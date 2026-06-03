@@ -7,7 +7,7 @@ pub mod geometry {
 
     /// True if a caret rect is plausibly a caret (not empty, not the whole container).
     pub fn usable_caret_rect(w: f64, h: f64) -> bool {
-        h > 0.0 && h < 200.0 && w < 2000.0
+        w > 0.0 && w < 2000.0 && h > 0.0 && h < 200.0
     }
 
     /// Convert an AX rect (top-left origin, y grows downward) to a Cocoa window
@@ -32,6 +32,9 @@ mod geometry_tests {
 
     #[test]
     fn usable_accepts_normal_caret() { assert!(usable_caret_rect(2.0, 18.0)); }
+
+    #[test]
+    fn usable_rejects_negative_width() { assert!(!usable_caret_rect(-5.0, 18.0)); }
 
     #[test]
     fn ax_to_cocoa_flips_y_from_top_left() {
@@ -148,6 +151,8 @@ mod context_tests {
     #[test] fn left_context_is_char_safe() { assert_eq!(left_context("héllo", 2), "hé"); }
     #[test] fn left_tail_returns_last_n() { assert_eq!(left_tail("abcdefgh", 8, 3), "fgh"); }
     #[test] fn left_tail_fewer_than_n_returns_all() { assert_eq!(left_tail("ab", 2, 5), "ab"); }
+    #[test] fn left_tail_zero_n_returns_empty() { assert_eq!(left_tail("abc", 3, 0), ""); }
+    #[test] fn left_context_caret_zero_returns_empty() { assert_eq!(left_context("hi", 0), ""); }
 }
 
 pub mod completion {
@@ -183,6 +188,8 @@ mod completion_tests {
     #[test] fn trim_prefix_removes_trailing_ws() { assert_eq!(trim_prefix("hi  "), "hi"); }
     #[test] fn cap_words_caps() { assert_eq!(cap_words("one two three four", 2), "one two"); }
     #[test] fn cap_words_returns_all_when_fewer() { assert_eq!(cap_words("a b", 5), "a b"); }
+    #[test] fn cap_words_zero_max_returns_empty() { assert_eq!(cap_words("one two", 0), ""); }
+    #[test] fn cap_words_normalizes_whitespace() { assert_eq!(cap_words("  one   two  ", 2), "one two"); }
 
     #[test]
     fn suggest_trims_trailing_ws_before_completing() {
