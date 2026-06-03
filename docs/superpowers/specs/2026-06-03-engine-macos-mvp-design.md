@@ -1,200 +1,266 @@
 # Design — Sub-project A: Engine + macOS MVP
 
 **Date:** 2026-06-03
-**Status:** Approved (brainstorming → ready for implementation plan)
-**Scope:** First sub-project of a long-term cross-platform predictive-writing product (Cotypist-like). This spec covers **only** the OS-agnostic engine + the macOS adapter + the app shell. Windows/Linux adapters and ecosystem integrations are separate, later specs that plug behind interfaces defined here.
+**Status:** Approved, then revised with online validation + Cotypist reverse-engineering
+**Scope:** First sub-project of a long-term cross-platform predictive-writing product (Cotypist-like). Covers **only** the OS-agnostic engine + the macOS adapter + the app shell. Windows/Linux adapters and ecosystem are later specs behind interfaces defined here.
+
+**Revision note (v2):** This document was re-validated against current crates/docs (Feb–Jun 2026) and against the shipping Cotypist binary (`/Applications/Cotypist.app`, v2026.1 build 73) via static analysis + its live `UserDefaults`. Material corrections are marked **[CORR]** and the evidence is in §12–§13.
 
 ---
 
 ## 1. Context & motivation
 
-The product is a local, privacy-first predictive-writing assistant: it reads the editable text around the caret in other apps, predicts the next word/phrase with a local model, shows it as inline grey "ghost text", and lets the user accept incrementally with Tab.
+Local, privacy-first predictive writing: read editable text around the caret in other apps, predict next word/phrase with a **local** model, show inline grey ghost text, accept incrementally with a configurable shortcut.
 
-This was validated against the real shipping Cotypist (`/Applications/Cotypist.app`):
+Validated against the shipping Cotypist binary:
 
-| Aspect | Real Cotypist (binary dissection) | Decision for this product |
+| Aspect | Cotypist (binary + libs + live prefs) | Decision for this product |
 |---|---|---|
-| Inference | `libllama` + `libggml-metal` (llama.cpp, Metal) | Same: llama.cpp via `llama-cpp-2`, Metal backend |
-| Storage | `GRDB.framework` (Swift SQLite) | `rusqlite` + FTS5 |
-| App shape | Menu-bar agent, `LSUIElement = true`, no dock | Tauri v2 tray app, hidden settings window |
-| Model | Not bundled; downloaded first-run | Same: download on first run |
-| Text access | macOS Accessibility (AX), min macOS 14 | `objc2` / `accessibility-sys` AX bindings |
-| Engine | Custom `RepliesSDK` (prompt/sampling/acceptance) | Our `core` + `ranker` crates |
-| Plumbing | Sparkle (update), Sentry (crash) | Sparkle for update; crash reporting optional |
+| Inference | `libllama` + `libggml-metal` (ggml 0.12.0), llama.cpp, Metal | llama.cpp via `llama-cpp-2` (feature `metal`), Metal backend |
+| Models | **Selectable catalog**, Instruct: Gemma 3/4, Qwen 3 (e.g. `gemma-4-E4B-UD-Q5_K_XL`); downloaded first-run | Selectable catalog; start small (see §5); download first-run |
+| Storage | `GRDB.framework` (SQLite); training data "encrypted, stored locally" | `rusqlite` + `bundled` (FTS5 included) |
+| App shape | Menu-bar agent, `LSUIElement=true`, status item, no dock | Tauri v2 tray app, `ActivationPolicy::Accessory`, hidden settings window |
+| Engine | Custom `RepliesSDK.framework` (prompt build, sampling, sender identity) | Our `core` + `ranker` + `model_client` |
+| Personalization | **Prompt-based**: `userPrompt` custom instructions + strength slider + sender name/email; optional training-data collector | Same: prompt-based primary; optional local memory later |
+| Context source | AX **+ pasteboard fallback** (`pasteboardContextEnabled`) | Same: AX primary, pasteboard augmentation |
+| Accept | **Configurable, two-tier**: full + partial(next-word) shortcuts; `maxCompletionLength` in words (default 4) | Same model: 2 configurable shortcuts, word-capped |
+| Update | Sparkle (`SUFeedURL` cotypist.app/updates) | **[CORR]** Tauri `updater` plugin (drop Sparkle — §12) |
+| Analytics | Sentry, opt-out per app | Optional; local-only by default |
+| Entitlements | `com.apple.security.automation.apple-events`; not sandboxed | Same; hardened runtime + notarize |
 | Language | Swift native | **Rust** (chosen for cross-platform reuse) |
 
-The original research-style plan that motivated this work proposed a 3-platform / 8-crate / 5-person / 4-phase effort with fabricated citations. It had the right **tech bets** but ~10× the right **scale** and understated the Rust FFI cost. This spec re-scopes to one solo-buildable sub-project.
-
 ### Non-goals (this spec)
-- Windows (UI Automation) and Linux (AT-SPI) adapters — later specs, behind `PlatformAdapter`.
-- Swappable model providers (Ollama/OpenAI) — later spec, behind the `LocalModel` trait seam.
+- Windows (UI Automation) / Linux (AT-SPI) adapters — behind `PlatformAdapter`.
+- Swappable cloud providers (Ollama/OpenAI) — behind `LocalModel` trait.
 - Browser extension / IDE plugins / remote compat registry.
-- On-device fine-tuning (personalization is memory+ranking only, never fine-tune).
+- On-device fine-tuning (personalization is prompt + optional retrieval, never weight training).
 
 ---
 
 ## 2. Architecture
 
-Single process. Tauri v2 supplies the tray menu, lifecycle, and a hidden settings webview. The Rust core (AX taps, overlay, inference, learning) runs in Tauri's backend, with prediction work on a dedicated thread so a settings-UI panic cannot stall predictions.
+Single process. Tauri v2 = tray, lifecycle, hidden settings webview. Rust core (AX, overlay, inference, prefs) in Tauri's backend. **Three run-loop contexts** (validated, §12):
+
+- **Main thread / AppKit run loop** — Tauri's loop; all NSPanel/overlay calls hop here via `app_handle.run_on_main_thread`.
+- **CGEventTap thread** — own thread + `CFRunLoopRun`; key interception (accept shortcut). Callback must be non-blocking and answer from **pre-computed state** (never a synchronous AX call).
+- **AX/inference worker** — background thread/queue; AX IPC (with short messaging timeout) + llama.cpp decode.
 
 ```
-┌─ Tauri v2 tray app (one process, LSUIElement) ───────────┐
-│  tray menu · hidden settings webview · lifecycle         │
-│                                                           │
-│  ┌── core ──────────┐   suggestion state machine,         │
-│  │ debounce, sched, │   acceptance (word/phrase), policy  │
-│  │ accept logic     │                                     │
-│  └───────┬──────────┘                                     │
-│   ┌──────┴───────┬───────────┬───────────────┐            │
-│  context       ranker     model_client    personalization │
-│  (TextCtx,    (score,     (llama-cpp-2,    (rusqlite+FTS5, │
-│   Caret,       rep.pen,    GGUF, Metal)     phrase memory, │
-│   Selection)   pers.score)                  redaction)     │
-│                                                           │
-│  ┌── platform (trait PlatformAdapter) ──┐                 │
-│  │  platform_macos: objc2 / AX /        │                 │
-│  │  CGEvent / NSPanel overlay           │                 │
-│  └──────────────────────────────────────┘                │
-└───────────────────────────────────────────────────────────┘
+┌─ Tauri v2 tray app (one process, ActivationPolicy::Accessory) ─────────┐
+│  tray menu/status item · hidden settings webview · lifecycle           │
+│                                                                         │
+│  ┌── core ───────────────┐   suggestion state machine, debounce,        │
+│  │ generation tokens,    │   accept logic (full/partial), app policy     │
+│  │ invalidation, cancel  │                                               │
+│  └───────┬───────────────┘                                              │
+│   ┌──────┴────────┬────────────┬───────────────┬──────────────┐         │
+│  context        ranker      model_client    personalization  prefs       │
+│  (AX read +    (score,     (LocalModel:    (custom-instr     (UserDefaults│
+│   pasteboard    trim,       llama-cpp-2,    prompt, strength,  -equivalent,│
+│   fallback,     boundary)   Metal, warm,    sender identity,   per-app    │
+│   caret rect)               prefix-cache)   opt. memory)       overrides) │
+│                                                                         │
+│  ┌── platform (trait PlatformAdapter) ───────────────────┐              │
+│  │  platform_macos: AX (accessibility-sys/objc2),         │              │
+│  │  CGEventTap, NSPanel overlay, NSWorkspace front-app    │              │
+│  └─────────────────────────────────────────────────────── ┘             │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Workspace layout
+### Workspace
 ```
-crates/core             # state machine, scheduling, debounce, acceptance, app policy
-crates/context          # TextContext, Selection, Caret — shared data models
-crates/ranker           # candidate scoring, repetition penalty, personalization score
-crates/model_client     # LocalModel trait + llama.cpp (llama-cpp-2) impl
-crates/personalization  # rusqlite + FTS5 store, phrase memory, redaction
-crates/platform         # PlatformAdapter trait + shared types (the cross-platform contract)
-crates/platform_macos   # AX read, CGEvent insert, NSPanel overlay (objc2 / accessibility-sys)
-apps/app                # Tauri v2 tray app wiring it all together + settings webview
-tools/spike             # throwaway A0 proof-of-concept (deleted after A0)
+crates/core             # state machine, generation tokens, invalidation, cancel, accept logic, policy
+crates/context          # TextContext, Selection, Caret + AX+pasteboard capture model
+crates/ranker           # candidate trim/boundary/repetition/score
+crates/model_client     # LocalModel trait + llama.cpp impl (warm-up, prefix cache, N-sample)
+crates/personalization  # custom-instructions prompt builder + sender identity + optional rusqlite memory
+crates/prefs            # settings store + per-app overrides (mirrors Cotypist's pane model)
+crates/platform         # PlatformAdapter trait + shared types (cross-platform contract)
+crates/platform_macos   # AX read, CGEventTap, NSPanel overlay, front-app detection
+apps/app                # Tauri v2 tray + settings webview, wiring
+tools/spike             # throwaway A0 PoC (deleted after A0)
 ```
 
 ---
 
 ## 3. The cross-platform contract
 
-`PlatformAdapter` is the central bet — get it right with one real adapter before B/C commit to it. Capability-first so `core` never special-cases apps; capabilities drive UX mode selection.
+Capability-first so `core` never special-cases apps; capabilities drive UX mode.
 
 ```rust
 pub trait PlatformAdapter: Send + Sync {
-    /// Register for focus-change events on editable fields.
-    fn subscribe_focus(&self, cb: FocusCallback);
-
-    /// What can we do with this field right now?
+    fn subscribe_focus(&self, cb: FocusCallback);              // focus + caret-change events
+    fn front_app(&self) -> Option<AppId>;                      // bundle id for per-app policy
     fn capabilities(&self, f: &FieldHandle) -> Capabilities;
-
-    /// Text to the left and right of caret, plus current selection.
-    fn read_context(&self, f: &FieldHandle) -> Result<TextContext>;
-
-    /// Caret rectangle in screen coordinates. None => no inline mode.
-    fn caret_rect(&self, f: &FieldHandle) -> Option<ScreenRect>;
-
-    /// Insert/accept text. Strategy chosen by InsertMode + capabilities.
-    fn insert(&self, f: &FieldHandle, text: &str, mode: InsertMode) -> Result<()>;
+    fn read_context(&self, f: &FieldHandle) -> Result<TextContext>; // left/right/selection; pasteboard fallback
+    fn caret_rect(&self, f: &FieldHandle) -> Option<ScreenRect>;    // collapsed-range workaround required (§12)
+    fn insert(&self, f: &FieldHandle, text: &str, m: InsertMode) -> Result<()>; // AX-set → keystroke → clipboard
 }
 
 pub struct Capabilities {
     pub readable_text: bool,
     pub readable_caret: bool,
     pub writable: bool,
-    pub secure: bool,       // password / secure field — HARD block
+    pub secure: bool,        // subrole AXSecureTextField OR Secure Input mode → HARD block (§12)
     pub multiline: bool,
+    pub is_electron: bool,    // route to keystroke/clipboard insertion; caret often unavailable
 }
 ```
 
-### UX mode derivation (in `core`, from `Capabilities`)
+### UX mode derivation (in `core`)
 | readable_text | readable_caret | writable | secure | → Mode |
 |---|---|---|---|---|
-| ✓ | ✓ | ✓ | ✗ | **Inline ghost text** (premium) |
-| ✓ | ✗ | ✓ | ✗ | **Near-caret popup** |
-| ✓ | – | ✓ | ✗ | **Hotkey completion** (if continuous unsafe) |
-| – | – | – | – | **Unsupported** (diagnostic tooltip) |
-| any | any | any | ✓ | **Blocked** (always) |
+| ✓ | ✓ | ✓ | ✗ | **Inline ghost text** |
+| ✓ | ✗ | ✓ | ✗ | **Near-caret popup** (use front-app frame / cursor) |
+| ✓ | – | ✓ | ✗ | **Hotkey completion** (continuous unsafe) |
+| – | – | – | – | **Unsupported** (tray status + diagnostic) |
+| any | any | any | ✓ | **Blocked** (always; also when `IsSecureEventInputEnabled`) |
 
 ---
 
-## 4. Event flow
+## 4. Event flow & suggestion lifecycle **[CORR — biggest gap in v1]**
 
-1. Focus changes to an editable field → `subscribe_focus` callback fires.
-2. Adapter gathers `capabilities` + `read_context` + `caret_rect` + app id.
-3. `core` checks policy (per-app toggle, secure block) and selects UX mode.
-4. After debounce, `core` schedules a completion request.
-5. `model_client` returns 2–5 short candidates (3–12 tokens, live mode) from local GGUF.
-6. `ranker` scores candidates: LM score + repetition penalty + personalization similarity + sensitive-context penalty.
-7. Overlay renders top candidate as ghost text at `caret_rect` (or popup fallback).
-8. **Tab** accepts one word/chunk; **Shift-Tab** cycles alternatives; **Esc** dismisses.
-9. `personalization` records accepted/rejected outcomes locally (after redaction).
+A suggestion is a contract over a specific context snapshot. Define it precisely or Tab inserts stale text.
 
----
-
-## 5. Inference
-
-- Backend: llama.cpp via `llama-cpp-2`, Metal enabled. Bundled build, pinned versions.
-- Model: start **Qwen2.5-0.5B-Instruct** GGUF, Q4_K_M (try 1.5B if latency budget allows). Downloaded first-run, cached in app support dir. Benchmarked in A0.
-- Live mode: 2–5 candidates, 3–12 tokens each. Stream internally; render only past a min-confidence threshold.
-- Prompt features: left-context window, optional right-context, app-category hint (email/chat/doc/terminal), user style hints from `personalization`.
-- `LocalModel` is a trait so future providers are an additive spec, not a refactor.
+1. Focus/caret change → adapter callback. Read `front_app`, apply per-app override (excluded? strength? enabled?).
+2. **Debounce** ~150–300 ms of keystroke quiescence; gate: not mid-word unless configured, not on backspace, min context length.
+3. Snapshot context → compute **generation token** = hash of `{element id, text length, caret offset, left-context tail}`.
+4. `model_client` runs inference (warm model, cached prefix). **Cancellation token** checked between decode steps; superseded request → drop-all-but-latest.
+5. On return, **discard unless current generation token still matches** (stale-race guard).
+6. `ranker` trims to word boundary, caps at `maxCompletionLength` words, applies repetition/sensitive penalties.
+7. Overlay renders top candidate at `caret_rect` (Retina/multi-monitor coordinate conversion, §12) or popup fallback.
+8. **Accept**: full-completion shortcut inserts all; partial shortcut inserts next word (+ trailing space if available). Shift-equivalent cycles candidates; Esc dismisses.
+9. **Invalidation** (any → drop suggestion): non-accept keystroke, caret/selection move, focus/app change, mouse click, text no longer matches prefix.
+10. `personalization`/stats record outcome locally (redacted).
 
 ---
 
-## 6. Personalization (memory + ranking, never fine-tune)
+## 5. Inference **[CORR]**
 
-- `rusqlite` + FTS5. Stores: accepted completions, rejected completions, accepted-phrase memory, per-app/per-domain style profiles, recurring entities/contacts/project terms.
-- **Opt-in and inspectable.** "Forget learned data" control. Per-app deny list + per-window incognito.
-- **Redaction before any persistence:** emails, card-like numbers, passwords, tokens/secrets stripped.
-- Feeds `ranker` as a personalization-similarity score; no model weights touched.
+- Backend: llama.cpp via `llama-cpp-2` (latest v0.1.146; **`metal` is NOT default** — must enable; add `sampler`). Vendored build via git submodule + cmake; needs clang/cmake; pin exact versions. `mistral.rs` (pure Rust, Metal) is the plan-B if the C++ build hurts distribution.
+- **Warm-up mandatory**: first decode triggers Metal shader compile (seconds). Pre-load model + dummy decode at launch; show "loading" tray state.
+- **Prefill dominates TTFT**: keep left-context short (few hundred tokens); reuse KV/prefix cache across keystrokes. Don't re-prefill long context per keystroke.
+- Live mode: `n_predict` 8–24 tokens, capped to `maxCompletionLength` words; aggressive stop sequences (newline/sentence boundary) — **boundary/stop handling is the hidden quality lever**.
+- Candidates (2–5): **N independent samples** (temp/seed variation; llama.cpp dropped beam search). Decode shared prompt once, branch N sequences → ~N× the *generation* cost, not N× whole request.
+- Latency: 0.5–1.5B Q4 on M-series ≈ 30–80 tok/s. Sub-150 ms first suggestion feasible **only** warm + short prompt. Cotypist targets ~100–200 ms and shipped on Qwen 2.5 1.5B before expanding the catalog.
+- **Model: selectable catalog** (mirrors Cotypist). Start tier "always fast": **Qwen2.5-0.5B / Qwen3-0.6B**, Q4_K_M (~350–490 MB). Quality tier: ~1.5–1.7B.
+  - **Base vs Instruct:** base gives cleaner continuations conventionally; **but Cotypist ships Instruct** (Gemma/Qwen Instruct) with hard constraints (4-word cap, custom-instruction prompt, stop sequences). Decision: **benchmark both in A0**; default to Instruct-with-constraints to match proven behavior, keep base as an option.
+  - **FIM / right-context: dropped for v1** — no good small *prose* FIM checkpoint; code-FIM models hurt prose. Left-context continuation only. Revisit (Qwen2.5-Coder FIM) only if targeting code fields.
+- `LocalModel` stays a trait so cloud providers are a later additive spec.
+
+---
+
+## 6. Personalization **[CORR — redesigned to match Cotypist]**
+
+Prompt-based, not ML. This is simpler, ships, and is what Cotypist actually does.
+
+- **Primary: custom-instructions prompt.** A user-editable free-text style profile (`userPrompt` equivalent: name, role, languages, tone rules) prepended/templated into the completion prompt. Plus a **personalization strength** slider controlling how strongly it steers.
+- **Sender identity**: name + email (signature/contact awareness), as Cotypist's `io_replies_sender_*`.
+- **Optional local memory (deferred within A2)**: `rusqlite` + FTS5 store of accepted completions / phrases for retrieval-augmented prompting and a ranker similarity score. Opt-in (`TrainingDataCollector` equivalent), inspectable, "forget learned data" control.
+- **No fine-tuning, ever.** Memory feeds the prompt/ranker, never model weights.
+- **Redaction before any persistence**: emails, card-like numbers (Luhn), tokens/secrets (regex; `pii-vault`/`redact` crates). Diagnostics text-redacted by default.
 
 ---
 
 ## 7. Privacy & safety (first-class)
 
-- Never read or store secure fields (hard block at capability layer).
-- No raw-text logging by default; diagnostics are text-redacted unless user explicitly exports verbose logs.
-- All inference local by default (only backend in this spec).
-- Visible "pause everywhere" toggle; per-app deny list; incognito per window.
-- Clear retention policy + "forget learned data".
+- Never read/store secure fields: block on `AXSecureTextField` subrole **and** `IsSecureEventInputEnabled` (§12).
+- All inference local by default (only backend this spec). No raw-text logging by default.
+- Visible **pause/snooze** ("disable for N minutes", as Cotypist) + per-app exclude list (default-exclude Finder-like) + per-window incognito.
+- Custom-instructions & memory are user-visible/editable; clear retention + "forget learned data".
 
 ---
 
-## 8. Phasing (Sub-project A)
+## 8. Settings / config surface (mirrors Cotypist's panes — §13)
+
+| Pane | Options |
+|---|---|
+| General | Completions enabled by default · `maxCompletionLength` (words) · show suggested fixes (spelling/grammar) · menu-bar word-count |
+| Personalization | Custom instructions (free text) · personalization strength slider · sender name/email · training-data collection toggle |
+| Shortcuts | Accept-full shortcut · accept-partial(next-word) shortcut · force-enable shortcut (configurable, not hardcoded) |
+| App Overrides | Per-app enable/disable · per-app strength/exclude |
+| Context | Pasteboard-context toggle |
+| Permissions | Accessibility status · Input Monitoring status · pasteboard permission |
+| Emoji | Emoji completion · skin tone · gender |
+| Labs | Experimental flags |
+| About / Update | Version · auto-update (Tauri updater) |
+
+Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepository_*`, per-app override list).
+
+---
+
+## 9. Phasing (Sub-project A)
 
 | Phase | Weeks | Deliverable | Exit criterion |
 |---|---|---|---|
-| **A0 spike** (`tools/spike`, throwaway) | 1–2 | AX caret-rect read + transparent overlay + llama round-trip in TextEdit | Caret geometry works in ≥1 real app; round-trip latency measured |
-| **A1 core loop** | 3–4 | `PlatformAdapter` trait + macOS adapter + single completion + ghost overlay + Tab-accept + secure-field block | Type in Notes/Mail → inline suggestion → Tab inserts, no lag; passwords blocked |
-| **A2 fat features** | 3–4 | personalization (SQLite+FTS5+redaction), multi-candidate gen, ranker, Shift-Tab cycle | Suggestions adapt to accepted phrases; cycling works |
-| **A3 settings + ship** | 2–3 | Tauri settings window, per-app toggles, diagnostics page, packaging + notarization + Sparkle | Installable signed `.app`, configurable, self-diagnosing |
+| **A0 spike** (throwaway) | 1–2 | (1) AX caret-rect read + collapsed-range workaround in TextEdit + an Electron app; (2) **CGEventTap that swallows a test key** behind Input Monitoring; (3) NSPanel overlay; (4) warm llama.cpp round-trip + latency table; bench base-vs-instruct | All four work in ≥1 real app each; sub-150 ms warm latency confirmed or model retiered |
+| **A1 core loop** | 3–4 | `PlatformAdapter` + macOS adapter + suggestion lifecycle (§4) + configurable accept + ghost overlay + **secure block (subrole + secure-input)** | Type in Notes/Mail → inline suggestion → accept; passwords & secure-input blocked; no stale inserts |
+| **A2 features** | 3–4 | Prompt-based personalization (custom instructions + strength + sender) + pasteboard context fallback + multi-candidate + cycle; optional rusqlite memory if time | Suggestions steered by custom instructions; cycling works; Electron apps get keystroke/clipboard insertion |
+| **A3 settings + ship** | 2–3 | Tauri settings (all §8 panes) + per-app overrides + model catalog/download + diagnostics + pause/snooze + Tauri updater + codesign/notarize (hardened runtime + entitlements) | Installable signed/notarized `.app`; configurable; self-diagnosing; two-permission onboarding |
 
-Estimated ~9–13 weeks solo to a shippable macOS app.
+~9–13 weeks solo to a shippable macOS app.
 
 ---
 
-## 9. Risks
+## 10. Risks (updated with validation)
 
-| Risk | Severity | Mitigation |
+| Risk | Sev | Mitigation |
 |---|---|---|
-| Rust AX FFI friction (`objc2` / `accessibility-sys`) | High | A0 spike de-risks before committing to A1 |
-| `caret_rect` unavailable in many apps | High | Capability tier → automatic popup fallback (designed-in) |
-| llama.cpp + Tauri build/link complexity | Medium | `llama-cpp-2` bundled build; pin versions; verify in A0 |
-| Single-process: settings-UI panic stalls predictions | Medium | Prediction work on dedicated thread; `catch_unwind` around UI |
-| Notarization / AX-permission onboarding UX | Medium | A3 handles; detect permission on launch, guide to System Settings |
+| **Tab/accept interception** needs CGEventTap + **Input Monitoring** (global-shortcut CANNOT swallow keys) | High | A0 proves it; surface missing-permission state; gate consumption by app-focus/context |
+| CGEventTap fragile at runtime (`tapDisabledByTimeout/UserInput`, sleep/wake) | High | Re-enable on disable events, re-create on wake, keep callback non-blocking, periodic self-test |
+| `caret_rect` collapsed-range returns `kAXErrorNoValue` in most apps | High | "Bounds of adjacent char" workaround + element-frame fallback (designed-in) |
+| Electron/Chromium apps expose poor AX tree | High | Detect Electron → keystroke/clipboard insert + pasteboard context + popup positioning |
+| **Secure Input mode** blocks AX/taps in password fields | Med | Detect `IsSecureEventInputEnabled`; suppress entirely |
+| llama.cpp + Tauri vendored C++ build (clang/cmake, slow) | Med | Pin versions; prebuilt artifacts in CI; mistral.rs fallback evaluated in A0 |
+| Two TCC permissions (Accessibility + Input Monitoring), revocable, post-grant relaunch | Med | Onboarding sequences both; runtime detect each; guide to correct Settings pane |
+| AX synchronous IPC can block (6 s default timeout) | Med | Off-main worker; `AXUIElementSetMessagingTimeout` short; handle `kAXErrorCannotComplete` retry |
+| Single process: settings-UI panic stalls predictions | Low | Prediction on dedicated thread; `catch_unwind` around UI |
 
 ---
 
-## 10. Success metrics
-
-- First-suggestion perceived latency < 100–150 ms on Apple Silicon.
-- Insertion failure < 1% in supported apps.
-- < 5% sessions with noticeable typing lag.
-- Clear support tier for top ~20 macOS apps.
-- Telemetry (local): acceptance rate, dismiss rate, wrong-insertion incidents, overlay misalignment, CPU/RAM, token throughput.
+## 11. Success metrics
+First-suggestion perceived latency <100–150 ms (warm) · insertion failure <1% in supported apps · <5% laggy sessions · clear tier for top ~20 macOS apps · local stats: shown/accepted/dismissed/superseded, latency, words (30-day, mirrors Cotypist stats).
 
 ---
 
-## 11. Future sub-projects (out of scope here, behind interfaces)
+## 12. Online validation results (Feb–Jun 2026) — evidence
 
+- **objc2 v0.6.4** (maintained) + **accessibility-sys/accessibility v0.2.0** (thin, 1 maintainer) provide AXUIElement FFI. Prefer `accessibility-sys` + own wrappers; CGEventTap suppression is hand-written FFI via `core-graphics`/`objc2`.
+- **Caret rect** = `kAXBoundsForRangeParameterizedAttribute`; collapsed range returns `kAXErrorNoValue` in most apps (rdar://14285519) → adjacent-char workaround mandatory.
+- **Focus events** = `AXObserver` + `kAXFocusedUIElementChangedNotification` (+ caret via `kAXSelectedTextChangedNotification`); deliver on a CFRunLoop thread.
+- **Secure field** = **subrole** `AXSecureTextField` (role stays `AXTextField`); also honor `IsSecureEventInputEnabled`.
+- **Accept-key interception** = **CGEventTap** (`.cgSessionEventTap`, `.defaultTap`, return nil to swallow), needs **Input Monitoring**; Carbon hotkeys / `NSEvent` global monitors are passive and **cannot consume** keys. ← single most important correction.
+- **CGEventTap fragility**: handle `kCGEventTapDisabledByTimeout/UserInput`, re-create on wake; non-blocking callback.
+- **Overlay** = `NSPanel` `.nonactivatingPanel`, `.floating`, `canJoinAllSpaces|fullScreenAuxiliary`, clear/`ignoresMouseEvents`; never `activate(ignoringOtherApps:)`. `tauri-nspanel` plugin exists.
+- **AX IPC** synchronous, 6 s default timeout → off-main + lower timeout.
+- **Tauri v2**: `ActivationPolicy::Accessory` (=LSUIElement), `TrayIconBuilder`, hidden `WebviewWindowBuilder::visible(false)`; run loop is AppKit's; AppKit calls via `run_on_main_thread`. **Official `updater` plugin → use it, drop Sparkle** (redundant/conflicting). `tauri build` does codesign + notarize.
+- **Inference**: `llama-cpp-2` v0.1.146, `metal` feature, vendored cmake build; warm-up + prefix cache critical; N-sample (no beam search); 30–80 tok/s for 0.5–1.5B Q4.
+- **Models**: Qwen2.5-0.5B/1.5B-Instruct GGUF Q4_K_M exist (~491 MB / ~1.12 GB); base cleaner for completion but Instruct works with constraints (Cotypist ships Instruct). FIM = code-only → drop for v1.
+- **Storage**: `rusqlite` `bundled` includes FTS5 (no separate flag); `directories::ProjectDirs` for paths (`cache_dir()` for the model); regex+Luhn redaction (`pii-vault`/`redact`).
+
+---
+
+## 13. Cotypist reverse-engineering — how it operates
+
+**Binary**: arm64 Swift, `LSUIElement=true`, min macOS 14, entitlement `com.apple.security.automation.apple-events`, not sandboxed. Libs: `libllama`/`libggml*` (Metal), `GRDB` (SQLite), `RepliesSDK` (own engine), `Sparkle` (update, `SUFeedURL=cotypist.app/updates`), `Sentry`.
+
+**Operation (from class names + live prefs):**
+- `CompletionAccessibilityMonitor` watches focus/text via AX; `TextFieldContextCapture` reads field context **with optional pasteboard augmentation**.
+- `CompletionManagerActor` (Swift actor → serialized concurrency) builds a `CompletionRequest` (prompt = custom instructions + context), runs local inference, returns `CompletionResult`.
+- `CompletionOverlayManager`/`CompletionBackdropManager` render ghost text; `CompletionInserter` inserts on accept.
+- `ShortcutListener` + key monitor handle **configurable** accept-full / accept-partial / force-enable shortcuts.
+- `ModelRepository` manages a **tiered selectable model catalog**; `DownloadAndRenameTask` downloads the chosen GGUF first-run (current: `gemma-4-E4B-UD-Q5_K_XL`).
+- Pause/snooze ("Completions disabled for N minutes"); per-app exclusion (`excludedApplications`, e.g. Finder); 30-day completion stats; emoji completion; "suggested fixes" (spelling/grammar via NSSpellChecker).
+
+**Config surface (live `UserDefaults` keys observed):**
+`CompletionManager_{acceptFullCompletionShortcut, acceptPartialCompletionShortcut, acceptNextWordOnly_includeTrailingSpaceIfAvailable, excludedApplications, maxCompletionLength=4, userPrompt}` · `ModelRepository_{selectedModel, statusItemVisible, shouldShowCompletedWordCountInMenuBar}` · `PersonalizationStrengthSlider` · `TextFieldContextCapture_pasteboardContextEnabled` · `TrainingDataCollector_enabled` · `EmojiCompletion_{preferredGender, preferredSkinTone, includeVanillaVariants}` · `io_replies_sender_{name,email}` · `ShortcutListener_forceEnableShortcut` · Sparkle `SU*`. Settings panes enumerated in §8.
+
+**What we adopt:** prompt-based personalization, two-tier configurable accept, word-capped length, pasteboard context fallback, selectable model catalog, pause/snooze, per-app overrides, local encrypted stats.
+**What we change:** Tauri updater instead of Sparkle; Rust instead of Swift; CGEventTap built by hand (no RepliesSDK).
+
+---
+
+## 14. Future sub-projects (out of scope, behind interfaces)
 - **B.** `platform_windows` (UI Automation) behind `PlatformAdapter`.
 - **C.** `platform_linux` (AT-SPI, X11/Wayland split) + popup fallback.
-- **D.** Provider abstraction (Ollama/OpenAI), browser extension, IDE plugins, remote compat registry.
+- **D.** Cloud provider abstraction, browser extension, IDE plugins, remote compat registry.
