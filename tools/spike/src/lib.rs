@@ -149,3 +149,49 @@ mod context_tests {
     #[test] fn left_tail_returns_last_n() { assert_eq!(left_tail("abcdefgh", 8, 3), "fgh"); }
     #[test] fn left_tail_fewer_than_n_returns_all() { assert_eq!(left_tail("ab", 2, 5), "ab"); }
 }
+
+pub mod completion {
+    use crate::context::left_context;
+
+    /// Seam: the model (real impl = llama.cpp).
+    pub trait Completer { fn complete(&self, prompt: &str) -> String; }
+
+    /// Trailing whitespace wrecks small models (spec §5) — strip before prompting.
+    pub fn trim_prefix(s: &str) -> &str { s.trim_end() }
+
+    /// Cap a completion to `max_words` (spec: maxCompletionLength in words).
+    pub fn cap_words(text: &str, max_words: usize) -> String {
+        text.split_whitespace().take(max_words).collect::<Vec<_>>().join(" ")
+    }
+
+    /// Full pipeline: left context -> trim -> complete -> cap.
+    pub fn suggest(value: &str, caret: usize, c: &dyn Completer, max_words: usize) -> String {
+        let prompt = trim_prefix(&left_context(value, caret)).to_string();
+        cap_words(&c.complete(&prompt), max_words)
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::completion::*;
+
+    struct ReturnsPrompt; // echoes its input so we can assert the pipeline trimmed it
+    impl Completer for ReturnsPrompt { fn complete(&self, p: &str) -> String { p.to_string() } }
+    struct Fixed(&'static str);
+    impl Completer for Fixed { fn complete(&self, _p: &str) -> String { self.0.to_string() } }
+
+    #[test] fn trim_prefix_removes_trailing_ws() { assert_eq!(trim_prefix("hi  "), "hi"); }
+    #[test] fn cap_words_caps() { assert_eq!(cap_words("one two three four", 2), "one two"); }
+    #[test] fn cap_words_returns_all_when_fewer() { assert_eq!(cap_words("a b", 5), "a b"); }
+
+    #[test]
+    fn suggest_trims_trailing_ws_before_completing() {
+        // value "hello " caret 6 -> left "hello " -> trimmed "hello" -> echoed -> capped
+        assert_eq!(suggest("hello ", 6, &ReturnsPrompt, 4), "hello");
+    }
+
+    #[test]
+    fn suggest_caps_completion_words() {
+        assert_eq!(suggest("x", 1, &Fixed("one two three four five"), 3), "one two three");
+    }
+}
