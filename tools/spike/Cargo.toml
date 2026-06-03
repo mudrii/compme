@@ -13,6 +13,10 @@ accessibility-sys = "=0.2.0"
 core-foundation = "=0.10.1"
 core-graphics = "=0.25.0"
 
+[lib]
+name = "spike"
+path = "src/lib.rs"
+
 [[bin]]
 name = "p1_build"
 path = "src/bin/p1_build.rs"
