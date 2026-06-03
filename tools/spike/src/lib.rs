@@ -118,3 +118,34 @@ mod caret_tests {
         assert_eq!(resolve_caret(&f, 0).0, CaretTier::None);
     }
 }
+
+pub mod context {
+    /// Seam: focused editable field (real impl = AX).
+    pub trait FieldSource {
+        fn value(&self) -> Option<String>;
+        fn caret(&self) -> usize;
+    }
+
+    /// Text left of the caret (char-safe).
+    pub fn left_context(value: &str, caret: usize) -> String {
+        value.chars().take(caret).collect()
+    }
+
+    /// Last `n` chars left of the caret (for compact display/logging).
+    pub fn left_tail(value: &str, caret: usize, n: usize) -> String {
+        let left: Vec<char> = value.chars().take(caret).collect();
+        let start = left.len().saturating_sub(n);
+        left[start..].iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::context::*;
+
+    #[test] fn left_context_truncates_at_caret() { assert_eq!(left_context("hello world", 5), "hello"); }
+    #[test] fn left_context_caret_past_end_returns_all() { assert_eq!(left_context("hi", 99), "hi"); }
+    #[test] fn left_context_is_char_safe() { assert_eq!(left_context("héllo", 2), "hé"); }
+    #[test] fn left_tail_returns_last_n() { assert_eq!(left_tail("abcdefgh", 8, 3), "fgh"); }
+    #[test] fn left_tail_fewer_than_n_returns_all() { assert_eq!(left_tail("ab", 2, 5), "ab"); }
+}
