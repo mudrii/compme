@@ -85,29 +85,37 @@ tools/spike             # throwaway A0 PoC (deleted after A0)
 
 ---
 
-## 3. The cross-platform contract
+## 3. The cross-platform contract **[CORR — expanded after Win/Linux validation]**
 
-Capability-first so `core` never special-cases apps; capabilities drive UX mode.
+Capability-first so `core` never special-cases apps; capabilities drive UX mode. This is the **validated** shape (see `2026-06-03-cross-platform-review.md` §4): Windows and Linux independently forced strategy enums + extra flags. macOS fills the rich values now so B/C slot in without reshaping the contract.
 
 ```rust
 pub trait PlatformAdapter: Send + Sync {
-    fn subscribe_focus(&self, cb: FocusCallback);              // focus + caret-change events
-    fn front_app(&self) -> Option<AppId>;                      // bundle id for per-app policy
+    fn environment(&self) -> Environment;          // OS + display_server + compositor (Linux); macOS = {macOS, n/a}
+    fn subscribe_focus(&self, cb: FocusCallback);  // focus events (cheap)
+    fn subscribe_caret(&self, cb: CaretCallback);  // caret events — SEPARATE (expensive on Win UIA / Linux D-Bus)
+    fn front_app(&self) -> Option<AppId>;          // bundle id; often None on Wayland
     fn capabilities(&self, f: &FieldHandle) -> Capabilities;
     fn read_context(&self, f: &FieldHandle) -> Result<TextContext>; // left/right/selection; pasteboard fallback
     fn caret_rect(&self, f: &FieldHandle) -> Option<ScreenRect>;    // collapsed-range workaround required (§12)
-    fn insert(&self, f: &FieldHandle, text: &str, m: InsertMode) -> Result<()>; // AX-set → keystroke → clipboard
+    fn insert(&self, f: &FieldHandle, text: &str, s: InsertStrategy) -> Result<Inserted>;
 }
 
 pub struct Capabilities {
     pub readable_text: bool,
     pub readable_caret: bool,
     pub writable: bool,
-    pub secure: bool,        // subrole AXSecureTextField OR Secure Input mode → HARD block (§12)
+    pub secure: bool,                       // AXSecureTextField subrole OR Secure Input mode → HARD block (§12)
     pub multiline: bool,
-    pub is_electron: bool,    // route to keystroke/clipboard insertion; caret often unavailable
+    pub toolkit: Toolkit,                   // generalizes is_electron: Cocoa/Win32/WPF/Qt/Gtk*/Electron/Java/Vte/Unknown
+    pub insert_strategy: InsertStrategy,    // macOS: AxSet | SyntheticKeys | Clipboard  (Linux adds EditableTextApi/ImeCommit)
+    pub accept_intercept: KeyInterceptMode, // macOS: CgEventTap  (Win: LowLevelHook; X11: XGrabKey; Wayland: HotkeyOnly/ImeOwnsKey/None)
+    pub overlay_at_caret: OverlayPlacement, // macOS: NativePanel  (≠ readable_caret — GNOME/Wayland can read caret but not place)
+    pub coords_global_screen: bool,         // can caret rect be used for absolute positioning?
 }
 ```
+
+Rationale per field is in the review (§4). The macOS adapter implements `accept_intercept = CgEventTap`, `overlay_at_caret = NativePanel`, `insert_strategy ∈ {AxSet, SyntheticKeys, Clipboard}` (probe writable → fall back), `toolkit` detected via bundle id / framework. `subscribe_caret` is split from focus because on Windows/Linux caret events are the expensive ones — macOS keeps the split for contract uniformity even though AX is cheaper.
 
 ### UX mode derivation (in `core`)
 | readable_text | readable_caret | writable | secure | → Mode |
@@ -279,6 +287,12 @@ First-suggestion perceived latency <100–150 ms (warm) · insertion failure <1%
 ---
 
 ## 14. Future sub-projects (out of scope, behind interfaces)
-- **B.** `platform_windows` (UI Automation) behind `PlatformAdapter`.
-- **C.** `platform_linux` (AT-SPI, X11/Wayland split) + popup fallback.
-- **D.** Cloud provider abstraction, browser extension, IDE plugins, remote compat registry.
+
+Validated in `2026-06-03-cross-platform-review.md`. Ordering reflects capability loss, not just porting effort: each step down loses a pillar of the macOS interaction model.
+
+- **B. Windows** — `platform_windows`: UIA on a dedicated MTA worker thread + `WH_KEYBOARD_LL` accept + layered overlay (PMv2 DPI). Inference: Vulkan+CPU default, CUDA optional download. Strong tier = WPF/WinForms/Win32/native Qt; Electron/Chromium degrade to popup/hotkey.
+- **C1. Linux X11 + Wayland(KDE/wlroots)** — `platform_linux`: `atspi` adapter + XTEST/wtype insert + override-redirect/layer-shell overlay + **dedicated-hotkey** accept (plain Tab can't be grabbed globally). AppImage distribution.
+- **C2. Linux GNOME/Wayland + cross-platform IME path** — **separate architecture**: IBus **input-method-engine** backend with IME-native suggestion UI. GNOME/Wayland defeats overlay + key-intercept + front-app simultaneously, so the macOS model is *absent*, not degraded. Biggest single piece of Linux work.
+- **D.** Cloud provider abstraction (behind `LocalModel`), browser extension, IDE plugins, remote compat registry, web-driven config, domain/website overrides.
+
+**Cross-cutting (from review):** Tauri = tray + settings only; render overlays with **native** windows per OS (Tauri webview click-through is unsolved). Engine/inference crate stays OS-agnostic — only the llama.cpp build feature (`metal`/`vulkan`/`cuda`) + shipped runtime differ; build with `dynamic-backends` for one-binary GPU/CPU adaptation.
