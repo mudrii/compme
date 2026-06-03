@@ -32,3 +32,15 @@ path = "src/bin/p3_axread.rs"
 [[bin]]
 name = "p4_caret"
 path = "src/bin/p4_caret.rs"
+
+[[bin]]
+name = "p5_tap"
+path = "src/bin/p5_tap.rs"
+
+[[bin]]
+name = "p6_overlay"
+path = "src/bin/p6_overlay.rs"
+
+[[bin]]
+name = "p7_smoke"
+path = "src/bin/p7_smoke.rs"
