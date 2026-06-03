@@ -22,7 +22,9 @@ Validated against the shipping Cotypist binary:
 | App shape | Menu-bar agent, `LSUIElement=true`, status item, no dock | Tauri v2 tray app, `ActivationPolicy::Accessory`, hidden settings window |
 | Engine | Custom `RepliesSDK.framework` (prompt build, sampling, sender identity) | Our `core` + `ranker` + `model_client` |
 | Personalization | **Prompt-based**: `userPrompt` custom instructions + strength slider + sender name/email; optional training-data collector | Same: prompt-based primary; optional local memory later |
-| Context source | AX **+ pasteboard fallback** (`pasteboardContextEnabled`) | Same: AX primary, pasteboard augmentation |
+| Context source | AX **+ pasteboard fallback** + previous-input / cross-app history | AX primary; pasteboard + previous-input augmentation (latter deferred) |
+| Models CDN | Self-hosted `models.cotypist.app` (zstd), sourced from HF | HF direct or self-host (TBD) |
+| Native inline prediction | Disabled while active (`InlinePredictionDisableController`) | Same — must suppress macOS 14+ inline prediction |
 | Accept | **Configurable, two-tier**: full + partial(next-word) shortcuts; `maxCompletionLength` in words (default 4) | Same model: 2 configurable shortcuts, word-capped |
 | Update | Sparkle (`SUFeedURL` cotypist.app/updates) | **[CORR]** Tauri `updater` plugin (drop Sparkle — §12) |
 | Analytics | Sentry, opt-out per app | Optional; local-only by default |
@@ -128,7 +130,7 @@ A suggestion is a contract over a specific context snapshot. Define it precisely
 4. `model_client` runs inference (warm model, cached prefix). **Cancellation token** checked between decode steps; superseded request → drop-all-but-latest.
 5. On return, **discard unless current generation token still matches** (stale-race guard).
 6. `ranker` trims to word boundary, caps at `maxCompletionLength` words, applies repetition/sensitive penalties.
-7. Overlay renders top candidate at `caret_rect` (Retina/multi-monitor coordinate conversion, §12) or popup fallback.
+7. Overlay renders top candidate at `caret_rect` (Retina/multi-monitor coordinate conversion, §12) or popup fallback. Render over a **backdrop** (solid/blurred/glass, configurable) for legibility on arbitrary app backgrounds. **Disable macOS native inline prediction** while active (else double ghost text). Multi-candidate shows as an inline list (row + badge views).
 8. **Accept**: full-completion shortcut inserts all; partial shortcut inserts next word (+ trailing space if available). Shift-equivalent cycles candidates; Esc dismisses.
 9. **Invalidation** (any → drop suggestion): non-accept keystroke, caret/selection move, focus/app change, mouse click, text no longer matches prefix.
 10. `personalization`/stats record outcome locally (redacted).
@@ -143,8 +145,9 @@ A suggestion is a contract over a specific context snapshot. Define it precisely
 - Live mode: `n_predict` 8–24 tokens, capped to `maxCompletionLength` words; aggressive stop sequences (newline/sentence boundary) — **boundary/stop handling is the hidden quality lever**.
 - Candidates (2–5): **N independent samples** (temp/seed variation; llama.cpp dropped beam search). Decode shared prompt once, branch N sequences → ~N× the *generation* cost, not N× whole request.
 - Latency: 0.5–1.5B Q4 on M-series ≈ 30–80 tok/s. Sub-150 ms first suggestion feasible **only** warm + short prompt. Cotypist targets ~100–200 ms and shipped on Qwen 2.5 1.5B before expanding the catalog.
-- **Model: selectable catalog** (mirrors Cotypist). Start tier "always fast": **Qwen2.5-0.5B / Qwen3-0.6B**, Q4_K_M (~350–490 MB). Quality tier: ~1.5–1.7B.
-  - **Base vs Instruct:** base gives cleaner continuations conventionally; **but Cotypist ships Instruct** (Gemma/Qwen Instruct) with hard constraints (4-word cap, custom-instruction prompt, stop sequences). Decision: **benchmark both in A0**; default to Instruct-with-constraints to match proven behavior, keep base as an option.
+- **Model: selectable tiered catalog** (mirrors Cotypist). Cotypist self-hosts GGUFs at `models.cotypist.app` (zstd-compressed), sourced from HF (unsloth `UD-Q*_K_XL` dynamic quants, `mradermacher *-i1-GGUF`). Catalog observed: Gemma 3 1b/4b-it-UD-Q4, Gemma 3 270m, Llama-3.2-1B/3B-Instruct-UD, Qwen3-0.6B/1.7B/30B-A3B-Base-i1, Gemma 4 E2B/E4B. We can either self-host similarly or pull from HF directly. Start tier "always fast": **Qwen3-0.6B / Qwen2.5-0.5B / gemma-3-1b**, Q4_K_M (~350–490 MB). Quality tier: ~1.5–1.7B (`featureMidSizeModels`); large tier behind capability gate.
+  - **Base vs Instruct:** Cotypist ships **both** (`-Base-i1` and `-it`/Instruct). Base = cleaner continuation; Instruct works with hard constraints (word cap, custom-instruction prompt, stop sequences). Decision: **benchmark both in A0**; offer both in catalog; default per-model.
+  - **Mid-line completion** (`featureMidLineCompletion`): insert within a line, not only at end. Achievable with left-context + stop-at-existing-text without full FIM; revisit FIM only for code fields.
   - **FIM / right-context: dropped for v1** — no good small *prose* FIM checkpoint; code-FIM models hurt prose. Left-context continuation only. Revisit (Qwen2.5-Coder FIM) only if targeting code fields.
 - `LocalModel` stays a trait so cloud providers are a later additive spec.
 
@@ -152,13 +155,16 @@ A suggestion is a contract over a specific context snapshot. Define it precisely
 
 ## 6. Personalization **[CORR — redesigned to match Cotypist]**
 
-Prompt-based, not ML. This is simpler, ships, and is what Cotypist actually does.
+Prompt-based, not ML. Simpler, ships, and is what Cotypist actually does.
 
-- **Primary: custom-instructions prompt.** A user-editable free-text style profile (`userPrompt` equivalent: name, role, languages, tone rules) prepended/templated into the completion prompt. Plus a **personalization strength** slider controlling how strongly it steers.
-- **Sender identity**: name + email (signature/contact awareness), as Cotypist's `io_replies_sender_*`.
-- **Optional local memory (deferred within A2)**: `rusqlite` + FTS5 store of accepted completions / phrases for retrieval-augmented prompting and a ranker similarity score. Opt-in (`TrainingDataCollector` equivalent), inspectable, "forget learned data" control.
-- **No fine-tuning, ever.** Memory feeds the prompt/ranker, never model weights.
-- **Redaction before any persistence**: emails, card-like numbers (Luhn), tokens/secrets (regex; `pii-vault`/`redact` crates). Diagnostics text-redacted by default.
+- **Primary: custom-instructions prompt.** User-editable free-text style profile (`userPrompt`: name, role, languages, tone rules) templated into the completion prompt. **Global + per-app** instructions (`featureCustomInstructionsGlobal` / `PerApp`) — per-app supplements global. Auto-seed a starter from the Mac on first run; "a few hundred words" guidance.
+- **Strength = 3 discrete levels** (`featurePersonalization{Gentle,Balanced,Strong}`), not a continuous slider. Controls how hard instructions + memory steer.
+- **Sender identity**: name + email (`io_replies_sender_*`) for signature/contact awareness.
+- **Custom model override** (`featureCustomModelOverride`): user may point at their own GGUF. Behind `LocalModel`; defer UI to A3.
+- **Context augmentation (deferred to A2/later)**: previous-input context — recent text the user typed (same app, and cross-app `featureCrossAppPreviousInputs`) — fed as extra context. Privacy-sensitive: opt-in, redacted, bounded retention.
+- **Optional local memory (deferred within A2)**: `rusqlite` + FTS5 store of accepted completions for retrieval-augmented prompting + ranker similarity score. Opt-in (`TrainingDataCollector` — encrypted, local, record count + "disable and erase"), inspectable.
+- **No fine-tuning, ever.** Memory/inputs feed the prompt/ranker, never weights.
+- **Redaction before any persistence**: emails, card-like numbers (Luhn), tokens/secrets (regex; `pii-vault`/`redact`). Diagnostics text-redacted by default.
 
 ---
 
@@ -175,17 +181,19 @@ Prompt-based, not ML. This is simpler, ships, and is what Cotypist actually does
 
 | Pane | Options |
 |---|---|
-| General | Completions enabled by default · `maxCompletionLength` (words) · show suggested fixes (spelling/grammar) · menu-bar word-count |
-| Personalization | Custom instructions (free text) · personalization strength slider · sender name/email · training-data collection toggle |
-| Shortcuts | Accept-full shortcut · accept-partial(next-word) shortcut · force-enable shortcut (configurable, not hardcoded) |
-| App Overrides | Per-app enable/disable · per-app strength/exclude |
-| Context | Pasteboard-context toggle |
+| General | Completions enabled by default · `maxCompletionLength` (words, `featureConfigurableCompletionLength`) · show suggested fixes / autocorrect (`featureFullAutocorrect`) · mid-line completion (`featureMidLineCompletion`) · menu-bar word-count |
+| Personalization | Global custom instructions · per-app custom instructions · strength (Gentle/Balanced/Strong) · sender name/email · training-data collection (enable / disable+erase / record count) |
+| Model | Selectable catalog (tiered) · download manager · custom model override (own GGUF) |
+| Shortcuts | Accept-full · accept-partial(next-word) · force-enable (all configurable; via MASShortcut-equivalent) |
+| App Overrides | Per-app enable/disable/exclude · per-app strength · per-app: **Tab-key behavior, Smart Quotes, Text Mirroring, Size Thresholds, Display/backdrop+font** · per-app instructions. (Domain/website overrides later; app-only knobs excluded from domain overrides.) |
+| Context | Pasteboard-context toggle · previous-input context · cross-app previous inputs |
+| Display | Backdrop style (solid / blurred / glass) · suggestion color/symbol · font style (`featurePerAppFontStyleOverrides`) |
 | Permissions | Accessibility status · Input Monitoring status · pasteboard permission |
 | Emoji | Emoji completion · skin tone · gender |
-| Labs | Experimental flags |
+| Labs | Experimental flags (`featureCotypistLabsAccess`); e.g. thesaurus auto/selection mode |
 | About / Update | Version · auto-update (Tauri updater) |
 
-Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepository_*`, per-app override list).
+Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepository_*`, `feature*`, per-app override list). Cotypist also supports **web-driven config** (`cotypist.app/setPreference`, `/launchCotypist/setOverride` deep links via URL scheme) for pushing compatibility fixes — optional later.
 
 ---
 
@@ -194,7 +202,7 @@ Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepo
 | Phase | Weeks | Deliverable | Exit criterion |
 |---|---|---|---|
 | **A0 spike** (throwaway) | 1–2 | (1) AX caret-rect read + collapsed-range workaround in TextEdit + an Electron app; (2) **CGEventTap that swallows a test key** behind Input Monitoring; (3) NSPanel overlay; (4) warm llama.cpp round-trip + latency table; bench base-vs-instruct | All four work in ≥1 real app each; sub-150 ms warm latency confirmed or model retiered |
-| **A1 core loop** | 3–4 | `PlatformAdapter` + macOS adapter + suggestion lifecycle (§4) + configurable accept + ghost overlay + **secure block (subrole + secure-input)** | Type in Notes/Mail → inline suggestion → accept; passwords & secure-input blocked; no stale inserts |
+| **A1 core loop** | 3–4 | `PlatformAdapter` + macOS adapter + suggestion lifecycle (§4) + configurable accept + ghost overlay (backdrop + **disable native inline prediction**) + **secure block (subrole + secure-input)** | Type in Notes/Mail → inline suggestion → accept; passwords & secure-input blocked; no stale inserts; no double ghost text |
 | **A2 features** | 3–4 | Prompt-based personalization (custom instructions + strength + sender) + pasteboard context fallback + multi-candidate + cycle; optional rusqlite memory if time | Suggestions steered by custom instructions; cycling works; Electron apps get keystroke/clipboard insertion |
 | **A3 settings + ship** | 2–3 | Tauri settings (all §8 panes) + per-app overrides + model catalog/download + diagnostics + pause/snooze + Tauri updater + codesign/notarize (hardened runtime + entitlements) | Installable signed/notarized `.app`; configurable; self-diagnosing; two-permission onboarding |
 
@@ -255,8 +263,18 @@ First-suggestion perceived latency <100–150 ms (warm) · insertion failure <1%
 **Config surface (live `UserDefaults` keys observed):**
 `CompletionManager_{acceptFullCompletionShortcut, acceptPartialCompletionShortcut, acceptNextWordOnly_includeTrailingSpaceIfAvailable, excludedApplications, maxCompletionLength=4, userPrompt}` · `ModelRepository_{selectedModel, statusItemVisible, shouldShowCompletedWordCountInMenuBar}` · `PersonalizationStrengthSlider` · `TextFieldContextCapture_pasteboardContextEnabled` · `TrainingDataCollector_enabled` · `EmojiCompletion_{preferredGender, preferredSkinTone, includeVanillaVariants}` · `io_replies_sender_{name,email}` · `ShortcutListener_forceEnableShortcut` · Sparkle `SU*`. Settings panes enumerated in §8.
 
-**What we adopt:** prompt-based personalization, two-tier configurable accept, word-capped length, pasteboard context fallback, selectable model catalog, pause/snooze, per-app overrides, local encrypted stats.
-**What we change:** Tauri updater instead of Sparkle; Rust instead of Swift; CGEventTap built by hand (no RepliesSDK).
+**Overlay internals**: `InlineSuggestionsOverlayWindow` + `OverlayViewController` host `InlineSuggestionsListView` (row + badge + border views) over a `CompletionBackdropManager` backdrop (`SolidBackdropView`/`BlurredBackdropView`/glass effect) for legibility. `InlinePredictionDisableController` turns off macOS's own inline prediction while active.
+
+**Network/endpoints**: model CDN `models.cotypist.app` (zstd GGUFs); `cotypist.app/{setPreference,launchCotypist/setOverride}` web-driven config via URL scheme; `cotypist.app/{compatibility,appHelp/textMetrics,help/privacy,pricing}`; RepliesSDK backend `replies.io` (protobuf — bundles `swift-protobuf`). Bundled deps of note: `MASShortcut` (configurable shortcuts), `LetsMove`, `CwlUtils`, `zstd`, `Sentry`.
+
+**Feature-flag catalog (full product surface, observed):**
+`featureConfigurableCompletionLength` · `featureMidLineCompletion` · `featureFullAutocorrect` · `featureEmojiCompletion` · `featureThesaurus{AutoMode,SelectionMode}` · `featureCustomInstructions{Global,PerApp}` · `featurePersonalization{Gentle,Balanced,Strong}` · `featurePasteboardContext` · `featurePreviousInputContext` · `featureCrossAppPreviousInputs` · `featureCustomModelOverride` · `feature{MidSize,Large}Models` · `featureUnlimitedCompletions` · `featurePerAppFontStyleOverrides` · `featureMultiDeviceSeats` · `featureCotypistLabsAccess`. (Subscription tiers gate model size + unlimited completions; we are not monetizing but the tiering informs the catalog structure.)
+
+**Thresholds/quality**: `deepMatchThreshold`, `reuseThreshold` (completion caching/reuse), `meetsQualityThresholds`, field-`Size Thresholds` (don't suggest in tiny fields), `wordCountAboveLengthThreshold` (stats).
+
+**What we adopt:** prompt-based personalization (global+per-app, 3 strength levels), two-tier configurable accept, word-capped length, pasteboard + previous-input context, selectable model catalog (base+instruct), backdrop overlay, disable-native-inline-prediction, pause/snooze, per-app overrides (incl. tab-key/smart-quotes/size-threshold/display), local encrypted stats/training data, quality/reuse thresholds.
+**What we change:** Tauri updater instead of Sparkle; Rust instead of Swift; CGEventTap built by hand (no RepliesSDK); model fetch from HF or self-host TBD.
+**Deferred features:** emoji completion, thesaurus, full autocorrect, cross-app previous inputs, web-driven config, domain/website overrides, subscription/seats.
 
 ---
 
