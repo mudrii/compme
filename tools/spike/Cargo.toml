@@ -24,3 +24,11 @@ path = "src/bin/p1_build.rs"
 [[bin]]
 name = "p2_infer"
 path = "src/bin/p2_infer.rs"
+
+[[bin]]
+name = "p3_axread"
+path = "src/bin/p3_axread.rs"
+
+[[bin]]
+name = "p4_caret"
+path = "src/bin/p4_caret.rs"
