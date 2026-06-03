@@ -20,3 +20,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "p1_build"
 path = "src/bin/p1_build.rs"
+
+[[bin]]
+name = "p2_infer"
+path = "src/bin/p2_infer.rs"
