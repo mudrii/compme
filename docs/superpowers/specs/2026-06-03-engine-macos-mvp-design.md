@@ -83,6 +83,8 @@ apps/app                # Tauri v2 tray + settings webview, wiring
 tools/spike             # throwaway A0 PoC (deleted after A0)
 ```
 
+**Crate strategy** (verdicts in `2026-06-03-prior-art-review.md` §3): build the AX/tap/inject layer natively via `objc2` + `objc2-app-kit` + `accessibility-sys`/`axuielement` + `core-graphics`; inference via `llama-cpp-2` (C-API surface, `metal`). **Do NOT depend on `rdev`/`rdevin` for the capture path** (stale / grab-disabled on Linux) — KeyType, Cotabby, and Espanso all hand-rolled native capture. `enigo` only as an inject shortcut later.
+
 ---
 
 ## 3. The cross-platform contract **[CORR — expanded after Win/Linux validation]**
@@ -143,6 +145,15 @@ A suggestion is a contract over a specific context snapshot. Define it precisely
 9. **Invalidation** (any → drop suggestion): non-accept keystroke, caret/selection move, focus/app change, mouse click, text no longer matches prefix.
 10. `personalization`/stats record outcome locally (redacted).
 
+**Implementation reality (from prior-art code — `2026-06-03-prior-art-review.md` §2):**
+- **Two-tap CGEventTap, not one.** A single always-on active `.defaultTap` stalls keystrokes in *other* apps (Cotabby DaVinci freeze). Use a permanent `.listenOnly` observer tap + a transient `.defaultTap` consuming tap installed **only while a suggestion is visible**. Re-enable on `tapDisabledByTimeout/UserInput`; defer mach-port teardown ~50 ms (else last accepted word lost).
+- **Tag synthetic events** (`CGEventSource.userData`) and skip them in the tap — else your own insert re-enters the tap → dismiss/double-insert.
+- **`AXUIElementSetMessagingTimeout(systemWide, 0.05)`** — default 6 s; a wedged app beachballs typing. Most important AX reliability knob.
+- **All AX calls on one dedicated background thread** (never main — NSOpenPanel deadlock; AXSwift was abandoned over thread bugs).
+- **Resolve field owner from the AX element's pid**, not `NSWorkspace.frontmostApplication` (Raycast/Spotlight/Alfred keep the previous app as frontmost).
+- **AX value-changed lags keystrokes** → front-run dismissal from the key tap (`hasPrefix` check); redraw shrinking remainder eagerly on accept.
+- **Suspend triggering during non-ASCII IME composition.** Wake lazy Chromium/Electron a11y via `AXManualAccessibility` on the browser-process element.
+
 ---
 
 ## 5. Inference **[CORR]**
@@ -158,6 +169,14 @@ A suggestion is a contract over a specific context snapshot. Define it precisely
   - **Mid-line completion** (`featureMidLineCompletion`): insert within a line, not only at end. Achievable with left-context + stop-at-existing-text without full FIM; revisit FIM only for code fields.
   - **FIM / right-context: dropped for v1** — no good small *prose* FIM checkpoint; code-FIM models hurt prose. Left-context continuation only. Revisit (Qwen2.5-Coder FIM) only if targeting code fields.
 - `LocalModel` stays a trait so cloud providers are a later additive spec.
+
+**Inference gotchas (from KeyType/Cotabby ADRs — `2026-06-03-prior-art-review.md` §2):**
+- **KV-cache reuse unsafe on hybrid/recurrent models** (Qwen3.5 SSM/GatedDeltaNet layers): `seq_cp` aborts, `seq_rm` rollback fails, `llama_model_is_recurrent` returns false despite recurrent buffers. **Only pure-append reuse is safe**; any divergence → `llama_memory_clear` + full re-decode. Snapshot/restore via `llama_state_seq_get/set_data` for branches. (Prefer non-recurrent small models to keep prefix-cache simple.)
+- **Token healing for mid-word completions** (worst case): back up to last whitespace, force typed bytes as a required prefix via byte-mask **over the full vocab** (not post-top-k), strip the re-emitted stem.
+- **Suffix-overlap guard for mid-line** — small models regurgitate text after caret; compare on alphanumerics, truncate at overlap.
+- **Trim trailing whitespace from the prefix** before prompting (the just-typed space makes small models wander/double-space).
+- **ggml-Metal aborts on exit** unless model/context freed via explicit `shutdown()` before teardown (guard double-free).
+- Serialize all llama calls behind an actor/mutex (`llama_context` not thread-safe). Optional: disk-cached per-model constrained-decode token profile.
 
 ---
 
@@ -182,6 +201,12 @@ Prompt-based, not ML. Simpler, ships, and is what Cotypist actually does.
 - All inference local by default (only backend this spec). No raw-text logging by default.
 - Visible **pause/snooze** ("disable for N minutes", as Cotypist) + per-app exclude list (default-exclude Finder-like) + per-window incognito.
 - Custom-instructions & memory are user-visible/editable; clear retention + "forget learned data".
+
+**Distribution & permission lifecycle (prior-art §2 — category's #1 support burden):**
+- **App Sandbox OFF**; hardened runtime needs `com.apple.security.cs.disable-library-validation` to load the dynamic llama framework → **Mac App Store impossible**. Ship Developer-ID DMG + Tauri updater. Entitlement `com.apple.security.automation.apple-events`.
+- **Stable signing identity** — TCC keys on cert+bundle-id; a cert change under the same bundle id causes an infinite "grant Accessibility" loop. Provide a `tccutil reset` recovery path + re-grant detection after OS updates.
+- Detect when **Secure Input** is stuck (background password managers) — it kills all injection globally; surface it in diagnostics.
+- Onboard **both** Accessibility + Input Monitoring; re-check after grant (may need relaunch).
 
 ---
 
@@ -209,7 +234,7 @@ Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepo
 
 | Phase | Weeks | Deliverable | Exit criterion |
 |---|---|---|---|
-| **A0 spike** (throwaway) | 1–2 | (1) AX caret-rect read + collapsed-range workaround in TextEdit + an Electron app; (2) **CGEventTap that swallows a test key** behind Input Monitoring; (3) NSPanel overlay; (4) warm llama.cpp round-trip + latency table; bench base-vs-instruct | All four work in ≥1 real app each; sub-150 ms warm latency confirmed or model retiered |
+| **A0 spike** (throwaway) | 1–2 | (1) caret **ladder** read in a native app (TextEdit) AND a Chromium app (AXTextMarker path); (2) **two-tap CGEventTap** that swallows a test key without stalling other apps, behind Input Monitoring; (3) NSPanel overlay (Retina-correct); (4) warm llama.cpp round-trip + latency table + KV-reuse rules for the chosen model; bench base-vs-instruct | All four work in real apps; two-tap proven stall-free; sub-150 ms warm latency confirmed or model retiered |
 | **A1 core loop** | 3–4 | `PlatformAdapter` + macOS adapter + suggestion lifecycle (§4) + configurable accept + ghost overlay (backdrop + **disable native inline prediction**) + **secure block (subrole + secure-input)** | Type in Notes/Mail → inline suggestion → accept; passwords & secure-input blocked; no stale inserts; no double ghost text |
 | **A2 features** | 3–4 | Prompt-based personalization (custom instructions + strength + sender) + pasteboard context fallback + multi-candidate + cycle; optional rusqlite memory if time | Suggestions steered by custom instructions; cycling works; Electron apps get keystroke/clipboard insertion |
 | **A3 settings + ship** | 2–3 | Tauri settings (all §8 panes) + per-app overrides + model catalog/download + diagnostics + pause/snooze + Tauri updater + codesign/notarize (hardened runtime + entitlements) | Installable signed/notarized `.app`; configurable; self-diagnosing; two-permission onboarding |
@@ -223,7 +248,11 @@ Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepo
 | Risk | Sev | Mitigation |
 |---|---|---|
 | **Tab/accept interception** needs CGEventTap + **Input Monitoring** (global-shortcut CANNOT swallow keys) | High | A0 proves it; surface missing-permission state; gate consumption by app-focus/context |
+| **Single CGEventTap stalls OTHER apps' input** (real bug: Cotabby #328) | High | **Two-tap design** (listen-only observer + on-demand consuming tap); never block the callback |
 | CGEventTap fragile at runtime (`tapDisabledByTimeout/UserInput`, sleep/wake) | High | Re-enable on disable events, re-create on wake, keep callback non-blocking, periodic self-test |
+| **Reading AX perturbs target apps** (Calendar/System Settings glitches) | Med | Non-invasive caret strategy for native single-line; full resolver only for web/multiline; text-eligibility gate |
+| **Hybrid-model KV-cache corruption / ggml exit-abort** | Med | Pure-append reuse only or full re-decode; prefer non-recurrent small model; explicit `shutdown()` |
+| **TCC re-grant loop on cert change; permission silent-stop after OS update** | Med | Stable signing cert; `tccutil reset` recovery UX; re-grant detection |
 | `caret_rect` collapsed-range returns `kAXErrorNoValue` in most apps | High | "Bounds of adjacent char" workaround + element-frame fallback (designed-in) |
 | Electron/Chromium apps expose poor AX tree | High | Detect Electron → keystroke/clipboard insert + pasteboard context + popup positioning |
 | **Secure Input mode** blocks AX/taps in password fields | Med | Detect `IsSecureEventInputEnabled`; suppress entirely |
@@ -235,14 +264,16 @@ Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepo
 ---
 
 ## 11. Success metrics
-First-suggestion perceived latency <100–150 ms (warm) · insertion failure <1% in supported apps · <5% laggy sessions · clear tier for top ~20 macOS apps · local stats: shown/accepted/dismissed/superseded, latency, words (30-day, mirrors Cotypist stats).
+First-suggestion perceived latency <100–150 ms (warm); **<500 ms p95 is the hard floor** — slower "feels laggy and reduces acceptance" (industry threshold). Insertion failure <1% in supported apps · <5% laggy sessions · clear tier for top ~20 macOS apps · local stats: shown/accepted/dismissed/superseded, latency, words (30-day, mirrors Cotypist stats).
+
+**Acceptance is trust-compounding** (66k-interaction study: prior per-user acceptance dominates future acceptance) → **protect first-run**; conservative triggering (fire near word/sentence boundaries, not every keystroke) beats always-on. Narrow scope deliberately — cede code/terminal to Copilot (as Cotypist does); own non-code writing.
 
 ---
 
 ## 12. Online validation results (Feb–Jun 2026) — evidence
 
 - **objc2 v0.6.4** (maintained) + **accessibility-sys/accessibility v0.2.0** (thin, 1 maintainer) provide AXUIElement FFI. Prefer `accessibility-sys` + own wrappers; CGEventTap suppression is hand-written FFI via `core-graphics`/`objc2`.
-- **Caret rect** = `kAXBoundsForRangeParameterizedAttribute`; collapsed range returns `kAXErrorNoValue` in most apps (rdar://14285519) → adjacent-char workaround mandatory.
+- **Caret rect = a 5-tier ladder** (confirmed by KeyType `AXCaretGeometryResolver`, prior-art §2), not one workaround: (1) `kAXBoundsForRangeParameterizedAttribute` zero-length range — *works in many native apps, try first*; reject empty/container-sized rects; (2) **web path** — Chromium/WebKit need `AXSelectedTextMarkerRange`→`AXBoundsForTextMarkerRange` (opaque markers, NOT NSRange); (3) previous-char `NSRange(loc-1,1)` → `maxX`; (4) `AXStaticText` child-run interpolation; (5) font-metric estimate. Plus **Retina pixel-vs-point**: validate against `AXFrame` anchor, divide by per-display `backingScaleFactor` if mismatched.
 - **Focus events** = `AXObserver` + `kAXFocusedUIElementChangedNotification` (+ caret via `kAXSelectedTextChangedNotification`); deliver on a CFRunLoop thread.
 - **Secure field** = **subrole** `AXSecureTextField` (role stays `AXTextField`); also honor `IsSecureEventInputEnabled`.
 - **Accept-key interception** = **CGEventTap** (`.cgSessionEventTap`, `.defaultTap`, return nil to swallow), needs **Input Monitoring**; Carbon hotkeys / `NSEvent` global monitors are passive and **cannot consume** keys. ← single most important correction.
