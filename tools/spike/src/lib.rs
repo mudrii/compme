@@ -195,3 +195,21 @@ mod completion_tests {
         assert_eq!(suggest("x", 1, &Fixed("one two three four five"), 3), "one two three");
     }
 }
+
+pub mod keys {
+    pub const KEYCODE_TAB: i64 = 48;
+
+    /// Two-tap rule (spec §4): only swallow the accept key while a suggestion is visible,
+    /// so plain Tab still navigates when nothing is shown.
+    pub fn should_swallow(keycode: i64, suggestion_visible: bool) -> bool {
+        keycode == KEYCODE_TAB && suggestion_visible
+    }
+}
+
+#[cfg(test)]
+mod keys_tests {
+    use super::keys::*;
+    #[test] fn swallow_tab_when_suggestion_visible() { assert!(should_swallow(KEYCODE_TAB, true)); }
+    #[test] fn pass_tab_when_no_suggestion() { assert!(!should_swallow(KEYCODE_TAB, false)); }
+    #[test] fn pass_other_keys_even_when_visible() { assert!(!should_swallow(0, true)); }
+}
