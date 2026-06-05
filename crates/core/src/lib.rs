@@ -2,9 +2,13 @@
 
 use context::{left_context, trim_prefix};
 use platform::{ux_mode, Capabilities, FieldHandle, UxMode};
-use ranker::{cap_words, next_word};
+use ranker::{cap_words, next_word, repetition_penalty};
 
 pub type SnapshotId = u64;
+
+/// Completions whose repetition penalty falls below this floor (i.e. they echo
+/// text already to the left of the caret) are dropped rather than shown.
+const REPETITION_PENALTY_FLOOR: f64 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditKind {
@@ -216,7 +220,9 @@ impl SuggestionMachine {
 
                 if matches_request {
                     let capped = cap_words(&text, self.max_words);
-                    if !capped.is_empty() {
+                    let recent = left_context(&self.value, self.caret);
+                    let fresh = repetition_penalty(&capped, &recent) >= REPETITION_PENALTY_FLOOR;
+                    if !capped.is_empty() && fresh {
                         self.showing = Some(Showing {
                             field: field.clone(),
                             snapshot,
@@ -398,6 +404,23 @@ mod tests {
                 snapshot: 1,
                 text: "a b c d".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn suppresses_completion_that_repeats_recent_text() {
+        let mut machine = machine();
+        machine.on_event(text_changed("please repeat me ", 16, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "repeat me".into(),
+            }),
+            vec![]
         );
     }
 

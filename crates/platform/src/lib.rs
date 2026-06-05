@@ -269,6 +269,13 @@ pub trait PlatformAdapter: Send + Sync {
     fn capabilities(&self, field: &FieldHandle) -> Result<Capabilities, PlatformError>;
     fn read_context(&self, field: &FieldHandle) -> Result<TextContext, PlatformError>;
     fn caret_rect(&self, field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError>;
+    /// A fallback anchor rect for popup-mode placement when no caret geometry is
+    /// available (e.g. the focused field exposes no caret bounds). Typically the
+    /// focused window frame. Defaults to `None` for adapters that cannot supply
+    /// one.
+    fn popup_anchor(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+        Ok(None)
+    }
     fn insert(
         &self,
         field: &FieldHandle,

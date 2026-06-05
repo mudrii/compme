@@ -29,6 +29,7 @@ use core_foundation::runloop::{
     kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopSource,
 };
 use core_foundation::string::{CFString, CFStringRef};
+use core_graphics::display::CGDisplay;
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
     CGEventType, CallbackResult, EventField, KeyCode,
@@ -40,10 +41,10 @@ use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSPanel,
-    NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting, NSTextField,
-    NSWindowStyleMask, NSWorkspace,
+    NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting, NSScreen,
+    NSTextField, NSWindowStyleMask, NSWorkspace,
 };
-use objc2_foundation::{NSArray, NSData, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSArray, NSData, NSPoint, NSProcessInfo, NSRect, NSSize, NSString};
 use platform::{
     AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback,
     ContextSource, Environment, FieldHandle, FocusCallback, InsertStrategy, Inserted,
@@ -62,8 +63,13 @@ const MAX_USABLE_CARET_RECT_WIDTH: f64 = 2000.0;
 const MAX_USABLE_CARET_RECT_HEIGHT: f64 = 200.0;
 const AX_SELECTED_TEXT_MARKER_RANGE_ATTRIBUTE: &str = "AXSelectedTextMarkerRange";
 const AX_BOUNDS_FOR_TEXT_MARKER_RANGE_PARAMETERIZED_ATTRIBUTE: &str = "AXBoundsForTextMarkerRange";
+const AX_WINDOW_ATTRIBUTE: &str = "AXWindow";
+const AX_FRAME_ATTRIBUTE: &str = "AXFrame";
 const ESRCH: i32 = 3;
 const KEYCODE_TAB: i64 = 48;
+/// Holding Option (⌥) while pressing the accept key requests a word accept
+/// instead of a full accept.
+const WORD_ACCEPT_MODIFIER_MASK: u64 = CGEventFlags::CGEventFlagAlternate.bits();
 const SYNTHETIC_EVENT_TAG: i64 = 0x636d706c746d65;
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(1000);
 
@@ -508,6 +514,7 @@ struct AcceptTapEvent {
     event_type: CGEventType,
     keycode: i64,
     source_user_data: i64,
+    flags: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -604,7 +611,7 @@ impl MacosOverlayPresenter {
 impl OverlayPresenter for MacosOverlayPresenter {
     fn show_ghost(&mut self, rect: ScreenRect, text: &str) -> Result<(), PlatformError> {
         let mtm = overlay_main_thread_marker()?;
-        let frame = overlay_frame_for_text(rect, text);
+        let frame = overlay_frame_for_text(rect, text, primary_screen_height(mtm));
         self.last_rect = Some(rect);
         self.ensure_panel(mtm, frame, text)?;
         if let Some(panel) = &self.panel {
@@ -618,13 +625,13 @@ impl OverlayPresenter for MacosOverlayPresenter {
     }
 
     fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError> {
-        let _mtm = overlay_main_thread_marker()?;
+        let mtm = overlay_main_thread_marker()?;
         let Some(rect) = self.last_rect else {
             return Err(PlatformError::CannotComplete {
                 reason: "cannot update hidden overlay".into(),
             });
         };
-        let frame = overlay_frame_for_text(rect, text);
+        let frame = overlay_frame_for_text(rect, text, primary_screen_height(mtm));
         if let Some(panel) = &self.panel {
             panel.setFrame_display(ns_rect(frame), true);
         }
@@ -652,13 +659,51 @@ fn overlay_main_thread_marker() -> Result<MainThreadMarker, PlatformError> {
     })
 }
 
-fn overlay_frame_for_text(rect: ScreenRect, text: &str) -> OverlayFrame {
+/// macOS version as `major.minor.patch` (thread-safe; no main thread needed).
+fn macos_version_string() -> String {
+    let v = NSProcessInfo::processInfo().operatingSystemVersion();
+    format!("{}.{}.{}", v.majorVersion, v.minorVersion, v.patchVersion)
+}
+
+/// Active-display geometry summary for diagnostics, e.g. "2 display(s):
+/// 1920x1080, 2560x1440". Uses CoreGraphics (thread-safe), not NSScreen.
+fn display_topology_string() -> Option<String> {
+    let ids = CGDisplay::active_displays().ok()?;
+    if ids.is_empty() {
+        return None;
+    }
+    let sizes: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            let bounds = CGDisplay::new(*id).bounds();
+            format!("{}x{}", bounds.size.width as i64, bounds.size.height as i64)
+        })
+        .collect();
+    Some(format!("{} display(s): {}", sizes.len(), sizes.join(", ")))
+}
+
+/// Height of the primary (menu-bar) screen — the shared origin both the AX
+/// (top-left) and Cocoa (bottom-left) global coordinate systems are measured
+/// from. Used to flip the caret rect into Cocoa window coordinates.
+fn primary_screen_height(mtm: MainThreadMarker) -> f64 {
+    NSScreen::screens(mtm)
+        .firstObject()
+        .map(|screen| screen.frame().size.height)
+        .unwrap_or(0.0)
+}
+
+fn overlay_frame_for_text(rect: ScreenRect, text: &str, primary_height: f64) -> OverlayFrame {
     let text_width = (text.chars().count() as f64 * 7.0) + 24.0;
+    let h = (rect.h + 10.0).clamp(30.0, 48.0);
     OverlayFrame {
         x: rect.x,
-        y: rect.y,
+        // AX gives a top-left-origin (Y-down) global rect; Cocoa windows use a
+        // bottom-left-origin (Y-up) global space sharing the primary screen's
+        // corner. Flip against the primary height so the overlay lands at the
+        // caret on any display, including non-primary monitors.
+        y: primary_height - rect.y - h,
         w: text_width.clamp(240.0, 720.0),
-        h: (rect.h + 10.0).clamp(30.0, 48.0),
+        h,
     }
 }
 
@@ -887,8 +932,8 @@ impl PlatformAdapter for MacosPlatformAdapter {
     fn environment(&self) -> Environment {
         Environment {
             os: OperatingSystem::Macos,
-            version: "unknown".into(),
-            display_topology: None,
+            version: macos_version_string(),
+            display_topology: display_topology_string(),
         }
     }
 
@@ -1159,6 +1204,34 @@ impl PlatformAdapter for MacosPlatformAdapter {
             })?;
 
         let result = self.worker.run(move || caret_rect_for_field(pid, field))?;
+        self.map_app_exited(pid, app, result)
+    }
+
+    fn popup_anchor(&self, field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+        if (self.secure_input_enabled)() {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            });
+        }
+        if field_has_secure_text_subrole(field) {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            });
+        }
+
+        let field = field.clone();
+        let app = field.app.clone();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for popup_anchor".into(),
+            })?;
+
+        let result = self
+            .worker
+            .run(move || popup_anchor_for_field(pid, field))?;
         self.map_app_exited(pid, app, result)
     }
 
@@ -1551,8 +1624,15 @@ fn accept_tap_decision(
         && matches!(event.event_type, CGEventType::KeyDown)
         && event.keycode == KEYCODE_TAB
     {
-        if let Some(action) = action {
-            return AcceptTapDecision::Drop(action);
+        if let Some(armed) = action {
+            // Option+Tab always requests a word accept; plain Tab honours the
+            // engine-armed action (full by default).
+            let resolved = if event.flags & WORD_ACCEPT_MODIFIER_MASK != 0 {
+                AcceptAction::Word
+            } else {
+                armed
+            };
+            return AcceptTapDecision::Drop(resolved);
         }
     }
 
@@ -1590,6 +1670,7 @@ fn install_worker_accept_tap_resource(
                 event_type,
                 keycode: event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
                 source_user_data: event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA),
+                flags: event.get_flags().bits(),
             };
             match handler(event) {
                 AcceptTapDecision::Keep => CallbackResult::Keep,
@@ -2219,6 +2300,68 @@ fn caret_rect_for_field(pid: i32, field: FieldHandle) -> Result<Option<ScreenRec
         || unsafe { read_ax_bounds_for_selected_text_marker_range(element) },
         |location, length| unsafe { read_ax_bounds_for_range(element, location, length) },
     )
+}
+
+/// Popup-mode fallback anchor: the focused field's window frame, used when no
+/// caret geometry is available. Best effort — returns `None` if the element
+/// exposes no `AXWindow`/`AXFrame`.
+fn popup_anchor_for_field(
+    pid: i32,
+    field: FieldHandle,
+) -> Result<Option<ScreenRect>, PlatformError> {
+    let (element, _owners) = copy_focused_or_app_element(pid)?;
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    if !field_matches_identity(&field, &identity) {
+        return Err(PlatformError::StaleField);
+    }
+
+    unsafe {
+        let Some((window, _window_owner)) =
+            copy_ax_element_attribute(element, AX_WINDOW_ATTRIBUTE)?
+        else {
+            return Ok(None);
+        };
+        read_ax_cgrect_attribute(window, AX_FRAME_ATTRIBUTE)
+    }
+}
+
+/// Copy an AX element-valued attribute (e.g. `AXWindow`). Returns the raw ref
+/// together with its owning `CFType` so the caller keeps it alive.
+unsafe fn copy_ax_element_attribute(
+    element: AXUIElementRef,
+    attribute: &str,
+) -> Result<Option<(AXUIElementRef, CFType)>, PlatformError> {
+    let attribute = CFString::new(attribute);
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
+    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+        return Ok(None);
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    if value.is_null() {
+        return Ok(None);
+    }
+    let owner = CFType::wrap_under_create_rule(value);
+    Ok(Some((value as AXUIElementRef, owner)))
+}
+
+/// Read a `CGRect`-valued AX attribute (e.g. `AXFrame`) as a global screen rect.
+unsafe fn read_ax_cgrect_attribute(
+    element: AXUIElementRef,
+    attribute: &str,
+) -> Result<Option<ScreenRect>, PlatformError> {
+    let attribute = CFString::new(attribute);
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
+    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+        return Ok(None);
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    screen_rect_from_ax_value(value)
 }
 
 fn caret_diagnostics_for_field(
@@ -5052,6 +5195,8 @@ mod tests {
 
     #[test]
     fn overlay_frame_uses_caret_origin_and_minimum_size() {
+        // Primary screen 1000pt tall: a caret at AX y=240 (top-left origin) maps
+        // to a Cocoa bottom-left origin of 1000 - 240 - 30 = 730.
         let frame = overlay_frame_for_text(
             ScreenRect {
                 x: 120.0,
@@ -5060,17 +5205,36 @@ mod tests {
                 h: 14.0,
             },
             "short",
+            1000.0,
         );
 
         assert_eq!(
             frame,
             OverlayFrame {
                 x: 120.0,
-                y: 240.0,
+                y: 730.0,
                 w: 240.0,
                 h: 30.0,
             }
         );
+    }
+
+    #[test]
+    fn overlay_frame_flips_against_primary_height_for_secondary_displays() {
+        // A caret on a taller secondary display (AX y beyond the primary height)
+        // produces a negative Cocoa y, which is correct in Cocoa global space.
+        let frame = overlay_frame_for_text(
+            ScreenRect {
+                x: 50.0,
+                y: 1200.0,
+                w: 1.0,
+                h: 14.0,
+            },
+            "short",
+            1000.0,
+        );
+
+        assert_eq!(frame.y, 1000.0 - 1200.0 - 30.0);
     }
 
     #[test]
@@ -5083,6 +5247,7 @@ mod tests {
                 h: 80.0,
             },
             &"x".repeat(200),
+            1000.0,
         );
 
         assert_eq!(frame.w, 720.0);
@@ -5118,6 +5283,21 @@ mod tests {
             event_type,
             keycode,
             source_user_data,
+            flags: 0,
+        }
+    }
+
+    fn accept_tap_event_with_flags(
+        event_type: CGEventType,
+        keycode: i64,
+        source_user_data: i64,
+        flags: u64,
+    ) -> AcceptTapEvent {
+        AcceptTapEvent {
+            event_type,
+            keycode,
+            source_user_data,
+            flags,
         }
     }
 
@@ -5140,6 +5320,38 @@ mod tests {
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Consumer, tab, Some(AcceptAction::Word)),
             AcceptTapDecision::Drop(AcceptAction::Word)
+        );
+    }
+
+    #[test]
+    fn option_tab_requests_word_accept_even_when_full_is_armed() {
+        let option_tab = accept_tap_event_with_flags(
+            CGEventType::KeyDown,
+            KEYCODE_TAB,
+            0,
+            WORD_ACCEPT_MODIFIER_MASK,
+        );
+
+        assert_eq!(
+            accept_tap_decision(
+                AcceptTapKind::Consumer,
+                option_tab,
+                Some(AcceptAction::Full)
+            ),
+            AcceptTapDecision::Drop(AcceptAction::Word)
+        );
+
+        // Plain Tab still honours the armed full accept.
+        let plain_tab = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, plain_tab, Some(AcceptAction::Full)),
+            AcceptTapDecision::Drop(AcceptAction::Full)
+        );
+
+        // No modifier upgrade when the tap is not armed.
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, option_tab, None),
+            AcceptTapDecision::Keep
         );
     }
 

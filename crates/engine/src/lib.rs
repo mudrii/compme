@@ -186,7 +186,13 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     max_tokens: self.max_tokens,
                 }),
                 Command::ShowGhost { field, text, .. } => {
-                    if let Some(rect) = self.adapter.caret_rect(&field)? {
+                    // Inline placement uses the caret rect; popup mode (no caret
+                    // geometry) falls back to the adapter's popup anchor.
+                    let rect = match self.adapter.caret_rect(&field)? {
+                        Some(rect) => Some(rect),
+                        None => self.adapter.popup_anchor(&field)?,
+                    };
+                    if let Some(rect) = rect {
                         self.overlay.show_ghost(rect, &text)?;
                         self.set_tap_visible(true, Some(AcceptAction::Full))?;
                     }
@@ -307,6 +313,7 @@ mod tests {
     struct FakeAdapter {
         caps: Capabilities,
         rect: Option<ScreenRect>,
+        popup: Option<ScreenRect>,
         inserts: Arc<Mutex<Vec<(FieldHandle, String, InsertStrategy)>>>,
     }
 
@@ -320,6 +327,7 @@ mod tests {
                     w: 1.0,
                     h: 14.0,
                 }),
+                popup: None,
                 inserts: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -357,6 +365,9 @@ mod tests {
         }
         fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
             Ok(self.rect)
+        }
+        fn popup_anchor(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+            Ok(self.popup)
         }
         fn insert(
             &self,
@@ -436,6 +447,49 @@ mod tests {
             *actions.lock().unwrap(),
             vec![Some(AcceptAction::Full), None]
         );
+    }
+
+    #[test]
+    fn popup_anchor_used_when_caret_rect_absent() {
+        let mut adapter = FakeAdapter::new();
+        adapter.rect = None;
+        let anchor = ScreenRect {
+            x: 5.0,
+            y: 6.0,
+            w: 200.0,
+            h: 24.0,
+        };
+        adapter.popup = Some(anchor);
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion(&requests[0], "popup text".into())
+            .unwrap();
+
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Show(anchor, "popup text".into())]
+        );
+    }
+
+    #[test]
+    fn no_overlay_when_neither_caret_nor_popup_anchor() {
+        let mut adapter = FakeAdapter::new();
+        adapter.rect = None;
+        adapter.popup = None;
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "nope".into()).unwrap();
+
+        assert!(overlay.calls.lock().unwrap().is_empty());
     }
 
     #[test]
