@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 llama-cpp-2 = { version = "=0.1.146", features = ["metal"] }
+encoding_rs = "0.8"
 objc2 = "=0.6.4"
 objc2-app-kit = "=0.3.2"
 objc2-foundation = "0.3"
@@ -26,6 +27,10 @@ name = "p2_infer"
 path = "src/bin/p2_infer.rs"
 
 [[bin]]
+name = "p2_model_compare"
+path = "src/bin/p2_model_compare.rs"
+
+[[bin]]
 name = "p3_axread"
 path = "src/bin/p3_axread.rs"
 
@@ -36,6 +41,10 @@ path = "src/bin/p4_caret.rs"
 [[bin]]
 name = "p5_tap"
 path = "src/bin/p5_tap.rs"
+
+[[bin]]
+name = "p5_twotap"
+path = "src/bin/p5_twotap.rs"
 
 [[bin]]
 name = "p6_overlay"

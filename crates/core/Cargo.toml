@@ -1,0 +1,10 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+context = { path = "../context" }
+platform = { path = "../platform" }
+ranker = { path = "../ranker" }
+

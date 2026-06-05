@@ -1,0 +1,13 @@
+[package]
+name = "platform_macos"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+accessibility-sys = "=0.2.0"
+core-foundation = "=0.10.1"
+core-graphics = { version = "=0.25.0", features = ["elcapitan"] }
+objc2 = "=0.6.4"
+objc2-app-kit = "=0.3.2"
+objc2-foundation = { version = "=0.3.2", features = ["NSValue"] }
+platform = { path = "../platform" }

@@ -6,6 +6,8 @@
 
 **Revision note (v2):** This document was re-validated against current crates/docs (Feb–Jun 2026) and against the shipping Cotypist binary (`/Applications/Cotypist.app`, v2026.1 build 73) via static analysis + its live `UserDefaults`. Material corrections are marked **[CORR]** and the evidence is in §12–§13.
 
+**2026-06-05 A1b reconciliation:** Native inline prediction suppression remains a product concern, but is deferred out of A1b for cross-app text fields. Current AppKit bindings expose automatic text-completion controls for owned `NSTextView`/`NSTextField` instances, while this app reads and writes other applications through Accessibility plus native overlay rendering. The active A1b source of truth is `docs/superpowers/plans/2026-06-04-a1b-macos-adapter-contract.md`.
+
 ---
 
 ## 1. Context & motivation
@@ -24,7 +26,7 @@ Validated against the shipping Cotypist binary:
 | Personalization | **Prompt-based**: `userPrompt` custom instructions + strength slider + sender name/email; optional training-data collector | Same: prompt-based primary; optional local memory later |
 | Context source | AX **+ pasteboard fallback** + previous-input / cross-app history | AX primary; pasteboard + previous-input augmentation (latter deferred) |
 | Models CDN | Self-hosted `models.cotypist.app` (zstd), sourced from HF | HF direct or self-host (TBD) |
-| Native inline prediction | Disabled while active (`InlinePredictionDisableController`) | Same — must suppress macOS 14+ inline prediction |
+| Native inline prediction | Disabled while active (`InlinePredictionDisableController`) | Same product goal; cross-app suppression deferred out of A1b unless an owned-control integration is added |
 | Accept | **Configurable, two-tier**: full + partial(next-word) shortcuts; `maxCompletionLength` in words (default 4) | Same model: 2 configurable shortcuts, word-capped |
 | Update | Sparkle (`SUFeedURL` cotypist.app/updates) | **[CORR]** Tauri `updater` plugin (drop Sparkle — §12) |
 | Analytics | Sentry, opt-out per app | Optional; local-only by default |
@@ -140,7 +142,7 @@ A suggestion is a contract over a specific context snapshot. Define it precisely
 4. `model_client` runs inference (warm model, cached prefix). **Cancellation token** checked between decode steps; superseded request → drop-all-but-latest.
 5. On return, **discard unless current generation token still matches** (stale-race guard).
 6. `ranker` trims to word boundary, caps at `maxCompletionLength` words, applies repetition/sensitive penalties.
-7. Overlay renders top candidate at `caret_rect` (Retina/multi-monitor coordinate conversion, §12) or popup fallback. Render over a **backdrop** (solid/blurred/glass, configurable) for legibility on arbitrary app backgrounds. **Disable macOS native inline prediction** while active (else double ghost text). Multi-candidate shows as an inline list (row + badge views).
+7. Overlay renders top candidate at `caret_rect` (Retina/multi-monitor coordinate conversion, §12) or popup fallback. Render over a **backdrop** (solid/blurred/glass, configurable) for legibility on arbitrary app backgrounds. Avoid double ghost text where the target integration allows native inline prediction suppression; for cross-app Accessibility fields this is deferred out of A1b. Multi-candidate shows as an inline list (row + badge views).
 8. **Accept**: full-completion shortcut inserts all; partial shortcut inserts next word (+ trailing space if available). Shift-equivalent cycles candidates; Esc dismisses.
 9. **Invalidation** (any → drop suggestion): non-accept keystroke, caret/selection move, focus/app change, mouse click, text no longer matches prefix.
 10. `personalization`/stats record outcome locally (redacted).
@@ -235,7 +237,7 @@ Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepo
 | Phase | Weeks | Deliverable | Exit criterion |
 |---|---|---|---|
 | **A0 spike** (throwaway) | 1–2 | (1) caret **ladder** read in a native app (TextEdit) AND a Chromium app (AXTextMarker path); (2) **two-tap CGEventTap** that swallows a test key without stalling other apps, behind Input Monitoring; (3) NSPanel overlay (Retina-correct); (4) warm llama.cpp round-trip + latency table + KV-reuse rules for the chosen model; bench base-vs-instruct | All four work in real apps; two-tap proven stall-free; sub-150 ms warm latency confirmed or model retiered |
-| **A1 core loop** | 3–4 | `PlatformAdapter` + macOS adapter + suggestion lifecycle (§4) + configurable accept + ghost overlay (backdrop + **disable native inline prediction**) + **secure block (subrole + secure-input)** | Type in Notes/Mail → inline suggestion → accept; passwords & secure-input blocked; no stale inserts; no double ghost text |
+| **A1 core loop** | 3–4 | `PlatformAdapter` + macOS adapter + suggestion lifecycle (§4) + configurable accept + ghost overlay (backdrop + native-inline-prediction suppression only where supported) + **secure block (subrole + secure-input)** | Type in Notes/Mail → inline suggestion → accept; passwords & secure-input blocked; no stale inserts; no double ghost text from this app |
 | **A2 features** | 3–4 | Prompt-based personalization (custom instructions + strength + sender) + pasteboard context fallback + multi-candidate + cycle; optional rusqlite memory if time | Suggestions steered by custom instructions; cycling works; Electron apps get keystroke/clipboard insertion |
 | **A3 settings + ship** | 2–3 | Tauri settings (all §8 panes) + per-app overrides + model catalog/download + diagnostics + pause/snooze + Tauri updater + codesign/notarize (hardened runtime + entitlements) | Installable signed/notarized `.app`; configurable; self-diagnosing; two-permission onboarding |
 
@@ -302,7 +304,7 @@ First-suggestion perceived latency <100–150 ms (warm); **<500 ms p95 is the ha
 **Config surface (live `UserDefaults` keys observed):**
 `CompletionManager_{acceptFullCompletionShortcut, acceptPartialCompletionShortcut, acceptNextWordOnly_includeTrailingSpaceIfAvailable, excludedApplications, maxCompletionLength=4, userPrompt}` · `ModelRepository_{selectedModel, statusItemVisible, shouldShowCompletedWordCountInMenuBar}` · `PersonalizationStrengthSlider` · `TextFieldContextCapture_pasteboardContextEnabled` · `TrainingDataCollector_enabled` · `EmojiCompletion_{preferredGender, preferredSkinTone, includeVanillaVariants}` · `io_replies_sender_{name,email}` · `ShortcutListener_forceEnableShortcut` · Sparkle `SU*`. Settings panes enumerated in §8.
 
-**Overlay internals**: `InlineSuggestionsOverlayWindow` + `OverlayViewController` host `InlineSuggestionsListView` (row + badge + border views) over a `CompletionBackdropManager` backdrop (`SolidBackdropView`/`BlurredBackdropView`/glass effect) for legibility. `InlinePredictionDisableController` turns off macOS's own inline prediction while active.
+**Overlay internals**: `InlineSuggestionsOverlayWindow` + `OverlayViewController` host `InlineSuggestionsListView` (row + badge + border views) over a `CompletionBackdropManager` backdrop (`SolidBackdropView`/`BlurredBackdropView`/glass effect) for legibility. `InlinePredictionDisableController` is a future owned-control integration point for supported native inline prediction suppression.
 
 **Network/endpoints**: model CDN `models.cotypist.app` (zstd GGUFs); `cotypist.app/{setPreference,launchCotypist/setOverride}` web-driven config via URL scheme; `cotypist.app/{compatibility,appHelp/textMetrics,help/privacy,pricing}`; RepliesSDK backend `replies.io` (protobuf — bundles `swift-protobuf`). Bundled deps of note: `MASShortcut` (configurable shortcuts), `LetsMove`, `CwlUtils`, `zstd`, `Sentry`.
 

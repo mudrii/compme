@@ -10,7 +10,7 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel, Special};
+use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
 use spike::completion::{suggest, Completer};
@@ -36,14 +36,21 @@ impl LlamaCompleter {
         )?;
         let ctx_params =
             LlamaContextParams::default().with_n_ctx(Some(NonZeroU32::new(2048).unwrap()));
-        Ok(Self { backend, model, ctx_params })
+        Ok(Self {
+            backend,
+            model,
+            ctx_params,
+        })
     }
 }
 
 impl Completer for LlamaCompleter {
     /// Greedy decode of up to `N_TOKENS` tokens, accumulating the generated text.
     fn complete(&self, prompt: &str) -> String {
-        let mut ctx = self.model.new_context(&self.backend, self.ctx_params.clone()).unwrap();
+        let mut ctx = self
+            .model
+            .new_context(&self.backend, self.ctx_params.clone())
+            .unwrap();
         let toks = self.model.str_to_token(prompt, AddBos::Always).unwrap();
         let mut b = LlamaBatch::new(512, 1);
         let last = toks.len() - 1;
@@ -52,19 +59,19 @@ impl Completer for LlamaCompleter {
         }
         ctx.decode(&mut b).unwrap();
         let mut s = LlamaSampler::greedy();
-        let mut cur = b.n_tokens();
         let mut out = String::new();
-        for _ in 0..N_TOKENS {
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
+        let first_generated_pos = b.n_tokens();
+        for cur in first_generated_pos..first_generated_pos + N_TOKENS as i32 {
             let tok = s.sample(&ctx, b.n_tokens() - 1);
             if self.model.is_eog_token(tok) {
                 break;
             }
-            if let Ok(piece) = self.model.token_to_str(tok, Special::Tokenize) {
+            if let Ok(piece) = self.model.token_to_piece(tok, &mut decoder, true, None) {
                 out.push_str(&piece);
             }
             b.clear();
             b.add(tok, cur, &[0], true).unwrap();
-            cur += 1;
             ctx.decode(&mut b).unwrap();
         }
         out

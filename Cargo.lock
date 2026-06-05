@@ -103,6 +103,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "context"
+version = "0.1.0"
+
+[[package]]
+name = "core"
+version = "0.1.0"
+dependencies = [
+ "context",
+ "platform",
+ "ranker",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -165,6 +178,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "platform",
 ]
 
 [[package]]
@@ -312,9 +333,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.31"
+version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "113b30b4cd05f7c06868fdb2854f66a7b9fece9a48425351cd532e810d74024f"
+checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "memchr"
@@ -327,6 +348,14 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "model_client"
+version = "0.1.0"
+dependencies = [
+ "encoding_rs",
+ "llama-cpp-2",
+]
 
 [[package]]
 name = "nom"
@@ -503,6 +532,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "platform"
+version = "0.1.0"
+
+[[package]]
+name = "platform_macos"
+version = "0.1.0"
+dependencies = [
+ "accessibility-sys",
+ "core-foundation",
+ "core-graphics",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "platform",
+]
+
+[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -535,6 +581,10 @@ name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "ranker"
+version = "0.1.0"
 
 [[package]]
 name = "regex"
@@ -591,20 +641,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "spike"
-version = "0.0.0"
-dependencies = [
- "accessibility-sys",
- "core-foundation",
- "core-graphics",
- "encoding_rs",
- "llama-cpp-2",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
-]
 
 [[package]]
 name = "syn"

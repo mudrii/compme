@@ -36,7 +36,10 @@ fn main() {
     panel.setHidesOnDeactivate(false);
 
     let label = NSTextField::labelWithString(&NSString::from_str("ghost completion text"), mtm);
-    label.setFrame(NSRect::new(NSPoint::new(8.0, 4.0), NSSize::new(224.0, 22.0)));
+    label.setFrame(NSRect::new(
+        NSPoint::new(8.0, 4.0),
+        NSSize::new(224.0, 22.0),
+    ));
     label.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.5, 0.9)));
     label.setDrawsBackground(false);
     label.setBezeled(false);
@@ -45,6 +48,8 @@ fn main() {
         content.addSubview(&label);
     }
     panel.orderFrontRegardless();
-    println!("Grey ghost text should be visible near the lower-left of the main screen. Ctrl-C to quit.");
+    println!(
+        "Grey ghost text should be visible near the lower-left of the main screen. Ctrl-C to quit."
+    );
     app.run();
 }

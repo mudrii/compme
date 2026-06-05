@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/platform",
+    "crates/context",
+    "crates/ranker",
+    "crates/core",
+    "crates/model_client",
+    "crates/platform_macos",
+    "crates/engine",
+]
+exclude = ["tools/spike"]

@@ -8,6 +8,8 @@
 //! Proves global interception + that an instant callback doesn't stall other apps.
 //! NOTE: blocks on `CFRunLoop::run_current()` forever (Ctrl-C to stop). The autonomous
 //! gate is: it compiles. Stall-free behaviour is human-verified per MANUAL-ACCEPTANCE.md.
+use std::io::{self, Write};
+
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::{
     CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
@@ -33,9 +35,11 @@ fn main() {
             // Probe hardcodes suggestion_visible = true; the lib owns the predicate.
             if should_swallow(keycode, true) {
                 println!("keycode {keycode} (accept key) -> SWALLOWED");
+                let _ = io::stdout().flush();
                 CallbackResult::Drop
             } else {
                 println!("key {keycode} -> passed");
+                let _ = io::stdout().flush();
                 CallbackResult::Keep
             }
         },

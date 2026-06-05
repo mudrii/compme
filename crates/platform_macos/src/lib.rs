@@ -1,0 +1,6480 @@
+//! macOS platform adapter scaffolding.
+
+use std::any::Any;
+use std::collections::HashMap;
+use std::ffi::{c_uchar, c_void};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{self, JoinHandle, ThreadId};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use accessibility_sys::{
+    kAXBoundsForRangeParameterizedAttribute, kAXErrorAPIDisabled, kAXErrorAttributeUnsupported,
+    kAXErrorCannotComplete, kAXErrorFailure, kAXErrorIllegalArgument, kAXErrorInvalidUIElement,
+    kAXErrorNoValue, kAXErrorParameterizedAttributeUnsupported, kAXErrorSuccess,
+    kAXFocusedUIElementAttribute, kAXFocusedUIElementChangedNotification, kAXIdentifierAttribute,
+    kAXRoleAttribute, kAXSecureTextFieldSubrole, kAXSelectedTextChangedNotification,
+    kAXSelectedTextRangeAttribute, kAXSubroleAttribute, kAXValueAttribute, kAXValueTypeCFRange,
+    kAXValueTypeCGRect, AXError, AXObserverAddNotification, AXObserverCreate,
+    AXObserverGetRunLoopSource, AXObserverRef, AXObserverRemoveNotification,
+    AXUIElementCopyAttributeValue, AXUIElementCopyParameterizedAttributeValue,
+    AXUIElementCreateApplication, AXUIElementCreateSystemWide, AXUIElementGetPid,
+    AXUIElementIsAttributeSettable, AXUIElementRef, AXUIElementSetAttributeValue,
+    AXUIElementSetMessagingTimeout, AXValueCreate, AXValueGetValue, AXValueRef,
+};
+use core_foundation::base::{CFRange, CFRelease, CFRetain, CFType, CFTypeRef, TCFType};
+use core_foundation::mach_port::CFMachPortRef;
+use core_foundation::runloop::{
+    kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopSource,
+};
+use core_foundation::string::{CFString, CFStringRef};
+use core_graphics::event::{
+    CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+    CGEventType, CallbackResult, EventField, KeyCode,
+};
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSPanel,
+    NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting, NSTextField,
+    NSWindowStyleMask, NSWorkspace,
+};
+use objc2_foundation::{NSArray, NSData, NSPoint, NSRect, NSSize, NSString};
+use platform::{
+    AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback,
+    ContextSource, Environment, FieldHandle, FocusCallback, InsertStrategy, Inserted,
+    KeyInterceptMode, OffsetEncoding, OperatingSystem, OverlayPlacement, OverlayPresenter,
+    PlatformAdapter, PlatformError, ScreenRect, SecurityState, Subscription, TextContext,
+    TextRange, Toolkit,
+};
+
+const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.05;
+const AX_WORKER_PUMP_INTERVAL: Duration = Duration::from_millis(5);
+const AX_WORKER_RUN_LOOP_SLICE: Duration = Duration::from_millis(1);
+const CARET_COALESCE_INTERVAL_MS: u64 = 25;
+const CARET_SAFETY_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const APP_REBIND_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const MAX_USABLE_CARET_RECT_WIDTH: f64 = 2000.0;
+const MAX_USABLE_CARET_RECT_HEIGHT: f64 = 200.0;
+const AX_SELECTED_TEXT_MARKER_RANGE_ATTRIBUTE: &str = "AXSelectedTextMarkerRange";
+const AX_BOUNDS_FOR_TEXT_MARKER_RANGE_PARAMETERIZED_ATTRIBUTE: &str = "AXBoundsForTextMarkerRange";
+const ESRCH: i32 = 3;
+const KEYCODE_TAB: i64 = 48;
+const SYNTHETIC_EVENT_TAG: i64 = 0x636d706c746d65;
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(1000);
+
+type Job = Box<dyn FnOnce() -> Box<dyn Any + Send> + Send + 'static>;
+type WorkerResource = Box<dyn Any + 'static>;
+type ResourceInstaller =
+    Box<dyn FnOnce() -> Result<WorkerResource, PlatformError> + Send + 'static>;
+type ObserverDispatch = Arc<dyn Fn(ObserverEvent) + Send + Sync + 'static>;
+type AdapterObserverInstallerFn = dyn Fn(
+        i32,
+        ObserverInstallTarget,
+        Vec<ObserverNotification>,
+        ObserverDispatch,
+    ) -> Result<ObserverResource, PlatformError>
+    + Send
+    + Sync
+    + 'static;
+type FrontmostPidProvider = dyn Fn() -> Option<i32> + Send + Sync + 'static;
+type NowMsProvider = dyn Fn() -> u64 + Send + Sync + 'static;
+type SecureInputProvider = dyn Fn() -> bool + Send + Sync + 'static;
+type ProcessExistsProvider = dyn Fn(i32) -> bool + Send + Sync + 'static;
+type SyntheticKeyPoster = dyn Fn(i32, &str) -> Result<(), PlatformError> + Send + Sync + 'static;
+type PasteboardPoster = dyn Fn(i32, &str) -> Result<(), PlatformError> + Send + Sync + 'static;
+type AcceptTapHandler = dyn Fn(AcceptTapEvent) -> AcceptTapDecision + Send + Sync + 'static;
+type AcceptTapInstallerFn = dyn Fn(AcceptTapKind, Arc<AcceptTapHandler>) -> Result<AcceptTapResource, PlatformError>
+    + Send
+    + Sync
+    + 'static;
+
+static SECURE_INPUT_QUERY_LOCK: Mutex<()> = Mutex::new(());
+
+#[link(name = "Carbon", kind = "framework")]
+extern "C" {
+    fn IsSecureEventInputEnabled() -> c_uchar;
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+}
+
+extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+    fn __error() -> *mut i32;
+}
+
+enum CallbackMessage {
+    Dispatch {
+        dispatch: ObserverDispatch,
+        event: ObserverEvent,
+    },
+    Accept {
+        callback: AcceptCallback,
+        action: AcceptAction,
+    },
+    Stop,
+}
+
+enum Message {
+    Run {
+        job: Job,
+        reply: mpsc::Sender<Box<dyn Any + Send>>,
+    },
+    InstallResource {
+        id: u64,
+        install: ResourceInstaller,
+        reply: mpsc::Sender<Result<(), PlatformError>>,
+    },
+    RemoveResource {
+        id: u64,
+        reply: Option<mpsc::Sender<bool>>,
+    },
+    ObserverEvent {
+        pid: i32,
+        notification: ObserverNotification,
+        retained_element: Option<usize>,
+        fallback_element_id: String,
+        dispatch: ObserverDispatch,
+        callback_tx: mpsc::Sender<CallbackMessage>,
+    },
+    PollFocusedElement {
+        pid: i32,
+        notification: ObserverNotification,
+        dispatch: ObserverDispatch,
+        callback_tx: mpsc::Sender<CallbackMessage>,
+    },
+    #[cfg(test)]
+    ResourceCount {
+        reply: mpsc::Sender<usize>,
+    },
+    Stop,
+}
+
+trait AxWorkerLoop: Send + 'static {
+    fn recv(&mut self) -> Result<Message, mpsc::RecvTimeoutError>;
+    fn pump_run_loop(&mut self);
+}
+
+struct ChannelAxWorkerLoop {
+    rx: mpsc::Receiver<Message>,
+    pump_interval: Duration,
+}
+
+impl ChannelAxWorkerLoop {
+    fn new(rx: mpsc::Receiver<Message>) -> Self {
+        Self {
+            rx,
+            pump_interval: AX_WORKER_PUMP_INTERVAL,
+        }
+    }
+}
+
+impl AxWorkerLoop for ChannelAxWorkerLoop {
+    fn recv(&mut self) -> Result<Message, mpsc::RecvTimeoutError> {
+        self.rx.recv_timeout(self.pump_interval)
+    }
+
+    fn pump_run_loop(&mut self) {
+        let _ = CFRunLoop::run_in_mode(
+            unsafe { kCFRunLoopDefaultMode },
+            AX_WORKER_RUN_LOOP_SLICE,
+            true,
+        );
+    }
+}
+
+pub struct AxWorker {
+    tx: mpsc::Sender<Message>,
+    thread_id: ThreadId,
+    handle: Option<JoinHandle<()>>,
+    next_resource_id: Arc<AtomicU64>,
+}
+
+#[derive(Clone)]
+struct AxWorkerHandle {
+    tx: mpsc::Sender<Message>,
+    next_resource_id: Arc<AtomicU64>,
+}
+
+#[derive(Debug)]
+pub struct AxWorkerResource {
+    id: u64,
+    tx: mpsc::Sender<Message>,
+    closed: bool,
+}
+
+#[derive(Debug)]
+pub struct CallbackDispatcher {
+    tx: mpsc::Sender<CallbackMessage>,
+    handle: Option<JoinHandle<()>>,
+}
+
+pub struct MacosPlatformAdapter {
+    worker: AxWorker,
+    callback_dispatcher: CallbackDispatcher,
+    next_subscription_id: AtomicU64,
+    subscriptions: Arc<Mutex<HashMap<u64, SubscriptionEntry>>>,
+    frontmost_pid: Arc<FrontmostPidProvider>,
+    now_ms: Arc<NowMsProvider>,
+    secure_input_enabled: Arc<SecureInputProvider>,
+    process_exists: Arc<ProcessExistsProvider>,
+    synthetic_key_poster: Arc<SyntheticKeyPoster>,
+    pasteboard_poster: Arc<PasteboardPoster>,
+    observer_installer: AdapterObserverInstaller,
+    accept_tap_installer: AdapterAcceptTapInstaller,
+}
+
+pub struct MacosOverlayPresenter {
+    panel: Option<Retained<NSPanel>>,
+    label: Option<Retained<NSTextField>>,
+    last_rect: Option<ScreenRect>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MacosOverlayDiagnostics {
+    pub has_panel: bool,
+    pub visible: bool,
+    pub ignores_mouse_events: bool,
+    pub nonactivating_panel: bool,
+    pub can_become_key_window: bool,
+    pub level: isize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MacosCaretRectSource {
+    Marker,
+    NativeFallback,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MacosCaretDiagnostics {
+    pub marker_rect: Option<ScreenRect>,
+    pub native_rect: Option<ScreenRect>,
+    pub resolved_rect: Option<ScreenRect>,
+    pub source: MacosCaretRectSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OverlayFrame {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+enum SubscriptionEntry {
+    Focus {
+        _callback: FocusCallback,
+        _binding: DynamicObserverBinding,
+    },
+    Caret {
+        _callback: CaretCallback,
+        _binding: DynamicObserverBinding,
+    },
+    Accept {
+        _callback: AcceptCallback,
+        _observer_tap: AcceptTapResource,
+        _controller: Arc<AcceptTapController>,
+    },
+}
+
+struct ObserverResource {
+    _inner: Box<dyn Any + Send + 'static>,
+}
+
+struct AcceptTapResource {
+    _inner: Box<dyn Any + Send + 'static>,
+}
+
+impl AcceptTapResource {
+    fn new(inner: impl Any + Send + 'static) -> Self {
+        Self {
+            _inner: Box::new(inner),
+        }
+    }
+}
+
+struct AcceptTapController {
+    installer: Arc<AcceptTapInstallerFn>,
+    callback_tx: mpsc::Sender<CallbackMessage>,
+    callback: AcceptCallback,
+    active: Arc<AtomicBool>,
+    consumer_tap: Mutex<Option<AcceptTapResource>>,
+    accept_action: Arc<Mutex<Option<AcceptAction>>>,
+    teardown_generation: AtomicU64,
+}
+
+struct SafetyPoller {
+    stop_tx: Option<mpsc::Sender<()>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+struct ObserverBinding {
+    pid: i32,
+    _observer: ObserverResource,
+    _poller: SafetyPoller,
+}
+
+struct DynamicObserverBinding {
+    _rebinder: RebindPoller,
+    _current: Arc<Mutex<Option<ObserverBinding>>>,
+}
+
+#[derive(Clone)]
+struct ObserverBindingConfig {
+    installer: Arc<AdapterObserverInstallerFn>,
+    worker_tx: mpsc::Sender<Message>,
+    target: ObserverInstallTarget,
+    notifications: Vec<ObserverNotification>,
+    poll_notification: ObserverNotification,
+    dispatch: ObserverDispatch,
+    callback_tx: mpsc::Sender<CallbackMessage>,
+}
+
+struct DynamicObserverBindingConfig {
+    initial_pid: i32,
+    frontmost_pid: Arc<FrontmostPidProvider>,
+    current: Arc<Mutex<Option<ObserverBinding>>>,
+    binding: ObserverBindingConfig,
+    rebind_interval: Duration,
+}
+
+#[cfg(test)]
+struct AdapterTestHooks {
+    callback_dispatcher: CallbackDispatcher,
+    frontmost_pid: Arc<FrontmostPidProvider>,
+    now_ms: Arc<NowMsProvider>,
+    secure_input_enabled: Arc<SecureInputProvider>,
+    process_exists: Arc<ProcessExistsProvider>,
+    synthetic_key_poster: Arc<SyntheticKeyPoster>,
+    pasteboard_poster: Arc<PasteboardPoster>,
+    observer_installer: Arc<AdapterObserverInstallerFn>,
+    accept_tap_installer: Arc<AcceptTapInstallerFn>,
+}
+
+struct RebindPoller {
+    stop_tx: Option<mpsc::Sender<()>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObserverInstallTarget {
+    App,
+    FocusedElementWithAppFallback,
+}
+
+impl ObserverResource {
+    fn new(inner: impl Any + Send + 'static) -> Self {
+        Self {
+            _inner: Box::new(inner),
+        }
+    }
+}
+
+impl AcceptTapController {
+    fn set_suggestion_visible(&self, visible: bool) -> Result<(), PlatformError> {
+        if !self.active.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.teardown_generation.fetch_add(1, Ordering::AcqRel);
+        self.set_accept_action(if visible {
+            Some(AcceptAction::Full)
+        } else {
+            None
+        })?;
+
+        let mut consumer_tap =
+            self.consumer_tap
+                .lock()
+                .map_err(|_| PlatformError::CannotComplete {
+                    reason: "accept tap controller lock poisoned".into(),
+                })?;
+
+        match (visible, consumer_tap.is_some()) {
+            (true, false) => {
+                let handler = accept_consumer_tap_handler(
+                    Arc::clone(&self.active),
+                    self.callback_tx.clone(),
+                    Arc::clone(&self.callback),
+                    Arc::clone(&self.accept_action),
+                );
+                *consumer_tap = Some((self.installer)(AcceptTapKind::Consumer, handler)?);
+            }
+            (false, true) => {
+                *consumer_tap = None;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn set_accept_action(&self, action: Option<AcceptAction>) -> Result<(), PlatformError> {
+        let mut accept_action =
+            self.accept_action
+                .lock()
+                .map_err(|_| PlatformError::CannotComplete {
+                    reason: "accept action lock poisoned".into(),
+                })?;
+        *accept_action = action;
+        Ok(())
+    }
+
+    fn clear_accept_action_if_generation(&self, generation: u64) -> Result<(), PlatformError> {
+        let mut accept_action =
+            self.accept_action
+                .lock()
+                .map_err(|_| PlatformError::CannotComplete {
+                    reason: "accept action lock poisoned".into(),
+                })?;
+        if self.teardown_generation.load(Ordering::Acquire) == generation {
+            *accept_action = None;
+        }
+        Ok(())
+    }
+
+    fn hide_suggestion_after(controller: Arc<Self>, delay: Duration) -> Result<(), PlatformError> {
+        if !controller.active.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let generation = controller
+            .teardown_generation
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        if delay.is_zero() {
+            return controller.deactivate_if_generation(generation);
+        }
+
+        thread::spawn(move || {
+            thread::sleep(delay);
+            let _ = controller.deactivate_if_generation(generation);
+        });
+        Ok(())
+    }
+
+    fn deactivate_if_generation(&self, generation: u64) -> Result<(), PlatformError> {
+        if !self.active.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if self.teardown_generation.load(Ordering::Acquire) != generation {
+            return Ok(());
+        }
+
+        {
+            let mut consumer_tap =
+                self.consumer_tap
+                    .lock()
+                    .map_err(|_| PlatformError::CannotComplete {
+                        reason: "accept tap controller lock poisoned".into(),
+                    })?;
+            if self.teardown_generation.load(Ordering::Acquire) == generation {
+                *consumer_tap = None;
+            }
+        }
+        self.clear_accept_action_if_generation(generation)?;
+        Ok(())
+    }
+}
+
+enum AdapterObserverInstaller {
+    Worker,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Custom(Arc<AdapterObserverInstallerFn>),
+}
+
+enum AdapterAcceptTapInstaller {
+    Worker,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Custom(Arc<AcceptTapInstallerFn>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcceptTapKind {
+    Observer,
+    Consumer,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AcceptTapEvent {
+    event_type: CGEventType,
+    keycode: i64,
+    source_user_data: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcceptTapDecision {
+    Keep,
+    Drop(AcceptAction),
+    ReenableAndKeep,
+}
+
+impl std::fmt::Debug for MacosPlatformAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MacosPlatformAdapter")
+            .field("worker", &self.worker)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MacosOverlayPresenter {
+    pub fn new() -> Result<Self, PlatformError> {
+        let mtm = overlay_main_thread_marker()?;
+        let app = NSApplication::sharedApplication(mtm);
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        Ok(Self {
+            panel: None,
+            label: None,
+            last_rect: None,
+        })
+    }
+
+    fn ensure_panel(
+        &mut self,
+        mtm: MainThreadMarker,
+        frame: OverlayFrame,
+        text: &str,
+    ) -> Result<(), PlatformError> {
+        if self.panel.is_some() && self.label.is_some() {
+            return Ok(());
+        }
+
+        let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+        let panel: Retained<NSPanel> = NSPanel::initWithContentRect_styleMask_backing_defer(
+            NSPanel::alloc(mtm),
+            ns_rect(frame),
+            style,
+            NSBackingStoreType::Buffered,
+            false,
+        );
+        panel.setOpaque(false);
+        panel.setBackgroundColor(Some(&NSColor::clearColor()));
+        panel.setLevel(101);
+        panel.setIgnoresMouseEvents(true);
+        panel.setHidesOnDeactivate(false);
+
+        let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
+        configure_overlay_label(&label, frame, text);
+        if let Some(content) = panel.contentView() {
+            content.addSubview(&label);
+        } else {
+            return Err(PlatformError::CannotComplete {
+                reason: "overlay panel had no content view".into(),
+            });
+        }
+
+        self.panel = Some(panel);
+        self.label = Some(label);
+        Ok(())
+    }
+
+    pub fn diagnostics_for_acceptance(&self) -> MacosOverlayDiagnostics {
+        let Some(panel) = &self.panel else {
+            return MacosOverlayDiagnostics {
+                has_panel: false,
+                visible: false,
+                ignores_mouse_events: false,
+                nonactivating_panel: false,
+                can_become_key_window: false,
+                level: 0,
+            };
+        };
+
+        MacosOverlayDiagnostics {
+            has_panel: true,
+            visible: panel.isVisible(),
+            ignores_mouse_events: panel.ignoresMouseEvents(),
+            nonactivating_panel: panel
+                .styleMask()
+                .contains(NSWindowStyleMask::NonactivatingPanel),
+            can_become_key_window: panel.canBecomeKeyWindow(),
+            level: panel.level(),
+        }
+    }
+}
+
+impl OverlayPresenter for MacosOverlayPresenter {
+    fn show_ghost(&mut self, rect: ScreenRect, text: &str) -> Result<(), PlatformError> {
+        let mtm = overlay_main_thread_marker()?;
+        let frame = overlay_frame_for_text(rect, text);
+        self.last_rect = Some(rect);
+        self.ensure_panel(mtm, frame, text)?;
+        if let Some(panel) = &self.panel {
+            panel.setFrame_display(ns_rect(frame), true);
+            panel.orderFrontRegardless();
+        }
+        if let Some(label) = &self.label {
+            configure_overlay_label(label, frame, text);
+        }
+        Ok(())
+    }
+
+    fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError> {
+        let _mtm = overlay_main_thread_marker()?;
+        let Some(rect) = self.last_rect else {
+            return Err(PlatformError::CannotComplete {
+                reason: "cannot update hidden overlay".into(),
+            });
+        };
+        let frame = overlay_frame_for_text(rect, text);
+        if let Some(panel) = &self.panel {
+            panel.setFrame_display(ns_rect(frame), true);
+        }
+        let Some(label) = &self.label else {
+            return Err(PlatformError::CannotComplete {
+                reason: "cannot update hidden overlay".into(),
+            });
+        };
+        configure_overlay_label(label, frame, text);
+        Ok(())
+    }
+
+    fn hide(&mut self) -> Result<(), PlatformError> {
+        let _mtm = overlay_main_thread_marker()?;
+        if let Some(panel) = &self.panel {
+            panel.orderOut(None);
+        }
+        Ok(())
+    }
+}
+
+fn overlay_main_thread_marker() -> Result<MainThreadMarker, PlatformError> {
+    MainThreadMarker::new().ok_or_else(|| PlatformError::CannotComplete {
+        reason: "macOS overlay must be used on the AppKit main thread".into(),
+    })
+}
+
+fn overlay_frame_for_text(rect: ScreenRect, text: &str) -> OverlayFrame {
+    let text_width = (text.chars().count() as f64 * 7.0) + 24.0;
+    OverlayFrame {
+        x: rect.x,
+        y: rect.y,
+        w: text_width.clamp(240.0, 720.0),
+        h: (rect.h + 10.0).clamp(30.0, 48.0),
+    }
+}
+
+fn overlay_label_frame(frame: OverlayFrame) -> OverlayFrame {
+    OverlayFrame {
+        x: 8.0,
+        y: 4.0,
+        w: (frame.w - 16.0).max(1.0),
+        h: (frame.h - 8.0).max(1.0),
+    }
+}
+
+fn ns_rect(frame: OverlayFrame) -> NSRect {
+    NSRect::new(
+        NSPoint::new(frame.x, frame.y),
+        NSSize::new(frame.w, frame.h),
+    )
+}
+
+fn configure_overlay_label(label: &NSTextField, frame: OverlayFrame, text: &str) {
+    label.setFrame(ns_rect(overlay_label_frame(frame)));
+    label.setStringValue(&NSString::from_str(text));
+    label.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.5, 0.9)));
+    label.setDrawsBackground(false);
+    label.setBezeled(false);
+    label.setEditable(false);
+}
+
+impl MacosPlatformAdapter {
+    pub fn new() -> Result<Self, PlatformError> {
+        Ok(Self::with_worker(AxWorker::new()?))
+    }
+
+    pub fn with_worker(worker: AxWorker) -> Self {
+        Self {
+            worker,
+            callback_dispatcher: CallbackDispatcher::new(),
+            next_subscription_id: AtomicU64::new(1),
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            frontmost_pid: Arc::new(frontmost_app_pid),
+            now_ms: Arc::new(wall_clock_now_ms),
+            secure_input_enabled: Arc::new(macos_secure_input_enabled),
+            process_exists: Arc::new(process_exists),
+            synthetic_key_poster: Arc::new(post_synthetic_text),
+            pasteboard_poster: Arc::new(post_clipboard_text),
+            observer_installer: AdapterObserverInstaller::Worker,
+            accept_tap_installer: AdapterAcceptTapInstaller::Worker,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_frontmost_pid_override_for_acceptance(pid: i32) -> Result<Self, PlatformError> {
+        Self::with_frontmost_pid_provider_for_acceptance(move || Some(pid))
+    }
+
+    #[doc(hidden)]
+    pub fn with_frontmost_pid_provider_for_acceptance<F>(
+        frontmost_pid: F,
+    ) -> Result<Self, PlatformError>
+    where
+        F: Fn() -> Option<i32> + Send + Sync + 'static,
+    {
+        let mut adapter = Self::new()?;
+        adapter.frontmost_pid = Arc::new(frontmost_pid);
+        Ok(adapter)
+    }
+
+    #[doc(hidden)]
+    pub fn caret_diagnostics(
+        &self,
+        field: &FieldHandle,
+    ) -> Result<MacosCaretDiagnostics, PlatformError> {
+        if (self.secure_input_enabled)() {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            });
+        }
+        if field_has_secure_text_subrole(field) {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            });
+        }
+
+        let field = field.clone();
+        let app = field.app.clone();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for caret diagnostics".into(),
+            })?;
+
+        let result = self
+            .worker
+            .run(move || caret_diagnostics_for_field(pid, field))?;
+        self.map_app_exited(pid, app, result)
+    }
+
+    #[cfg(test)]
+    fn with_worker_test_hooks(worker: AxWorker, hooks: AdapterTestHooks) -> Self {
+        let AdapterTestHooks {
+            callback_dispatcher,
+            frontmost_pid,
+            now_ms,
+            secure_input_enabled,
+            process_exists,
+            synthetic_key_poster,
+            pasteboard_poster,
+            observer_installer,
+            accept_tap_installer,
+        } = hooks;
+
+        Self {
+            worker,
+            callback_dispatcher,
+            next_subscription_id: AtomicU64::new(1),
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            frontmost_pid,
+            now_ms,
+            secure_input_enabled,
+            process_exists,
+            synthetic_key_poster,
+            pasteboard_poster,
+            observer_installer: AdapterObserverInstaller::Custom(observer_installer),
+            accept_tap_installer: AdapterAcceptTapInstaller::Custom(accept_tap_installer),
+        }
+    }
+
+    pub fn ax_worker_thread_id(&self) -> ThreadId {
+        self.worker.thread_id()
+    }
+
+    fn next_subscription(&self) -> u64 {
+        self.next_subscription_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn subscription_count(&self) -> Result<usize, PlatformError> {
+        Ok(self
+            .subscriptions
+            .lock()
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "subscription registry lock poisoned".into(),
+            })?
+            .len())
+    }
+
+    fn frontmost_pid(&self) -> Result<i32, PlatformError> {
+        (self.frontmost_pid)().ok_or_else(|| PlatformError::CannotComplete {
+            reason: "no frontmost application pid".into(),
+        })
+    }
+
+    fn ensure_global_insert_target(&self, pid: i32) -> Result<(), PlatformError> {
+        match (self.frontmost_pid)() {
+            Some(frontmost_pid) if frontmost_pid == pid => Ok(()),
+            Some(_) => Err(PlatformError::StaleField),
+            None => Err(PlatformError::CannotComplete {
+                reason: "no frontmost application pid for global insert".into(),
+            }),
+        }
+    }
+
+    fn subscription_handle(&self, id: u64, active: Arc<AtomicBool>) -> Subscription {
+        let subscriptions = Arc::downgrade(&self.subscriptions);
+        Subscription::with_cancel(id, move || {
+            active.store(false, Ordering::Release);
+            let removed = subscriptions
+                .upgrade()
+                .and_then(|subscriptions| subscriptions.lock().ok()?.remove(&id));
+            drop(removed);
+        })
+    }
+
+    fn observer_installer(&self) -> Arc<AdapterObserverInstallerFn> {
+        match &self.observer_installer {
+            AdapterObserverInstaller::Worker => {
+                let worker = self.worker.handle();
+                let callback_tx = self.callback_dispatcher.sender();
+                Arc::new(move |pid, target, notifications, dispatch| match target {
+                    ObserverInstallTarget::App => worker
+                        .install_app_observer(pid, notifications, dispatch, callback_tx.clone())
+                        .map(ObserverResource::new),
+                    ObserverInstallTarget::FocusedElementWithAppFallback => worker
+                        .install_focused_caret_observer(pid, dispatch, callback_tx.clone())
+                        .map(ObserverResource::new),
+                })
+            }
+            AdapterObserverInstaller::Custom(install) => Arc::clone(install),
+        }
+    }
+
+    fn accept_tap_installer(&self) -> Arc<AcceptTapInstallerFn> {
+        match &self.accept_tap_installer {
+            AdapterAcceptTapInstaller::Worker => {
+                let worker = self.worker.handle();
+                Arc::new(move |kind, handler| {
+                    worker
+                        .install_resource(move || install_worker_accept_tap_resource(kind, handler))
+                        .map(AcceptTapResource::new)
+                })
+            }
+            AdapterAcceptTapInstaller::Custom(install) => Arc::clone(install),
+        }
+    }
+
+    fn map_app_exited<T>(
+        &self,
+        pid: i32,
+        app: AppId,
+        result: Result<T, PlatformError>,
+    ) -> Result<T, PlatformError> {
+        match result {
+            Err(PlatformError::StaleField) | Err(PlatformError::CannotComplete { .. })
+                if !(self.process_exists)(pid) =>
+            {
+                Err(PlatformError::AppExited { app })
+            }
+            other => other,
+        }
+    }
+}
+
+impl PlatformAdapter for MacosPlatformAdapter {
+    fn environment(&self) -> Environment {
+        Environment {
+            os: OperatingSystem::Macos,
+            version: "unknown".into(),
+            display_topology: None,
+        }
+    }
+
+    fn subscribe_focus(&self, cb: FocusCallback) -> Result<Subscription, PlatformError> {
+        let pid = self.frontmost_pid()?;
+        let id = self.next_subscription();
+        let factory = Arc::new(Mutex::new(FocusTokenFactory::new()));
+        let current_identity_key = Arc::new(Mutex::new(None));
+        let binding_state = Arc::new(Mutex::new(None));
+        let active = Arc::new(AtomicBool::new(true));
+        let active_for_dispatch = Arc::clone(&active);
+        let cb_for_dispatch = Arc::clone(&cb);
+        let current_identity_key_for_dispatch = Arc::clone(&current_identity_key);
+        let binding_state_for_dispatch = Arc::clone(&binding_state);
+        let dispatch: ObserverDispatch = Arc::new(move |event: ObserverEvent| {
+            if event.notification != ObserverNotification::FocusChanged {
+                return;
+            }
+            if !active_for_dispatch.load(Ordering::Acquire) {
+                return;
+            }
+            if current_binding_pid(&binding_state_for_dispatch) != Some(event.pid) {
+                return;
+            }
+
+            let identity_key = event.identity.stable_field_key().unwrap_or_else(|| {
+                format!("pid={}:{}", event.pid, event.identity.field_element_id())
+            });
+            let Ok(mut current_identity_key) = current_identity_key_for_dispatch.lock() else {
+                return;
+            };
+            if current_identity_key.as_ref() == Some(&identity_key) {
+                return;
+            }
+            *current_identity_key = Some(identity_key);
+
+            let Ok(mut factory) = factory.lock() else {
+                return;
+            };
+            let field = factory.focused_field(
+                event.identity.app_id(event.pid),
+                event.identity.pid(event.pid),
+                event.identity.field_element_id(),
+            );
+            cb_for_dispatch(field);
+        });
+        let binding = start_dynamic_observer_binding(DynamicObserverBindingConfig {
+            initial_pid: pid,
+            frontmost_pid: Arc::clone(&self.frontmost_pid),
+            current: Arc::clone(&binding_state),
+            binding: ObserverBindingConfig {
+                installer: self.observer_installer(),
+                worker_tx: self.worker.handle().tx,
+                target: ObserverInstallTarget::App,
+                notifications: vec![ObserverNotification::FocusChanged],
+                poll_notification: ObserverNotification::FocusChanged,
+                dispatch: Arc::clone(&dispatch),
+                callback_tx: self.callback_dispatcher.sender(),
+            },
+            rebind_interval: APP_REBIND_POLL_INTERVAL,
+        })?;
+
+        self.subscriptions
+            .lock()
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "subscription registry lock poisoned".into(),
+            })?
+            .insert(
+                id,
+                SubscriptionEntry::Focus {
+                    _callback: cb,
+                    _binding: binding,
+                },
+            );
+
+        Ok(self.subscription_handle(id, active))
+    }
+
+    fn subscribe_caret(&self, cb: CaretCallback) -> Result<Subscription, PlatformError> {
+        let pid = self.frontmost_pid()?;
+        let id = self.next_subscription();
+        let tracker = Arc::new(Mutex::new(CaretFieldTracker::new()));
+        let coalescer = Arc::new(Mutex::new(CaretCoalescer::new(CARET_COALESCE_INTERVAL_MS)));
+        let now_ms = Arc::clone(&self.now_ms);
+        let binding_state = Arc::new(Mutex::new(None));
+        let active = Arc::new(AtomicBool::new(true));
+        let active_for_dispatch = Arc::clone(&active);
+        let cb_for_dispatch = Arc::clone(&cb);
+        let binding_state_for_dispatch = Arc::clone(&binding_state);
+        let dispatch: ObserverDispatch = Arc::new(move |event: ObserverEvent| {
+            if event.notification != ObserverNotification::CaretChanged {
+                return;
+            }
+            if !active_for_dispatch.load(Ordering::Acquire) {
+                return;
+            }
+            if current_binding_pid(&binding_state_for_dispatch) != Some(event.pid) {
+                return;
+            }
+
+            let Ok(mut tracker) = tracker.lock() else {
+                return;
+            };
+            let field = tracker.field_for_event(event.pid, &event.identity);
+            let rect = event.rect;
+            let Ok(mut coalescer) = coalescer.lock() else {
+                return;
+            };
+            if let Some((field, rect)) = coalescer.observe((now_ms)(), field, rect) {
+                cb_for_dispatch(field, rect);
+            }
+        });
+        let binding = start_dynamic_observer_binding(DynamicObserverBindingConfig {
+            initial_pid: pid,
+            frontmost_pid: Arc::clone(&self.frontmost_pid),
+            current: Arc::clone(&binding_state),
+            binding: ObserverBindingConfig {
+                installer: self.observer_installer(),
+                worker_tx: self.worker.handle().tx,
+                target: ObserverInstallTarget::FocusedElementWithAppFallback,
+                notifications: vec![ObserverNotification::CaretChanged],
+                poll_notification: ObserverNotification::CaretChanged,
+                dispatch: Arc::clone(&dispatch),
+                callback_tx: self.callback_dispatcher.sender(),
+            },
+            rebind_interval: APP_REBIND_POLL_INTERVAL,
+        })?;
+
+        self.subscriptions
+            .lock()
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "subscription registry lock poisoned".into(),
+            })?
+            .insert(
+                id,
+                SubscriptionEntry::Caret {
+                    _callback: cb,
+                    _binding: binding,
+                },
+            );
+
+        Ok(self.subscription_handle(id, active))
+    }
+
+    fn subscribe_accept(&self, cb: AcceptCallback) -> Result<AcceptSubscription, PlatformError> {
+        let id = self.next_subscription();
+        let active = Arc::new(AtomicBool::new(true));
+        let installer = self.accept_tap_installer();
+        let callback_tx = self.callback_dispatcher.sender();
+        let observer_tap = installer(
+            AcceptTapKind::Observer,
+            accept_observer_tap_handler(Arc::clone(&active)),
+        )?;
+        let controller = Arc::new(AcceptTapController {
+            installer,
+            callback_tx,
+            callback: Arc::clone(&cb),
+            active: Arc::clone(&active),
+            consumer_tap: Mutex::new(None),
+            accept_action: Arc::new(Mutex::new(None)),
+            teardown_generation: AtomicU64::new(0),
+        });
+
+        self.subscriptions
+            .lock()
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "subscription registry lock poisoned".into(),
+            })?
+            .insert(
+                id,
+                SubscriptionEntry::Accept {
+                    _callback: cb,
+                    _observer_tap: observer_tap,
+                    _controller: Arc::clone(&controller),
+                },
+            );
+
+        let subscription = self.subscription_handle(id, active);
+        let controller_for_visible = Arc::clone(&controller);
+        let controller_for_hide = Arc::clone(&controller);
+        let controller_for_action = Arc::clone(&controller);
+        Ok(AcceptSubscription::new(
+            subscription,
+            move |visible| controller_for_visible.set_suggestion_visible(visible),
+            move |delay| {
+                AcceptTapController::hide_suggestion_after(Arc::clone(&controller_for_hide), delay)
+            },
+            move |action| controller_for_action.set_accept_action(action),
+        ))
+    }
+
+    fn front_app(&self) -> Option<AppId> {
+        (self.frontmost_pid)().map(|pid| format!("pid:{pid}"))
+    }
+
+    fn capabilities(&self, field: &FieldHandle) -> Result<Capabilities, PlatformError> {
+        if (self.secure_input_enabled)() {
+            return Ok(global_secure_input_capabilities());
+        }
+        if field_has_secure_text_subrole(field) {
+            return Ok(secure_field_capabilities());
+        }
+
+        let field = field.clone();
+        let app = field.app.clone();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for capabilities".into(),
+            })?;
+
+        let result = self
+            .worker
+            .run(move || capabilities_for_field(pid, field))?;
+        self.map_app_exited(pid, app, result)
+    }
+
+    fn read_context(&self, field: &FieldHandle) -> Result<TextContext, PlatformError> {
+        if (self.secure_input_enabled)() {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            });
+        }
+        if field_has_secure_text_subrole(field) {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            });
+        }
+
+        let field = field.clone();
+        let app = field.app.clone();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for read_context".into(),
+            })?;
+
+        let result = self
+            .worker
+            .run(move || read_context_for_field(pid, field))?;
+        self.map_app_exited(pid, app, result)
+    }
+
+    fn caret_rect(&self, field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+        if (self.secure_input_enabled)() {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            });
+        }
+        if field_has_secure_text_subrole(field) {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            });
+        }
+
+        let field = field.clone();
+        let app = field.app.clone();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for caret_rect".into(),
+            })?;
+
+        let result = self.worker.run(move || caret_rect_for_field(pid, field))?;
+        self.map_app_exited(pid, app, result)
+    }
+
+    fn insert(
+        &self,
+        field: &FieldHandle,
+        text: &str,
+        strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        if (self.secure_input_enabled)() {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            });
+        }
+        if field_has_secure_text_subrole(field) {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            });
+        }
+        if text.is_empty() {
+            return Ok(Inserted {
+                bytes: 0,
+                chars: 0,
+                strategy,
+            });
+        }
+
+        let field = field.clone();
+        let app = field.app.clone();
+        let text = text.to_string();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for insert".into(),
+            })?;
+
+        match strategy {
+            InsertStrategy::AxSet => {
+                let result = self
+                    .worker
+                    .run(move || insert_for_field(pid, field, text, strategy))?;
+                self.map_app_exited(pid, app, result)
+            }
+            InsertStrategy::SyntheticKeys => {
+                self.ensure_global_insert_target(pid)?;
+                let result = (self.synthetic_key_poster)(pid, &text).map(|()| Inserted {
+                    bytes: text.len(),
+                    chars: text.chars().count(),
+                    strategy,
+                });
+                self.map_app_exited(pid, app, result)
+            }
+            InsertStrategy::Clipboard => {
+                self.ensure_global_insert_target(pid)?;
+                let result = (self.pasteboard_poster)(pid, &text).map(|()| Inserted {
+                    bytes: text.len(),
+                    chars: text.chars().count(),
+                    strategy,
+                });
+                self.map_app_exited(pid, app, result)
+            }
+            other => Err(PlatformError::UnsupportedField {
+                reason: format!("macOS insert strategy {other:?} not implemented yet"),
+            }),
+        }
+    }
+}
+
+fn frontmost_app_pid() -> Option<i32> {
+    let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    let pid = frontmost.processIdentifier();
+    if pid < 0 {
+        None
+    } else {
+        Some(pid)
+    }
+}
+
+fn wall_clock_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn macos_secure_input_enabled() -> bool {
+    let _guard = SECURE_INPUT_QUERY_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    unsafe { IsSecureEventInputEnabled() != 0 }
+}
+
+fn process_exists(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+
+    if unsafe { kill(pid, 0) } == 0 {
+        return true;
+    }
+
+    unsafe { *__error() != ESRCH }
+}
+
+fn post_synthetic_text(pid: i32, text: &str) -> Result<(), PlatformError> {
+    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| {
+        PlatformError::CannotComplete {
+            reason: "failed to create CGEventSource for synthetic insertion".into(),
+        }
+    })?;
+    let key_down =
+        CGEvent::new_keyboard_event(source.clone(), KeyCode::SPACE, true).map_err(|_| {
+            PlatformError::CannotComplete {
+                reason: "failed to create synthetic key-down event".into(),
+            }
+        })?;
+    key_down.set_string(text);
+    let key_up = CGEvent::new_keyboard_event(source, KeyCode::SPACE, false).map_err(|_| {
+        PlatformError::CannotComplete {
+            reason: "failed to create synthetic key-up event".into(),
+        }
+    })?;
+
+    tag_synthetic_event(&key_down);
+    tag_synthetic_event(&key_up);
+    key_down.post_to_pid(pid);
+    key_up.post_to_pid(pid);
+    Ok(())
+}
+
+fn post_clipboard_text(pid: i32, text: &str) -> Result<(), PlatformError> {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    let string_type = pasteboard_string_type();
+    let previous_snapshot = snapshot_pasteboard(&pasteboard);
+
+    pasteboard.clearContents();
+    if !pasteboard.setString_forType(&NSString::from_str(text), string_type) {
+        restore_pasteboard(&pasteboard, &previous_snapshot);
+        return Err(PlatformError::CannotComplete {
+            reason: "failed to write completion text to pasteboard".into(),
+        });
+    }
+    let completion_change_count = pasteboard.changeCount();
+
+    let post_result = post_command_v(pid);
+    thread::sleep(CLIPBOARD_RESTORE_DELAY);
+    restore_pasteboard_if_unchanged(&pasteboard, &previous_snapshot, completion_change_count);
+    post_result
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PasteboardSnapshot {
+    items: Vec<PasteboardItemSnapshot>,
+    fallback_string: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PasteboardItemSnapshot {
+    types: Vec<PasteboardTypeSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PasteboardTypeSnapshot {
+    type_name: String,
+    data: Vec<u8>,
+}
+
+fn snapshot_pasteboard(pasteboard: &NSPasteboard) -> PasteboardSnapshot {
+    let fallback_string = pasteboard
+        .stringForType(pasteboard_string_type())
+        .map(|value| value.to_string());
+    let items = pasteboard
+        .pasteboardItems()
+        .map(|items| snapshot_pasteboard_items(&items))
+        .unwrap_or_default();
+
+    PasteboardSnapshot {
+        items,
+        fallback_string,
+    }
+}
+
+fn snapshot_pasteboard_items(items: &NSArray<NSPasteboardItem>) -> Vec<PasteboardItemSnapshot> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let types = item
+                .types()
+                .iter()
+                .filter_map(|pasteboard_type| {
+                    item.dataForType(&pasteboard_type)
+                        .map(|data| PasteboardTypeSnapshot {
+                            type_name: pasteboard_type.to_string(),
+                            data: data.to_vec(),
+                        })
+                })
+                .collect::<Vec<_>>();
+
+            (!types.is_empty()).then_some(PasteboardItemSnapshot { types })
+        })
+        .collect()
+}
+
+fn restore_pasteboard(pasteboard: &NSPasteboard, snapshot: &PasteboardSnapshot) {
+    pasteboard.clearContents();
+    if !snapshot.items.is_empty() && restore_pasteboard_items(pasteboard, &snapshot.items) {
+        return;
+    }
+
+    restore_pasteboard_string(pasteboard, snapshot.fallback_string.as_deref());
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PasteboardRestoreOutcome {
+    Restored,
+    SkippedChanged,
+}
+
+fn restore_pasteboard_if_unchanged(
+    pasteboard: &NSPasteboard,
+    snapshot: &PasteboardSnapshot,
+    expected_change_count: isize,
+) -> PasteboardRestoreOutcome {
+    if pasteboard.changeCount() != expected_change_count {
+        return PasteboardRestoreOutcome::SkippedChanged;
+    }
+
+    restore_pasteboard(pasteboard, snapshot);
+    PasteboardRestoreOutcome::Restored
+}
+
+fn restore_pasteboard_items(
+    pasteboard: &NSPasteboard,
+    item_snapshots: &[PasteboardItemSnapshot],
+) -> bool {
+    let mut items = Vec::with_capacity(item_snapshots.len());
+    for item_snapshot in item_snapshots {
+        let item = NSPasteboardItem::new();
+        if !populate_pasteboard_item(&item, item_snapshot) {
+            return false;
+        }
+        items.push(ProtocolObject::<dyn NSPasteboardWriting>::from_retained(
+            item,
+        ));
+    }
+
+    let item_refs = NSArray::from_retained_slice(&items);
+    pasteboard.writeObjects(&item_refs)
+}
+
+fn populate_pasteboard_item(
+    item: &NSPasteboardItem,
+    item_snapshot: &PasteboardItemSnapshot,
+) -> bool {
+    for type_snapshot in &item_snapshot.types {
+        let data = NSData::with_bytes(&type_snapshot.data);
+        let pasteboard_type = NSString::from_str(&type_snapshot.type_name);
+        if !item.setData_forType(&data, &pasteboard_type) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn restore_pasteboard_string(pasteboard: &NSPasteboard, previous_string: Option<&str>) {
+    pasteboard.clearContents();
+    if let Some(previous_string) = previous_string {
+        pasteboard.setString_forType(
+            &NSString::from_str(previous_string),
+            pasteboard_string_type(),
+        );
+    }
+}
+
+fn pasteboard_string_type() -> &'static objc2_app_kit::NSPasteboardType {
+    // SAFETY: AppKit provides this process-lifetime global pasteboard type constant.
+    unsafe { NSPasteboardTypeString }
+}
+
+fn post_command_v(pid: i32) -> Result<(), PlatformError> {
+    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| {
+        PlatformError::CannotComplete {
+            reason: "failed to create CGEventSource for clipboard insertion".into(),
+        }
+    })?;
+    let command_down = CGEvent::new_keyboard_event(source.clone(), KeyCode::COMMAND, true)
+        .map_err(|_| PlatformError::CannotComplete {
+            reason: "failed to create command key-down event".into(),
+        })?;
+    let key_down =
+        CGEvent::new_keyboard_event(source.clone(), KeyCode::ANSI_V, true).map_err(|_| {
+            PlatformError::CannotComplete {
+                reason: "failed to create command-v key down event".into(),
+            }
+        })?;
+    let key_up =
+        CGEvent::new_keyboard_event(source.clone(), KeyCode::ANSI_V, false).map_err(|_| {
+            PlatformError::CannotComplete {
+                reason: "failed to create command-v key up event".into(),
+            }
+        })?;
+    let command_up =
+        CGEvent::new_keyboard_event(source, KeyCode::COMMAND, false).map_err(|_| {
+            PlatformError::CannotComplete {
+                reason: "failed to create command key-up event".into(),
+            }
+        })?;
+
+    command_down.set_flags(CGEventFlags::CGEventFlagCommand);
+    key_down.set_flags(CGEventFlags::CGEventFlagCommand);
+    key_up.set_flags(CGEventFlags::CGEventFlagCommand);
+    command_up.set_flags(CGEventFlags::CGEventFlagNull);
+    tag_synthetic_event(&command_down);
+    tag_synthetic_event(&key_down);
+    tag_synthetic_event(&key_up);
+    tag_synthetic_event(&command_up);
+    command_down.post_to_pid(pid);
+    key_down.post_to_pid(pid);
+    key_up.post_to_pid(pid);
+    command_up.post_to_pid(pid);
+    Ok(())
+}
+
+fn tag_synthetic_event(event: &CGEvent) {
+    event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, SYNTHETIC_EVENT_TAG);
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn should_ignore_event_for_tap(event_source_user_data: i64) -> bool {
+    event_source_user_data == SYNTHETIC_EVENT_TAG
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn is_self_generated_event(event: &CGEvent) -> bool {
+    should_ignore_event_for_tap(event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA))
+}
+
+fn accept_observer_tap_handler(active: Arc<AtomicBool>) -> Arc<AcceptTapHandler> {
+    Arc::new(move |event| {
+        if !active.load(Ordering::Acquire) {
+            return AcceptTapDecision::Keep;
+        }
+        accept_tap_decision(AcceptTapKind::Observer, event, None)
+    })
+}
+
+fn accept_consumer_tap_handler(
+    active: Arc<AtomicBool>,
+    callback_tx: mpsc::Sender<CallbackMessage>,
+    callback: AcceptCallback,
+    accept_action: Arc<Mutex<Option<AcceptAction>>>,
+) -> Arc<AcceptTapHandler> {
+    Arc::new(move |event| {
+        if !active.load(Ordering::Acquire) {
+            return AcceptTapDecision::Keep;
+        }
+
+        let action = accept_action.lock().ok().and_then(|action| *action);
+        let decision = accept_tap_decision(AcceptTapKind::Consumer, event, action);
+        if let AcceptTapDecision::Drop(action) = decision {
+            let _ = callback_tx.send(CallbackMessage::Accept {
+                callback: Arc::clone(&callback),
+                action,
+            });
+        }
+        decision
+    })
+}
+
+fn accept_tap_decision(
+    kind: AcceptTapKind,
+    event: AcceptTapEvent,
+    action: Option<AcceptAction>,
+) -> AcceptTapDecision {
+    if matches!(
+        event.event_type,
+        CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
+    ) {
+        return AcceptTapDecision::ReenableAndKeep;
+    }
+    if should_ignore_event_for_tap(event.source_user_data) {
+        return AcceptTapDecision::Keep;
+    }
+    if kind == AcceptTapKind::Consumer
+        && matches!(event.event_type, CGEventType::KeyDown)
+        && event.keycode == KEYCODE_TAB
+    {
+        if let Some(action) = action {
+            return AcceptTapDecision::Drop(action);
+        }
+    }
+
+    AcceptTapDecision::Keep
+}
+
+struct WorkerAcceptTapResource {
+    _tap: CGEventTap<'static>,
+    source: CFRunLoopSource,
+}
+
+impl Drop for WorkerAcceptTapResource {
+    fn drop(&mut self) {
+        CFRunLoop::get_current().remove_source(&self.source, unsafe { kCFRunLoopCommonModes });
+    }
+}
+
+fn install_worker_accept_tap_resource(
+    kind: AcceptTapKind,
+    handler: Arc<AcceptTapHandler>,
+) -> Result<WorkerResource, PlatformError> {
+    let options = match kind {
+        AcceptTapKind::Observer => CGEventTapOptions::ListenOnly,
+        AcceptTapKind::Consumer => CGEventTapOptions::Default,
+    };
+    let tap_ref = Arc::new(AtomicU64::new(0));
+    let tap_ref_for_callback = Arc::clone(&tap_ref);
+    let tap = CGEventTap::new(
+        CGEventTapLocation::Session,
+        CGEventTapPlacement::HeadInsertEventTap,
+        options,
+        vec![CGEventType::KeyDown],
+        move |_proxy, event_type, event| {
+            let event = AcceptTapEvent {
+                event_type,
+                keycode: event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
+                source_user_data: event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA),
+            };
+            match handler(event) {
+                AcceptTapDecision::Keep => CallbackResult::Keep,
+                AcceptTapDecision::Drop(_) => CallbackResult::Drop,
+                AcceptTapDecision::ReenableAndKeep => {
+                    reenable_event_tap(tap_ref_for_callback.load(Ordering::Acquire));
+                    CallbackResult::Keep
+                }
+            }
+        },
+    )
+    .map_err(|_| PlatformError::PermissionMissing {
+        permission: "Input Monitoring".into(),
+    })?;
+    tap_ref.store(
+        tap.mach_port().as_concrete_TypeRef() as usize as u64,
+        Ordering::Release,
+    );
+    let source =
+        tap.mach_port()
+            .create_runloop_source(0)
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "failed to create CGEventTap run-loop source".into(),
+            })?;
+    CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopCommonModes });
+    tap.enable();
+
+    Ok(Box::new(WorkerAcceptTapResource { _tap: tap, source }) as WorkerResource)
+}
+
+fn reenable_event_tap(tap_ref: u64) {
+    if tap_ref == 0 {
+        return;
+    }
+    unsafe {
+        CGEventTapEnable(tap_ref as usize as CFMachPortRef, true);
+    }
+}
+
+fn field_has_secure_text_subrole(field: &FieldHandle) -> bool {
+    field
+        .element_id
+        .contains(&format!("subrole={kAXSecureTextFieldSubrole}"))
+}
+
+fn global_secure_input_capabilities() -> Capabilities {
+    blocked_capabilities(SecurityState::SecureInputEnabled)
+}
+
+fn secure_field_capabilities() -> Capabilities {
+    blocked_capabilities(SecurityState::SecureField)
+}
+
+fn blocked_capabilities(security_state: SecurityState) -> Capabilities {
+    Capabilities {
+        readable_text: false,
+        readable_caret: false,
+        writable: false,
+        secure: true,
+        security_state,
+        toolkit: Toolkit::Unknown("macOS Accessibility".into()),
+        multiline: false,
+        insert_strategy: InsertStrategy::None,
+        accept_intercept: KeyInterceptMode::None,
+        overlay_at_caret: OverlayPlacement::None,
+        coords_global_screen: true,
+    }
+}
+
+impl std::fmt::Debug for AxWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AxWorker")
+            .field("thread_id", &self.thread_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AxWorker {
+    pub fn new() -> Result<Self, PlatformError> {
+        Self::start_with_setup(set_ax_messaging_timeout)
+    }
+
+    pub fn start_with_setup<F>(setup: F) -> Result<Self, PlatformError>
+    where
+        F: FnOnce(f32) -> Result<(), PlatformError> + Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel::<Message>();
+        let (started_tx, started_rx) = mpsc::channel::<Result<ThreadId, PlatformError>>();
+
+        let handle = thread::Builder::new()
+            .name("complete-me-ax-worker".into())
+            .spawn(move || {
+                run_ax_worker_loop(
+                    ChannelAxWorkerLoop::new(rx),
+                    started_tx,
+                    setup,
+                    AX_MESSAGING_TIMEOUT_SECONDS,
+                );
+            })
+            .map_err(|err| PlatformError::CannotComplete {
+                reason: format!("failed to start AX worker thread: {err}"),
+            })?;
+
+        let thread_id = match started_rx
+            .recv()
+            .map_err(|err| PlatformError::CannotComplete {
+                reason: format!("AX worker failed during startup: {err}"),
+            })? {
+            Ok(thread_id) => thread_id,
+            Err(err) => {
+                let _ = handle.join();
+                return Err(err);
+            }
+        };
+
+        Ok(Self {
+            tx,
+            thread_id,
+            handle: Some(handle),
+            next_resource_id: Arc::new(AtomicU64::new(1)),
+        })
+    }
+
+    pub fn thread_id(&self) -> ThreadId {
+        self.thread_id
+    }
+
+    fn handle(&self) -> AxWorkerHandle {
+        AxWorkerHandle {
+            tx: self.tx.clone(),
+            next_resource_id: Arc::clone(&self.next_resource_id),
+        }
+    }
+
+    pub fn run<F, R>(&self, job: F) -> Result<R, PlatformError>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(Message::Run {
+                job: Box::new(move || Box::new(job()) as Box<dyn Any + Send>),
+                reply: reply_tx,
+            })
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "AX worker is not running".into(),
+            })?;
+
+        let value = reply_rx.recv().map_err(|_| PlatformError::CannotComplete {
+            reason: "AX worker dropped job result".into(),
+        })?;
+
+        value
+            .downcast::<R>()
+            .map(|boxed| *boxed)
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "AX worker returned unexpected job result type".into(),
+            })
+    }
+
+    pub fn install_resource<F>(&self, install: F) -> Result<AxWorkerResource, PlatformError>
+    where
+        F: FnOnce() -> Result<WorkerResource, PlatformError> + Send + 'static,
+    {
+        self.handle().install_resource(install)
+    }
+
+    #[cfg(test)]
+    fn resource_count(&self) -> Result<usize, PlatformError> {
+        self.handle().resource_count()
+    }
+}
+
+impl AxWorkerHandle {
+    pub fn install_resource<F>(&self, install: F) -> Result<AxWorkerResource, PlatformError>
+    where
+        F: FnOnce() -> Result<WorkerResource, PlatformError> + Send + 'static,
+    {
+        let id = self.next_resource_id.fetch_add(1, Ordering::Relaxed);
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(Message::InstallResource {
+                id,
+                install: Box::new(install),
+                reply: reply_tx,
+            })
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "AX worker is not running".into(),
+            })?;
+
+        reply_rx
+            .recv()
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "AX worker dropped resource install result".into(),
+            })??;
+
+        Ok(AxWorkerResource {
+            id,
+            tx: self.tx.clone(),
+            closed: false,
+        })
+    }
+
+    #[cfg(test)]
+    fn resource_count(&self) -> Result<usize, PlatformError> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(Message::ResourceCount { reply: reply_tx })
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "AX worker is not running".into(),
+            })?;
+
+        reply_rx.recv().map_err(|_| PlatformError::CannotComplete {
+            reason: "AX worker dropped resource count result".into(),
+        })
+    }
+
+    fn install_app_observer(
+        &self,
+        pid: i32,
+        notifications: Vec<ObserverNotification>,
+        dispatch: ObserverDispatch,
+        callback_tx: mpsc::Sender<CallbackMessage>,
+    ) -> Result<AxWorkerResource, PlatformError> {
+        let tx = self.tx.clone();
+        self.install_resource(move || {
+            let (element, element_owner) = create_app_ax_element(pid)?;
+            install_worker_observer_resource(
+                tx,
+                callback_tx,
+                dispatch,
+                pid,
+                element,
+                notifications,
+                vec![element_owner],
+            )
+        })
+    }
+
+    fn install_focused_caret_observer(
+        &self,
+        pid: i32,
+        dispatch: ObserverDispatch,
+        callback_tx: mpsc::Sender<CallbackMessage>,
+    ) -> Result<AxWorkerResource, PlatformError> {
+        let tx = self.tx.clone();
+        self.install_resource(move || {
+            let (app_element, app_owner) = create_app_ax_element(pid)?;
+            let focused_owner = unsafe { copy_focused_ui_element(app_element) }?;
+            let focused_element = focused_owner
+                .as_ref()
+                .map(|focused_owner| focused_owner.as_CFTypeRef() as AXUIElementRef);
+            let target_element = choose_caret_observer_element(app_element, focused_element);
+            let element_owners = if let Some(focused_owner) = focused_owner {
+                vec![app_owner, focused_owner]
+            } else {
+                vec![app_owner]
+            };
+
+            install_worker_observer_resource(
+                tx,
+                callback_tx,
+                dispatch,
+                pid,
+                target_element,
+                vec![ObserverNotification::CaretChanged],
+                element_owners,
+            )
+        })
+    }
+}
+
+impl AxWorkerResource {
+    pub fn close(mut self) -> Result<bool, PlatformError> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(Message::RemoveResource {
+                id: self.id,
+                reply: Some(reply_tx),
+            })
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "AX worker is not running".into(),
+            })?;
+
+        self.closed = true;
+        reply_rx.recv().map_err(|_| PlatformError::CannotComplete {
+            reason: "AX worker dropped resource removal result".into(),
+        })
+    }
+}
+
+impl Drop for AxWorkerResource {
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+
+        let _ = self.tx.send(Message::RemoveResource {
+            id: self.id,
+            reply: None,
+        });
+    }
+}
+
+impl Drop for SafetyPoller {
+    fn drop(&mut self) {
+        let _ = self.stop_tx.take().map(|stop_tx| stop_tx.send(()));
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for RebindPoller {
+    fn drop(&mut self) {
+        let _ = self.stop_tx.take().map(|stop_tx| stop_tx.send(()));
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+struct WorkerObserverResource {
+    registration: Option<RawAxObserverRegistration>,
+    _callback_state: Box<ObserverCallbackState>,
+    _element_owners: Vec<CFType>,
+}
+
+impl Drop for WorkerObserverResource {
+    fn drop(&mut self) {
+        let _ = self.registration.take();
+    }
+}
+
+fn create_app_ax_element(pid: i32) -> Result<(AXUIElementRef, CFType), PlatformError> {
+    let element = unsafe { AXUIElementCreateApplication(pid) };
+    if element.is_null() {
+        return Err(PlatformError::CannotComplete {
+            reason: "AXUIElementCreateApplication returned null".into(),
+        });
+    }
+
+    let owner = unsafe { CFType::wrap_under_create_rule(element as CFTypeRef) };
+    Ok((element, owner))
+}
+
+fn install_worker_observer_resource(
+    tx: mpsc::Sender<Message>,
+    callback_tx: mpsc::Sender<CallbackMessage>,
+    dispatch: ObserverDispatch,
+    pid: i32,
+    element: AXUIElementRef,
+    notifications: Vec<ObserverNotification>,
+    element_owners: Vec<CFType>,
+) -> Result<WorkerResource, PlatformError> {
+    let mut callback_state = Box::new(ObserverCallbackState {
+        pid,
+        tx,
+        callback_tx,
+        dispatch,
+    });
+    let refcon = callback_state.as_mut() as *mut ObserverCallbackState as *mut c_void;
+    let registration =
+        unsafe { register_raw_ax_observer_with_refcon(pid, element, &notifications, refcon) }?;
+
+    Ok(Box::new(WorkerObserverResource {
+        registration: Some(registration),
+        _callback_state: callback_state,
+        _element_owners: element_owners,
+    }) as WorkerResource)
+}
+
+unsafe fn copy_focused_ui_element(
+    app_element: AXUIElementRef,
+) -> Result<Option<CFType>, PlatformError> {
+    let attribute = CFString::new(kAXFocusedUIElementAttribute);
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err =
+        AXUIElementCopyAttributeValue(app_element, attribute.as_concrete_TypeRef(), &mut value);
+
+    if focused_element_lookup_allows_app_fallback(err) {
+        return Ok(None);
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    Ok(Some(CFType::wrap_under_create_rule(value)))
+}
+
+fn focused_element_lookup_allows_app_fallback(error: AXError) -> bool {
+    error == kAXErrorAttributeUnsupported || error == kAXErrorNoValue
+}
+
+fn choose_caret_observer_element(
+    app_element: AXUIElementRef,
+    focused_element: Option<AXUIElementRef>,
+) -> AXUIElementRef {
+    focused_element.unwrap_or(app_element)
+}
+
+fn start_dynamic_observer_binding(
+    config: DynamicObserverBindingConfig,
+) -> Result<DynamicObserverBinding, PlatformError> {
+    let initial = install_observer_binding(config.initial_pid, &config.binding)?;
+    *config
+        .current
+        .lock()
+        .map_err(|_| PlatformError::CannotComplete {
+            reason: "observer binding lock poisoned".into(),
+        })? = Some(initial);
+
+    let rebinder = start_observer_rebind_poller(
+        config.frontmost_pid,
+        Arc::clone(&config.current),
+        config.binding,
+        config.rebind_interval,
+    );
+
+    Ok(DynamicObserverBinding {
+        _rebinder: rebinder,
+        _current: config.current,
+    })
+}
+
+fn install_observer_binding(
+    pid: i32,
+    config: &ObserverBindingConfig,
+) -> Result<ObserverBinding, PlatformError> {
+    let observer = (config.installer)(
+        pid,
+        config.target,
+        config.notifications.clone(),
+        Arc::clone(&config.dispatch),
+    )?;
+    let poller = start_focused_element_safety_poll(
+        config.worker_tx.clone(),
+        pid,
+        config.poll_notification,
+        Arc::clone(&config.dispatch),
+        config.callback_tx.clone(),
+        CARET_SAFETY_POLL_INTERVAL,
+    );
+
+    Ok(ObserverBinding {
+        pid,
+        _observer: observer,
+        _poller: poller,
+    })
+}
+
+fn start_observer_rebind_poller(
+    frontmost_pid: Arc<FrontmostPidProvider>,
+    current: Arc<Mutex<Option<ObserverBinding>>>,
+    config: ObserverBindingConfig,
+    interval: Duration,
+) -> RebindPoller {
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let handle = thread::Builder::new()
+        .name("complete-me-app-rebind".into())
+        .spawn(move || loop {
+            match stop_rx.recv_timeout(interval) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let desired_pid = frontmost_pid();
+                    let current_pid = current_binding_pid(&current);
+                    if desired_pid == current_pid {
+                        continue;
+                    }
+
+                    let next_binding =
+                        desired_pid.and_then(|pid| install_observer_binding(pid, &config).ok());
+
+                    let Ok(mut current) = current.lock() else {
+                        break;
+                    };
+                    if current.as_ref().map(|binding| binding.pid) == current_pid {
+                        *current = next_binding;
+                    }
+                }
+            }
+        })
+        .expect("failed to start app rebind poll thread");
+
+    RebindPoller {
+        stop_tx: Some(stop_tx),
+        handle: Some(handle),
+    }
+}
+
+fn current_binding_pid(current: &Arc<Mutex<Option<ObserverBinding>>>) -> Option<i32> {
+    current
+        .lock()
+        .ok()
+        .and_then(|current| current.as_ref().map(|binding| binding.pid))
+}
+
+fn start_focused_element_safety_poll(
+    tx: mpsc::Sender<Message>,
+    pid: i32,
+    notification: ObserverNotification,
+    dispatch: ObserverDispatch,
+    callback_tx: mpsc::Sender<CallbackMessage>,
+    interval: Duration,
+) -> SafetyPoller {
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let handle = thread::Builder::new()
+        .name("complete-me-caret-poll".into())
+        .spawn(move || loop {
+            match stop_rx.recv_timeout(interval) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if tx
+                        .send(Message::PollFocusedElement {
+                            pid,
+                            notification,
+                            dispatch: Arc::clone(&dispatch),
+                            callback_tx: callback_tx.clone(),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        })
+        .expect("failed to start caret safety poll thread");
+
+    SafetyPoller {
+        stop_tx: Some(stop_tx),
+        handle: Some(handle),
+    }
+}
+
+fn dispatch_focused_element_poll(
+    pid: i32,
+    notification: ObserverNotification,
+    dispatch: ObserverDispatch,
+    callback_tx: mpsc::Sender<CallbackMessage>,
+) {
+    let Ok(event) = resolve_focused_or_app_event(pid, notification) else {
+        return;
+    };
+
+    let _ = callback_tx.send(CallbackMessage::Dispatch { dispatch, event });
+}
+
+fn resolve_focused_or_app_event(
+    pid: i32,
+    notification: ObserverNotification,
+) -> Result<ObserverEvent, PlatformError> {
+    let (app_element, _app_owner) = create_app_ax_element(pid)?;
+    let focused_owner = unsafe { copy_focused_ui_element(app_element) }?;
+    let focused_element = focused_owner
+        .as_ref()
+        .map(|focused_owner| focused_owner.as_CFTypeRef() as AXUIElementRef);
+    let target_element = choose_caret_observer_element(app_element, focused_element);
+
+    Ok(ObserverEvent {
+        pid,
+        notification,
+        identity: unsafe { resolve_ax_element_identity(target_element) }?,
+        rect: observer_caret_rect(notification, target_element),
+    })
+}
+
+fn capabilities_for_field(pid: i32, field: FieldHandle) -> Result<Capabilities, PlatformError> {
+    let (element, _owners) = copy_focused_or_app_element(pid)?;
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    if !field_matches_identity(&field, &identity) {
+        return Err(PlatformError::StaleField);
+    }
+
+    let _value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
+    let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    let value_settable = unsafe { ax_attribute_is_settable(element, kAXValueAttribute) }?;
+    let selected_range_settable =
+        unsafe { ax_attribute_is_settable(element, kAXSelectedTextRangeAttribute) }
+            .unwrap_or(false);
+    let caret = selected_range.location.max(0);
+    let has_caret_rect = match resolve_caret_rect_with_marker_first(
+        caret,
+        || unsafe { read_ax_bounds_for_selected_text_marker_range(element) },
+        |location, length| unsafe { read_ax_bounds_for_range(element, location, length) },
+    ) {
+        Ok(Some(_)) => true,
+        Ok(None) | Err(PlatformError::UnsupportedField { .. }) => false,
+        Err(err) => return Err(err),
+    };
+
+    Ok(editable_capabilities(
+        &identity,
+        value_settable,
+        selected_range_settable,
+        has_caret_rect,
+        true,
+    ))
+}
+
+fn read_context_for_field(pid: i32, field: FieldHandle) -> Result<TextContext, PlatformError> {
+    let (element, _owners) = copy_focused_or_app_element(pid)?;
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    if !field_matches_identity(&field, &identity) {
+        return Err(PlatformError::StaleField);
+    }
+
+    let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
+    let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    Ok(text_context_from_value(field, value, selected_range))
+}
+
+fn caret_rect_for_field(pid: i32, field: FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+    let (element, _owners) = copy_focused_or_app_element(pid)?;
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    if !field_matches_identity(&field, &identity) {
+        return Err(PlatformError::StaleField);
+    }
+
+    let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    let caret = selected_range.location.max(0);
+    resolve_caret_rect_with_marker_first(
+        caret,
+        || unsafe { read_ax_bounds_for_selected_text_marker_range(element) },
+        |location, length| unsafe { read_ax_bounds_for_range(element, location, length) },
+    )
+}
+
+fn caret_diagnostics_for_field(
+    pid: i32,
+    field: FieldHandle,
+) -> Result<MacosCaretDiagnostics, PlatformError> {
+    let (element, _owners) = copy_focused_or_app_element(pid)?;
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    if !field_matches_identity(&field, &identity) {
+        return Err(PlatformError::StaleField);
+    }
+
+    let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    let caret = selected_range.location.max(0);
+    let marker_rect = unsafe { read_ax_bounds_for_selected_text_marker_range(element) }?;
+    let native_rect = resolve_caret_rect(caret, |location, length| unsafe {
+        read_ax_bounds_for_range(element, location, length)
+    })?;
+    Ok(caret_diagnostics_from_rects(marker_rect, native_rect))
+}
+
+fn caret_diagnostics_from_rects(
+    marker_rect: Option<ScreenRect>,
+    native_rect: Option<ScreenRect>,
+) -> MacosCaretDiagnostics {
+    let (resolved_rect, source) = if marker_rect.is_some_and(usable_caret_rect) {
+        (marker_rect, MacosCaretRectSource::Marker)
+    } else if native_rect.is_some() {
+        (native_rect, MacosCaretRectSource::NativeFallback)
+    } else {
+        (None, MacosCaretRectSource::None)
+    };
+
+    MacosCaretDiagnostics {
+        marker_rect,
+        native_rect,
+        resolved_rect,
+        source,
+    }
+}
+
+fn insert_for_field(
+    pid: i32,
+    field: FieldHandle,
+    text: String,
+    strategy: InsertStrategy,
+) -> Result<Inserted, PlatformError> {
+    let (element, _owners) = copy_focused_or_app_element(pid)?;
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    if !field_matches_identity(&field, &identity) {
+        return Err(PlatformError::StaleField);
+    }
+
+    let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
+    let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    let (new_value, new_caret) = splice_text_at_utf16_range(&value, selected_range, &text);
+
+    unsafe {
+        set_required_ax_string_attribute(element, kAXValueAttribute, &new_value)?;
+        let caret_result = set_required_ax_selected_range(element, new_caret);
+        if !matches!(
+            caret_result,
+            Ok(()) | Err(PlatformError::UnsupportedField { .. })
+        ) {
+            caret_result?;
+        }
+    }
+
+    Ok(Inserted {
+        bytes: text.len(),
+        chars: text.chars().count(),
+        strategy,
+    })
+}
+
+fn copy_focused_or_app_element(pid: i32) -> Result<(AXUIElementRef, Vec<CFType>), PlatformError> {
+    let (app_element, app_owner) = create_app_ax_element(pid)?;
+    let focused_owner = unsafe { copy_focused_ui_element(app_element) }?;
+    let focused_element = focused_owner
+        .as_ref()
+        .map(|focused_owner| focused_owner.as_CFTypeRef() as AXUIElementRef);
+    let target_element = choose_caret_observer_element(app_element, focused_element);
+    let owners = if let Some(focused_owner) = focused_owner {
+        vec![app_owner, focused_owner]
+    } else {
+        vec![app_owner]
+    };
+
+    Ok((target_element, owners))
+}
+
+fn field_matches_identity(field: &FieldHandle, identity: &AxElementIdentity) -> bool {
+    if field.element_id == identity.field_element_id() {
+        return true;
+    }
+
+    identity.stable_field_key().is_some_and(|stable_key| {
+        let stable_key = stable_key.strip_prefix("ax:").unwrap_or(&stable_key);
+        stable_key
+            .split('|')
+            .all(|part| field.element_id.contains(part))
+    })
+}
+
+unsafe fn read_required_ax_string_attribute(
+    element: AXUIElementRef,
+    attribute: &str,
+) -> Result<String, PlatformError> {
+    let attribute = CFString::new(attribute);
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
+    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+        return Err(PlatformError::UnsupportedField {
+            reason: "AX text value unavailable".into(),
+        });
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    if value.is_null() {
+        return Err(PlatformError::UnsupportedField {
+            reason: "AX text value was null".into(),
+        });
+    }
+
+    let value = CFType::wrap_under_create_rule(value);
+    value
+        .downcast::<CFString>()
+        .map(|value| value.to_string())
+        .ok_or_else(|| PlatformError::UnsupportedField {
+            reason: "AX text value was not a string".into(),
+        })
+}
+
+unsafe fn read_required_ax_range_attribute(
+    element: AXUIElementRef,
+) -> Result<CFRange, PlatformError> {
+    let attribute = CFString::new(kAXSelectedTextRangeAttribute);
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
+    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+        return Err(PlatformError::UnsupportedField {
+            reason: "AX selected text range unavailable".into(),
+        });
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    if value.is_null() {
+        return Err(PlatformError::UnsupportedField {
+            reason: "AX selected text range was null".into(),
+        });
+    }
+
+    let value = CFType::wrap_under_create_rule(value);
+    let mut range = CFRange {
+        location: 0,
+        length: 0,
+    };
+    if AXValueGetValue(
+        value.as_CFTypeRef() as AXValueRef,
+        kAXValueTypeCFRange,
+        &mut range as *mut _ as *mut c_void,
+    ) {
+        Ok(range)
+    } else {
+        Err(PlatformError::UnsupportedField {
+            reason: "AX selected text range was not a CFRange".into(),
+        })
+    }
+}
+
+unsafe fn read_ax_bounds_for_selected_text_marker_range(
+    element: AXUIElementRef,
+) -> Result<Option<ScreenRect>, PlatformError> {
+    let marker_attribute = CFString::new(AX_SELECTED_TEXT_MARKER_RANGE_ATTRIBUTE);
+    let mut marker_range: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyAttributeValue(
+        element,
+        marker_attribute.as_concrete_TypeRef(),
+        &mut marker_range,
+    );
+    if err == kAXErrorAttributeUnsupported
+        || err == kAXErrorNoValue
+        || err == kAXErrorIllegalArgument
+        || err == kAXErrorParameterizedAttributeUnsupported
+    {
+        return Ok(None);
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    if marker_range.is_null() {
+        return Ok(None);
+    }
+    let marker_range_owner = CFType::wrap_under_create_rule(marker_range);
+
+    let bounds_attribute = CFString::new(AX_BOUNDS_FOR_TEXT_MARKER_RANGE_PARAMETERIZED_ATTRIBUTE);
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyParameterizedAttributeValue(
+        element,
+        bounds_attribute.as_concrete_TypeRef(),
+        marker_range_owner.as_CFTypeRef(),
+        &mut value,
+    );
+    if err == kAXErrorAttributeUnsupported
+        || err == kAXErrorNoValue
+        || err == kAXErrorIllegalArgument
+        || err == kAXErrorParameterizedAttributeUnsupported
+    {
+        return Ok(None);
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+
+    screen_rect_from_ax_value(value)
+}
+
+unsafe fn read_ax_bounds_for_range(
+    element: AXUIElementRef,
+    location: isize,
+    length: isize,
+) -> Result<Option<ScreenRect>, PlatformError> {
+    let range = CFRange { location, length };
+    let parameter = AXValueCreate(kAXValueTypeCFRange, &range as *const _ as *const c_void);
+    if parameter.is_null() {
+        return Err(PlatformError::CannotComplete {
+            reason: "AXValueCreate failed for CFRange".into(),
+        });
+    }
+    let _parameter_owner = CFType::wrap_under_create_rule(parameter as CFTypeRef);
+
+    let attribute = CFString::new(kAXBoundsForRangeParameterizedAttribute);
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyParameterizedAttributeValue(
+        element,
+        attribute.as_concrete_TypeRef(),
+        parameter as CFTypeRef,
+        &mut value,
+    );
+    if err == kAXErrorAttributeUnsupported
+        || err == kAXErrorNoValue
+        || err == kAXErrorIllegalArgument
+        || err == kAXErrorParameterizedAttributeUnsupported
+    {
+        return Ok(None);
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    screen_rect_from_ax_value(value)
+}
+
+unsafe fn screen_rect_from_ax_value(value: CFTypeRef) -> Result<Option<ScreenRect>, PlatformError> {
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let value = CFType::wrap_under_create_rule(value);
+    let mut rect = CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size: CGSize {
+            width: 0.0,
+            height: 0.0,
+        },
+    };
+    if AXValueGetValue(
+        value.as_CFTypeRef() as AXValueRef,
+        kAXValueTypeCGRect,
+        &mut rect as *mut _ as *mut c_void,
+    ) {
+        Ok(Some(normalize_ax_screen_rect(rect)))
+    } else {
+        Ok(None)
+    }
+}
+
+fn normalize_ax_screen_rect(rect: CGRect) -> ScreenRect {
+    // AX bounds are already in global screen points. Preserve fractional and
+    // negative origins for Retina and non-primary display layouts.
+    ScreenRect {
+        x: rect.origin.x,
+        y: rect.origin.y,
+        w: rect.size.width,
+        h: rect.size.height,
+    }
+}
+
+unsafe fn ax_attribute_is_settable(
+    element: AXUIElementRef,
+    attribute: &str,
+) -> Result<bool, PlatformError> {
+    let attribute = CFString::new(attribute);
+    let mut settable: c_uchar = 0;
+    let err =
+        AXUIElementIsAttributeSettable(element, attribute.as_concrete_TypeRef(), &mut settable);
+    if err == kAXErrorAttributeUnsupported
+        || err == kAXErrorNoValue
+        || err == kAXErrorIllegalArgument
+    {
+        return Ok(false);
+    }
+    if err == kAXErrorSuccess {
+        Ok(settable != 0)
+    } else {
+        Err(map_ax_error(err))
+    }
+}
+
+unsafe fn set_required_ax_string_attribute(
+    element: AXUIElementRef,
+    attribute: &str,
+    value: &str,
+) -> Result<(), PlatformError> {
+    let attribute = CFString::new(attribute);
+    let value = CFString::new(value);
+    let err = AXUIElementSetAttributeValue(
+        element,
+        attribute.as_concrete_TypeRef(),
+        value.as_CFTypeRef(),
+    );
+    if err == kAXErrorAttributeUnsupported
+        || err == kAXErrorNoValue
+        || err == kAXErrorIllegalArgument
+    {
+        return Err(PlatformError::UnsupportedField {
+            reason: "AX text value is not settable".into(),
+        });
+    }
+    if err == kAXErrorSuccess {
+        Ok(())
+    } else {
+        Err(map_ax_error(err))
+    }
+}
+
+unsafe fn set_required_ax_selected_range(
+    element: AXUIElementRef,
+    caret: usize,
+) -> Result<(), PlatformError> {
+    let location = isize::try_from(caret).map_err(|_| PlatformError::CannotComplete {
+        reason: "insert caret offset overflowed CFRange".into(),
+    })?;
+    let range = CFRange {
+        location,
+        length: 0,
+    };
+    let value = AXValueCreate(kAXValueTypeCFRange, &range as *const _ as *const c_void);
+    if value.is_null() {
+        return Err(PlatformError::CannotComplete {
+            reason: "AXValueCreate failed for selected text range".into(),
+        });
+    }
+    let value = CFType::wrap_under_create_rule(value as CFTypeRef);
+    let attribute = CFString::new(kAXSelectedTextRangeAttribute);
+    let err = AXUIElementSetAttributeValue(
+        element,
+        attribute.as_concrete_TypeRef(),
+        value.as_CFTypeRef(),
+    );
+    if err == kAXErrorAttributeUnsupported
+        || err == kAXErrorNoValue
+        || err == kAXErrorIllegalArgument
+    {
+        return Err(PlatformError::UnsupportedField {
+            reason: "AX selected text range is not settable".into(),
+        });
+    }
+    if err == kAXErrorSuccess {
+        Ok(())
+    } else {
+        Err(map_ax_error(err))
+    }
+}
+
+fn resolve_caret_rect(
+    caret: isize,
+    mut bounds: impl FnMut(isize, isize) -> Result<Option<ScreenRect>, PlatformError>,
+) -> Result<Option<ScreenRect>, PlatformError> {
+    if let Some(rect) = bounds(caret, 0)? {
+        if usable_caret_rect(rect) {
+            return Ok(Some(rect));
+        }
+    }
+
+    if caret > 0 {
+        if let Some(previous) = bounds(caret - 1, 1)? {
+            if usable_caret_rect(previous) {
+                return Ok(Some(ScreenRect {
+                    x: previous.x + previous.w,
+                    y: previous.y,
+                    w: 1.0,
+                    h: previous.h,
+                }));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn resolve_caret_rect_with_marker_first(
+    caret: isize,
+    mut marker_bounds: impl FnMut() -> Result<Option<ScreenRect>, PlatformError>,
+    range_bounds: impl FnMut(isize, isize) -> Result<Option<ScreenRect>, PlatformError>,
+) -> Result<Option<ScreenRect>, PlatformError> {
+    if let Some(rect) = marker_bounds()? {
+        if usable_caret_rect(rect) {
+            return Ok(Some(rect));
+        }
+    }
+
+    resolve_caret_rect(caret, range_bounds)
+}
+
+fn usable_caret_rect(rect: ScreenRect) -> bool {
+    rect.w > 0.0
+        && rect.w < MAX_USABLE_CARET_RECT_WIDTH
+        && rect.h > 0.0
+        && rect.h < MAX_USABLE_CARET_RECT_HEIGHT
+}
+
+fn splice_text_at_utf16_range(
+    value: &str,
+    selected_range: CFRange,
+    insert: &str,
+) -> (String, usize) {
+    let utf16_len = value.encode_utf16().count();
+    let start = (selected_range.location.max(0) as usize).min(utf16_len);
+    let length = selected_range.length.max(0) as usize;
+    let end = start.saturating_add(length).min(utf16_len);
+    let left_end = byte_index_for_utf16_units(value, start);
+    let right_start = byte_index_for_utf16_units(value, end);
+
+    let mut new_value = String::with_capacity(
+        value
+            .len()
+            .saturating_add(insert.len())
+            .saturating_sub(right_start.saturating_sub(left_end)),
+    );
+    new_value.push_str(&value[..left_end]);
+    new_value.push_str(insert);
+    new_value.push_str(&value[right_start..]);
+
+    (
+        new_value,
+        start.saturating_add(insert.encode_utf16().count()),
+    )
+}
+
+fn editable_capabilities(
+    identity: &AxElementIdentity,
+    value_settable: bool,
+    selected_range_settable: bool,
+    has_caret_rect: bool,
+    global_insert_allowed: bool,
+) -> Capabilities {
+    let insert_strategy = insertion_strategy(
+        value_settable,
+        selected_range_settable,
+        has_caret_rect,
+        global_insert_allowed,
+    );
+
+    Capabilities {
+        readable_text: true,
+        readable_caret: selected_range_settable && has_caret_rect,
+        writable: insert_strategy != InsertStrategy::None,
+        secure: false,
+        security_state: SecurityState::Normal,
+        toolkit: toolkit_for_identity(identity),
+        multiline: identity
+            .role
+            .as_deref()
+            .is_some_and(|role| role == "AXTextArea"),
+        insert_strategy,
+        accept_intercept: KeyInterceptMode::CgEventTap,
+        overlay_at_caret: if selected_range_settable && has_caret_rect {
+            OverlayPlacement::NativePanel
+        } else {
+            OverlayPlacement::None
+        },
+        coords_global_screen: true,
+    }
+}
+
+fn insertion_strategy(
+    value_settable: bool,
+    selected_range_settable: bool,
+    has_caret_rect: bool,
+    global_insert_allowed: bool,
+) -> InsertStrategy {
+    if value_settable {
+        InsertStrategy::AxSet
+    } else if global_insert_allowed && selected_range_settable {
+        InsertStrategy::SyntheticKeys
+    } else if global_insert_allowed && has_caret_rect {
+        InsertStrategy::Clipboard
+    } else {
+        InsertStrategy::None
+    }
+}
+
+fn toolkit_for_identity(identity: &AxElementIdentity) -> Toolkit {
+    match identity.role.as_deref() {
+        Some("AXTextArea" | "AXTextField") => Toolkit::AppKit,
+        Some(role) => Toolkit::Unknown(format!("macOS Accessibility {role}")),
+        None => Toolkit::Unknown("macOS Accessibility".into()),
+    }
+}
+
+fn text_context_from_value(
+    field: FieldHandle,
+    value: String,
+    selected_range: CFRange,
+) -> TextContext {
+    let utf16_len = value.encode_utf16().count();
+    let start = (selected_range.location.max(0) as usize).min(utf16_len);
+    let length = selected_range.length.max(0) as usize;
+    let end = start.saturating_add(length).min(utf16_len);
+    let left_end = byte_index_for_utf16_units(&value, start);
+    let right_start = byte_index_for_utf16_units(&value, end);
+
+    TextContext {
+        left: value[..left_end].to_string(),
+        right: value[right_start..].to_string(),
+        selection: (end > start).then_some(TextRange { start, end }),
+        caret: start,
+        source: ContextSource::Accessibility,
+        field_id: field,
+        offset_encoding: OffsetEncoding::Utf16CodeUnits,
+    }
+}
+
+fn byte_index_for_utf16_units(value: &str, target_units: usize) -> usize {
+    if target_units == 0 {
+        return 0;
+    }
+
+    let mut units = 0usize;
+    for (byte_index, ch) in value.char_indices() {
+        if units >= target_units {
+            return byte_index;
+        }
+        units = units.saturating_add(ch.len_utf16());
+        if units >= target_units {
+            return byte_index + ch.len_utf8();
+        }
+    }
+
+    value.len()
+}
+
+fn run_ax_worker_loop<L, F>(
+    mut worker_loop: L,
+    started_tx: mpsc::Sender<Result<ThreadId, PlatformError>>,
+    setup: F,
+    timeout_seconds: f32,
+) where
+    L: AxWorkerLoop,
+    F: FnOnce(f32) -> Result<(), PlatformError>,
+{
+    let mut resources: HashMap<u64, WorkerResource> = HashMap::new();
+    let thread_id = thread::current().id();
+    if let Err(err) = setup(timeout_seconds) {
+        let _ = started_tx.send(Err(err));
+        return;
+    }
+
+    if started_tx.send(Ok(thread_id)).is_err() {
+        return;
+    }
+
+    loop {
+        match worker_loop.recv() {
+            Ok(Message::Run { job, reply }) => {
+                let _ = reply.send(job());
+                worker_loop.pump_run_loop();
+            }
+            Ok(Message::InstallResource { id, install, reply }) => {
+                let result = install().map(|resource| {
+                    resources.insert(id, resource);
+                });
+                let _ = reply.send(result);
+                worker_loop.pump_run_loop();
+            }
+            Ok(Message::RemoveResource { id, reply }) => {
+                let removed = resources.remove(&id).is_some();
+                if let Some(reply) = reply {
+                    let _ = reply.send(removed);
+                }
+                worker_loop.pump_run_loop();
+            }
+            Ok(Message::ObserverEvent {
+                pid,
+                notification,
+                retained_element,
+                fallback_element_id,
+                dispatch,
+                callback_tx,
+            }) => {
+                let event = resolve_retained_observer_event(
+                    pid,
+                    notification,
+                    retained_element,
+                    &fallback_element_id,
+                );
+                let _ = callback_tx.send(CallbackMessage::Dispatch { dispatch, event });
+                worker_loop.pump_run_loop();
+            }
+            Ok(Message::PollFocusedElement {
+                pid,
+                notification,
+                dispatch,
+                callback_tx,
+            }) => {
+                dispatch_focused_element_poll(pid, notification, dispatch, callback_tx);
+                worker_loop.pump_run_loop();
+            }
+            #[cfg(test)]
+            Ok(Message::ResourceCount { reply }) => {
+                let _ = reply.send(resources.len());
+            }
+            Ok(Message::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => worker_loop.pump_run_loop(),
+        }
+    }
+}
+
+impl Drop for AxWorker {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Message::Stop);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl CallbackDispatcher {
+    fn new() -> Self {
+        let (tx, rx) = mpsc::channel();
+        let handle = thread::Builder::new()
+            .name("complete-me-callbacks".into())
+            .spawn(move || run_callback_dispatcher(rx))
+            .expect("failed to start callback dispatcher thread");
+
+        Self {
+            tx,
+            handle: Some(handle),
+        }
+    }
+
+    fn sender(&self) -> mpsc::Sender<CallbackMessage> {
+        self.tx.clone()
+    }
+}
+
+impl Drop for CallbackDispatcher {
+    fn drop(&mut self) {
+        let _ = self.tx.send(CallbackMessage::Stop);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn run_callback_dispatcher(rx: mpsc::Receiver<CallbackMessage>) {
+    while let Ok(message) = rx.recv() {
+        match message {
+            CallbackMessage::Dispatch { dispatch, event } => {
+                dispatch_observer_event(dispatch, event);
+            }
+            CallbackMessage::Accept { callback, action } => {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(action);
+                }));
+            }
+            CallbackMessage::Stop => break,
+        }
+    }
+}
+
+fn set_ax_messaging_timeout(timeout_seconds: f32) -> Result<(), PlatformError> {
+    unsafe {
+        let system_wide = AXUIElementCreateSystemWide();
+        if system_wide.is_null() {
+            return Err(PlatformError::CannotComplete {
+                reason: "AXUIElementCreateSystemWide returned null".into(),
+            });
+        }
+        let _system_wide_owner = CFType::wrap_under_create_rule(system_wide as CFTypeRef);
+
+        let err = AXUIElementSetMessagingTimeout(system_wide, timeout_seconds);
+        if err == kAXErrorSuccess {
+            Ok(())
+        } else {
+            Err(map_ax_error(err))
+        }
+    }
+}
+
+pub fn map_ax_error(error: AXError) -> PlatformError {
+    if error == kAXErrorAPIDisabled {
+        PlatformError::PermissionMissing {
+            permission: "Accessibility".into(),
+        }
+    } else if error == kAXErrorCannotComplete {
+        PlatformError::CannotComplete {
+            reason: "AX cannot complete request".into(),
+        }
+    } else if error == kAXErrorAttributeUnsupported {
+        PlatformError::UnsupportedField {
+            reason: "AX attribute unsupported".into(),
+        }
+    } else if error == kAXErrorInvalidUIElement {
+        PlatformError::StaleField
+    } else if error == kAXErrorIllegalArgument {
+        PlatformError::CannotComplete {
+            reason: "AX illegal argument".into(),
+        }
+    } else if error == kAXErrorFailure {
+        PlatformError::CannotComplete {
+            reason: "AX request failed".into(),
+        }
+    } else {
+        PlatformError::CannotComplete {
+            reason: format!("AX error {error}"),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct FocusTokenFactory {
+    next_generation: u64,
+}
+
+impl FocusTokenFactory {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn focused_field(
+        &mut self,
+        app: impl Into<String>,
+        pid: Option<u32>,
+        element_id: impl Into<String>,
+    ) -> FieldHandle {
+        self.next_generation += 1;
+        FieldHandle {
+            app: app.into(),
+            pid,
+            element_id: element_id.into(),
+            generation: self.next_generation,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CaretCoalescer {
+    min_interval_ms: u64,
+    last: Option<LastCaretEvent>,
+}
+
+#[derive(Debug)]
+struct CaretFieldTracker {
+    factory: FocusTokenFactory,
+    current: Option<FieldHandle>,
+    current_identity_key: Option<String>,
+}
+
+impl CaretFieldTracker {
+    fn new() -> Self {
+        Self {
+            factory: FocusTokenFactory::new(),
+            current: None,
+            current_identity_key: None,
+        }
+    }
+
+    fn field_for_event(&mut self, fallback_pid: i32, identity: &AxElementIdentity) -> FieldHandle {
+        let app = identity.app_id(fallback_pid);
+        let pid = identity.pid(fallback_pid);
+        let element_id = identity.field_element_id();
+        let identity_key = identity.stable_field_key();
+        let pid = pid.or_else(|| u32::try_from(fallback_pid).ok());
+        if let Some(current) = &self.current {
+            if current.pid == pid
+                && (current.element_id == element_id
+                    || (self.current_identity_key.is_some()
+                        && self.current_identity_key == identity_key))
+            {
+                return current.clone();
+            }
+        }
+
+        let field = self.factory.focused_field(app, pid, element_id);
+        self.current_identity_key = identity_key;
+        self.current = Some(field.clone());
+        field
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LastCaretEvent {
+    emitted_at_ms: u64,
+    field: FieldHandle,
+    rect: Option<ScreenRect>,
+}
+
+impl CaretCoalescer {
+    pub fn new(min_interval_ms: u64) -> Self {
+        Self {
+            min_interval_ms,
+            last: None,
+        }
+    }
+
+    pub fn observe(
+        &mut self,
+        now_ms: u64,
+        field: FieldHandle,
+        rect: Option<ScreenRect>,
+    ) -> Option<(FieldHandle, Option<ScreenRect>)> {
+        let should_emit = self.last.as_ref().is_none_or(|last| {
+            last.field != field
+                || last.rect != rect
+                || now_ms.saturating_sub(last.emitted_at_ms) >= self.min_interval_ms
+        });
+
+        if should_emit {
+            self.last = Some(LastCaretEvent {
+                emitted_at_ms: now_ms,
+                field: field.clone(),
+                rect,
+            });
+            Some((field, rect))
+        } else {
+            None
+        }
+    }
+}
+
+pub fn focus_notifications() -> [&'static str; 1] {
+    [kAXFocusedUIElementChangedNotification]
+}
+
+pub fn caret_notifications() -> [&'static str; 1] {
+    [kAXSelectedTextChangedNotification]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObserverNotification {
+    FocusChanged,
+    CaretChanged,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ObserverEvent {
+    pid: i32,
+    notification: ObserverNotification,
+    identity: AxElementIdentity,
+    rect: Option<ScreenRect>,
+}
+
+impl ObserverNotification {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::FocusChanged => kAXFocusedUIElementChangedNotification,
+            Self::CaretChanged => kAXSelectedTextChangedNotification,
+        }
+    }
+}
+
+trait ObserverBackend {
+    type Observer;
+    type Element;
+    type Source;
+
+    fn create_observer(&mut self, pid: i32) -> Result<Self::Observer, PlatformError>;
+    fn run_loop_source(&mut self, observer: &Self::Observer)
+        -> Result<Self::Source, PlatformError>;
+    fn add_run_loop_source(&mut self, source: &Self::Source) -> Result<(), PlatformError>;
+    fn remove_run_loop_source(&mut self, source: &Self::Source);
+    fn add_notification(
+        &mut self,
+        observer: &Self::Observer,
+        element: &Self::Element,
+        notification: ObserverNotification,
+        refcon: *mut c_void,
+    ) -> Result<(), PlatformError>;
+    fn remove_notification(
+        &mut self,
+        observer: &Self::Observer,
+        element: &Self::Element,
+        notification: ObserverNotification,
+    );
+}
+
+struct AxObserverRegistration<B: ObserverBackend> {
+    backend: B,
+    observer: B::Observer,
+    element: B::Element,
+    source: B::Source,
+    notifications: Vec<ObserverNotification>,
+    #[cfg(test)]
+    refcon: *mut c_void,
+}
+
+impl<B: ObserverBackend> AxObserverRegistration<B> {
+    #[cfg(test)]
+    fn register(
+        backend: B,
+        pid: i32,
+        element: B::Element,
+        notifications: &[ObserverNotification],
+    ) -> Result<Self, PlatformError> {
+        Self::register_with_refcon(backend, pid, element, notifications, ptr::null_mut())
+    }
+
+    fn register_with_refcon(
+        mut backend: B,
+        pid: i32,
+        element: B::Element,
+        notifications: &[ObserverNotification],
+        refcon: *mut c_void,
+    ) -> Result<Self, PlatformError> {
+        let observer = backend.create_observer(pid)?;
+        let source = backend.run_loop_source(&observer)?;
+        backend.add_run_loop_source(&source)?;
+
+        let mut registered = Vec::new();
+        for notification in notifications {
+            if let Err(err) = backend.add_notification(&observer, &element, *notification, refcon) {
+                for registered_notification in &registered {
+                    backend.remove_notification(&observer, &element, *registered_notification);
+                }
+                backend.remove_run_loop_source(&source);
+                return Err(err);
+            }
+            registered.push(*notification);
+        }
+
+        Ok(Self {
+            backend,
+            observer,
+            element,
+            source,
+            notifications: registered,
+            #[cfg(test)]
+            refcon,
+        })
+    }
+
+    #[cfg(test)]
+    fn refcon(&self) -> *mut c_void {
+        self.refcon
+    }
+}
+
+impl<B: ObserverBackend> Drop for AxObserverRegistration<B> {
+    fn drop(&mut self) {
+        for notification in &self.notifications {
+            self.backend
+                .remove_notification(&self.observer, &self.element, *notification);
+        }
+        self.backend.remove_run_loop_source(&self.source);
+    }
+}
+
+struct RawAxObserverBackend {
+    run_loop: CFRunLoop,
+}
+
+impl RawAxObserverBackend {
+    pub fn current_run_loop() -> Self {
+        Self {
+            run_loop: CFRunLoop::get_current(),
+        }
+    }
+}
+
+struct RawAxObserver {
+    observer: CFType,
+}
+
+impl RawAxObserver {
+    fn as_ref(&self) -> AXObserverRef {
+        self.observer.as_CFTypeRef() as AXObserverRef
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RawAxElement {
+    element: AXUIElementRef,
+}
+
+impl RawAxElement {
+    /// The caller must keep the underlying AX element valid for the observer registration.
+    unsafe fn borrowed(element: AXUIElementRef) -> Self {
+        Self { element }
+    }
+}
+
+type RawAxObserverRegistration = AxObserverRegistration<RawAxObserverBackend>;
+
+unsafe fn register_raw_ax_observer_with_refcon(
+    pid: i32,
+    element: AXUIElementRef,
+    notifications: &[ObserverNotification],
+    refcon: *mut c_void,
+) -> Result<RawAxObserverRegistration, PlatformError> {
+    AxObserverRegistration::register_with_refcon(
+        RawAxObserverBackend::current_run_loop(),
+        pid,
+        RawAxElement::borrowed(element),
+        notifications,
+        refcon,
+    )
+}
+
+impl ObserverBackend for RawAxObserverBackend {
+    type Observer = RawAxObserver;
+    type Element = RawAxElement;
+    type Source = CFRunLoopSource;
+
+    fn create_observer(&mut self, pid: i32) -> Result<Self::Observer, PlatformError> {
+        unsafe {
+            let mut observer: AXObserverRef = ptr::null_mut();
+            let err = AXObserverCreate(pid, ax_observer_callback, &mut observer);
+            if err != kAXErrorSuccess {
+                return Err(map_ax_error(err));
+            }
+            if observer.is_null() {
+                return Err(PlatformError::CannotComplete {
+                    reason: "AXObserverCreate returned null".into(),
+                });
+            }
+
+            Ok(RawAxObserver {
+                observer: CFType::wrap_under_create_rule(observer as CFTypeRef),
+            })
+        }
+    }
+
+    fn run_loop_source(
+        &mut self,
+        observer: &Self::Observer,
+    ) -> Result<Self::Source, PlatformError> {
+        unsafe {
+            let source = AXObserverGetRunLoopSource(observer.as_ref());
+            if source.is_null() {
+                return Err(PlatformError::CannotComplete {
+                    reason: "AXObserverGetRunLoopSource returned null".into(),
+                });
+            }
+
+            Ok(CFRunLoopSource::wrap_under_get_rule(source))
+        }
+    }
+
+    fn add_run_loop_source(&mut self, source: &Self::Source) -> Result<(), PlatformError> {
+        unsafe {
+            self.run_loop.add_source(source, kCFRunLoopCommonModes);
+        }
+        Ok(())
+    }
+
+    fn remove_run_loop_source(&mut self, source: &Self::Source) {
+        unsafe {
+            self.run_loop.remove_source(source, kCFRunLoopCommonModes);
+        }
+    }
+
+    fn add_notification(
+        &mut self,
+        observer: &Self::Observer,
+        element: &Self::Element,
+        notification: ObserverNotification,
+        refcon: *mut c_void,
+    ) -> Result<(), PlatformError> {
+        let notification = CFString::new(notification.name());
+        unsafe {
+            let err = AXObserverAddNotification(
+                observer.as_ref(),
+                element.element,
+                notification.as_concrete_TypeRef(),
+                refcon,
+            );
+            if err == kAXErrorSuccess {
+                Ok(())
+            } else {
+                Err(map_ax_error(err))
+            }
+        }
+    }
+
+    fn remove_notification(
+        &mut self,
+        observer: &Self::Observer,
+        element: &Self::Element,
+        notification: ObserverNotification,
+    ) {
+        let notification = CFString::new(notification.name());
+        unsafe {
+            let _ = AXObserverRemoveNotification(
+                observer.as_ref(),
+                element.element,
+                notification.as_concrete_TypeRef(),
+            );
+        }
+    }
+}
+
+struct ObserverCallbackState {
+    pid: i32,
+    tx: mpsc::Sender<Message>,
+    callback_tx: mpsc::Sender<CallbackMessage>,
+    dispatch: ObserverDispatch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AxElementIdentity {
+    pointer_id: String,
+    owner_pid: Option<u32>,
+    identifier: Option<String>,
+    role: Option<String>,
+    subrole: Option<String>,
+}
+
+impl AxElementIdentity {
+    fn pointer_only(pointer_id: impl Into<String>) -> Self {
+        Self {
+            pointer_id: pointer_id.into(),
+            owner_pid: None,
+            identifier: None,
+            role: None,
+            subrole: None,
+        }
+    }
+
+    fn new(
+        pointer_id: impl Into<String>,
+        owner_pid: Option<u32>,
+        identifier: Option<String>,
+        role: Option<String>,
+        subrole: Option<String>,
+    ) -> Self {
+        Self {
+            pointer_id: pointer_id.into(),
+            owner_pid,
+            identifier,
+            role,
+            subrole,
+        }
+    }
+
+    fn app_id(&self, fallback_pid: i32) -> AppId {
+        self.owner_pid
+            .map(|pid| format!("pid:{pid}"))
+            .unwrap_or_else(|| format!("pid:{fallback_pid}"))
+    }
+
+    fn pid(&self, fallback_pid: i32) -> Option<u32> {
+        self.owner_pid.or_else(|| u32::try_from(fallback_pid).ok())
+    }
+
+    fn field_element_id(&self) -> String {
+        let mut parts = vec![format!(
+            "ptr={}",
+            escape_identity_component(&self.pointer_id)
+        )];
+
+        if let Some(pid) = self.owner_pid {
+            parts.push(format!("pid={pid}"));
+        }
+        if let Some(identifier) = &self.identifier {
+            parts.push(format!("id={}", escape_identity_component(identifier)));
+        }
+        if let Some(role) = &self.role {
+            parts.push(format!("role={}", escape_identity_component(role)));
+        }
+        if let Some(subrole) = &self.subrole {
+            parts.push(format!("subrole={}", escape_identity_component(subrole)));
+        }
+
+        format!("ax:{}", parts.join("|"))
+    }
+
+    fn stable_field_key(&self) -> Option<String> {
+        let owner_pid = self.owner_pid?;
+        if self.identifier.is_none() && self.role.is_none() && self.subrole.is_none() {
+            return None;
+        }
+
+        let mut parts = vec![format!("pid={owner_pid}")];
+        if let Some(identifier) = &self.identifier {
+            parts.push(format!("id={}", escape_identity_component(identifier)));
+        }
+        if let Some(role) = &self.role {
+            parts.push(format!("role={}", escape_identity_component(role)));
+        }
+        if let Some(subrole) = &self.subrole {
+            parts.push(format!("subrole={}", escape_identity_component(subrole)));
+        }
+
+        Some(format!("ax:{}", parts.join("|")))
+    }
+}
+
+fn escape_identity_component(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('|', "\\|")
+}
+
+unsafe fn resolve_ax_element_identity(
+    element: AXUIElementRef,
+) -> Result<AxElementIdentity, PlatformError> {
+    let pointer_id = ax_element_id(element);
+    if element.is_null() {
+        return Ok(AxElementIdentity::pointer_only(pointer_id));
+    }
+
+    let owner_pid = read_ax_element_pid(element)?;
+    let identifier = read_optional_ax_string_attribute(element, kAXIdentifierAttribute)?;
+    let role = read_optional_ax_string_attribute(element, kAXRoleAttribute)?;
+    let subrole = read_optional_ax_string_attribute(element, kAXSubroleAttribute)?;
+
+    Ok(AxElementIdentity::new(
+        pointer_id, owner_pid, identifier, role, subrole,
+    ))
+}
+
+unsafe fn read_ax_element_pid(element: AXUIElementRef) -> Result<Option<u32>, PlatformError> {
+    let mut pid = 0;
+    let err = AXUIElementGetPid(element, &mut pid);
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+
+    Ok(u32::try_from(pid).ok())
+}
+
+unsafe fn read_optional_ax_string_attribute(
+    element: AXUIElementRef,
+    attribute: &str,
+) -> Result<Option<String>, PlatformError> {
+    let attribute = CFString::new(attribute);
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
+
+    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+        return Ok(None);
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let value = CFType::wrap_under_create_rule(value);
+    Ok(value.downcast::<CFString>().map(|value| value.to_string()))
+}
+
+fn resolve_retained_observer_event(
+    pid: i32,
+    notification: ObserverNotification,
+    retained_element: Option<usize>,
+    fallback_element_id: &str,
+) -> ObserverEvent {
+    if retained_element.is_none() {
+        return ObserverEvent {
+            pid,
+            notification,
+            identity: AxElementIdentity::pointer_only(fallback_element_id),
+            rect: None,
+        };
+    }
+
+    match resolve_retained_observer_element(notification, retained_element) {
+        Ok((identity, rect)) => ObserverEvent {
+            pid,
+            notification,
+            identity,
+            rect,
+        },
+        Err(_) => ObserverEvent {
+            pid,
+            notification,
+            identity: AxElementIdentity::pointer_only(fallback_element_id),
+            rect: None,
+        },
+    }
+}
+
+fn resolve_retained_observer_element(
+    notification: ObserverNotification,
+    retained_element: Option<usize>,
+) -> Result<(AxElementIdentity, Option<ScreenRect>), PlatformError> {
+    let Some(retained_element) = retained_element else {
+        return Err(PlatformError::UnsupportedField {
+            reason: "observer callback did not include an AX element".into(),
+        });
+    };
+
+    let element = retained_element as AXUIElementRef;
+    let _owner = unsafe { CFType::wrap_under_create_rule(retained_element as CFTypeRef) };
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    Ok((identity, observer_caret_rect(notification, element)))
+}
+
+fn observer_caret_rect(
+    notification: ObserverNotification,
+    element: AXUIElementRef,
+) -> Option<ScreenRect> {
+    if notification != ObserverNotification::CaretChanged {
+        return None;
+    }
+
+    let selected_range = unsafe { read_required_ax_range_attribute(element) }.ok()?;
+    let caret = selected_range.location.max(0);
+    resolve_caret_rect_with_marker_first(
+        caret,
+        || unsafe { read_ax_bounds_for_selected_text_marker_range(element) },
+        |location, length| unsafe { read_ax_bounds_for_range(element, location, length) },
+    )
+    .ok()
+    .flatten()
+}
+
+fn dispatch_observer_event(dispatch: ObserverDispatch, event: ObserverEvent) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dispatch(event);
+    }));
+}
+
+unsafe fn decode_observer_notification(notification: CFStringRef) -> Option<ObserverNotification> {
+    if notification.is_null() {
+        return None;
+    }
+
+    let notification = CFString::wrap_under_get_rule(notification);
+    let name = notification.to_string();
+    if name == ObserverNotification::FocusChanged.name() {
+        Some(ObserverNotification::FocusChanged)
+    } else if name == ObserverNotification::CaretChanged.name() {
+        Some(ObserverNotification::CaretChanged)
+    } else {
+        None
+    }
+}
+
+unsafe extern "C" fn ax_observer_callback(
+    _observer: AXObserverRef,
+    element: AXUIElementRef,
+    notification: CFStringRef,
+    refcon: *mut c_void,
+) {
+    if refcon.is_null() {
+        return;
+    }
+
+    let Some(notification) = decode_observer_notification(notification) else {
+        return;
+    };
+
+    let state = unsafe { &*(refcon as *const ObserverCallbackState) };
+    let fallback_element_id = ax_element_id(element);
+    let retained_element = retain_observer_element(element);
+    let message = Message::ObserverEvent {
+        pid: state.pid,
+        notification,
+        retained_element,
+        fallback_element_id,
+        dispatch: Arc::clone(&state.dispatch),
+        callback_tx: state.callback_tx.clone(),
+    };
+
+    if state.tx.send(message).is_err() {
+        release_retained_observer_element(retained_element);
+    }
+}
+
+fn ax_element_id(element: AXUIElementRef) -> String {
+    if element.is_null() {
+        "ax:null".into()
+    } else {
+        format!("ax:0x{:x}", element as usize)
+    }
+}
+
+fn retain_observer_element(element: AXUIElementRef) -> Option<usize> {
+    if element.is_null() {
+        return None;
+    }
+
+    let retained = unsafe { CFRetain(element as CFTypeRef) };
+    if retained.is_null() {
+        None
+    } else {
+        Some(retained as usize)
+    }
+}
+
+fn release_retained_observer_element(element: Option<usize>) {
+    if let Some(element) = element {
+        unsafe {
+            CFRelease(element as CFTypeRef);
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SafetyPollSchedule {
+    interval_ms: u64,
+    last_poll_ms: Option<u64>,
+}
+
+impl SafetyPollSchedule {
+    pub fn new(interval_ms: u64) -> Self {
+        Self {
+            interval_ms,
+            last_poll_ms: None,
+        }
+    }
+
+    pub fn should_poll(&mut self, now_ms: u64) -> bool {
+        let due = self
+            .last_poll_ms
+            .is_none_or(|last| now_ms.saturating_sub(last) >= self.interval_ms);
+        if due {
+            self.last_poll_ms = Some(now_ms);
+        }
+        due
+    }
+
+    pub fn reset(&mut self) {
+        self.last_poll_ms = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use objc2::{define_class, msg_send, AnyThread, DefinedClass};
+    use objc2_app_kit::NSPasteboardItemDataProvider;
+    use objc2_foundation::{NSObject, NSObjectProtocol};
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicUsize;
+    use std::thread;
+
+    #[derive(Debug)]
+    struct TestPasteboardProviderIvars {
+        provided_count: Arc<AtomicUsize>,
+        value: String,
+    }
+
+    define_class!(
+        // SAFETY: NSObject has no subclassing requirements relevant to this
+        // test-only data provider.
+        #[unsafe(super = NSObject)]
+        #[thread_kind = AnyThread]
+        #[ivars = TestPasteboardProviderIvars]
+        struct TestPasteboardProvider;
+
+        // SAFETY: NSObjectProtocol has no additional safety requirements.
+        unsafe impl NSObjectProtocol for TestPasteboardProvider {}
+
+        // SAFETY: The method signature matches NSPasteboardItemDataProvider.
+        unsafe impl NSPasteboardItemDataProvider for TestPasteboardProvider {
+            #[allow(non_snake_case)]
+            #[unsafe(method(pasteboard:item:provideDataForType:))]
+            fn pasteboard_item_provideDataForType(
+                &self,
+                _pasteboard: Option<&NSPasteboard>,
+                item: &NSPasteboardItem,
+                pasteboard_type: &objc2_app_kit::NSPasteboardType,
+            ) {
+                self.ivars().provided_count.fetch_add(1, Ordering::SeqCst);
+                item.setString_forType(&NSString::from_str(&self.ivars().value), pasteboard_type);
+            }
+        }
+    );
+
+    impl TestPasteboardProvider {
+        fn new(value: &str, provided_count: Arc<AtomicUsize>) -> Retained<Self> {
+            let this = Self::alloc().set_ivars(TestPasteboardProviderIvars {
+                provided_count,
+                value: value.to_string(),
+            });
+            // SAFETY: The signature of NSObject's init method is correct.
+            unsafe { msg_send![super(this), init] }
+        }
+    }
+
+    struct FakeObserverBackend {
+        log: Arc<Mutex<Vec<String>>>,
+        fail_on: Option<ObserverNotification>,
+    }
+
+    impl FakeObserverBackend {
+        fn new(log: Arc<Mutex<Vec<String>>>) -> Self {
+            Self { log, fail_on: None }
+        }
+
+        fn failing_on(log: Arc<Mutex<Vec<String>>>, notification: ObserverNotification) -> Self {
+            Self {
+                log,
+                fail_on: Some(notification),
+            }
+        }
+
+        fn push(&self, event: impl Into<String>) {
+            self.log.lock().unwrap().push(event.into());
+        }
+    }
+
+    impl ObserverBackend for FakeObserverBackend {
+        type Observer = String;
+        type Element = String;
+        type Source = String;
+
+        fn create_observer(&mut self, pid: i32) -> Result<Self::Observer, PlatformError> {
+            self.push(format!("create_observer:{pid}"));
+            Ok(format!("observer-{pid}"))
+        }
+
+        fn run_loop_source(
+            &mut self,
+            observer: &Self::Observer,
+        ) -> Result<Self::Source, PlatformError> {
+            self.push(format!("source:{observer}"));
+            Ok(format!("source-{observer}"))
+        }
+
+        fn add_run_loop_source(&mut self, source: &Self::Source) -> Result<(), PlatformError> {
+            self.push(format!("add_source:{source}"));
+            Ok(())
+        }
+
+        fn remove_run_loop_source(&mut self, source: &Self::Source) {
+            self.push(format!("remove_source:{source}"));
+        }
+
+        fn add_notification(
+            &mut self,
+            observer: &Self::Observer,
+            element: &Self::Element,
+            notification: ObserverNotification,
+            refcon: *mut c_void,
+        ) -> Result<(), PlatformError> {
+            if self.fail_on == Some(notification) {
+                self.push(format!(
+                    "fail_add:{observer}:{element}:{}",
+                    notification.name()
+                ));
+                return Err(PlatformError::Timeout);
+            }
+
+            self.push(format!(
+                "add:{observer}:{element}:{}:{}",
+                notification.name(),
+                if refcon.is_null() { "null" } else { "refcon" }
+            ));
+            Ok(())
+        }
+
+        fn remove_notification(
+            &mut self,
+            observer: &Self::Observer,
+            element: &Self::Element,
+            notification: ObserverNotification,
+        ) {
+            self.push(format!(
+                "remove:{observer}:{element}:{}",
+                notification.name()
+            ));
+        }
+    }
+
+    struct FakeAxWorkerLoop {
+        events: Arc<Mutex<Vec<String>>>,
+        messages: VecDeque<Result<Message, mpsc::RecvTimeoutError>>,
+    }
+
+    impl FakeAxWorkerLoop {
+        fn new(messages: impl Into<VecDeque<Result<Message, mpsc::RecvTimeoutError>>>) -> Self {
+            Self {
+                events: Arc::new(Mutex::new(Vec::new())),
+                messages: messages.into(),
+            }
+        }
+
+        fn events(&self) -> Arc<Mutex<Vec<String>>> {
+            Arc::clone(&self.events)
+        }
+    }
+
+    impl AxWorkerLoop for FakeAxWorkerLoop {
+        fn recv(&mut self) -> Result<Message, mpsc::RecvTimeoutError> {
+            self.events.lock().unwrap().push("recv".into());
+            self.messages
+                .pop_front()
+                .unwrap_or(Err(mpsc::RecvTimeoutError::Disconnected))
+        }
+
+        fn pump_run_loop(&mut self) {
+            self.events.lock().unwrap().push("pump".into());
+        }
+    }
+
+    fn stop_message() -> Result<Message, mpsc::RecvTimeoutError> {
+        Ok(Message::Stop)
+    }
+
+    fn timeout_message() -> Result<Message, mpsc::RecvTimeoutError> {
+        Err(mpsc::RecvTimeoutError::Timeout)
+    }
+
+    fn run_message(label: &'static str) -> Result<Message, mpsc::RecvTimeoutError> {
+        let (reply, _rx) = mpsc::channel();
+        Ok(Message::Run {
+            job: Box::new(move || Box::new(label) as Box<dyn Any + Send>),
+            reply,
+        })
+    }
+
+    fn observer_event(
+        notification: ObserverNotification,
+        identity: AxElementIdentity,
+    ) -> ObserverEvent {
+        observer_event_for_pid(42, notification, identity, None)
+    }
+
+    fn observer_event_with_rect(
+        notification: ObserverNotification,
+        identity: AxElementIdentity,
+        rect: Option<ScreenRect>,
+    ) -> ObserverEvent {
+        observer_event_for_pid(42, notification, identity, rect)
+    }
+
+    fn observer_event_for_pid(
+        pid: i32,
+        notification: ObserverNotification,
+        identity: AxElementIdentity,
+        rect: Option<ScreenRect>,
+    ) -> ObserverEvent {
+        ObserverEvent {
+            pid,
+            notification,
+            identity,
+            rect,
+        }
+    }
+
+    fn pointer_identity(element_id: &str) -> AxElementIdentity {
+        AxElementIdentity::pointer_only(element_id)
+    }
+
+    fn resolved_identity(
+        pointer_id: &str,
+        owner_pid: u32,
+        identifier: Option<&str>,
+    ) -> AxElementIdentity {
+        AxElementIdentity::new(
+            pointer_id,
+            Some(owner_pid),
+            identifier.map(str::to_string),
+            Some("AXTextArea".into()),
+            None,
+        )
+    }
+
+    fn observer_message(
+        dispatch: ObserverDispatch,
+        callback_tx: mpsc::Sender<CallbackMessage>,
+    ) -> Result<Message, mpsc::RecvTimeoutError> {
+        Ok(Message::ObserverEvent {
+            pid: 42,
+            notification: ObserverNotification::FocusChanged,
+            retained_element: None,
+            fallback_element_id: "ax:null".into(),
+            dispatch,
+            callback_tx,
+        })
+    }
+
+    struct DropTrackedResource {
+        expected_thread: ThreadId,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Drop for DropTrackedResource {
+        fn drop(&mut self) {
+            self.log.lock().unwrap().push(format!(
+                "drop_on_worker:{}",
+                thread::current().id() == self.expected_thread
+            ));
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeObserverInstall {
+        pid: i32,
+        target: ObserverInstallTarget,
+        notifications: Vec<ObserverNotification>,
+        dispatch: ObserverDispatch,
+    }
+
+    #[derive(Clone)]
+    struct FakeAcceptTapInstall {
+        kind: AcceptTapKind,
+        handler: Arc<AcceptTapHandler>,
+    }
+
+    struct TestAdapterConfig {
+        frontmost_pid: Option<i32>,
+        installs: Arc<Mutex<Vec<FakeObserverInstall>>>,
+        install_error: Option<PlatformError>,
+        now_ms: Arc<NowMsProvider>,
+        secure_input_enabled: Arc<SecureInputProvider>,
+        process_exists: Arc<ProcessExistsProvider>,
+        synthetic_key_poster: Arc<SyntheticKeyPoster>,
+        pasteboard_poster: Arc<PasteboardPoster>,
+        accept_tap_installs: Arc<Mutex<Vec<FakeAcceptTapInstall>>>,
+    }
+
+    impl TestAdapterConfig {
+        fn new(
+            frontmost_pid: Option<i32>,
+            installs: Arc<Mutex<Vec<FakeObserverInstall>>>,
+            install_error: Option<PlatformError>,
+        ) -> Self {
+            Self {
+                frontmost_pid,
+                installs,
+                install_error,
+                now_ms: Arc::new(|| 1000),
+                secure_input_enabled: Arc::new(|| false),
+                process_exists: Arc::new(|_| true),
+                synthetic_key_poster: Arc::new(|_, _| Ok(())),
+                pasteboard_poster: Arc::new(|_, _| Ok(())),
+                accept_tap_installs: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    fn test_adapter(
+        frontmost_pid: Option<i32>,
+        installs: Arc<Mutex<Vec<FakeObserverInstall>>>,
+        install_error: Option<PlatformError>,
+    ) -> MacosPlatformAdapter {
+        test_adapter_with_hooks(TestAdapterConfig::new(
+            frontmost_pid,
+            installs,
+            install_error,
+        ))
+    }
+
+    fn test_adapter_with_secure_input(secure_input_enabled: bool) -> MacosPlatformAdapter {
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.secure_input_enabled = Arc::new(move || secure_input_enabled);
+        test_adapter_with_hooks(config)
+    }
+
+    fn test_adapter_with_hooks(config: TestAdapterConfig) -> MacosPlatformAdapter {
+        let TestAdapterConfig {
+            frontmost_pid,
+            installs,
+            install_error,
+            now_ms,
+            secure_input_enabled,
+            process_exists,
+            synthetic_key_poster,
+            pasteboard_poster,
+            accept_tap_installs,
+        } = config;
+        let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
+        let frontmost_pid = Arc::new(move || frontmost_pid);
+        let observer_installer = Arc::new(move |pid, target, notifications, dispatch| {
+            if let Some(err) = install_error.clone() {
+                return Err(err);
+            }
+
+            installs.lock().unwrap().push(FakeObserverInstall {
+                pid,
+                target,
+                notifications,
+                dispatch,
+            });
+            Ok(ObserverResource::new("observer"))
+        });
+        let accept_tap_installer = Arc::new(move |kind, handler: Arc<AcceptTapHandler>| {
+            accept_tap_installs
+                .lock()
+                .unwrap()
+                .push(FakeAcceptTapInstall { kind, handler });
+            Ok(AcceptTapResource::new("accept-tap"))
+        });
+
+        MacosPlatformAdapter::with_worker_test_hooks(
+            worker,
+            AdapterTestHooks {
+                callback_dispatcher: CallbackDispatcher::new(),
+                frontmost_pid,
+                now_ms,
+                secure_input_enabled,
+                process_exists,
+                synthetic_key_poster,
+                pasteboard_poster,
+                observer_installer,
+                accept_tap_installer,
+            },
+        )
+    }
+
+    fn test_adapter_with_dynamic_frontmost(
+        frontmost_pid: Arc<Mutex<Option<i32>>>,
+        installs: Arc<Mutex<Vec<FakeObserverInstall>>>,
+    ) -> MacosPlatformAdapter {
+        let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
+        let frontmost_pid = Arc::new(move || *frontmost_pid.lock().unwrap());
+        let observer_installer = Arc::new(move |pid, target, notifications, dispatch| {
+            installs.lock().unwrap().push(FakeObserverInstall {
+                pid,
+                target,
+                notifications,
+                dispatch,
+            });
+            Ok(ObserverResource::new("observer"))
+        });
+        let accept_tap_installer = Arc::new(|kind, handler: Arc<AcceptTapHandler>| {
+            let _ = (kind, handler);
+            Ok(AcceptTapResource::new("accept-tap"))
+        });
+
+        MacosPlatformAdapter::with_worker_test_hooks(
+            worker,
+            AdapterTestHooks {
+                callback_dispatcher: CallbackDispatcher::new(),
+                frontmost_pid,
+                now_ms: Arc::new(|| 1000),
+                secure_input_enabled: Arc::new(|| false),
+                process_exists: Arc::new(|_| true),
+                synthetic_key_poster: Arc::new(|_, _| Ok(())),
+                pasteboard_poster: Arc::new(|_, _| Ok(())),
+                observer_installer,
+                accept_tap_installer,
+            },
+        )
+    }
+
+    fn wait_for_install_count(installs: &Arc<Mutex<Vec<FakeObserverInstall>>>, expected: usize) {
+        let deadline = SystemTime::now() + Duration::from_secs(2);
+        while SystemTime::now() < deadline {
+            if installs.lock().unwrap().len() >= expected {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert_eq!(installs.lock().unwrap().len(), expected);
+    }
+
+    fn wait_for_accept_tap_count(
+        installs: &Arc<Mutex<Vec<FakeAcceptTapInstall>>>,
+        expected: usize,
+    ) {
+        let deadline = SystemTime::now() + Duration::from_secs(2);
+        while SystemTime::now() < deadline {
+            if installs.lock().unwrap().len() >= expected {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert_eq!(installs.lock().unwrap().len(), expected);
+    }
+
+    fn wait_for_vec_count<T>(items: &Arc<Mutex<Vec<T>>>, expected: usize) {
+        let deadline = SystemTime::now() + Duration::from_secs(2);
+        while SystemTime::now() < deadline {
+            if items.lock().unwrap().len() >= expected {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert_eq!(items.lock().unwrap().len(), expected);
+    }
+
+    fn write_test_pasteboard_items(
+        pasteboard: &NSPasteboard,
+        items: Vec<Retained<NSPasteboardItem>>,
+    ) -> bool {
+        let writing_items = items
+            .into_iter()
+            .map(ProtocolObject::<dyn NSPasteboardWriting>::from_retained)
+            .collect::<Vec<_>>();
+        let writing_array = NSArray::from_retained_slice(&writing_items);
+        pasteboard.writeObjects(&writing_array)
+    }
+
+    #[test]
+    fn ax_worker_runs_jobs_on_dedicated_non_calling_thread() {
+        let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
+        let caller = thread::current().id();
+
+        let worker_thread = worker.run(|| thread::current().id()).expect("run");
+
+        assert_ne!(worker_thread, caller);
+        assert_eq!(worker_thread, worker.thread_id());
+    }
+
+    #[test]
+    fn ax_worker_serializes_jobs_on_same_thread() {
+        let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
+
+        let first = worker.run(|| thread::current().id()).expect("first");
+        let second = worker.run(|| thread::current().id()).expect("second");
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn ax_worker_setup_runs_on_worker_with_timeout() {
+        let seen = Arc::new(Mutex::new(None));
+        let seen_in_setup = Arc::clone(&seen);
+
+        let worker = AxWorker::start_with_setup(move |timeout| {
+            *seen_in_setup.lock().unwrap() = Some((thread::current().id(), timeout));
+            Ok(())
+        })
+        .expect("worker");
+
+        assert_eq!(*seen.lock().unwrap(), Some((worker.thread_id(), 0.05)));
+    }
+
+    #[test]
+    fn ax_worker_reports_setup_error() {
+        let err = AxWorker::start_with_setup(|_| Err(PlatformError::Timeout)).unwrap_err();
+
+        assert_eq!(err, PlatformError::Timeout);
+    }
+
+    #[test]
+    fn ax_worker_loop_pumps_run_loop_on_idle_timeout() {
+        let worker_loop = FakeAxWorkerLoop::new(VecDeque::from([
+            timeout_message(),
+            timeout_message(),
+            stop_message(),
+        ]));
+        let events = worker_loop.events();
+        let (started_tx, started_rx) = mpsc::channel();
+
+        run_ax_worker_loop(worker_loop, started_tx, |_| Ok(()), 0.05);
+
+        assert_eq!(
+            started_rx.recv().expect("started").unwrap(),
+            thread::current().id()
+        );
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            ["recv", "pump", "recv", "pump", "recv"]
+        );
+    }
+
+    #[test]
+    fn ax_worker_loop_pumps_after_job_to_avoid_run_loop_starvation() {
+        let worker_loop =
+            FakeAxWorkerLoop::new(VecDeque::from([run_message("job"), stop_message()]));
+        let events = worker_loop.events();
+        let (started_tx, started_rx) = mpsc::channel();
+
+        run_ax_worker_loop(worker_loop, started_tx, |_| Ok(()), 0.05);
+
+        assert_eq!(
+            started_rx.recv().expect("started").unwrap(),
+            thread::current().id()
+        );
+        assert_eq!(events.lock().unwrap().as_slice(), ["recv", "pump", "recv"]);
+    }
+
+    #[test]
+    fn ax_worker_loop_delivers_observer_callbacks_off_worker_thread() {
+        let callback_dispatcher = CallbackDispatcher::new();
+        let (callback_thread_tx, callback_thread_rx) = mpsc::channel();
+        let dispatch = Arc::new(move |_| {
+            callback_thread_tx
+                .send(thread::current().id())
+                .expect("callback thread id");
+        });
+        let worker_loop = FakeAxWorkerLoop::new(VecDeque::from([
+            observer_message(dispatch, callback_dispatcher.sender()),
+            stop_message(),
+        ]));
+        let (started_tx, started_rx) = mpsc::channel();
+
+        run_ax_worker_loop(worker_loop, started_tx, |_| Ok(()), 0.05);
+
+        let ax_worker_thread = started_rx.recv().expect("started").unwrap();
+        let callback_thread = callback_thread_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("callback delivered");
+        assert_ne!(callback_thread, ax_worker_thread);
+    }
+
+    #[test]
+    fn callback_dispatcher_contains_panics_and_keeps_running() {
+        let callback_dispatcher = CallbackDispatcher::new();
+        let (delivered_tx, delivered_rx) = mpsc::channel();
+
+        callback_dispatcher
+            .sender()
+            .send(CallbackMessage::Dispatch {
+                dispatch: Arc::new(|_| panic!("callback panic is contained")),
+                event: observer_event(
+                    ObserverNotification::FocusChanged,
+                    pointer_identity("ax:panic"),
+                ),
+            })
+            .expect("send panicking callback");
+        callback_dispatcher
+            .sender()
+            .send(CallbackMessage::Dispatch {
+                dispatch: Arc::new(move |_| {
+                    delivered_tx.send(()).expect("delivered");
+                }),
+                event: observer_event(
+                    ObserverNotification::FocusChanged,
+                    pointer_identity("ax:after-panic"),
+                ),
+            })
+            .expect("send follow-up callback");
+
+        delivered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("dispatcher continued after panic");
+    }
+
+    #[test]
+    fn focused_element_safety_poll_sends_worker_poll_messages_until_dropped() {
+        let (tx, rx) = mpsc::channel();
+        let (callback_tx, _callback_rx) = mpsc::channel();
+        let poller = start_focused_element_safety_poll(
+            tx,
+            42,
+            ObserverNotification::CaretChanged,
+            Arc::new(|_| {}),
+            callback_tx,
+            Duration::from_millis(5),
+        );
+
+        let message = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("poll message");
+        let Message::PollFocusedElement {
+            pid, notification, ..
+        } = message
+        else {
+            panic!("expected focused element poll message");
+        };
+        assert_eq!(pid, 42);
+        assert_eq!(notification, ObserverNotification::CaretChanged);
+
+        drop(poller);
+    }
+
+    #[test]
+    fn ax_worker_installs_and_drops_resources_on_worker_thread() {
+        let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
+        let worker_thread = worker.thread_id();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let log_in_resource = Arc::clone(&log);
+
+        let handle = worker
+            .install_resource(move || {
+                log_in_resource.lock().unwrap().push(format!(
+                    "install_on_worker:{}",
+                    thread::current().id() == worker_thread
+                ));
+                Ok(Box::new(DropTrackedResource {
+                    expected_thread: worker_thread,
+                    log: Arc::clone(&log_in_resource),
+                }) as WorkerResource)
+            })
+            .expect("install resource");
+
+        assert_eq!(worker.resource_count().expect("resource count"), 1);
+        assert!(handle.close().expect("close resource"));
+        assert_eq!(worker.resource_count().expect("resource count"), 0);
+        assert_eq!(
+            log.lock().unwrap().as_slice(),
+            ["install_on_worker:true", "drop_on_worker:true"]
+        );
+    }
+
+    #[test]
+    fn ax_worker_failed_resource_install_does_not_store_resource() {
+        let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
+
+        let err = worker
+            .install_resource(|| Err(PlatformError::Timeout))
+            .unwrap_err();
+
+        assert_eq!(err, PlatformError::Timeout);
+        assert_eq!(worker.resource_count().expect("resource count"), 0);
+    }
+
+    #[test]
+    fn ax_error_mapping_distinguishes_contract_errors() {
+        assert_eq!(
+            map_ax_error(accessibility_sys::kAXErrorAPIDisabled),
+            PlatformError::PermissionMissing {
+                permission: "Accessibility".into(),
+            }
+        );
+        assert_eq!(
+            map_ax_error(accessibility_sys::kAXErrorCannotComplete),
+            PlatformError::CannotComplete {
+                reason: "AX cannot complete request".into(),
+            }
+        );
+        assert_eq!(
+            map_ax_error(accessibility_sys::kAXErrorAttributeUnsupported),
+            PlatformError::UnsupportedField {
+                reason: "AX attribute unsupported".into(),
+            }
+        );
+        assert_eq!(
+            map_ax_error(accessibility_sys::kAXErrorInvalidUIElement),
+            PlatformError::StaleField
+        );
+    }
+
+    #[test]
+    fn focus_token_factory_assigns_new_generation_for_each_focus_event() {
+        let mut factory = FocusTokenFactory::new();
+
+        let first = factory.focused_field("TextEdit", Some(42), "element");
+        let second = factory.focused_field("TextEdit", Some(42), "element");
+
+        assert_eq!(first.generation, 1);
+        assert_eq!(second.generation, 2);
+        assert_eq!(second.element_id, "element");
+    }
+
+    #[test]
+    fn ax_element_identity_prefers_owner_pid_for_field_metadata() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("editor".into()),
+            Some("AXTextArea".into()),
+            Some("AXSecureTextField".into()),
+        );
+
+        assert_eq!(identity.app_id(7), "pid:42");
+        assert_eq!(identity.pid(7), Some(42));
+        assert_eq!(
+            identity.field_element_id(),
+            "ax:ptr=ax:0x123|pid=42|id=editor|role=AXTextArea|subrole=AXSecureTextField"
+        );
+    }
+
+    #[test]
+    fn ax_element_identity_falls_back_to_frontmost_pid_until_resolved() {
+        let identity = AxElementIdentity::pointer_only("ax:0x123");
+
+        assert_eq!(identity.app_id(7), "pid:7");
+        assert_eq!(identity.pid(7), Some(7));
+        assert_eq!(identity.field_element_id(), "ax:ptr=ax:0x123");
+    }
+
+    #[test]
+    fn ax_element_identity_escapes_separator_characters() {
+        let identity = AxElementIdentity::new(
+            r"ax:\0x123",
+            Some(42),
+            Some(r"editor|main".into()),
+            Some(r"AX\TextArea".into()),
+            None,
+        );
+
+        assert_eq!(
+            identity.field_element_id(),
+            r"ax:ptr=ax:\\0x123|pid=42|id=editor\|main|role=AX\\TextArea"
+        );
+    }
+
+    #[test]
+    fn caret_field_tracker_reuses_semantic_identity_when_pointer_changes() {
+        let mut tracker = CaretFieldTracker::new();
+        let first = AxElementIdentity::new(
+            "ax:0x111",
+            Some(42),
+            Some("First Text View".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        let second = AxElementIdentity::new(
+            "ax:0x222",
+            Some(42),
+            Some("First Text View".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+
+        let first_field = tracker.field_for_event(42, &first);
+        let second_field = tracker.field_for_event(42, &second);
+
+        assert_eq!(second_field, first_field);
+    }
+
+    #[test]
+    fn capabilities_blocks_secure_text_field_handles() {
+        let adapter = test_adapter(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: AxElementIdentity::new(
+                "ax:0x123",
+                Some(42),
+                Some("password".into()),
+                Some("AXTextField".into()),
+                Some(kAXSecureTextFieldSubrole.into()),
+            )
+            .field_element_id(),
+            generation: 1,
+        };
+
+        let caps = adapter.capabilities(&field).expect("secure capabilities");
+
+        assert!(caps.secure);
+        assert_eq!(caps.security_state, SecurityState::SecureField);
+        assert!(!caps.readable_text);
+        assert!(!caps.writable);
+        assert_eq!(caps.insert_strategy, InsertStrategy::None);
+        assert_eq!(caps.overlay_at_caret, OverlayPlacement::None);
+    }
+
+    #[test]
+    fn capabilities_blocks_when_global_secure_input_is_enabled() {
+        let adapter = test_adapter_with_secure_input(true);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        let caps = adapter
+            .capabilities(&field)
+            .expect("secure input capabilities");
+
+        assert!(caps.secure);
+        assert_eq!(caps.security_state, SecurityState::SecureInputEnabled);
+        assert!(!caps.readable_text);
+        assert!(!caps.writable);
+        assert_eq!(caps.insert_strategy, InsertStrategy::None);
+        assert_eq!(caps.accept_intercept, KeyInterceptMode::None);
+    }
+
+    #[test]
+    fn capabilities_prefers_global_secure_input_over_secure_field() {
+        let adapter = test_adapter_with_secure_input(true);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: AxElementIdentity::new(
+                "ax:0x123",
+                Some(42),
+                Some("password".into()),
+                Some("AXTextField".into()),
+                Some(kAXSecureTextFieldSubrole.into()),
+            )
+            .field_element_id(),
+            generation: 1,
+        };
+
+        let caps = adapter
+            .capabilities(&field)
+            .expect("secure input capabilities");
+
+        assert_eq!(caps.security_state, SecurityState::SecureInputEnabled);
+    }
+
+    #[test]
+    fn capabilities_requires_pid_for_non_secure_fields() {
+        let adapter = test_adapter(None, Arc::new(Mutex::new(Vec::new())), None);
+        let field = FieldHandle {
+            app: "unknown".into(),
+            pid: None,
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.capabilities(&field),
+            Err(PlatformError::CannotComplete {
+                reason: "no pid available for capabilities".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn editable_capabilities_advertise_inline_axset_when_rect_is_available() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("First Text View".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+
+        let caps = editable_capabilities(&identity, true, true, true, true);
+
+        assert!(caps.readable_text);
+        assert!(caps.readable_caret);
+        assert!(caps.writable);
+        assert!(!caps.secure);
+        assert_eq!(caps.security_state, SecurityState::Normal);
+        assert_eq!(caps.toolkit, Toolkit::AppKit);
+        assert!(caps.multiline);
+        assert_eq!(caps.insert_strategy, InsertStrategy::AxSet);
+        assert_eq!(caps.accept_intercept, KeyInterceptMode::CgEventTap);
+        assert_eq!(caps.overlay_at_caret, OverlayPlacement::NativePanel);
+        assert!(caps.coords_global_screen);
+        assert_eq!(platform::ux_mode(&caps), platform::UxMode::Inline);
+    }
+
+    #[test]
+    fn editable_capabilities_mark_ax_text_field_single_line() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("Field".into()),
+            Some("AXTextField".into()),
+            None,
+        );
+
+        let caps = editable_capabilities(&identity, true, true, true, true);
+
+        assert_eq!(caps.toolkit, Toolkit::AppKit);
+        assert!(!caps.multiline);
+        assert_eq!(platform::ux_mode(&caps), platform::UxMode::Inline);
+    }
+
+    #[test]
+    fn editable_capabilities_fall_back_to_popup_without_rect() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("Field".into()),
+            Some("AXTextField".into()),
+            None,
+        );
+
+        let caps = editable_capabilities(&identity, true, true, false, true);
+
+        assert!(caps.readable_text);
+        assert!(!caps.readable_caret);
+        assert!(caps.writable);
+        assert!(!caps.multiline);
+        assert_eq!(caps.insert_strategy, InsertStrategy::AxSet);
+        assert_eq!(caps.overlay_at_caret, OverlayPlacement::None);
+        assert_eq!(platform::ux_mode(&caps), platform::UxMode::Popup);
+    }
+
+    #[test]
+    fn editable_capabilities_disable_caret_when_selected_range_is_not_settable() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("Field".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+
+        let caps = editable_capabilities(&identity, true, false, true, true);
+
+        assert!(caps.readable_text);
+        assert!(!caps.readable_caret);
+        assert!(caps.writable);
+        assert_eq!(caps.overlay_at_caret, OverlayPlacement::None);
+        assert_eq!(platform::ux_mode(&caps), platform::UxMode::Popup);
+    }
+
+    #[test]
+    fn editable_capabilities_plan_synthetic_when_ax_value_is_not_settable() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("Keyboard Injectable".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+
+        let caps = editable_capabilities(&identity, false, true, true, true);
+
+        assert!(caps.readable_text);
+        assert!(caps.writable);
+        assert_eq!(caps.insert_strategy, InsertStrategy::SyntheticKeys);
+        assert_eq!(platform::ux_mode(&caps), platform::UxMode::Inline);
+    }
+
+    #[test]
+    fn editable_capabilities_plan_clipboard_when_only_caret_rect_is_available() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("Clipboard Injectable".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+
+        let caps = editable_capabilities(&identity, false, false, true, true);
+
+        assert!(caps.readable_text);
+        assert!(!caps.readable_caret);
+        assert!(caps.writable);
+        assert_eq!(caps.insert_strategy, InsertStrategy::Clipboard);
+        assert_eq!(platform::ux_mode(&caps), platform::UxMode::Popup);
+    }
+
+    #[test]
+    fn editable_capabilities_are_unsupported_when_no_insert_strategy_is_available() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("Read Only".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+
+        let caps = editable_capabilities(&identity, false, false, false, false);
+
+        assert!(caps.readable_text);
+        assert!(!caps.writable);
+        assert_eq!(caps.insert_strategy, InsertStrategy::None);
+        assert_eq!(platform::ux_mode(&caps), platform::UxMode::Unsupported);
+    }
+
+    #[test]
+    fn editable_capabilities_preserve_unknown_role_in_toolkit() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("Custom".into()),
+            Some("AXCustomEditor".into()),
+            None,
+        );
+
+        let caps = editable_capabilities(&identity, true, true, true, true);
+
+        assert_eq!(
+            caps.toolkit,
+            Toolkit::Unknown("macOS Accessibility AXCustomEditor".into())
+        );
+        assert!(!caps.multiline);
+    }
+
+    #[test]
+    fn read_context_blocks_when_global_secure_input_is_enabled() {
+        let adapter = test_adapter_with_secure_input(true);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.read_context(&field),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
+    }
+
+    #[test]
+    fn read_context_blocks_secure_text_field_handles() {
+        let adapter = test_adapter_with_secure_input(false);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: AxElementIdentity::new(
+                "ax:0x123",
+                Some(42),
+                Some("password".into()),
+                Some("AXTextField".into()),
+                Some(kAXSecureTextFieldSubrole.into()),
+            )
+            .field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.read_context(&field),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            })
+        );
+    }
+
+    #[test]
+    fn caret_rect_blocks_when_global_secure_input_is_enabled() {
+        let adapter = test_adapter_with_secure_input(true);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.caret_rect(&field),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
+    }
+
+    #[test]
+    fn caret_rect_blocks_secure_text_field_handles() {
+        let adapter = test_adapter_with_secure_input(false);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: AxElementIdentity::new(
+                "ax:0x123",
+                Some(42),
+                Some("password".into()),
+                Some("AXTextField".into()),
+                Some(kAXSecureTextFieldSubrole.into()),
+            )
+            .field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.caret_rect(&field),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            })
+        );
+    }
+
+    #[test]
+    fn insert_blocks_when_global_secure_input_is_enabled() {
+        let adapter = test_adapter_with_secure_input(true);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert(&field, "x", InsertStrategy::AxSet),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
+    }
+
+    #[test]
+    fn insert_blocks_secure_text_field_handles() {
+        let adapter = test_adapter_with_secure_input(false);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: AxElementIdentity::new(
+                "ax:0x123",
+                Some(42),
+                Some("password".into()),
+                Some("AXTextField".into()),
+                Some(kAXSecureTextFieldSubrole.into()),
+            )
+            .field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert(&field, "x", InsertStrategy::AxSet),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            })
+        );
+    }
+
+    #[test]
+    fn insert_clipboard_posts_text_to_target_pid() {
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let posted_in_hook = Arc::clone(&posted);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.pasteboard_poster = Arc::new(move |pid, text| {
+            posted_in_hook.lock().unwrap().push((pid, text.to_string()));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert(&field, "x", InsertStrategy::Clipboard),
+            Ok(Inserted {
+                bytes: 1,
+                chars: 1,
+                strategy: InsertStrategy::Clipboard,
+            })
+        );
+        assert_eq!(*posted.lock().unwrap(), vec![(42, "x".into())]);
+    }
+
+    #[test]
+    fn insert_synthetic_keys_posts_text_when_frontmost_pid_matches_field() {
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let posted_in_hook = Arc::clone(&posted);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.synthetic_key_poster = Arc::new(move |pid, text| {
+            posted_in_hook.lock().unwrap().push((pid, text.to_string()));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert(&field, "hé", InsertStrategy::SyntheticKeys),
+            Ok(Inserted {
+                bytes: "hé".len(),
+                chars: 2,
+                strategy: InsertStrategy::SyntheticKeys,
+            })
+        );
+        assert_eq!(*posted.lock().unwrap(), vec![(42, "hé".into())]);
+    }
+
+    #[test]
+    fn insert_global_strategy_rejects_when_frontmost_pid_moved_to_another_app() {
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let posted_in_hook = Arc::clone(&posted);
+        let mut config = TestAdapterConfig::new(Some(99), Arc::new(Mutex::new(Vec::new())), None);
+        config.synthetic_key_poster = Arc::new(move |pid, text| {
+            posted_in_hook.lock().unwrap().push((pid, text.to_string()));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert(&field, "x", InsertStrategy::SyntheticKeys),
+            Err(PlatformError::StaleField)
+        );
+        assert!(posted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pasteboard_snapshot_restores_multiple_items_and_types() {
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        let custom_type = NSString::from_str("com.complete-me.test.bytes");
+        pasteboard.clearContents();
+
+        let first = NSPasteboardItem::new();
+        assert!(first.setString_forType(&NSString::from_str("first"), pasteboard_string_type()));
+        assert!(first.setData_forType(&NSData::with_bytes(&[1, 2, 3]), &custom_type));
+        let second = NSPasteboardItem::new();
+        assert!(second.setString_forType(&NSString::from_str("second"), pasteboard_string_type()));
+        assert!(write_test_pasteboard_items(
+            &pasteboard,
+            vec![first, second]
+        ));
+
+        let snapshot = snapshot_pasteboard(&pasteboard);
+        pasteboard.clearContents();
+        assert!(pasteboard
+            .setString_forType(&NSString::from_str("replacement"), pasteboard_string_type(),));
+
+        restore_pasteboard(&pasteboard, &snapshot);
+
+        let restored_items = pasteboard.pasteboardItems().expect("restored items");
+        assert_eq!(restored_items.len(), 2);
+        let restored_first = restored_items.objectAtIndex(0);
+        let restored_second = restored_items.objectAtIndex(1);
+        assert_eq!(
+            restored_first
+                .stringForType(pasteboard_string_type())
+                .map(|value| value.to_string()),
+            Some("first".into())
+        );
+        assert_eq!(
+            restored_first
+                .dataForType(&custom_type)
+                .map(|data| data.to_vec()),
+            Some(vec![1, 2, 3])
+        );
+        assert_eq!(
+            restored_second
+                .stringForType(pasteboard_string_type())
+                .map(|value| value.to_string()),
+            Some("second".into())
+        );
+    }
+
+    #[test]
+    fn pasteboard_snapshot_materializes_provider_items_before_restore() {
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        let provider_type = NSString::from_str("com.complete-me.test.provider");
+        let provided_count = Arc::new(AtomicUsize::new(0));
+        let provider = TestPasteboardProvider::new("provided", Arc::clone(&provided_count));
+        pasteboard.clearContents();
+
+        let item = NSPasteboardItem::new();
+        let provider_ref: &ProtocolObject<dyn NSPasteboardItemDataProvider> =
+            ProtocolObject::from_ref(&*provider);
+        let types = NSArray::from_slice(&[&*provider_type]);
+        assert!(item.setDataProvider_forTypes(provider_ref, &types));
+        assert!(write_test_pasteboard_items(&pasteboard, vec![item]));
+        assert_eq!(provided_count.load(Ordering::SeqCst), 0);
+
+        let snapshot = snapshot_pasteboard(&pasteboard);
+        assert_eq!(provided_count.load(Ordering::SeqCst), 1);
+
+        pasteboard.clearContents();
+        restore_pasteboard(&pasteboard, &snapshot);
+
+        let restored_items = pasteboard.pasteboardItems().expect("restored items");
+        assert_eq!(restored_items.len(), 1);
+        assert_eq!(
+            restored_items
+                .objectAtIndex(0)
+                .stringForType(&provider_type)
+                .map(|value| value.to_string()),
+            Some("provided".into())
+        );
+        assert_eq!(provided_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pasteboard_restore_falls_back_to_string_when_items_are_empty() {
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        pasteboard.clearContents();
+        assert!(pasteboard
+            .setString_forType(&NSString::from_str("replacement"), pasteboard_string_type(),));
+        let snapshot = PasteboardSnapshot {
+            items: Vec::new(),
+            fallback_string: Some("previous".into()),
+        };
+
+        restore_pasteboard(&pasteboard, &snapshot);
+
+        assert_eq!(
+            pasteboard
+                .stringForType(pasteboard_string_type())
+                .map(|value| value.to_string()),
+            Some("previous".into())
+        );
+    }
+
+    #[test]
+    fn pasteboard_restore_if_unchanged_restores_snapshot() {
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        pasteboard.clearContents();
+        assert!(pasteboard
+            .setString_forType(&NSString::from_str("previous"), pasteboard_string_type(),));
+        let snapshot = snapshot_pasteboard(&pasteboard);
+
+        pasteboard.clearContents();
+        assert!(pasteboard
+            .setString_forType(&NSString::from_str("completion"), pasteboard_string_type(),));
+        let completion_change_count = pasteboard.changeCount();
+
+        assert_eq!(
+            restore_pasteboard_if_unchanged(&pasteboard, &snapshot, completion_change_count),
+            PasteboardRestoreOutcome::Restored
+        );
+        assert_eq!(
+            pasteboard
+                .stringForType(pasteboard_string_type())
+                .map(|value| value.to_string()),
+            Some("previous".into())
+        );
+    }
+
+    #[test]
+    fn pasteboard_restore_if_unchanged_preserves_external_clipboard_change() {
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        pasteboard.clearContents();
+        assert!(pasteboard
+            .setString_forType(&NSString::from_str("previous"), pasteboard_string_type(),));
+        let snapshot = snapshot_pasteboard(&pasteboard);
+
+        pasteboard.clearContents();
+        assert!(pasteboard
+            .setString_forType(&NSString::from_str("completion"), pasteboard_string_type(),));
+        let completion_change_count = pasteboard.changeCount();
+        pasteboard.clearContents();
+        assert!(pasteboard
+            .setString_forType(&NSString::from_str("external"), pasteboard_string_type(),));
+
+        assert_eq!(
+            restore_pasteboard_if_unchanged(&pasteboard, &snapshot, completion_change_count),
+            PasteboardRestoreOutcome::SkippedChanged
+        );
+        assert_eq!(
+            pasteboard
+                .stringForType(pasteboard_string_type())
+                .map(|value| value.to_string()),
+            Some("external".into())
+        );
+    }
+
+    #[test]
+    fn overlay_frame_uses_caret_origin_and_minimum_size() {
+        let frame = overlay_frame_for_text(
+            ScreenRect {
+                x: 120.0,
+                y: 240.0,
+                w: 1.0,
+                h: 14.0,
+            },
+            "short",
+        );
+
+        assert_eq!(
+            frame,
+            OverlayFrame {
+                x: 120.0,
+                y: 240.0,
+                w: 240.0,
+                h: 30.0,
+            }
+        );
+    }
+
+    #[test]
+    fn overlay_frame_caps_very_long_text_width() {
+        let frame = overlay_frame_for_text(
+            ScreenRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 80.0,
+            },
+            &"x".repeat(200),
+        );
+
+        assert_eq!(frame.w, 720.0);
+        assert_eq!(frame.h, 48.0);
+    }
+
+    #[test]
+    fn overlay_label_frame_keeps_fixed_inset() {
+        let label = overlay_label_frame(OverlayFrame {
+            x: 120.0,
+            y: 240.0,
+            w: 240.0,
+            h: 30.0,
+        });
+
+        assert_eq!(
+            label,
+            OverlayFrame {
+                x: 8.0,
+                y: 4.0,
+                w: 224.0,
+                h: 22.0,
+            }
+        );
+    }
+
+    fn accept_tap_event(
+        event_type: CGEventType,
+        keycode: i64,
+        source_user_data: i64,
+    ) -> AcceptTapEvent {
+        AcceptTapEvent {
+            event_type,
+            keycode,
+            source_user_data,
+        }
+    }
+
+    #[test]
+    fn accept_tap_decision_drops_tab_only_for_consumer_tap() {
+        let tab = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
+
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Observer, tab, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
+        );
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, tab, None),
+            AcceptTapDecision::Keep
+        );
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, tab, Some(AcceptAction::Full)),
+            AcceptTapDecision::Drop(AcceptAction::Full)
+        );
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, tab, Some(AcceptAction::Word)),
+            AcceptTapDecision::Drop(AcceptAction::Word)
+        );
+    }
+
+    #[test]
+    fn accept_tap_decision_ignores_self_generated_tab() {
+        let event = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, SYNTHETIC_EVENT_TAG);
+
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
+        );
+    }
+
+    #[test]
+    fn accept_tap_decision_reenables_disabled_taps() {
+        let event = accept_tap_event(CGEventType::TapDisabledByTimeout, KEYCODE_TAB, 0);
+
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, event, None),
+            AcceptTapDecision::ReenableAndKeep
+        );
+    }
+
+    #[test]
+    fn subscribe_accept_installs_observer_and_transient_consumer_tap() {
+        let accept_tap_installs = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.accept_tap_installs = Arc::clone(&accept_tap_installs);
+        let adapter = test_adapter_with_hooks(config);
+        let (action_tx, action_rx) = mpsc::channel();
+
+        let subscription = adapter
+            .subscribe_accept(Arc::new(move |action| {
+                action_tx.send(action).expect("action send");
+            }))
+            .expect("subscribe accept");
+        wait_for_accept_tap_count(&accept_tap_installs, 1);
+        assert_eq!(
+            accept_tap_installs.lock().unwrap()[0].kind,
+            AcceptTapKind::Observer
+        );
+
+        subscription
+            .set_suggestion_visible(true)
+            .expect("activate consumer");
+        wait_for_accept_tap_count(&accept_tap_installs, 2);
+        assert_eq!(
+            accept_tap_installs.lock().unwrap()[1].kind,
+            AcceptTapKind::Consumer
+        );
+
+        subscription
+            .set_suggestion_visible(true)
+            .expect("activation is idempotent");
+        assert_eq!(accept_tap_installs.lock().unwrap().len(), 2);
+
+        let consumer_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[1].handler);
+        assert_eq!(
+            consumer_handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
+            AcceptTapDecision::Drop(AcceptAction::Full)
+        );
+        assert_eq!(
+            action_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("accept action"),
+            AcceptAction::Full
+        );
+        subscription
+            .set_accept_action(Some(AcceptAction::Word))
+            .expect("arm word accept");
+        assert_eq!(
+            consumer_handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
+            AcceptTapDecision::Drop(AcceptAction::Word)
+        );
+        assert_eq!(
+            action_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("word accept action"),
+            AcceptAction::Word
+        );
+        subscription.set_accept_action(None).expect("disarm accept");
+        assert_eq!(
+            consumer_handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
+            AcceptTapDecision::Keep
+        );
+
+        subscription
+            .set_suggestion_visible(false)
+            .expect("deactivate consumer");
+        subscription
+            .set_suggestion_visible(true)
+            .expect("reactivate consumer");
+        wait_for_accept_tap_count(&accept_tap_installs, 3);
+        assert_eq!(
+            accept_tap_installs.lock().unwrap()[2].kind,
+            AcceptTapKind::Consumer
+        );
+    }
+
+    #[test]
+    fn accept_subscription_delayed_hide_tears_down_consumer_tap() {
+        let accept_tap_installs = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.accept_tap_installs = Arc::clone(&accept_tap_installs);
+        let adapter = test_adapter_with_hooks(config);
+
+        let subscription = adapter
+            .subscribe_accept(Arc::new(|_| {}))
+            .expect("subscribe accept");
+        subscription
+            .set_suggestion_visible(true)
+            .expect("activate consumer");
+        wait_for_accept_tap_count(&accept_tap_installs, 2);
+
+        subscription
+            .hide_suggestion_after(Duration::from_millis(10))
+            .expect("schedule delayed hide");
+        thread::sleep(Duration::from_millis(50));
+        subscription
+            .set_suggestion_visible(true)
+            .expect("reactivate after delayed hide");
+
+        wait_for_accept_tap_count(&accept_tap_installs, 3);
+        assert_eq!(
+            accept_tap_installs.lock().unwrap()[2].kind,
+            AcceptTapKind::Consumer
+        );
+    }
+
+    #[test]
+    fn accept_subscription_visible_update_cancels_delayed_hide() {
+        let accept_tap_installs = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.accept_tap_installs = Arc::clone(&accept_tap_installs);
+        let adapter = test_adapter_with_hooks(config);
+
+        let subscription = adapter
+            .subscribe_accept(Arc::new(|_| {}))
+            .expect("subscribe accept");
+        subscription
+            .set_suggestion_visible(true)
+            .expect("activate consumer");
+        wait_for_accept_tap_count(&accept_tap_installs, 2);
+
+        subscription
+            .hide_suggestion_after(Duration::from_millis(30))
+            .expect("schedule delayed hide");
+        subscription
+            .set_suggestion_visible(true)
+            .expect("cancel delayed hide");
+        thread::sleep(Duration::from_millis(70));
+        subscription
+            .set_suggestion_visible(true)
+            .expect("still active after canceled hide");
+
+        assert_eq!(accept_tap_installs.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn tap_ignore_decision_ignores_exact_self_generated_tag() {
+        assert!(should_ignore_event_for_tap(SYNTHETIC_EVENT_TAG));
+    }
+
+    #[test]
+    fn tap_ignore_decision_passes_untagged_events() {
+        assert!(!should_ignore_event_for_tap(0));
+    }
+
+    #[test]
+    fn tap_ignore_decision_requires_exact_tag_match() {
+        assert!(!should_ignore_event_for_tap(SYNTHETIC_EVENT_TAG - 1));
+        assert!(!should_ignore_event_for_tap(SYNTHETIC_EVENT_TAG + 1));
+    }
+
+    #[test]
+    fn synthetic_event_tag_can_be_detected_by_future_taps() {
+        let source = CGEventSource::new(CGEventSourceStateID::Private).expect("source");
+        let event =
+            CGEvent::new_keyboard_event(source, KeyCode::SPACE, true).expect("keyboard event");
+
+        assert!(!is_self_generated_event(&event));
+        tag_synthetic_event(&event);
+        assert!(is_self_generated_event(&event));
+    }
+
+    #[test]
+    fn insert_empty_text_is_noop_for_axset() {
+        let adapter = test_adapter_with_secure_input(false);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert(&field, "", InsertStrategy::AxSet),
+            Ok(Inserted {
+                bytes: 0,
+                chars: 0,
+                strategy: InsertStrategy::AxSet,
+            })
+        );
+    }
+
+    #[test]
+    fn text_context_uses_utf16_offsets_and_splits_on_caret() {
+        let field = FocusTokenFactory::new().focused_field("TextEdit", Some(42), "element");
+
+        let context = text_context_from_value(
+            field.clone(),
+            "Hi 😀 there".into(),
+            CFRange {
+                location: 5,
+                length: 0,
+            },
+        );
+
+        assert_eq!(context.left, "Hi 😀");
+        assert_eq!(context.right, " there");
+        assert_eq!(context.selection, None);
+        assert_eq!(context.caret, 5);
+        assert_eq!(context.field_id, field);
+        assert_eq!(context.source, ContextSource::Accessibility);
+        assert_eq!(context.offset_encoding, OffsetEncoding::Utf16CodeUnits);
+    }
+
+    #[test]
+    fn text_context_omits_selected_text_from_left_and_right() {
+        let field = FocusTokenFactory::new().focused_field("TextEdit", Some(42), "element");
+
+        let context = text_context_from_value(
+            field,
+            "Hello world".into(),
+            CFRange {
+                location: 6,
+                length: 5,
+            },
+        );
+
+        assert_eq!(context.left, "Hello ");
+        assert_eq!(context.right, "");
+        assert_eq!(context.selection, Some(TextRange { start: 6, end: 11 }));
+        assert_eq!(context.caret, 6);
+    }
+
+    #[test]
+    fn text_context_clamps_out_of_range_utf16_offsets() {
+        let field = FocusTokenFactory::new().focused_field("TextEdit", Some(42), "element");
+
+        let context = text_context_from_value(
+            field,
+            "abc".into(),
+            CFRange {
+                location: 99,
+                length: 99,
+            },
+        );
+
+        assert_eq!(context.left, "abc");
+        assert_eq!(context.right, "");
+        assert_eq!(context.selection, None);
+        assert_eq!(context.caret, 3);
+    }
+
+    #[test]
+    fn splice_text_inserts_at_utf16_caret() {
+        let (value, caret) = splice_text_at_utf16_range(
+            "Hi 😀 there",
+            CFRange {
+                location: 5,
+                length: 0,
+            },
+            "!",
+        );
+
+        assert_eq!(value, "Hi 😀! there");
+        assert_eq!(caret, 6);
+    }
+
+    #[test]
+    fn splice_text_replaces_selected_utf16_range() {
+        let (value, caret) = splice_text_at_utf16_range(
+            "Hello world",
+            CFRange {
+                location: 6,
+                length: 5,
+            },
+            "there",
+        );
+
+        assert_eq!(value, "Hello there");
+        assert_eq!(caret, 11);
+    }
+
+    #[test]
+    fn splice_text_clamps_out_of_range_selection() {
+        let (value, caret) = splice_text_at_utf16_range(
+            "abc",
+            CFRange {
+                location: 99,
+                length: 99,
+            },
+            "!",
+        );
+
+        assert_eq!(value, "abc!");
+        assert_eq!(caret, 4);
+    }
+
+    #[test]
+    fn resolve_caret_rect_uses_zero_length_rect_when_usable() {
+        let exact = ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 2.0,
+            h: 18.0,
+        };
+        let mut calls = Vec::new();
+
+        let rect = resolve_caret_rect(5, |location, length| {
+            calls.push((location, length));
+            Ok(Some(exact))
+        })
+        .expect("resolve caret");
+
+        assert_eq!(rect, Some(exact));
+        assert_eq!(calls, [(5, 0)]);
+    }
+
+    #[test]
+    fn resolve_caret_rect_derives_from_previous_character_right_edge() {
+        let previous = ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 8.0,
+            h: 18.0,
+        };
+        let mut calls = Vec::new();
+
+        let rect = resolve_caret_rect(5, |location, length| {
+            calls.push((location, length));
+            Ok(if length == 0 { None } else { Some(previous) })
+        })
+        .expect("resolve caret");
+
+        assert_eq!(
+            rect,
+            Some(ScreenRect {
+                x: 18.0,
+                y: 20.0,
+                w: 1.0,
+                h: 18.0,
+            })
+        );
+        assert_eq!(calls, [(5, 0), (4, 1)]);
+    }
+
+    #[test]
+    fn resolve_caret_rect_rejects_container_zero_length_before_fallback() {
+        let container = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 2500.0,
+            h: 18.0,
+        };
+        let previous = ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 8.0,
+            h: 18.0,
+        };
+
+        let rect = resolve_caret_rect(5, |_, length| {
+            Ok(Some(if length == 0 { container } else { previous }))
+        })
+        .expect("resolve caret");
+
+        assert_eq!(
+            rect,
+            Some(ScreenRect {
+                x: 18.0,
+                y: 20.0,
+                w: 1.0,
+                h: 18.0,
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_caret_rect_does_not_request_previous_character_at_zero() {
+        let mut calls = Vec::new();
+
+        let rect = resolve_caret_rect(0, |location, length| {
+            calls.push((location, length));
+            Ok(None)
+        })
+        .expect("resolve caret");
+
+        assert_eq!(rect, None);
+        assert_eq!(calls, [(0, 0)]);
+    }
+
+    #[test]
+    fn normalize_ax_screen_rect_preserves_global_point_coordinates() {
+        let rect = normalize_ax_screen_rect(CGRect {
+            origin: CGPoint {
+                x: -127.5,
+                y: 42.25,
+            },
+            size: CGSize {
+                width: 1.5,
+                height: 18.75,
+            },
+        });
+
+        assert_eq!(
+            rect,
+            ScreenRect {
+                x: -127.5,
+                y: 42.25,
+                w: 1.5,
+                h: 18.75,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_caret_rect_returns_none_when_no_tier_is_usable() {
+        let rect = resolve_caret_rect(5, |_, _| {
+            Ok(Some(ScreenRect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            }))
+        })
+        .expect("resolve caret");
+
+        assert_eq!(rect, None);
+    }
+
+    #[test]
+    fn resolve_caret_rect_propagates_hard_bounds_errors() {
+        let rect = resolve_caret_rect(5, |_, _| Err(PlatformError::StaleField));
+
+        assert_eq!(rect, Err(PlatformError::StaleField));
+    }
+
+    #[test]
+    fn resolve_caret_rect_with_marker_first_prefers_marker_rect() {
+        let marker = ScreenRect {
+            x: 30.0,
+            y: 40.0,
+            w: 1.0,
+            h: 18.0,
+        };
+        let mut range_called = false;
+
+        let rect = resolve_caret_rect_with_marker_first(
+            5,
+            || Ok(Some(marker)),
+            |_, _| {
+                range_called = true;
+                Ok(None)
+            },
+        )
+        .expect("resolve caret");
+
+        assert_eq!(rect, Some(marker));
+        assert!(!range_called);
+    }
+
+    #[test]
+    fn resolve_caret_rect_with_marker_first_falls_back_when_marker_missing() {
+        let native = ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 1.0,
+            h: 18.0,
+        };
+        let mut range_calls = Vec::new();
+
+        let rect = resolve_caret_rect_with_marker_first(
+            5,
+            || Ok(None),
+            |location, length| {
+                range_calls.push((location, length));
+                Ok(Some(native))
+            },
+        )
+        .expect("resolve caret");
+
+        assert_eq!(rect, Some(native));
+        assert_eq!(range_calls, [(5, 0)]);
+    }
+
+    #[test]
+    fn resolve_caret_rect_with_marker_first_falls_back_from_container_marker() {
+        let container = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 2500.0,
+            h: 18.0,
+        };
+        let native = ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 1.0,
+            h: 18.0,
+        };
+
+        let rect = resolve_caret_rect_with_marker_first(
+            5,
+            || Ok(Some(container)),
+            |_, _| Ok(Some(native)),
+        )
+        .expect("resolve caret");
+
+        assert_eq!(rect, Some(native));
+    }
+
+    #[test]
+    fn resolve_caret_rect_with_marker_first_propagates_marker_errors() {
+        let rect = resolve_caret_rect_with_marker_first(
+            5,
+            || Err(PlatformError::StaleField),
+            |_, _| Ok(None),
+        );
+
+        assert_eq!(rect, Err(PlatformError::StaleField));
+    }
+
+    #[test]
+    fn caret_diagnostics_prefers_usable_marker_rect() {
+        let marker = ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 1.0,
+            h: 18.0,
+        };
+        let native = ScreenRect {
+            x: 30.0,
+            y: 20.0,
+            w: 1.0,
+            h: 18.0,
+        };
+
+        let diagnostics = caret_diagnostics_from_rects(Some(marker), Some(native));
+
+        assert_eq!(diagnostics.source, MacosCaretRectSource::Marker);
+        assert_eq!(diagnostics.resolved_rect, Some(marker));
+    }
+
+    #[test]
+    fn caret_diagnostics_falls_back_from_unusable_marker_rect() {
+        let marker = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 2500.0,
+            h: 18.0,
+        };
+        let native = ScreenRect {
+            x: 30.0,
+            y: 20.0,
+            w: 1.0,
+            h: 18.0,
+        };
+
+        let diagnostics = caret_diagnostics_from_rects(Some(marker), Some(native));
+
+        assert_eq!(diagnostics.source, MacosCaretRectSource::NativeFallback);
+        assert_eq!(diagnostics.marker_rect, Some(marker));
+        assert_eq!(diagnostics.resolved_rect, Some(native));
+    }
+
+    #[test]
+    fn caret_diagnostics_records_none_without_any_rect() {
+        let diagnostics = caret_diagnostics_from_rects(None, None);
+
+        assert_eq!(diagnostics.source, MacosCaretRectSource::None);
+        assert_eq!(diagnostics.resolved_rect, None);
+    }
+
+    #[test]
+    fn caret_coalescer_drops_duplicate_events_inside_window() {
+        let field = FocusTokenFactory::new().focused_field("TextEdit", Some(42), "element");
+        let mut coalescer = CaretCoalescer::new(25);
+        let rect = Some(platform::ScreenRect {
+            x: 1.0,
+            y: 2.0,
+            w: 1.0,
+            h: 12.0,
+        });
+
+        assert_eq!(
+            coalescer.observe(100, field.clone(), rect),
+            Some((field.clone(), rect))
+        );
+        assert_eq!(coalescer.observe(110, field.clone(), rect), None);
+        assert_eq!(
+            coalescer.observe(126, field.clone(), rect),
+            Some((field, rect))
+        );
+    }
+
+    #[test]
+    fn caret_coalescer_emits_field_or_position_changes_immediately() {
+        let mut factory = FocusTokenFactory::new();
+        let field_a = factory.focused_field("TextEdit", Some(42), "a");
+        let field_b = factory.focused_field("TextEdit", Some(42), "b");
+        let mut coalescer = CaretCoalescer::new(100);
+        let rect_a = Some(platform::ScreenRect {
+            x: 1.0,
+            y: 2.0,
+            w: 1.0,
+            h: 12.0,
+        });
+        let rect_b = Some(platform::ScreenRect {
+            x: 5.0,
+            y: 2.0,
+            w: 1.0,
+            h: 12.0,
+        });
+
+        assert_eq!(
+            coalescer.observe(100, field_a.clone(), rect_a),
+            Some((field_a.clone(), rect_a))
+        );
+        assert_eq!(
+            coalescer.observe(101, field_a.clone(), rect_b),
+            Some((field_a, rect_b))
+        );
+        assert_eq!(
+            coalescer.observe(102, field_b.clone(), rect_b),
+            Some((field_b, rect_b))
+        );
+    }
+
+    #[test]
+    fn observer_notification_plan_uses_focus_and_selected_text_notifications() {
+        assert_eq!(
+            focus_notifications(),
+            [accessibility_sys::kAXFocusedUIElementChangedNotification]
+        );
+        assert_eq!(
+            caret_notifications(),
+            [accessibility_sys::kAXSelectedTextChangedNotification]
+        );
+    }
+
+    #[test]
+    fn focused_element_lookup_falls_back_only_for_missing_attribute() {
+        assert!(focused_element_lookup_allows_app_fallback(
+            kAXErrorAttributeUnsupported
+        ));
+        assert!(focused_element_lookup_allows_app_fallback(kAXErrorNoValue));
+        assert!(!focused_element_lookup_allows_app_fallback(
+            kAXErrorCannotComplete
+        ));
+        assert!(!focused_element_lookup_allows_app_fallback(
+            kAXErrorAPIDisabled
+        ));
+    }
+
+    #[test]
+    fn caret_observer_element_prefers_focused_element_when_available() {
+        let app_element = 0x01usize as AXUIElementRef;
+        let focused_element = 0x02usize as AXUIElementRef;
+
+        assert_eq!(
+            choose_caret_observer_element(app_element, Some(focused_element)),
+            focused_element
+        );
+        assert_eq!(
+            choose_caret_observer_element(app_element, None),
+            app_element
+        );
+    }
+
+    #[test]
+    fn observer_registration_adds_source_and_notifications() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let backend = FakeObserverBackend::new(Arc::clone(&log));
+
+        let _registration = AxObserverRegistration::register(
+            backend,
+            42,
+            "element-a".to_string(),
+            &[
+                ObserverNotification::FocusChanged,
+                ObserverNotification::CaretChanged,
+            ],
+        )
+        .expect("registration");
+
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "create_observer:42",
+                "source:observer-42",
+                "add_source:source-observer-42",
+                "add:observer-42:element-a:AXFocusedUIElementChanged:null",
+                "add:observer-42:element-a:AXSelectedTextChanged:null",
+            ]
+        );
+    }
+
+    #[test]
+    fn observer_registration_passes_refcon_to_notifications() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let backend = FakeObserverBackend::new(Arc::clone(&log));
+        let (tx, _rx) = mpsc::channel();
+        let (callback_tx, _callback_rx) = mpsc::channel();
+        let mut state = ObserverCallbackState {
+            pid: 42,
+            tx,
+            callback_tx,
+            dispatch: Arc::new(|_| {}),
+        };
+        let refcon = &mut state as *mut ObserverCallbackState as *mut c_void;
+
+        let registration = AxObserverRegistration::register_with_refcon(
+            backend,
+            42,
+            "element-a".to_string(),
+            &[ObserverNotification::FocusChanged],
+            refcon,
+        )
+        .expect("registration");
+
+        assert_eq!(registration.refcon(), refcon);
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "create_observer:42",
+                "source:observer-42",
+                "add_source:source-observer-42",
+                "add:observer-42:element-a:AXFocusedUIElementChanged:refcon",
+            ]
+        );
+    }
+
+    #[test]
+    fn observer_registration_cleans_up_partial_registration_on_add_failure() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let backend =
+            FakeObserverBackend::failing_on(Arc::clone(&log), ObserverNotification::CaretChanged);
+
+        let err = match AxObserverRegistration::register(
+            backend,
+            42,
+            "element-a".to_string(),
+            &[
+                ObserverNotification::FocusChanged,
+                ObserverNotification::CaretChanged,
+            ],
+        ) {
+            Ok(_) => panic!("expected registration failure"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err, PlatformError::Timeout);
+        assert_eq!(
+            log.lock().unwrap().as_slice(),
+            [
+                "create_observer:42",
+                "source:observer-42",
+                "add_source:source-observer-42",
+                "add:observer-42:element-a:AXFocusedUIElementChanged:null",
+                "fail_add:observer-42:element-a:AXSelectedTextChanged",
+                "remove:observer-42:element-a:AXFocusedUIElementChanged",
+                "remove_source:source-observer-42",
+            ]
+        );
+    }
+
+    #[test]
+    fn observer_registration_removes_notifications_and_source_on_drop() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let backend = FakeObserverBackend::new(Arc::clone(&log));
+
+        {
+            let _registration = AxObserverRegistration::register(
+                backend,
+                42,
+                "element-a".to_string(),
+                &[
+                    ObserverNotification::FocusChanged,
+                    ObserverNotification::CaretChanged,
+                ],
+            )
+            .expect("registration");
+        }
+
+        assert_eq!(
+            log.lock().unwrap().as_slice(),
+            [
+                "create_observer:42",
+                "source:observer-42",
+                "add_source:source-observer-42",
+                "add:observer-42:element-a:AXFocusedUIElementChanged:null",
+                "add:observer-42:element-a:AXSelectedTextChanged:null",
+                "remove:observer-42:element-a:AXFocusedUIElementChanged",
+                "remove:observer-42:element-a:AXSelectedTextChanged",
+                "remove_source:source-observer-42",
+            ]
+        );
+    }
+
+    #[test]
+    fn ax_observer_callback_decodes_focus_and_caret_notifications_from_refcon() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_in_dispatch = Arc::clone(&events);
+        let (tx, rx) = mpsc::channel();
+        let (callback_tx, _callback_rx) = mpsc::channel();
+        let mut state = ObserverCallbackState {
+            pid: 42,
+            tx,
+            callback_tx,
+            dispatch: Arc::new(move |event| {
+                events_in_dispatch.lock().unwrap().push(event);
+            }),
+        };
+        let refcon = &mut state as *mut ObserverCallbackState as *mut c_void;
+        let focus = CFString::new(ObserverNotification::FocusChanged.name());
+        let caret = CFString::new(ObserverNotification::CaretChanged.name());
+
+        unsafe {
+            ax_observer_callback(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                focus.as_concrete_TypeRef(),
+                refcon,
+            );
+            ax_observer_callback(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                caret.as_concrete_TypeRef(),
+                refcon,
+            );
+        }
+
+        let first = rx.recv().expect("focus message");
+        let second = rx.recv().expect("caret message");
+        for (message, expected_notification) in [
+            (first, ObserverNotification::FocusChanged),
+            (second, ObserverNotification::CaretChanged),
+        ] {
+            let Message::ObserverEvent {
+                notification,
+                retained_element,
+                fallback_element_id,
+                ..
+            } = message
+            else {
+                panic!("expected observer event message");
+            };
+
+            assert_eq!(notification, expected_notification);
+            assert_eq!(retained_element, None);
+            assert_eq!(fallback_element_id, "ax:null");
+        }
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ax_observer_callback_ignores_null_refcon_and_unknown_notification() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_in_dispatch = Arc::clone(&events);
+        let (tx, rx) = mpsc::channel();
+        let (callback_tx, _callback_rx) = mpsc::channel();
+        let mut state = ObserverCallbackState {
+            pid: 42,
+            tx,
+            callback_tx,
+            dispatch: Arc::new(move |event| {
+                events_in_dispatch.lock().unwrap().push(event);
+            }),
+        };
+        let refcon = &mut state as *mut ObserverCallbackState as *mut c_void;
+        let focus = CFString::new(ObserverNotification::FocusChanged.name());
+        let unknown = CFString::new("AXOtherNotification");
+
+        unsafe {
+            ax_observer_callback(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                focus.as_concrete_TypeRef(),
+                ptr::null_mut(),
+            );
+            ax_observer_callback(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                unknown.as_concrete_TypeRef(),
+                refcon,
+            );
+        }
+
+        assert!(events.lock().unwrap().is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn macos_platform_adapter_allocates_distinct_subscription_ids() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter(Some(42), Arc::clone(&installs), None);
+
+        let focus = adapter
+            .subscribe_focus(Arc::new(|_| {}))
+            .expect("focus subscription");
+        let caret = adapter
+            .subscribe_caret(Arc::new(|_, _| {}))
+            .expect("caret subscription");
+
+        assert_ne!(focus.id(), caret.id());
+        assert_eq!(focus.id(), 1);
+        assert_eq!(caret.id(), 2);
+        assert!(adapter.ax_worker_thread_id() != thread::current().id());
+        assert_eq!(adapter.subscription_count().expect("count"), 2);
+
+        let installs = installs.lock().unwrap();
+        assert_eq!(installs.len(), 2);
+        assert_eq!(installs[0].pid, 42);
+        assert_eq!(installs[0].target, ObserverInstallTarget::App);
+        assert_eq!(
+            installs[0].notifications,
+            vec![ObserverNotification::FocusChanged]
+        );
+        assert_eq!(installs[1].pid, 42);
+        assert_eq!(
+            installs[1].target,
+            ObserverInstallTarget::FocusedElementWithAppFallback
+        );
+        assert_eq!(
+            installs[1].notifications,
+            vec![ObserverNotification::CaretChanged]
+        );
+    }
+
+    #[test]
+    fn subscribe_caret_prefers_focused_element_observer_with_app_fallback() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter(Some(42), Arc::clone(&installs), None);
+
+        let _caret = adapter
+            .subscribe_caret(Arc::new(|_, _| {}))
+            .expect("caret subscription");
+
+        let installs = installs.lock().unwrap();
+        assert_eq!(installs.len(), 1);
+        assert_eq!(
+            installs[0].target,
+            ObserverInstallTarget::FocusedElementWithAppFallback
+        );
+        assert_eq!(
+            installs[0].notifications,
+            vec![ObserverNotification::CaretChanged]
+        );
+    }
+
+    #[test]
+    fn macos_platform_adapter_does_not_store_subscription_when_observer_install_fails() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter(
+            Some(42),
+            Arc::clone(&installs),
+            Some(PlatformError::Timeout),
+        );
+
+        let err = adapter.subscribe_focus(Arc::new(|_| {})).unwrap_err();
+
+        assert_eq!(err, PlatformError::Timeout);
+        assert!(installs.lock().unwrap().is_empty());
+        assert_eq!(adapter.subscription_count().expect("count"), 0);
+    }
+
+    #[test]
+    fn dropping_focus_subscription_removes_observer_and_suppresses_late_dispatch() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter(Some(42), Arc::clone(&installs), None);
+        let focused = Arc::new(Mutex::new(Vec::new()));
+        let focused_in_cb = Arc::clone(&focused);
+
+        let focus = adapter
+            .subscribe_focus(Arc::new(move |field| {
+                focused_in_cb.lock().unwrap().push(field);
+            }))
+            .expect("focus subscription");
+        let dispatch = installs.lock().unwrap()[0].dispatch.clone();
+
+        assert_eq!(adapter.subscription_count().expect("count"), 1);
+        drop(focus);
+
+        assert_eq!(adapter.subscription_count().expect("count"), 0);
+        dispatch(observer_event(
+            ObserverNotification::FocusChanged,
+            pointer_identity("ax:late-focus"),
+        ));
+        assert!(focused.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dropping_caret_subscription_removes_observer_and_suppresses_late_dispatch() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter(Some(42), Arc::clone(&installs), None);
+        let carets = Arc::new(Mutex::new(Vec::new()));
+        let carets_in_cb = Arc::clone(&carets);
+
+        let caret = adapter
+            .subscribe_caret(Arc::new(move |field, rect| {
+                carets_in_cb.lock().unwrap().push((field, rect));
+            }))
+            .expect("caret subscription");
+        let dispatch = installs.lock().unwrap()[0].dispatch.clone();
+
+        assert_eq!(adapter.subscription_count().expect("count"), 1);
+        drop(caret);
+
+        assert_eq!(adapter.subscription_count().expect("count"), 0);
+        dispatch(observer_event(
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:late-caret"),
+        ));
+        assert!(carets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn macos_platform_adapter_requires_frontmost_pid_before_subscription() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter(None, Arc::clone(&installs), None);
+
+        let err = adapter.subscribe_focus(Arc::new(|_| {})).unwrap_err();
+
+        assert_eq!(
+            err,
+            PlatformError::CannotComplete {
+                reason: "no frontmost application pid".into(),
+            }
+        );
+        assert!(installs.lock().unwrap().is_empty());
+        assert_eq!(adapter.subscription_count().expect("count"), 0);
+    }
+
+    #[test]
+    fn stale_field_operation_for_exited_pid_reports_app_exited() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), installs, None);
+        config.process_exists = Arc::new(|_| false);
+        let adapter = test_adapter_with_hooks(config);
+
+        let err = adapter
+            .map_app_exited::<()>(42, "pid:42".into(), Err(PlatformError::StaleField))
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            PlatformError::AppExited {
+                app: "pid:42".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn stale_field_operation_for_running_pid_stays_stale() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), installs, None);
+        config.process_exists = Arc::new(|_| true);
+        let adapter = test_adapter_with_hooks(config);
+
+        let err = adapter
+            .map_app_exited::<()>(42, "pid:42".into(), Err(PlatformError::StaleField))
+            .unwrap_err();
+
+        assert_eq!(err, PlatformError::StaleField);
+    }
+
+    #[test]
+    fn macos_platform_adapter_dispatches_focus_and_caret_callbacks_from_observer_notifications() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter(Some(42), Arc::clone(&installs), None);
+        let focused = Arc::new(Mutex::new(Vec::new()));
+        let carets = Arc::new(Mutex::new(Vec::new()));
+        let focused_in_cb = Arc::clone(&focused);
+        let carets_in_cb = Arc::clone(&carets);
+
+        let _focus = adapter
+            .subscribe_focus(Arc::new(move |field| {
+                focused_in_cb.lock().unwrap().push(field);
+            }))
+            .expect("focus subscription");
+        let _caret = adapter
+            .subscribe_caret(Arc::new(move |field, rect| {
+                carets_in_cb.lock().unwrap().push((field, rect));
+            }))
+            .expect("caret subscription");
+
+        let installs = installs.lock().unwrap();
+        (installs[0].dispatch)(observer_event(
+            ObserverNotification::FocusChanged,
+            resolved_identity("ax:0x111", 99, Some("editor-main")),
+        ));
+        (installs[0].dispatch)(observer_event(
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:0x222"),
+        ));
+        (installs[1].dispatch)(observer_event(
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:0x333"),
+        ));
+        (installs[1].dispatch)(observer_event(
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:0x333"),
+        ));
+        (installs[1].dispatch)(observer_event(
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:0x555"),
+        ));
+        (installs[1].dispatch)(observer_event(
+            ObserverNotification::FocusChanged,
+            pointer_identity("ax:0x444"),
+        ));
+        drop(installs);
+
+        let focused = focused.lock().unwrap();
+        assert_eq!(focused.len(), 1);
+        assert_eq!(focused[0].app, "pid:99");
+        assert_eq!(focused[0].pid, Some(99));
+        assert_eq!(
+            focused[0].element_id,
+            "ax:ptr=ax:0x111|pid=99|id=editor-main|role=AXTextArea"
+        );
+
+        let carets = carets.lock().unwrap();
+        assert_eq!(carets.len(), 2);
+        assert_eq!(carets[0].0.app, "pid:42");
+        assert_eq!(carets[0].0.pid, Some(42));
+        assert_eq!(carets[0].0.element_id, "ax:ptr=ax:0x333");
+        assert_eq!(carets[0].1, None);
+        assert_eq!(carets[1].0.element_id, "ax:ptr=ax:0x555");
+        assert_ne!(carets[1].0.generation, carets[0].0.generation);
+    }
+
+    #[test]
+    fn focus_subscription_rebinds_to_new_frontmost_pid_and_ignores_old_events() {
+        let frontmost_pid = Arc::new(Mutex::new(Some(42)));
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter =
+            test_adapter_with_dynamic_frontmost(Arc::clone(&frontmost_pid), Arc::clone(&installs));
+        let focused = Arc::new(Mutex::new(Vec::new()));
+        let focused_in_cb = Arc::clone(&focused);
+
+        let _focus = adapter
+            .subscribe_focus(Arc::new(move |field| {
+                focused_in_cb.lock().unwrap().push(field);
+            }))
+            .expect("focus subscription");
+        wait_for_install_count(&installs, 1);
+
+        *frontmost_pid.lock().unwrap() = Some(99);
+        wait_for_install_count(&installs, 2);
+        let installs_snapshot = installs.lock().unwrap().clone();
+        assert_eq!(installs_snapshot[0].pid, 42);
+        assert_eq!(installs_snapshot[1].pid, 99);
+        assert_eq!(installs_snapshot[1].target, ObserverInstallTarget::App);
+
+        (installs_snapshot[0].dispatch)(observer_event_for_pid(
+            42,
+            ObserverNotification::FocusChanged,
+            pointer_identity("ax:old"),
+            None,
+        ));
+        (installs_snapshot[1].dispatch)(observer_event_for_pid(
+            99,
+            ObserverNotification::FocusChanged,
+            pointer_identity("ax:new"),
+            None,
+        ));
+
+        let focused = focused.lock().unwrap();
+        assert_eq!(focused.len(), 1);
+        assert_eq!(focused[0].app, "pid:99");
+        assert_eq!(focused[0].pid, Some(99));
+        assert_eq!(focused[0].element_id, "ax:ptr=ax:new");
+    }
+
+    #[test]
+    fn caret_subscription_rebinds_and_does_not_reuse_same_pointer_across_pids() {
+        let frontmost_pid = Arc::new(Mutex::new(Some(42)));
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter =
+            test_adapter_with_dynamic_frontmost(Arc::clone(&frontmost_pid), Arc::clone(&installs));
+        let carets = Arc::new(Mutex::new(Vec::new()));
+        let carets_in_cb = Arc::clone(&carets);
+
+        let _caret = adapter
+            .subscribe_caret(Arc::new(move |field, rect| {
+                carets_in_cb.lock().unwrap().push((field, rect));
+            }))
+            .expect("caret subscription");
+        wait_for_install_count(&installs, 1);
+        let first_dispatch = installs.lock().unwrap()[0].dispatch.clone();
+        first_dispatch(observer_event_for_pid(
+            42,
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:same"),
+            None,
+        ));
+
+        *frontmost_pid.lock().unwrap() = Some(99);
+        wait_for_install_count(&installs, 2);
+        let installs_snapshot = installs.lock().unwrap().clone();
+        assert_eq!(installs_snapshot[1].pid, 99);
+        assert_eq!(
+            installs_snapshot[1].target,
+            ObserverInstallTarget::FocusedElementWithAppFallback
+        );
+
+        (installs_snapshot[0].dispatch)(observer_event_for_pid(
+            42,
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:old"),
+            None,
+        ));
+        (installs_snapshot[1].dispatch)(observer_event_for_pid(
+            99,
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:same"),
+            None,
+        ));
+
+        let carets = carets.lock().unwrap();
+        assert_eq!(carets.len(), 2);
+        assert_eq!(carets[0].0.app, "pid:42");
+        assert_eq!(carets[0].0.pid, Some(42));
+        assert_eq!(carets[1].0.app, "pid:99");
+        assert_eq!(carets[1].0.pid, Some(99));
+        assert_ne!(carets[1].0.generation, carets[0].0.generation);
+    }
+
+    #[test]
+    fn focus_subscription_clears_binding_when_no_app_is_frontmost_then_rebinds() {
+        let frontmost_pid = Arc::new(Mutex::new(Some(42)));
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter =
+            test_adapter_with_dynamic_frontmost(Arc::clone(&frontmost_pid), Arc::clone(&installs));
+        let focused = Arc::new(Mutex::new(Vec::new()));
+        let focused_in_cb = Arc::clone(&focused);
+
+        let _focus = adapter
+            .subscribe_focus(Arc::new(move |field| {
+                focused_in_cb.lock().unwrap().push(field);
+            }))
+            .expect("focus subscription");
+        wait_for_install_count(&installs, 1);
+        let first_dispatch = installs.lock().unwrap()[0].dispatch.clone();
+
+        *frontmost_pid.lock().unwrap() = None;
+        thread::sleep(APP_REBIND_POLL_INTERVAL + Duration::from_millis(100));
+        first_dispatch(observer_event_for_pid(
+            42,
+            ObserverNotification::FocusChanged,
+            pointer_identity("ax:old-after-exit"),
+            None,
+        ));
+        assert!(focused.lock().unwrap().is_empty());
+
+        *frontmost_pid.lock().unwrap() = Some(77);
+        wait_for_install_count(&installs, 2);
+        let second_dispatch = installs.lock().unwrap()[1].dispatch.clone();
+        second_dispatch(observer_event_for_pid(
+            77,
+            ObserverNotification::FocusChanged,
+            pointer_identity("ax:reborn"),
+            None,
+        ));
+
+        wait_for_vec_count(&focused, 1);
+        let focused = focused.lock().unwrap();
+        assert_eq!(focused.len(), 1);
+        assert_eq!(focused[0].app, "pid:77");
+        assert_eq!(focused[0].pid, Some(77));
+    }
+
+    #[test]
+    fn caret_subscription_forwards_observer_rect_to_callback() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter(Some(42), Arc::clone(&installs), None);
+        let carets = Arc::new(Mutex::new(Vec::new()));
+        let carets_in_cb = Arc::clone(&carets);
+        let rect = Some(platform::ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 1.0,
+            h: 14.0,
+        });
+
+        let _caret = adapter
+            .subscribe_caret(Arc::new(move |field, rect| {
+                carets_in_cb.lock().unwrap().push((field, rect));
+            }))
+            .expect("caret subscription");
+
+        let installs = installs.lock().unwrap();
+        (installs[0].dispatch)(observer_event_with_rect(
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:0x333"),
+            rect,
+        ));
+        drop(installs);
+
+        let carets = carets.lock().unwrap();
+        assert_eq!(carets.len(), 1);
+        assert_eq!(carets[0].0.element_id, "ax:ptr=ax:0x333");
+        assert_eq!(carets[0].1, rect);
+    }
+
+    #[test]
+    fn safety_poll_schedule_emits_at_low_rate() {
+        let mut schedule = SafetyPollSchedule::new(250);
+
+        assert!(schedule.should_poll(1000));
+        assert!(!schedule.should_poll(1100));
+        assert!(schedule.should_poll(1250));
+        assert!(!schedule.should_poll(1499));
+        assert!(schedule.should_poll(1500));
+    }
+
+    #[test]
+    fn safety_poll_schedule_can_be_reset_after_focus_change() {
+        let mut schedule = SafetyPollSchedule::new(250);
+
+        assert!(schedule.should_poll(1000));
+        schedule.reset();
+
+        assert!(schedule.should_poll(1001));
+    }
+}
