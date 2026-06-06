@@ -181,6 +181,14 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    /// Dismiss any showing suggestion (e.g. the user disabled the app via the
+    /// tray). Wraps the machine's `Dismiss` event so a visible ghost hides
+    /// immediately rather than lingering until the next focus/caret change.
+    pub fn on_dismiss(&mut self) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self.machine.on_event(Event::Dismiss);
+        self.dispatch(commands)
+    }
+
     fn dispatch(
         &mut self,
         commands: Vec<Command>,
@@ -619,6 +627,26 @@ mod tests {
         engine.on_focus(other_field()).unwrap();
 
         assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+    }
+
+    #[test]
+    fn dismiss_hides_a_showing_ghost() {
+        let (mut engine, _adapter, overlay) = showing("hello there");
+
+        engine.on_dismiss().unwrap();
+
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+    }
+
+    #[test]
+    fn dismiss_with_nothing_showing_is_noop() {
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+
+        let follow = engine.on_dismiss().unwrap();
+
+        assert!(follow.is_empty());
+        assert!(overlay.calls.lock().unwrap().is_empty());
     }
 
     #[test]

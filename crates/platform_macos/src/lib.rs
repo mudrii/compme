@@ -15,8 +15,9 @@ use accessibility_sys::{
     kAXErrorNoValue, kAXErrorParameterizedAttributeUnsupported, kAXErrorSuccess,
     kAXFocusedUIElementAttribute, kAXFocusedUIElementChangedNotification, kAXIdentifierAttribute,
     kAXRoleAttribute, kAXSecureTextFieldSubrole, kAXSelectedTextChangedNotification,
-    kAXSelectedTextRangeAttribute, kAXSubroleAttribute, kAXValueAttribute, kAXValueTypeCFRange,
-    kAXValueTypeCGRect, AXError, AXObserverAddNotification, AXObserverCreate,
+    kAXSelectedTextRangeAttribute, kAXSubroleAttribute, kAXTrustedCheckOptionPrompt,
+    kAXValueAttribute, kAXValueTypeCFRange, kAXValueTypeCGRect, AXError, AXIsProcessTrusted,
+    AXIsProcessTrustedWithOptions, AXObserverAddNotification, AXObserverCreate,
     AXObserverGetRunLoopSource, AXObserverRef, AXObserverRemoveNotification,
     AXUIElementCopyAttributeValue, AXUIElementCopyParameterizedAttributeValue,
     AXUIElementCreateApplication, AXUIElementCreateSystemWide, AXUIElementGetPid,
@@ -24,6 +25,8 @@ use accessibility_sys::{
     AXUIElementSetMessagingTimeout, AXValueCreate, AXValueGetValue, AXValueRef,
 };
 use core_foundation::base::{CFRange, CFRelease, CFRetain, CFType, CFTypeRef, TCFType};
+use core_foundation::boolean::CFBoolean;
+use core_foundation::dictionary::CFDictionary;
 use core_foundation::mach_port::CFMachPortRef;
 use core_foundation::runloop::{
     kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopSource,
@@ -52,6 +55,9 @@ use platform::{
     PlatformAdapter, PlatformError, ScreenRect, SecurityState, Subscription, TextContext,
     TextRange, Toolkit,
 };
+
+mod tray;
+pub use tray::{MacosTray, TrayFlags};
 
 const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.05;
 const AX_WORKER_PUMP_INTERVAL: Duration = Duration::from_millis(5);
@@ -1326,6 +1332,51 @@ fn macos_secure_input_enabled() -> bool {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     unsafe { IsSecureEventInputEnabled() != 0 }
+}
+
+/// Whether this process holds the macOS Accessibility (AX) permission.
+///
+/// Process-global, so it is a free function rather than an adapter method.
+pub fn accessibility_trusted() -> bool {
+    // SAFETY: `AXIsProcessTrusted` takes no arguments and is always safe to call.
+    unsafe { AXIsProcessTrusted() }
+}
+
+/// Like [`accessibility_trusted`], but if the permission is missing this fires
+/// the system "grant Accessibility" prompt. Returns the current trust state.
+pub fn prompt_accessibility_trust() -> bool {
+    // SAFETY: `kAXTrustedCheckOptionPrompt` is a Core Foundation extern static
+    // CFString; wrapping it under the get rule borrows without taking ownership.
+    let key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+    let options =
+        CFDictionary::from_CFType_pairs(&[(key.as_CFType(), CFBoolean::true_value().as_CFType())]);
+    // SAFETY: passing a valid CFDictionaryRef to the AX trust API.
+    unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
+}
+
+/// Whether macOS global secure input is currently enabled (e.g. a password
+/// field has the keyboard). Public wrapper over the Carbon query.
+pub fn secure_input_enabled() -> bool {
+    macos_secure_input_enabled()
+}
+
+/// Active displays as `(bounds, backing scale)` pairs, for the Retina/multi-
+/// monitor coordinate diagnostic.
+pub fn display_scales() -> Vec<(ScreenRect, f64)> {
+    active_display_scales()
+        .into_iter()
+        .map(|d| {
+            (
+                ScreenRect {
+                    x: d.bounds.origin.x,
+                    y: d.bounds.origin.y,
+                    w: d.bounds.size.width,
+                    h: d.bounds.size.height,
+                },
+                d.scale,
+            )
+        })
+        .collect()
 }
 
 fn process_exists(pid: i32) -> bool {

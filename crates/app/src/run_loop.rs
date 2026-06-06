@@ -13,6 +13,7 @@
 
 use std::env;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -21,18 +22,27 @@ use std::time::{Duration, Instant};
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use engine::{CompletionRequest, Engine, TriggerPolicy};
 use platform::{AcceptAction, FieldHandle, PlatformAdapter, PlatformError, ScreenRect};
-use platform_macos::{MacosOverlayPresenter, MacosPlatformAdapter};
+use platform_macos::{
+    accessibility_trusted, display_scales, prompt_accessibility_trust, secure_input_enabled,
+    MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
+};
 
 use crate::adapter::SharedAdapter;
+use crate::config::{self, parse_clamped};
 use crate::inference::InferenceHandle;
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
+use crate::status::derive_status;
 use crate::wiring::{FieldTracker, LatestRequest, Observation};
 
-const DEBOUNCE_MS: u64 = 120;
-const MAX_WORDS: usize = 8;
-const MAX_TOKENS: usize = 24;
+const DEFAULT_DEBOUNCE_MS: u64 = 120;
+const DEFAULT_MAX_WORDS: usize = 8;
+const DEFAULT_MAX_TOKENS: usize = 24;
 const HEARTBEAT: Duration = Duration::from_millis(12);
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
+/// Poll secure input every N heartbeats (~12ms each → ~480ms).
+const SECURE_POLL_EVERY: u64 = 40;
+const ACCESSIBILITY_SETTINGS_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
 /// Set by the SIGINT/SIGTERM handler; observed by the loop to begin shutdown.
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -65,16 +75,25 @@ struct Config {
     model_path: PathBuf,
     prompt_mode: PromptMode,
     run_ms: Option<u64>,
+    debounce_ms: u64,
+    max_words: usize,
+    max_tokens: usize,
+    diag_coords: bool,
 }
 
 impl Config {
+    /// Build config by layering the environment over the optional config file
+    /// (env wins over file wins over default), all through `from_lookup`.
     fn from_env() -> Self {
-        Self::from_lookup(|key| env::var(key).ok())
+        let file_map = config::config_file_path()
+            .map(|path| config::load_file_map(&path))
+            .unwrap_or_default();
+        Self::from_lookup(move |key| env::var(key).ok().or_else(|| file_map.get(key).cloned()))
     }
 
     /// Pure config parsing from a key→value lookup, so the parsing rules
-    /// (pid/run_ms parse, empty-stub filtering, default model path, prompt mode)
-    /// are unit-testable without touching the process environment.
+    /// (pid/run_ms parse, empty-stub filtering, default model path, prompt mode,
+    /// clamped numeric knobs) are unit-testable without touching the environment.
     fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
         Self {
             acceptance_pid: lookup("COMPLETE_ME_ACCEPTANCE_PID")
@@ -85,6 +104,15 @@ impl Config {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_MODEL)),
             prompt_mode: resolve_prompt_mode(lookup("COMPLETE_ME_PROMPT_MODE")),
             run_ms: lookup("COMPLETE_ME_RUN_MS").and_then(|raw| raw.parse::<u64>().ok()),
+            debounce_ms: parse_clamped(
+                lookup("COMPLETE_ME_DEBOUNCE_MS"),
+                DEFAULT_DEBOUNCE_MS,
+                0,
+                5000,
+            ),
+            max_words: parse_clamped(lookup("COMPLETE_ME_MAX_WORDS"), DEFAULT_MAX_WORDS, 1, 50),
+            max_tokens: parse_clamped(lookup("COMPLETE_ME_MAX_TOKENS"), DEFAULT_MAX_TOKENS, 1, 200),
+            diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
         }
     }
 }
@@ -116,6 +144,18 @@ pub fn run() -> Result<(), String> {
     let config = Config::from_env();
     install_signal_handlers();
 
+    // Permissions: if Accessibility isn't granted, fire the system prompt once.
+    // The app keeps running and reflects the Blocked state in the tray.
+    let trusted = accessibility_trusted();
+    if !trusted {
+        eprintln!("complete-me: Accessibility not granted — requesting permission");
+        prompt_accessibility_trust();
+    }
+
+    if config.diag_coords {
+        eprintln!("complete-me: diag display_scales={:?}", display_scales());
+    }
+
     let adapter = match config.acceptance_pid {
         Some(pid) => MacosPlatformAdapter::with_frontmost_pid_override_for_acceptance(pid),
         None => MacosPlatformAdapter::new(),
@@ -128,9 +168,9 @@ pub fn run() -> Result<(), String> {
     let mut engine = Engine::new(
         SharedAdapter::new(Arc::clone(&adapter)),
         overlay,
-        DEBOUNCE_MS,
-        MAX_WORDS,
-        MAX_TOKENS,
+        config.debounce_ms,
+        config.max_words,
+        config.max_tokens,
     );
 
     // Callbacks fire on the dispatcher thread; mpsc::Sender is !Sync, so share it
@@ -172,8 +212,26 @@ pub fn run() -> Result<(), String> {
     ))?;
     let inference = InferenceHandle::spawn(model, config.prompt_mode)?;
 
+    // Shared state for the tray; flipped by menu actions, observed by this loop.
+    let flags = TrayFlags {
+        enabled: Arc::new(AtomicBool::new(true)),
+        quit: Arc::new(AtomicBool::new(false)),
+        open_settings: Arc::new(AtomicBool::new(false)),
+    };
+    // A tray failure is non-fatal — the engine still runs headless.
+    let tray = match MacosTray::new(flags.clone()) {
+        Ok(tray) => Some(tray),
+        Err(err) => {
+            eprintln!("complete-me: tray unavailable: {err:?}");
+            None
+        }
+    };
+
     let mut tracker = FieldTracker::new();
     let mut latest = LatestRequest::new();
+    let mut prev_enabled = true;
+    let mut secure = false;
+    let mut tick: u64 = 0;
     let start = Instant::now();
 
     eprintln!(
@@ -200,6 +258,14 @@ pub fn run() -> Result<(), String> {
                     // bare cursor move. Typing schedules a completion; a cursor
                     // move only invalidates a showing ghost (no re-request).
                     Ok(ctx) => {
+                        if config.diag_coords {
+                            if let Ok(rect) = adapter.caret_rect(&field) {
+                                eprintln!(
+                                    "complete-me: diag caret rect={rect:?} scales={:?}",
+                                    display_scales()
+                                );
+                            }
+                        }
                         match tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms) {
                             Observation::Typed(change) => offer_all(
                                 &mut latest,
@@ -238,9 +304,30 @@ pub fn run() -> Result<(), String> {
         // 3. Debounce tick.
         offer_all(&mut latest, log_err("on_tick", engine.on_tick(now_ms)));
 
-        // 4. Submit the newest pending request — withheld until the model is warm
-        // (the "loading" state; no suggestions appear before readiness).
-        if inference.is_ready() {
+        // 4. Derive status (permission/secure/ready/enabled) and update the tray.
+        if tick.is_multiple_of(SECURE_POLL_EVERY) {
+            secure = secure_input_enabled();
+        }
+        tick = tick.wrapping_add(1);
+        let enabled = flags.enabled.load(Ordering::SeqCst);
+        // Toggling off hides any showing ghost immediately.
+        if prev_enabled && !enabled {
+            let _ = log_err("on_dismiss", engine.on_dismiss());
+        }
+        prev_enabled = enabled;
+        let status = derive_status(trusted, secure, inference.is_ready(), enabled);
+        if let Some(tray) = &tray {
+            tray.set_status(
+                status.menu_title(),
+                status.status_line(),
+                enabled,
+                status.needs_accessibility(),
+            );
+        }
+
+        // 5. Submit the newest pending request only when suggestions are allowed
+        // (Ready ⇒ trusted + not secure + warm + enabled).
+        if status.suggestions_allowed() {
             if let Some(request) = latest.take() {
                 eprintln!(
                     "complete-me: request gen={} prompt={:?}",
@@ -250,20 +337,32 @@ pub fn run() -> Result<(), String> {
             }
         }
 
-        // 5. Bounded run (gates pass COMPLETE_ME_RUN_MS).
+        // 6. Tray actions.
+        if flags.open_settings.swap(false, Ordering::SeqCst) {
+            let _ = Command::new("open")
+                .arg(ACCESSIBILITY_SETTINGS_URL)
+                .status();
+        }
+        if flags.quit.load(Ordering::SeqCst) {
+            eprintln!("complete-me: quit requested");
+            break;
+        }
+
+        // 7. Bounded run (gates pass COMPLETE_ME_RUN_MS).
         if let Some(run_ms) = config.run_ms {
             if now_ms >= run_ms {
                 break;
             }
         }
 
-        // 6. Pump the main run loop: paces the loop and services the overlay.
+        // 8. Pump the main run loop: paces the loop and services the overlay.
         // SAFETY: `kCFRunLoopDefaultMode` is a Core Foundation extern static.
         let mode = unsafe { kCFRunLoopDefaultMode };
         CFRunLoop::run_in_mode(mode, HEARTBEAT, false);
     }
 
     eprintln!("complete-me: shutting down");
+    drop(tray); // remove the status item before AppKit teardown
     drop(caret_sub);
     drop(focus_sub);
     inference.shutdown();
@@ -294,6 +393,29 @@ mod tests {
         assert_eq!(config.model_path, PathBuf::from(DEFAULT_MODEL));
         assert_eq!(config.prompt_mode, PromptMode::Terse);
         assert_eq!(config.run_ms, None);
+        assert_eq!(config.debounce_ms, DEFAULT_DEBOUNCE_MS);
+        assert_eq!(config.max_words, DEFAULT_MAX_WORDS);
+        assert_eq!(config.max_tokens, DEFAULT_MAX_TOKENS);
+        assert!(!config.diag_coords);
+    }
+
+    #[test]
+    fn numeric_knobs_parse_and_clamp() {
+        let config = Config::from_lookup(lookup(&[
+            ("COMPLETE_ME_DEBOUNCE_MS", "60"),
+            ("COMPLETE_ME_MAX_WORDS", "999"), // over max → clamps to 50
+            ("COMPLETE_ME_MAX_TOKENS", "0"),  // under min → clamps to 1
+        ]));
+        assert_eq!(config.debounce_ms, 60);
+        assert_eq!(config.max_words, 50);
+        assert_eq!(config.max_tokens, 1);
+    }
+
+    #[test]
+    fn diag_coords_enabled_by_one_or_true() {
+        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_DIAG_COORDS", "1")])).diag_coords);
+        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_DIAG_COORDS", "true")])).diag_coords);
+        assert!(!Config::from_lookup(lookup(&[("COMPLETE_ME_DIAG_COORDS", "no")])).diag_coords);
     }
 
     #[test]
