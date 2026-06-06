@@ -21,6 +21,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "core-foundation",
+ "engine",
+ "libc",
+ "model_client",
+ "platform",
+ "platform_macos",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
