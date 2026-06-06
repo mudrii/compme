@@ -129,4 +129,42 @@ mod tests {
         // Same words, non-contiguous, is not a repeat.
         assert_eq!(repetition_penalty("repeat now", "repeat me now"), 1.0);
     }
+
+    #[test]
+    fn repetition_penalty_candidate_longer_than_recent_is_full() {
+        assert_eq!(repetition_penalty("a b c d", "a b"), 1.0);
+    }
+
+    #[test]
+    fn repetition_penalty_candidate_equals_recent_is_low() {
+        assert!(repetition_penalty("hello there", "hello there") < 0.5);
+    }
+
+    #[test]
+    fn repetition_penalty_empty_recent_is_full() {
+        assert_eq!(repetition_penalty("hello", ""), 1.0);
+    }
+
+    #[test]
+    fn repetition_penalty_single_word_whole_match_is_low() {
+        assert!(repetition_penalty("world", "hello world today") < 0.5);
+    }
+
+    #[test]
+    fn cap_words_empty_string_is_empty() {
+        assert_eq!(cap_words("", 4), "");
+    }
+
+    #[test]
+    fn cap_words_whitespace_only_is_empty() {
+        assert_eq!(cap_words("   \n\t", 4), "");
+    }
+
+    #[test]
+    fn next_word_two_words_splits_cleanly() {
+        assert_eq!(
+            next_word("hello world"),
+            ("hello ".to_string(), "world".to_string())
+        );
+    }
 }

@@ -5937,6 +5937,278 @@ mod tests {
     }
 
     #[test]
+    fn option_modifier_on_non_tab_key_keeps_event() {
+        // Option held on a non-Tab key must not be consumed.
+        let event =
+            accept_tap_event_with_flags(CGEventType::KeyDown, 11, 0, WORD_ACCEPT_MODIFIER_MASK);
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
+        );
+    }
+
+    #[test]
+    fn accept_tap_decision_keeps_keyup_tab() {
+        let event = accept_tap_event_with_flags(
+            CGEventType::KeyUp,
+            KEYCODE_TAB,
+            0,
+            WORD_ACCEPT_MODIFIER_MASK,
+        );
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
+        );
+    }
+
+    #[test]
+    fn observer_tap_keeps_option_tab() {
+        let event = accept_tap_event_with_flags(
+            CGEventType::KeyDown,
+            KEYCODE_TAB,
+            0,
+            WORD_ACCEPT_MODIFIER_MASK,
+        );
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Observer, event, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
+        );
+    }
+
+    #[test]
+    fn accept_tap_decision_ignores_self_generated_option_tab() {
+        let event = accept_tap_event_with_flags(
+            CGEventType::KeyDown,
+            KEYCODE_TAB,
+            SYNTHETIC_EVENT_TAG,
+            WORD_ACCEPT_MODIFIER_MASK,
+        );
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
+        );
+    }
+
+    #[test]
+    fn overlay_frame_with_zero_primary_height_does_not_panic() {
+        let frame = overlay_frame_for_text(
+            ScreenRect {
+                x: 10.0,
+                y: 50.0,
+                w: 1.0,
+                h: 14.0,
+            },
+            "x",
+            0.0,
+        );
+        // 0 - 50 - 30
+        assert_eq!(frame.y, -80.0);
+        assert!(frame.y.is_finite());
+    }
+
+    #[test]
+    fn overlay_frame_at_exact_primary_height() {
+        let frame = overlay_frame_for_text(
+            ScreenRect {
+                x: 0.0,
+                y: 1000.0,
+                w: 1.0,
+                h: 14.0,
+            },
+            "x",
+            1000.0,
+        );
+        assert_eq!(frame.y, -30.0);
+    }
+
+    #[test]
+    fn overlay_frame_small_caret_height_clamps_and_flips() {
+        // h clamps up to the 30 minimum, and the flip uses the clamped height.
+        let frame = overlay_frame_for_text(
+            ScreenRect {
+                x: 0.0,
+                y: 100.0,
+                w: 1.0,
+                h: 2.0,
+            },
+            "x",
+            1000.0,
+        );
+        assert_eq!(frame.h, 30.0);
+        assert_eq!(frame.y, 1000.0 - 100.0 - 30.0);
+    }
+
+    #[test]
+    fn usable_caret_rect_accepts_normal_and_rejects_boundaries() {
+        assert!(usable_caret_rect(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 14.0,
+        }));
+        // zero width / height rejected
+        assert!(!usable_caret_rect(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 14.0,
+        }));
+        assert!(!usable_caret_rect(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 0.0,
+        }));
+        // over-max rejected (container-sized rects)
+        assert!(!usable_caret_rect(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: MAX_USABLE_CARET_RECT_WIDTH + 1.0,
+            h: 14.0,
+        }));
+        assert!(!usable_caret_rect(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: MAX_USABLE_CARET_RECT_HEIGHT + 1.0,
+        }));
+    }
+
+    #[test]
+    fn caret_diagnostics_uses_native_when_marker_absent() {
+        let native = Some(ScreenRect {
+            x: 1.0,
+            y: 2.0,
+            w: 1.0,
+            h: 12.0,
+        });
+        let diag = caret_diagnostics_from_rects(None, native);
+        assert_eq!(diag.source, MacosCaretRectSource::NativeFallback);
+        assert_eq!(diag.resolved_rect, native);
+    }
+
+    #[test]
+    fn caret_diagnostics_uses_marker_when_usable() {
+        let marker = Some(ScreenRect {
+            x: 1.0,
+            y: 2.0,
+            w: 1.0,
+            h: 12.0,
+        });
+        let diag = caret_diagnostics_from_rects(marker, None);
+        assert_eq!(diag.source, MacosCaretRectSource::Marker);
+        assert_eq!(diag.resolved_rect, marker);
+    }
+
+    #[test]
+    fn caret_diagnostics_falls_back_when_marker_unusable() {
+        let unusable_marker = Some(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: MAX_USABLE_CARET_RECT_WIDTH + 10.0,
+            h: 12.0,
+        });
+        let native = Some(ScreenRect {
+            x: 5.0,
+            y: 6.0,
+            w: 1.0,
+            h: 12.0,
+        });
+        let diag = caret_diagnostics_from_rects(unusable_marker, native);
+        assert_eq!(diag.source, MacosCaretRectSource::NativeFallback);
+        assert_eq!(diag.resolved_rect, native);
+    }
+
+    #[test]
+    fn field_has_secure_text_subrole_matches_substring() {
+        let secure = FieldHandle {
+            app: "App".into(),
+            pid: Some(1),
+            element_id: format!("role=AXTextField|subrole={kAXSecureTextFieldSubrole}"),
+            generation: 1,
+        };
+        let normal = FieldHandle {
+            app: "App".into(),
+            pid: Some(1),
+            element_id: "role=AXTextField".into(),
+            generation: 1,
+        };
+        assert!(field_has_secure_text_subrole(&secure));
+        assert!(!field_has_secure_text_subrole(&normal));
+    }
+
+    #[test]
+    fn insertion_strategy_covers_all_branches() {
+        assert_eq!(
+            insertion_strategy(true, false, false, false),
+            InsertStrategy::AxSet
+        );
+        assert_eq!(
+            insertion_strategy(false, true, false, true),
+            InsertStrategy::SyntheticKeys
+        );
+        assert_eq!(
+            insertion_strategy(false, false, true, true),
+            InsertStrategy::Clipboard
+        );
+        assert_eq!(
+            insertion_strategy(false, true, true, false),
+            InsertStrategy::None
+        );
+        assert_eq!(
+            insertion_strategy(false, false, false, true),
+            InsertStrategy::None
+        );
+    }
+
+    #[test]
+    fn splice_text_into_empty_value() {
+        let (value, caret) = splice_text_at_utf16_range(
+            "",
+            CFRange {
+                location: 0,
+                length: 0,
+            },
+            "hi",
+        );
+        assert_eq!(value, "hi");
+        assert_eq!(caret, 2);
+    }
+
+    #[test]
+    fn splice_text_at_surrogate_boundary() {
+        // "a😀b": UTF-16 units a@0, 😀@1..3, b@3. Inserting at unit 1 (before the
+        // emoji) must keep the emoji intact.
+        let (value, caret) = splice_text_at_utf16_range(
+            "a😀b",
+            CFRange {
+                location: 1,
+                length: 0,
+            },
+            "X",
+        );
+        assert_eq!(value, "aX😀b");
+        assert_eq!(caret, 2);
+    }
+
+    #[test]
+    fn normalize_ax_screen_rect_preserves_negative_origin() {
+        let rect = normalize_ax_screen_rect(CGRect {
+            origin: CGPoint::new(-50.0, -10.0),
+            size: CGSize::new(3.0, 14.0),
+        });
+        assert_eq!(
+            rect,
+            ScreenRect {
+                x: -50.0,
+                y: -10.0,
+                w: 3.0,
+                h: 14.0,
+            }
+        );
+    }
+
+    #[test]
     fn caret_coalescer_drops_duplicate_events_inside_window() {
         let field = FocusTokenFactory::new().focused_field("TextEdit", Some(42), "element");
         let mut coalescer = CaretCoalescer::new(25);

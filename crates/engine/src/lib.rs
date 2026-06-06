@@ -314,6 +314,8 @@ mod tests {
         caps: Capabilities,
         rect: Option<ScreenRect>,
         popup: Option<ScreenRect>,
+        fail_caret_rect: bool,
+        fail_insert: bool,
         inserts: Arc<Mutex<Vec<(FieldHandle, String, InsertStrategy)>>>,
     }
 
@@ -328,9 +330,18 @@ mod tests {
                     h: 14.0,
                 }),
                 popup: None,
+                fail_caret_rect: false,
+                fail_insert: false,
                 inserts: Arc::new(Mutex::new(Vec::new())),
             }
         }
+    }
+
+    fn unsupported_field_caps() -> Capabilities {
+        let mut caps = inline_caps();
+        caps.readable_text = false;
+        caps.insert_strategy = InsertStrategy::None;
+        caps
     }
 
     impl PlatformAdapter for FakeAdapter {
@@ -364,6 +375,9 @@ mod tests {
             unimplemented!()
         }
         fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+            if self.fail_caret_rect {
+                return Err(PlatformError::Timeout);
+            }
             Ok(self.rect)
         }
         fn popup_anchor(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
@@ -375,6 +389,9 @@ mod tests {
             text: &str,
             strategy: InsertStrategy,
         ) -> Result<Inserted, PlatformError> {
+            if self.fail_insert {
+                return Err(PlatformError::StaleField);
+            }
             self.inserts
                 .lock()
                 .unwrap()
@@ -490,6 +507,145 @@ mod tests {
         engine.on_completion(&requests[0], "nope".into()).unwrap();
 
         assert!(overlay.calls.lock().unwrap().is_empty());
+    }
+
+    fn other_field() -> FieldHandle {
+        FieldHandle {
+            app: "TextEdit".into(),
+            pid: Some(42),
+            element_id: "field-b".into(),
+            generation: 1,
+        }
+    }
+
+    #[test]
+    fn focus_on_unsupported_field_yields_no_request() {
+        let mut adapter = FakeAdapter::new();
+        adapter.caps = unsupported_field_caps();
+        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+
+        assert!(engine.on_tick(9999).unwrap().is_empty());
+    }
+
+    #[test]
+    fn accept_insert_uses_strategy_from_focus_caps() {
+        let mut adapter = FakeAdapter::new();
+        adapter.caps = Capabilities {
+            insert_strategy: InsertStrategy::SyntheticKeys,
+            ..inline_caps()
+        };
+        let inserts = Arc::clone(&adapter.inserts);
+        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion(&requests[0], "hello world".into())
+            .unwrap();
+        engine.on_accept(AcceptAction::Full).unwrap();
+
+        assert_eq!(inserts.lock().unwrap()[0].2, InsertStrategy::SyntheticKeys);
+    }
+
+    #[test]
+    fn caret_rect_error_propagates_when_showing() {
+        let mut adapter = FakeAdapter::new();
+        adapter.fail_caret_rect = true;
+        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+
+        assert!(engine.on_completion(&requests[0], "hi".into()).is_err());
+    }
+
+    #[test]
+    fn insert_error_propagates_on_accept() {
+        let mut adapter = FakeAdapter::new();
+        adapter.fail_insert = true;
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay, 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion(&requests[0], "hi there".into())
+            .unwrap();
+
+        assert!(engine.on_accept(AcceptAction::Full).is_err());
+    }
+
+    #[test]
+    fn secure_state_change_hides_showing_ghost() {
+        let (mut engine, _adapter, overlay) = showing("hello there");
+
+        engine
+            .on_secure_state(Capabilities {
+                secure: true,
+                security_state: platform::SecurityState::SecureField,
+                ..inline_caps()
+            })
+            .unwrap();
+
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+    }
+
+    #[test]
+    fn refocus_hides_showing_ghost() {
+        let (mut engine, _adapter, overlay) = showing("hello there");
+
+        engine.on_focus(other_field()).unwrap();
+
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+    }
+
+    #[test]
+    fn caret_move_with_nothing_showing_is_noop() {
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+
+        engine.on_caret(field(), 5).unwrap();
+
+        assert!(overlay.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn arms_accept_tap_via_popup_anchor_path() {
+        let mut adapter = FakeAdapter::new();
+        adapter.rect = None;
+        adapter.popup = Some(ScreenRect {
+            x: 1.0,
+            y: 2.0,
+            w: 200.0,
+            h: 24.0,
+        });
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay, 200, 4, 32);
+
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            |_delay| Ok(()),
+            |_action| Ok(()),
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "popup".into()).unwrap();
+
+        assert_eq!(*visible.lock().unwrap(), vec![true]);
     }
 
     #[test]

@@ -418,4 +418,60 @@ mod tests {
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
+
+    #[test]
+    fn subscription_without_cancel_drops_safely() {
+        let subscription = Subscription::new(3);
+        assert_eq!(subscription.id(), 3);
+        drop(subscription);
+    }
+
+    #[test]
+    fn secure_field_state_alone_is_blocked() {
+        let mut c = caps();
+        c.secure = false;
+        c.security_state = SecurityState::SecureField;
+
+        assert_eq!(ux_mode(&c), UxMode::Blocked);
+    }
+
+    #[test]
+    fn accept_subscription_forwards_each_callback_and_id() {
+        let visible = Arc::new(AtomicUsize::new(0));
+        let hide = Arc::new(AtomicUsize::new(0));
+        let action = Arc::new(AtomicUsize::new(0));
+        let v = Arc::clone(&visible);
+        let h = Arc::clone(&hide);
+        let a = Arc::clone(&action);
+
+        let subscription = AcceptSubscription::new(
+            Subscription::new(9),
+            move |_visible| {
+                v.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+            move |_delay| {
+                h.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+            move |_action| {
+                a.fetch_add(1, Ordering::Relaxed);
+                Err(PlatformError::Timeout)
+            },
+        );
+
+        assert_eq!(subscription.id(), 9);
+        assert!(subscription.set_suggestion_visible(true).is_ok());
+        assert!(subscription
+            .hide_suggestion_after(std::time::Duration::from_millis(5))
+            .is_ok());
+        // The set_accept_action closure returns Err — forwarding must surface it.
+        assert!(subscription
+            .set_accept_action(Some(AcceptAction::Word))
+            .is_err());
+
+        assert_eq!(visible.load(Ordering::Relaxed), 1);
+        assert_eq!(hide.load(Ordering::Relaxed), 1);
+        assert_eq!(action.load(Ordering::Relaxed), 1);
+    }
 }

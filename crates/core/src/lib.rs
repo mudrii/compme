@@ -640,4 +640,112 @@ mod tests {
 
         assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
     }
+
+    #[test]
+    fn accept_word_with_nothing_showing_is_noop() {
+        let mut machine = machine();
+
+        assert_eq!(machine.on_event(Event::AcceptWord), vec![]);
+    }
+
+    #[test]
+    fn whitespace_only_completion_is_suppressed() {
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "   \n\t".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn completion_ready_without_request_is_noop() {
+        let mut machine = machine();
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "unrequested".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn tick_without_pending_is_noop() {
+        let mut machine = machine();
+
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 9999 }), vec![]);
+    }
+
+    #[test]
+    fn dismiss_with_nothing_showing_is_noop() {
+        let mut machine = machine();
+
+        assert_eq!(machine.on_event(Event::Dismiss), vec![]);
+    }
+
+    #[test]
+    fn caret_moved_with_nothing_showing_is_noop() {
+        let mut machine = machine();
+
+        assert_eq!(
+            machine.on_event(Event::CaretMoved {
+                field: field("field-a"),
+                caret: 4,
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn secure_state_change_with_nothing_showing_emits_no_hide() {
+        let mut machine = machine();
+
+        assert_eq!(
+            machine.on_event(Event::SecureStateChanged {
+                caps: secure_caps(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn focus_with_nothing_showing_emits_no_hide() {
+        let mut machine = machine();
+
+        assert_eq!(
+            machine.on_event(Event::Focus {
+                field: field("field-a"),
+                caps: inline_caps(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn accept_word_advances_internal_caret_so_matching_caret_keeps_showing() {
+        let mut machine = showing_three_words();
+        // Suggestion shown at caret 1 ("x"); accepting "world " (6 chars)
+        // advances the tracked caret to 7.
+        machine.on_event(Event::AcceptWord);
+
+        // A caret report at the advanced position must NOT hide the remainder.
+        assert_eq!(
+            machine.on_event(Event::CaretMoved {
+                field: field("field-a"),
+                caret: 7,
+            }),
+            vec![]
+        );
+    }
 }

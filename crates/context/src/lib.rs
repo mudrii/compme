@@ -89,4 +89,44 @@ mod tests {
     fn trim_prefix_preserves_leading_whitespace() {
         assert_eq!(trim_prefix("  hi "), "  hi");
     }
+
+    #[test]
+    fn left_tail_n_exceeds_available_returns_all() {
+        assert_eq!(left_tail("abc", 1, 5), "a");
+    }
+
+    #[test]
+    fn left_tail_caret_past_end_returns_all_left() {
+        assert_eq!(left_tail("abc", 99, 2), "bc");
+    }
+
+    #[test]
+    fn left_tail_empty_string_is_empty() {
+        assert_eq!(left_tail("", 3, 4), "");
+    }
+
+    #[test]
+    fn left_context_empty_string_is_empty() {
+        assert_eq!(left_context("", 5), "");
+    }
+
+    #[test]
+    fn right_context_caret_zero_returns_all() {
+        assert_eq!(right_context("hello", 0), "hello");
+    }
+
+    #[test]
+    fn right_context_empty_string_is_empty() {
+        assert_eq!(right_context("", 3), "");
+    }
+
+    #[test]
+    fn trim_prefix_all_whitespace_is_empty() {
+        assert_eq!(trim_prefix("  \n\t"), "");
+    }
+
+    #[test]
+    fn trim_prefix_empty_string_is_empty() {
+        assert_eq!(trim_prefix(""), "");
+    }
 }
