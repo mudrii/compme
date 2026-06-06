@@ -794,4 +794,49 @@ mod tests {
             )]
         );
     }
+
+    #[test]
+    fn overlay_show_error_propagates() {
+        // A failing overlay must surface its error to the caller rather than
+        // being swallowed — the show→accept→hide cycle depends on it.
+        struct ErroringOverlay;
+        impl OverlayPresenter for ErroringOverlay {
+            fn show_ghost(&mut self, _rect: ScreenRect, _text: &str) -> Result<(), PlatformError> {
+                Err(PlatformError::Timeout)
+            }
+            fn update_ghost(&mut self, _text: &str) -> Result<(), PlatformError> {
+                Ok(())
+            }
+            fn hide(&mut self) -> Result<(), PlatformError> {
+                Ok(())
+            }
+        }
+
+        let mut engine = Engine::new(FakeAdapter::new(), ErroringOverlay, 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+
+        let result = engine.on_completion(&requests[0], "hello".into());
+
+        assert_eq!(result, Err(PlatformError::Timeout));
+    }
+
+    #[test]
+    fn show_ghost_is_safe_without_an_accept_subscription() {
+        // The engine is shown a completion before any accept subscription was
+        // installed. The tap arming must no-op rather than panic.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+
+        let result = engine.on_completion(&requests[0], "hello".into());
+
+        assert!(result.is_ok());
+        assert!(matches!(
+            overlay.calls.lock().unwrap().last(),
+            Some(OverlayCall::Show(_, _))
+        ));
+    }
 }

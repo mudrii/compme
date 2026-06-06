@@ -1,5 +1,6 @@
 //! ATDD acceptance: a real GGUF loads on Metal and a warm short completion is < 500ms.
-//! Skips (not fails) if the model isn't downloaded, so CI without the model stays green.
+//! Ignored by default (needs the GGUF model + Metal GPU), so a plain `cargo test`
+//! reports it as *ignored* rather than silently passing. Run with `--ignored`.
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -55,6 +56,7 @@ fn warm_complete_ms(prompt: &str, n: usize) -> Option<u128> {
 }
 
 #[test]
+#[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn model_loads_and_warm_completion_is_under_500ms() {
     match warm_complete_ms("The quick brown fox", 12) {
         None => eprintln!("SKIP: model not downloaded at {MODEL}"),

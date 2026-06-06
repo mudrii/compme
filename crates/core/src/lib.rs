@@ -2,7 +2,7 @@
 
 use context::{left_context, trim_prefix};
 use platform::{ux_mode, Capabilities, FieldHandle, UxMode};
-use ranker::{cap_words, next_word, repetition_penalty};
+use ranker::{cap_words, next_word, repetition_penalty, trim_to_stop_boundary};
 
 pub type SnapshotId = u64;
 
@@ -176,12 +176,14 @@ impl SuggestionMachine {
                 self.value = value;
                 self.caret = caret;
                 self.advance_snapshot();
-                self.pending_since =
-                    if edit != EditKind::Delete && self.enabled() && trigger == TriggerPolicy::Automatic {
-                        Some(now_ms)
-                    } else {
-                        None
-                    };
+                self.pending_since = if edit != EditKind::Delete
+                    && self.enabled()
+                    && trigger == TriggerPolicy::Automatic
+                {
+                    Some(now_ms)
+                } else {
+                    None
+                };
             }
             Event::Tick { now_ms } => {
                 if let (Some(since), Some(field)) = (self.pending_since, self.field.clone()) {
@@ -220,7 +222,8 @@ impl SuggestionMachine {
                 });
 
                 if matches_request {
-                    let capped = cap_words(&text, self.max_words);
+                    let bounded = trim_to_stop_boundary(&text);
+                    let capped = cap_words(bounded, self.max_words);
                     let recent = left_context(&self.value, self.caret);
                     let fresh = repetition_penalty(&capped, &recent) >= REPETITION_PENALTY_FLOOR;
                     if !capped.is_empty() && fresh {
@@ -389,9 +392,79 @@ mod tests {
         // Tick well past the debounce window — must not emit RequestCompletion.
         let cmds = machine.on_event(Event::Tick { now_ms: 2000 });
         assert!(
-            !cmds.iter().any(|c| matches!(c, Command::RequestCompletion { .. })),
+            !cmds
+                .iter()
+                .any(|c| matches!(c, Command::RequestCompletion { .. })),
             "expected no RequestCompletion after a Delete edit, got: {cmds:?}"
         );
+    }
+
+    #[test]
+    fn paste_edit_triggers_request_like_insert() {
+        // A paste (Cmd+V) is a non-Delete edit and must arm a completion the
+        // same way typing does.
+        let mut machine = machine();
+
+        machine.on_event(Event::TextChanged {
+            field: field("field-a"),
+            value: "pasted text ".into(),
+            caret: 12,
+            edit: EditKind::Paste,
+            previous_caret: Some(0),
+            previous_value_hash: Some(1),
+            trigger: TriggerPolicy::Automatic,
+            now_ms: 1000,
+        });
+
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 1200 }),
+            vec![Command::RequestCompletion {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                prompt: "pasted text".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn unknown_edit_triggers_request() {
+        // The trigger gate keys off "not a Delete", so an Unknown edit still
+        // arms a request — this pins the gate against regressing to `== Insert`.
+        let mut machine = machine();
+
+        machine.on_event(Event::TextChanged {
+            field: field("field-a"),
+            value: "typed ".into(),
+            caret: 6,
+            edit: EditKind::Unknown,
+            previous_caret: None,
+            previous_value_hash: None,
+            trigger: TriggerPolicy::Automatic,
+            now_ms: 1000,
+        });
+
+        let cmds = machine.on_event(Event::Tick { now_ms: 1200 });
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Command::RequestCompletion { .. })),
+            "expected RequestCompletion after an Unknown edit, got: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn secure_state_change_clears_pending_request() {
+        // A secure-state flip arriving before debounce must cancel the pending
+        // request. Caps stay enabled here so this isolates pending-clearing
+        // from the separate "secure field disables requests" path.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello ", 6, 1000));
+
+        machine.on_event(Event::SecureStateChanged {
+            caps: inline_caps(),
+        });
+
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
     }
 
     #[test]
@@ -429,6 +502,27 @@ mod tests {
                 field: field("field-a"),
                 snapshot: 1,
                 text: "a b c d".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn shows_only_first_line_of_multiline_completion() {
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "inline tail\n- bullet\n- bullet".into(),
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "inline tail".into(),
             }]
         );
     }

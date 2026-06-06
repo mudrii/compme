@@ -1,5 +1,19 @@
 //! Candidate shaping and lightweight ranking helpers.
 
+/// Trim a raw completion at the first hard stop boundary.
+///
+/// Inline completion is a single visual line: a model that runs on into a new
+/// paragraph or list must be cut at the first line break before any word
+/// capping happens. This is the "aggressive stop sequence" lever called out in
+/// the MVP spec (newline/sentence boundary). We stop at the first `\n`/`\r`;
+/// sentence-boundary shaping is left to `cap_words` plus the caller's word cap.
+pub fn trim_to_stop_boundary(text: &str) -> &str {
+    match text.find(['\n', '\r']) {
+        Some(index) => &text[..index],
+        None => text,
+    }
+}
+
 pub fn cap_words(text: &str, max_words: usize) -> String {
     text.split_whitespace()
         .take(max_words)
@@ -45,6 +59,32 @@ pub fn repetition_penalty(candidate: &str, recent: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trim_to_stop_boundary_cuts_at_first_newline() {
+        assert_eq!(
+            trim_to_stop_boundary("inline part\nsecond paragraph"),
+            "inline part"
+        );
+    }
+
+    #[test]
+    fn trim_to_stop_boundary_cuts_at_carriage_return() {
+        assert_eq!(trim_to_stop_boundary("first\r\nsecond"), "first");
+    }
+
+    #[test]
+    fn trim_to_stop_boundary_keeps_single_line_intact() {
+        assert_eq!(
+            trim_to_stop_boundary("one clean inline line"),
+            "one clean inline line"
+        );
+    }
+
+    #[test]
+    fn trim_to_stop_boundary_empty_when_leading_newline() {
+        assert_eq!(trim_to_stop_boundary("\nrest"), "");
+    }
 
     #[test]
     fn cap_words_caps() {

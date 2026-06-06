@@ -49,14 +49,12 @@ pub trait LocalModel: Send + Sync {
 
     /// Warm up the model (e.g. run a dummy inference to prime the KV cache).
     /// Default is a no-op; override in production backends.
-    // TODO: implement in LlamaModel once a warm-up inference strategy is chosen
     fn warm_up(&self) -> Result<(), LocalModelError> {
         Ok(())
     }
 
     /// Release model resources. Called on graceful shutdown.
     /// Default is a no-op; override in production backends.
-    // TODO: implement in LlamaModel to drop the context and backend cleanly
     fn shutdown(self: Box<Self>) {}
 }
 
@@ -141,6 +139,27 @@ impl LocalModel for LlamaModel {
 
         Ok(output)
     }
+
+    /// Pre-load Metal shaders with a single throwaway decode.
+    ///
+    /// The first decode after load triggers ggml's Metal shader compile, which
+    /// costs seconds. Spec §"Warm-up mandatory": pre-load model + dummy decode
+    /// at launch so the first real completion is on the warm path.
+    fn warm_up(&self) -> Result<(), LocalModelError> {
+        self.complete("warm up", 1).map(|_| ())
+    }
+
+    /// Free the model and backend in a deterministic order before process exit.
+    ///
+    /// Spec §"ggml-Metal aborts on exit unless model/context freed via explicit
+    /// `shutdown()` before teardown (guard double-free)". Completion contexts are
+    /// already dropped per call, so here we drop the model before the backend it
+    /// borrows from, rather than relying on struct field drop order at exit.
+    fn shutdown(self: Box<Self>) {
+        let Self { backend, model, .. } = *self;
+        drop(model);
+        drop(backend);
+    }
 }
 
 pub fn terse_continuation_prompt(prefix: &str) -> String {
@@ -184,6 +203,47 @@ mod tests {
         assert_eq!(err.stage(), "decode prompt");
         assert_eq!(err.message(), "backend unavailable");
         assert_eq!(err.to_string(), "decode prompt failed: backend unavailable");
+    }
+
+    #[test]
+    fn default_warm_up_is_ok_noop() {
+        let model: Box<dyn LocalModel> = Box::new(Fixed("ok"));
+
+        assert_eq!(model.warm_up(), Ok(()));
+    }
+
+    #[test]
+    fn warm_up_surfaces_backend_errors() {
+        struct WarmFails;
+
+        impl LocalModel for WarmFails {
+            fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+                Err(LocalModelError::new(
+                    "decode prompt",
+                    "metal compile failed",
+                ))
+            }
+
+            fn warm_up(&self) -> Result<(), LocalModelError> {
+                self.complete("warm up", 1).map(|_| ())
+            }
+        }
+
+        let model: Box<dyn LocalModel> = Box::new(WarmFails);
+        let err = model
+            .warm_up()
+            .expect_err("warm-up should surface decode errors");
+
+        assert_eq!(err.stage(), "decode prompt");
+    }
+
+    #[test]
+    fn shutdown_consumes_the_boxed_model() {
+        // shutdown takes `self: Box<Self>`, so a graceful teardown both runs the
+        // override and guarantees the resources are released exactly once.
+        let model: Box<dyn LocalModel> = Box::new(Fixed("ok"));
+
+        model.shutdown();
     }
 
     #[test]

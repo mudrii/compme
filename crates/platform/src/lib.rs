@@ -380,6 +380,19 @@ mod tests {
     }
 
     #[test]
+    fn secure_field_blocks_even_with_hotkey_only_intercept() {
+        // The secure guard runs before the intercept check, so a secure field
+        // is Blocked regardless of a HotkeyOnly intercept that would otherwise
+        // classify as Hotkey.
+        let mut c = caps();
+        c.secure = true;
+        c.security_state = SecurityState::SecureField;
+        c.accept_intercept = KeyInterceptMode::HotkeyOnly;
+
+        assert_eq!(ux_mode(&c), UxMode::Blocked);
+    }
+
+    #[test]
     fn not_readable_is_unsupported() {
         let mut c = caps();
         c.readable_text = false;

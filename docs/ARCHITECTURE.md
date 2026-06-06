@@ -72,12 +72,15 @@ cases.
 
 `ranker` contains lightweight candidate shaping:
 
+- `trim_to_stop_boundary`: cut a raw completion at the first line break before
+  any word capping, so inline ghost text stays a single visual line.
 - `cap_words`
 - `next_word`
-- `repetition_penalty`
+- `repetition_penalty`: returns a sub-floor factor when the candidate repeats a
+  contiguous run of recent words verbatim.
 
-The current implementation is intentionally small. Product-quality ranking and
-stop-boundary handling are future work.
+The current implementation is intentionally small. Richer product-quality
+ranking (sentence-boundary shaping, per-app scoring) is future work.
 
 ### `core`
 
@@ -116,6 +119,12 @@ The machine tracks:
 This prevents stale model output from being shown or inserted after focus,
 caret, secure-state, or text changes.
 
+Before a completion is shown, the machine shapes it through `ranker`:
+`trim_to_stop_boundary` cuts at the first line break, `cap_words` enforces the
+word cap, and a `repetition_penalty` below `REPETITION_PENALTY_FLOOR`
+suppresses the suggestion entirely so the user is never shown a verbatim repeat
+of nearby text.
+
 ### `model_client`
 
 `model_client` defines the model boundary:
@@ -123,11 +132,13 @@ caret, secure-state, or text changes.
 - `LocalModel`: synchronous local completion trait.
 - `LocalModelError`: structured failure stage plus message.
 - `LlamaModel`: `llama-cpp-2` implementation using Metal via
-  `with_n_gpu_layers(999)`.
+  `with_n_gpu_layers(999)`. Overrides `warm_up` (a throwaway decode that
+  triggers Metal shader compile up front) and `shutdown` (drops the model
+  before the backend, in order, to avoid the ggml exit-abort).
 - `terse_continuation_prompt`: the current development prompt shape.
 
-The current `LlamaModel` creates a fresh llama context per completion. Warm-up,
-long-lived actor lifecycle, prefix-cache reuse, and serialized production model
+The current `LlamaModel` creates a fresh llama context per completion.
+Long-lived actor lifecycle, prefix-cache reuse, and serialized production model
 access are not implemented in this crate yet.
 
 ### `engine`
@@ -136,6 +147,14 @@ access are not implemented in this crate yet.
 `PlatformAdapter` and an `OverlayPresenter`. It drives the suggestion loop:
 subscribing to platform events, feeding them into the machine, and dispatching
 the resulting commands back to the platform and overlay layers.
+
+Beyond translating platform callbacks into core `Event`s, the host exposes two
+adapter-driven entry points required by the A1b macOS contract:
+
+- `on_secure_state`: forwards a fresh `Capabilities` reading into the machine as
+  a `SecureStateChanged` event when Secure Input or secure-field status flips.
+- `set_accept_subscription`: hands the adapter's accept-tap subscription to the
+  host so accept events reach the machine while a suggestion is armed.
 
 ### `platform_macos`
 

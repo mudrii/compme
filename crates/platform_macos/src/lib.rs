@@ -2642,15 +2642,78 @@ unsafe fn screen_rect_from_ax_value(value: CFTypeRef) -> Result<Option<ScreenRec
         kAXValueTypeCGRect,
         &mut rect as *mut _ as *mut c_void,
     ) {
-        Ok(Some(normalize_ax_screen_rect(rect)))
+        Ok(Some(normalize_ax_screen_rect(
+            rect,
+            &active_display_scales(),
+        )))
     } else {
         Ok(None)
     }
 }
 
-fn normalize_ax_screen_rect(rect: CGRect) -> ScreenRect {
-    // AX bounds are already in global screen points. Preserve fractional and
-    // negative origins for Retina and non-primary display layouts.
+/// A display's point-space bounds plus its backing scale factor. Used to detect
+/// whether an AX rect was reported in pixels instead of points.
+#[derive(Clone, Copy, Debug)]
+struct DisplayScale {
+    bounds: CGRect,
+    scale: f64,
+}
+
+/// Active displays with their point-space bounds and backing scale factor,
+/// read via thread-safe CoreGraphics (not NSScreen, which needs the main
+/// thread — caret rects are read off the AX worker thread).
+fn active_display_scales() -> Vec<DisplayScale> {
+    let Ok(ids) = CGDisplay::active_displays() else {
+        return Vec::new();
+    };
+    ids.iter()
+        .map(|id| {
+            let display = CGDisplay::new(*id);
+            let bounds = display.bounds();
+            let point_width = bounds.size.width;
+            let scale = if point_width > 0.0 {
+                display.pixels_wide() as f64 / point_width
+            } else {
+                1.0
+            };
+            DisplayScale { bounds, scale }
+        })
+        .collect()
+}
+
+fn point_within(point: CGPoint, bounds: CGRect) -> bool {
+    point.x >= bounds.origin.x
+        && point.x <= bounds.origin.x + bounds.size.width
+        && point.y >= bounds.origin.y
+        && point.y <= bounds.origin.y + bounds.size.height
+}
+
+/// Normalize an AX caret/bounds rect into global screen points.
+///
+/// AX is documented to return global screen *points*, and on every display we
+/// have measured it does — so the common path is a pass-through that preserves
+/// fractional and negative origins for Retina and non-primary layouts. But the
+/// MVP spec (§"Retina pixel-vs-point": "divide by per-display
+/// `backingScaleFactor` if mismatched") requires guarding the case where a
+/// misbehaving app reports *pixels*: if the raw origin lands on no display yet
+/// dividing by some display's scale lands it inside that display's point
+/// bounds, the rect was in pixels — divide the whole rect by that scale.
+fn normalize_ax_screen_rect(rect: CGRect, displays: &[DisplayScale]) -> ScreenRect {
+    let origin = rect.origin;
+    let on_a_display = displays.iter().any(|d| point_within(origin, d.bounds));
+    if !on_a_display {
+        if let Some(scale) = displays.iter().find_map(|d| {
+            let scaled = CGPoint::new(origin.x / d.scale, origin.y / d.scale);
+            (d.scale > 1.0 && point_within(scaled, d.bounds)).then_some(d.scale)
+        }) {
+            return ScreenRect {
+                x: rect.origin.x / scale,
+                y: rect.origin.y / scale,
+                w: rect.size.width / scale,
+                h: rect.size.height / scale,
+            };
+        }
+    }
     ScreenRect {
         x: rect.origin.x,
         y: rect.origin.y,
@@ -5764,16 +5827,19 @@ mod tests {
 
     #[test]
     fn normalize_ax_screen_rect_preserves_global_point_coordinates() {
-        let rect = normalize_ax_screen_rect(CGRect {
-            origin: CGPoint {
-                x: -127.5,
-                y: 42.25,
+        let rect = normalize_ax_screen_rect(
+            CGRect {
+                origin: CGPoint {
+                    x: -127.5,
+                    y: 42.25,
+                },
+                size: CGSize {
+                    width: 1.5,
+                    height: 18.75,
+                },
             },
-            size: CGSize {
-                width: 1.5,
-                height: 18.75,
-            },
-        });
+            &[],
+        );
 
         assert_eq!(
             rect,
@@ -5782,6 +5848,169 @@ mod tests {
                 y: 42.25,
                 w: 1.5,
                 h: 18.75,
+            }
+        );
+    }
+
+    fn retina_display() -> DisplayScale {
+        DisplayScale {
+            bounds: CGRect {
+                origin: CGPoint::new(0.0, 0.0),
+                size: CGSize::new(1440.0, 900.0),
+            },
+            scale: 2.0,
+        }
+    }
+
+    #[test]
+    fn normalize_ax_screen_rect_passes_through_points_on_a_display() {
+        let rect = normalize_ax_screen_rect(
+            CGRect {
+                origin: CGPoint::new(720.0, 450.0),
+                size: CGSize::new(2.0, 18.0),
+            },
+            &[retina_display()],
+        );
+        assert_eq!(
+            rect,
+            ScreenRect {
+                x: 720.0,
+                y: 450.0,
+                w: 2.0,
+                h: 18.0
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_ax_screen_rect_divides_pixel_space_rect_by_backing_scale() {
+        // Origin (1500, 880) lands on no display in points (the Retina display
+        // is 1440x900 points), but /2 lands inside it — so it was reported in
+        // pixels and must be divided by the backing scale factor.
+        let rect = normalize_ax_screen_rect(
+            CGRect {
+                origin: CGPoint::new(1500.0, 880.0),
+                size: CGSize::new(4.0, 36.0),
+            },
+            &[retina_display()],
+        );
+        assert_eq!(
+            rect,
+            ScreenRect {
+                x: 750.0,
+                y: 440.0,
+                w: 2.0,
+                h: 18.0
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_ax_screen_rect_preserves_when_scale_cannot_explain_offset() {
+        // Off every display even after scaling — ambiguous, so preserve the
+        // raw rect rather than guess.
+        let rect = normalize_ax_screen_rect(
+            CGRect {
+                origin: CGPoint::new(9000.0, 9000.0),
+                size: CGSize::new(2.0, 18.0),
+            },
+            &[retina_display()],
+        );
+        assert_eq!(
+            rect,
+            ScreenRect {
+                x: 9000.0,
+                y: 9000.0,
+                w: 2.0,
+                h: 18.0
+            }
+        );
+    }
+
+    fn primary_display() -> DisplayScale {
+        DisplayScale {
+            bounds: CGRect {
+                origin: CGPoint::new(0.0, 0.0),
+                size: CGSize::new(1440.0, 900.0),
+            },
+            scale: 1.0,
+        }
+    }
+
+    fn secondary_retina_display() -> DisplayScale {
+        DisplayScale {
+            bounds: CGRect {
+                origin: CGPoint::new(1440.0, 0.0),
+                size: CGSize::new(1280.0, 800.0),
+            },
+            scale: 2.0,
+        }
+    }
+
+    #[test]
+    fn normalize_ax_screen_rect_passes_through_points_on_a_non_primary_display() {
+        // Origin (1500, 100) is already inside the secondary display's point
+        // bounds, so it must pass through untouched — not be mistaken for
+        // pixels and divided by the primary's scale.
+        let rect = normalize_ax_screen_rect(
+            CGRect {
+                origin: CGPoint::new(1500.0, 100.0),
+                size: CGSize::new(2.0, 18.0),
+            },
+            &[primary_display(), secondary_retina_display()],
+        );
+        assert_eq!(
+            rect,
+            ScreenRect {
+                x: 1500.0,
+                y: 100.0,
+                w: 2.0,
+                h: 18.0
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_ax_screen_rect_divides_by_the_matching_display_scale_not_a_unit_display() {
+        // Origin (5000, 100) lands on neither display in points. /1.0 still
+        // lands on neither, but /2.0 lands inside the Retina secondary — so the
+        // Retina scale is the one that explains it.
+        let rect = normalize_ax_screen_rect(
+            CGRect {
+                origin: CGPoint::new(5000.0, 100.0),
+                size: CGSize::new(4.0, 36.0),
+            },
+            &[primary_display(), secondary_retina_display()],
+        );
+        assert_eq!(
+            rect,
+            ScreenRect {
+                x: 2500.0,
+                y: 50.0,
+                w: 2.0,
+                h: 18.0
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_ax_screen_rect_empty_display_list_preserves_off_screen_rect() {
+        // With no displays known, there is nothing to validate against — the
+        // rect must pass through without panicking.
+        let rect = normalize_ax_screen_rect(
+            CGRect {
+                origin: CGPoint::new(9000.0, 9000.0),
+                size: CGSize::new(2.0, 18.0),
+            },
+            &[],
+        );
+        assert_eq!(
+            rect,
+            ScreenRect {
+                x: 9000.0,
+                y: 9000.0,
+                w: 2.0,
+                h: 18.0
             }
         );
     }
@@ -6200,10 +6429,13 @@ mod tests {
 
     #[test]
     fn normalize_ax_screen_rect_preserves_negative_origin() {
-        let rect = normalize_ax_screen_rect(CGRect {
-            origin: CGPoint::new(-50.0, -10.0),
-            size: CGSize::new(3.0, 14.0),
-        });
+        let rect = normalize_ax_screen_rect(
+            CGRect {
+                origin: CGPoint::new(-50.0, -10.0),
+                size: CGSize::new(3.0, 14.0),
+            },
+            &[],
+        );
         assert_eq!(
             rect,
             ScreenRect {
