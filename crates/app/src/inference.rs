@@ -139,7 +139,7 @@ impl InferenceHandle {
 mod tests {
     use super::*;
     use crate::model_select::StubModel;
-    use model_client::LocalModelResult;
+    use model_client::{LocalModelError, LocalModelResult};
     use platform::FieldHandle;
 
     /// Echoes the exact prompt string it receives, so a test can assert what the
@@ -148,6 +148,30 @@ mod tests {
     impl LocalModel for EchoModel {
         fn complete(&self, prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
             Ok(prompt.to_string())
+        }
+    }
+
+    /// Fails warm-up but completes normally — proves warm-up failure is non-fatal.
+    struct WarmUpFailModel;
+    impl LocalModel for WarmUpFailModel {
+        fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+            Ok("served".into())
+        }
+        fn warm_up(&self) -> Result<(), LocalModelError> {
+            Err(LocalModelError::new("warm-up", "boom"))
+        }
+    }
+
+    /// Errors only on prompts containing "bad" — lets a test exercise the
+    /// complete()-error branch and confirm the worker keeps serving afterwards.
+    struct ConditionalModel;
+    impl LocalModel for ConditionalModel {
+        fn complete(&self, prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+            if prompt.contains("bad") {
+                Err(LocalModelError::new("infer", "nope"))
+            } else {
+                Ok(prompt.to_string())
+            }
         }
     }
 
@@ -206,6 +230,34 @@ mod tests {
         inference.submit(request("p", 1));
         let _ = inference.recv_outcome();
         assert!(inference.is_ready());
+        inference.shutdown();
+    }
+
+    #[test]
+    fn warm_up_failure_is_non_fatal() {
+        // A failing warm-up must not block readiness or completions.
+        let inference = InferenceHandle::spawn(Box::new(WarmUpFailModel), PromptMode::Raw).unwrap();
+        inference.submit(request("p", 1));
+        let outcome = inference
+            .recv_outcome()
+            .expect("outcome despite warm-up failure");
+        assert_eq!(outcome.text, "served");
+        assert!(inference.is_ready());
+        inference.shutdown();
+    }
+
+    #[test]
+    fn complete_error_is_non_fatal_worker_keeps_serving() {
+        // The worker hits a complete() error on the "bad" request, then must
+        // still serve the later "good" request.
+        let inference =
+            InferenceHandle::spawn(Box::new(ConditionalModel), PromptMode::Raw).unwrap();
+        inference.submit(request("bad", 1));
+        inference.submit(request("good", 2));
+        let outcome = inference
+            .recv_outcome()
+            .expect("worker survives an error and serves later requests");
+        assert_eq!(outcome.text, "good");
         inference.shutdown();
     }
 

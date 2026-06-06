@@ -69,20 +69,22 @@ struct Config {
 
 impl Config {
     fn from_env() -> Self {
+        Self::from_lookup(|key| env::var(key).ok())
+    }
+
+    /// Pure config parsing from a key→value lookup, so the parsing rules
+    /// (pid/run_ms parse, empty-stub filtering, default model path, prompt mode)
+    /// are unit-testable without touching the process environment.
+    fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
         Self {
-            acceptance_pid: env::var("COMPLETE_ME_ACCEPTANCE_PID")
-                .ok()
+            acceptance_pid: lookup("COMPLETE_ME_ACCEPTANCE_PID")
                 .and_then(|raw| raw.parse::<i32>().ok()),
-            stub_completion: env::var("COMPLETE_ME_STUB_COMPLETION")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            model_path: env::var("COMPLETE_ME_MODEL_PATH")
+            stub_completion: lookup("COMPLETE_ME_STUB_COMPLETION").filter(|s| !s.is_empty()),
+            model_path: lookup("COMPLETE_ME_MODEL_PATH")
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(DEFAULT_MODEL)),
-            prompt_mode: resolve_prompt_mode(env::var("COMPLETE_ME_PROMPT_MODE").ok()),
-            run_ms: env::var("COMPLETE_ME_RUN_MS")
-                .ok()
-                .and_then(|raw| raw.parse::<u64>().ok()),
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_MODEL)),
+            prompt_mode: resolve_prompt_mode(lookup("COMPLETE_ME_PROMPT_MODE")),
+            run_ms: lookup("COMPLETE_ME_RUN_MS").and_then(|raw| raw.parse::<u64>().ok()),
         }
     }
 }
@@ -268,4 +270,73 @@ pub fn run() -> Result<(), String> {
     drop(engine); // drops overlay + accept subscription + the engine's adapter handle
     drop(adapter); // last Arc ref → AX worker thread stops
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Build a lookup closure from a list of key/value pairs.
+    fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |key: &str| map.get(key).cloned()
+    }
+
+    #[test]
+    fn empty_environment_uses_defaults() {
+        let config = Config::from_lookup(lookup(&[]));
+        assert_eq!(config.acceptance_pid, None);
+        assert_eq!(config.stub_completion, None);
+        assert_eq!(config.model_path, PathBuf::from(DEFAULT_MODEL));
+        assert_eq!(config.prompt_mode, PromptMode::Terse);
+        assert_eq!(config.run_ms, None);
+    }
+
+    #[test]
+    fn valid_pid_and_run_ms_parse() {
+        let config = Config::from_lookup(lookup(&[
+            ("COMPLETE_ME_ACCEPTANCE_PID", "8273"),
+            ("COMPLETE_ME_RUN_MS", "4000"),
+        ]));
+        assert_eq!(config.acceptance_pid, Some(8273));
+        assert_eq!(config.run_ms, Some(4000));
+    }
+
+    #[test]
+    fn unparseable_pid_and_run_ms_fall_back_to_none() {
+        let config = Config::from_lookup(lookup(&[
+            ("COMPLETE_ME_ACCEPTANCE_PID", "not-a-number"),
+            ("COMPLETE_ME_RUN_MS", "later"),
+        ]));
+        assert_eq!(config.acceptance_pid, None);
+        assert_eq!(config.run_ms, None);
+    }
+
+    #[test]
+    fn empty_stub_completion_is_treated_as_unset() {
+        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_STUB_COMPLETION", "")]));
+        assert_eq!(config.stub_completion, None);
+    }
+
+    #[test]
+    fn non_empty_stub_completion_is_kept() {
+        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_STUB_COMPLETION", " jumps")]));
+        assert_eq!(config.stub_completion.as_deref(), Some(" jumps"));
+    }
+
+    #[test]
+    fn model_path_override_wins_over_default() {
+        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_MODEL_PATH", "/models/x.gguf")]));
+        assert_eq!(config.model_path, PathBuf::from("/models/x.gguf"));
+    }
+
+    #[test]
+    fn prompt_mode_raw_is_parsed() {
+        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_PROMPT_MODE", "raw")]));
+        assert_eq!(config.prompt_mode, PromptMode::Raw);
+    }
 }

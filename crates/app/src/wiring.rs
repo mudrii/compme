@@ -380,4 +380,26 @@ mod tests {
         assert!(latest.take().is_some());
         assert!(latest.take().is_none());
     }
+
+    #[test]
+    fn take_on_empty_slot_is_none() {
+        let mut latest = LatestRequest::new();
+        assert!(latest.take().is_none());
+    }
+
+    #[test]
+    fn equal_generation_request_overwrites() {
+        // offer uses `>=`, so a fresh request of the same generation replaces the
+        // pending one (a re-read of the same snapshot wins).
+        let mut latest = LatestRequest::new();
+        latest.offer(CompletionRequest {
+            prompt: "first".into(),
+            ..request(2)
+        });
+        latest.offer(CompletionRequest {
+            prompt: "second".into(),
+            ..request(2)
+        });
+        assert_eq!(latest.take().unwrap().prompt, "second");
+    }
 }
