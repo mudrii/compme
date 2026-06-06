@@ -6,6 +6,7 @@ DRY_RUN=0
 FORCE=0
 SKIP_BUILD=0
 SKIP_TEXTEDIT=0
+SKIP_E2E=0
 TIMEOUT_MS=3000
 SHORT_TIMEOUT_MS=1500
 RETRIES="${A1B_RETRIES:-3}"
@@ -35,6 +36,7 @@ Options:
   --skip-build           Do not run cargo build -p platform_macos --examples first.
   --skip-textedit        Do not run TextEdit gates. Useful when a browser or
                          popup target must stay focused.
+  --skip-e2e             Do not run the end-to-end complete-me pipeline gate.
   --textedit-pid PID     Use this TextEdit pid instead of pgrep -x TextEdit.
   --popup-pid PID        Also run popup fallback gate against a focused writable no-rect target.
   --browser-pid PID      Also run the browser marker gate requiring marker geometry.
@@ -60,6 +62,7 @@ while [ "$#" -gt 0 ]; do
     --force) FORCE=1 ;;
     --skip-build) SKIP_BUILD=1 ;;
     --skip-textedit) SKIP_TEXTEDIT=1 ;;
+    --skip-e2e) SKIP_E2E=1 ;;
     --textedit-pid)
       [ "$#" -ge 2 ] || { echo "--textedit-pid requires a pid" >&2; exit 2; }
       TEXTEDIT_PID="$2"
@@ -130,6 +133,8 @@ ACCEPT_INSERT_BIN="$ROOT_DIR/target/debug/examples/accept_insert_acceptance"
 MARKER_BIN="$ROOT_DIR/target/debug/examples/caret_marker_acceptance"
 OVERLAY_BIN="$ROOT_DIR/target/debug/examples/overlay_presenter_acceptance"
 POPUP_FIXTURE_BIN="$ROOT_DIR/target/debug/examples/popup_fallback_acceptance"
+COMPLETE_ME_BIN="$ROOT_DIR/target/debug/complete-me"
+E2E_SCRIPT="$ROOT_DIR/tools/acceptance/e2e-complete-me.sh"
 
 print_cmd() {
   printf '  '
@@ -326,6 +331,7 @@ fi
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
   run_gate "build-platform-macos-examples" cargo build -p platform_macos --examples
+  run_gate "build-complete-me" cargo build -p app
 fi
 
 if [ "$DRY_RUN" -eq 0 ] && ! require_bins; then
@@ -341,6 +347,7 @@ if [ "$SKIP_TEXTEDIT" -eq 1 ]; then
   skip_gate "caret-marker-textedit-any" "--skip-textedit"
   skip_gate "accept-insert-full" "--skip-textedit"
   skip_gate "accept-insert-word" "--skip-textedit"
+  skip_gate "e2e-complete-me-pipeline" "--skip-textedit"
 else
   resolve_textedit_pid
   if [ -z "$TEXTEDIT_PID" ]; then
@@ -351,6 +358,7 @@ else
     skip_gate "caret-marker-textedit-any" "TextEdit is not running"
     skip_gate "accept-insert-full" "TextEdit is not running"
     skip_gate "accept-insert-word" "TextEdit is not running"
+    skip_gate "e2e-complete-me-pipeline" "TextEdit is not running"
   else
     run_retryable_gate "textedit-read" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$TEXTEDIT_BIN" "$TIMEOUT_MS" read
     run_retryable_gate "textedit-insert-synthetic" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-synthetic" "$TEXTEDIT_BIN" "$TIMEOUT_MS" synthetic
@@ -359,6 +367,13 @@ else
     run_retryable_gate "caret-marker-textedit-any" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$MARKER_BIN" "$SHORT_TIMEOUT_MS" any
     run_retryable_gate "accept-insert-full" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" COMPLETE_ME_ACCEPTANCE_FULL_TEXT="$INSERT_TEXT-accept-full" "$ACCEPT_INSERT_BIN" "$TIMEOUT_MS" full
     run_retryable_gate "accept-insert-word" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" COMPLETE_ME_ACCEPTANCE_WORD_TEXT="$INSERT_TEXT-accept-word" "$ACCEPT_INSERT_BIN" "$TIMEOUT_MS" word
+    if [ "$SKIP_E2E" -eq 1 ]; then
+      skip_gate "e2e-complete-me-pipeline" "--skip-e2e"
+    elif [ "$DRY_RUN" -eq 0 ] && [ ! -x "$COMPLETE_ME_BIN" ]; then
+      skip_gate "e2e-complete-me-pipeline" "complete-me not built (drop --skip-build or run: cargo build -p app)"
+    else
+      run_gate "e2e-complete-me-pipeline" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_BIN="$COMPLETE_ME_BIN" "$E2E_SCRIPT"
+    fi
   fi
 fi
 
