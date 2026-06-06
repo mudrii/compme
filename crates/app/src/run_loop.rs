@@ -330,12 +330,14 @@ pub fn run() -> Result<(), String> {
         // Only touch AppKit when the rendered state actually changed.
         if last_render != Some((status, enabled)) {
             if let Some(tray) = &tray {
-                tray.set_status(
+                if let Err(err) = tray.set_status(
                     status.menu_title(),
                     status.status_line(),
                     enabled,
                     status.needs_accessibility(),
-                );
+                ) {
+                    eprintln!("complete-me: tray update failed: {err:?}");
+                }
             }
             last_render = Some((status, enabled));
         }

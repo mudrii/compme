@@ -155,16 +155,19 @@ impl MacosTray {
 
     /// Render the current status: short button title, the menu status line, the
     /// enable checkmark, and whether the settings affordance is shown.
+    ///
+    /// Returns `Err` if called off the main thread (an AppKit contract violation)
+    /// rather than silently no-op'ing, so a future threading regression surfaces.
     pub fn set_status(
         &self,
         title: &str,
         status_line: &str,
         enabled: bool,
         needs_accessibility: bool,
-    ) {
-        let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
+    ) -> Result<(), PlatformError> {
+        let mtm = MainThreadMarker::new().ok_or_else(|| PlatformError::CannotComplete {
+            reason: "tray set_status must run on the main thread".into(),
+        })?;
         if let Some(button) = self.status_item.button(mtm) {
             button.setTitle(&NSString::from_str(title));
         }
@@ -176,6 +179,7 @@ impl MacosTray {
             NSControlStateValueOff
         });
         self.settings_item.setHidden(!needs_accessibility);
+        Ok(())
     }
 }
 
