@@ -135,4 +135,35 @@ mod tests {
         assert_eq!(parse_clamped::<usize>(Some("999".into()), 8, 1, 50), 50);
         assert_eq!(parse_clamped::<usize>(Some("0".into()), 8, 1, 50), 1);
     }
+
+    #[test]
+    fn load_file_map_reads_and_parses_a_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "complete-me-test-config-{}.env",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "# comment\nCOMPLETE_ME_MAX_WORDS=15\nCOMPLETE_ME_PROMPT_MODE=raw\n",
+        )
+        .unwrap();
+        let map = load_file_map(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            map.get("COMPLETE_ME_MAX_WORDS").map(String::as_str),
+            Some("15")
+        );
+        assert_eq!(
+            map.get("COMPLETE_ME_PROMPT_MODE").map(String::as_str),
+            Some("raw")
+        );
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn load_file_map_missing_file_is_empty() {
+        let map = load_file_map(Path::new("/no/such/complete-me/config.env"));
+        assert!(map.is_empty());
+    }
 }

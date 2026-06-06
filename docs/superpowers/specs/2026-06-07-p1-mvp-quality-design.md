@@ -80,7 +80,7 @@ pub fn secure_input_enabled() -> bool;           // IsSecureEventInputEnabled() 
 Startup flow in `run()`:
 1. `accessibility_trusted()`; if false, call `prompt_accessibility_trust()` once to fire the system dialog, log guidance. Continue running (adapter init may still partially work; status shows `Blocked(Permission)`).
 2. The tray exposes **Open Accessibility Settings** when blocked; the action sets `open_settings_requested`, and the run loop runs `open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"` (via `std::process::Command`, no AppKit).
-3. Secure input: the run loop polls `secure_input_enabled()` roughly every 500ms (every ~40 heartbeats) and feeds the result into the status derivation. (Per-field secure state continues to be handled by the engine via `Capabilities` on focus.)
+3. Secure input **and trust** are re-polled on the same ~500ms throttle (every ~40 heartbeats) and fed into the status derivation. Re-polling trust matters: if the user grants Accessibility while the app is running (via the prompt or the tray's settings affordance), `Blocked(Permission)` clears without a restart. (Per-field secure state continues to be handled by the engine via `Capabilities` on focus.)
 
 Input Monitoring has no public prompt API; failure to install the accept tap already surfaces as a `PlatformError` at startup and is logged with guidance — no extra UI in P1.
 

@@ -145,8 +145,10 @@ pub fn run() -> Result<(), String> {
     install_signal_handlers();
 
     // Permissions: if Accessibility isn't granted, fire the system prompt once.
-    // The app keeps running and reflects the Blocked state in the tray.
-    let trusted = accessibility_trusted();
+    // The app keeps running and reflects the Blocked state in the tray. Trust is
+    // re-polled in the loop so granting it mid-session clears Blocked without a
+    // restart.
+    let mut trusted = accessibility_trusted();
     if !trusted {
         eprintln!("complete-me: Accessibility not granted — requesting permission");
         prompt_accessibility_trust();
@@ -232,6 +234,7 @@ pub fn run() -> Result<(), String> {
     let mut prev_enabled = true;
     let mut secure = false;
     let mut tick: u64 = 0;
+    let mut last_render: Option<(crate::status::AppStatus, bool)> = None;
     let start = Instant::now();
 
     eprintln!(
@@ -305,8 +308,11 @@ pub fn run() -> Result<(), String> {
         offer_all(&mut latest, log_err("on_tick", engine.on_tick(now_ms)));
 
         // 4. Derive status (permission/secure/ready/enabled) and update the tray.
+        // Re-poll secure input and trust on a throttle so granting permission or
+        // a password field appearing is reflected without a restart.
         if tick.is_multiple_of(SECURE_POLL_EVERY) {
             secure = secure_input_enabled();
+            trusted = accessibility_trusted();
         }
         tick = tick.wrapping_add(1);
         let enabled = flags.enabled.load(Ordering::SeqCst);
@@ -316,13 +322,17 @@ pub fn run() -> Result<(), String> {
         }
         prev_enabled = enabled;
         let status = derive_status(trusted, secure, inference.is_ready(), enabled);
-        if let Some(tray) = &tray {
-            tray.set_status(
-                status.menu_title(),
-                status.status_line(),
-                enabled,
-                status.needs_accessibility(),
-            );
+        // Only touch AppKit when the rendered state actually changed.
+        if last_render != Some((status, enabled)) {
+            if let Some(tray) = &tray {
+                tray.set_status(
+                    status.menu_title(),
+                    status.status_line(),
+                    enabled,
+                    status.needs_accessibility(),
+                );
+            }
+            last_render = Some((status, enabled));
         }
 
         // 5. Submit the newest pending request only when suggestions are allowed
@@ -339,9 +349,12 @@ pub fn run() -> Result<(), String> {
 
         // 6. Tray actions.
         if flags.open_settings.swap(false, Ordering::SeqCst) {
-            let _ = Command::new("open")
+            if let Err(err) = Command::new("open")
                 .arg(ACCESSIBILITY_SETTINGS_URL)
-                .status();
+                .status()
+            {
+                eprintln!("complete-me: open settings failed: {err}");
+            }
         }
         if flags.quit.load(Ordering::SeqCst) {
             eprintln!("complete-me: quit requested");
