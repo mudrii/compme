@@ -8,6 +8,7 @@
 //! See `docs/superpowers/specs/2026-06-06-p0-mvp-integration-design.md`.
 
 mod adapter;
+mod model_select;
 
 use std::sync::Arc;
 
