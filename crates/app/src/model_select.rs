@@ -38,6 +38,33 @@ pub enum ModelSource {
     Llama(PathBuf),
 }
 
+/// How the engine's raw left-context prompt is shaped before it reaches the
+/// model. `Terse` is the documented A1a development default (wraps the prefix in
+/// the continuation instruction); `Raw` passes the prefix through unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptMode {
+    Terse,
+    Raw,
+}
+
+/// Resolve the prompt strategy from config. Default is `Terse` (the A1a default);
+/// `COMPLETE_ME_PROMPT_MODE=raw` opts out. Keeping this configurable satisfies the
+/// contract requirement that prompt strategy stay configurable, not hardcoded.
+pub fn resolve_prompt_mode(raw: Option<String>) -> PromptMode {
+    match raw.as_deref() {
+        Some("raw") => PromptMode::Raw,
+        _ => PromptMode::Terse,
+    }
+}
+
+/// Apply the prompt mode to the engine's raw left-context prefix.
+pub fn shape_prompt(mode: PromptMode, prefix: &str) -> String {
+    match mode {
+        PromptMode::Terse => model_client::terse_continuation_prompt(prefix),
+        PromptMode::Raw => prefix.to_string(),
+    }
+}
+
 /// Stub completion (when set) always wins so gates stay deterministic; otherwise
 /// load the real model from `model_path`.
 pub fn resolve_source(stub_completion: Option<String>, model_path: PathBuf) -> ModelSource {
@@ -94,5 +121,30 @@ mod tests {
     fn load_model_builds_working_stub() {
         let model = load_model(ModelSource::Stub("done".into())).unwrap();
         assert_eq!(model.complete("p", 4).unwrap(), "done");
+    }
+
+    #[test]
+    fn prompt_mode_defaults_to_terse() {
+        assert_eq!(resolve_prompt_mode(None), PromptMode::Terse);
+        assert_eq!(resolve_prompt_mode(Some("terse".into())), PromptMode::Terse);
+        assert_eq!(
+            resolve_prompt_mode(Some("anything".into())),
+            PromptMode::Terse
+        );
+    }
+
+    #[test]
+    fn prompt_mode_raw_opts_out() {
+        assert_eq!(resolve_prompt_mode(Some("raw".into())), PromptMode::Raw);
+    }
+
+    #[test]
+    fn terse_mode_wraps_prefix_raw_mode_passes_through() {
+        let raw = shape_prompt(PromptMode::Raw, "Dear team");
+        assert_eq!(raw, "Dear team");
+
+        let terse = shape_prompt(PromptMode::Terse, "Dear team");
+        assert!(terse.contains("Dear team"));
+        assert!(terse.starts_with("Complete this text inline"));
     }
 }

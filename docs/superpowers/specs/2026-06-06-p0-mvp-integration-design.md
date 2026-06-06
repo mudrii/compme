@@ -1,7 +1,7 @@
 # P0 MVP Integration — Design
 
-**Date:** 2026-06-06
-**Status:** Draft — awaiting user spec review
+**Date:** 2026-06-06 (reconciled with implementation 2026-06-07)
+**Status:** Implemented in `crates/app`; reconciled with the shipped code after two-axis review
 **Scope:** The 5 P0 (blocks-MVP-ship) items: integration run-loop binary, Engine↔inference wiring, end-to-end live acceptance gate, model warm-up on launch, graceful shutdown on exit.
 
 ## Problem
@@ -30,14 +30,14 @@ This design wires those proven parts into a single `complete-me` binary and adds
  focus cb  ──┐                                                
  caret cb  ──┼──push──▶  [evt queue] ─drain─▶ Engine.on_*  ─reqs─▶ [req slot]─▶ complete()
  accept cb ──┘  (mpsc)        ▲                   │ (latest-wins)         │
-                             timer               applies overlay         │
+                          pump (run_in_mode)    applies overlay         │
                           (~12ms heartbeat)      cmds (main-thread OK)    │
                              │                    ▲                       │
                        [result queue] ◀───────────┴────on_completion──────┘ (mpsc)
 ```
 
 - **Main thread** owns `Engine` + `MacosOverlayPresenter`; runs `NSApplication.run()` under `NSApplicationActivationPolicy::Accessory`.
-- **Heartbeat**: a single repeating main-thread timer (~12ms). Each fire:
+- **Heartbeat**: each iteration the main thread pumps the run loop once via `CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, ~12ms, false)` (paces the loop and services the overlay), then on the next pass:
   1. drain inbound **event queue** → `engine.on_focus` / `engine.on_text_changed` / `engine.on_caret_moved` / `engine.on_accept`,
   2. drain inbound **result queue** → `engine.on_completion`,
   3. call `engine.on_tick(now_ms)`,
@@ -45,11 +45,11 @@ This design wires those proven parts into a single `complete-me` binary and adds
 - **Inference thread**: `warm_up()` once → loop `recv → complete → send {request, text}` back.
 - The adapter's own AX work happens on its `AxWorker`; the Engine touching the adapter from main only briefly blocks main.
 
-### Decision a (defaulted, confirm at review): signals via `libc`
-SIGINT/SIGTERM handled with a raw `libc::sigaction` handler that only sets an `AtomicBool` (async-signal-safe). No new `signal-hook` dependency. `libc` is already in the dependency graph.
+### Decision a: signals via `libc`
+SIGINT/SIGTERM handled with a `libc::signal` handler that only sets an `AtomicBool` (async-signal-safe `Relaxed` store). No `signal-hook` dependency.
 
-### Decision b (defaulted, confirm at review): heartbeat via `CFRunLoopTimer`
-Use a `CFRunLoopTimer` added to the main run loop rather than `NSTimer` — no Objective-C target object / selector plumbing required. `core-foundation` is already a transitive dependency via the macOS crates.
+### Decision b: heartbeat via run-loop pumping
+Pump the main run loop with `CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, ~12ms, false)` once per iteration rather than installing a `CFRunLoopTimer`/`NSTimer` callback — no extern-C context plumbing, and one call both paces the loop and services the overlay's AppKit needs. `core-foundation` is already a transitive dependency via the macOS crates.
 
 ## Crate structure
 
@@ -87,12 +87,14 @@ Lib crates stay pure; only `crates/app` depends on AppKit entry glue.
 
 ## Shutdown (P0 item 5)
 
-- A `libc::sigaction` handler for SIGINT/SIGTERM sets `AtomicBool should_stop`.
-- The heartbeat checks `should_stop`; when set it stops the run loop (`NSApplication::stop` / `CFRunLoopStop`).
-- After `run()` returns, teardown runs in order:
-  1. drop accept, caret, focus subscriptions (in that order),
-  2. signal the inference thread to stop and `join()` it,
-  3. `Box::new(model).shutdown()` — frees model before backend, guarding the ggml-Metal exit-abort.
+- A `libc::signal` handler for SIGINT/SIGTERM sets a `static AtomicBool STOP` (the only async-signal-safe work it does — a `Relaxed` store).
+- The loop checks `STOP` each iteration; when set it exits the pump loop.
+- After the loop exits, teardown runs in this order:
+  1. drop the caret and focus subscriptions (stop new focus/caret events),
+  2. `inference.shutdown()` — closes the request channel, the worker exits its loop and **frees the model on the inference thread** (`model.shutdown()` drops the model before the backend), then `join()`. This is the ggml-Metal exit-abort guard, and it completes before the engine/overlay are dropped.
+  3. `drop(engine)` — releases the overlay and the accept subscription it owns; then `drop(adapter)` releases the last `Arc`, stopping the AX worker.
+
+Note on the accept subscription: it is owned by the `Engine` (via `set_accept_subscription`) and so is released at step 3, not step 1. This is safe: the pump loop has already exited, so any late accept callback only enqueues an event that is never drained. The model is freed at step 2 — before the engine/overlay drop — so the Metal-exit guard holds regardless of accept-sub drop order.
 
 ## Config (P0 = constants + env; full config surface is P1)
 
@@ -100,7 +102,10 @@ Lib crates stay pure; only `crates/app` depends on AppKit entry glue.
 - `COMPLETE_ME_MODEL_PATH`: model GGUF path; defaults to the spike base model (`tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf`).
 - `COMPLETE_ME_STUB_COMPLETION="<text>"`: when set, use a deterministic `StubModel` returning `<text>` instead of `LlamaModel`.
 - `COMPLETE_ME_ACCEPTANCE_PID=<pid>`: use `MacosPlatformAdapter::with_frontmost_pid_override_for_acceptance` (mirrors the existing examples); absent → `MacosPlatformAdapter::new()`.
+- `COMPLETE_ME_PROMPT_MODE=terse|raw`: prompt strategy applied to the engine's raw left-context prefix before inference. Default `terse` (wraps with `terse_continuation_prompt`, the A1a development default); `raw` passes the prefix through. Keeping this configurable satisfies the contract requirement that prompt strategy not be hardcoded.
 - `COMPLETE_ME_RUN_MS=<n>`: auto-stop after `n` ms (bounded gate runs); absent → run until signal.
+
+Prompt shaping lives in the inference thread (`shape_prompt`), not in the engine: the engine emits a raw left-context prefix in `CompletionRequest.prompt`, and the worker wraps it per `PromptMode` immediately before `model.complete()`. The `StubModel` ignores the prompt, so the gate stays deterministic regardless of mode.
 
 ## End-to-end live gate (P0 item 3)
 
@@ -108,10 +113,14 @@ Driven by `tools/acceptance/run-a1b-live-gates.sh` (extended with one new gate):
 
 1. `osascript`: focus TextEdit and set a known prefix.
 2. Launch `complete-me` with `COMPLETE_ME_STUB_COMPLETION="<known>"`, `COMPLETE_ME_ACCEPTANCE_PID=<textedit pid>`, `COMPLETE_ME_RUN_MS=<n>`.
-3. The binary logs each pipeline stage: `focus → request → completion → show-ghost → accept → insert`.
-4. `osascript` sends **Tab** → accept tap fires → `engine.on_accept(Full)` → insert.
-5. The gate reads the TextEdit value and asserts it contains `<known>`, and asserts the log shows each stage. Deterministic because the stub completion is fixed.
+3. `osascript` moves the caret to end-of-line (fires a selection-changed read), waits for the ghost, then sends **Tab** → accept tap fires → `engine.on_accept(Full)` → insert.
+4. The gate asserts two things:
+   - **Document content** contains `<known>`. This transitively proves the whole chain: `Engine::on_accept(Full)` only emits an `Insert` command when a ghost is currently showing (`SuggestionMachine` holds `self.showing`), so a successful insert of the stub text proves focus → read → infer → **show-ghost** → accept → insert all fired. The overlay-show step is applied *inside* the engine and emits no log line of its own, so it is verified by its observable effect (the insert), not by a log string.
+   - **Logged stages** `focus`, `request gen=`, `completion gen=`, `accept Full` are each present in the binary's stderr. (These are the stages the run loop logs directly.)
+5. Deterministic because the stub completion is fixed.
 6. A separate **manual** invocation uses the real `LlamaModel` and asserts that *an* insert occurred (output text not pinned, since it is nondeterministic).
+
+The gate verifies the **Full** (whole-suggestion) accept path. The first-tap **Word** path is covered separately by the existing `accept-insert-word` gate, not by this end-to-end gate.
 
 The product binary is the thing under test; the gate drives the real product path with a deterministic model.
 
@@ -119,15 +128,20 @@ The product binary is the thing under test; the gate drives the real product pat
 
 - **Pure logic in `wiring.rs`** (EditKind/previous-hash derivation, latest-wins coalescing, ready-gate state) — unit-tested, no AppKit. TDD.
 - **`StubModel`** — unit-tests the inference-thread protocol (request in → result out, warm-up sets ready).
-- **AppKit/main-thread glue** (`run_loop.rs` timer, `NSApplication.run`, signal handler) is intentionally thin and is covered by the live E2E gate; it cannot be unit-tested without a UI session.
+- **AppKit/main-thread glue** (`run_loop.rs` run-loop pump, overlay, signal handler) is intentionally thin and is covered by the live E2E gate; it cannot be unit-tested without a UI session.
 - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets` stay green throughout.
 
 ## Out of scope (P1+, per the pending list)
 
 Tray/menu-bar UI, Accessibility/Input-Monitoring permission first-run UX, full settings/config surface, Retina multi-monitor offset measurement, prefix/KV-cache reuse, long-lived model actor, N-sample multi-candidate generation, sentence/punctuation stop-boundary, and all P2–P4 items.
 
-## Open items to confirm at spec review
+## Resolved decisions (as implemented)
 
-- **Decision a**: `libc` raw `sigaction` for signals (vs adding `signal-hook`).
-- **Decision b**: `CFRunLoopTimer` heartbeat (vs `NSTimer`).
-- Heartbeat interval (~12ms proposed) and whether `on_caret_moved` should always also trigger a `read_context` (cost vs. correctness).
+- **Decision a**: signals via `libc::signal` (a handler that only sets `AtomicBool STOP`); no `signal-hook` dependency.
+- **Decision b**: heartbeat via **pumping** the main run loop with `CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, ~12ms, false)` each iteration — chosen over a `CFRunLoopTimer`/`NSTimer` callback because it needs no extern-C context plumbing and both paces the loop and services the overlay in one call.
+- **Caret vs typing**: the caret handler reads context, then `FieldTracker` classifies it: identical reconstructed value → `Observation::CaretMoved` → `engine.on_caret_moved` (hide-on-jump only); changed value → `Observation::Typed` → `engine.on_text_changed` (schedules a completion). This avoids re-requesting a completion on every bare cursor move.
+
+## Known P1 follow-ups (acknowledged, not addressed here)
+
+- A `read_context` AX round-trip runs per delivered caret event; no read-level debounce yet (the adapter already coalesces caret notifications).
+- Heartbeat interval (~12ms) is a fixed constant; not yet tuned or configurable.

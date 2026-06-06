@@ -25,8 +25,8 @@ use platform_macos::{MacosOverlayPresenter, MacosPlatformAdapter};
 
 use crate::adapter::SharedAdapter;
 use crate::inference::InferenceHandle;
-use crate::model_select::{load_model, resolve_source};
-use crate::wiring::{FieldTracker, LatestRequest};
+use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
+use crate::wiring::{FieldTracker, LatestRequest, Observation};
 
 const DEBOUNCE_MS: u64 = 120;
 const MAX_WORDS: usize = 8;
@@ -39,7 +39,7 @@ static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_sig: libc::c_int) {
     // Async-signal-safe: only a relaxed atomic store.
-    STOP.store(true, Ordering::SeqCst);
+    STOP.store(true, Ordering::Relaxed);
 }
 
 fn install_signal_handlers() {
@@ -63,6 +63,7 @@ struct Config {
     acceptance_pid: Option<i32>,
     stub_completion: Option<String>,
     model_path: PathBuf,
+    prompt_mode: PromptMode,
     run_ms: Option<u64>,
 }
 
@@ -78,6 +79,7 @@ impl Config {
             model_path: env::var("COMPLETE_ME_MODEL_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(DEFAULT_MODEL)),
+            prompt_mode: resolve_prompt_mode(env::var("COMPLETE_ME_PROMPT_MODE").ok()),
             run_ms: env::var("COMPLETE_ME_RUN_MS")
                 .ok()
                 .and_then(|raw| raw.parse::<u64>().ok()),
@@ -166,7 +168,7 @@ pub fn run() -> Result<(), String> {
         config.stub_completion.clone(),
         config.model_path.clone(),
     ))?;
-    let inference = InferenceHandle::spawn(model);
+    let inference = InferenceHandle::spawn(model, config.prompt_mode)?;
 
     let mut tracker = FieldTracker::new();
     let mut latest = LatestRequest::new();
@@ -179,7 +181,7 @@ pub fn run() -> Result<(), String> {
         config.run_ms
     );
 
-    while !STOP.load(Ordering::SeqCst) {
+    while !STOP.load(Ordering::Relaxed) {
         let now_ms = start.elapsed().as_millis() as u64;
 
         // 1. Host events → engine. The caret callback is the typing driver: read
@@ -192,13 +194,20 @@ pub fn run() -> Result<(), String> {
                     offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
                 }
                 HostEvent::Caret(field, _rect) => match adapter.read_context(&field) {
+                    // One selection-changed notification covers both typing and a
+                    // bare cursor move. Typing schedules a completion; a cursor
+                    // move only invalidates a showing ghost (no re-request).
                     Ok(ctx) => {
-                        let change =
-                            tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms);
-                        offer_all(
-                            &mut latest,
-                            log_err("on_text_changed", engine.on_text_changed(change)),
-                        );
+                        match tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms) {
+                            Observation::Typed(change) => offer_all(
+                                &mut latest,
+                                log_err("on_text_changed", engine.on_text_changed(change)),
+                            ),
+                            Observation::CaretMoved { field, caret } => offer_all(
+                                &mut latest,
+                                log_err("on_caret_moved", engine.on_caret_moved(field, caret)),
+                            ),
+                        }
                     }
                     Err(err) => eprintln!("complete-me: read_context: {err:?}"),
                 },

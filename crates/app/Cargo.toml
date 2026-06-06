@@ -8,7 +8,6 @@ name = "complete-me"
 path = "src/main.rs"
 
 [dependencies]
-core = { path = "../core" }
 platform = { path = "../platform" }
 platform_macos = { path = "../platform_macos" }
 engine = { path = "../engine" }

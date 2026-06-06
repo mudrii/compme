@@ -15,6 +15,8 @@ use std::thread::{self, JoinHandle};
 use engine::CompletionRequest;
 use model_client::LocalModel;
 
+use crate::model_select::{shape_prompt, PromptMode};
+
 /// A completed inference, paired with the request that produced it so the engine
 /// can match it against the current generation (and discard if stale).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +39,7 @@ fn recv_latest(requests: &Receiver<CompletionRequest>) -> Option<CompletionReque
 /// until the channel closes; finally releases the model.
 fn run(
     model: Box<dyn LocalModel>,
+    prompt_mode: PromptMode,
     requests: Receiver<CompletionRequest>,
     outcomes: Sender<CompletionOutcome>,
     ready: Arc<AtomicBool>,
@@ -49,7 +52,10 @@ fn run(
     eprintln!("complete-me: state=ready");
 
     while let Some(request) = recv_latest(&requests) {
-        match model.complete(&request.prompt, request.max_tokens) {
+        // Shape the engine's raw left-context prefix per the configured strategy
+        // (terse continuation prompt by default — the A1a development default).
+        let prompt = shape_prompt(prompt_mode, &request.prompt);
+        match model.complete(&prompt, request.max_tokens) {
             Ok(text) => {
                 // A dropped receiver means the main loop is shutting down.
                 if outcomes.send(CompletionOutcome { request, text }).is_err() {
@@ -73,7 +79,11 @@ pub struct InferenceHandle {
 
 impl InferenceHandle {
     /// Spawn the worker, moving the model onto it. Warm-up begins immediately.
-    pub fn spawn(model: Box<dyn LocalModel>) -> Self {
+    ///
+    /// Returns `Err` if the OS refuses the thread (resource limits); the caller
+    /// propagates it rather than panicking, matching the crate's no-panic-in-
+    /// runtime-paths convention.
+    pub fn spawn(model: Box<dyn LocalModel>, prompt_mode: PromptMode) -> Result<Self, String> {
         let (request_tx, request_rx) = channel::<CompletionRequest>();
         let (outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
         let ready = Arc::new(AtomicBool::new(false));
@@ -81,15 +91,15 @@ impl InferenceHandle {
 
         let handle = thread::Builder::new()
             .name("complete-me-inference".into())
-            .spawn(move || run(model, request_rx, outcome_tx, ready_for_thread))
-            .expect("spawn inference thread");
+            .spawn(move || run(model, prompt_mode, request_rx, outcome_tx, ready_for_thread))
+            .map_err(|err| format!("spawn inference thread: {err}"))?;
 
-        Self {
+        Ok(Self {
             request_tx: Some(request_tx),
             outcome_rx,
             ready,
             handle: Some(handle),
-        }
+        })
     }
 
     /// True once warm-up has finished. The run loop withholds suggestions until
@@ -129,7 +139,17 @@ impl InferenceHandle {
 mod tests {
     use super::*;
     use crate::model_select::StubModel;
+    use model_client::LocalModelResult;
     use platform::FieldHandle;
+
+    /// Echoes the exact prompt string it receives, so a test can assert what the
+    /// worker actually fed the model after prompt shaping.
+    struct EchoModel;
+    impl LocalModel for EchoModel {
+        fn complete(&self, prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+            Ok(prompt.to_string())
+        }
+    }
 
     fn request(prompt: &str, generation: u64) -> CompletionRequest {
         CompletionRequest {
@@ -148,7 +168,8 @@ mod tests {
 
     #[test]
     fn completes_a_request_with_the_model() {
-        let inference = InferenceHandle::spawn(Box::new(StubModel::new(" world")));
+        let inference =
+            InferenceHandle::spawn(Box::new(StubModel::new(" world")), PromptMode::Terse).unwrap();
         assert!(inference.submit(request("hello", 1)));
 
         let outcome = inference.recv_outcome().expect("outcome");
@@ -159,8 +180,28 @@ mod tests {
     }
 
     #[test]
+    fn terse_mode_wraps_the_prompt_before_the_model_sees_it() {
+        let inference = InferenceHandle::spawn(Box::new(EchoModel), PromptMode::Terse).unwrap();
+        inference.submit(request("Dear team", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(outcome.text.contains("Dear team"));
+        assert!(outcome.text.starts_with("Complete this text inline"));
+        inference.shutdown();
+    }
+
+    #[test]
+    fn raw_mode_passes_the_prompt_through_unchanged() {
+        let inference = InferenceHandle::spawn(Box::new(EchoModel), PromptMode::Raw).unwrap();
+        inference.submit(request("Dear team", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert_eq!(outcome.text, "Dear team");
+        inference.shutdown();
+    }
+
+    #[test]
     fn ready_flips_after_warm_up() {
-        let inference = InferenceHandle::spawn(Box::new(StubModel::new("x")));
+        let inference =
+            InferenceHandle::spawn(Box::new(StubModel::new("x")), PromptMode::Terse).unwrap();
         // Submit + receive guarantees the worker has passed warm-up.
         inference.submit(request("p", 1));
         let _ = inference.recv_outcome();
@@ -170,7 +211,8 @@ mod tests {
 
     #[test]
     fn shutdown_without_work_joins_cleanly() {
-        let inference = InferenceHandle::spawn(Box::new(StubModel::new("x")));
+        let inference =
+            InferenceHandle::spawn(Box::new(StubModel::new("x")), PromptMode::Terse).unwrap();
         inference.shutdown(); // must not hang
     }
 

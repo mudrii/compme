@@ -45,8 +45,21 @@ fn edit_kind(prev_chars: usize, new_chars: usize) -> EditKind {
     }
 }
 
+/// The result of observing a context read: either the field's content changed
+/// (typing/paste/delete) or the caret moved within unchanged content.
+///
+/// macOS delivers one selection-changed notification for both cases. Splitting
+/// them here lets the run loop feed typing to `on_text_changed` (which schedules
+/// a completion) and a bare cursor move to `on_caret_moved` (hide-on-jump
+/// invalidation) — instead of re-requesting a completion on every cursor nudge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Observation {
+    Typed(TextChange),
+    CaretMoved { field: FieldHandle, caret: usize },
+}
+
 /// Tracks the last-seen value/caret per focused field so successive context reads
-/// can be diffed into `TextChange`s.
+/// can be diffed into `Observation`s.
 #[derive(Default)]
 pub struct FieldTracker {
     last: Option<TrackedField>,
@@ -63,30 +76,50 @@ impl FieldTracker {
         Self::default()
     }
 
-    /// Derive a `TextChange` from a fresh context read, updating internal state.
+    /// Classify a fresh context read against the last one for this field,
+    /// updating internal state.
     ///
     /// A change of focused field resets the diff baseline (the new field has no
-    /// previous state), so the first edit in a field reads as an `Insert`.
+    /// previous state), so the first edit in a field reads as an `Insert`. When
+    /// the reconstructed value is identical to the previous read, this is a pure
+    /// caret move, reported as [`Observation::CaretMoved`].
     pub fn observe(
         &mut self,
         field: &FieldHandle,
         ctx: &TextContext,
         trigger: TriggerPolicy,
         now_ms: u64,
-    ) -> TextChange {
+    ) -> Observation {
         let (value, caret) = value_and_caret(ctx);
         let new_chars = value.chars().count();
 
+        // Snapshot the previous state for this field, then release the borrow so
+        // we can update the baseline.
         let prev = match &self.last {
-            Some(prev) if &prev.field == field => Some(prev),
+            Some(prev) if &prev.field == field => Some((prev.value.clone(), prev.caret)),
             _ => None,
         };
 
-        let (edit, previous_caret, previous_value_hash) = match prev {
-            Some(prev) => (
-                edit_kind(prev.value.chars().count(), new_chars),
-                Some(prev.caret),
-                Some(hash_value(&prev.value)),
+        self.last = Some(TrackedField {
+            field: field.clone(),
+            value: value.clone(),
+            caret,
+        });
+
+        if let Some((prev_value, _)) = &prev {
+            if *prev_value == value {
+                return Observation::CaretMoved {
+                    field: field.clone(),
+                    caret,
+                };
+            }
+        }
+
+        let (edit, previous_caret, previous_value_hash) = match &prev {
+            Some((prev_value, prev_caret)) => (
+                edit_kind(prev_value.chars().count(), new_chars),
+                Some(*prev_caret),
+                Some(hash_value(prev_value)),
             ),
             None => (
                 if new_chars == 0 {
@@ -99,13 +132,7 @@ impl FieldTracker {
             ),
         };
 
-        self.last = Some(TrackedField {
-            field: field.clone(),
-            value: value.clone(),
-            caret,
-        });
-
-        TextChange {
+        Observation::Typed(TextChange {
             field: field.clone(),
             value,
             caret,
@@ -114,7 +141,7 @@ impl FieldTracker {
             previous_value_hash,
             trigger,
             now_ms,
-        }
+        })
     }
 
     /// Forget the diff baseline (e.g. on refocus or after a self-insert) so the
@@ -180,15 +207,23 @@ mod tests {
         }
     }
 
+    /// Unwrap a `Typed` observation, panicking on a caret move.
+    fn typed(obs: Observation) -> TextChange {
+        match obs {
+            Observation::Typed(change) => change,
+            other => panic!("expected Typed, got {other:?}"),
+        }
+    }
+
     #[test]
     fn reconstructs_value_and_char_caret() {
         let mut tracker = FieldTracker::new();
-        let change = tracker.observe(
+        let change = typed(tracker.observe(
             &field("f"),
             &ctx("hello ", "world"),
             TriggerPolicy::Automatic,
             10,
-        );
+        ));
         assert_eq!(change.value, "hello world");
         assert_eq!(change.caret, 6);
     }
@@ -197,7 +232,8 @@ mod tests {
     fn caret_is_char_counted_for_unicode_left() {
         // "café " is 5 chars but 6 UTF-8 bytes; caret must be the char count.
         let mut tracker = FieldTracker::new();
-        let change = tracker.observe(&field("f"), &ctx("café ", "x"), TriggerPolicy::Automatic, 0);
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("café ", "x"), TriggerPolicy::Automatic, 0));
         assert_eq!(change.caret, 5);
         assert_eq!(change.value, "café x");
     }
@@ -205,7 +241,8 @@ mod tests {
     #[test]
     fn first_observation_with_text_is_insert() {
         let mut tracker = FieldTracker::new();
-        let change = tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 0);
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 0));
         assert_eq!(change.edit, EditKind::Insert);
         assert_eq!(change.previous_caret, None);
         assert_eq!(change.previous_value_hash, None);
@@ -214,7 +251,7 @@ mod tests {
     #[test]
     fn first_observation_empty_is_unknown() {
         let mut tracker = FieldTracker::new();
-        let change = tracker.observe(&field("f"), &ctx("", ""), TriggerPolicy::Automatic, 0);
+        let change = typed(tracker.observe(&field("f"), &ctx("", ""), TriggerPolicy::Automatic, 0));
         assert_eq!(change.edit, EditKind::Unknown);
     }
 
@@ -222,7 +259,8 @@ mod tests {
     fn growing_value_is_insert_with_previous_state() {
         let mut tracker = FieldTracker::new();
         tracker.observe(&field("f"), &ctx("hel", ""), TriggerPolicy::Automatic, 0);
-        let change = tracker.observe(&field("f"), &ctx("hell", ""), TriggerPolicy::Automatic, 1);
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("hell", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Insert);
         assert_eq!(change.previous_caret, Some(3));
         assert_eq!(change.previous_value_hash, Some(hash_value("hel")));
@@ -232,7 +270,8 @@ mod tests {
     fn shrinking_value_is_delete() {
         let mut tracker = FieldTracker::new();
         tracker.observe(&field("f"), &ctx("hell", ""), TriggerPolicy::Automatic, 0);
-        let change = tracker.observe(&field("f"), &ctx("hel", ""), TriggerPolicy::Automatic, 1);
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("hel", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Delete);
     }
 
@@ -240,7 +279,8 @@ mod tests {
     fn same_length_change_is_unknown() {
         let mut tracker = FieldTracker::new();
         tracker.observe(&field("f"), &ctx("cat", ""), TriggerPolicy::Automatic, 0);
-        let change = tracker.observe(&field("f"), &ctx("cot", ""), TriggerPolicy::Automatic, 1);
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("cot", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Unknown);
     }
 
@@ -254,7 +294,8 @@ mod tests {
             0,
         );
         // New field with shorter text must NOT read as a delete.
-        let change = tracker.observe(&field("b"), &ctx("hi", ""), TriggerPolicy::Automatic, 1);
+        let change =
+            typed(tracker.observe(&field("b"), &ctx("hi", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Insert);
         assert_eq!(change.previous_caret, None);
     }
@@ -264,7 +305,8 @@ mod tests {
         let mut tracker = FieldTracker::new();
         tracker.observe(&field("f"), &ctx("hello", ""), TriggerPolicy::Automatic, 0);
         tracker.reset();
-        let change = tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 1);
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Insert);
         assert_eq!(change.previous_caret, None);
     }
@@ -272,9 +314,37 @@ mod tests {
     #[test]
     fn trigger_is_carried_through() {
         let mut tracker = FieldTracker::new();
-        let change = tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Manual, 7);
+        let change = typed(tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Manual, 7));
         assert_eq!(change.trigger, TriggerPolicy::Manual);
         assert_eq!(change.now_ms, 7);
+    }
+
+    #[test]
+    fn caret_move_within_unchanged_value_is_caret_moved() {
+        let mut tracker = FieldTracker::new();
+        // First read establishes "hello" with caret at 3.
+        let first = tracker.observe(&field("f"), &ctx("hel", "lo"), TriggerPolicy::Automatic, 0);
+        assert!(matches!(first, Observation::Typed(_)));
+        // Same content, caret now at 5 → pure caret move, not a text change.
+        let second = tracker.observe(&field("f"), &ctx("hello", ""), TriggerPolicy::Automatic, 1);
+        assert_eq!(
+            second,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 5
+            }
+        );
+    }
+
+    #[test]
+    fn typing_after_a_caret_move_is_typed_again() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("hel", "lo"), TriggerPolicy::Automatic, 0);
+        tracker.observe(&field("f"), &ctx("hello", ""), TriggerPolicy::Automatic, 1);
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("hello!", ""), TriggerPolicy::Automatic, 2));
+        assert_eq!(change.edit, EditKind::Insert);
+        assert_eq!(change.value, "hello!");
     }
 
     fn request(generation: u64) -> CompletionRequest {
