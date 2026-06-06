@@ -66,7 +66,10 @@ mod tests {
     fn stub_returns_fixed_completion_ignoring_prompt() {
         let stub = StubModel::new(" - the rest");
         assert_eq!(stub.complete("anything", 4).unwrap(), " - the rest");
-        assert_eq!(stub.complete("different prompt", 99).unwrap(), " - the rest");
+        assert_eq!(
+            stub.complete("different prompt", 99).unwrap(),
+            " - the rest"
+        );
     }
 
     #[test]

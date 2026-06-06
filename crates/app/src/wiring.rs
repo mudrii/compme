@@ -183,7 +183,12 @@ mod tests {
     #[test]
     fn reconstructs_value_and_char_caret() {
         let mut tracker = FieldTracker::new();
-        let change = tracker.observe(&field("f"), &ctx("hello ", "world"), TriggerPolicy::Automatic, 10);
+        let change = tracker.observe(
+            &field("f"),
+            &ctx("hello ", "world"),
+            TriggerPolicy::Automatic,
+            10,
+        );
         assert_eq!(change.value, "hello world");
         assert_eq!(change.caret, 6);
     }
@@ -242,7 +247,12 @@ mod tests {
     #[test]
     fn switching_field_resets_baseline() {
         let mut tracker = FieldTracker::new();
-        tracker.observe(&field("a"), &ctx("longtext", ""), TriggerPolicy::Automatic, 0);
+        tracker.observe(
+            &field("a"),
+            &ctx("longtext", ""),
+            TriggerPolicy::Automatic,
+            0,
+        );
         // New field with shorter text must NOT read as a delete.
         let change = tracker.observe(&field("b"), &ctx("hi", ""), TriggerPolicy::Automatic, 1);
         assert_eq!(change.edit, EditKind::Insert);

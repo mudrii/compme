@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use platform::{
     AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback, Environment,
-    FieldHandle, FocusCallback, Inserted, InsertStrategy, PlatformAdapter, PlatformError,
+    FieldHandle, FocusCallback, InsertStrategy, Inserted, PlatformAdapter, PlatformError,
     ScreenRect, Subscription, TextContext,
 };
 use platform_macos::MacosPlatformAdapter;
