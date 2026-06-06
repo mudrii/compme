@@ -1,8 +1,20 @@
 # P0 MVP Integration — Design
 
 **Date:** 2026-06-06 (reconciled with implementation 2026-06-07)
-**Status:** Implemented in `crates/app`; reconciled with the shipped code after two-axis review
+**Status:** Implemented in `crates/app`, reviewed, and **live-validated on macOS 2026-06-07**. All 5 P0 items pass.
 **Scope:** The 5 P0 (blocks-MVP-ship) items: integration run-loop binary, Engine↔inference wiring, end-to-end live acceptance gate, model warm-up on launch, graceful shutdown on exit.
+
+## Live validation — 2026-06-07 (Apple M4 Max, macOS 25.5)
+
+Run on a real GUI session (console user logged in, Accessibility already granted to the terminal). Evidence:
+
+**Non-intrusive smoke** (`COMPLETE_ME_STUB_COMPLETION=… COMPLETE_ME_RUN_MS=2500`, no keystrokes): adapter + overlay init OK, `state=loading → state=ready`, focus event marshalled dispatcher→main, non-text frontmost (`AXGroup`) → `UnsupportedField` logged and loop continued, clean exit 0. Validates items 1, 4, 5 + the threading model.
+
+**Stub E2E gate** (`tools/acceptance/e2e-complete-me.sh` against TextEdit pid): **PASS**. Seeded `"The quick brown fox "`, binary logged `focus` (AXTextArea) → `request gen=2 prompt="The quick brown fox"` → `completion " jumps-NNNNNN"` → `accept Full`, and the document became `"The quick brown fox jumps-NNNNNN"`. All four logged stages present; document assertion passed. Validates items 2, 3 (full focus→read→infer→ghost→Tab-accept→insert). Benign, handled: transient `StaleField` on activation focus churn; a post-accept re-request (self-insert → fresh read).
+
+**Real `LlamaModel`** (no stub, GGUF on Metal): warm-up `loading→ready` (embedded Metal lib ~7s first load), then `request gen=3 prompt="Dear team, I wanted to"` → real completion `" let you know that I have been working on a new project for the past few weeks…"`. Validates the real model path: load → warm → terse prompt → genuine inference. (Insert not exercised here — no Tab sent; insert proven by the stub E2E.)
+
+Acceptance docs left open in TextEdit are throwaway test content (discard without saving).
 
 ## Problem
 
