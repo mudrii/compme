@@ -130,6 +130,13 @@ The current `LlamaModel` creates a fresh llama context per completion. Warm-up,
 long-lived actor lifecycle, prefix-cache reuse, and serialized production model
 access are not implemented in this crate yet.
 
+### `engine`
+
+`engine` is the runtime host that wires `SuggestionMachine` with a
+`PlatformAdapter` and an `OverlayPresenter`. It drives the suggestion loop:
+subscribing to platform events, feeding them into the machine, and dispatching
+the resulting commands back to the platform and overlay layers.
+
 ### `platform_macos`
 
 `platform_macos` implements the platform contract for macOS.

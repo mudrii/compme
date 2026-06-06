@@ -48,6 +48,10 @@ New plan/docs files:
 - `docs/superpowers/plans/2026-06-04-plan-review-online-validation.md`
 - `docs/superpowers/plans/2026-06-05-current-work-handoff.md`
 
+New implementation crates:
+
+- `crates/engine/`
+
 Modified plan/docs files:
 
 - `docs/superpowers/plans/2026-06-03-a0-spike.md`
@@ -130,6 +134,8 @@ Completed A1a slices:
 - `crates/core`: deterministic `SuggestionMachine` for debounced requests, stale completion discard, hide invalidation, full accept, and word accept; events/commands now carry `FieldHandle` and snapshot IDs so completions and inserts are tied to the focused field.
 - `crates/model_client`: fallible `LocalModel` seam, configurable terse continuation prompt, and `LlamaModel` backed by `llama-cpp-2` 0.1.146 with the selected base GGUF. Runtime llama failures now surface as `LocalModelError` instead of panicking during completion.
 - `crates/platform_macos`: A1b macOS adapter implementation is unit-tested and live-validated for the default TextEdit profile, Safari marker profile, and repo-local popup fallback fixture. Implemented slices include the AX worker/run-loop resource model, focus/caret observer subscriptions with rebind and safety polling, secure-field and global Secure Input blocking, field ownership resolution, AX text context reads, native plus Chromium/WebKit marker-first caret geometry, `kAXErrorParameterizedAttributeUnsupported` handling as absent caret geometry for bounds queries, AxSet/SyntheticKeys/Clipboard insertion planning, stale-focus rejection before global event posting, eager pasteboard item/type snapshot restore, provider-backed pasteboard snapshot materialization, `changeCount`-guarded clipboard restore, capability-level popup fallback when no caret rect is available, the two-tap accept interception substrate with a permanent listen-only tap plus transient consuming tap for Tab/keycode 48, explicit precomputed `AcceptAction` gating, delayed teardown after synthetic insertion, and the AppKit-main-thread `MacosOverlayPresenter` for `show_ghost`/`update_ghost`/`hide` through a transparent click-through non-activating `NSPanel`. Production live harnesses exist for TextEdit focus/caret/read/insert, repo-local popup fallback fixture plus optional external `--popup-pid`, accept tap interception, marker-vs-fallback caret diagnostics, full/word accept insertion, and overlay presenter show/update/hide diagnostics. Live SyntheticKeys, Clipboard, AxSet, accept tap inactive/full/word/delayed-hide, full/word accept insertion, Safari Chromium/WebKit marker geometry, popup fallback, and overlay diagnostics now pass. Native macOS inline prediction suppression is explicitly deferred out of A1b because AppKit only exposes `setAutomaticTextCompletionEnabled(false)` for owned text controls, while this app targets other applications through Accessibility and overlay rendering.
+
+Note on `edit_kind` / delete suppression: the `edit_kind` field exists on `TextChanged` but `EditKind::Delete` suppression was not yet wired in `SuggestionMachine` at time of handoff — added as part of review fixes.
 
 Fresh A1a validation:
 

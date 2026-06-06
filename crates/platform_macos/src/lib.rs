@@ -734,13 +734,13 @@ fn configure_overlay_label(label: &NSTextField, frame: OverlayFrame, text: &str)
 
 impl MacosPlatformAdapter {
     pub fn new() -> Result<Self, PlatformError> {
-        Ok(Self::with_worker(AxWorker::new()?))
+        Self::with_worker(AxWorker::new()?)
     }
 
-    pub fn with_worker(worker: AxWorker) -> Self {
-        Self {
+    pub fn with_worker(worker: AxWorker) -> Result<Self, PlatformError> {
+        Ok(Self {
             worker,
-            callback_dispatcher: CallbackDispatcher::new(),
+            callback_dispatcher: CallbackDispatcher::new()?,
             next_subscription_id: AtomicU64::new(1),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
             frontmost_pid: Arc::new(frontmost_app_pid),
@@ -751,7 +751,7 @@ impl MacosPlatformAdapter {
             pasteboard_poster: Arc::new(post_clipboard_text),
             observer_installer: AdapterObserverInstaller::Worker,
             accept_tap_installer: AdapterAcceptTapInstaller::Worker,
-        }
+        })
     }
 
     #[doc(hidden)]
@@ -2092,7 +2092,7 @@ fn start_dynamic_observer_binding(
         Arc::clone(&config.current),
         config.binding,
         config.rebind_interval,
-    );
+    )?;
 
     Ok(DynamicObserverBinding {
         _rebinder: rebinder,
@@ -2117,7 +2117,7 @@ fn install_observer_binding(
         Arc::clone(&config.dispatch),
         config.callback_tx.clone(),
         CARET_SAFETY_POLL_INTERVAL,
-    );
+    )?;
 
     Ok(ObserverBinding {
         pid,
@@ -2131,7 +2131,7 @@ fn start_observer_rebind_poller(
     current: Arc<Mutex<Option<ObserverBinding>>>,
     config: ObserverBindingConfig,
     interval: Duration,
-) -> RebindPoller {
+) -> Result<RebindPoller, PlatformError> {
     let (stop_tx, stop_rx) = mpsc::channel();
     let handle = thread::Builder::new()
         .name("complete-me-app-rebind".into())
@@ -2157,12 +2157,14 @@ fn start_observer_rebind_poller(
                 }
             }
         })
-        .expect("failed to start app rebind poll thread");
+        .map_err(|_| PlatformError::CannotComplete {
+            reason: "failed to start app rebind poll thread".into(),
+        })?;
 
-    RebindPoller {
+    Ok(RebindPoller {
         stop_tx: Some(stop_tx),
         handle: Some(handle),
-    }
+    })
 }
 
 fn current_binding_pid(current: &Arc<Mutex<Option<ObserverBinding>>>) -> Option<i32> {
@@ -2179,7 +2181,7 @@ fn start_focused_element_safety_poll(
     dispatch: ObserverDispatch,
     callback_tx: mpsc::Sender<CallbackMessage>,
     interval: Duration,
-) -> SafetyPoller {
+) -> Result<SafetyPoller, PlatformError> {
     let (stop_tx, stop_rx) = mpsc::channel();
     let handle = thread::Builder::new()
         .name("complete-me-caret-poll".into())
@@ -2201,12 +2203,14 @@ fn start_focused_element_safety_poll(
                 }
             }
         })
-        .expect("failed to start caret safety poll thread");
+        .map_err(|_| PlatformError::CannotComplete {
+            reason: "failed to start caret safety poll thread".into(),
+        })?;
 
-    SafetyPoller {
+    Ok(SafetyPoller {
         stop_tx: Some(stop_tx),
         handle: Some(handle),
-    }
+    })
 }
 
 fn dispatch_focused_element_poll(
@@ -3006,17 +3010,19 @@ impl Drop for AxWorker {
 }
 
 impl CallbackDispatcher {
-    fn new() -> Self {
+    fn new() -> Result<Self, PlatformError> {
         let (tx, rx) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("complete-me-callbacks".into())
             .spawn(move || run_callback_dispatcher(rx))
-            .expect("failed to start callback dispatcher thread");
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "failed to start callback dispatcher thread".into(),
+            })?;
 
-        Self {
+        Ok(Self {
             tx,
             handle: Some(handle),
-        }
+        })
     }
 
     fn sender(&self) -> mpsc::Sender<CallbackMessage> {
@@ -4170,7 +4176,7 @@ mod tests {
         MacosPlatformAdapter::with_worker_test_hooks(
             worker,
             AdapterTestHooks {
-                callback_dispatcher: CallbackDispatcher::new(),
+                callback_dispatcher: CallbackDispatcher::new().expect("CallbackDispatcher"),
                 frontmost_pid,
                 now_ms,
                 secure_input_enabled,
@@ -4206,7 +4212,7 @@ mod tests {
         MacosPlatformAdapter::with_worker_test_hooks(
             worker,
             AdapterTestHooks {
-                callback_dispatcher: CallbackDispatcher::new(),
+                callback_dispatcher: CallbackDispatcher::new().expect("CallbackDispatcher"),
                 frontmost_pid,
                 now_ms: Arc::new(|| 1000),
                 secure_input_enabled: Arc::new(|| false),
@@ -4352,7 +4358,7 @@ mod tests {
 
     #[test]
     fn ax_worker_loop_delivers_observer_callbacks_off_worker_thread() {
-        let callback_dispatcher = CallbackDispatcher::new();
+        let callback_dispatcher = CallbackDispatcher::new().expect("CallbackDispatcher");
         let (callback_thread_tx, callback_thread_rx) = mpsc::channel();
         let dispatch = Arc::new(move |_| {
             callback_thread_tx
@@ -4376,7 +4382,7 @@ mod tests {
 
     #[test]
     fn callback_dispatcher_contains_panics_and_keeps_running() {
-        let callback_dispatcher = CallbackDispatcher::new();
+        let callback_dispatcher = CallbackDispatcher::new().expect("CallbackDispatcher");
         let (delivered_tx, delivered_rx) = mpsc::channel();
 
         callback_dispatcher
@@ -4418,7 +4424,8 @@ mod tests {
             Arc::new(|_| {}),
             callback_tx,
             Duration::from_millis(5),
-        );
+        )
+        .expect("failed to start caret safety poll thread");
 
         let message = rx
             .recv_timeout(Duration::from_secs(1))

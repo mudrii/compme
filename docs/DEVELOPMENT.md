@@ -17,6 +17,7 @@ The root `Cargo.toml` is a Rust workspace with these members:
 - `crates/core`
 - `crates/model_client`
 - `crates/platform_macos`
+- `crates/engine`
 
 `tools/spike` is excluded from the root workspace and must be checked
 separately.

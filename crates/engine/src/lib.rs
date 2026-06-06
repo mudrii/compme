@@ -32,6 +32,10 @@ pub struct TextChange {
 
 /// A model completion the host loop must fulfil and feed back via
 /// [`Engine::on_completion`].
+///
+/// Created by [`Engine::dispatch`] whenever the `SuggestionMachine` emits a
+/// `RequestCompletion` command. The host is responsible for running inference
+/// and returning the result through [`Engine::on_completion`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionRequest {
     pub generation: u64,
@@ -41,6 +45,13 @@ pub struct CompletionRequest {
     pub max_tokens: usize,
 }
 
+/// Impure-but-deterministic wiring layer that connects the pure
+/// [`SuggestionMachine`] to a [`PlatformAdapter`] and an [`OverlayPresenter`].
+///
+/// The engine translates host inputs into `core` events, runs the machine, and
+/// dispatches the resulting commands to platform effects. It owns no inference
+/// logic: `RequestCompletion` commands are surfaced as [`CompletionRequest`]
+/// values for the host loop to fulfil and fed back via [`Engine::on_completion`].
 pub struct Engine<P, O> {
     machine: SuggestionMachine,
     adapter: P,
@@ -71,6 +82,8 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
 
     /// Provide the accept-tap subscription so the engine can arm the consuming
     /// tap only while a suggestion is visible (the two-tap design from spec §4).
+    // Extended beyond A1b contract table: accept-tap lifecycle requires
+    // visibility callbacks not in the original spec.
     pub fn set_accept_subscription(&mut self, accept: platform::AcceptSubscription) {
         self.accept = Some(accept);
     }
@@ -114,7 +127,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
-    pub fn on_caret(
+    pub fn on_caret_moved(
         &mut self,
         field: FieldHandle,
         caret: usize,
@@ -123,6 +136,8 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    // Not in original event enum; added because secure input mode changes
+    // require hiding the ghost immediately.
     pub fn on_secure_state(
         &mut self,
         caps: Capabilities,
@@ -198,6 +213,9 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     }
                 }
                 Command::Insert { field, text } => {
+                    // Contract: the adapter must tag this self-inserted text so it is NOT
+                    // fed back to the engine as a TextChanged event. Failure breaks the
+                    // show→accept→hide cycle.
                     self.adapter
                         .insert(&field, &text, self.caps.insert_strategy)?;
                 }
@@ -232,9 +250,8 @@ fn unsupported_caps() -> Capabilities {
 mod tests {
     use super::*;
     use platform::{
-        AcceptCallback, AcceptSubscription, AppId, CaretCallback, ContextSource, Environment,
-        FocusCallback, Inserted, OffsetEncoding, OperatingSystem, PlatformError, ScreenRect,
-        Subscription, TextContext,
+        AcceptCallback, AcceptSubscription, AppId, CaretCallback, Environment, FocusCallback,
+        Inserted, OperatingSystem, PlatformError, ScreenRect, Subscription, TextContext,
     };
     use std::sync::{Arc, Mutex};
 
@@ -371,7 +388,6 @@ mod tests {
             Ok(self.caps.clone())
         }
         fn read_context(&self, _field: &FieldHandle) -> Result<TextContext, PlatformError> {
-            let _ = (ContextSource::Unknown, OffsetEncoding::Utf8Bytes);
             unimplemented!()
         }
         fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
@@ -610,7 +626,7 @@ mod tests {
         let (mut engine, _adapter, overlay) = engine();
         engine.on_focus(field()).unwrap();
 
-        engine.on_caret(field(), 5).unwrap();
+        engine.on_caret_moved(field(), 5).unwrap();
 
         assert!(overlay.calls.lock().unwrap().is_empty());
     }
@@ -666,7 +682,7 @@ mod tests {
     fn caret_move_hides_a_showing_ghost() {
         let (mut engine, _adapter, overlay) = showing("hello there");
 
-        engine.on_caret(field(), 99).unwrap();
+        engine.on_caret_moved(field(), 99).unwrap();
 
         assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
     }
@@ -698,6 +714,30 @@ mod tests {
         assert_eq!(
             *overlay.calls.lock().unwrap(),
             vec![OverlayCall::Update("there friend".into())]
+        );
+    }
+
+    #[test]
+    fn accept_word_advances_caret_in_showing_state() {
+        // After AcceptWord the engine's SuggestionMachine should advance
+        // the internal caret by the number of chars in the accepted word.
+        // This verifies the fix documented in A1a plan Task 6.
+        //
+        // "world there friend": accepting "world " (6 chars) from caret 1
+        // advances the tracked caret to 7.  A subsequent on_caret_moved at
+        // position 7 must leave the ghost showing (no Hide command) because
+        // the machine now agrees on the caret position.
+        let (mut engine, _adapter, overlay) = showing("world there friend");
+
+        engine.on_accept(AcceptAction::Word).unwrap();
+        overlay.calls.lock().unwrap().clear();
+
+        // Caret arrives at the advanced position — must NOT trigger a hide.
+        engine.on_caret_moved(field(), 7).unwrap();
+
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "expected ghost to remain visible after caret moves to accepted position"
         );
     }
 

@@ -46,6 +46,18 @@ impl std::error::Error for LocalModelError {}
 
 pub trait LocalModel: Send + Sync {
     fn complete(&self, prompt: &str, max_tokens: usize) -> LocalModelResult<String>;
+
+    /// Warm up the model (e.g. run a dummy inference to prime the KV cache).
+    /// Default is a no-op; override in production backends.
+    // TODO: implement in LlamaModel once a warm-up inference strategy is chosen
+    fn warm_up(&self) -> Result<(), LocalModelError> {
+        Ok(())
+    }
+
+    /// Release model resources. Called on graceful shutdown.
+    /// Default is a no-op; override in production backends.
+    // TODO: implement in LlamaModel to drop the context and backend cleanly
+    fn shutdown(self: Box<Self>) {}
 }
 
 pub struct LlamaModel {
@@ -62,8 +74,10 @@ impl LlamaModel {
             path,
             &LlamaModelParams::default().with_n_gpu_layers(999),
         )?;
-        let context_params =
-            LlamaContextParams::default().with_n_ctx(Some(NonZeroU32::new(2048).unwrap()));
+        let context_params = LlamaContextParams::default().with_n_ctx(Some(
+            // SAFETY: 2048 is non-zero
+            unsafe { NonZeroU32::new_unchecked(2048) },
+        ));
 
         Ok(Self {
             backend,

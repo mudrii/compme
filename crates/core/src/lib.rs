@@ -165,7 +165,7 @@ impl SuggestionMachine {
                 field,
                 value,
                 caret,
-                edit: _,
+                edit,
                 previous_caret: _,
                 previous_value_hash: _,
                 trigger,
@@ -176,11 +176,12 @@ impl SuggestionMachine {
                 self.value = value;
                 self.caret = caret;
                 self.advance_snapshot();
-                self.pending_since = if self.enabled() && trigger == TriggerPolicy::Automatic {
-                    Some(now_ms)
-                } else {
-                    None
-                };
+                self.pending_since =
+                    if edit != EditKind::Delete && self.enabled() && trigger == TriggerPolicy::Automatic {
+                        Some(now_ms)
+                    } else {
+                        None
+                    };
             }
             Event::Tick { now_ms } => {
                 if let (Some(since), Some(field)) = (self.pending_since, self.field.clone()) {
@@ -365,6 +366,31 @@ mod tests {
                 snapshot: 1,
                 prompt: "hello".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn delete_edit_does_not_trigger_request() {
+        // After a Delete edit, even past the debounce window, no RequestCompletion
+        // command should be emitted.
+        let mut machine = machine();
+
+        machine.on_event(Event::TextChanged {
+            field: field("field-a"),
+            value: "hell".into(),
+            caret: 4,
+            edit: EditKind::Delete,
+            previous_caret: Some(5),
+            previous_value_hash: Some(123),
+            trigger: TriggerPolicy::Automatic,
+            now_ms: 1000,
+        });
+
+        // Tick well past the debounce window — must not emit RequestCompletion.
+        let cmds = machine.on_event(Event::Tick { now_ms: 2000 });
+        assert!(
+            !cmds.iter().any(|c| matches!(c, Command::RequestCompletion { .. })),
+            "expected no RequestCompletion after a Delete edit, got: {cmds:?}"
         );
     }
 
