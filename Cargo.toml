@@ -8,5 +8,6 @@ members = [
     "crates/model_client",
     "crates/platform_macos",
     "crates/engine",
+    "crates/app",
 ]
 exclude = ["tools/spike"]

@@ -1,0 +1,17 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "complete-me"
+path = "src/main.rs"
+
+[dependencies]
+core = { path = "../core" }
+platform = { path = "../platform" }
+platform_macos = { path = "../platform_macos" }
+engine = { path = "../engine" }
+model_client = { path = "../model_client" }
+core-foundation = "=0.10.1"
+libc = "0.2"
