@@ -39,8 +39,8 @@ const DEFAULT_MAX_WORDS: usize = 8;
 const DEFAULT_MAX_TOKENS: usize = 24;
 const HEARTBEAT: Duration = Duration::from_millis(12);
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
-/// Poll secure input every N heartbeats (~12ms each → ~480ms).
-const SECURE_POLL_EVERY: u64 = 40;
+/// Re-poll secure input + Accessibility trust at most this often (wall-clock ms).
+const SECURE_POLL_INTERVAL_MS: u64 = 480;
 const ACCESSIBILITY_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
@@ -233,7 +233,8 @@ pub fn run() -> Result<(), String> {
     let mut latest = LatestRequest::new();
     let mut prev_enabled = true;
     let mut secure = false;
-    let mut tick: u64 = 0;
+    let mut prev_secure = false;
+    let mut last_secure_poll_ms: Option<u64> = None;
     let mut last_render: Option<(crate::status::AppStatus, bool)> = None;
     let start = Instant::now();
 
@@ -308,19 +309,25 @@ pub fn run() -> Result<(), String> {
         offer_all(&mut latest, log_err("on_tick", engine.on_tick(now_ms)));
 
         // 4. Derive status (permission/secure/ready/enabled) and update the tray.
-        // Re-poll secure input and trust on a throttle so granting permission or
-        // a password field appearing is reflected without a restart.
-        if tick.is_multiple_of(SECURE_POLL_EVERY) {
+        // Re-poll secure input and trust on a wall-clock throttle so granting
+        // permission or a password field appearing is reflected without a restart.
+        if last_secure_poll_ms
+            .is_none_or(|last| now_ms.saturating_sub(last) >= SECURE_POLL_INTERVAL_MS)
+        {
             secure = secure_input_enabled();
             trusted = accessibility_trusted();
+            last_secure_poll_ms = Some(now_ms);
         }
-        tick = tick.wrapping_add(1);
-        let enabled = flags.enabled.load(Ordering::SeqCst);
-        // Toggling off hides any showing ghost immediately.
-        if prev_enabled && !enabled {
+        let enabled = flags.enabled.load(Ordering::Relaxed);
+        // Hide any showing ghost immediately when the user disables the app or
+        // secure input turns on (a password field gained focus) — gating only
+        // blocks *new* requests, so an already-visible ghost needs an explicit
+        // dismiss.
+        if (prev_enabled && !enabled) || (!prev_secure && secure) {
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
         prev_enabled = enabled;
+        prev_secure = secure;
         let status = derive_status(trusted, secure, inference.is_ready(), enabled);
         // Only touch AppKit when the rendered state actually changed.
         if last_render != Some((status, enabled)) {
@@ -347,8 +354,9 @@ pub fn run() -> Result<(), String> {
             }
         }
 
-        // 6. Tray actions.
-        if flags.open_settings.swap(false, Ordering::SeqCst) {
+        // 6. Tray actions (menu callbacks fire on this same main thread via the
+        // run-loop pump, so Relaxed is sufficient for these flags).
+        if flags.open_settings.swap(false, Ordering::Relaxed) {
             if let Err(err) = Command::new("open")
                 .arg(ACCESSIBILITY_SETTINGS_URL)
                 .status()
@@ -356,7 +364,7 @@ pub fn run() -> Result<(), String> {
                 eprintln!("complete-me: open settings failed: {err}");
             }
         }
-        if flags.quit.load(Ordering::SeqCst) {
+        if flags.quit.load(Ordering::Relaxed) {
             eprintln!("complete-me: quit requested");
             break;
         }

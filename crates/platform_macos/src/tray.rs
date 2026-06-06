@@ -46,21 +46,23 @@ define_class!(
     unsafe impl NSObjectProtocol for TrayTarget {}
 
     impl TrayTarget {
+        // These actions fire on the main thread (run-loop pump), the same thread
+        // that reads the flags, so Relaxed ordering is sufficient.
         #[unsafe(method(toggleEnabled:))]
         fn toggle_enabled(&self, _sender: Option<&AnyObject>) {
             let enabled = &self.ivars().flags.enabled;
-            let now = enabled.load(Ordering::SeqCst);
-            enabled.store(!now, Ordering::SeqCst);
+            let now = enabled.load(Ordering::Relaxed);
+            enabled.store(!now, Ordering::Relaxed);
         }
 
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
-            self.ivars().flags.open_settings.store(true, Ordering::SeqCst);
+            self.ivars().flags.open_settings.store(true, Ordering::Relaxed);
         }
 
         #[unsafe(method(requestQuit:))]
         fn request_quit(&self, _sender: Option<&AnyObject>) {
-            self.ivars().flags.quit.store(true, Ordering::SeqCst);
+            self.ivars().flags.quit.store(true, Ordering::Relaxed);
         }
     }
 );
