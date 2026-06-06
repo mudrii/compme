@@ -31,7 +31,7 @@ use crate::adapter::SharedAdapter;
 use crate::config::{self, parse_clamped};
 use crate::inference::InferenceHandle;
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
-use crate::status::derive_status;
+use crate::status::{derive_status, should_dismiss};
 use crate::wiring::{FieldTracker, LatestRequest, Observation};
 
 const DEFAULT_DEBOUNCE_MS: u64 = 120;
@@ -319,11 +319,9 @@ pub fn run() -> Result<(), String> {
             last_secure_poll_ms = Some(now_ms);
         }
         let enabled = flags.enabled.load(Ordering::Relaxed);
-        // Hide any showing ghost immediately when the user disables the app or
-        // secure input turns on (a password field gained focus) — gating only
-        // blocks *new* requests, so an already-visible ghost needs an explicit
-        // dismiss.
-        if (prev_enabled && !enabled) || (!prev_secure && secure) {
+        // Hide any showing ghost on the disable or secure-on edge (gating only
+        // blocks *new* requests; an already-visible ghost needs explicit dismiss).
+        if should_dismiss(prev_enabled, enabled, prev_secure, secure) {
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
         prev_enabled = enabled;

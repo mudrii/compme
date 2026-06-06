@@ -42,6 +42,18 @@ pub fn derive_status(trusted: bool, secure: bool, ready: bool, enabled: bool) ->
     }
 }
 
+/// Whether a showing ghost must be dismissed this iteration.
+///
+/// Suggestion *gating* (`suggestions_allowed`) only blocks new requests; an
+/// already-visible ghost needs an explicit dismiss when the user disables the
+/// app or when secure input turns on (a password field gained focus). Both are
+/// rising/falling edges, so this compares the previous tick's state to now.
+pub fn should_dismiss(prev_enabled: bool, enabled: bool, prev_secure: bool, secure: bool) -> bool {
+    let disabled_edge = prev_enabled && !enabled;
+    let secured_edge = !prev_secure && secure;
+    disabled_edge || secured_edge
+}
+
 impl AppStatus {
     /// Only `Ready` permits inference requests to be submitted.
     pub fn suggestions_allowed(self) -> bool {
@@ -134,6 +146,37 @@ mod tests {
         assert!(AppStatus::Blocked(BlockReason::Permission).needs_accessibility());
         assert!(!AppStatus::Blocked(BlockReason::SecureInput).needs_accessibility());
         assert!(!AppStatus::Ready.needs_accessibility());
+    }
+
+    #[test]
+    fn dismiss_on_disable_edge_only() {
+        // Falling edge enabled true→false dismisses; staying disabled does not.
+        assert!(should_dismiss(true, false, false, false));
+        assert!(!should_dismiss(false, false, false, false));
+        // Staying enabled does not dismiss.
+        assert!(!should_dismiss(true, true, false, false));
+        // Re-enabling (false→true) does not dismiss.
+        assert!(!should_dismiss(false, true, false, false));
+    }
+
+    #[test]
+    fn dismiss_on_secure_rising_edge_only() {
+        // Rising edge secure false→true dismisses; staying secure does not.
+        assert!(should_dismiss(true, true, false, true));
+        assert!(!should_dismiss(true, true, true, true));
+        // Secure clearing (true→false) does not dismiss.
+        assert!(!should_dismiss(true, true, true, false));
+    }
+
+    #[test]
+    fn dismiss_when_both_edges_fire() {
+        assert!(should_dismiss(true, false, false, true));
+    }
+
+    #[test]
+    fn no_dismiss_in_steady_state() {
+        // Enabled + not secure, unchanged: nothing to dismiss.
+        assert!(!should_dismiss(true, true, false, false));
     }
 
     #[test]
