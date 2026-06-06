@@ -9,6 +9,7 @@
 
 mod adapter;
 mod model_select;
+mod wiring;
 
 use std::sync::Arc;
 
