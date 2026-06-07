@@ -8,6 +8,14 @@
 
 **2026-06-05 A1b reconciliation:** Native inline prediction suppression remains a product concern, but is deferred out of A1b for cross-app text fields. Current AppKit bindings expose automatic text-completion controls for owned `NSTextView`/`NSTextField` instances, while this app reads and writes other applications through Accessibility plus native overlay rendering. The active A1b source of truth is `docs/superpowers/plans/2026-06-04-a1b-macos-adapter-contract.md`.
 
+**2026-06-07 decompile audit (corrections):** Full static re-decompile (`codesign`/`otool`/`strings`) + live `UserDefaults` read produced fixes marked **[CORR 06-07]**: (1) `RepliesSDK.framework` is feedback/screen-capture tooling, **not** the completion engine — completion = `CompletionManagerActor` + llama.cpp directly (§1, §13); (2) default accept is **Tab = next word**, `~`/key-above-Tab = full — previously under-specified (§1, §4, §13); (3) personalization strength is a **3-stop** control (Gentle/Balanced/Strong) behind a slider UI, not a contradiction (§6); (4) `maxCompletionLength=4` and `selectedModel=gemma-4-E4B-UD-Q5_K_XL` are **live-confirmed**; (5) Cotypist's ~100–200 ms latency is secondary-sourced and "Qwen 2.5 1.5B" is stale pre-launch reporting (§5); (6) full-accept uses Carbon/`MASShortcut` (no Input Monitoring) — only the Tab swallow needs a CGEventTap (§7, §13).
+
+**2026-06-07 architecture pivot (Tauri → native):** The app shell was planned as a Tauri v2 tray app, but the shipped implementation is a **native Rust binary** (`crates/app`) with an AppKit `NSStatusItem` tray built via `objc2` (`crates/platform_macos/src/tray.rs`) — **there is no Tauri dependency in the workspace**. Config is a dotenv-style `config.env` file (not a hidden Tauri webview). Mentions of "Tauri v2 tray app", `apps/app`, `WebviewWindowBuilder`, `run_on_main_thread`, and the Tauri `updater` plugin below are **superseded**: read them as the native AppKit run loop, `crates/app`, the objc2 tray/menu, and an A3 updater decision still open (no Tauri). The cross-platform `PlatformAdapter` seam is unchanged.
+
+**2026-06-07 Cotypist parity audit:** P0/P1 are MVP layers, not Cotypist parity; individual P0/P1 docs record which checks are implemented, live-validated, or still pending after the accept-key flip. The installed Cotypist app and current website add requirements beyond the active MVP: optional Screen Recording / screen-aware context, encrypted local personalization, per-app and per-domain controls, Google Docs onboarding, browser compatibility workarounds, terminal AI-agent prompt support, mirror-window fallback, configurable shortcut matrix, emoji/typo features, anonymous telemetry controls, and a signed/updating app distribution story. These are now tracked explicitly in §8, §9, §12, and §13; do not mark the product "Cotypist-aligned" until those A2/A3+ items have implementation and validation evidence.
+
+**2026-06-08 audit update:** Current public Cotypist pages add sharper parity requirements than the older static decompile notes: tier-capped feature behavior, a possibly six-stop personalization slider in pricing copy, more granular app compatibility tiers, and a pricing/update-copy mismatch on trial length. Treat website claims and live installed preferences as separate evidence streams; user-customized local preferences do not prove factory defaults.
+
 ---
 
 ## 1. Context & motivation
@@ -20,15 +28,16 @@ Validated against the shipping Cotypist binary:
 |---|---|---|
 | Inference | `libllama` + `libggml-metal` (ggml 0.12.0), llama.cpp, Metal | llama.cpp via `llama-cpp-2` (feature `metal`), Metal backend |
 | Models | **Selectable catalog**, Instruct: Gemma 3/4, Qwen 3 (e.g. `gemma-4-E4B-UD-Q5_K_XL`); downloaded first-run | Selectable catalog; start small (see §5); download first-run |
-| Storage | `GRDB.framework` (SQLite); training data "encrypted, stored locally" | `rusqlite` + `bundled` (FTS5 included) |
-| App shape | Menu-bar agent, `LSUIElement=true`, status item, no dock | Tauri v2 tray app, `ActivationPolicy::Accessory`, hidden settings window |
-| Engine | Custom `RepliesSDK.framework` (prompt build, sampling, sender identity) | Our `core` + `ranker` + `model_client` |
-| Personalization | **Prompt-based**: `userPrompt` custom instructions + strength slider + sender name/email; optional training-data collector | Same: prompt-based primary; optional local memory later |
+| Storage | `GRDB.framework` (SQLite); training data "encrypted, stored locally"; local DB appears passphrase-protected and key-managed | `rusqlite` + `bundled` (FTS5 included) plus A2 encryption/key-management plan before claiming personalization parity |
+| App shape | Menu-bar agent, `LSUIElement=true`, status item, no dock | **[CORR 06-07]** Native Rust binary (`crates/app`), AppKit `NSStatusItem` tray via `objc2`, `ActivationPolicy::Accessory`; config via `config.env` (no Tauri, no webview) |
+| Engine | **[CORR 06-07]** Swift `CompletionManagerActor` + llama.cpp directly (prompt build, sampling). `RepliesSDK.framework` is a screen-capture/feedback SDK, **not** the completion engine | Our `core` + `ranker` + `model_client` |
+| Personalization | **Prompt-based**: `userPrompt` custom instructions + strength control + sender name/email + optional training-data collector. Static binary evidence shows Gentle/Balanced/Strong symbols; current public pricing describes tier-capped slider stops. | Same mechanism: prompt-based primary; A2 must re-verify factory/current strength semantics and model tier caps explicitly |
 | Context source | AX **+ pasteboard fallback** + previous-input / cross-app history | AX primary; pasteboard + previous-input augmentation (latter deferred) |
+| Screen-aware context | Optional Screen Recording + on-device OCR/context extraction; still works without it | A2+ optional permission; local-only ScreenCaptureKit/Vision-style context source with clear opt-in/off path |
 | Models CDN | Self-hosted `models.cotypist.app` (zstd), sourced from HF | HF direct or self-host (TBD) |
 | Native inline prediction | Disabled while active (`InlinePredictionDisableController`) | Same product goal; cross-app suppression deferred out of A1b unless an owned-control integration is added |
-| Accept | **Configurable, two-tier**: full + partial(next-word) shortcuts; `maxCompletionLength` in words (default 4) | Same model: 2 configurable shortcuts, word-capped |
-| Update | Sparkle (`SUFeedURL` cotypist.app/updates) | **[CORR]** Tauri `updater` plugin (drop Sparkle — §12) |
+| Accept | **[CORR 06-07] Configurable, two-tier**: factory default evidence points to **Tab = next word** (partial), **`~`/key-above-Tab = full**; `maxCompletionLength` in words (live-confirmed default 4); Tab disable per-app. Installed user profiles may differ because shortcuts are configurable. | 2 configurable shortcuts, word-capped — **default Tab→word to match Cotypist muscle memory**, but do not hardcode factory defaults as the only valid layout (§4) |
+| Update | Sparkle (`SUFeedURL` cotypist.app/updates) | **[CORR 06-08]** A3 decision, open. Tauri's updater is off the table (no Tauri); **Sparkle is now the leading candidate** — it is the standard Developer-ID/non-MAS macOS updater and is what Cotypist itself ships (§13). The earlier "drop Sparkle for Tauri" rationale is void. |
 | Analytics | Sentry, opt-out per app | Optional; local-only by default |
 | Entitlements | `com.apple.security.automation.apple-events`; not sandboxed | Same; hardened runtime + notarize |
 | Language | Swift native | **Rust** (chosen for cross-platform reuse) |
@@ -38,27 +47,28 @@ Validated against the shipping Cotypist binary:
 - Swappable cloud providers (Ollama/OpenAI) — behind `LocalModel` trait.
 - Browser extension / IDE plugins / remote compat registry.
 - On-device fine-tuning (personalization is prompt + optional retrieval, never weight training).
+- Full Cotypist feature parity in P0/P1. P0/P1 prove the core local completion loop; parity features land in A2/A3+ only when they have their own acceptance gates.
 
 ---
 
 ## 2. Architecture
 
-Single process. Tauri v2 = tray, lifecycle, hidden settings webview. Rust core (AX, overlay, inference, prefs) in Tauri's backend. **Three run-loop contexts** (validated, §12):
+Single process, **native Rust** (`crates/app`). **[CORR 06-07]** The shell is not Tauri: an AppKit `NSStatusItem` tray/menu (objc2) provides lifecycle + enable/disable; there is no settings webview (config is `config.env`). **Three run-loop contexts** (validated, §12):
 
-- **Main thread / AppKit run loop** — Tauri's loop; all NSPanel/overlay calls hop here via `app_handle.run_on_main_thread`.
+- **Main thread / AppKit run loop** — the process's own AppKit loop; all NSPanel/overlay calls run on the main thread.
 - **CGEventTap thread** — own thread + `CFRunLoopRun`; key interception (accept shortcut). Callback must be non-blocking and answer from **pre-computed state** (never a synchronous AX call).
 - **AX/inference worker** — background thread/queue; AX IPC (with short messaging timeout) + llama.cpp decode.
 
 ```
-┌─ Tauri v2 tray app (one process, ActivationPolicy::Accessory) ─────────┐
-│  tray menu/status item · hidden settings webview · lifecycle           │
+┌─ Native Rust binary (one process, ActivationPolicy::Accessory) ────────┐
+│  AppKit NSStatusItem tray/menu (objc2) · config.env · lifecycle        │
 │                                                                         │
 │  ┌── core ───────────────┐   suggestion state machine, debounce,        │
 │  │ generation tokens,    │   accept logic (full/partial), app policy     │
 │  │ invalidation, cancel  │                                               │
 │  └───────┬───────────────┘                                              │
 │   ┌──────┴────────┬────────────┬───────────────┬──────────────┐         │
-│  context        ranker      model_client    personalization  prefs       │
+│  context     ranker     model_client    (personalization/prefs: A2/A3)   │
 │  (AX read +    (score,     (LocalModel:    (custom-instr     (UserDefaults│
 │   pasteboard    trim,       llama-cpp-2,    prompt, strength,  -equivalent,│
 │   fallback,     boundary)   Metal, warm,    sender identity,   per-app    │
@@ -71,19 +81,26 @@ Single process. Tauri v2 = tray, lifecycle, hidden settings webview. Rust core (
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Workspace
+### Current Workspace And Planned Crate Map
+
+Current root workspace crates:
+
 ```
 crates/core             # state machine, generation tokens, invalidation, cancel, accept logic, policy
 crates/context          # TextContext, Selection, Caret + AX+pasteboard capture model
 crates/ranker           # candidate trim/boundary/repetition/score
 crates/model_client     # LocalModel trait + llama.cpp impl (warm-up, prefix cache, N-sample)
-crates/personalization  # custom-instructions prompt builder + sender identity + optional rusqlite memory
-crates/prefs            # settings store + per-app overrides (mirrors Cotypist's pane model)
 crates/platform         # PlatformAdapter trait + shared types (cross-platform contract)
-crates/platform_macos   # AX read, CGEventTap, NSPanel overlay, front-app detection
-apps/app                # Tauri v2 tray + settings webview, wiring
-tools/spike             # throwaway A0 PoC (deleted after A0)
+crates/platform_macos   # AX read, CGEventTap, NSPanel overlay, front-app, NSStatusItem tray (objc2)
+crates/engine           # wires SuggestionMachine → adapter + overlay + accept subscription
+crates/app              # [CORR 06-07] native complete-me binary: run loop, inference thread, config.env, tray
+tools/spike             # throwaway A0 PoC (excluded from workspace; retained under tools/spike)
 ```
+
+Planned A2/A3 crates or modules, not current workspace members:
+
+- `crates/personalization`: custom-instructions prompt builder, sender identity, optional encrypted local memory.
+- `crates/prefs`: settings store, per-app/per-domain overrides, and migration from MVP `config.env`.
 
 **Crate strategy** (verdicts in `2026-06-03-prior-art-review.md` §3): build the AX/tap/inject layer natively via `objc2` + `objc2-app-kit` + `accessibility-sys`/`axuielement` + `core-graphics`; inference via `llama-cpp-2` (C-API surface, `metal`). **Do NOT depend on `rdev`/`rdevin` for the capture path** (stale / grab-disabled on Linux) — KeyType, Cotabby, and Espanso all hand-rolled native capture. `enigo` only as an inject shortcut later.
 
@@ -143,7 +160,7 @@ A suggestion is a contract over a specific context snapshot. Define it precisely
 5. On return, **discard unless current generation token still matches** (stale-race guard).
 6. `ranker` trims to word boundary, caps at `maxCompletionLength` words, applies repetition/sensitive penalties.
 7. Overlay renders top candidate at `caret_rect` (Retina/multi-monitor coordinate conversion, §12) or popup fallback. Render over a **backdrop** (solid/blurred/glass, configurable) for legibility on arbitrary app backgrounds. Avoid double ghost text where the target integration allows native inline prediction suppression; for cross-app Accessibility fields this is deferred out of A1b. Multi-candidate shows as an inline list (row + badge views).
-8. **Accept**: full-completion shortcut inserts all; partial shortcut inserts next word (+ trailing space if available). Shift-equivalent cycles candidates; Esc dismisses.
+8. **Accept**: full-completion shortcut inserts all; partial shortcut inserts next word (+ trailing space if available). **[CORR 06-07] Match Cotypist defaults: Tab = accept next word (partial), `~`/key-above-Tab = accept full** (`acceptNextWordOnly_includeTrailingSpaceIfAvailable=1`, live-confirmed); Tab disengageable per-app where Tab has native function. Shift-equivalent cycles candidates; Esc dismisses.
 9. **Invalidation** (any → drop suggestion): non-accept keystroke, caret/selection move, focus/app change, mouse click, text no longer matches prefix.
 10. `personalization`/stats record outcome locally (redacted).
 
@@ -165,7 +182,7 @@ A suggestion is a contract over a specific context snapshot. Define it precisely
 - **Prefill dominates TTFT**: keep left-context short (few hundred tokens); reuse KV/prefix cache across keystrokes. Don't re-prefill long context per keystroke.
 - Live mode: `n_predict` 8–24 tokens, capped to `maxCompletionLength` words; aggressive stop sequences (newline/sentence boundary) — **boundary/stop handling is the hidden quality lever**.
 - Candidates (2–5): **N independent samples** (temp/seed variation; llama.cpp dropped beam search). Decode shared prompt once, branch N sequences → ~N× the *generation* cost, not N× whole request.
-- Latency: 0.5–1.5B Q4 on M-series ≈ 30–80 tok/s. Sub-150 ms first suggestion feasible **only** warm + short prompt. Cotypist targets ~100–200 ms and shipped on Qwen 2.5 1.5B before expanding the catalog.
+- Latency: 0.5–1.5B Q4 on M-series ≈ 30–80 tok/s. Sub-150 ms first suggestion feasible **only** warm + short prompt. **[CORR 06-07]** Cotypist's ~100–200 ms target is **secondary-sourced** (press reporting, not first-party — site only claims "real-time"); the "Qwen 2.5 1.5B" figure is stale pre-launch reporting. Live default model is `gemma-4-E4B-UD-Q5_K_XL` (~3 GB Gemma 4; §13) — i.e. Cotypist trades latency budget for a much larger model than our MVP's 0.5B.
 - **Model: selectable tiered catalog** (mirrors Cotypist). Cotypist self-hosts GGUFs at `models.cotypist.app` (zstd-compressed), sourced from HF (unsloth `UD-Q*_K_XL` dynamic quants, `mradermacher *-i1-GGUF`). Catalog observed: Gemma 3 1b/4b-it-UD-Q4, Gemma 3 270m, Llama-3.2-1B/3B-Instruct-UD, Qwen3-0.6B/1.7B/30B-A3B-Base-i1, Gemma 4 E2B/E4B. We can either self-host similarly or pull from HF directly. Start tier "always fast": **Qwen3-0.6B / Qwen2.5-0.5B / gemma-3-1b**, Q4_K_M (~350–490 MB). Quality tier: ~1.5–1.7B (`featureMidSizeModels`); large tier behind capability gate.
   - **Base vs Instruct:** Cotypist ships **both** (`-Base-i1` and `-it`/Instruct). Base = cleaner continuation; Instruct works with hard constraints (word cap, custom-instruction prompt, stop sequences). Decision: **benchmark both in A0**; offer both in catalog; default per-model.
   - **Mid-line completion** (`featureMidLineCompletion`): insert within a line, not only at end. Achievable with left-context + stop-at-existing-text without full FIM; revisit FIM only for code fields.
@@ -187,11 +204,11 @@ A suggestion is a contract over a specific context snapshot. Define it precisely
 Prompt-based, not ML. Simpler, ships, and is what Cotypist actually does.
 
 - **Primary: custom-instructions prompt.** User-editable free-text style profile (`userPrompt`: name, role, languages, tone rules) templated into the completion prompt. **Global + per-app** instructions (`featureCustomInstructionsGlobal` / `PerApp`) — per-app supplements global. Auto-seed a starter from the Mac on first run; "a few hundred words" guidance.
-- **Strength = 3 discrete levels** (`featurePersonalization{Gentle,Balanced,Strong}`), not a continuous slider. Controls how hard instructions + memory steer.
+- **Strength control**: static binary symbols include `featurePersonalization{Gentle,Balanced,Strong}` and a `PersonalizationStrengthSlider`; current public pricing copy describes tier-capped slider stops. A2 must re-check factory/current behavior and then encode either 3-level compatibility, 6-stop compatibility, or an intentional divergence. Controls how hard instructions + memory steer.
 - **Sender identity**: name + email (`io_replies_sender_*`) for signature/contact awareness.
 - **Custom model override** (`featureCustomModelOverride`): user may point at their own GGUF. Behind `LocalModel`; defer UI to A3.
 - **Context augmentation (deferred to A2/later)**: previous-input context — recent text the user typed (same app, and cross-app `featureCrossAppPreviousInputs`) — fed as extra context. Privacy-sensitive: opt-in, redacted, bounded retention.
-- **Optional local memory (deferred within A2)**: `rusqlite` + FTS5 store of accepted completions for retrieval-augmented prompting + ranker similarity score. Opt-in (`TrainingDataCollector` — encrypted, local, record count + "disable and erase"), inspectable.
+- **Optional local memory (deferred within A2)**: encrypted `rusqlite`/SQLite-compatible store with FTS5-style retrieval of accepted completions for retrieval-augmented prompting + ranker similarity score. Opt-in (`TrainingDataCollector` — encrypted, local, record count + "disable and erase"), inspectable. Encryption key must live in Keychain or an equivalent macOS-protected key store; deletion UX must support all data plus per-app/per-domain data. Plain unencrypted `rusqlite` is not Cotypist parity.
 - **No fine-tuning, ever.** Memory/inputs feed the prompt/ranker, never weights.
 - **Redaction before any persistence**: emails, card-like numbers (Luhn), tokens/secrets (regex; `pii-vault`/`redact`). Diagnostics text-redacted by default.
 
@@ -201,14 +218,17 @@ Prompt-based, not ML. Simpler, ships, and is what Cotypist actually does.
 
 - Never read/store secure fields: block on `AXSecureTextField` subrole **and** `IsSecureEventInputEnabled` (§12).
 - All inference local by default (only backend this spec). No raw-text logging by default.
+- Optional Screen Recording / screen-aware context must be local-only, off-revocable, and non-blocking: the app continues with field-only context when denied.
 - Visible **pause/snooze** ("disable for N minutes", as Cotypist) + per-app exclude list (default-exclude Finder-like) + per-window incognito.
 - Custom-instructions & memory are user-visible/editable; clear retention + "forget learned data".
+- Telemetry decision is explicit: P0/P1 ship no network telemetry. If A3 adds crash/usage telemetry, the plan must specify provider, region, payload schema, default state, opt-out/opt-in semantics, restart requirements, and a hard rule that typed text, clipboard text, OCR text, and prompts are never included.
 
 **Distribution & permission lifecycle (prior-art §2 — category's #1 support burden):**
-- **App Sandbox OFF**; hardened runtime needs `com.apple.security.cs.disable-library-validation` to load the dynamic llama framework → **Mac App Store impossible**. Ship Developer-ID DMG + Tauri updater. Entitlement `com.apple.security.automation.apple-events`.
+- **App Sandbox OFF**; hardened runtime needs `com.apple.security.cs.disable-library-validation` to load the dynamic llama framework → **Mac App Store impossible**. Ship Developer-ID DMG + a native updater (no Tauri; A3 decision). Entitlement `com.apple.security.automation.apple-events`.
+- A3 updater requirements: generate updater artifacts, generate/store signing key material safely, define the update endpoint/manifest format, choose static vs dynamic manifests, verify signature failure behavior, and validate update rollback/failure recovery before release.
 - **Stable signing identity** — TCC keys on cert+bundle-id; a cert change under the same bundle id causes an infinite "grant Accessibility" loop. Provide a `tccutil reset` recovery path + re-grant detection after OS updates.
 - Detect when **Secure Input** is stuck (background password managers) — it kills all injection globally; surface it in diagnostics.
-- Onboard **both** Accessibility + Input Monitoring; re-check after grant (may need relaunch).
+- Onboard **Accessibility + Input Monitoring** for the P0/P1 accept path; add optional Screen Recording onboarding in A2+ for screen-aware context. Re-check after grant (may need relaunch). **[CORR 06-07]** Only the Tab-swallow CGEventTap needs Input Monitoring; a Carbon/`MASShortcut`-registered full-accept hotkey (as Cotypist uses) needs none — prefer that split to minimize permission prompts.
 
 ---
 
@@ -216,19 +236,22 @@ Prompt-based, not ML. Simpler, ships, and is what Cotypist actually does.
 
 | Pane | Options |
 |---|---|
-| General | Completions enabled by default · `maxCompletionLength` (words, `featureConfigurableCompletionLength`) · show suggested fixes / autocorrect (`featureFullAutocorrect`) · mid-line completion (`featureMidLineCompletion`) · menu-bar word-count |
-| Personalization | Global custom instructions · per-app custom instructions · strength (Gentle/Balanced/Strong) · sender name/email · training-data collection (enable / disable+erase / record count) |
+| General | Completions enabled by default · `maxCompletionLength` (words, `featureConfigurableCompletionLength`) · typo/suggested-fix indicator separate from full autocorrect (`featureFullAutocorrect`) because public copy is inconsistent · mid-line completion (`featureMidLineCompletion`) · menu-bar word-count |
+| Personalization | Global custom instructions · per-app and per-domain custom instructions · strength control with current tier caps re-verified · sender name/email · training-data collection (enable / disable+erase / record count) · encrypted local database status |
 | Model | Selectable catalog (tiered) · download manager · custom model override (own GGUF) |
-| Shortcuts | Accept-full · accept-partial(next-word) · force-enable (all configurable; via MASShortcut-equivalent) |
-| App Overrides | Per-app enable/disable/exclude · per-app strength · per-app: **Tab-key behavior, Smart Quotes, Text Mirroring, Size Thresholds, Display/backdrop+font** · per-app instructions. (Domain/website overrides later; app-only knobs excluded from domain overrides.) |
-| Context | Pasteboard-context toggle · previous-input context · cross-app previous inputs |
-| Display | Backdrop style (solid / blurred / glass) · suggestion color/symbol · font style (`featurePerAppFontStyleOverrides`) |
-| Permissions | Accessibility status · Input Monitoring status · pasteboard permission |
+| Shortcuts | Accept next word · accept full completion · dismiss · force-activate current field · temporary current-app toggle · global toggle · per-app Tab disable; all configurable where feasible. Factory defaults are separate from user-customized installed preferences. |
+| App Overrides | Per-app enable/disable/exclude · per-app strength · per-app: **Tab-key behavior, Smart Quotes, Text Mirroring, Size Thresholds, Display/backdrop+font** · per-app instructions. Domain/website overrides are required for browser personalization/data controls; app-only knobs remain app-only. |
+| Compatibility | Google Docs Accessibility setup · Arc/Dia Text Metrics guidance · Firefox/Zen mirror-window fallback · Terminal/iTerm AI-agent prompt mode · Slack partial handling · code-editor sidebar/chat-only activation for VS Code/Cursor/Windsurf · TheBrain support check · explicit unsupported list for Pages/Scrivener/Thunderbird/OneNote/BBEdit/Sublime/Ghostty/cmux/Warp-style cases until proven |
+| Context | Pasteboard-context toggle · previous-input context · cross-app previous inputs · optional Screen Recording/OCR surrounding-context toggle |
+| Display | Backdrop style (solid / blurred / glass) · suggestion color/symbol · font style (`featurePerAppFontStyleOverrides`) · mirror-window fallback for fields without usable inline metrics |
+| Permissions | Accessibility status · Input Monitoring status · optional Screen Recording status · pasteboard permission |
 | Emoji | Emoji completion · skin tone · gender |
 | Labs | Experimental flags (`featureCotypistLabsAccess`); e.g. thesaurus auto/selection mode |
-| About / Update | Version · auto-update (Tauri updater) |
+| About / Update | Version · auto-update (native updater, A3 — no Tauri) |
 
 Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepository_*`, `feature*`, per-app override list). Cotypist also supports **web-driven config** (`cotypist.app/setPreference`, `/launchCotypist/setOverride` deep links via URL scheme) for pushing compatibility fixes — optional later.
+
+Tier semantics: Cotypist currently gates completion quotas, model catalog size, clipboard awareness, global/per-app instructions, full autocorrect, Labs, and device count by tier. Complete Me does not need to copy pricing, but A3 must make an explicit product decision: either model feature gates in prefs/entitlements or document a deliberate no-pricing-gates divergence. Do not leave tiered behavior implicit if claiming Cotypist parity.
 
 ---
 
@@ -238,8 +261,8 @@ Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepo
 |---|---|---|---|
 | **A0 spike** (throwaway) | 1–2 | (1) caret **ladder** read in a native app (TextEdit) AND a Chromium app (AXTextMarker path); (2) **two-tap CGEventTap** that swallows a test key without stalling other apps, behind Input Monitoring; (3) NSPanel overlay (Retina-correct); (4) warm llama.cpp round-trip + latency table + KV-reuse rules for the chosen model; bench base-vs-instruct | All four work in real apps; two-tap proven stall-free; sub-150 ms warm latency confirmed or model retiered |
 | **A1 core loop** | 3–4 | `PlatformAdapter` + macOS adapter + suggestion lifecycle (§4) + configurable accept + ghost overlay (backdrop + native-inline-prediction suppression only where supported) + **secure block (subrole + secure-input)** | Type in Notes/Mail → inline suggestion → accept; passwords & secure-input blocked; no stale inserts; no double ghost text from this app |
-| **A2 features** | 3–4 | Prompt-based personalization (custom instructions + strength + sender) + pasteboard context fallback + multi-candidate + cycle; optional rusqlite memory if time | Suggestions steered by custom instructions; cycling works; Electron apps get keystroke/clipboard insertion |
-| **A3 settings + ship** | 2–3 | Tauri settings (all §8 panes) + per-app overrides + model catalog/download + diagnostics + pause/snooze + Tauri updater + codesign/notarize (hardened runtime + entitlements) | Installable signed/notarized `.app`; configurable; self-diagnosing; two-permission onboarding |
+| **A2 parity features** | 3–4 | Prompt-based personalization (global/per-app/per-domain custom instructions + re-verified strength semantics + sender) + encrypted local memory/data controls + pasteboard context + optional Screen Recording/OCR context + multi-candidate/cycle + Google Docs setup + browser compatibility/mirror fallback + Terminal/iTerm AI-agent prompt activation + current compatibility matrix | Suggestions are steered by custom instructions; encrypted local data can be inspected/deleted; Google Docs and browser workarounds are guided; terminal suggestions only activate in intended prompt contexts; unsupported/partial app claims are explicit |
+| **A3 settings + ship** | 2–3 | Native settings UI (all §8 panes; no Tauri) + per-app/domain overrides + model catalog/download + diagnostics + pause/snooze + updater details (native, Sparkle-leading/TBD — no Tauri) + codesign/notarize (hardened runtime + entitlements) + telemetry decision + tier/feature-gate decision | Installable signed/notarized `.app`; configurable; self-diagnosing; Accessibility/Input Monitoring onboarding plus optional Screen Recording onboarding; updater artifacts and telemetry policy validated; pricing/tier divergence either implemented or documented |
 
 ~9–13 weeks solo to a shippable macOS app.
 
@@ -258,7 +281,7 @@ Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepo
 | `caret_rect` collapsed-range returns `kAXErrorNoValue` in most apps | High | "Bounds of adjacent char" workaround + element-frame fallback (designed-in) |
 | Electron/Chromium apps expose poor AX tree | High | Detect Electron → keystroke/clipboard insert + pasteboard context + popup positioning |
 | **Secure Input mode** blocks AX/taps in password fields | Med | Detect `IsSecureEventInputEnabled`; suppress entirely |
-| llama.cpp + Tauri vendored C++ build (clang/cmake, slow) | Med | Pin versions; prebuilt artifacts in CI; mistral.rs fallback evaluated in A0 |
+| llama.cpp vendored C++ build (clang/cmake, slow) | Med | Pin versions; prebuilt artifacts in CI; mistral.rs fallback evaluated in A0 |
 | Two TCC permissions (Accessibility + Input Monitoring), revocable, post-grant relaunch | Med | Onboarding sequences both; runtime detect each; guide to correct Settings pane |
 | AX synchronous IPC can block (6 s default timeout) | Med | Off-main worker; `AXUIElementSetMessagingTimeout` short; handle `kAXErrorCannotComplete` retry |
 | Single process: settings-UI panic stalls predictions | Low | Prediction on dedicated thread; `catch_unwind` around UI |
@@ -268,7 +291,7 @@ Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepo
 ## 11. Success metrics
 First-suggestion perceived latency <100–150 ms (warm); **<500 ms p95 is the hard floor** — slower "feels laggy and reduces acceptance" (industry threshold). Insertion failure <1% in supported apps · <5% laggy sessions · clear tier for top ~20 macOS apps · local stats: shown/accepted/dismissed/superseded, latency, words (30-day, mirrors Cotypist stats).
 
-**Acceptance is trust-compounding** (66k-interaction study: prior per-user acceptance dominates future acceptance) → **protect first-run**; conservative triggering (fire near word/sentence boundaries, not every keystroke) beats always-on. Narrow scope deliberately — cede code/terminal to Copilot (as Cotypist does); own non-code writing.
+**Acceptance is trust-compounding** (66k-interaction study: prior per-user acceptance dominates future acceptance) → **protect first-run**; conservative triggering (fire near word/sentence boundaries, not every keystroke) beats always-on. Narrow scope deliberately: main code editor panes stay disabled unless a later code-specific plan exists, but terminal and code-editor sidebar **AI prompt fields** are compatibility targets because Cotypist supports those natural-language workflows.
 
 ---
 
@@ -282,7 +305,8 @@ First-suggestion perceived latency <100–150 ms (warm); **<500 ms p95 is the ha
 - **CGEventTap fragility**: handle `kCGEventTapDisabledByTimeout/UserInput`, re-create on wake; non-blocking callback.
 - **Overlay** = `NSPanel` `.nonactivatingPanel`, `.floating`, `canJoinAllSpaces|fullScreenAuxiliary`, clear/`ignoresMouseEvents`; never `activate(ignoringOtherApps:)`. `tauri-nspanel` plugin exists.
 - **AX IPC** synchronous, 6 s default timeout → off-main + lower timeout.
-- **Tauri v2**: `ActivationPolicy::Accessory` (=LSUIElement), `TrayIconBuilder`, hidden `WebviewWindowBuilder::visible(false)`; run loop is AppKit's; AppKit calls via `run_on_main_thread`. **Official `updater` plugin → use it, drop Sparkle** (redundant/conflicting). `tauri build` does codesign + notarize.
+- **Tauri v2** (evaluated, **not adopted — see 2026-06-07 pivot note**): would have given `ActivationPolicy::Accessory`, `TrayIconBuilder`, hidden webview, official `updater`, and `tauri build` codesign/notarize. The shipped app instead sets `ActivationPolicy::Accessory` and the `NSStatusItem` tray directly via `objc2`/AppKit; the A3 updater + codesign/notarize approach is open (no Tauri tooling).
+- **Cotypist 2026.1 website/app delta**: optional Screen Recording improves context through local screen text recognition; clipboard context is optional/off by default; personalization is opt-in and encrypted locally; anonymous crash/usage telemetry exists and is user-controllable. Complete Me must model each of those as explicit A2/A3 decisions, not inferred behavior.
 - **Inference**: `llama-cpp-2` v0.1.146, `metal` feature, vendored cmake build; warm-up + prefix cache critical; N-sample (no beam search); 30–80 tok/s for 0.5–1.5B Q4.
 - **Models**: Qwen2.5-0.5B/1.5B-Instruct GGUF Q4_K_M exist (~491 MB / ~1.12 GB); base cleaner for completion but Instruct works with constraints (Cotypist ships Instruct). FIM = code-only → drop for v1.
 - **Storage**: `rusqlite` `bundled` includes FTS5 (no separate flag); `directories::ProjectDirs` for paths (`cache_dir()` for the model); regex+Luhn redaction (`pii-vault`/`redact`).
@@ -291,31 +315,32 @@ First-suggestion perceived latency <100–150 ms (warm); **<500 ms p95 is the ha
 
 ## 13. Cotypist reverse-engineering — how it operates
 
-**Binary**: arm64 Swift, `LSUIElement=true`, min macOS 14, entitlement `com.apple.security.automation.apple-events`, not sandboxed. Libs: `libllama`/`libggml*` (Metal), `GRDB` (SQLite), `RepliesSDK` (own engine), `Sparkle` (update, `SUFeedURL=cotypist.app/updates`), `Sentry`.
+**Binary**: arm64 (thin, Apple-Silicon-only) Swift + AppKit/SwiftUI, `LSUIElement=true`, min macOS 14, built vs macOS 26.4 SDK, Developer ID (Accelerated Thought GmbH, `MRLF43FW3G`), Hardened Runtime ON, entitlement `com.apple.security.automation.apple-events` only, not sandboxed. Libs: `libllama`/`libggml*` (Metal), `GRDB` (SQLite), `Sparkle` (update, `SUFeedURL=cotypist.app/updates`), `Sentry`, `ScreenCaptureKit`, `Vision`, NaturalLanguage. **[CORR 06-07]** `RepliesSDK.framework` is a screen-capture/annotation/feedback SDK — **not** the completion engine (completion runs through `CompletionManagerActor` + llama.cpp directly).
 
 **Operation (from class names + live prefs):**
 - `CompletionAccessibilityMonitor` watches focus/text via AX; `TextFieldContextCapture` reads field context **with optional pasteboard augmentation**.
 - `CompletionManagerActor` (Swift actor → serialized concurrency) builds a `CompletionRequest` (prompt = custom instructions + context), runs local inference, returns `CompletionResult`.
 - `CompletionOverlayManager`/`CompletionBackdropManager` render ghost text; `CompletionInserter` inserts on accept.
-- `ShortcutListener` + key monitor handle **configurable** accept-full / accept-partial / force-enable shortcuts.
+- `ShortcutListener` + key monitor handle **configurable** accept-full / accept-partial / force-enable shortcuts. **[CORR 06-07] Observed defaults** (live prefs + binary strings "(Tab) key to complete", "Disable Completions with the Tab Key", "try the key above [Tab]"): **Tab = accept-next-word** (partial), **`~`/key-above-Tab = accept-full**; `acceptNextWordOnly_includeTrailingSpaceIfAvailable=1`. The full-accept shortcut is registered via **`MASShortcut`/Carbon** (`RegisterEventHotKey`, no Input Monitoring); only the Tab swallow needs a consuming CGEventTap.
 - `ModelRepository` manages a **tiered selectable model catalog**; `DownloadAndRenameTask` downloads the chosen GGUF first-run (current: `gemma-4-E4B-UD-Q5_K_XL`).
 - Pause/snooze ("Completions disabled for N minutes"); per-app exclusion (`excludedApplications`, e.g. Finder); 30-day completion stats; emoji completion; "suggested fixes" (spelling/grammar via NSSpellChecker).
+- Compatibility surface observed from the current site: Google Docs requires Accessibility mode; Arc/Dia need Text Metrics or an accessibility launch flag for inline suggestions; Firefox/Zen use mirror-window fallback; Terminal.app and iTerm activate for AI-agent prompts; Ghostty is publicly listed as not supported even though the binary has preparatory Ghostty customizer symbols.
 
 **Config surface (live `UserDefaults` keys observed):**
 `CompletionManager_{acceptFullCompletionShortcut, acceptPartialCompletionShortcut, acceptNextWordOnly_includeTrailingSpaceIfAvailable, excludedApplications, maxCompletionLength=4, userPrompt}` · `ModelRepository_{selectedModel, statusItemVisible, shouldShowCompletedWordCountInMenuBar}` · `PersonalizationStrengthSlider` · `TextFieldContextCapture_pasteboardContextEnabled` · `TrainingDataCollector_enabled` · `EmojiCompletion_{preferredGender, preferredSkinTone, includeVanillaVariants}` · `io_replies_sender_{name,email}` · `ShortcutListener_forceEnableShortcut` · Sparkle `SU*`. Settings panes enumerated in §8.
 
 **Overlay internals**: `InlineSuggestionsOverlayWindow` + `OverlayViewController` host `InlineSuggestionsListView` (row + badge + border views) over a `CompletionBackdropManager` backdrop (`SolidBackdropView`/`BlurredBackdropView`/glass effect) for legibility. `InlinePredictionDisableController` is a future owned-control integration point for supported native inline prediction suppression.
 
-**Network/endpoints**: model CDN `models.cotypist.app` (zstd GGUFs); `cotypist.app/{setPreference,launchCotypist/setOverride}` web-driven config via URL scheme; `cotypist.app/{compatibility,appHelp/textMetrics,help/privacy,pricing}`; RepliesSDK backend `replies.io` (protobuf — bundles `swift-protobuf`). Bundled deps of note: `MASShortcut` (configurable shortcuts), `LetsMove`, `CwlUtils`, `zstd`, `Sentry`.
+**Network/endpoints**: model CDN `models.cotypist.app` (zstd GGUFs); `cotypist.app/{setPreference,launchCotypist/setOverride}` web-driven config via URL scheme; `cotypist.app/{compatibility,appHelp/textMetrics,help/privacy,pricing}`; telemetry = Sentry (crash/perf, Frankfurt) + Google BigQuery (anonymous usage counts, Frankfurt), both default-on + user-disablable, **content never sent**. **[CORR 06-07]** A `replies.io` protobuf completion backend is **unconfirmed** — `swift-protobuf` is bundled, but `RepliesSDK` is feedback/screen-capture tooling, so do not assume a network completion path. Bundled deps of note: `MASShortcut` (configurable shortcuts), `LetsMove`, `CwlUtils`, `zstd`, `Sentry`.
 
 **Feature-flag catalog (full product surface, observed):**
 `featureConfigurableCompletionLength` · `featureMidLineCompletion` · `featureFullAutocorrect` · `featureEmojiCompletion` · `featureThesaurus{AutoMode,SelectionMode}` · `featureCustomInstructions{Global,PerApp}` · `featurePersonalization{Gentle,Balanced,Strong}` · `featurePasteboardContext` · `featurePreviousInputContext` · `featureCrossAppPreviousInputs` · `featureCustomModelOverride` · `feature{MidSize,Large}Models` · `featureUnlimitedCompletions` · `featurePerAppFontStyleOverrides` · `featureMultiDeviceSeats` · `featureCotypistLabsAccess`. (Subscription tiers gate model size + unlimited completions; we are not monetizing but the tiering informs the catalog structure.)
 
 **Thresholds/quality**: `deepMatchThreshold`, `reuseThreshold` (completion caching/reuse), `meetsQualityThresholds`, field-`Size Thresholds` (don't suggest in tiny fields), `wordCountAboveLengthThreshold` (stats).
 
-**What we adopt:** prompt-based personalization (global+per-app, 3 strength levels), two-tier configurable accept, word-capped length, pasteboard + previous-input context, selectable model catalog (base+instruct), backdrop overlay, disable-native-inline-prediction, pause/snooze, per-app overrides (incl. tab-key/smart-quotes/size-threshold/display), local encrypted stats/training data, quality/reuse thresholds.
-**What we change:** Tauri updater instead of Sparkle; Rust instead of Swift; CGEventTap built by hand (no RepliesSDK); model fetch from HF or self-host TBD.
-**Deferred features:** emoji completion, thesaurus, full autocorrect, cross-app previous inputs, web-driven config, domain/website overrides, subscription/seats.
+**What we adopt:** prompt-based personalization (global+per-app/per-domain, 3 strength levels), configurable shortcut matrix, word-capped length, pasteboard + previous-input context, optional screen-aware context, selectable model catalog (base+instruct), backdrop/mirror overlay, disable-native-inline-prediction where possible, pause/snooze, per-app overrides (incl. tab-key/smart-quotes/size-threshold/display), encrypted local stats/training data, compatibility guidance, quality/reuse thresholds.
+**What we change:** **[CORR 06-07]** native Rust shell (`crates/app` + objc2/AppKit tray), **not Tauri**; updater + codesign/notarize is an open A3 decision (Tauri dropped — **Sparkle is the leading candidate, as Cotypist ships it**); Rust instead of Swift; CGEventTap + `core`/`model_client` built by hand (Cotypist's completion is Swift `CompletionManagerActor` + llama.cpp; `RepliesSDK` is unrelated feedback tooling); model fetch from HF or self-host TBD; telemetry disabled unless explicitly designed later.
+**Deferred features:** emoji completion, thesaurus, full autocorrect, cross-app previous inputs, web-driven config, subscription/seats. Domain/website overrides are no longer optional for personalization/privacy parity; they are A2/A3 requirements for browser use.
 
 ---
 
@@ -328,4 +353,4 @@ Validated in `2026-06-03-cross-platform-review.md`. Ordering reflects capability
 - **C2. Linux GNOME/Wayland + cross-platform IME path** — **separate architecture**: IBus **input-method-engine** backend with IME-native suggestion UI. GNOME/Wayland defeats overlay + key-intercept + front-app simultaneously, so the macOS model is *absent*, not degraded. Biggest single piece of Linux work.
 - **D.** Cloud provider abstraction (behind `LocalModel`), browser extension, IDE plugins, remote compat registry, web-driven config, domain/website overrides.
 
-**Cross-cutting (from review):** Tauri = tray + settings only; render overlays with **native** windows per OS (Tauri webview click-through is unsolved). Engine/inference crate stays OS-agnostic — only the llama.cpp build feature (`metal`/`vulkan`/`cuda`) + shipped runtime differ; build with `dynamic-backends` for one-binary GPU/CPU adaptation.
+**Cross-cutting (from review):** **[CORR 06-08]** the shell is native AppKit (objc2), not Tauri; render overlays with **native** windows per OS (a webview can't host click-through overlays — the original reason the design avoided one). Engine/inference crate stays OS-agnostic — only the llama.cpp build feature (`metal`/`vulkan`/`cuda`) + shipped runtime differ; build with `dynamic-backends` for one-binary GPU/CPU adaptation.

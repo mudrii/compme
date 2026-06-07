@@ -9,6 +9,10 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use platform::{AcceptAction, PlatformAdapter};
 use platform_macos::MacosPlatformAdapter;
 
+/// Grave/backtick (key above Tab). Must match the engine's accept binding:
+/// Tab accepts the next word, grave accepts the full completion.
+const KEYCODE_GRAVE: u16 = 50;
+
 fn main() {
     let duration = env::args()
         .nth(1)
@@ -81,6 +85,14 @@ fn main() {
         }
     }
 
+    // The posted key must match the requirement: grave accepts the full
+    // completion, Tab accepts the next word. Posting Tab for "full" would now
+    // resolve to a word accept under the keycode-driven binding.
+    let (accept_keycode, accept_key_label): (u16, &str) = if requirement == "full" {
+        (KEYCODE_GRAVE, "GRAVE")
+    } else {
+        (KeyCode::TAB, "TAB")
+    };
     if let Some(delay) = env::var("COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
@@ -88,9 +100,9 @@ fn main() {
     {
         thread::spawn(move || {
             thread::sleep(delay);
-            match post_tab_key() {
-                Ok(()) => println!("POSTED_TAB"),
-                Err(err) => eprintln!("POST_TAB_ERROR {err}"),
+            match post_accept_key(accept_keycode) {
+                Ok(()) => println!("POSTED_{accept_key_label}"),
+                Err(err) => eprintln!("POST_KEY_ERROR {err}"),
             }
         });
     }
@@ -115,13 +127,13 @@ fn main() {
     }
 }
 
-fn post_tab_key() -> Result<(), String> {
+fn post_accept_key(keycode: u16) -> Result<(), String> {
     let source = CGEventSource::new(CGEventSourceStateID::Private)
         .map_err(|_| "failed to create CGEventSource".to_string())?;
-    let key_down = CGEvent::new_keyboard_event(source.clone(), KeyCode::TAB, true)
-        .map_err(|_| "failed to create Tab key-down event".to_string())?;
-    let key_up = CGEvent::new_keyboard_event(source, KeyCode::TAB, false)
-        .map_err(|_| "failed to create Tab key-up event".to_string())?;
+    let key_down = CGEvent::new_keyboard_event(source.clone(), keycode, true)
+        .map_err(|_| "failed to create key-down event".to_string())?;
+    let key_up = CGEvent::new_keyboard_event(source, keycode, false)
+        .map_err(|_| "failed to create key-up event".to_string())?;
     key_down.post(CGEventTapLocation::HID);
     key_up.post(CGEventTapLocation::HID);
     Ok(())

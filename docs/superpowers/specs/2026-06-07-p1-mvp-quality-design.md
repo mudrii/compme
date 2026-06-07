@@ -1,14 +1,16 @@
 # P1 MVP Quality — Design
 
 **Date:** 2026-06-07
-**Status:** Implemented + live-validated on macOS (M4 Max). All P1 items done. See "Live validation" below.
+**Status:** Implemented + live-validated on macOS (M4 Max). **[CORR 06-07]** All P1 items are *implemented*; live validation is complete **except** two hardware/UI-bound checks that stay manual: true-2× / multi-monitor coordinate offset (no second display available) and a literal tray-menu mouse click (the accessory-policy status item exposes no menu to System Events — the Enable toggle is validated via `SIGUSR1` instead). See "Live validation" and "Known environment limits" below.
 **Scope:** P1 "MVP quality / correctness" items from the pending list:
 - **6** Retina/multi-monitor offset — quantify via diagnostic + manual measurement (coordinate code already exists).
 - **7** Tray / menu-bar UI — status + enable/disable toggle.
 - **8** App lifecycle / permissions UX — Accessibility prompt + first-run guidance.
 - **9** Settings / config surface — user-editable config file for the currently-hardcoded knobs.
 
-Builds on the live-validated P0 integration (`docs/superpowers/specs/2026-06-06-p0-mvp-integration-design.md`).
+**Cotypist parity note (2026-06-07 audit):** P1 completes the MVP control/permission/config layer. It does not complete parity with Cotypist's installed app or current website. Parity work begins after P1 and needs explicit plans for optional Screen Recording / screen-aware context, encrypted local personalization, per-app/per-domain controls, Google Docs setup, browser mirror/Text Metrics guidance, Terminal/iTerm AI-agent prompt support, full shortcut customization, updater/signing, telemetry policy, emoji, typo correction, and advanced overlay/backdrop/mirror UI.
+
+Builds on the implemented P0 integration (`docs/superpowers/specs/2026-06-06-p0-mvp-integration-design.md`), with the post-accept-key-flip live GUI rerun still tracked there.
 
 ## Constraints (from the seam map)
 
@@ -86,6 +88,8 @@ Startup flow in `run()`:
 
 Input Monitoring has no public prompt API; failure to install the accept tap already surfaces as a `PlatformError` at startup and is logged with guidance — no extra UI in P1.
 
+Screen Recording is intentionally not requested in P1. Cotypist uses it optionally for screen-aware context; Complete Me should add that in A2+ with local-only processing, a clear off path, and a field-only fallback when the permission is denied.
+
 ### 5. Tray / menu-bar UI (item 7 — `crates/platform_macos/src/tray.rs` or in `lib.rs`)
 
 `MacosTray`, constructed on the main thread (reuses the shared `NSApplication`):
@@ -147,7 +151,21 @@ This is the bulk of the AppKit/objc2 glue: **build-verified + live**, not unit-t
 
 ## Out of scope (P2+)
 
-Per-app settings/personalization, multi-candidate UI, local memory, native inline-prediction suppression, IME composition, KV-cache reuse, long-lived model actor, sentence/punctuation stop-boundary, Windows/Linux adapters. Automated multi-monitor geometry correction beyond the existing pixel/point guard (revisit only if measurement shows an offset).
+Per-app settings/personalization, per-domain browser controls, multi-candidate UI, local encrypted memory, optional Screen Recording / OCR context, native inline-prediction suppression, IME composition, KV-cache reuse, long-lived model actor, sentence/punctuation stop-boundary, Windows/Linux adapters. Automated multi-monitor geometry correction beyond the existing pixel/point guard (revisit only if measurement shows an offset).
+
+Specific Cotypist-alignment backlog:
+
+- Google Docs Accessibility setup detection/onboarding.
+- Arc/Dia Text Metrics guidance and Firefox/Zen mirror-window fallback.
+- Terminal.app/iTerm AI-agent prompt activation, while leaving normal shell completion alone by default.
+- Current compatibility matrix, including Slack partial support, VS Code/Cursor/Windsurf sidebar-chat-only activation, TheBrain support verification, and explicit unsupported status for Pages/Scrivener/Thunderbird/OneNote/BBEdit/Sublime/Ghostty/cmux/Warp unless proven otherwise.
+- Full shortcut settings: next-word, full-completion, dismiss, force-activate, temporary app toggle, global toggle, and per-app Tab disable.
+- Custom instructions and personalization across global, per-app, and per-domain contexts, including a recheck of current Cotypist strength/tier semantics before choosing 3-level, 6-stop, or intentionally divergent behavior.
+- Encrypted local typing-history database with Keychain-protected key, per-app/domain counts, delete-all, and per-scope deletion.
+- Typo/suggested-fix behavior separated from full autocorrect, because current public pages describe both and not all help copy agrees.
+- Product/tier decision: either implement feature gates for quotas, larger models, clipboard awareness, custom instructions, autocorrect, Labs, and device counts, or document an explicit no-pricing-gates divergence.
+- Telemetry decision and policy. P1 has no network telemetry; any future crash/usage reporting needs explicit payload, provider, region, default state, and opt-out/opt-in semantics.
+- Signed/notarized release packaging plus native updater artifacts, signing key handling, endpoint format, and failure recovery. Sparkle is the leading candidate because Cotypist ships Sparkle; any non-Sparkle updater needs an explicit A3 decision.
 
 ## Decisions (from brainstorming)
 

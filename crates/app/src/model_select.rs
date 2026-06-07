@@ -144,7 +144,10 @@ mod tests {
         assert_eq!(raw, "Dear team");
 
         let terse = shape_prompt(PromptMode::Terse, "Dear team");
+        // Behavioural check: terse wraps the prefix (contains it, differs from
+        // raw) without pinning the template's exact prose — that literal lives in
+        // its owner, `model_client::terse_continuation_prompt`'s own test.
         assert!(terse.contains("Dear team"));
-        assert!(terse.starts_with("Complete this text inline"));
+        assert_ne!(terse, "Dear team");
     }
 }

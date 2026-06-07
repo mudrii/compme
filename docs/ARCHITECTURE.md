@@ -74,13 +74,21 @@ cases.
 
 - `trim_to_stop_boundary`: cut a raw completion at the first line break before
   any word capping, so inline ghost text stays a single visual line.
+- `truncate_at_sentence_end`: cut at the first sentence terminator (`.`/`!`/`?`
+  followed by whitespace or end-of-text), so a completion stops at one sentence;
+  decimals like `3.14` are preserved.
+- `strip_suffix_overlap`: drop a trailing run of the candidate that already
+  exists to the right of the caret (small models regurgitate post-caret text);
+  comparison is case- and punctuation-insensitive on whole words.
+- `is_degenerate_repetition`: report a single word or phrase repeated three or
+  more times (`the the the`) so the caller can suppress the loop.
 - `cap_words`
 - `next_word`
 - `repetition_penalty`: returns a sub-floor factor when the candidate repeats a
   contiguous run of recent words verbatim.
 
-The current implementation is intentionally small. Richer product-quality
-ranking (sentence-boundary shaping, per-app scoring) is future work.
+The implementation stays small; per-app scoring and learned ranking remain
+future work.
 
 ### `core`
 
@@ -119,11 +127,13 @@ The machine tracks:
 This prevents stale model output from being shown or inserted after focus,
 caret, secure-state, or text changes.
 
-Before a completion is shown, the machine shapes it through `ranker`:
-`trim_to_stop_boundary` cuts at the first line break, `cap_words` enforces the
-word cap, and a `repetition_penalty` below `REPETITION_PENALTY_FLOOR`
-suppresses the suggestion entirely so the user is never shown a verbatim repeat
-of nearby text.
+Before a completion is shown, the machine shapes it through `ranker` in order:
+`trim_to_stop_boundary` cuts at the first line break, `truncate_at_sentence_end`
+cuts at the first sentence end, `strip_suffix_overlap` removes any tail the user
+already has to the right of the caret, and `cap_words` enforces the word cap.
+The shaped candidate is then suppressed entirely when a `repetition_penalty`
+below `REPETITION_PENALTY_FLOOR` shows it repeats nearby text, or when
+`is_degenerate_repetition` flags a repeated-word loop.
 
 ### `model_client`
 
@@ -155,6 +165,24 @@ adapter-driven entry points required by the A1b macOS contract:
   a `SecureStateChanged` event when Secure Input or secure-field status flips.
 - `set_accept_subscription`: hands the adapter's accept-tap subscription to the
   host so accept events reach the machine while a suggestion is armed.
+
+### `app`
+
+`app` owns the `complete-me` binary and the runtime wiring that P0/P1 validated.
+It is the only root crate that combines config loading, AppKit run-loop pumping,
+the menu-bar status surface, model selection, the inference worker, signal
+handling, and ordered shutdown.
+
+Major responsibilities:
+
+- load dotenv-style config plus environment overrides
+- choose `StubModel` or `LlamaModel`
+- warm the model before serving suggestions
+- marshal platform callbacks onto the AppKit main-thread engine host
+- keep only the latest pending completion request
+- derive loading/ready/disabled/blocked status for tray gating
+- dismiss suggestions when the app is disabled
+- shut down inference before dropping engine/overlay/platform resources
 
 ### `platform_macos`
 
@@ -250,9 +278,12 @@ Accept interception uses two event-tap roles:
 - Consumer tap: installed only while a suggestion is visible and armed with an
   `AcceptAction`.
 
-The consumer tap drops Tab only when a precomputed accept action is present.
-Tagged self-generated events are ignored to avoid swallowing the app's own
-synthetic insertion events.
+The consumer tap is keycode-driven while armed (a completion is visible):
+**Tab (keycode 48) accepts the next word**, **grave/backtick (keycode 50, the
+key above Tab) accepts the whole completion** — matching Cotypist's default
+binding. The armed `AcceptAction` is only a visibility gate; the keycode picks
+the action. Tagged self-generated events are ignored to avoid swallowing the
+app's own synthetic insertion events.
 
 ### Overlay Presenter
 

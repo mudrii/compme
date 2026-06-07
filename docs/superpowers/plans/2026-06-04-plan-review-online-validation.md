@@ -241,20 +241,20 @@ Required fix:
 
 ### 15. Plan commands previously used the wrong path
 
-Earlier drafts referenced `cotypist_alt`; the active plan files now use `/Users/mudrii/src/complete-me`.
+Earlier drafts referenced `cotypist_alt`; the active plan files now use `/Users/mudrii/src/compme`.
 
 Impact if it regresses: agentic execution can commit in the wrong repository or fail.
 
 Required guardrail:
 
-- Keep future command blocks rooted at `/Users/mudrii/src/complete-me`.
+- Keep future command blocks rooted at `/Users/mudrii/src/compme`.
 
 ## Non-Blocking But Worth Fixing
 
 - Naming a crate `core` compiles, but it is confusing because Rust has a built-in `core` crate. Prefer `engine_core` or `complete_me_core`.
 - A1a root workspace excludes `tools/spike`; that is good, but the model path in A1a still depends on the spike model location. Make that dependency explicit.
 - The Tauri global-shortcut plugin is useful for configurable hotkeys, but not for plain Tab accept in another app. The plan should say "global shortcut is not a consuming accept path" rather than implying the plugin is broken.
-- Tauri updater is valid, but A3 must include `createUpdaterArtifacts`, pubkey generation, endpoint format, signing key handling, and static/dynamic update manifest choice.
+- Historical Tauri updater research is superseded for macOS. A3 should now plan a native updater, with Sparkle as the leading candidate because Cotypist ships it; any non-Sparkle updater still needs artifact generation, public-key/signing-key handling, endpoint format, manifest strategy, and failure recovery.
 - `ActivationPolicy::Accessory` is validated for no Dock/no menu bar, but windows can still activate; overlay windows must still use native non-activating panel behavior.
 
 ## Corrected Execution Order

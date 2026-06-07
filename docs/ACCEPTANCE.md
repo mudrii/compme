@@ -102,6 +102,34 @@ External popup fallback requires:
 
 This prevents a capability-only pass from masking a failed insertion path.
 
+### P1 Quality Validation (manual / scriptable, not in the default gate list)
+
+The P1 "MVP quality" items (`docs/superpowers/specs/2026-06-07-p1-mvp-quality-design.md`)
+are validated outside the A1b gate runner:
+
+- **Tray instantiation** — launch `complete-me`; the `NSStatusItem` appears and the
+  binary exits clean (smoke, no panic / "tray unavailable").
+- **Enable/disable toggle + gating + dismiss** — scripted via `SIGUSR1` (the
+  scriptable equivalent of the tray's Enable item): `Ready` → `SIGUSR1` →
+  `Disabled enabled=false` (suggestions gated, ghost dismissed) → `SIGUSR1` →
+  `Ready`. A literal tray-menu mouse click stays manual (accessory-policy item
+  exposes no menu to System Events).
+- **Permissions** — `accessibility_trusted()` true when granted; status derivation
+  + ~500 ms re-poll exercised live; Input Monitoring has no public prompt API.
+- **Coordinate diagnostics** — `COMPLETE_ME_DIAG_COORDS=1` prints display scales +
+  caret rect; measured scale 1.0 on the built-in display (no offset). True-2× /
+  multi-monitor (scale > 1) is hardware-bound and unverified.
+- **Config surface** — `config.env` layered under env (`env > file > default`),
+  `SIGUSR1` toggle, debounce/max-words/max-tokens/heartbeat keys (unit-tested in
+  `crates/app`).
+
+> **[CORR 06-08] Accept-key harness:** after the accept-key flip (Tab → next word,
+> grave → full), the `accept_tap_acceptance` and `accept_insert_acceptance` harnesses
+> now post the key matching the requirement — **grave (keycode 50) for `full`**, Tab
+> for `word` — so the `accept-tap-full` / `accept-insert-full` gates exercise the real
+> grave→full path. Unit tests cover grave→full; the live desktop run of these two gates
+> is still pending (FFI/GUI manual acceptance).
+
 ### Useful Options
 
 ```text

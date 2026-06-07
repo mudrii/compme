@@ -134,7 +134,9 @@ Sources: fcitx-im.org Wayland; wayland.app text-input-unstable-v3 / keyboard-sho
 
 ---
 
-## 6. Tauri shell — cross-platform caveats
+## 6. Historical Tauri shell research — cross-platform caveats
+
+**Status note (2026-06-08):** this section is historical cross-platform research. The active macOS plan has pivoted to a native Rust/AppKit shell with no Tauri dependency. Reuse these notes only if a later Windows/Linux settings/tray shell deliberately reintroduces Tauri; do not apply them to Sub-project A macOS execution.
 
 - **Tray:** Win/macOS fine. Linux needs `libayatana-appindicator`; **GNOME needs the AppIndicator shell extension**; tray **breaks inside Flatpak**; works best from **AppImage** (embeds the lib). Linux icon must be PNG, Windows `.ico`.
 - **Overlay = native, not Tauri webview.** Per-pixel click-through is unsolved in Tauri; `set_ignore_cursor_events` is buggy even on Windows; Linux transparency needs a compositor. Use Tauri for **tray + settings UI only**; render ghost text with native windows per OS (NSPanel / layered window / layer-shell / override-redirect) via `raw-window-handle`.
@@ -172,7 +174,7 @@ Per-platform inference (orthogonal, all tiers): macOS Metal; Windows/Linux Vulka
 - **Sub-project B (Windows):** UIA MTA-worker adapter + WH_KEYBOARD_LL + layered overlay (PMv2). Default Vulkan+CPU build, optional CUDA. Strong tier = native toolkits; accept Electron-as-popup/hotkey.
 - **Sub-project C1 (Linux/X11 + KDE/wlroots Wayland):** `atspi` adapter + XTEST/wtype + override-redirect/layer-shell overlay + dedicated-hotkey accept. AppImage distribution.
 - **Sub-project C2 (Linux/GNOME-Wayland, and cross-platform IME path):** **IBus input-method engine backend** with IME-native suggestion UI. Distinct architecture; biggest single piece of Linux work.
-- **Shell:** Tauri for tray+settings only; **native overlays** everywhere; document GNOME tray extension + XWayland fallback.
+- **Shell:** macOS Sub-project A uses the native AppKit shell. For future Windows/Linux, Tauri remains only a candidate for tray/settings UI; **native overlays** stay mandatory everywhere. Document GNOME tray extension + XWayland fallback if Tauri is reintroduced.
 - **Engine/inference:** no change — OS-agnostic crate, per-OS build feature, `dynamic-backends` for one-binary GPU/CPU adaptation.
 
 **One-sentence strategy:** build the Accessibility+inject+native-overlay path down through macOS → Windows → Linux/X11 → Linux/KDE+wlroots, and treat GNOME/Wayland as an IME-engine sub-project — because there the macOS interaction model is not degraded, it is absent.

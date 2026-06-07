@@ -533,6 +533,39 @@ mod tests {
     }
 
     #[test]
+    fn accept_word_keeps_tap_armed_for_remaining_words() {
+        let (mut engine, _adapter, _overlay) = engine();
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            |_delay| Ok(()),
+            |_act| Ok(()),
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion(&requests[0], "alpha beta".into())
+            .unwrap();
+        assert_eq!(*visible.lock().unwrap(), vec![true], "armed on show");
+
+        // A word accept inserts the first word and emits UpdateGhost (no Hide),
+        // so the tap must stay armed — no `false` — for accepting the remainder.
+        engine.on_accept(AcceptAction::Word).unwrap();
+        assert_eq!(
+            *visible.lock().unwrap(),
+            vec![true],
+            "tap stays armed across a partial word accept"
+        );
+    }
+
+    #[test]
     fn popup_anchor_used_when_caret_rect_absent() {
         let mut adapter = FakeAdapter::new();
         adapter.rect = None;
@@ -759,6 +792,22 @@ mod tests {
             .on_secure_state(Capabilities {
                 secure: true,
                 security_state: platform::SecurityState::SecureField,
+                ..inline_caps()
+            })
+            .unwrap();
+
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+    }
+
+    #[test]
+    fn global_secure_input_enabled_hides_showing_ghost() {
+        // Distinct hard-block trigger from a secure field: global Secure Input
+        // (e.g. a background password manager). The ghost must hide immediately.
+        let (mut engine, _adapter, overlay) = showing("hello there");
+
+        engine
+            .on_secure_state(Capabilities {
+                security_state: platform::SecurityState::SecureInputEnabled,
                 ..inline_caps()
             })
             .unwrap();
@@ -1012,15 +1061,17 @@ mod tests {
             .is_empty());
 
         let requests = engine.on_tick(1200).unwrap();
+        // Assert the observable request shape, not the machine's internal
+        // generation/snapshot counter values (those are incidental to how many
+        // boundary advances happened; pinning them couples the test to internals).
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.field, field());
+        assert_eq!(request.prompt, "hello");
+        assert_eq!(request.max_tokens, 32);
         assert_eq!(
-            requests,
-            vec![CompletionRequest {
-                generation: 2,
-                field: field(),
-                snapshot: 2,
-                prompt: "hello".into(),
-                max_tokens: 32,
-            }]
+            request.generation, request.snapshot,
+            "generation and snapshot advance together"
         );
 
         let follow = engine.on_completion(&requests[0], "world".into()).unwrap();

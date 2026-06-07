@@ -69,6 +69,22 @@ mod tests {
     }
 
     #[test]
+    fn context_is_scalar_safe_for_astral_4byte_chars() {
+        // 😀 is one Unicode scalar but 4 UTF-8 bytes (and 2 UTF-16 units). Caret
+        // is a scalar index, so caret 2 lands just after "a😀".
+        assert_eq!(left_context("a😀b", 2), "a😀");
+        assert_eq!(right_context("a😀b", 2), "b");
+        assert_eq!(left_tail("a😀b", 2, 1), "😀");
+    }
+
+    #[test]
+    fn left_context_at_exact_len_returns_all() {
+        // Caret exactly at the scalar count (not past-end) is the boundary case.
+        assert_eq!(left_context("hé日", 3), "hé日");
+        assert_eq!(right_context("hé日", 3), "");
+    }
+
+    #[test]
     fn left_tail_last_n() {
         assert_eq!(left_tail("abcdefgh", 8, 3), "fgh");
     }

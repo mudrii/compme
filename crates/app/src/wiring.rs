@@ -450,6 +450,98 @@ mod tests {
         );
     }
 
+    // --- Text-indexing: scalar (char) engine offsets vs UTF-16 AX offsets ---
+    // The adapter slices left/right by UTF-16 code units and reports a UTF-16
+    // `ctx.caret`; `value_and_caret` ignores that and re-derives a scalar caret
+    // from `left.chars().count()`. These pin that boundary for the astral /
+    // grapheme cases the plan flagged as unverified (emoji, skin-tone, CJK,
+    // combining marks) — each is a place a UTF-16 index would diverge from a
+    // scalar index.
+
+    #[test]
+    fn caret_is_scalar_counted_for_astral_emoji_left() {
+        // "a😀" is 2 Unicode scalars but 3 UTF-16 code units (😀 is a surrogate
+        // pair). The engine caret must be the scalar count (2), not 3.
+        let mut tracker = FieldTracker::new();
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("a😀", "b"), TriggerPolicy::Automatic, 0));
+        assert_eq!(change.caret, 2);
+        assert_eq!(change.value, "a😀b");
+    }
+
+    #[test]
+    fn caret_is_scalar_counted_for_cjk_left() {
+        // CJK ideographs are 1 scalar each (3 UTF-8 bytes, 1 UTF-16 unit).
+        let mut tracker = FieldTracker::new();
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("日本", "語"), TriggerPolicy::Automatic, 0));
+        assert_eq!(change.caret, 2);
+        assert_eq!(change.value, "日本語");
+    }
+
+    #[test]
+    fn caret_counts_skin_tone_emoji_as_two_scalars() {
+        // "👍🏽" is one grapheme but two scalars (base + skin-tone modifier),
+        // four UTF-16 units. Scalar counting yields 2 for the emoji plus 1 for
+        // the trailing space = 3.
+        let mut tracker = FieldTracker::new();
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("👍🏽 ", "x"), TriggerPolicy::Automatic, 0));
+        assert_eq!(change.caret, 3);
+        assert_eq!(change.value, "👍🏽 x");
+    }
+
+    #[test]
+    fn caret_counts_combining_accent_as_two_scalars() {
+        // "e" + U+0301 (combining acute) is one grapheme, two scalars.
+        let mut tracker = FieldTracker::new();
+        let change = typed(tracker.observe(
+            &field("f"),
+            &ctx("e\u{0301}", "x"),
+            TriggerPolicy::Automatic,
+            0,
+        ));
+        assert_eq!(change.caret, 2);
+        assert_eq!(change.value, "e\u{0301}x");
+    }
+
+    #[test]
+    fn self_insert_uses_scalar_caret_after_astral_prefix() {
+        // Self-insert splices at a scalar caret over an astral prefix; the byte
+        // index must land after the 4-byte emoji, not mid-surrogate.
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("👋", "tail"), TriggerPolicy::Automatic, 0);
+
+        tracker.apply_self_insert(&field("f"), "🎉");
+        let observed = tracker.observe(
+            &field("f"),
+            &ctx("👋🎉", "tail"),
+            TriggerPolicy::Automatic,
+            1,
+        );
+
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 2
+            }
+        );
+    }
+
+    #[test]
+    fn byte_index_for_char_lands_on_scalar_boundaries() {
+        // Direct check that scalar caret → byte index never splits a multi-byte
+        // scalar, across CJK and astral text.
+        assert_eq!(byte_index_for_char("日本語", 0), 0);
+        assert_eq!(byte_index_for_char("日本語", 1), 3);
+        assert_eq!(byte_index_for_char("日本語", 2), 6);
+        assert_eq!(byte_index_for_char("日本語", 3), 9); // past end → len
+                                                         // "a😀b": a=1 byte, 😀=4 bytes, b=1 byte.
+        assert_eq!(byte_index_for_char("a😀b", 1), 1);
+        assert_eq!(byte_index_for_char("a😀b", 2), 5);
+    }
+
     fn request(generation: u64) -> CompletionRequest {
         CompletionRequest {
             generation,

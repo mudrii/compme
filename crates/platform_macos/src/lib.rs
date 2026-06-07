@@ -69,13 +69,18 @@ const MAX_USABLE_CARET_RECT_WIDTH: f64 = 2000.0;
 const MAX_USABLE_CARET_RECT_HEIGHT: f64 = 200.0;
 const AX_SELECTED_TEXT_MARKER_RANGE_ATTRIBUTE: &str = "AXSelectedTextMarkerRange";
 const AX_BOUNDS_FOR_TEXT_MARKER_RANGE_PARAMETERIZED_ATTRIBUTE: &str = "AXBoundsForTextMarkerRange";
+/// Setting this attribute to true asks a Chromium/Electron application to build
+/// its accessibility tree on demand, which is what exposes the
+/// `AXSelectedTextMarkerRange` markers the web caret path depends on. WebKit and
+/// AppKit ignore it; see `enable_manual_accessibility`.
+const AX_MANUAL_ACCESSIBILITY_ATTRIBUTE: &str = "AXManualAccessibility";
 const AX_WINDOW_ATTRIBUTE: &str = "AXWindow";
 const AX_FRAME_ATTRIBUTE: &str = "AXFrame";
 const ESRCH: i32 = 3;
+/// Default accept keys, matching Cotypist: Tab accepts the next word
+/// (partial), the grave/backtick key above Tab accepts the whole completion.
 const KEYCODE_TAB: i64 = 48;
-/// Holding Option (⌥) while pressing the accept key requests a word accept
-/// instead of a full accept.
-const WORD_ACCEPT_MODIFIER_MASK: u64 = CGEventFlags::CGEventFlagAlternate.bits();
+const KEYCODE_GRAVE: i64 = 50;
 const SYNTHETIC_EVENT_TAG: i64 = 0x636d706c746d65;
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(1000);
 
@@ -520,7 +525,6 @@ struct AcceptTapEvent {
     event_type: CGEventType,
     keycode: i64,
     source_user_data: i64,
-    flags: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1679,17 +1683,16 @@ fn accept_tap_decision(
     }
     if kind == AcceptTapKind::Consumer
         && matches!(event.event_type, CGEventType::KeyDown)
-        && event.keycode == KEYCODE_TAB
+        && action.is_some()
     {
-        if let Some(armed) = action {
-            // Option+Tab always requests a word accept; plain Tab honours the
-            // engine-armed action (full by default).
-            let resolved = if event.flags & WORD_ACCEPT_MODIFIER_MASK != 0 {
-                AcceptAction::Word
-            } else {
-                armed
-            };
-            return AcceptTapDecision::Drop(resolved);
+        // Cotypist binding: the keycode picks the action, not the armed value.
+        // Tab accepts the next word (partial); the grave/backtick key above Tab
+        // accepts the whole completion. `action.is_some()` is only the
+        // armed/visible gate.
+        match event.keycode {
+            KEYCODE_TAB => return AcceptTapDecision::Drop(AcceptAction::Word),
+            KEYCODE_GRAVE => return AcceptTapDecision::Drop(AcceptAction::Full),
+            _ => {}
         }
     }
 
@@ -1727,7 +1730,6 @@ fn install_worker_accept_tap_resource(
                 event_type,
                 keycode: event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
                 source_user_data: event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA),
-                flags: event.get_flags().bits(),
             };
             match handler(event) {
                 AcceptTapDecision::Keep => CallbackResult::Keep,
@@ -1956,6 +1958,8 @@ impl AxWorkerHandle {
         let tx = self.tx.clone();
         self.install_resource(move || {
             let (element, element_owner) = create_app_ax_element(pid)?;
+            // Wake Chromium/Electron a11y once per focus bind, not per read.
+            unsafe { enable_manual_accessibility(element) };
             install_worker_observer_resource(
                 tx,
                 callback_tx,
@@ -1977,6 +1981,8 @@ impl AxWorkerHandle {
         let tx = self.tx.clone();
         self.install_resource(move || {
             let (app_element, app_owner) = create_app_ax_element(pid)?;
+            // Wake Chromium/Electron a11y once per focus bind, not per read.
+            unsafe { enable_manual_accessibility(app_element) };
             let focused_owner = unsafe { copy_focused_ui_element(app_element) }?;
             let focused_element = focused_owner
                 .as_ref()
@@ -2073,6 +2079,31 @@ fn create_app_ax_element(pid: i32) -> Result<(AXUIElementRef, CFType), PlatformE
 
     let owner = unsafe { CFType::wrap_under_create_rule(element as CFTypeRef) };
     Ok((element, owner))
+}
+
+/// Ask an application to expose its accessibility tree by setting
+/// `AXManualAccessibility = true` on its application element.
+///
+/// Chromium- and Electron-based apps (Chrome, Brave, Edge, Arc, Dia, Slack, VS
+/// Code, …) build their AX tree lazily and only surface
+/// `AXSelectedTextMarkerRange` markers once a client requests it this way. WebKit
+/// (Safari) and native AppKit apps already expose markers and return
+/// `AttributeUnsupported` here, so posting unconditionally needs no per-app
+/// bundle-id detection. This is advisory: every failure is ignored. It is called
+/// at observer install (once per focus bind to a pid), not on the per-caret read
+/// path, so it adds no per-keystroke AX round-trip. Live caret behaviour is
+/// covered by the browser caret-marker acceptance runner.
+///
+/// # Safety
+/// `app_element` must be a valid application `AXUIElementRef`.
+unsafe fn enable_manual_accessibility(app_element: AXUIElementRef) {
+    let attribute = CFString::new(AX_MANUAL_ACCESSIBILITY_ATTRIBUTE);
+    let value = CFBoolean::true_value();
+    let _ = AXUIElementSetAttributeValue(
+        app_element,
+        attribute.as_concrete_TypeRef(),
+        value.as_CFTypeRef(),
+    );
 }
 
 fn install_worker_observer_resource(
@@ -5610,21 +5641,6 @@ mod tests {
             event_type,
             keycode,
             source_user_data,
-            flags: 0,
-        }
-    }
-
-    fn accept_tap_event_with_flags(
-        event_type: CGEventType,
-        keycode: i64,
-        source_user_data: i64,
-        flags: u64,
-    ) -> AcceptTapEvent {
-        AcceptTapEvent {
-            event_type,
-            keycode,
-            source_user_data,
-            flags,
         }
     }
 
@@ -5632,17 +5648,20 @@ mod tests {
     fn accept_tap_decision_drops_tab_only_for_consumer_tap() {
         let tab = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
 
+        // Observer (listen-only) tap never consumes.
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Observer, tab, Some(AcceptAction::Full)),
             AcceptTapDecision::Keep
         );
+        // Consumer tap only consumes while armed.
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Consumer, tab, None),
             AcceptTapDecision::Keep
         );
+        // Tab always accepts the next word once armed, regardless of armed value.
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Consumer, tab, Some(AcceptAction::Full)),
-            AcceptTapDecision::Drop(AcceptAction::Full)
+            AcceptTapDecision::Drop(AcceptAction::Word)
         );
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Consumer, tab, Some(AcceptAction::Word)),
@@ -5651,33 +5670,31 @@ mod tests {
     }
 
     #[test]
-    fn option_tab_requests_word_accept_even_when_full_is_armed() {
-        let option_tab = accept_tap_event_with_flags(
-            CGEventType::KeyDown,
-            KEYCODE_TAB,
-            0,
-            WORD_ACCEPT_MODIFIER_MASK,
-        );
+    fn tab_accepts_word_and_grave_accepts_full() {
+        // Cotypist default binding: Tab = accept next word (partial),
+        // grave/backtick (key above Tab) = accept the whole completion.
+        // The armed value is only a gate — the keycode picks the action.
+        let tab = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
+        let grave = accept_tap_event(CGEventType::KeyDown, KEYCODE_GRAVE, 0);
 
         assert_eq!(
-            accept_tap_decision(
-                AcceptTapKind::Consumer,
-                option_tab,
-                Some(AcceptAction::Full)
-            ),
-            AcceptTapDecision::Drop(AcceptAction::Word)
+            accept_tap_decision(AcceptTapKind::Consumer, tab, Some(AcceptAction::Full)),
+            AcceptTapDecision::Drop(AcceptAction::Word),
+            "Tab must accept the next word regardless of armed value"
         );
-
-        // Plain Tab still honours the armed full accept.
-        let plain_tab = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, plain_tab, Some(AcceptAction::Full)),
-            AcceptTapDecision::Drop(AcceptAction::Full)
+            accept_tap_decision(AcceptTapKind::Consumer, grave, Some(AcceptAction::Full)),
+            AcceptTapDecision::Drop(AcceptAction::Full),
+            "grave must accept the full completion"
         );
-
-        // No modifier upgrade when the tap is not armed.
+        // Grave is only consumed while armed.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, option_tab, None),
+            accept_tap_decision(AcceptTapKind::Consumer, grave, None),
+            AcceptTapDecision::Keep
+        );
+        // Grave on the observer (listen-only) tap is never consumed.
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Observer, grave, Some(AcceptAction::Full)),
             AcceptTapDecision::Keep
         );
     }
@@ -5736,19 +5753,7 @@ mod tests {
         assert_eq!(accept_tap_installs.lock().unwrap().len(), 2);
 
         let consumer_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[1].handler);
-        assert_eq!(
-            consumer_handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
-            AcceptTapDecision::Drop(AcceptAction::Full)
-        );
-        assert_eq!(
-            action_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("accept action"),
-            AcceptAction::Full
-        );
-        subscription
-            .set_accept_action(Some(AcceptAction::Word))
-            .expect("arm word accept");
+        // While armed: Tab accepts the next word, grave accepts the full completion.
         assert_eq!(
             consumer_handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
             AcceptTapDecision::Drop(AcceptAction::Word)
@@ -5758,6 +5763,16 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("word accept action"),
             AcceptAction::Word
+        );
+        assert_eq!(
+            consumer_handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_GRAVE, 0)),
+            AcceptTapDecision::Drop(AcceptAction::Full)
+        );
+        assert_eq!(
+            action_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("full accept action"),
+            AcceptAction::Full
         );
         subscription.set_accept_action(None).expect("disarm accept");
         assert_eq!(
@@ -6430,10 +6445,9 @@ mod tests {
     }
 
     #[test]
-    fn option_modifier_on_non_tab_key_keeps_event() {
-        // Option held on a non-Tab key must not be consumed.
-        let event =
-            accept_tap_event_with_flags(CGEventType::KeyDown, 11, 0, WORD_ACCEPT_MODIFIER_MASK);
+    fn non_accept_key_keeps_event() {
+        // A key that is neither Tab nor grave must not be consumed.
+        let event = accept_tap_event(CGEventType::KeyDown, 11, 0);
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
             AcceptTapDecision::Keep
@@ -6442,12 +6456,8 @@ mod tests {
 
     #[test]
     fn accept_tap_decision_keeps_keyup_tab() {
-        let event = accept_tap_event_with_flags(
-            CGEventType::KeyUp,
-            KEYCODE_TAB,
-            0,
-            WORD_ACCEPT_MODIFIER_MASK,
-        );
+        // Only KeyDown is consumed; the matching KeyUp passes through.
+        let event = accept_tap_event(CGEventType::KeyUp, KEYCODE_TAB, 0);
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
             AcceptTapDecision::Keep
@@ -6455,13 +6465,17 @@ mod tests {
     }
 
     #[test]
-    fn observer_tap_keeps_option_tab() {
-        let event = accept_tap_event_with_flags(
-            CGEventType::KeyDown,
-            KEYCODE_TAB,
-            0,
-            WORD_ACCEPT_MODIFIER_MASK,
+    fn accept_tap_decision_keeps_keyup_grave() {
+        let event = accept_tap_event(CGEventType::KeyUp, KEYCODE_GRAVE, 0);
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
         );
+    }
+
+    #[test]
+    fn observer_tap_keeps_tab() {
+        let event = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Observer, event, Some(AcceptAction::Full)),
             AcceptTapDecision::Keep
@@ -6469,13 +6483,9 @@ mod tests {
     }
 
     #[test]
-    fn accept_tap_decision_ignores_self_generated_option_tab() {
-        let event = accept_tap_event_with_flags(
-            CGEventType::KeyDown,
-            KEYCODE_TAB,
-            SYNTHETIC_EVENT_TAG,
-            WORD_ACCEPT_MODIFIER_MASK,
-        );
+    fn accept_tap_decision_ignores_self_generated_grave() {
+        // Our own synthetic grave insertion must never re-enter as an accept.
+        let event = accept_tap_event(CGEventType::KeyDown, KEYCODE_GRAVE, SYNTHETIC_EVENT_TAG);
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
             AcceptTapDecision::Keep
@@ -6682,6 +6692,40 @@ mod tests {
         );
         assert_eq!(value, "aX😀b");
         assert_eq!(caret, 2);
+    }
+
+    #[test]
+    fn splice_text_replaces_an_astral_char_by_utf16_range() {
+        // Delete the emoji in "a😀b" (UTF-16 units 1..3, the surrogate pair) and
+        // insert "X". The range spans an astral char; byte math must not split it.
+        let (value, caret) = splice_text_at_utf16_range(
+            "a😀b",
+            CFRange {
+                location: 1,
+                length: 2,
+            },
+            "X",
+        );
+        assert_eq!(value, "aXb");
+        assert_eq!(caret, 2);
+    }
+
+    #[test]
+    fn byte_index_for_utf16_units_maps_units_to_byte_boundaries() {
+        // "a😀b": a=1 byte/1 unit, 😀=4 bytes/2 units, b=1 byte/1 unit.
+        assert_eq!(byte_index_for_utf16_units("a😀b", 0), 0);
+        assert_eq!(byte_index_for_utf16_units("a😀b", 1), 1); // before 😀
+                                                              // A target that bisects the surrogate pair rounds up to the char's end.
+        assert_eq!(byte_index_for_utf16_units("a😀b", 2), 5); // mid-😀 → after 😀
+        assert_eq!(byte_index_for_utf16_units("a😀b", 3), 5); // after 😀
+        assert_eq!(byte_index_for_utf16_units("a😀b", 4), 6); // after b
+        assert_eq!(byte_index_for_utf16_units("a😀b", 99), 6); // past end → len
+    }
+
+    #[test]
+    fn process_exists_is_false_for_non_positive_pids() {
+        assert!(!process_exists(0));
+        assert!(!process_exists(-1));
     }
 
     #[test]

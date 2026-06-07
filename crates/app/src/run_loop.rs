@@ -101,7 +101,7 @@ impl Config {
         let file_map = config::config_file_path()
             .map(|path| config::load_file_map(&path))
             .unwrap_or_default();
-        Self::from_lookup(move |key| env::var(key).ok().or_else(|| file_map.get(key).cloned()))
+        Self::from_lookup(move |key| layered(env::var(key).ok(), file_map.get(key).cloned()))
     }
 
     /// Pure config parsing from a key→value lookup, so the parsing rules
@@ -134,6 +134,14 @@ impl Config {
             diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
         }
     }
+}
+
+/// Resolve one config key with env-over-file precedence: the environment value
+/// wins, falling back to the file value, else `None` (so `from_lookup` applies
+/// the default). Extracted so the precedence direction is unit-testable without
+/// mutating the process environment.
+fn layered(env_value: Option<String>, file_value: Option<String>) -> Option<String> {
+    env_value.or(file_value)
 }
 
 /// Log a platform error and fall back to no requests, so one failed effect never
@@ -492,6 +500,19 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         move |key: &str| map.get(key).cloned()
+    }
+
+    #[test]
+    fn layered_lookup_prefers_env_then_file_then_none() {
+        // env wins over file (the P1 "env > file > default" precedence).
+        assert_eq!(
+            layered(Some("env".into()), Some("file".into())),
+            Some("env".into())
+        );
+        // file is the fallback when env is absent.
+        assert_eq!(layered(None, Some("file".into())), Some("file".into()));
+        // neither present → None, so `from_lookup` applies the built-in default.
+        assert_eq!(layered(None, None), None);
     }
 
     #[test]

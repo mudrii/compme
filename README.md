@@ -15,7 +15,8 @@ contract-first implementation and validation harness for:
 - deciding whether a field can support inline, popup, blocked, hotkey-only, or
   unsupported UX
 - showing a non-activating AppKit ghost-text overlay
-- intercepting Tab acceptance through a split observer/consumer `CGEventTap`
+- intercepting accept keys (Tab = next word, grave/`` ` `` = full) through a
+  split observer/consumer `CGEventTap`
 - inserting accepted text through Accessibility, synthetic keys, or clipboard
   paste fallback
 
@@ -30,7 +31,9 @@ contract-first implementation and validation harness for:
 │   ├── ranker/                        # Candidate shaping helpers
 │   ├── core/                          # Deterministic suggestion state machine
 │   ├── model_client/                  # Local model trait and llama.cpp backend
-│   └── platform_macos/                # macOS Accessibility/AppKit adapter
+│   ├── engine/                        # Runtime host for core + platform + overlay
+│   ├── platform_macos/                # macOS Accessibility/AppKit adapter
+│   └── app/                           # complete-me binary and run loop
 ├── tools/
 │   ├── acceptance/                    # A1b macOS live acceptance runner
 │   └── spike/                         # Separate A0 prototype workspace
@@ -53,7 +56,9 @@ from `tools/spike/`.
 | `ranker` | Candidate shaping helpers such as word capping, first-word extraction, and repetition penalty. |
 | `core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2` with Metal. |
+| `engine` | Runtime host that wires the pure state machine to a `PlatformAdapter` and `OverlayPresenter`. |
 | `platform_macos` | macOS implementation of `PlatformAdapter` and `OverlayPresenter` using Accessibility, CoreGraphics, AppKit, and pasteboard APIs. |
+| `app` | `complete-me` binary, config loading, menu-bar status, run loop, inference worker, and shutdown ordering. |
 
 ## Requirements
 

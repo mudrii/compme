@@ -1,8 +1,11 @@
 //! Deterministic suggestion state machine.
 
-use context::{left_context, trim_prefix};
+use context::{left_context, right_context, trim_prefix};
 use platform::{ux_mode, AcceptAction, Capabilities, FieldHandle, UxMode};
-use ranker::{cap_words, next_word, repetition_penalty, trim_to_stop_boundary};
+use ranker::{
+    cap_words, is_degenerate_repetition, next_word, repetition_penalty, strip_suffix_overlap,
+    trim_to_stop_boundary, truncate_at_sentence_end,
+};
 
 pub type SnapshotId = u64;
 
@@ -222,10 +225,18 @@ impl SuggestionMachine {
                 });
 
                 if matches_request {
-                    let bounded = trim_to_stop_boundary(&text);
-                    let capped = cap_words(bounded, self.max_words);
+                    // Shape the raw completion into a single inline offering:
+                    // cut at the first line break, then the first sentence end,
+                    // drop any tail that re-states text already after the caret,
+                    // and cap the word count.
+                    let line = trim_to_stop_boundary(&text);
+                    let sentence = truncate_at_sentence_end(line);
+                    let right = right_context(&self.value, self.caret);
+                    let de_overlapped = strip_suffix_overlap(sentence, &right);
+                    let capped = cap_words(&de_overlapped, self.max_words);
                     let recent = left_context(&self.value, self.caret);
-                    let fresh = repetition_penalty(&capped, &recent) >= REPETITION_PENALTY_FLOOR;
+                    let fresh = repetition_penalty(&capped, &recent) >= REPETITION_PENALTY_FLOOR
+                        && !is_degenerate_repetition(&capped);
                     if !capped.is_empty() && fresh {
                         self.showing = Some(Showing {
                             field: field.clone(),
@@ -554,6 +565,130 @@ mod tests {
     }
 
     #[test]
+    fn truncates_completion_at_sentence_end() {
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "first done. second thing".into(),
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "first done.".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn strips_completion_overlap_with_text_after_caret() {
+        // Caret sits after "the quick" (9 chars) in "the quick fox"; the model
+        // regurgitates the trailing " fox", which must be stripped before showing.
+        let mut machine = machine();
+        machine.on_event(text_changed("the quick fox", 9, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "quick brown fox".into(),
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "quick brown".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn suppresses_completion_fully_overlapping_text_after_caret() {
+        // Caret after "the quick" (9 chars); the model echoes exactly the text
+        // already to the right (" fox"). Stripping the overlap empties the
+        // candidate, so nothing is shown.
+        let mut machine = machine();
+        machine.on_event(text_changed("the quick fox", 9, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "fox".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn applies_sentence_stop_and_overlap_strip_together() {
+        // One completion needs both shapers: cut at the sentence end ("done."),
+        // then strip the trailing " fox" already after the caret.
+        let mut machine = machine();
+        machine.on_event(text_changed("the quick fox", 9, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "brown fox. extra sentence".into(),
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "brown".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn suppresses_degenerate_repetition_created_by_word_cap() {
+        // "na na na na ma" is NOT degenerate as-is (5 words), but capping to the
+        // 4-word max yields "na na na na" — a loop. The degenerate check runs
+        // AFTER cap_words, so the capped loop is still suppressed.
+        let mut machine = machine();
+        machine.on_event(text_changed("z", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "na na na na ma".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn suppresses_degenerate_repetition_completion() {
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "ha ha ha".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
     fn discards_stale_completion() {
         let mut machine = machine();
         machine.on_event(text_changed("x", 1, 0));
@@ -586,6 +721,51 @@ mod tests {
             }),
             vec![]
         );
+    }
+
+    #[test]
+    fn discards_completion_after_secure_state_advances_boundary() {
+        // A request is in flight (gen/snap = 1). A secure-state change advances
+        // the boundary; the completion tagged with the now-stale gen/snap must be
+        // discarded — distinct stale-race site from text/focus changes.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello ", 6, 1000));
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 1200 }),
+            vec![Command::RequestCompletion {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                prompt: "hello".into(),
+            }]
+        );
+
+        machine.on_event(Event::SecureStateChanged {
+            caps: inline_caps(),
+        });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "world".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn transition_to_secure_blocks_subsequent_requests() {
+        // Field starts Normal, then a secure-state change flips caps to secure.
+        // Typing afterwards must never arm a request (privacy invariant, §7).
+        let mut machine = machine();
+        machine.on_event(Event::SecureStateChanged {
+            caps: secure_caps(),
+        });
+        machine.on_event(text_changed("password", 8, 1000));
+
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 9999 }), vec![]);
     }
 
     #[test]

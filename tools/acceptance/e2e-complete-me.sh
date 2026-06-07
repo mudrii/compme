@@ -80,15 +80,16 @@ APP_PID=$!
 sleep_ms "$WARMUP_MS"
 osascript -e 'tell application "System Events" to key code 119' >/dev/null 2>&1 # End
 
-# 4. Give the ghost time to appear, then accept it. Word mode first accepts the
-#    next word with Option-Tab, then presses Tab to accept the remaining ghost.
+# 4. Give the ghost time to appear, then accept it. Cotypist-parity binding:
+#    Tab (key code 48) = accept next word, grave/backtick (key code 50) = accept
+#    full. Word mode accepts the first word with Tab, then the remainder with grave.
 sleep_ms "$TAB_AFTER_MS"
 if [ "$ACCEPT_MODE" = "word" ]; then
-  osascript -e 'tell application "System Events" to key code 48 using option down' >/dev/null 2>&1 # Option-Tab
+  osascript -e 'tell application "System Events" to key code 48' >/dev/null 2>&1 # Tab = next word
   sleep_ms "$SECOND_TAB_AFTER_MS"
-  osascript -e 'tell application "System Events" to key code 48' >/dev/null 2>&1 # Tab
+  osascript -e 'tell application "System Events" to key code 50' >/dev/null 2>&1 # grave = full (remaining)
 else
-  osascript -e 'tell application "System Events" to key code 48' >/dev/null 2>&1 # Tab
+  osascript -e 'tell application "System Events" to key code 50' >/dev/null 2>&1 # grave = full
 fi
 
 # 5. Wait for the bounded run to finish on its own (COMPLETE_ME_RUN_MS).

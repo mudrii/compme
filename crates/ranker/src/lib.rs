@@ -5,8 +5,8 @@
 /// Inline completion is a single visual line: a model that runs on into a new
 /// paragraph or list must be cut at the first line break before any word
 /// capping happens. This is the "aggressive stop sequence" lever called out in
-/// the MVP spec (newline/sentence boundary). We stop at the first `\n`/`\r`;
-/// sentence-boundary shaping is left to `cap_words` plus the caller's word cap.
+/// the MVP spec (newline/sentence boundary). This stops at the first `\n`/`\r`;
+/// sentence-boundary shaping is handled separately by `truncate_at_sentence_end`.
 pub fn trim_to_stop_boundary(text: &str) -> &str {
     match text.find(['\n', '\r']) {
         Some(index) => &text[..index],
@@ -28,6 +28,81 @@ pub fn next_word(text: &str) -> (String, String) {
         [only] => ((*only).to_string(), String::new()),
         [first, rest @ ..] => (format!("{first} "), rest.join(" ")),
     }
+}
+
+/// Truncate a completion at the end of its first sentence.
+///
+/// Inline completion offers a short continuation, not a paragraph. When a small
+/// model runs past a sentence terminator (`.`/`!`/`?`) we cut there. A terminator
+/// only counts when followed by whitespace or end-of-text, so `3.14` and `e.g.`
+/// are not mistaken for sentence ends.
+pub fn truncate_at_sentence_end(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    for (index, ch) in text.char_indices() {
+        if matches!(ch, '.' | '!' | '?') {
+            let next = bytes.get(index + ch.len_utf8());
+            if next.is_none_or(|b| b.is_ascii_whitespace()) {
+                return &text[..index + ch.len_utf8()];
+            }
+        }
+    }
+    text
+}
+
+/// Drop a trailing run of `candidate` words that the user already has to the
+/// right of the caret.
+///
+/// Small models regurgitate text after the caret: with caret in `the quick| fox`
+/// the model may return `quick brown fox`, which would insert a duplicate `fox`.
+/// We compare words case- and punctuation-insensitively and truncate the
+/// candidate where its tail re-states the start of the right context.
+pub fn strip_suffix_overlap(candidate: &str, right: &str) -> String {
+    fn normalize(word: &str) -> String {
+        word.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+
+    let cand: Vec<&str> = candidate.split_whitespace().collect();
+    let cand_norm: Vec<String> = cand.iter().map(|w| normalize(w)).collect();
+    let right_norm: Vec<String> = right.split_whitespace().map(normalize).collect();
+    let max_overlap = cand.len().min(right_norm.len());
+    for k in (1..=max_overlap).rev() {
+        let tail = &cand_norm[cand_norm.len() - k..];
+        let head = &right_norm[..k];
+        // Require a real word overlap. A pure-punctuation token normalizes to ""
+        // and would otherwise match another "" spuriously, dropping punctuation
+        // the model legitimately produced.
+        if tail.iter().chain(head).any(String::is_empty) {
+            continue;
+        }
+        if tail == head {
+            return cand[..cand.len() - k].join(" ");
+        }
+    }
+    candidate.to_string()
+}
+
+/// Report whether a completion is a single word or phrase repeated three or more
+/// times (`the the the`, `go home go home go home`) — a classic small-model
+/// degenerate loop that should be dropped rather than shown.
+pub fn is_degenerate_repetition(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let len = words.len();
+    if len < 3 {
+        return false;
+    }
+    for phrase_len in 1..=len / 3 {
+        // A non-dividing `phrase_len` leaves a short final chunk that can never
+        // equal the full-length phrase, so `all` returns false on its own — no
+        // separate divisibility guard (and no `is_multiple_of`/MSRV bump) needed.
+        let phrase = &words[..phrase_len];
+        if words.chunks(phrase_len).all(|chunk| chunk == phrase) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn repetition_penalty(candidate: &str, recent: &str) -> f64 {
@@ -217,5 +292,163 @@ mod tests {
             next_word("hello world"),
             ("hello ".to_string(), "world".to_string())
         );
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_cuts_after_first_terminator() {
+        assert_eq!(
+            truncate_at_sentence_end("Hello there. More text here"),
+            "Hello there."
+        );
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_handles_question_and_exclaim() {
+        assert_eq!(truncate_at_sentence_end("Really? yes"), "Really?");
+        assert_eq!(truncate_at_sentence_end("Stop! now"), "Stop!");
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_keeps_decimals() {
+        // A period not followed by whitespace is not a sentence end, so numeric
+        // decimals survive — the critical false-positive to avoid.
+        assert_eq!(truncate_at_sentence_end("3.14 is pi"), "3.14 is pi");
+        assert_eq!(
+            truncate_at_sentence_end("version 1.2 ships"),
+            "version 1.2 ships"
+        );
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_cuts_abbreviation_period_known_limitation() {
+        // A period+space is treated as a sentence end, so abbreviations like
+        // "e.g." are cut. Acceptable for a dictionary-free heuristic; the model
+        // rarely opens an inline completion with one.
+        assert_eq!(truncate_at_sentence_end("e.g. this"), "e.g.");
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_keeps_unterminated_text() {
+        assert_eq!(
+            truncate_at_sentence_end("just a continuation"),
+            "just a continuation"
+        );
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_includes_trailing_terminator_only() {
+        assert_eq!(truncate_at_sentence_end("Done."), "Done.");
+    }
+
+    #[test]
+    fn strip_suffix_overlap_removes_words_already_after_caret() {
+        // caret in "the quick| fox"; right context is "fox"; model returned
+        // "quick brown fox" — the trailing "fox" must be dropped.
+        assert_eq!(
+            strip_suffix_overlap("quick brown fox", "fox"),
+            "quick brown"
+        );
+    }
+
+    #[test]
+    fn strip_suffix_overlap_removes_multi_word_overlap() {
+        assert_eq!(
+            strip_suffix_overlap("see you later today", "later today maybe"),
+            "see you"
+        );
+    }
+
+    #[test]
+    fn strip_suffix_overlap_is_punctuation_and_case_insensitive() {
+        assert_eq!(strip_suffix_overlap("hello World", "world!"), "hello");
+    }
+
+    #[test]
+    fn strip_suffix_overlap_keeps_candidate_without_overlap() {
+        assert_eq!(
+            strip_suffix_overlap("hello world", "xyz abc"),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn strip_suffix_overlap_ignores_punctuation_only_overlap() {
+        // "!" normalizes to "" — an empty normalized token must NOT count as a
+        // real word overlap, or punctuation the model emitted gets dropped.
+        assert_eq!(strip_suffix_overlap("see !", "! ok"), "see !");
+        assert_eq!(strip_suffix_overlap("wait ...", "... more"), "wait ...");
+    }
+
+    #[test]
+    fn strip_suffix_overlap_empties_when_all_words_overlap() {
+        // Model echoed the entire right context; the whole candidate is overlap.
+        assert_eq!(strip_suffix_overlap("brown fox", "brown fox more"), "");
+    }
+
+    #[test]
+    fn strip_suffix_overlap_strips_multi_word_tail_when_candidate_is_longer() {
+        // candidate has more words than right; only the overlapping tail goes.
+        assert_eq!(
+            strip_suffix_overlap("one two three four", "three four five"),
+            "one two"
+        );
+    }
+
+    #[test]
+    fn strip_suffix_overlap_misses_overlap_straddling_punctuation_by_design() {
+        // "you ..." straddles a punctuation-only token (`...` → ""); the
+        // empty-skip guard deliberately leaves it rather than risk dropping
+        // legitimately-produced punctuation. A redundant suggestion is safer
+        // than mangled inserted text.
+        assert_eq!(
+            strip_suffix_overlap("see you ...", "you ... more"),
+            "see you ..."
+        );
+    }
+
+    #[test]
+    fn strip_suffix_overlap_empty_right_keeps_candidate() {
+        assert_eq!(strip_suffix_overlap("hello world", ""), "hello world");
+    }
+
+    #[test]
+    fn is_degenerate_repetition_flags_single_word_loop() {
+        assert!(is_degenerate_repetition("the the the"));
+    }
+
+    #[test]
+    fn is_degenerate_repetition_flags_repeated_phrase() {
+        assert!(is_degenerate_repetition("go home go home go home"));
+    }
+
+    #[test]
+    fn is_degenerate_repetition_ignores_normal_text() {
+        assert!(!is_degenerate_repetition("the quick brown fox"));
+    }
+
+    #[test]
+    fn is_degenerate_repetition_ignores_short_text() {
+        assert!(!is_degenerate_repetition("hello"));
+        assert!(!is_degenerate_repetition("hello world"));
+    }
+
+    #[test]
+    fn is_degenerate_repetition_flags_three_word_phrase_at_loop_boundary() {
+        // phrase_len 3 sits at the `1..=len/3` upper bound for len 9 — pins the
+        // boundary so an off-by-one (`<len/3`) regression would be caught.
+        assert!(is_degenerate_repetition("a b c a b c a b c"));
+    }
+
+    #[test]
+    fn is_degenerate_repetition_ignores_divisible_but_non_repeating() {
+        // len 6 divides by 1/2/3, but no phrase tiles it — must not be flagged.
+        assert!(!is_degenerate_repetition("a b a b c d"));
+        assert!(!is_degenerate_repetition("one two three four five six"));
+    }
+
+    #[test]
+    fn is_degenerate_repetition_ignores_two_repeats() {
+        // Two repeats is a real phrase ("bye bye"), not a degenerate loop.
+        assert!(!is_degenerate_repetition("bye bye"));
     }
 }

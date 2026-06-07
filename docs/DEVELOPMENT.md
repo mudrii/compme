@@ -18,6 +18,7 @@ The root `Cargo.toml` is a Rust workspace with these members:
 - `crates/model_client`
 - `crates/platform_macos`
 - `crates/engine`
+- `crates/app`
 
 `tools/spike` is excluded from the root workspace and must be checked
 separately.
@@ -48,6 +49,29 @@ Current local model paths:
 tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf
 tools/spike/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 ```
+
+### Selecting the completion model
+
+`complete-me` resolves the model path with env > `config.env` > built-in default
+(`run_loop::DEFAULT_MODEL`):
+
+```sh
+# one-off override
+COMPLETE_ME_MODEL_PATH=/abs/path/to/model.gguf complete-me
+```
+
+```text
+# persistent: $HOME/Library/Application Support/complete-me/config.env
+COMPLETE_ME_MODEL_PATH=/abs/path/to/model.gguf
+```
+
+The MVP default is **Qwen2.5-0.5B Q4_K_M** — chosen for the warm sub-150 ms first
+token the latency gate requires, not for output quality. The reference app
+(Cotypist) ships a far larger default (~3 GB Gemma 4) behind a downloaded,
+tiered catalog. Any GGUF that `llama-cpp-2` can load works via the override
+above, so tiering up is a config change, not a code change. A selectable
+download manager and per-tier catalog remain A2/A3 scope (see
+`docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` §5, §8).
 
 ## Root Workspace Commands
 
@@ -189,17 +213,18 @@ tools/acceptance/run-a1b-live-gates.sh --skip-textedit --popup-pid <pid>
 - loads a GGUF model through `llama-cpp-2`
 - enables Metal offload through `with_n_gpu_layers(999)`
 - creates a fresh llama context for each completion
+- supports `warm_up()` so launch can trigger the first Metal decode before serving suggestions
+- supports ordered `shutdown()` so the model/backend are dropped before process teardown
 - greedily samples up to the requested max token count
 - decodes pieces with `token_to_piece` and a UTF-8 decoder
 
 Known future production work:
 
-- warm-up lifecycle
 - persistent model actor
 - serialized access
 - prefix-cache reuse
 - cancellation and timeout policy
-- final candidate shaping and stop-boundary policy
+- production multi-candidate ranking, quality thresholds, and model-client stop/cancellation policy beyond the current `core`/`ranker` shaping
 
 ## Documentation Updates
 

@@ -1,8 +1,10 @@
 # P0 MVP Integration — Design
 
 **Date:** 2026-06-06 (reconciled with implementation 2026-06-07)
-**Status:** Implemented in `crates/app`, reviewed, and **live-validated on macOS 2026-06-07**. All 5 P0 items pass.
+**Status:** Implemented in `crates/app` and reviewed. The original 2026-06-07 macOS live run validated the P0 loop before the Cotypist accept-key correction; after the Tab->word / grave->full flip, unit/static harness coverage is green, but the binding-specific live GUI rerun remains pending. Treat P0 as implemented with a live-validation gap, not as fully revalidated.
 **Scope:** The 5 P0 (blocks-MVP-ship) items: integration run-loop binary, Engine↔inference wiring, end-to-end live acceptance gate, model warm-up on launch, graceful shutdown on exit.
+
+**Cotypist parity note (2026-06-07 audit):** P0 proves the local completion loop and deterministic TextEdit acceptance path. It does not claim parity with Cotypist's full app surface: screen-aware context, encrypted personalization, app/domain overrides, Google Docs setup, browser mirror/text-metrics workarounds, terminal AI-agent prompt activation, full shortcut customization, updater/signing, telemetry policy, emoji, and typo correction are A2/A3+ scope.
 
 ## Live validation — 2026-06-07 (Apple M4 Max, macOS 25.5)
 
@@ -10,7 +12,7 @@ Run on a real GUI session (console user logged in, Accessibility already granted
 
 **Non-intrusive smoke** (`COMPLETE_ME_STUB_COMPLETION=… COMPLETE_ME_RUN_MS=2500`, no keystrokes): adapter + overlay init OK, `state=loading → state=ready`, focus event marshalled dispatcher→main, non-text frontmost (`AXGroup`) → `UnsupportedField` logged and loop continued, clean exit 0. Validates items 1, 4, 5 + the threading model.
 
-**Stub E2E gate** (`tools/acceptance/e2e-complete-me.sh` against TextEdit pid): **PASS**. Seeded `"The quick brown fox "`, binary logged `focus` (AXTextArea) → `request gen=2 prompt="The quick brown fox"` → `completion " jumps-NNNNNN"` → `accept Full`, and the document became `"The quick brown fox jumps-NNNNNN"`. All four logged stages present; document assertion passed. Validates items 2, 3 (full focus→read→infer→ghost→Tab-accept→insert). Benign, handled: transient `StaleField` on activation focus churn; a post-accept re-request (self-insert → fresh read).
+**Stub E2E gate** (`tools/acceptance/e2e-complete-me.sh` against TextEdit pid): **historical PASS with stale binding evidence**. Seeded `"The quick brown fox "`, binary logged `focus` (AXTextArea) → `request gen=2 prompt="The quick brown fox"` → `completion " jumps-NNNNNN"` → `accept Full`, and the document became `"The quick brown fox jumps-NNNNNN"`. All four logged stages present; document assertion passed. Validated items 2, 3 for the original Tab=full binding. **[CORR 06-08]** This PASS predates the Cotypist-parity accept-key flip; the gate now sends **grave** for full accept and Tab for word accept, so the current requirement needs a fresh desktop live run before P0 can be called fully revalidated.
 
 **Real `LlamaModel`** (no stub, GGUF on Metal): warm-up `loading→ready` (embedded Metal lib ~7s first load), then `request gen=3 prompt="Dear team, I wanted to"` → real completion `" let you know that I have been working on a new project for the past few weeks…"`. Validates the real model path: load → warm → terse prompt → genuine inference. (Insert not exercised here — no Tab sent; insert proven by the stub E2E.)
 
@@ -125,16 +127,16 @@ Driven by `tools/acceptance/run-a1b-live-gates.sh` (extended with one new gate):
 
 1. `osascript`: focus TextEdit and set a known prefix.
 2. Launch `complete-me` with `COMPLETE_ME_STUB_COMPLETION="<known>"`, `COMPLETE_ME_ACCEPTANCE_PID=<textedit pid>`, `COMPLETE_ME_RUN_MS=<n>`.
-3. `osascript` moves the caret to end-of-line (fires a selection-changed read), waits for the ghost, then sends **Tab** → accept tap fires → `engine.on_accept(Full)` → insert.
+3. `osascript` moves the caret to end-of-line (fires a selection-changed read), waits for the ghost, then sends **grave** (key code 50) → accept tap fires → `engine.on_accept(Full)` → insert. **[CORR 06-08]** (Was Tab; after the Cotypist-parity flip Tab accepts the next *word* and grave accepts the *full* completion.)
 4. The gate asserts two things:
    - **Document content** contains `<known>`. This transitively proves the whole chain: `Engine::on_accept(Full)` only emits an `Insert` command when a ghost is currently showing (`SuggestionMachine` holds `self.showing`), so a successful insert of the stub text proves focus → read → infer → **show-ghost** → accept → insert all fired. The overlay-show step is applied *inside* the engine and emits no log line of its own, so it is verified by its observable effect (the insert), not by a log string.
    - **Logged stages** `focus`, `request gen=`, `completion gen=`, `accept Full` are each present in the binary's stderr. (These are the stages the run loop logs directly.)
 5. Deterministic because the stub completion is fixed.
 6. A separate **manual** invocation uses the real `LlamaModel` and asserts that *an* insert occurred (output text not pinned, since it is nondeterministic).
 
-The gate verifies both accept paths via `COMPLETE_ME_E2E_ACCEPT`:
-- **Full** (default): one **Tab** → `engine.on_accept(Full)` → whole-suggestion insert; asserts the `accept Full` stage.
-- **Word** (`COMPLETE_ME_E2E_ACCEPT=word`): **Option-Tab** (first word) then **Tab** (remaining ghost); asserts both `accept Word` and `accept Full` stages and that the contiguous stub text (e.g. `" jumps over"`) lands in the document. The standalone `accept-insert-word` gate still covers the tap-layer word path in isolation.
+The gate verifies both accept paths via `COMPLETE_ME_E2E_ACCEPT` (**[CORR 06-08]** keys updated for the Tab=word / grave=full binding):
+- **Full** (default): one **grave** (key code 50) → `engine.on_accept(Full)` → whole-suggestion insert; asserts the `accept Full` stage.
+- **Word** (`COMPLETE_ME_E2E_ACCEPT=word`): **Tab** (key code 48 → first word) then **grave** (key code 50 → remaining ghost); asserts both `accept Word` and `accept Full` stages and that the contiguous stub text (e.g. `" jumps over"`) lands in the document. The standalone `accept-insert-word` gate still covers the tap-layer word path in isolation.
 
 The product binary is the thing under test; the gate drives the real product path with a deterministic model.
 
@@ -147,7 +149,9 @@ The product binary is the thing under test; the gate drives the real product pat
 
 ## Out of scope (P1+, per the pending list)
 
-Tray/menu-bar UI, Accessibility/Input-Monitoring permission first-run UX, full settings/config surface, Retina multi-monitor offset measurement, prefix/KV-cache reuse, long-lived model actor, N-sample multi-candidate generation, sentence/punctuation stop-boundary, and all P2–P4 items.
+Historical P0 exclusions, some of which were closed by P1: tray/menu-bar UI, Accessibility/Input-Monitoring permission first-run UX, full settings/config surface, Retina multi-monitor offset measurement, prefix/KV-cache reuse, long-lived model actor, N-sample multi-candidate generation, sentence/punctuation stop-boundary, and all P2–P4 items. See `2026-06-07-p1-mvp-quality-design.md` for the items P1 has since implemented or measured; true-2x/multi-monitor geometry and literal tray-menu mouse-click validation remain environment/manual checks there.
+
+Additional Cotypist-alignment items are also out of P0: optional Screen Recording / OCR context, Google Docs Accessibility onboarding, browser compatibility guidance and mirror fallback, Terminal/iTerm AI-agent prompt heuristics, per-app/per-domain controls, encrypted local personalization storage, emoji/typo features, full shortcut settings, signed/updating app packaging, and telemetry policy.
 
 ## Resolved decisions (as implemented)
 

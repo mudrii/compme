@@ -208,8 +208,11 @@ mod tests {
         let inference = InferenceHandle::spawn(Box::new(EchoModel), PromptMode::Terse).unwrap();
         inference.submit(request("Dear team", 1));
         let outcome = inference.recv_outcome().expect("outcome");
+        // Terse mode wraps the prefix before the model sees it: the echoed text
+        // contains the prefix and differs from it. The exact template prose is
+        // pinned in `model_client`, not coupled here.
         assert!(outcome.text.contains("Dear team"));
-        assert!(outcome.text.starts_with("Complete this text inline"));
+        assert_ne!(outcome.text, "Dear team");
         inference.shutdown();
     }
 
