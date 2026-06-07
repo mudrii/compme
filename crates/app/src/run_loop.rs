@@ -46,18 +46,27 @@ const ACCESSIBILITY_SETTINGS_URL: &str =
 
 /// Set by the SIGINT/SIGTERM handler; observed by the loop to begin shutdown.
 static STOP: AtomicBool = AtomicBool::new(false);
+/// Set by the SIGUSR1 handler; observed by the loop to toggle enable/disable
+/// (a headless equivalent of the tray's Enable item, also handy for scripting).
+static TOGGLE: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_sig: libc::c_int) {
     // Async-signal-safe: only a relaxed atomic store.
     STOP.store(true, Ordering::Relaxed);
 }
 
+extern "C" fn on_toggle(_sig: libc::c_int) {
+    TOGGLE.store(true, Ordering::Relaxed);
+}
+
 fn install_signal_handlers() {
-    let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
-    // SAFETY: installing a handler that only sets an atomic flag is safe.
+    let stop = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    let toggle = on_toggle as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    // SAFETY: installing handlers that only set atomic flags is safe.
     unsafe {
-        libc::signal(libc::SIGINT, handler);
-        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGINT, stop);
+        libc::signal(libc::SIGTERM, stop);
+        libc::signal(libc::SIGUSR1, toggle);
     }
 }
 
@@ -326,6 +335,11 @@ pub fn run() -> Result<(), String> {
             trusted = accessibility_trusted();
             last_secure_poll_ms = Some(now_ms);
         }
+        // SIGUSR1 toggles enable/disable (headless equivalent of the tray item).
+        if TOGGLE.swap(false, Ordering::Relaxed) {
+            let now = flags.enabled.load(Ordering::Relaxed);
+            flags.enabled.store(!now, Ordering::Relaxed);
+        }
         let enabled = flags.enabled.load(Ordering::Relaxed);
         // Hide any showing ghost on the disable or secure-on edge (gating only
         // blocks *new* requests; an already-visible ghost needs explicit dismiss).
@@ -337,6 +351,7 @@ pub fn run() -> Result<(), String> {
         let status = derive_status(trusted, secure, inference.is_ready(), enabled);
         // Only touch AppKit when the rendered state actually changed.
         if last_render != Some((status, enabled)) {
+            eprintln!("complete-me: status={status:?} enabled={enabled}");
             if let Some(tray) = &tray {
                 if let Err(err) = tray.set_status(
                     status.menu_title(),

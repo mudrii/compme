@@ -1,7 +1,7 @@
 # P1 MVP Quality — Design
 
 **Date:** 2026-06-07
-**Status:** Draft — implementation in `crates/app` + small additions to `crates/engine`, `crates/platform_macos`
+**Status:** Implemented + live-validated on macOS (M4 Max). All P1 items done. See "Live validation" below.
 **Scope:** P1 "MVP quality / correctness" items from the pending list:
 - **6** Retina/multi-monitor offset — quantify via diagnostic + manual measurement (coordinate code already exists).
 - **7** Tray / menu-bar UI — status + enable/disable toggle.
@@ -125,6 +125,23 @@ This is the bulk of the AppKit/objc2 glue: **build-verified + live**, not unit-t
 - **Build-verified + live:** `MacosTray` (objc2), AX/secure-input FFI, run-loop glue, the settings `open`.
 - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets` stay green.
 - Live: tray appears in the menu bar, toggle disables suggestions + hides ghost, Quit exits cleanly, blocked state shows when Accessibility is revoked.
+
+## Live validation — 2026-06-07 (Apple M4 Max, macOS 25.5)
+
+- **Tray instantiates** live (status item appears; binary exits clean) — smoke run, no panic, no "tray unavailable".
+- **Enable/disable toggle + gating + dismiss** verified live and headless via `SIGUSR1` (a scriptable equivalent of the tray's Enable item): `status=Ready` with completions flowing → SIGUSR1 → `status=Disabled enabled=false` (suggestions gated, showing ghost dismissed) → SIGUSR1 → `status=Ready`. The tray menu's Enable item flips the same `flags.enabled` atomic.
+- **Permissions:** `accessibility_trusted()` returns true (granted); status derivation + re-poll exercised live.
+- **Retina (item 6):** measured on the built-in display — `display_scales = [(0,0,3840×1600), 1.0]` and caret rect `(619.05, 215.0, 1×14)` global screen points. Scale 1.0 ⇒ AX points equal pixels, `normalize_ax_screen_rect` pass-through correct, **no offset**. The true-2× / multi-monitor case (scale > 1.0) remains hardware-bound (no second display available); the diagnostic + normalization code are ready for it.
+
+### Known environment limits (manual QA only)
+- **Visual menu-bar click** of the tray cannot be automated: macOS exposes 0 menu bars for an accessory-policy status item to System Events. The toggle *behavior* is verified via SIGUSR1 + unit tests (`should_dismiss`, `derive_status`, `suggestions_allowed`); only the literal mouse-click on the menu item is manual.
+- **Multi-monitor Retina offset** needs a second display.
+
+## Additional config knobs (implemented)
+
+- `COMPLETE_ME_HEARTBEAT_MS` (clamp 1..=100, default 12) — run-loop pump interval.
+- `SIGUSR1` toggles enable/disable at runtime (headless control surface alongside the tray).
+- Caret read-coalescing is handled at the adapter layer (`CARET_COALESCE_INTERVAL_MS = 25`), not duplicated in the run loop.
 
 ## Out of scope (P2+)
 
