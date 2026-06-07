@@ -372,6 +372,29 @@ mod tests {
     }
 
     #[test]
+    fn caret_readable_but_no_overlay_placement_is_popup() {
+        // Isolates the overlay_at_caret half of the inline gate: the caret is
+        // readable but there is no caret-anchored overlay placement, so we fall
+        // through to Popup rather than Inline. Everything else stays inline-capable.
+        let mut c = caps();
+        c.readable_caret = true;
+        c.overlay_at_caret = OverlayPlacement::None;
+
+        assert_eq!(ux_mode(&c), UxMode::Popup);
+    }
+
+    #[test]
+    fn secure_flag_alone_with_normal_state_is_blocked() {
+        // Isolates the left side of the secure `||`: the secure flag is set even
+        // though the security_state is Normal, so the field is Blocked.
+        let mut c = caps();
+        c.secure = true;
+        c.security_state = SecurityState::Normal;
+
+        assert_eq!(ux_mode(&c), UxMode::Blocked);
+    }
+
+    #[test]
     fn hotkey_only_intercept_is_hotkey_mode() {
         let mut c = caps();
         c.accept_intercept = KeyInterceptMode::HotkeyOnly;

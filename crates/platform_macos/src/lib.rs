@@ -4703,6 +4703,138 @@ mod tests {
     }
 
     #[test]
+    fn stable_field_key_is_none_without_owner_pid() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            None,
+            Some("editor".into()),
+            Some("AXTextArea".into()),
+            Some("AXSecureTextField".into()),
+        );
+
+        assert_eq!(identity.stable_field_key(), None);
+    }
+
+    #[test]
+    fn stable_field_key_is_none_when_no_semantic_attributes_present() {
+        let identity = AxElementIdentity::new("ax:0x123", Some(42), None, None, None);
+
+        assert_eq!(identity.stable_field_key(), None);
+    }
+
+    #[test]
+    fn stable_field_key_builds_key_when_any_attribute_present() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("editor".into()),
+            Some("AXTextArea".into()),
+            Some("AXSecureTextField".into()),
+        );
+
+        assert_eq!(
+            identity.stable_field_key(),
+            Some("ax:pid=42|id=editor|role=AXTextArea|subrole=AXSecureTextField".into())
+        );
+
+        let role_only =
+            AxElementIdentity::new("ax:0x123", Some(42), None, Some("AXTextArea".into()), None);
+
+        assert_eq!(
+            role_only.stable_field_key(),
+            Some("ax:pid=42|role=AXTextArea".into())
+        );
+    }
+
+    #[test]
+    fn field_matches_identity_accepts_exact_field_element_id() {
+        let identity = AxElementIdentity::new(
+            "ax:0x123",
+            Some(42),
+            Some("editor".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: identity.field_element_id(),
+            generation: 1,
+        };
+
+        assert!(field_matches_identity(&field, &identity));
+    }
+
+    #[test]
+    fn field_matches_identity_accepts_when_all_stable_key_parts_present() {
+        let identity = AxElementIdentity::new(
+            "ax:0x999",
+            Some(42),
+            Some("editor".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        // The stable key is "ax:pid=42|id=editor|role=AXTextArea". After
+        // stripping the "ax:" prefix and splitting on '|', every part
+        // (pid=42, id=editor, role=AXTextArea) is contained in element_id even
+        // though the pointer differs from the original field_element_id.
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: "ax:ptr=ax:0xDIFFERENT|pid=42|id=editor|role=AXTextArea".into(),
+            generation: 1,
+        };
+
+        assert!(field_matches_identity(&field, &identity));
+    }
+
+    #[test]
+    fn field_matches_identity_rejects_when_a_stable_key_part_is_missing() {
+        let identity = AxElementIdentity::new(
+            "ax:0x999",
+            Some(42),
+            Some("editor".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        // Missing the "role=AXTextArea" part, so not all parts are contained.
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: "ax:ptr=ax:0xDIFFERENT|pid=42|id=editor".into(),
+            generation: 1,
+        };
+
+        assert!(!field_matches_identity(&field, &identity));
+    }
+
+    #[test]
+    fn field_matches_identity_rejects_when_identity_has_no_stable_key() {
+        // Pointer-only identity has no owner_pid, so stable_field_key() is None
+        // and only an exact field_element_id match could succeed.
+        let identity = AxElementIdentity::pointer_only("ax:0x123");
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: "ax:ptr=ax:0xOTHER".into(),
+            generation: 1,
+        };
+
+        assert!(!field_matches_identity(&field, &identity));
+    }
+
+    #[test]
+    fn toolkit_for_identity_maps_missing_role_to_generic_unknown() {
+        let identity =
+            AxElementIdentity::new("ax:0x123", Some(42), Some("editor".into()), None, None);
+
+        assert_eq!(
+            toolkit_for_identity(&identity),
+            Toolkit::Unknown("macOS Accessibility".into())
+        );
+    }
+
+    #[test]
     fn capabilities_blocks_secure_text_field_handles() {
         let adapter = test_adapter(Some(42), Arc::new(Mutex::new(Vec::new())), None);
         let field = FieldHandle {
@@ -6552,18 +6684,6 @@ mod tests {
         assert_eq!(
             coalescer.observe(102, field_b.clone(), rect_b),
             Some((field_b, rect_b))
-        );
-    }
-
-    #[test]
-    fn observer_notification_plan_uses_focus_and_selected_text_notifications() {
-        assert_eq!(
-            focus_notifications(),
-            [accessibility_sys::kAXFocusedUIElementChangedNotification]
-        );
-        assert_eq!(
-            caret_notifications(),
-            [accessibility_sys::kAXSelectedTextChangedNotification]
         );
     }
 

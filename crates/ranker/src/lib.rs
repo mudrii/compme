@@ -74,6 +74,11 @@ mod tests {
     }
 
     #[test]
+    fn trim_to_stop_boundary_cuts_at_bare_carriage_return() {
+        assert_eq!(trim_to_stop_boundary("a\rb"), "a");
+    }
+
+    #[test]
     fn trim_to_stop_boundary_keeps_single_line_intact() {
         assert_eq!(
             trim_to_stop_boundary("one clean inline line"),
@@ -144,12 +149,18 @@ mod tests {
 
     #[test]
     fn repetition_penalty_is_low_for_exact_recent_text() {
-        assert!(repetition_penalty("repeat me", "please repeat me now") < 0.5);
+        assert_eq!(
+            repetition_penalty("repeat me", "please repeat me now"),
+            0.25
+        );
     }
 
     #[test]
     fn repetition_penalty_is_case_insensitive() {
-        assert!(repetition_penalty("Repeat Me", "please repeat me now") < 0.5);
+        assert_eq!(
+            repetition_penalty("Repeat Me", "please repeat me now"),
+            0.25
+        );
     }
 
     #[test]
@@ -165,7 +176,7 @@ mod tests {
 
     #[test]
     fn repetition_penalty_matches_contiguous_word_run() {
-        assert!(repetition_penalty("repeat me", "you repeat me now") < 0.5);
+        assert_eq!(repetition_penalty("repeat me", "you repeat me now"), 0.25);
         // Same words, non-contiguous, is not a repeat.
         assert_eq!(repetition_penalty("repeat now", "repeat me now"), 1.0);
     }
@@ -177,7 +188,7 @@ mod tests {
 
     #[test]
     fn repetition_penalty_candidate_equals_recent_is_low() {
-        assert!(repetition_penalty("hello there", "hello there") < 0.5);
+        assert_eq!(repetition_penalty("hello there", "hello there"), 0.25);
     }
 
     #[test]
@@ -187,7 +198,7 @@ mod tests {
 
     #[test]
     fn repetition_penalty_single_word_whole_match_is_low() {
-        assert!(repetition_penalty("world", "hello world today") < 0.5);
+        assert_eq!(repetition_penalty("world", "hello world today"), 0.25);
     }
 
     #[test]

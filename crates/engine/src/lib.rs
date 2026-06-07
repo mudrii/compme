@@ -377,6 +377,7 @@ mod tests {
         rect: Option<ScreenRect>,
         popup: Option<ScreenRect>,
         fail_caret_rect: bool,
+        fail_popup: bool,
         fail_insert: bool,
         inserts: Arc<Mutex<Vec<(FieldHandle, String, InsertStrategy)>>>,
     }
@@ -393,6 +394,7 @@ mod tests {
                 }),
                 popup: None,
                 fail_caret_rect: false,
+                fail_popup: false,
                 fail_insert: false,
                 inserts: Arc::new(Mutex::new(Vec::new())),
             }
@@ -442,6 +444,9 @@ mod tests {
             Ok(self.rect)
         }
         fn popup_anchor(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+            if self.fail_popup {
+                return Err(PlatformError::Timeout);
+            }
             Ok(self.popup)
         }
         fn insert(
@@ -700,7 +705,10 @@ mod tests {
         engine.on_text_changed(typed("x", 1, 0)).unwrap();
         let requests = engine.on_tick(500).unwrap();
 
-        assert!(engine.on_completion(&requests[0], "hi".into()).is_err());
+        assert_eq!(
+            engine.on_completion(&requests[0], "hi".into()),
+            Err(PlatformError::Timeout)
+        );
     }
 
     #[test]
@@ -717,7 +725,30 @@ mod tests {
             .on_completion(&requests[0], "hi there".into())
             .unwrap();
 
-        assert!(engine.on_accept(AcceptAction::Full).is_err());
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Err(PlatformError::StaleField)
+        );
+    }
+
+    #[test]
+    fn popup_anchor_error_propagates_when_showing() {
+        // No caret rect forces the ShowGhost path to fall back to the popup
+        // anchor; that adapter call fails, and the error must surface to the
+        // caller rather than being swallowed.
+        let mut adapter = FakeAdapter::new();
+        adapter.rect = None;
+        adapter.fail_popup = true;
+        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+
+        assert_eq!(
+            engine.on_completion(&requests[0], "hi".into()),
+            Err(PlatformError::Timeout)
+        );
     }
 
     #[test]
@@ -857,6 +888,57 @@ mod tests {
         assert_eq!(
             *overlay.calls.lock().unwrap(),
             vec![OverlayCall::Update("there friend".into())]
+        );
+    }
+
+    #[test]
+    fn double_accept_word_exhausts_completion_inserts_last_word_and_hides() {
+        // A 2-word completion accepted word-by-word: the first AcceptWord
+        // advances the ghost, the second exhausts it — inserting the final word,
+        // hiding the overlay, and disarming the accept tap.
+        let (mut engine, adapter, overlay) = showing("world there");
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            |_delay| Ok(()),
+            |_action| Ok(()),
+        ));
+
+        // First word: advances the ghost (no Hide yet).
+        engine.on_accept(AcceptAction::Word).unwrap();
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Update("there".into())],
+            "first AcceptWord advances the ghost without hiding"
+        );
+
+        // Second word: exhausts the completion.
+        engine.on_accept(AcceptAction::Word).unwrap();
+
+        assert_eq!(
+            *adapter.inserts.lock().unwrap(),
+            vec![
+                (field(), "world ".into(), InsertStrategy::AxSet),
+                (field(), "there".into(), InsertStrategy::AxSet),
+            ],
+            "the second AcceptWord inserts the final word"
+        );
+        assert_eq!(
+            overlay.calls.lock().unwrap().last(),
+            Some(&OverlayCall::Hide),
+            "exhausting the completion hides the overlay"
+        );
+        // The accept tap was armed on show, then disarmed when the ghost hid
+        // (AxSet insert takes the immediate-disarm path, ending visible=false).
+        assert_eq!(
+            *visible.lock().unwrap(),
+            vec![false],
+            "accept tap is disarmed once the completion is exhausted"
         );
     }
 

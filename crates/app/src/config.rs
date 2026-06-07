@@ -166,4 +166,44 @@ mod tests {
         let map = load_file_map(Path::new("/no/such/complete-me/config.env"));
         assert!(map.is_empty());
     }
+
+    #[test]
+    fn config_file_path_covers_all_branches() {
+        // Save originals so the test is hermetic and leaves the process env
+        // exactly as it found it.
+        let saved_config = std::env::var("COMPLETE_ME_CONFIG").ok();
+        let saved_home = std::env::var("HOME").ok();
+
+        // Branch 1: COMPLETE_ME_CONFIG set non-empty -> returned verbatim.
+        std::env::set_var("COMPLETE_ME_CONFIG", "/some/path");
+        assert_eq!(config_file_path(), Some(PathBuf::from("/some/path")));
+
+        // Branch 2: COMPLETE_ME_CONFIG empty + HOME set -> path under $HOME.
+        std::env::set_var("COMPLETE_ME_CONFIG", "");
+        std::env::set_var("HOME", "/h");
+        let path = config_file_path().expect("HOME branch should yield a path");
+        assert!(
+            path.ends_with("complete-me/config.env"),
+            "unexpected path: {path:?}"
+        );
+        assert!(
+            path.starts_with("/h"),
+            "path should be under HOME: {path:?}"
+        );
+
+        // Branch 3: neither var available -> None.
+        std::env::remove_var("COMPLETE_ME_CONFIG");
+        std::env::remove_var("HOME");
+        assert_eq!(config_file_path(), None);
+
+        // Restore originals.
+        match saved_config {
+            Some(v) => std::env::set_var("COMPLETE_ME_CONFIG", v),
+            None => std::env::remove_var("COMPLETE_ME_CONFIG"),
+        }
+        match saved_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
 }

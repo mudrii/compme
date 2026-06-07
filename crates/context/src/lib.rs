@@ -61,6 +61,14 @@ mod tests {
     }
 
     #[test]
+    fn context_split_is_char_based_for_cjk_and_multibyte() {
+        // Caret is a character index, so a 2-byte char (é) and a 3-byte char
+        // (日) each count as one. Caret 3 lands just before the final "b".
+        assert_eq!(left_context("aé日b", 3), "aé日");
+        assert_eq!(right_context("aé日b", 3), "b");
+    }
+
+    #[test]
     fn left_tail_last_n() {
         assert_eq!(left_tail("abcdefgh", 8, 3), "fgh");
     }

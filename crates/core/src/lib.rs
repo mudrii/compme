@@ -897,4 +897,150 @@ mod tests {
             vec![]
         );
     }
+
+    #[test]
+    fn tick_after_request_fired_does_not_refire() {
+        // One arming yields exactly one RequestCompletion: firing clears
+        // pending_since, so a second Tick further past the threshold is a noop.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello ", 6, 1000));
+
+        // First Tick past debounce fires the request.
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 1200 }),
+            vec![Command::RequestCompletion {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                prompt: "hello".into(),
+            }]
+        );
+
+        // Second Tick even further past the threshold must not re-fire.
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 5000 }), vec![]);
+    }
+
+    fn showing_three_distinct_words() -> SuggestionMachine {
+        // "alpha beta gamma" shares no token with the recent left context
+        // ("x"), so it survives the repetition gate, and three words fit under
+        // the max-words cap of 4.
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "alpha beta gamma".into(),
+        });
+        machine
+    }
+
+    #[test]
+    fn accept_word_to_exhaustion_inserts_each_word_then_hides() {
+        let mut machine = showing_three_distinct_words();
+
+        // First word: insert "alpha " and show the remaining two words.
+        assert_eq!(
+            machine.on_event(Event::AcceptWord),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "alpha ".into(),
+                },
+                Command::UpdateGhost {
+                    field: field("field-a"),
+                    snapshot: 1,
+                    text: "beta gamma".into(),
+                },
+            ]
+        );
+
+        // Second word: insert "beta " and show the final word.
+        assert_eq!(
+            machine.on_event(Event::AcceptWord),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "beta ".into(),
+                },
+                Command::UpdateGhost {
+                    field: field("field-a"),
+                    snapshot: 1,
+                    text: "gamma".into(),
+                },
+            ]
+        );
+
+        // The tracked caret has advanced across both accepted words
+        // (1 + "alpha ".len() + "beta ".len() = 12), so a caret report at the
+        // advanced position keeps the final word showing rather than hiding it.
+        assert_eq!(
+            machine.on_event(Event::CaretMoved {
+                field: field("field-a"),
+                caret: 12,
+            }),
+            vec![]
+        );
+
+        // Third (last) word: insert "gamma" with no trailing space and hide.
+        assert_eq!(
+            machine.on_event(Event::AcceptWord),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "gamma".into(),
+                },
+                Command::Hide,
+            ]
+        );
+
+        // Nothing is showing anymore: a further accept is a noop.
+        assert_eq!(machine.on_event(Event::AcceptWord), vec![]);
+    }
+
+    #[test]
+    fn preview_accept_insert_with_nothing_showing_returns_none() {
+        // A fresh machine has no completion showing, so neither preview
+        // variant can report an insertion.
+        let machine = machine();
+
+        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
+        assert_eq!(machine.preview_accept_insert(AcceptAction::Word), None);
+    }
+
+    #[test]
+    fn completion_ready_discarded_after_focus_advances_boundary() {
+        let mut machine = machine();
+        // Arm a request: generation/snapshot are now 1.
+        machine.on_event(text_changed("hello ", 6, 1000));
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 1200 }),
+            vec![Command::RequestCompletion {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                prompt: "hello".into(),
+            }]
+        );
+
+        // Focusing a new field advances the snapshot/generation boundary and
+        // clears the in-flight request.
+        machine.on_event(Event::Focus {
+            field: field("field-b"),
+            caps: inline_caps(),
+        });
+
+        // A completion tagged with the now-stale generation/snapshot must be
+        // discarded — nothing is shown.
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "world".into(),
+            }),
+            vec![]
+        );
+    }
 }
