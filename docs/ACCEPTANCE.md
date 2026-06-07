@@ -58,7 +58,8 @@ Use `--force` only when intentionally collecting blocked harness logs.
 
 ### Default Gates
 
-By default the runner builds `platform_macos` examples and runs:
+By default the runner builds the `platform_macos` examples, builds the
+`complete-me` product binary, and runs:
 
 - `textedit-read`
 - `textedit-insert-synthetic`
@@ -67,6 +68,8 @@ By default the runner builds `platform_macos` examples and runs:
 - `caret-marker-textedit-any`
 - `accept-insert-full`
 - `accept-insert-word`
+- `e2e-complete-me-pipeline`
+- `e2e-complete-me-word-remainder`
 - `popup-fallback-fixture`
 - `accept-tap-inactive`
 - `accept-tap-full`

@@ -5219,10 +5219,12 @@ mod tests {
             ProtocolObject::from_ref(&*provider);
         let types = NSArray::from_slice(&[&*provider_type]);
         assert!(item.setDataProvider_forTypes(provider_ref, &types));
-        assert!(write_test_pasteboard_items(&pasteboard, vec![item]));
         assert_eq!(provided_count.load(Ordering::SeqCst), 0);
 
-        let snapshot = snapshot_pasteboard(&pasteboard);
+        let snapshot = PasteboardSnapshot {
+            items: snapshot_pasteboard_items(&NSArray::from_slice(&[&*item])),
+            fallback_string: None,
+        };
         assert_eq!(provided_count.load(Ordering::SeqCst), 1);
 
         pasteboard.clearContents();

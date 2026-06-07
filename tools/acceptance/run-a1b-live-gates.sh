@@ -348,6 +348,7 @@ if [ "$SKIP_TEXTEDIT" -eq 1 ]; then
   skip_gate "accept-insert-full" "--skip-textedit"
   skip_gate "accept-insert-word" "--skip-textedit"
   skip_gate "e2e-complete-me-pipeline" "--skip-textedit"
+  skip_gate "e2e-complete-me-word-remainder" "--skip-textedit"
 else
   resolve_textedit_pid
   if [ -z "$TEXTEDIT_PID" ]; then
@@ -359,6 +360,7 @@ else
     skip_gate "accept-insert-full" "TextEdit is not running"
     skip_gate "accept-insert-word" "TextEdit is not running"
     skip_gate "e2e-complete-me-pipeline" "TextEdit is not running"
+    skip_gate "e2e-complete-me-word-remainder" "TextEdit is not running"
   else
     run_retryable_gate "textedit-read" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$TEXTEDIT_BIN" "$TIMEOUT_MS" read
     run_retryable_gate "textedit-insert-synthetic" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-synthetic" "$TEXTEDIT_BIN" "$TIMEOUT_MS" synthetic
@@ -369,10 +371,13 @@ else
     run_retryable_gate "accept-insert-word" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" COMPLETE_ME_ACCEPTANCE_WORD_TEXT="$INSERT_TEXT-accept-word" "$ACCEPT_INSERT_BIN" "$TIMEOUT_MS" word
     if [ "$SKIP_E2E" -eq 1 ]; then
       skip_gate "e2e-complete-me-pipeline" "--skip-e2e"
+      skip_gate "e2e-complete-me-word-remainder" "--skip-e2e"
     elif [ "$DRY_RUN" -eq 0 ] && [ ! -x "$COMPLETE_ME_BIN" ]; then
       skip_gate "e2e-complete-me-pipeline" "complete-me not built (drop --skip-build or run: cargo build -p app)"
+      skip_gate "e2e-complete-me-word-remainder" "complete-me not built (drop --skip-build or run: cargo build -p app)"
     else
       run_gate "e2e-complete-me-pipeline" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_BIN="$COMPLETE_ME_BIN" "$E2E_SCRIPT"
+      run_gate "e2e-complete-me-word-remainder" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_BIN="$COMPLETE_ME_BIN" COMPLETE_ME_E2E_ACCEPT=word "$E2E_SCRIPT"
     fi
   fi
 fi

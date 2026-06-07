@@ -1,7 +1,7 @@
 //! Deterministic suggestion state machine.
 
 use context::{left_context, trim_prefix};
-use platform::{ux_mode, Capabilities, FieldHandle, UxMode};
+use platform::{ux_mode, AcceptAction, Capabilities, FieldHandle, UxMode};
 use ranker::{cap_words, next_word, repetition_penalty, trim_to_stop_boundary};
 
 pub type SnapshotId = u64;
@@ -298,6 +298,15 @@ impl SuggestionMachine {
         }
 
         out
+    }
+
+    pub fn preview_accept_insert(&self, action: AcceptAction) -> Option<(FieldHandle, String)> {
+        let showing = self.showing.as_ref()?;
+        let text = match action {
+            AcceptAction::Full => showing.remaining.clone(),
+            AcceptAction::Word => next_word(&showing.remaining).0,
+        };
+        (!text.is_empty()).then(|| (showing.field.clone(), text))
     }
 }
 
@@ -727,6 +736,26 @@ mod tests {
                     text: "there friend".into(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn preview_accept_word_reports_inserted_word() {
+        let machine = showing_three_words();
+
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Word),
+            Some((field("field-a"), "world ".into()))
+        );
+    }
+
+    #[test]
+    fn preview_accept_full_reports_remaining_completion() {
+        let machine = showing_three_words();
+
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "world there friend".into()))
         );
     }
 

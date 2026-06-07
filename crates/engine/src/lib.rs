@@ -14,6 +14,9 @@ use platform::{
     AcceptAction, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode, OverlayPlacement,
     OverlayPresenter, PlatformAdapter, SecurityState, Toolkit,
 };
+use std::time::Duration;
+
+const SYNTHETIC_INSERT_HIDE_DELAY: Duration = Duration::from_millis(50);
 
 /// A text edit reported by the host, carrying the metadata the contract
 /// requires (`edit` kind, previous caret/value hash, trigger policy) so the
@@ -100,6 +103,13 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         Ok(())
     }
 
+    fn hide_tap_after(&self, delay: Duration) -> Result<(), platform::PlatformError> {
+        if let Some(accept) = &self.accept {
+            accept.hide_suggestion_after(delay)?;
+        }
+        Ok(())
+    }
+
     pub fn on_focus(
         &mut self,
         field: FieldHandle,
@@ -181,6 +191,10 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    pub fn preview_accept_insert(&self, action: AcceptAction) -> Option<(FieldHandle, String)> {
+        self.machine.preview_accept_insert(action)
+    }
+
     /// Dismiss any showing suggestion (e.g. the user disabled the app via the
     /// tray). Wraps the machine's `Dismiss` event so a visible ghost hides
     /// immediately rather than lingering until the next focus/caret change.
@@ -194,6 +208,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         commands: Vec<Command>,
     ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
         let mut requests = Vec::new();
+        let mut delay_next_hide = false;
         for command in commands {
             match command {
                 Command::RequestCompletion {
@@ -224,13 +239,19 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // Contract: the adapter must tag this self-inserted text so it is NOT
                     // fed back to the engine as a TextChanged event. Failure breaks the
                     // show→accept→hide cycle.
-                    self.adapter
-                        .insert(&field, &text, self.caps.insert_strategy)?;
+                    let strategy = self.caps.insert_strategy;
+                    self.adapter.insert(&field, &text, strategy)?;
+                    delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
                 }
                 Command::UpdateGhost { text, .. } => self.overlay.update_ghost(&text)?,
                 Command::Hide => {
                     self.overlay.hide()?;
-                    self.set_tap_visible(false, None)?;
+                    if delay_next_hide {
+                        self.hide_tap_after(SYNTHETIC_INSERT_HIDE_DELAY)?;
+                        delay_next_hide = false;
+                    } else {
+                        self.set_tap_visible(false, None)?;
+                    }
                 }
             }
         }
@@ -576,6 +597,52 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_accept_hides_overlay_but_delays_tap_teardown() {
+        let mut adapter = FakeAdapter::new();
+        adapter.caps = Capabilities {
+            insert_strategy: InsertStrategy::SyntheticKeys,
+            ..inline_caps()
+        };
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let delays: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
+        let actions: Arc<Mutex<Vec<Option<AcceptAction>>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        let d = Arc::clone(&delays);
+        let a = Arc::clone(&actions);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            move |delay| {
+                d.lock().unwrap().push(delay);
+                Ok(())
+            },
+            move |action| {
+                a.lock().unwrap().push(action);
+                Ok(())
+            },
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion(&requests[0], "hello world".into())
+            .unwrap();
+        overlay.calls.lock().unwrap().clear();
+        engine.on_accept(AcceptAction::Full).unwrap();
+
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+        assert_eq!(*visible.lock().unwrap(), vec![true]);
+        assert_eq!(*actions.lock().unwrap(), vec![Some(AcceptAction::Full)]);
+        assert_eq!(*delays.lock().unwrap(), vec![SYNTHETIC_INSERT_HIDE_DELAY]);
+    }
+
+    #[test]
     fn caret_rect_error_propagates_when_showing() {
         let mut adapter = FakeAdapter::new();
         adapter.fail_caret_rect = true;
@@ -742,6 +809,26 @@ mod tests {
         assert_eq!(
             *overlay.calls.lock().unwrap(),
             vec![OverlayCall::Update("there friend".into())]
+        );
+    }
+
+    #[test]
+    fn preview_accept_word_exposes_inserted_text_for_host_reconciliation() {
+        let (engine, _adapter, _overlay) = showing("world there friend");
+
+        assert_eq!(
+            engine.preview_accept_insert(AcceptAction::Word),
+            Some((field(), "world ".into()))
+        );
+    }
+
+    #[test]
+    fn preview_accept_full_exposes_remaining_text_for_host_reconciliation() {
+        let (engine, _adapter, _overlay) = showing("world there friend");
+
+        assert_eq!(
+            engine.preview_accept_insert(AcceptAction::Full),
+            Some((field(), "world there friend".into()))
         );
     }
 

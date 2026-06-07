@@ -20,8 +20,10 @@ PID="${COMPLETE_ME_ACCEPTANCE_PID:-}"
 RUN_MS="${COMPLETE_ME_E2E_RUN_MS:-5000}"
 WARMUP_MS="${COMPLETE_ME_E2E_WARMUP_MS:-1200}"
 TAB_AFTER_MS="${COMPLETE_ME_E2E_TAB_AFTER_MS:-1800}"
+SECOND_TAB_AFTER_MS="${COMPLETE_ME_E2E_SECOND_TAB_AFTER_MS:-700}"
 PREFIX="${COMPLETE_ME_E2E_PREFIX:-The quick brown fox }"
 STUB="${COMPLETE_ME_E2E_STUB:- jumps-$(date +%H%M%S)}"
+ACCEPT_MODE="${COMPLETE_ME_E2E_ACCEPT:-full}"
 LOG="${COMPLETE_ME_E2E_LOG:-$ROOT_DIR/tools/acceptance/logs/e2e-complete-me-$(date +%Y%m%d-%H%M%S).log}"
 
 fail() {
@@ -44,7 +46,16 @@ sleep_ms() {
   sleep "$(awk "BEGIN { printf \"%.3f\", $ms / 1000 }")"
 }
 
-echo "E2E complete-me: prefix=\"$PREFIX\" stub=\"$STUB\" pid=$PID run_ms=$RUN_MS"
+case "$ACCEPT_MODE" in
+  full|word) ;;
+  *) fail "COMPLETE_ME_E2E_ACCEPT must be full or word" ;;
+esac
+
+if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPLETE_ME_E2E_STUB+x}" != "x" ]; then
+  STUB=" jumps over"
+fi
+
+echo "E2E complete-me: prefix=\"$PREFIX\" stub=\"$STUB\" pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE"
 
 # 1. Seed TextEdit with a known prefix and bring it to the front.
 osascript <<OSA || fail "could not seed TextEdit"
@@ -69,9 +80,16 @@ APP_PID=$!
 sleep_ms "$WARMUP_MS"
 osascript -e 'tell application "System Events" to key code 119' >/dev/null 2>&1 # End
 
-# 4. Give the ghost time to appear, then press Tab to accept it.
+# 4. Give the ghost time to appear, then accept it. Word mode first accepts the
+#    next word with Option-Tab, then presses Tab to accept the remaining ghost.
 sleep_ms "$TAB_AFTER_MS"
-osascript -e 'tell application "System Events" to key code 48' >/dev/null 2>&1 # Tab
+if [ "$ACCEPT_MODE" = "word" ]; then
+  osascript -e 'tell application "System Events" to key code 48 using option down' >/dev/null 2>&1 # Option-Tab
+  sleep_ms "$SECOND_TAB_AFTER_MS"
+  osascript -e 'tell application "System Events" to key code 48' >/dev/null 2>&1 # Tab
+else
+  osascript -e 'tell application "System Events" to key code 48' >/dev/null 2>&1 # Tab
+fi
 
 # 5. Wait for the bounded run to finish on its own (COMPLETE_ME_RUN_MS).
 wait "$APP_PID" 2>/dev/null
@@ -90,14 +108,29 @@ case "$RESULT" in
   *) echo "E2E: stub text NOT found in document [FAIL]"; ok=0 ;;
 esac
 
-for stage in "focus " "request gen=" "completion gen=" "accept Full"; do
+stages="focus
+request gen=
+completion gen="
+if [ "$ACCEPT_MODE" = "word" ]; then
+  stages="${stages}
+accept Word
+accept Full"
+else
+  stages="${stages}
+accept Full"
+fi
+
+while IFS= read -r stage; do
+  [ -n "$stage" ] || continue
   if grep -q "$stage" "$LOG"; then
     echo "E2E: stage present: '$stage' [PASS]"
   else
     echo "E2E: stage missing: '$stage' [FAIL]"
     ok=0
   fi
-done
+done <<EOF
+$stages
+EOF
 
 [ "$ok" -eq 1 ] || fail "pipeline assertions failed (see log above)"
-echo "E2E PASS: full focus->read->infer->ghost->accept->insert pipeline"
+echo "E2E PASS: $ACCEPT_MODE focus->read->infer->ghost->accept->insert pipeline"

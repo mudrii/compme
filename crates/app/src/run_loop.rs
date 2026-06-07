@@ -21,7 +21,10 @@ use std::time::{Duration, Instant};
 
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use engine::{CompletionRequest, Engine, TriggerPolicy};
-use platform::{AcceptAction, FieldHandle, PlatformAdapter, PlatformError, ScreenRect};
+use platform::{
+    AcceptAction, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode, OverlayPlacement,
+    PlatformAdapter, PlatformError, ScreenRect, SecurityState, Toolkit,
+};
 use platform_macos::{
     accessibility_trusted, display_scales, prompt_accessibility_trust, secure_input_enabled,
     MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
@@ -31,7 +34,7 @@ use crate::adapter::SharedAdapter;
 use crate::config::{self, parse_clamped};
 use crate::inference::InferenceHandle;
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
-use crate::status::{derive_status, should_dismiss};
+use crate::status::{derive_status, AppStatus, BlockReason};
 use crate::wiring::{FieldTracker, LatestRequest, Observation};
 
 const DEFAULT_DEBOUNCE_MS: u64 = 120;
@@ -154,6 +157,30 @@ fn offer_all(latest: &mut LatestRequest, requests: Vec<CompletionRequest>) {
     }
 }
 
+fn secure_input_caps() -> Capabilities {
+    Capabilities {
+        readable_text: false,
+        readable_caret: false,
+        writable: false,
+        secure: true,
+        security_state: SecurityState::SecureInputEnabled,
+        toolkit: Toolkit::Unknown("secure input".into()),
+        multiline: false,
+        insert_strategy: InsertStrategy::None,
+        accept_intercept: KeyInterceptMode::None,
+        overlay_at_caret: OverlayPlacement::None,
+        coords_global_screen: false,
+    }
+}
+
+fn status_drops_pending_requests(status: AppStatus) -> bool {
+    matches!(
+        status,
+        AppStatus::Disabled
+            | AppStatus::Blocked(BlockReason::Permission | BlockReason::SecureInput)
+    )
+}
+
 /// Build the whole stack, run until a signal (or the run-ms deadline), then tear
 /// down in order.
 pub fn run() -> Result<(), String> {
@@ -248,6 +275,7 @@ pub fn run() -> Result<(), String> {
     let heartbeat = Duration::from_millis(config.heartbeat_ms);
     let mut tracker = FieldTracker::new();
     let mut latest = LatestRequest::new();
+    let mut current_field: Option<FieldHandle> = None;
     let mut prev_enabled = true;
     let mut secure = false;
     let mut prev_secure = false;
@@ -271,6 +299,7 @@ pub fn run() -> Result<(), String> {
             match event {
                 HostEvent::Focus(field) => {
                     eprintln!("complete-me: focus {}", field.element_id);
+                    current_field = Some(field.clone());
                     tracker.reset();
                     offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
                 }
@@ -279,6 +308,7 @@ pub fn run() -> Result<(), String> {
                     // bare cursor move. Typing schedules a completion; a cursor
                     // move only invalidates a showing ghost (no re-request).
                     Ok(ctx) => {
+                        current_field = Some(field.clone());
                         if config.diag_coords {
                             if let Ok(rect) = adapter.caret_rect(&field) {
                                 eprintln!(
@@ -302,7 +332,18 @@ pub fn run() -> Result<(), String> {
                 },
                 HostEvent::Accept(action) => {
                     eprintln!("complete-me: accept {action:?}");
-                    offer_all(&mut latest, log_err("on_accept", engine.on_accept(action)));
+                    let self_insert = (action == AcceptAction::Word)
+                        .then(|| engine.preview_accept_insert(action))
+                        .flatten();
+                    match engine.on_accept(action) {
+                        Ok(requests) => {
+                            if let Some((field, text)) = self_insert {
+                                tracker.apply_self_insert(&field, &text);
+                            }
+                            offer_all(&mut latest, requests);
+                        }
+                        Err(err) => eprintln!("complete-me: on_accept error: {err:?}"),
+                    }
                 }
             }
         }
@@ -341,14 +382,38 @@ pub fn run() -> Result<(), String> {
             flags.enabled.store(!now, Ordering::Relaxed);
         }
         let enabled = flags.enabled.load(Ordering::Relaxed);
-        // Hide any showing ghost on the disable or secure-on edge (gating only
-        // blocks *new* requests; an already-visible ghost needs explicit dismiss).
-        if should_dismiss(prev_enabled, enabled, prev_secure, secure) {
+        let status = derive_status(trusted, secure, inference.is_ready(), enabled);
+        // Secure input is a true engine-state transition, not only a UI state:
+        // clear queued work and invalidate the machine so held requests cannot
+        // submit after the secure block clears.
+        if !prev_secure && secure {
+            latest.clear();
+            offer_all(
+                &mut latest,
+                log_err(
+                    "on_secure_state",
+                    engine.on_secure_state(secure_input_caps()),
+                ),
+            );
+        } else if prev_secure && !secure && trusted {
+            // Rehydrate capabilities for the current field after the secure
+            // global block clears; otherwise the machine would stay blocked
+            // until a fresh focus event arrives.
+            if let Some(field) = current_field.clone() {
+                tracker.reset();
+                offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
+            }
+        }
+        // Disabling is user policy: dismiss visible UI and drop queued requests.
+        if prev_enabled && !enabled {
+            latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
+        }
+        if status_drops_pending_requests(status) {
+            latest.clear();
         }
         prev_enabled = enabled;
         prev_secure = secure;
-        let status = derive_status(trusted, secure, inference.is_ready(), enabled);
         // Only touch AppKit when the rendered state actually changed.
         if last_render != Some((status, enabled)) {
             eprintln!("complete-me: status={status:?} enabled={enabled}");
@@ -459,6 +524,20 @@ mod tests {
     }
 
     #[test]
+    fn numeric_knobs_fall_back_to_defaults_when_unparseable() {
+        let config = Config::from_lookup(lookup(&[
+            ("COMPLETE_ME_DEBOUNCE_MS", "fast"),
+            ("COMPLETE_ME_MAX_WORDS", "many"),
+            ("COMPLETE_ME_MAX_TOKENS", "lots"),
+            ("COMPLETE_ME_HEARTBEAT_MS", "soon"),
+        ]));
+        assert_eq!(config.debounce_ms, DEFAULT_DEBOUNCE_MS);
+        assert_eq!(config.max_words, DEFAULT_MAX_WORDS);
+        assert_eq!(config.max_tokens, DEFAULT_MAX_TOKENS);
+        assert_eq!(config.heartbeat_ms, DEFAULT_HEARTBEAT_MS);
+    }
+
+    #[test]
     fn diag_coords_enabled_by_one_or_true() {
         assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_DIAG_COORDS", "1")])).diag_coords);
         assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_DIAG_COORDS", "true")])).diag_coords);
@@ -507,5 +586,31 @@ mod tests {
     fn prompt_mode_raw_is_parsed() {
         let config = Config::from_lookup(lookup(&[("COMPLETE_ME_PROMPT_MODE", "raw")]));
         assert_eq!(config.prompt_mode, PromptMode::Raw);
+    }
+
+    #[test]
+    fn only_unavailable_statuses_drop_pending_requests() {
+        assert!(!status_drops_pending_requests(AppStatus::Loading));
+        assert!(!status_drops_pending_requests(AppStatus::Ready));
+        assert!(status_drops_pending_requests(AppStatus::Disabled));
+        assert!(status_drops_pending_requests(AppStatus::Blocked(
+            BlockReason::Permission
+        )));
+        assert!(status_drops_pending_requests(AppStatus::Blocked(
+            BlockReason::SecureInput
+        )));
+    }
+
+    #[test]
+    fn secure_input_caps_are_non_interactive_and_secure() {
+        let caps = secure_input_caps();
+        assert!(!caps.readable_text);
+        assert!(!caps.readable_caret);
+        assert!(!caps.writable);
+        assert!(caps.secure);
+        assert_eq!(caps.security_state, SecurityState::SecureInputEnabled);
+        assert_eq!(caps.insert_strategy, InsertStrategy::None);
+        assert_eq!(caps.accept_intercept, KeyInterceptMode::None);
+        assert_eq!(caps.overlay_at_caret, OverlayPlacement::None);
     }
 }

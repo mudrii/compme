@@ -149,6 +149,33 @@ impl FieldTracker {
     pub fn reset(&mut self) {
         self.last = None;
     }
+
+    pub fn apply_self_insert(&mut self, field: &FieldHandle, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let Some(last) = &mut self.last else {
+            return;
+        };
+        if &last.field != field {
+            return;
+        }
+
+        let byte_index = byte_index_for_char(&last.value, last.caret);
+        last.value.insert_str(byte_index, text);
+        last.caret = last.caret.saturating_add(text.chars().count());
+    }
+}
+
+fn byte_index_for_char(value: &str, target_chars: usize) -> usize {
+    if target_chars == 0 {
+        return 0;
+    }
+    value
+        .char_indices()
+        .nth(target_chars)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len())
 }
 
 /// Holds at most one pending completion request, keeping the newest by
@@ -178,6 +205,10 @@ impl LatestRequest {
     /// Take the pending request, leaving the slot empty.
     pub fn take(&mut self) -> Option<CompletionRequest> {
         self.pending.take()
+    }
+
+    pub fn clear(&mut self) {
+        self.pending = None;
     }
 }
 
@@ -347,6 +378,78 @@ mod tests {
         assert_eq!(change.value, "hello!");
     }
 
+    #[test]
+    fn self_insert_updates_baseline_so_readback_is_caret_move() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("hello ", ""), TriggerPolicy::Automatic, 0);
+
+        tracker.apply_self_insert(&field("f"), "world ");
+        let observed = tracker.observe(
+            &field("f"),
+            &ctx("hello world ", ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 12
+            }
+        );
+    }
+
+    #[test]
+    fn self_insert_uses_char_caret_for_unicode_prefix() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("hé", "llo"), TriggerPolicy::Automatic, 0);
+
+        tracker.apply_self_insert(&field("f"), "!");
+        let observed =
+            tracker.observe(&field("f"), &ctx("hé!", "llo"), TriggerPolicy::Automatic, 1);
+
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 3
+            }
+        );
+    }
+
+    #[test]
+    fn self_insert_noops_without_matching_baseline() {
+        let mut tracker = FieldTracker::new();
+        tracker.apply_self_insert(&field("f"), "ignored");
+        let first =
+            typed(tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 1));
+        assert_eq!(first.edit, EditKind::Insert);
+        assert_eq!(first.previous_caret, None);
+
+        tracker.apply_self_insert(&field("other"), "ignored");
+        let after_wrong_field =
+            tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 2);
+        assert_eq!(
+            after_wrong_field,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 2
+            }
+        );
+
+        tracker.apply_self_insert(&field("f"), "");
+        let after_empty_insert =
+            tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 3);
+        assert_eq!(
+            after_empty_insert,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 2
+            }
+        );
+    }
+
     fn request(generation: u64) -> CompletionRequest {
         CompletionRequest {
             generation,
@@ -384,6 +487,14 @@ mod tests {
     #[test]
     fn take_on_empty_slot_is_none() {
         let mut latest = LatestRequest::new();
+        assert!(latest.take().is_none());
+    }
+
+    #[test]
+    fn clear_drops_pending_request() {
+        let mut latest = LatestRequest::new();
+        latest.offer(request(1));
+        latest.clear();
         assert!(latest.take().is_none());
     }
 
