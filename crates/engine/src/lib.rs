@@ -209,6 +209,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
     ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
         let mut requests = Vec::new();
         let mut delay_next_hide = false;
+        let mut show_failed = false;
         for command in commands {
             match command {
                 Command::RequestCompletion {
@@ -233,6 +234,13 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     if let Some(rect) = rect {
                         self.overlay.show_ghost(rect, &text)?;
                         self.set_tap_visible(true, Some(AcceptAction::Full))?;
+                    } else {
+                        // No caret rect and no popup anchor: we cannot place the
+                        // ghost. The machine already marked itself showing, so
+                        // reconcile it back to not-showing (below) — otherwise its
+                        // state would lie and a later accept could insert a ghost
+                        // the user never saw.
+                        show_failed = true;
                     }
                 }
                 Command::Insert { field, text } => {
@@ -254,6 +262,14 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     }
                 }
             }
+        }
+        if show_failed {
+            // Clear the machine's showing state to match reality (nothing was
+            // placed, the accept tap was never armed). `Dismiss` emits a `Hide`,
+            // which is a no-op against the already-hidden overlay/tap. Depth-1
+            // recursion: `Dismiss` never yields another `ShowGhost`.
+            let dismiss = self.machine.on_event(Event::Dismiss);
+            requests.extend(self.dispatch(dismiss)?);
         }
         Ok(requests)
     }
@@ -551,7 +567,39 @@ mod tests {
         let requests = engine.on_tick(500).unwrap();
         engine.on_completion(&requests[0], "nope".into()).unwrap();
 
-        assert!(overlay.calls.lock().unwrap().is_empty());
+        // No ghost is ever shown when neither caret rect nor popup anchor exists.
+        // The reconciliation emits a single idempotent Hide (machine was marked
+        // showing before dispatch); crucially there is no Show.
+        let calls = overlay.calls.lock().unwrap();
+        assert!(
+            !calls.iter().any(|c| matches!(c, OverlayCall::Show(_, _))),
+            "no ghost must be shown without geometry"
+        );
+        assert_eq!(*calls, vec![OverlayCall::Hide]);
+    }
+
+    #[test]
+    fn failed_show_reconciles_machine_so_accept_does_not_phantom_insert() {
+        // No caret rect and no popup anchor → the ghost can't be placed. The
+        // machine must end up NOT showing, so a subsequent accept inserts nothing
+        // (the user never saw a ghost).
+        let mut adapter = FakeAdapter::new();
+        adapter.rect = None;
+        adapter.popup = None;
+        let inserts = Arc::clone(&adapter.inserts);
+        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "nope".into()).unwrap();
+
+        // Accept after a failed show must be a no-op: nothing was showing.
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert!(
+            inserts.lock().unwrap().is_empty(),
+            "accept after a failed show must not insert a never-seen ghost"
+        );
     }
 
     fn other_field() -> FieldHandle {
