@@ -1363,8 +1363,14 @@ pub fn secure_input_enabled() -> bool {
 /// Active displays as `(bounds, backing scale)` pairs, for the Retina/multi-
 /// monitor coordinate diagnostic.
 pub fn display_scales() -> Vec<(ScreenRect, f64)> {
-    active_display_scales()
-        .into_iter()
+    display_scale_pairs(&active_display_scales())
+}
+
+/// Pure mapping of `DisplayScale`s to `(bounds, scale)` pairs, split out so the
+/// field projection is unit-testable without the FFI display query.
+fn display_scale_pairs(scales: &[DisplayScale]) -> Vec<(ScreenRect, f64)> {
+    scales
+        .iter()
         .map(|d| {
             (
                 ScreenRect {
@@ -4831,6 +4837,72 @@ mod tests {
         assert_eq!(
             toolkit_for_identity(&identity),
             Toolkit::Unknown("macOS Accessibility".into())
+        );
+    }
+
+    #[test]
+    fn display_scale_pairs_projects_bounds_and_scale() {
+        let scales = vec![
+            DisplayScale {
+                bounds: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(1920.0, 1080.0)),
+                scale: 1.0,
+            },
+            DisplayScale {
+                bounds: CGRect::new(&CGPoint::new(1920.0, -200.0), &CGSize::new(1440.0, 900.0)),
+                scale: 2.0,
+            },
+        ];
+
+        let pairs = display_scale_pairs(&scales);
+
+        assert_eq!(
+            pairs,
+            vec![
+                (
+                    ScreenRect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 1920.0,
+                        h: 1080.0
+                    },
+                    1.0
+                ),
+                (
+                    ScreenRect {
+                        x: 1920.0,
+                        y: -200.0,
+                        w: 1440.0,
+                        h: 900.0
+                    },
+                    2.0
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn display_scale_pairs_empty_is_empty() {
+        assert!(display_scale_pairs(&[]).is_empty());
+    }
+
+    #[test]
+    fn resolve_retained_observer_event_without_element_is_pointer_only() {
+        // No retained AX element → pointer-only identity, no rect, no FFI deref.
+        let event = resolve_retained_observer_event(
+            42,
+            ObserverNotification::FocusChanged,
+            None,
+            "ax:null",
+        );
+
+        assert_eq!(
+            event,
+            ObserverEvent {
+                pid: 42,
+                notification: ObserverNotification::FocusChanged,
+                identity: AxElementIdentity::pointer_only("ax:null"),
+                rect: None,
+            }
         );
     }
 
