@@ -132,7 +132,9 @@ Driven by `tools/acceptance/run-a1b-live-gates.sh` (extended with one new gate):
 5. Deterministic because the stub completion is fixed.
 6. A separate **manual** invocation uses the real `LlamaModel` and asserts that *an* insert occurred (output text not pinned, since it is nondeterministic).
 
-The gate verifies the **Full** (whole-suggestion) accept path. The first-tap **Word** path is covered separately by the existing `accept-insert-word` gate, not by this end-to-end gate.
+The gate verifies both accept paths via `COMPLETE_ME_E2E_ACCEPT`:
+- **Full** (default): one **Tab** → `engine.on_accept(Full)` → whole-suggestion insert; asserts the `accept Full` stage.
+- **Word** (`COMPLETE_ME_E2E_ACCEPT=word`): **Option-Tab** (first word) then **Tab** (remaining ghost); asserts both `accept Word` and `accept Full` stages and that the contiguous stub text (e.g. `" jumps over"`) lands in the document. The standalone `accept-insert-word` gate still covers the tap-layer word path in isolation.
 
 The product binary is the thing under test; the gate drives the real product path with a deterministic model.
 

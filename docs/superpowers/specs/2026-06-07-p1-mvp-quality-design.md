@@ -63,7 +63,9 @@ A user-editable file layered under environment variables, reusing the existing t
   - `COMPLETE_ME_DEBOUNCE_MS` (default 120, clamp 0..=5000)
   - `COMPLETE_ME_MAX_WORDS` (default 8, clamp 1..=50)
   - `COMPLETE_ME_MAX_TOKENS` (default 24, clamp 1..=200)
+  - `COMPLETE_ME_HEARTBEAT_MS` (default 12, clamp 1..=100) — run-loop pump interval.
   - plus existing `COMPLETE_ME_MODEL_PATH`, `COMPLETE_ME_PROMPT_MODE`.
+- Runtime control: `SIGUSR1` toggles enable/disable (headless equivalent of the tray's Enable item; see the tray section).
 - Test/gate-only knobs (`ACCEPTANCE_PID`, `STUB_COMPLETION`, `RUN_MS`, `DIAG_COORDS`, `CONFIG`) stay env-sourced (reading them from the file is harmless but not advertised).
 - Typed parse/clamp lives in pure helpers (`parse_clamped(raw, default, min, max)`) — **unit-tested**; invalid values fall back to the default rather than failing startup.
 
