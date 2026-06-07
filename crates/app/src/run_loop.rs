@@ -37,7 +37,7 @@ use crate::wiring::{FieldTracker, LatestRequest, Observation};
 const DEFAULT_DEBOUNCE_MS: u64 = 120;
 const DEFAULT_MAX_WORDS: usize = 8;
 const DEFAULT_MAX_TOKENS: usize = 24;
-const HEARTBEAT: Duration = Duration::from_millis(12);
+const DEFAULT_HEARTBEAT_MS: u64 = 12;
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
 /// Re-poll secure input + Accessibility trust at most this often (wall-clock ms).
 const SECURE_POLL_INTERVAL_MS: u64 = 480;
@@ -78,6 +78,7 @@ struct Config {
     debounce_ms: u64,
     max_words: usize,
     max_tokens: usize,
+    heartbeat_ms: u64,
     diag_coords: bool,
 }
 
@@ -112,6 +113,12 @@ impl Config {
             ),
             max_words: parse_clamped(lookup("COMPLETE_ME_MAX_WORDS"), DEFAULT_MAX_WORDS, 1, 50),
             max_tokens: parse_clamped(lookup("COMPLETE_ME_MAX_TOKENS"), DEFAULT_MAX_TOKENS, 1, 200),
+            heartbeat_ms: parse_clamped(
+                lookup("COMPLETE_ME_HEARTBEAT_MS"),
+                DEFAULT_HEARTBEAT_MS,
+                1,
+                100,
+            ),
             diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
         }
     }
@@ -229,6 +236,7 @@ pub fn run() -> Result<(), String> {
         }
     };
 
+    let heartbeat = Duration::from_millis(config.heartbeat_ms);
     let mut tracker = FieldTracker::new();
     let mut latest = LatestRequest::new();
     let mut prev_enabled = true;
@@ -379,7 +387,7 @@ pub fn run() -> Result<(), String> {
         // 8. Pump the main run loop: paces the loop and services the overlay.
         // SAFETY: `kCFRunLoopDefaultMode` is a Core Foundation extern static.
         let mode = unsafe { kCFRunLoopDefaultMode };
-        CFRunLoop::run_in_mode(mode, HEARTBEAT, false);
+        CFRunLoop::run_in_mode(mode, heartbeat, false);
     }
 
     eprintln!("complete-me: shutting down");
@@ -417,6 +425,7 @@ mod tests {
         assert_eq!(config.debounce_ms, DEFAULT_DEBOUNCE_MS);
         assert_eq!(config.max_words, DEFAULT_MAX_WORDS);
         assert_eq!(config.max_tokens, DEFAULT_MAX_TOKENS);
+        assert_eq!(config.heartbeat_ms, DEFAULT_HEARTBEAT_MS);
         assert!(!config.diag_coords);
     }
 
@@ -426,10 +435,12 @@ mod tests {
             ("COMPLETE_ME_DEBOUNCE_MS", "60"),
             ("COMPLETE_ME_MAX_WORDS", "999"), // over max → clamps to 50
             ("COMPLETE_ME_MAX_TOKENS", "0"),  // under min → clamps to 1
+            ("COMPLETE_ME_HEARTBEAT_MS", "500"), // over max → clamps to 100
         ]));
         assert_eq!(config.debounce_ms, 60);
         assert_eq!(config.max_words, 50);
         assert_eq!(config.max_tokens, 1);
+        assert_eq!(config.heartbeat_ms, 100);
     }
 
     #[test]
