@@ -83,6 +83,16 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         }
     }
 
+    /// Configure conservative trigger gating on the underlying machine (spec §4):
+    /// minimum left-context length and mid-word suppression. Forwards to
+    /// [`SuggestionMachine::with_trigger_gates`].
+    pub fn with_trigger_gates(mut self, min_context_chars: usize, allow_mid_word: bool) -> Self {
+        self.machine = self
+            .machine
+            .with_trigger_gates(min_context_chars, allow_mid_word);
+        self
+    }
+
     /// Provide the accept-tap subscription so the engine can arm the consuming
     /// tap only while a suggestion is visible (the two-tap design from spec §4).
     // Extended beyond A1b contract table: accept-tap lifecycle requires

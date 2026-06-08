@@ -39,6 +39,7 @@ use crate::wiring::{FieldTracker, LatestRequest, Observation};
 
 const DEFAULT_DEBOUNCE_MS: u64 = 120;
 const DEFAULT_MAX_WORDS: usize = 8;
+const DEFAULT_MIN_CONTEXT_CHARS: usize = 3;
 const DEFAULT_MAX_TOKENS: usize = 24;
 const DEFAULT_HEARTBEAT_MS: u64 = 12;
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
@@ -116,6 +117,8 @@ struct Config {
     max_words: usize,
     max_tokens: usize,
     heartbeat_ms: u64,
+    min_context_chars: usize,
+    allow_mid_word: bool,
     diag_coords: bool,
 }
 
@@ -156,6 +159,15 @@ impl Config {
                 1,
                 100,
             ),
+            min_context_chars: parse_clamped(
+                lookup("COMPLETE_ME_MIN_CONTEXT"),
+                DEFAULT_MIN_CONTEXT_CHARS,
+                0,
+                100,
+            ),
+            // Conservative default: suppress mid-word completions (spec §4,
+            // "protect first-run"). `COMPLETE_ME_MIDLINE=1` opts into them.
+            allow_mid_word: lookup("COMPLETE_ME_MIDLINE").is_some_and(|v| v == "1" || v == "true"),
             diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
         }
     }
@@ -249,7 +261,8 @@ pub fn run() -> Result<(), String> {
         config.debounce_ms,
         config.max_words,
         config.max_tokens,
-    );
+    )
+    .with_trigger_gates(config.min_context_chars, config.allow_mid_word);
 
     // Callbacks fire on the dispatcher thread; mpsc::Sender is !Sync, so share it
     // through a Mutex (the callbacks must be Send + Sync).
@@ -555,7 +568,34 @@ mod tests {
         assert_eq!(config.max_words, DEFAULT_MAX_WORDS);
         assert_eq!(config.max_tokens, DEFAULT_MAX_TOKENS);
         assert_eq!(config.heartbeat_ms, DEFAULT_HEARTBEAT_MS);
+        assert_eq!(config.min_context_chars, DEFAULT_MIN_CONTEXT_CHARS);
+        assert!(!config.allow_mid_word); // conservative default: mid-word suppressed
         assert!(!config.diag_coords);
+    }
+
+    #[test]
+    fn min_context_parses_and_clamps() {
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPLETE_ME_MIN_CONTEXT", "5")])).min_context_chars,
+            5
+        );
+        // over max → clamps to 100
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPLETE_ME_MIN_CONTEXT", "999")])).min_context_chars,
+            100
+        );
+        // unparseable → default
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPLETE_ME_MIN_CONTEXT", "lots")])).min_context_chars,
+            DEFAULT_MIN_CONTEXT_CHARS
+        );
+    }
+
+    #[test]
+    fn midline_opt_in_by_one_or_true() {
+        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_MIDLINE", "1")])).allow_mid_word);
+        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_MIDLINE", "true")])).allow_mid_word);
+        assert!(!Config::from_lookup(lookup(&[("COMPLETE_ME_MIDLINE", "no")])).allow_mid_word);
     }
 
     #[test]

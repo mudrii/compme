@@ -101,6 +101,8 @@ pub struct SuggestionMachine {
     caps: Capabilities,
     debounce_ms: u64,
     max_words: usize,
+    min_context_chars: usize,
+    allow_mid_word: bool,
     generation: u64,
     snapshot: SnapshotId,
     field: Option<FieldHandle>,
@@ -124,6 +126,10 @@ impl SuggestionMachine {
             caps,
             debounce_ms,
             max_words,
+            // Permissive defaults: no minimum context, mid-word allowed. Callers
+            // opt into conservative triggering via `with_trigger_gates`.
+            min_context_chars: 0,
+            allow_mid_word: true,
             generation: 0,
             snapshot: 0,
             field: None,
@@ -135,8 +141,42 @@ impl SuggestionMachine {
         }
     }
 
+    /// Configure conservative trigger gating (spec §4, "protect first-run"):
+    /// require at least `min_context_chars` of trimmed left context before
+    /// requesting, and (unless `allow_mid_word`) suppress requests when the caret
+    /// splits a word. Defaults are permissive so existing callers are unaffected.
+    pub fn with_trigger_gates(mut self, min_context_chars: usize, allow_mid_word: bool) -> Self {
+        self.min_context_chars = min_context_chars;
+        self.allow_mid_word = allow_mid_word;
+        self
+    }
+
     fn enabled(&self) -> bool {
         matches!(ux_mode(&self.caps), UxMode::Inline | UxMode::Popup)
+    }
+
+    /// Whether the current value/caret passes the conservative trigger gates:
+    /// enough left context, and not mid-word unless configured otherwise.
+    fn passes_trigger_gates(&self) -> bool {
+        let left = left_context(&self.value, self.caret);
+        // Minimum context: count only substantive characters — leading and
+        // trailing whitespace must not satisfy the minimum.
+        if left.trim().chars().count() < self.min_context_chars {
+            return false;
+        }
+        // Mid-word: the caret splits a word only when the characters on *both*
+        // sides are word characters. A caret at a word boundary (after a space,
+        // at the start of a word, or at end-of-text) is not mid-word.
+        if !self.allow_mid_word {
+            let is_word = |c: char| c.is_alphanumeric() || c == '_';
+            let left_is_word = left.chars().next_back().is_some_and(is_word);
+            let right = right_context(&self.value, self.caret);
+            let right_is_word = right.chars().next().is_some_and(is_word);
+            if left_is_word && right_is_word {
+                return false;
+            }
+        }
+        true
     }
 
     fn hide_if_showing(&mut self, out: &mut Vec<Command>) {
@@ -182,6 +222,7 @@ impl SuggestionMachine {
                 self.pending_since = if edit != EditKind::Delete
                     && self.enabled()
                     && trigger == TriggerPolicy::Automatic
+                    && self.passes_trigger_gates()
                 {
                     Some(now_ms)
                 } else {
@@ -373,6 +414,102 @@ mod tests {
             trigger: TriggerPolicy::Automatic,
             now_ms,
         }
+    }
+
+    #[test]
+    fn no_request_when_context_below_min() {
+        // min_context_chars=3; "hi " trims to "hi" (2 chars) < 3 → never arms.
+        let mut machine = machine().with_trigger_gates(3, false);
+        machine.on_event(text_changed("hi ", 3, 1000));
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+    }
+
+    #[test]
+    fn requests_when_context_meets_min() {
+        // "hey " trims to "hey" (3 chars) == min → arms and fires.
+        let mut machine = machine().with_trigger_gates(3, false);
+        machine.on_event(text_changed("hey ", 4, 1000));
+        assert!(machine
+            .on_event(Event::Tick { now_ms: 1300 })
+            .iter()
+            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+    }
+
+    #[test]
+    fn no_request_mid_word() {
+        // Caret at 3 inside "hello" → right context "lo world" starts with an
+        // alphanumeric char → mid-word → suppressed when allow_mid_word=false.
+        let mut machine = machine().with_trigger_gates(0, false);
+        machine.on_event(text_changed("hello world", 3, 1000));
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+    }
+
+    #[test]
+    fn requests_at_word_boundary() {
+        // Caret at 5 (after "hello", before the space) → right " world" starts
+        // with a non-word char → not mid-word → arms.
+        let mut machine = machine().with_trigger_gates(0, false);
+        machine.on_event(text_changed("hello world", 5, 1000));
+        assert!(machine
+            .on_event(Event::Tick { now_ms: 1300 })
+            .iter()
+            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+    }
+
+    #[test]
+    fn requests_at_end_of_text() {
+        // Caret at end → right context empty → not mid-word → arms.
+        let mut machine = machine().with_trigger_gates(0, false);
+        machine.on_event(text_changed("hello", 5, 1000));
+        assert!(machine
+            .on_event(Event::Tick { now_ms: 1300 })
+            .iter()
+            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+    }
+
+    #[test]
+    fn caret_at_word_start_is_not_mid_word() {
+        // Caret at 4 in "foo bar": left "foo " ends in a space, right "bar"
+        // starts a word. The caret is at a word *boundary* (start of "bar"), not
+        // splitting a word, so it must arm even with mid-word suppression on.
+        let mut machine = machine().with_trigger_gates(0, false);
+        machine.on_event(text_changed("foo bar", 4, 1000));
+        assert!(machine
+            .on_event(Event::Tick { now_ms: 1300 })
+            .iter()
+            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+    }
+
+    #[test]
+    fn leading_whitespace_does_not_count_toward_min_context() {
+        // "  ab" has 4 left-context chars but only 2 of substance. min=3 must
+        // suppress (leading whitespace must not satisfy the minimum).
+        let mut machine = machine().with_trigger_gates(3, false);
+        machine.on_event(text_changed("  ab", 4, 1000));
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+    }
+
+    #[test]
+    fn mid_word_allowed_when_configured() {
+        // Same mid-word caret, but allow_mid_word=true → arms anyway.
+        let mut machine = machine().with_trigger_gates(0, true);
+        machine.on_event(text_changed("hello world", 3, 1000));
+        assert!(machine
+            .on_event(Event::Tick { now_ms: 1300 })
+            .iter()
+            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+    }
+
+    #[test]
+    fn default_machine_has_no_trigger_gates() {
+        // new() leaves gates permissive (min 0, mid-word allowed) so existing
+        // callers are unaffected; a 1-char mid-word context still arms.
+        let mut machine = machine();
+        machine.on_event(text_changed("ab", 1, 1000));
+        assert!(machine
+            .on_event(Event::Tick { now_ms: 1300 })
+            .iter()
+            .any(|c| matches!(c, Command::RequestCompletion { .. })));
     }
 
     #[test]
