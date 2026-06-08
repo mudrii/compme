@@ -4,34 +4,57 @@
 //!
 //! This is a best-effort scrubber, not a guarantee — it removes the obvious,
 //! high-risk PII classes so accepted-completion memory and diagnostics never
-//! store raw secrets. Order matters: secrets and cards are matched before the
-//! generic email pass so a token containing `@` is not mis-handled.
+//! store raw secrets. Passes run email → secret → card so a long email local
+//! part is redacted whole rather than fragmented by the secret pass.
 
 use std::sync::OnceLock;
 
 use regex::Regex;
 
-/// Matches API-key / secret-like tokens: AWS access-key ids, common prefixed
-/// keys (`sk-`, `ghp_`-style), and long mixed alphanumeric tokens.
+/// Known credential prefixes that are always redacted when matched, regardless
+/// of length/entropy. AWS (long-term + STS), Google, Slack, GitHub, GitLab,
+/// SendGrid, Stripe-style.
+const KEY_PREFIXES: &[&str] = &[
+    "AKIA", "ASIA", "AIza", "xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-", "whsec_", "glpat-", "SG.",
+    "sk-", "sk_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "pk-", "pk_", "rk-", "rk_",
+];
+
+/// Matches API-key / secret-like tokens: vendor-prefixed keys and long
+/// high-entropy tokens (base64/base64url incl. padding and JWT dots).
 fn secret_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
             r"(?x)
-              AKIA[0-9A-Z]{16}
+              (?:AKIA|ASIA)[0-9A-Z]{16}
+            | AIza[0-9A-Za-z_\-]{16,}
+            | xox[baprs]-[A-Za-z0-9-]{10,}
+            | (?:whsec_|glpat-)[A-Za-z0-9_-]{16,}
             | (?:sk|ghp|gho|ghu|ghs|ghr|pk|rk)[-_][A-Za-z0-9_-]{16,}
-            | [A-Za-z0-9+/_-]{32,}
+            | [A-Za-z0-9+/=._-]{32,}
             ",
         )
         .expect("secret regex")
     })
 }
 
-/// Matches a run of 13–19 digits, optionally separated by single spaces or
-/// dashes (a candidate card number; Luhn-checked before redacting).
+/// Whether a generic long token looks high-entropy enough to be a secret rather
+/// than a long word: it has a digit, mixed case, or base64 punctuation. (An
+/// all-one-case all-letter 32+ run — rare for a secret — is left alone.)
+fn looks_high_entropy(token: &str) -> bool {
+    let has_digit = token.chars().any(|c| c.is_ascii_digit());
+    let has_upper = token.chars().any(|c| c.is_ascii_uppercase());
+    let has_lower = token.chars().any(|c| c.is_ascii_lowercase());
+    let has_b64_punct = token.contains(['+', '/', '=']);
+    has_digit || (has_upper && has_lower) || has_b64_punct
+}
+
+/// Matches a run of 13–19 digits, optionally separated by single spaces,
+/// dashes, or no-break spaces (a candidate card number; Luhn-checked before
+/// redacting).
 fn card_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\d(?:[ -]?\d){12,18}").expect("card regex"))
+    RE.get_or_init(|| Regex::new(r"\d(?:[ \u{00a0}-]?\d){12,18}").expect("card regex"))
 }
 
 fn email_re() -> &'static Regex {
@@ -41,46 +64,38 @@ fn email_re() -> &'static Regex {
     })
 }
 
-fn has_letter_and_digit(s: &str) -> bool {
-    s.chars().any(|c| c.is_ascii_alphabetic()) && s.chars().any(|c| c.is_ascii_digit())
-}
-
 /// Replace emails, Luhn-valid card numbers, and API-key/secret-like tokens with
 /// stable placeholders. Idempotent on already-redacted text.
 ///
-/// Secrets and cards are matched before emails so a token containing `@` is not
-/// mishandled, and card candidates are Luhn-checked so ordinary long ids survive.
+/// Emails are matched first (so a long local part is redacted whole rather than
+/// fragmented by the secret pass), then secrets, then Luhn-checked cards.
 pub fn redact(input: &str) -> String {
-    // 1. Secrets. The generic long-token branch only redacts mixed alphanumerics
-    //    so long all-letter words in prose are preserved.
-    let stage1 = secret_re().replace_all(input, |caps: &regex::Captures| {
+    // 1. Emails.
+    let stage1 = email_re().replace_all(input, "[redacted-email]");
+
+    // 2. Secrets. Vendor-prefixed keys always redact; the generic long-token
+    //    branch redacts only high-entropy runs so long prose words survive.
+    let stage2 = secret_re().replace_all(&stage1, |caps: &regex::Captures| {
         let m = &caps[0];
-        let is_keyed = m.starts_with("AKIA")
-            || matches!(
-                m.split_once(['-', '_']),
-                Some((prefix, _)) if matches!(prefix, "sk" | "ghp" | "gho" | "ghu" | "ghs" | "ghr" | "pk" | "rk")
-            );
-        if is_keyed || (m.len() >= 32 && has_letter_and_digit(m)) {
+        let is_keyed = KEY_PREFIXES.iter().any(|prefix| m.starts_with(prefix));
+        if is_keyed || looks_high_entropy(m) {
             "[redacted-secret]".to_string()
         } else {
             m.to_string()
         }
     });
 
-    // 2. Card numbers (Luhn-validated).
-    let stage2 = card_re().replace_all(&stage1, |caps: &regex::Captures| {
-        let m = &caps[0];
-        let digits: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
-        if luhn_valid(&digits) {
-            "[redacted-card]".to_string()
-        } else {
-            m.to_string()
-        }
-    });
-
-    // 3. Emails.
-    email_re()
-        .replace_all(&stage2, "[redacted-email]")
+    // 3. Card numbers (Luhn-validated).
+    card_re()
+        .replace_all(&stage2, |caps: &regex::Captures| {
+            let m = &caps[0];
+            let digits: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
+            if luhn_valid(&digits) {
+                "[redacted-card]".to_string()
+            } else {
+                m.to_string()
+            }
+        })
         .into_owned()
 }
 
@@ -158,6 +173,60 @@ mod tests {
     fn redaction_is_idempotent() {
         let once = redact("mail ada@example.com");
         assert_eq!(redact(&once), once);
+    }
+
+    #[test]
+    fn redacts_all_letter_mixed_case_secret() {
+        // Base64/base64url secrets are often all letters (no digit); the
+        // letter+digit heuristic must not let them through (review finding 1).
+        let out = redact("key abcdefghABCDEFGHabcdefghABCDEFGHxyz done");
+        assert!(out.contains("[redacted-secret]"), "got {out:?}");
+        assert!(!out.contains("abcdefghABCDEFGH"), "got {out:?}");
+    }
+
+    #[test]
+    fn redacts_jwt_including_payload() {
+        // JWT segments are dot-separated; the payload must not leak (review 2).
+        let jwt =
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1";
+        let out = redact(&format!("auth {jwt} ok"));
+        assert!(out.contains("[redacted-secret]"), "got {out:?}");
+        assert!(!out.contains("eyJzdWIi"), "payload scrubbed: {out:?}");
+    }
+
+    #[test]
+    fn redacts_base64_padded_secret() {
+        let out = redact("s=c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0PT0=");
+        assert!(out.contains("[redacted-secret]"), "got {out:?}");
+    }
+
+    #[test]
+    fn redacts_vendor_key_prefixes() {
+        for token in [
+            "ASIAIOSFODNN7EXAMPLE",
+            "AIzaSyA1234567890abcdEFGHijkl",
+            "xoxb-123456789012-abcdefghijkl",
+            "glpat-abcdefghij1234567890",
+        ] {
+            let out = redact(&format!("k {token} done"));
+            assert!(out.contains("[redacted-secret]"), "{token} -> {out:?}");
+            assert!(!out.contains(token), "{token} leaked -> {out:?}");
+        }
+    }
+
+    #[test]
+    fn redacts_nbsp_separated_card() {
+        let out = redact("pan 4242\u{00a0}4242\u{00a0}4242\u{00a0}4242 end");
+        assert!(out.contains("[redacted-card]"), "got {out:?}");
+        assert!(!out.contains("4242"), "got {out:?}");
+    }
+
+    #[test]
+    fn long_email_local_part_is_fully_redacted() {
+        // Email pass runs first so a 32+ char local part is not fragmented by
+        // the secret pass into a partial-leak tail (review finding 6).
+        let out = redact("verylonglocalpartoverthirtytwochars@example.com");
+        assert_eq!(out, "[redacted-email]");
     }
 
     #[test]
