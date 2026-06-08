@@ -36,16 +36,16 @@
 
 ## Remaining A2 — GUI / permission / live-bound (specified; validation environment-bound)
 
-All of these are **implemented** to the project's build-verified+live standard (real compiling code, pure cores unit-tested, FFI build-verified) with a scripted live gate (`tools/acceptance/run-a2-compat-gates.sh`). The remaining work on two of them is a deep-FFI *enrichment* riding on the already-done opt-in/permission/policy infrastructure, validated live on a GUI session (mirroring §15 G7 / Task 5c live residuals).
+All of these are **implemented** to the project's build-verified+live standard (real compiling code, pure cores unit-tested, FFI build-verified) with a scripted live gate (`tools/acceptance/run-a2-compat-gates.sh`). What remains is **live validation on a GUI session** (mirroring §15 G7 / Task 5c live residuals) — not unimplemented code.
 
-| Feature | What's implemented | Live/enrichment residual |
+| Feature | What's implemented | Live-validation residual |
 |---|---|---|
-| Screen Recording / OCR context | `platform_macos::screen_recording_permission` + `request_screen_recording_permission` (CGPreflight/Request); `COMPLETE_ME_SCREEN_CONTEXT` opt-in requests the grant at startup; off by default; works without it (field-only). | OCR *text extraction* (Vision `VNRecognizeTextRequest`) is the local-OCR enrichment on top of the granted permission. |
-| Google Docs / Arc setup onboarding | ✅ `compat::needs_accessibility_setup` (browser/Arc/Dia + unreadable field; tested) wired on the read-context error path — surfaces "may need Accessibility/Text-Metrics setup" once per app (the Google-Docs-in-Chrome case). | live Docs round-trip; domain-precise trigger when browser-domain extraction lands. |
-| Browser mirror-window fallback | ✅ `MirrorOnly` tier (Firefox/Zen) classified + onboarded; renders via the engine's existing non-activating overlay **popup-anchor fallback** (used whenever inline caret geometry is absent). | dedicated mirror-window chrome, verified live in Firefox/Zen. |
-| Terminal/iTerm AI-agent activation | ✅ `compat::terminal_prompt_activates` (tested) gates terminals to natural-language prompts before submit. | live tuning of the heuristic against real agent prompts. |
-| Clipboard context | ✅ `platform_macos::read_pasteboard_text` + run-loop refresh (redacted) into `WorkerContext.clipboard`; `COMPLETE_ME_CLIPBOARD_CONTEXT` opt-in; worker test. | — |
+| Screen Recording / OCR context | ✅ `platform_macos::screen_recording_permission`/`request_screen_recording_permission` (CGPreflight/Request) + **`screen_context_text`: main-display capture (CGDisplayCreateImage) → local Vision OCR (`VNRecognizeTextRequest`)**, redacted + bounded, wired as a `WorkerContext.screen` source; `COMPLETE_ME_SCREEN_CONTEXT` opt-in, off by default, degrades to field-only when ungranted. | live OCR quality/perf tuning on a granted desktop. |
+| Google Docs / Arc setup onboarding | ✅ `compat::needs_accessibility_setup` (browser/Arc/Dia + unreadable field; tested) wired on the read-context error path — surfaces setup guidance once per app (the Google-Docs-in-Chrome case). | live Docs round-trip; domain-precise trigger when browser-domain extraction lands. |
+| Browser mirror-window fallback | ✅ `Engine::set_mirror_mode` — MirrorOnly apps (Firefox/Zen) render the ghost in the floating non-activating mirror window (front-app popup anchor) instead of inline; run loop sets it per focused app's tier; engine test pins it. | live Firefox/Zen confirmation. |
+| Terminal/iTerm AI-agent activation | ✅ `compat::terminal_prompt_activates` (sigil-aware; tested) gates terminals to natural-language prompts before submit. | live tuning vs real agent prompts. |
+| Clipboard context | ✅ `read_pasteboard_text` + run-loop refresh (redacted) into `WorkerContext.clipboard`; `COMPLETE_ME_CLIPBOARD_CONTEXT` opt-in; worker test. | — |
 | Compatibility matrix gating | ✅ `compat::compatibility_tier` + unsupported-gating + onboarding; `run-a2-compat-gates.sh` exercises works/unsupported/terminal/clipboard. | per-app live confirmation across the matrix (script-driven). |
 
 ## Testing strategy
-Every pure feature is unit-tested (RED→GREEN); FFI is build-verified and exercised by acceptance scripts on a GUI session (the project's standard for AppKit/AX/CGEvent code). `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` stay green, and each feature lands with a code review whose findings are fixed before commit.
+Every pure feature is unit-tested (RED→GREEN); FFI is build-verified and exercised by acceptance scripts on a GUI session (the project's standard for AppKit/AX/CGEvent code — the overlay, tray, AX worker, accept tap, and now Vision OCR + screen capture are all built and clippy-clean, validated live). `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` stay green, and each feature lands with a code review whose findings are fixed before commit.
