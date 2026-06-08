@@ -558,9 +558,17 @@ pub fn run() -> Result<(), String> {
                     // guidance once per app (mirror-window apps, setup-needed
                     // browsers like Google Docs/Arc).
                     if let Some(app) = resolve_app_key(field.pid, bundle_id_for_pid) {
+                        // MirrorOnly apps (Firefox/Zen) render the ghost in the
+                        // floating mirror window, not inline (A2 §16).
+                        engine.set_mirror_mode(matches!(
+                            compat::compatibility_tier(&app),
+                            compat::CompatTier::MirrorOnly
+                        ));
                         if hinted_apps.insert(app.clone()) {
                             log_compat_guidance(&app);
                         }
+                    } else {
+                        engine.set_mirror_mode(false);
                     }
                     current_field = Some(field.clone());
                     tracker.reset();

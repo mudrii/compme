@@ -62,6 +62,10 @@ pub struct Engine<P, O> {
     caps: Capabilities,
     max_tokens: usize,
     accept: Option<platform::AcceptSubscription>,
+    /// When set (MirrorOnly apps — Firefox/Zen, A2 §16), render the ghost in the
+    /// floating mirror window (the front-app popup anchor) instead of inline,
+    /// since these apps cannot host an inline caret ghost.
+    mirror_mode: bool,
 }
 
 impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
@@ -80,7 +84,15 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
             caps,
             max_tokens,
             accept: None,
+            mirror_mode: false,
         }
+    }
+
+    /// Route ghost rendering to the mirror window (A2 §16): MirrorOnly apps
+    /// cannot host an inline caret ghost, so the overlay renders at the front-app
+    /// popup anchor instead. The run loop sets this per focused app's tier.
+    pub fn set_mirror_mode(&mut self, mirror: bool) {
+        self.mirror_mode = mirror;
     }
 
     /// Configure conservative trigger gating on the underlying machine (spec §4):
@@ -267,10 +279,19 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                 }),
                 Command::ShowGhost { field, text, .. } => {
                     // Inline placement uses the caret rect; popup mode (no caret
-                    // geometry) falls back to the adapter's popup anchor.
-                    let rect = match self.adapter.caret_rect(&field)? {
-                        Some(rect) => Some(rect),
-                        None => self.adapter.popup_anchor(&field)?,
+                    // geometry) falls back to the adapter's popup anchor. Mirror
+                    // mode (MirrorOnly apps) renders at the popup/mirror anchor
+                    // directly, since these apps have no usable inline caret.
+                    let rect = if self.mirror_mode {
+                        match self.adapter.popup_anchor(&field)? {
+                            Some(rect) => Some(rect),
+                            None => self.adapter.caret_rect(&field)?,
+                        }
+                    } else {
+                        match self.adapter.caret_rect(&field)? {
+                            Some(rect) => Some(rect),
+                            None => self.adapter.popup_anchor(&field)?,
+                        }
                     };
                     if let Some(rect) = rect {
                         self.overlay.show_ghost(rect, &text)?;
@@ -630,6 +651,42 @@ mod tests {
         assert_eq!(
             *overlay.calls.lock().unwrap(),
             vec![OverlayCall::Show(anchor, "popup text".into())]
+        );
+    }
+
+    #[test]
+    fn mirror_mode_renders_at_the_popup_anchor_even_with_a_caret_rect() {
+        // MirrorOnly apps (Firefox/Zen) must render in the floating mirror window
+        // (popup anchor), not at the inline caret, even when a caret rect exists.
+        let mut adapter = FakeAdapter::new();
+        let caret = ScreenRect {
+            x: 1.0,
+            y: 2.0,
+            w: 1.0,
+            h: 14.0,
+        };
+        let mirror = ScreenRect {
+            x: 100.0,
+            y: 200.0,
+            w: 300.0,
+            h: 24.0,
+        };
+        adapter.rect = Some(caret);
+        adapter.popup = Some(mirror);
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        engine.set_mirror_mode(true);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion(&requests[0], "mirrored".into())
+            .unwrap();
+
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Show(mirror, "mirrored".into())]
         );
     }
 
