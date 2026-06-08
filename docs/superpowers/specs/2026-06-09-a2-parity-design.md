@@ -14,6 +14,7 @@
 | **Per-app enable/exclude + pause/snooze** | `prefs` + `app` gate | 8 + 2 builder + resolve | Partial: per-app exclude gates live (keyed on resolved bundle id); snooze logic done but not yet UI/signal-triggerable (A3 control surface). |
 | **Per-app Tab disable** primitive | `prefs::tab_disabled` | ✓ | Logic present; tap-layer consumption of the per-app flag is A3 (needs the accept tap to read prefs). |
 | **PII redaction** (pre-persistence) | `redaction` | 14 | Foundation for encrypted memory + diagnostics; emails/Luhn-cards/secrets scrubbed. |
+| **Encrypted local memory** (inspect/delete) | `memory` | 11 | ✅ core: AES-256-GCM (app bound as AAD), ciphertext-only on disk (asserted), redact-on-insert, opt-in `StorageMode` (Off default / AcceptedOnly / AllMonitored, behaviorally distinct), `count`/`recent`/`delete_all`/`delete_app`, `secure_delete`. **A3 live residual:** Keychain `KeyProvider` (tests use `StaticKey`); run-loop wiring to record accepted completions + a settings surface. |
 
 ### Steering preamble injection
 `app/inference.rs` computes `PersonalizationProfile::build_preamble(app, None)` per request and prepends it to the shaped prompt; `app/run_loop.rs` builds the profile + prefs from config keys (`COMPLETE_ME_INSTRUCTIONS`, `COMPLETE_ME_STRENGTH`, `COMPLETE_ME_SENDER_NAME/EMAIL`, `COMPLETE_ME_EXCLUDED_APPS`, `COMPLETE_ME_DEFAULT_ENABLED`).
@@ -30,7 +31,6 @@
 | Feature | Plan | §16 gate |
 |---|---|---|
 | **Multi-candidate + cycle** | `model_client` N-sample (temp/seed variation, shared-prefix decode); `engine_core` holds candidates + a `Cycle` event; accept inserts the shown one | N candidates generated; cycle switches; accept inserts shown |
-| **Encrypted local memory** | `memory` crate: rusqlite store of accepted completions, **redacted on insert** (`redaction`), AEAD-encrypted values behind a `KeyProvider` trait (Keychain impl live, in-memory for tests); inspect/count/delete-all/delete-per-app | DB encrypted at rest; key in OS keystore; inspect + delete; accepted-only vs all-monitored modes (default off) |
 | **Pasteboard / previous-input context** | `context` augmentation + adapter pasteboard read (already present as fallback); opt-in; bounded; redacted | clipboard/previous-input augments prompt when enabled; off by default |
 
 ## Remaining A2 — GUI / permission / live-bound (specified; validation environment-bound)
