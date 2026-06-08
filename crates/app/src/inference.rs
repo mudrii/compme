@@ -7,9 +7,10 @@
 //! `recv → complete → send outcome`. On shutdown it drops the request sender,
 //! joins the thread, and the thread frees the model in deterministic order.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use engine::CompletionRequest;
@@ -17,6 +18,39 @@ use model_client::LocalModel;
 use personalization::PersonalizationProfile;
 
 use crate::model_select::{shape_prompt, PromptMode};
+
+/// Bounded ring of recent accepted completions (redacted), shared between the
+/// run loop (which records on accept) and the inference worker (which reads them
+/// as previous-input context). A2 §16 context augmentation.
+#[derive(Clone, Default)]
+pub struct PreviousInputs {
+    inner: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl PreviousInputs {
+    const CAPACITY: usize = 5;
+
+    /// Record an already-redacted accepted completion, evicting the oldest.
+    pub fn record(&self, text: String) {
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Ok(mut buf) = self.inner.lock() {
+            if buf.len() == Self::CAPACITY {
+                buf.pop_front();
+            }
+            buf.push_back(text);
+        }
+    }
+
+    /// The recent inputs, newest first.
+    fn recent(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .map(|buf| buf.iter().rev().cloned().collect())
+            .unwrap_or_default()
+    }
+}
 
 /// A completed inference, paired with the request that produced it so the engine
 /// can match it against the current generation (and discard if stale).
@@ -40,11 +74,17 @@ fn recv_latest(requests: &Receiver<CompletionRequest>) -> Option<CompletionReque
 
 /// The worker body. Warms the model, signals readiness, then serves requests
 /// until the channel closes; finally releases the model.
+// Internal plumbing fn: the parameters are the worker's whole context (model,
+// prompt config, the two channels, the ready flag); bundling them into a struct
+// would not improve clarity here.
+#[allow(clippy::too_many_arguments)]
 fn run(
     model: Box<dyn LocalModel>,
     prompt_mode: PromptMode,
     profile: PersonalizationProfile,
     candidates: usize,
+    previous_inputs: PreviousInputs,
+    context_max_chars: usize,
     requests: Receiver<CompletionRequest>,
     outcomes: Sender<CompletionOutcome>,
     ready: Arc<AtomicBool>,
@@ -61,7 +101,17 @@ fn run(
         // browser feature; None for now), then shape the engine's raw left-context
         // prefix per the configured strategy (terse continuation by default).
         let preamble = profile.build_preamble(Some(&request.field.app), None);
-        let prompt = shape_prompt(prompt_mode, &preamble, &request.prompt);
+        // Opt-in previous-input context (off when max_chars is 0): prepend a
+        // bounded, already-redacted context block ahead of the steering preamble.
+        let full_preamble = if context_max_chars == 0 {
+            preamble
+        } else {
+            let recent = previous_inputs.recent();
+            let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
+            let block = context::build_context_block(None, &recent_refs, context_max_chars);
+            format!("{block}{preamble}")
+        };
+        let prompt = shape_prompt(prompt_mode, &full_preamble, &request.prompt);
         match model.complete_n(&prompt, request.max_tokens, candidates) {
             Ok(candidates) => {
                 // A dropped receiver means the main loop is shutting down.
@@ -101,6 +151,8 @@ impl InferenceHandle {
         prompt_mode: PromptMode,
         profile: PersonalizationProfile,
         candidates: usize,
+        previous_inputs: PreviousInputs,
+        context_max_chars: usize,
     ) -> Result<Self, String> {
         let (request_tx, request_rx) = channel::<CompletionRequest>();
         let (outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
@@ -115,6 +167,8 @@ impl InferenceHandle {
                     prompt_mode,
                     profile,
                     candidates.max(1),
+                    previous_inputs,
+                    context_max_chars,
                     request_rx,
                     outcome_tx,
                     ready_for_thread,
@@ -225,6 +279,8 @@ mod tests {
             PromptMode::Terse,
             PersonalizationProfile::default(),
             1,
+            PreviousInputs::default(),
+            0,
         )
         .unwrap();
         assert!(inference.submit(request("hello", 1)));
@@ -243,6 +299,8 @@ mod tests {
             PromptMode::Terse,
             PersonalizationProfile::default(),
             1,
+            PreviousInputs::default(),
+            0,
         )
         .unwrap();
         inference.submit(request("Dear team", 1));
@@ -253,6 +311,63 @@ mod tests {
         assert!(outcome.candidates[0].contains("Dear team"));
         assert_ne!(outcome.candidates[0], "Dear team");
         inference.shutdown();
+    }
+
+    #[test]
+    fn previous_input_context_is_prepended_when_enabled() {
+        // Recorded inputs surface as a context block ahead of the prompt the
+        // model sees (A2 §16 context augmentation).
+        let previous = PreviousInputs::default();
+        previous.record("earlier sentence".into());
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            previous,
+            160,
+        )
+        .unwrap();
+        inference.submit(request("now typing", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            outcome.candidates[0].contains("Recent: earlier sentence"),
+            "context block present: {:?}",
+            outcome.candidates[0]
+        );
+        assert!(outcome.candidates[0].contains("now typing"));
+        inference.shutdown();
+    }
+
+    #[test]
+    fn context_disabled_prepends_nothing() {
+        let previous = PreviousInputs::default();
+        previous.record("earlier".into());
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            previous,
+            0, // disabled
+        )
+        .unwrap();
+        inference.submit(request("now", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert_eq!(outcome.candidates[0], "now");
+        inference.shutdown();
+    }
+
+    #[test]
+    fn previous_inputs_ring_is_bounded_newest_first() {
+        let previous = PreviousInputs::default();
+        for i in 0..8 {
+            previous.record(format!("input{i}"));
+        }
+        let recent = previous.recent();
+        assert_eq!(recent.len(), PreviousInputs::CAPACITY);
+        assert_eq!(recent[0], "input7"); // newest first
+        assert!(!recent.contains(&"input0".to_string())); // oldest evicted
     }
 
     #[test]
@@ -273,6 +388,8 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             3,
+            PreviousInputs::default(),
+            0,
         )
         .unwrap();
         inference.submit(request("x", 1));
@@ -288,6 +405,8 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
+            PreviousInputs::default(),
+            0,
         )
         .unwrap();
         inference.submit(request("Dear team", 1));
@@ -305,8 +424,15 @@ mod tests {
             global_instructions: "Write in pirate dialect.".into(),
             ..Default::default()
         };
-        let inference =
-            InferenceHandle::spawn(Box::new(EchoModel), PromptMode::Raw, profile, 1).unwrap();
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            profile,
+            1,
+            PreviousInputs::default(),
+            0,
+        )
+        .unwrap();
         inference.submit(request("Ahoy", 1));
         let outcome = inference.recv_outcome().expect("outcome");
         assert!(
@@ -325,6 +451,8 @@ mod tests {
             PromptMode::Terse,
             PersonalizationProfile::default(),
             1,
+            PreviousInputs::default(),
+            0,
         )
         .unwrap();
         // Submit + receive guarantees the worker has passed warm-up.
@@ -342,6 +470,8 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
+            PreviousInputs::default(),
+            0,
         )
         .unwrap();
         inference.submit(request("p", 1));
@@ -362,6 +492,8 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
+            PreviousInputs::default(),
+            0,
         )
         .unwrap();
         inference.submit(request("bad", 1));
@@ -380,6 +512,8 @@ mod tests {
             PromptMode::Terse,
             PersonalizationProfile::default(),
             1,
+            PreviousInputs::default(),
+            0,
         )
         .unwrap();
         inference.shutdown(); // must not hang

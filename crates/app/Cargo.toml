@@ -14,5 +14,7 @@ engine = { path = "../engine" }
 model_client = { path = "../model_client" }
 personalization = { path = "../personalization" }
 prefs = { path = "../prefs" }
+context = { path = "../context" }
+redaction = { path = "../redaction" }
 core-foundation = "=0.10.1"
 libc = "0.2"

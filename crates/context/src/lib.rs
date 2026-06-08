@@ -25,6 +25,49 @@ pub fn trim_trailing(value: &str) -> &str {
     value.trim_end()
 }
 
+/// Truncate to at most `max` chars on a char boundary, keeping the tail (the
+/// most recent / caret-adjacent end).
+fn tail_chars(s: &str, max: usize) -> &str {
+    let count = s.chars().count();
+    if count <= max {
+        return s;
+    }
+    match s.char_indices().nth(count - max) {
+        Some((byte_idx, _)) => &s[byte_idx..],
+        None => s,
+    }
+}
+
+/// Assemble an opt-in context block to prepend to the completion prompt (A2 §16
+/// context augmentation): optional clipboard/pasteboard text plus recent
+/// previous inputs. Each source is trimmed and bounded to `max_chars` (keeping
+/// the most recent tail). Returns an empty string when there is no context, so
+/// the caller can prepend unconditionally. The caller is responsible for
+/// redacting the sources before passing them in.
+pub fn build_context_block(
+    pasteboard: Option<&str>,
+    previous_inputs: &[&str],
+    max_chars: usize,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(clip) = pasteboard {
+        let clip = clip.trim();
+        if !clip.is_empty() {
+            lines.push(format!("Clipboard: {}", tail_chars(clip, max_chars)));
+        }
+    }
+    for input in previous_inputs {
+        let input = input.trim();
+        if !input.is_empty() {
+            lines.push(format!("Recent: {}", tail_chars(input, max_chars)));
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("Context (for reference only):\n{}\n", lines.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,6 +95,34 @@ mod tests {
     #[test]
     fn right_context_starts_at_caret() {
         assert_eq!(right_context("hello world", 6), "world");
+    }
+
+    #[test]
+    fn context_block_empty_without_sources() {
+        assert_eq!(build_context_block(None, &[], 100), "");
+        assert_eq!(build_context_block(Some("   "), &["  "], 100), "");
+    }
+
+    #[test]
+    fn context_block_includes_clipboard() {
+        let block = build_context_block(Some("paste me"), &[], 100);
+        assert!(block.contains("Clipboard: paste me"));
+        assert!(block.starts_with("Context (for reference only):"));
+    }
+
+    #[test]
+    fn context_block_includes_previous_inputs() {
+        let block = build_context_block(None, &["first note", "second note"], 100);
+        assert!(block.contains("Recent: first note"));
+        assert!(block.contains("Recent: second note"));
+    }
+
+    #[test]
+    fn context_block_bounds_each_source_to_max_chars_keeping_the_tail() {
+        let long = "0123456789abcdef"; // 16 chars
+        let block = build_context_block(Some(long), &[], 4);
+        assert!(block.contains("Clipboard: cdef"), "got {block:?}");
+        assert!(!block.contains("0123"));
     }
 
     #[test]

@@ -34,7 +34,7 @@ use prefs::Prefs;
 
 use crate::adapter::SharedAdapter;
 use crate::config::{self, parse_clamped};
-use crate::inference::InferenceHandle;
+use crate::inference::{InferenceHandle, PreviousInputs};
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
 use crate::status::{derive_status, AppStatus, BlockReason};
 use crate::wiring::{FieldTracker, LatestRequest, Observation};
@@ -46,6 +46,8 @@ const DEFAULT_MAX_TOKENS: usize = 24;
 const DEFAULT_HEARTBEAT_MS: u64 = 12;
 /// Candidate completions generated per request (1 = single, up to 5 for cycle).
 const DEFAULT_CANDIDATES: usize = 1;
+/// Per-source character bound when previous-input context is enabled truthily.
+const DEFAULT_CONTEXT_MAX_CHARS: usize = 160;
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
 /// Re-poll secure input + Accessibility trust at most this often (wall-clock ms).
 const SECURE_POLL_INTERVAL_MS: u64 = 480;
@@ -129,6 +131,7 @@ struct Config {
     allow_mid_word: bool,
     diag_coords: bool,
     candidates: usize,
+    context_max_chars: usize,
     personalization: PersonalizationProfile,
     prefs: Prefs,
 }
@@ -182,6 +185,9 @@ impl Config {
             allow_mid_word: lookup("COMPLETE_ME_MIDLINE").is_some_and(|v| v == "1" || v == "true"),
             diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
             candidates: parse_clamped(lookup("COMPLETE_ME_CANDIDATES"), DEFAULT_CANDIDATES, 1, 5),
+            context_max_chars: parse_context_max_chars(lookup(
+                "COMPLETE_ME_PREVIOUS_INPUT_CONTEXT",
+            )),
             personalization: build_personalization(&lookup),
             prefs: build_prefs(&lookup),
         }
@@ -204,6 +210,28 @@ fn build_personalization(lookup: &impl Fn(&str) -> Option<String>) -> Personaliz
         profile.strength = Strength::from_stop(stop);
     }
     profile
+}
+
+/// Parse the previous-input context setting (A2 §16): off by default; an explicit
+/// falsy value is off; a positive number is the per-source char bound; any other
+/// truthy value uses the default bound.
+fn parse_context_max_chars(raw: Option<String>) -> usize {
+    match raw {
+        None => 0,
+        Some(v) => {
+            let v = v.trim();
+            if matches!(
+                v.to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no" | ""
+            ) {
+                0
+            } else {
+                v.parse::<usize>()
+                    .map(|n| n.min(2000))
+                    .unwrap_or(DEFAULT_CONTEXT_MAX_CHARS)
+            }
+        }
+    }
 }
 
 /// Resolve a focused field's pid to a stable bundle id for per-app preferences.
@@ -408,11 +436,14 @@ pub fn run() -> Result<(), String> {
         config.stub_completion.clone(),
         config.model_path.clone(),
     ))?;
+    let previous_inputs = PreviousInputs::default();
     let inference = InferenceHandle::spawn(
         model,
         config.prompt_mode,
         config.personalization.clone(),
         config.candidates,
+        previous_inputs.clone(),
+        config.context_max_chars,
     )?;
 
     // Shared state for the tray; flipped by menu actions, observed by this loop.
@@ -496,6 +527,13 @@ pub fn run() -> Result<(), String> {
                     let self_insert = (action == AcceptAction::Word)
                         .then(|| engine.preview_accept_insert(action))
                         .flatten();
+                    // Record the accepted text as previous-input context (redacted,
+                    // only when the feature is on).
+                    if config.context_max_chars > 0 {
+                        if let Some((_, text)) = engine.preview_accept_insert(action) {
+                            previous_inputs.record(redaction::redact(&text));
+                        }
+                    }
                     match engine.on_accept(action) {
                         Ok(requests) => {
                             if let Some((field, text)) = self_insert {
@@ -720,6 +758,19 @@ mod tests {
         assert!(build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "True")])).default_enabled);
         assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "0")])).default_enabled);
         assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "off")])).default_enabled);
+    }
+
+    #[test]
+    fn context_max_chars_parsing_is_off_by_default_and_fail_safe() {
+        assert_eq!(parse_context_max_chars(None), 0);
+        assert_eq!(parse_context_max_chars(Some("off".into())), 0);
+        assert_eq!(parse_context_max_chars(Some("0".into())), 0);
+        assert_eq!(parse_context_max_chars(Some("150".into())), 150);
+        assert_eq!(
+            parse_context_max_chars(Some("true".into())),
+            DEFAULT_CONTEXT_MAX_CHARS
+        );
+        assert_eq!(parse_context_max_chars(Some("99999".into())), 2000); // clamped
     }
 
     #[test]

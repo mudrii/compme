@@ -30,7 +30,7 @@
 
 | Feature | Plan | §16 gate |
 |---|---|---|
-| **Multi-candidate + cycle** | `model_client` N-sample (temp/seed variation, shared-prefix decode); `engine_core` holds candidates + a `Cycle` event; accept inserts the shown one | N candidates generated; cycle switches; accept inserts shown |
+| **Multi-candidate + cycle** | ✅ done — `model_client::complete_n` N-sample (greedy + temp/top_k/top_p/seed); `engine_core` `CompletionReadyMulti`/`Cycle` + candidate list; Down-arrow cycle key; accept inserts shown; AcceptWord collapses to active | ✅ N candidates generated; cycle switches; accept inserts shown |
 | **Pasteboard / previous-input context** | `context` augmentation + adapter pasteboard read (already present as fallback); opt-in; bounded; redacted | clipboard/previous-input augments prompt when enabled; off by default |
 
 ## Remaining A2 — GUI / permission / live-bound (specified; validation environment-bound)

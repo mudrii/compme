@@ -71,6 +71,7 @@ dependencies = [
 name = "app"
 version = "0.1.0"
 dependencies = [
+ "context",
  "core-foundation",
  "engine",
  "libc",
@@ -79,6 +80,7 @@ dependencies = [
  "platform",
  "platform_macos",
  "prefs",
+ "redaction",
 ]
 
 [[package]]
