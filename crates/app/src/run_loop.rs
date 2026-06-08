@@ -28,13 +28,14 @@ use platform::{
 };
 use platform_macos::{
     accessibility_trusted, bundle_id_for_pid, display_scales, prompt_accessibility_trust,
+    read_pasteboard_text, request_screen_recording_permission, screen_recording_permission,
     secure_input_enabled, MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
 };
 use prefs::Prefs;
 
 use crate::adapter::SharedAdapter;
 use crate::config::{self, parse_clamped};
-use crate::inference::{InferenceHandle, PreviousInputs};
+use crate::inference::{InferenceHandle, PreviousInputs, WorkerContext};
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
 use crate::status::{derive_status, AppStatus, BlockReason};
 use crate::wiring::{FieldTracker, LatestRequest, Observation};
@@ -132,6 +133,8 @@ struct Config {
     diag_coords: bool,
     candidates: usize,
     context_max_chars: usize,
+    clipboard_context: bool,
+    screen_context: bool,
     personalization: PersonalizationProfile,
     prefs: Prefs,
 }
@@ -188,6 +191,10 @@ impl Config {
             context_max_chars: parse_context_max_chars(lookup(
                 "COMPLETE_ME_PREVIOUS_INPUT_CONTEXT",
             )),
+            clipboard_context: lookup("COMPLETE_ME_CLIPBOARD_CONTEXT")
+                .is_some_and(|v| v == "1" || v == "true"),
+            screen_context: lookup("COMPLETE_ME_SCREEN_CONTEXT")
+                .is_some_and(|v| v == "1" || v == "true"),
             personalization: build_personalization(&lookup),
             prefs: build_prefs(&lookup),
         }
@@ -231,6 +238,30 @@ fn parse_context_max_chars(raw: Option<String>) -> usize {
                     .unwrap_or(DEFAULT_CONTEXT_MAX_CHARS)
             }
         }
+    }
+}
+
+/// Log one-time compatibility guidance for an app by its tier (A2 §16
+/// onboarding): setup-needed browsers (Google Docs/Arc), mirror-window apps,
+/// partial/sidebar-only apps, and unsupported apps.
+fn log_compat_guidance(app: &str) {
+    use compat::CompatTier;
+    match compat::compatibility_tier(app) {
+        CompatTier::SetupNeeded => eprintln!(
+            "complete-me: {app} needs setup for inline suggestions \
+             (e.g. Google Docs Accessibility / Text Metrics)"
+        ),
+        CompatTier::MirrorOnly => {
+            eprintln!("complete-me: {app} renders via a mirror window (inline overlay unsupported)")
+        }
+        CompatTier::Partial => eprintln!("complete-me: {app} has partial support"),
+        CompatTier::SidebarOnly => eprintln!(
+            "complete-me: {app} suggests in AI-chat/sidebar fields only, not the editor pane"
+        ),
+        CompatTier::Unsupported => {
+            eprintln!("complete-me: {app} is not supported — suggestions disabled")
+        }
+        CompatTier::Works | CompatTier::Unknown => {}
     }
 }
 
@@ -443,14 +474,35 @@ pub fn run() -> Result<(), String> {
         config.stub_completion.clone(),
         config.model_path.clone(),
     ))?;
+    // Screen-recording context (optional, A2 §16): request the permission once if
+    // the user opted in. The app continues with field-only context if denied
+    // (the "works without it" requirement); local OCR enrichment rides on this
+    // grant.
+    if config.screen_context && !screen_recording_permission() {
+        eprintln!("complete-me: requesting Screen Recording permission (screen context)");
+        request_screen_recording_permission();
+    }
+
     let previous_inputs = PreviousInputs::default();
+    let clipboard_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // Clipboard context works independently of previous-input context, so the
+    // worker needs a positive char bound when either is enabled.
+    let context_bound = if config.clipboard_context && config.context_max_chars == 0 {
+        DEFAULT_CONTEXT_MAX_CHARS
+    } else {
+        config.context_max_chars
+    };
+    let worker_context = WorkerContext {
+        previous_inputs: previous_inputs.clone(),
+        clipboard: Arc::clone(&clipboard_cell),
+        max_chars: context_bound,
+    };
     let inference = InferenceHandle::spawn(
         model,
         config.prompt_mode,
         config.personalization.clone(),
         config.candidates,
-        previous_inputs.clone(),
-        config.context_max_chars,
+        worker_context,
     )?;
 
     // Shared state for the tray; flipped by menu actions, observed by this loop.
@@ -472,6 +524,7 @@ pub fn run() -> Result<(), String> {
     let mut tracker = FieldTracker::new();
     let mut latest = LatestRequest::new();
     let mut current_field: Option<FieldHandle> = None;
+    let mut hinted_apps: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut prev_enabled = true;
     let mut secure = false;
     let mut prev_secure = false;
@@ -498,6 +551,14 @@ pub fn run() -> Result<(), String> {
             match event {
                 HostEvent::Focus(field) => {
                     eprintln!("complete-me: focus {}", field.element_id);
+                    // Compatibility onboarding (A2 §16): surface tier-specific
+                    // guidance once per app (mirror-window apps, setup-needed
+                    // browsers like Google Docs/Arc).
+                    if let Some(app) = resolve_app_key(field.pid, bundle_id_for_pid) {
+                        if hinted_apps.insert(app.clone()) {
+                            log_compat_guidance(&app);
+                        }
+                    }
                     current_field = Some(field.clone());
                     tracker.reset();
                     offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
@@ -664,11 +725,23 @@ pub fn run() -> Result<(), String> {
                 // it can't be resolved. Domain is None until browser-domain
                 // extraction lands.
                 let app_key = resolve_app_key(request.field.pid, bundle_id_for_pid);
+                // Terminal apps only suggest for natural-language agent prompts,
+                // not shell commands (A2 §16).
+                let terminal_ok = app_key
+                    .as_deref()
+                    .is_none_or(|app| compat::terminal_prompt_activates(app, &request.prompt));
                 if app_allows_suggestions(app_key.as_deref())
+                    && terminal_ok
                     && config
                         .prefs
                         .should_suggest(app_key.as_deref(), None, now_ms)
                 {
+                    // Refresh the clipboard context cell (redacted) just before a
+                    // submit that will use it (A2 §16 clipboard context).
+                    if config.clipboard_context {
+                        let clip = read_pasteboard_text().map(|text| redaction::redact(&text));
+                        *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = clip;
+                    }
                     eprintln!(
                         "complete-me: request gen={} prompt={:?}",
                         request.generation, request.prompt
@@ -769,6 +842,19 @@ mod tests {
         assert!(build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "True")])).default_enabled);
         assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "0")])).default_enabled);
         assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "off")])).default_enabled);
+    }
+
+    #[test]
+    fn clipboard_and_screen_context_flags_default_off() {
+        let off = Config::from_lookup(lookup(&[]));
+        assert!(!off.clipboard_context);
+        assert!(!off.screen_context);
+        let on = Config::from_lookup(lookup(&[
+            ("COMPLETE_ME_CLIPBOARD_CONTEXT", "1"),
+            ("COMPLETE_ME_SCREEN_CONTEXT", "true"),
+        ]));
+        assert!(on.clipboard_context);
+        assert!(on.screen_context);
     }
 
     #[test]

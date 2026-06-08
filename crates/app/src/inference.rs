@@ -63,6 +63,33 @@ impl PreviousInputs {
     }
 }
 
+/// The context-augmentation sources the inference worker reads per request
+/// (A2 §16): per-app previous inputs, optional clipboard text (redacted, set by
+/// the run loop when clipboard context is enabled), and the per-source char
+/// bound (`max_chars == 0` disables augmentation entirely).
+#[derive(Clone, Default)]
+pub struct WorkerContext {
+    pub previous_inputs: PreviousInputs,
+    pub clipboard: Arc<Mutex<Option<String>>>,
+    pub max_chars: usize,
+}
+
+impl WorkerContext {
+    fn block_for(&self, app: &str) -> String {
+        if self.max_chars == 0 {
+            return String::new();
+        }
+        let recent = self.previous_inputs.recent(app);
+        let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
+        let clip = self
+            .clipboard
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        context::build_context_block(clip.as_deref(), &recent_refs, self.max_chars)
+    }
+}
+
 /// A completed inference, paired with the request that produced it so the engine
 /// can match it against the current generation (and discard if stale).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,8 +121,7 @@ fn run(
     prompt_mode: PromptMode,
     profile: PersonalizationProfile,
     candidates: usize,
-    previous_inputs: PreviousInputs,
-    context_max_chars: usize,
+    worker_context: WorkerContext,
     requests: Receiver<CompletionRequest>,
     outcomes: Sender<CompletionOutcome>,
     ready: Arc<AtomicBool>,
@@ -112,14 +138,12 @@ fn run(
         // browser feature; None for now), then shape the engine's raw left-context
         // prefix per the configured strategy (terse continuation by default).
         let preamble = profile.build_preamble(Some(&request.field.app), None);
-        // Opt-in previous-input context (off when max_chars is 0): prepend a
-        // bounded, already-redacted context block ahead of the steering preamble.
-        let full_preamble = if context_max_chars == 0 {
+        // Opt-in context augmentation (clipboard + previous inputs): prepend a
+        // bounded, already-redacted block ahead of the steering preamble.
+        let block = worker_context.block_for(&request.field.app);
+        let full_preamble = if block.is_empty() {
             preamble
         } else {
-            let recent = previous_inputs.recent(&request.field.app);
-            let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
-            let block = context::build_context_block(None, &recent_refs, context_max_chars);
             format!("{block}{preamble}")
         };
         let prompt = shape_prompt(prompt_mode, &full_preamble, &request.prompt);
@@ -162,8 +186,7 @@ impl InferenceHandle {
         prompt_mode: PromptMode,
         profile: PersonalizationProfile,
         candidates: usize,
-        previous_inputs: PreviousInputs,
-        context_max_chars: usize,
+        worker_context: WorkerContext,
     ) -> Result<Self, String> {
         let (request_tx, request_rx) = channel::<CompletionRequest>();
         let (outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
@@ -178,8 +201,7 @@ impl InferenceHandle {
                     prompt_mode,
                     profile,
                     candidates.max(1),
-                    previous_inputs,
-                    context_max_chars,
+                    worker_context,
                     request_rx,
                     outcome_tx,
                     ready_for_thread,
@@ -290,8 +312,7 @@ mod tests {
             PromptMode::Terse,
             PersonalizationProfile::default(),
             1,
-            PreviousInputs::default(),
-            0,
+            WorkerContext::default(),
         )
         .unwrap();
         assert!(inference.submit(request("hello", 1)));
@@ -310,8 +331,7 @@ mod tests {
             PromptMode::Terse,
             PersonalizationProfile::default(),
             1,
-            PreviousInputs::default(),
-            0,
+            WorkerContext::default(),
         )
         .unwrap();
         inference.submit(request("Dear team", 1));
@@ -336,8 +356,11 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
-            previous,
-            160,
+            WorkerContext {
+                previous_inputs: previous,
+                max_chars: 160,
+                ..Default::default()
+            },
         )
         .unwrap();
         inference.submit(request("now typing", 1));
@@ -352,6 +375,33 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_context_is_prepended_when_set() {
+        // The clipboard cell (set by the run loop, A2 §16) surfaces as a
+        // "Clipboard:" line in the prompt the model sees.
+        let clipboard = Arc::new(Mutex::new(Some("copied snippet".to_string())));
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext {
+                clipboard,
+                max_chars: 160,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        inference.submit(request("typing", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            outcome.candidates[0].contains("Clipboard: copied snippet"),
+            "clipboard context present: {:?}",
+            outcome.candidates[0]
+        );
+        inference.shutdown();
+    }
+
+    #[test]
     fn context_disabled_prepends_nothing() {
         let previous = PreviousInputs::default();
         previous.record("TextEdit", "earlier".into());
@@ -360,8 +410,11 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
-            previous,
-            0, // disabled
+            WorkerContext {
+                previous_inputs: previous,
+                max_chars: 0,
+                ..Default::default()
+            },
         )
         .unwrap();
         inference.submit(request("now", 1));
@@ -419,8 +472,7 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             3,
-            PreviousInputs::default(),
-            0,
+            WorkerContext::default(),
         )
         .unwrap();
         inference.submit(request("x", 1));
@@ -436,8 +488,7 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
-            PreviousInputs::default(),
-            0,
+            WorkerContext::default(),
         )
         .unwrap();
         inference.submit(request("Dear team", 1));
@@ -460,8 +511,7 @@ mod tests {
             PromptMode::Raw,
             profile,
             1,
-            PreviousInputs::default(),
-            0,
+            WorkerContext::default(),
         )
         .unwrap();
         inference.submit(request("Ahoy", 1));
@@ -482,8 +532,7 @@ mod tests {
             PromptMode::Terse,
             PersonalizationProfile::default(),
             1,
-            PreviousInputs::default(),
-            0,
+            WorkerContext::default(),
         )
         .unwrap();
         // Submit + receive guarantees the worker has passed warm-up.
@@ -501,8 +550,7 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
-            PreviousInputs::default(),
-            0,
+            WorkerContext::default(),
         )
         .unwrap();
         inference.submit(request("p", 1));
@@ -523,8 +571,7 @@ mod tests {
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
-            PreviousInputs::default(),
-            0,
+            WorkerContext::default(),
         )
         .unwrap();
         inference.submit(request("bad", 1));
@@ -543,8 +590,7 @@ mod tests {
             PromptMode::Terse,
             PersonalizationProfile::default(),
             1,
-            PreviousInputs::default(),
-            0,
+            WorkerContext::default(),
         )
         .unwrap();
         inference.shutdown(); // must not hang

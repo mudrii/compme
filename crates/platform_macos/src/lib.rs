@@ -126,6 +126,10 @@ extern "C" {
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+    /// Whether this process already has Screen Recording permission (no prompt).
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    /// Request Screen Recording permission, firing the system prompt if needed.
+    fn CGRequestScreenCaptureAccess() -> bool;
 }
 
 extern "C" {
@@ -1385,6 +1389,29 @@ pub fn prompt_accessibility_trust() -> bool {
 /// field has the keyboard). Public wrapper over the Carbon query.
 pub fn secure_input_enabled() -> bool {
     macos_secure_input_enabled()
+}
+
+/// The general pasteboard's plain-text contents, for opt-in clipboard context
+/// (A2 §16). Call on the main thread. `None` when the clipboard holds no string.
+pub fn read_pasteboard_text() -> Option<String> {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard
+        .stringForType(pasteboard_string_type())
+        .map(|value| value.to_string())
+}
+
+/// Whether this process has Screen Recording permission (for optional
+/// screen-aware/OCR context, A2 §16). No prompt; pure query.
+pub fn screen_recording_permission() -> bool {
+    // SAFETY: the CG screen-capture access query takes no arguments.
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+/// Request Screen Recording permission, firing the system prompt if it is not
+/// already granted. Returns the resulting grant state.
+pub fn request_screen_recording_permission() -> bool {
+    // SAFETY: the CG screen-capture access request takes no arguments.
+    unsafe { CGRequestScreenCaptureAccess() }
 }
 
 /// Active displays as `(bounds, backing scale)` pairs, for the Retina/multi-
