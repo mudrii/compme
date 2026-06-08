@@ -6567,6 +6567,10 @@ mod tests {
         assert_eq!(backing_scale(3840, 3840), 1.0);
         // Degenerate point width falls back to 1.0 (never divide by zero).
         assert_eq!(backing_scale(3024, 0), 1.0);
+        // Zero native pixels yields 0.0; `active_display_scales` filters that out
+        // (`scale > 0.0`) and falls back to 1.0, so a bogus mode never reaches
+        // `normalize_ax_screen_rect`.
+        assert_eq!(backing_scale(0, 1512), 0.0);
     }
 
     #[test]
@@ -6598,6 +6602,26 @@ mod tests {
             y: 0.0,
             w: -1.0,
             h: 14.0,
+        }));
+        // Negative height is rejected.
+        assert!(!usable_caret_rect(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: -1.0,
+        }));
+        // Exact-max bounds are rejected (the cutoff is strict `<`).
+        assert!(!usable_caret_rect(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: MAX_USABLE_CARET_RECT_WIDTH,
+            h: 14.0,
+        }));
+        assert!(!usable_caret_rect(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: MAX_USABLE_CARET_RECT_HEIGHT,
         }));
         // over-max rejected (container-sized rects)
         assert!(!usable_caret_rect(ScreenRect {

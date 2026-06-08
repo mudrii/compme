@@ -165,8 +165,9 @@ impl Config {
                 0,
                 100,
             ),
-            // Conservative default: suppress mid-word completions (spec §4,
-            // "protect first-run"). `COMPLETE_ME_MIDLINE=1` opts into them.
+            // Conservative default: suppress mid-word completions (engine-macos
+            // design §4 trigger gating + plan-review F5, "protect first-run").
+            // `COMPLETE_ME_MIDLINE=1` opts into them.
             allow_mid_word: lookup("COMPLETE_ME_MIDLINE").is_some_and(|v| v == "1" || v == "true"),
             diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
         }
@@ -719,6 +720,11 @@ mod tests {
             w: 1.0,
             h: 14.0,
         })
+    }
+
+    #[test]
+    fn coalesce_empty_drain_is_empty() {
+        assert_eq!(coalesce_caret_reads(vec![]), vec![]);
     }
 
     #[test]
