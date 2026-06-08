@@ -36,24 +36,32 @@ impl CompatTier {
     pub fn sidebar_only(self) -> bool {
         matches!(self, CompatTier::SidebarOnly)
     }
-
-    /// Where suggestions should be rendered for this tier. `MirrorOnly` apps
-    /// (Firefox/Zen) cannot host an inline ghost, so they fall back to a mirror
-    /// window; everything else renders inline (with the engine's own per-field
-    /// popup fallback when caret geometry is missing).
-    pub fn placement(self) -> Placement {
-        match self {
-            CompatTier::MirrorOnly => Placement::Mirror,
-            _ => Placement::Inline,
-        }
-    }
 }
 
-/// How a suggestion is rendered for an app.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Placement {
-    Inline,
-    Mirror,
+/// Whether a bundle id is a web browser. Google Docs and other web editors run
+/// inside one, so a browser field that is not yet readable may need
+/// Accessibility / Text-Metrics setup. (MirrorOnly browsers render via the
+/// engine's existing popup-anchor fallback when inline caret geometry is absent.)
+pub fn is_browser(bundle_id: &str) -> bool {
+    matches!(
+        bundle_id,
+        "com.apple.Safari"
+            | "com.google.Chrome"
+            | "company.thebrowser.Browser"
+            | "company.thebrowser.dia"
+            | "org.mozilla.firefox"
+            | "app.zen-browser.zen"
+    )
+}
+
+/// Whether the focused field needs Accessibility/Text-Metrics setup before inline
+/// suggestions work (design spec §16 "Setup needed"): a browser or an explicitly
+/// setup-needed app (Arc/Dia) whose field text is not yet readable — the case
+/// Google Docs hits in Chrome until Accessibility mode is enabled.
+pub fn needs_accessibility_setup(bundle_id: &str, readable_text: bool) -> bool {
+    !readable_text
+        && (is_browser(bundle_id)
+            || matches!(compatibility_tier(bundle_id), CompatTier::SetupNeeded))
 }
 
 /// Shell command leaders that mark a terminal line as a command, not an
@@ -82,27 +90,22 @@ pub fn terminal_prompt_activates(bundle_id: &str, left_context: &str) -> bool {
         .next()
         .unwrap_or(left_context)
         .trim();
-    let words: Vec<&str> = line.split_whitespace().collect();
-    if words.len() < 3 {
+    // Drop leading shell-prompt sigils ($ / % / > / #) that render as their own
+    // tokens, so the real command word is inspected (not a bare sigil).
+    let tokens: Vec<&str> = line
+        .split_whitespace()
+        .map(|word| word.trim_start_matches(['$', '%', '>', '#']))
+        .filter(|word| !word.is_empty())
+        .collect();
+    if tokens.len() < 3 {
         return false;
     }
     // A recognized shell command leader → treat as shell input, not a prompt.
-    let first = words[0]
-        .trim_start_matches(['$', '%', '>', '#'])
-        .to_lowercase();
-    if SHELL_LEADERS.contains(&first.as_str()) {
+    if SHELL_LEADERS.contains(&tokens[0].to_lowercase().as_str()) {
         return false;
     }
     // Require some lowercase-alphabetic prose so a bare path/flags line is skipped.
     line.chars().any(|c| c.is_ascii_lowercase())
-}
-
-/// Whether Google Docs needs Accessibility/Text-Metrics setup before inline
-/// suggestions work (design spec §16 "Setup needed"): on a Google Docs domain
-/// where the field text is not yet readable, onboarding should be surfaced.
-pub fn google_docs_needs_setup(domain: Option<&str>, readable_text: bool) -> bool {
-    domain.is_some_and(|d| d == "docs.google.com" || d.ends_with(".docs.google.com"))
-        && !readable_text
 }
 
 /// Classify a macOS application bundle id into a compatibility tier.
@@ -213,29 +216,26 @@ mod tests {
     }
 
     #[test]
-    fn mirror_only_apps_get_mirror_placement() {
-        assert_eq!(
-            compatibility_tier("org.mozilla.firefox").placement(),
-            Placement::Mirror
-        );
-        assert_eq!(
-            compatibility_tier("com.apple.TextEdit").placement(),
-            Placement::Inline
-        );
-    }
-
-    #[test]
     fn terminal_activates_only_for_natural_language_prompts() {
         let term = "com.googlecode.iterm2";
         // Shell commands → no suggestions.
         assert!(!terminal_prompt_activates(term, "git commit -m wip"));
         assert!(!terminal_prompt_activates(term, "ls -la /tmp"));
+        // Shell commands behind a prompt sigil → still no suggestions (review #1).
+        assert!(!terminal_prompt_activates(term, "$ git push origin main"));
+        assert!(!terminal_prompt_activates(term, "% npm install left-pad"));
+        assert!(!terminal_prompt_activates(term, "> cargo build --release"));
         // Too few words → no.
         assert!(!terminal_prompt_activates(term, "hello there"));
         // Natural-language agent prompt → yes.
         assert!(terminal_prompt_activates(
             term,
             "please refactor the parser to"
+        ));
+        // ...even behind a prompt sigil.
+        assert!(terminal_prompt_activates(
+            term,
+            "$ please summarize the recent changes"
         ));
         // Only the current line matters.
         assert!(terminal_prompt_activates(
@@ -251,10 +251,23 @@ mod tests {
     }
 
     #[test]
-    fn google_docs_setup_detected_only_when_unreadable_on_docs_domain() {
-        assert!(google_docs_needs_setup(Some("docs.google.com"), false));
-        assert!(!google_docs_needs_setup(Some("docs.google.com"), true));
-        assert!(!google_docs_needs_setup(Some("example.com"), false));
-        assert!(!google_docs_needs_setup(None, false));
+    fn accessibility_setup_detected_for_unreadable_browsers_and_setup_apps() {
+        // Google Docs runs in Chrome (Works tier) — keyed on browser+unreadable.
+        assert!(needs_accessibility_setup("com.google.Chrome", false));
+        assert!(!needs_accessibility_setup("com.google.Chrome", true));
+        // Arc/Dia (SetupNeeded) when unreadable.
+        assert!(needs_accessibility_setup(
+            "company.thebrowser.Browser",
+            false
+        ));
+        // Plain native apps never need this setup.
+        assert!(!needs_accessibility_setup("com.apple.TextEdit", false));
+    }
+
+    #[test]
+    fn is_browser_recognizes_web_browsers() {
+        assert!(is_browser("com.google.Chrome"));
+        assert!(is_browser("org.mozilla.firefox"));
+        assert!(!is_browser("com.apple.TextEdit"));
     }
 }

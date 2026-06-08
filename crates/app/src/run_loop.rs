@@ -481,6 +481,9 @@ pub fn run() -> Result<(), String> {
     if config.screen_context && !screen_recording_permission() {
         eprintln!("complete-me: requesting Screen Recording permission (screen context)");
         request_screen_recording_permission();
+        // The grant takes effect on the NEXT launch (macOS shows the prompt async
+        // and re-reads TCC at startup), so screen context is inactive this run.
+        eprintln!("complete-me: restart after granting Screen Recording to enable screen context");
     }
 
     let previous_inputs = PreviousInputs::default();
@@ -588,7 +591,22 @@ pub fn run() -> Result<(), String> {
                             ),
                         }
                     }
-                    Err(err) => eprintln!("complete-me: read_context: {err:?}"),
+                    Err(err) => {
+                        eprintln!("complete-me: read_context: {err:?}");
+                        // Setup-needed onboarding (A2 §16): a browser/Arc/Dia field
+                        // that won't read may need Accessibility/Text-Metrics setup
+                        // (the Google-Docs-in-Chrome case). Surface guidance once.
+                        if let Some(app) = resolve_app_key(field.pid, bundle_id_for_pid) {
+                            if compat::needs_accessibility_setup(&app, false)
+                                && hinted_apps.insert(format!("setup:{app}"))
+                            {
+                                eprintln!(
+                                    "complete-me: {app} field not readable — may need \
+                                     Accessibility/Text-Metrics setup (e.g. Google Docs)"
+                                );
+                            }
+                        }
+                    }
                 },
                 HostEvent::Accept(action) => {
                     eprintln!("complete-me: accept {action:?}");
@@ -737,7 +755,10 @@ pub fn run() -> Result<(), String> {
                         .should_suggest(app_key.as_deref(), None, now_ms)
                 {
                     // Refresh the clipboard context cell (redacted) just before a
-                    // submit that will use it (A2 §16 clipboard context).
+                    // submit that will use it (A2 §16 clipboard context). Invariant:
+                    // the cell is rewritten before *every* gated submit, so the
+                    // worker (which reads the latest cell for the surviving
+                    // coalesced request) never attaches a prior app's clipboard.
                     if config.clipboard_context {
                         let clip = read_pasteboard_text().map(|text| redaction::redact(&text));
                         *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = clip;
