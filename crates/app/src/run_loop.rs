@@ -74,10 +74,35 @@ fn install_signal_handlers() {
 }
 
 /// What a platform callback enqueues for the main loop to process.
+#[derive(Clone, Debug, PartialEq)]
 enum HostEvent {
     Focus(FieldHandle),
     Caret(FieldHandle, Option<ScreenRect>),
     Accept(AcceptAction),
+}
+
+/// Collapse a burst of consecutive same-field `Caret` events into just the last
+/// one. Each `Caret` triggers an AX `read_context` round-trip; when several land
+/// in one heartbeat drain for the same field, only the newest read matters — the
+/// earlier reads would be immediately superseded. Dropping them removes redundant
+/// AX traffic with zero added latency (the surviving event carries the latest
+/// rect). A run is only collapsed across *adjacent* same-field carets, so an
+/// intervening `Focus`/`Accept` (which changes engine state) always breaks it.
+fn coalesce_caret_reads(events: Vec<HostEvent>) -> Vec<HostEvent> {
+    let mut out: Vec<HostEvent> = Vec::with_capacity(events.len());
+    let mut iter = events.into_iter().peekable();
+    while let Some(event) = iter.next() {
+        if let HostEvent::Caret(field, _) = &event {
+            if let Some(HostEvent::Caret(next_field, _)) = iter.peek() {
+                if next_field == field {
+                    // Superseded by the next same-field caret read; drop this one.
+                    continue;
+                }
+            }
+        }
+        out.push(event);
+    }
+    out
 }
 
 /// Runtime configuration, all from the environment (full config surface is P1).
@@ -303,7 +328,10 @@ pub fn run() -> Result<(), String> {
 
         // 1. Host events → engine. The caret callback is the typing driver: read
         // context (executes on the adapter's AX worker), diff into a TextChange.
-        for event in rx.try_iter() {
+        // Drain the queue first, then collapse bursts of same-field caret reads so
+        // we issue at most one AX round-trip per field per heartbeat.
+        let drained: Vec<HostEvent> = rx.try_iter().collect();
+        for event in coalesce_caret_reads(drained) {
             match event {
                 HostEvent::Focus(field) => {
                     eprintln!("complete-me: focus {}", field.element_id);
@@ -633,5 +661,103 @@ mod tests {
         assert_eq!(caps.insert_strategy, InsertStrategy::None);
         assert_eq!(caps.accept_intercept, KeyInterceptMode::None);
         assert_eq!(caps.overlay_at_caret, OverlayPlacement::None);
+    }
+
+    fn host_field(id: &str) -> FieldHandle {
+        FieldHandle {
+            app: "TextEdit".into(),
+            pid: Some(7),
+            element_id: id.into(),
+            generation: 1,
+        }
+    }
+
+    fn rect(x: f64) -> Option<ScreenRect> {
+        Some(ScreenRect {
+            x,
+            y: 0.0,
+            w: 1.0,
+            h: 14.0,
+        })
+    }
+
+    #[test]
+    fn coalesce_keeps_a_lone_caret() {
+        let events = vec![HostEvent::Caret(host_field("a"), rect(1.0))];
+        assert_eq!(coalesce_caret_reads(events.clone()), events);
+    }
+
+    #[test]
+    fn coalesce_collapses_adjacent_same_field_carets_to_the_last() {
+        let events = vec![
+            HostEvent::Caret(host_field("a"), rect(1.0)),
+            HostEvent::Caret(host_field("a"), rect(2.0)),
+            HostEvent::Caret(host_field("a"), rect(3.0)),
+        ];
+        // Only the newest read survives, carrying the latest rect.
+        assert_eq!(
+            coalesce_caret_reads(events),
+            vec![HostEvent::Caret(host_field("a"), rect(3.0))]
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_carets_for_different_fields() {
+        let events = vec![
+            HostEvent::Caret(host_field("a"), rect(1.0)),
+            HostEvent::Caret(host_field("b"), rect(2.0)),
+        ];
+        assert_eq!(coalesce_caret_reads(events.clone()), events);
+    }
+
+    #[test]
+    fn coalesce_does_not_cross_a_focus_event() {
+        // Focus changes engine state, so the caret before it must still be read.
+        let events = vec![
+            HostEvent::Caret(host_field("a"), rect(1.0)),
+            HostEvent::Focus(host_field("a")),
+            HostEvent::Caret(host_field("a"), rect(2.0)),
+        ];
+        assert_eq!(coalesce_caret_reads(events.clone()), events);
+    }
+
+    #[test]
+    fn coalesce_does_not_cross_an_accept_event() {
+        let events = vec![
+            HostEvent::Caret(host_field("a"), rect(1.0)),
+            HostEvent::Accept(AcceptAction::Full),
+            HostEvent::Caret(host_field("a"), rect(2.0)),
+        ];
+        assert_eq!(coalesce_caret_reads(events.clone()), events);
+    }
+
+    #[test]
+    fn coalesce_passes_non_caret_events_through() {
+        let events = vec![
+            HostEvent::Focus(host_field("a")),
+            HostEvent::Accept(AcceptAction::Word),
+        ];
+        assert_eq!(coalesce_caret_reads(events.clone()), events);
+    }
+
+    #[test]
+    fn coalesce_collapses_only_within_runs() {
+        // a,a -> last a ; then b ; then a,a -> last a. Two runs collapse
+        // independently around the intervening different-field caret.
+        let events = vec![
+            HostEvent::Caret(host_field("a"), rect(1.0)),
+            HostEvent::Caret(host_field("a"), rect(2.0)),
+            HostEvent::Caret(host_field("b"), rect(3.0)),
+            HostEvent::Caret(host_field("a"), rect(4.0)),
+            HostEvent::Caret(host_field("a"), rect(5.0)),
+        ];
+        assert_eq!(
+            coalesce_caret_reads(events),
+            vec![
+                HostEvent::Caret(host_field("a"), rect(2.0)),
+                HostEvent::Caret(host_field("b"), rect(3.0)),
+                HostEvent::Caret(host_field("a"), rect(5.0)),
+            ]
+        );
     }
 }
