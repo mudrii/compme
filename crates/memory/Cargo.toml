@@ -1,0 +1,11 @@
+[package]
+name = "memory"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+redaction = { path = "../redaction" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+aes-gcm = "0.10"
+getrandom = "0.2"

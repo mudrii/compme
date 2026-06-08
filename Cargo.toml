@@ -8,6 +8,7 @@ members = [
     "crates/personalization",
     "crates/redaction",
     "crates/prefs",
+    "crates/memory",
     "crates/model_client",
     "crates/platform_macos",
     "crates/engine",
