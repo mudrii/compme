@@ -40,8 +40,8 @@ use core_graphics::event::{
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::{class, msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSPanel,
     NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting,
@@ -123,6 +123,11 @@ extern "C" {
     fn IsSecureEventInputEnabled() -> c_uchar;
 }
 
+// Linked so the Vision OCR classes (VNImageRequestHandler / VNRecognizeTextRequest)
+// resolve at runtime; the calls go through objc2 `msg_send!`.
+#[link(name = "Vision", kind = "framework")]
+extern "C" {}
+
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
@@ -130,6 +135,9 @@ extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     /// Request Screen Recording permission, firing the system prompt if needed.
     fn CGRequestScreenCaptureAccess() -> bool;
+    fn CGMainDisplayID() -> u32;
+    /// Snapshot the display as a `CGImageRef` (+1; release with `CFRelease`).
+    fn CGDisplayCreateImage(display: u32) -> *mut c_void;
 }
 
 extern "C" {
@@ -1412,6 +1420,89 @@ pub fn screen_recording_permission() -> bool {
 pub fn request_screen_recording_permission() -> bool {
     // SAFETY: the CG screen-capture access request takes no arguments.
     unsafe { CGRequestScreenCaptureAccess() }
+}
+
+/// Screen-aware context (A2 §16): capture the main display and OCR it locally
+/// with Vision (`VNRecognizeTextRequest`), returning up to `max_chars` of
+/// recognized on-screen text. Returns `None` when Screen Recording is not
+/// granted, capture fails, or nothing is recognized — so the caller degrades to
+/// field-only context ("works without it"). Local-only; no network, no storage.
+pub fn screen_context_text(max_chars: usize) -> Option<String> {
+    if max_chars == 0 || !screen_recording_permission() {
+        return None;
+    }
+    // SAFETY: standard Vision OCR pipeline via objc2 message sends. Each selector
+    // matches its documented signature; `performRequests:error:` is synchronous
+    // (no completion handler), and the autoreleased results are read before this
+    // scope returns. The handler/request are owned (+1 from alloc/init / new); the
+    // captured CGImage is +1 from `CGDisplayCreateImage` and released below.
+    unsafe {
+        let image_ref = CGDisplayCreateImage(CGMainDisplayID());
+        if image_ref.is_null() {
+            return None;
+        }
+        let result = screen_ocr_with_image(image_ref, max_chars);
+        CFRelease(image_ref as CFTypeRef);
+        result
+    }
+}
+
+/// Run Vision text recognition over a captured `CGImageRef`. Split out so the
+/// caller owns the image's lifetime (release after this returns).
+///
+/// # Safety
+/// `image_ref` must be a valid `CGImageRef`.
+unsafe fn screen_ocr_with_image(image_ref: *mut c_void, max_chars: usize) -> Option<String> {
+    unsafe {
+        let handler_alloc: *mut AnyObject = msg_send![class!(VNImageRequestHandler), alloc];
+        let options: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
+        let handler: *mut AnyObject =
+            msg_send![handler_alloc, initWithCGImage: image_ref, options: options];
+        let handler = Retained::from_raw(handler)?;
+
+        let request: *mut AnyObject = msg_send![class!(VNRecognizeTextRequest), new];
+        let request = Retained::from_raw(request)?;
+
+        let requests: *mut AnyObject = msg_send![class!(NSArray), arrayWithObject: &*request];
+        let mut error: *mut AnyObject = ptr::null_mut();
+        let _ok: bool = msg_send![&*handler, performRequests: requests, error: &mut error];
+
+        let results: *mut AnyObject = msg_send![&*request, results];
+        if results.is_null() {
+            return None;
+        }
+        let count: usize = msg_send![results, count];
+
+        let mut text = String::new();
+        for index in 0..count {
+            let observation: *mut AnyObject = msg_send![results, objectAtIndex: index];
+            let candidates: *mut AnyObject = msg_send![observation, topCandidates: 1usize];
+            let candidate_count: usize = msg_send![candidates, count];
+            if candidate_count == 0 {
+                continue;
+            }
+            let candidate: *mut AnyObject = msg_send![candidates, objectAtIndex: 0usize];
+            let string: *mut NSString = msg_send![candidate, string];
+            if string.is_null() {
+                continue;
+            }
+            let line = (*string).to_string();
+            if !line.trim().is_empty() {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(line.trim());
+            }
+            if text.chars().count() >= max_chars {
+                break;
+            }
+        }
+        if text.is_empty() {
+            None
+        } else {
+            Some(text.chars().take(max_chars).collect())
+        }
+    }
 }
 
 /// Active displays as `(bounds, backing scale)` pairs, for the Retina/multi-

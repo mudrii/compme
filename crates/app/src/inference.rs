@@ -71,6 +71,7 @@ impl PreviousInputs {
 pub struct WorkerContext {
     pub previous_inputs: PreviousInputs,
     pub clipboard: Arc<Mutex<Option<String>>>,
+    pub screen: Arc<Mutex<Option<String>>>,
     pub max_chars: usize,
 }
 
@@ -86,7 +87,17 @@ impl WorkerContext {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        context::build_context_block(clip.as_deref(), &recent_refs, self.max_chars)
+        let screen = self
+            .screen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        context::build_context_block(
+            clip.as_deref(),
+            screen.as_deref(),
+            &recent_refs,
+            self.max_chars,
+        )
     }
 }
 
@@ -396,6 +407,33 @@ mod tests {
         assert!(
             outcome.candidates[0].contains("Clipboard: copied snippet"),
             "clipboard context present: {:?}",
+            outcome.candidates[0]
+        );
+        inference.shutdown();
+    }
+
+    #[test]
+    fn screen_context_is_prepended_when_set() {
+        // The screen-OCR cell (set by the run loop, A2 §16) surfaces as an
+        // "On screen:" line in the prompt the model sees.
+        let screen = Arc::new(Mutex::new(Some("visible window text".to_string())));
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext {
+                screen,
+                max_chars: 160,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        inference.submit(request("typing", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            outcome.candidates[0].contains("On screen: visible window text"),
+            "screen context present: {:?}",
             outcome.candidates[0]
         );
         inference.shutdown();

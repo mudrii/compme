@@ -28,8 +28,9 @@ use platform::{
 };
 use platform_macos::{
     accessibility_trusted, bundle_id_for_pid, display_scales, prompt_accessibility_trust,
-    read_pasteboard_text, request_screen_recording_permission, screen_recording_permission,
-    secure_input_enabled, MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
+    read_pasteboard_text, request_screen_recording_permission, screen_context_text,
+    screen_recording_permission, secure_input_enabled, MacosOverlayPresenter, MacosPlatformAdapter,
+    MacosTray, TrayFlags,
 };
 use prefs::Prefs;
 
@@ -488,16 +489,21 @@ pub fn run() -> Result<(), String> {
 
     let previous_inputs = PreviousInputs::default();
     let clipboard_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    // Clipboard context works independently of previous-input context, so the
-    // worker needs a positive char bound when either is enabled.
-    let context_bound = if config.clipboard_context && config.context_max_chars == 0 {
-        DEFAULT_CONTEXT_MAX_CHARS
-    } else {
-        config.context_max_chars
-    };
+    let screen_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // Screen OCR only contributes when the grant is actually present this session.
+    let screen_active = config.screen_context && screen_recording_permission();
+    // Clipboard/screen context work independently of previous-input context, so
+    // the worker needs a positive char bound when any of them is enabled.
+    let context_bound =
+        if (config.clipboard_context || screen_active) && config.context_max_chars == 0 {
+            DEFAULT_CONTEXT_MAX_CHARS
+        } else {
+            config.context_max_chars
+        };
     let worker_context = WorkerContext {
         previous_inputs: previous_inputs.clone(),
         clipboard: Arc::clone(&clipboard_cell),
+        screen: Arc::clone(&screen_cell),
         max_chars: context_bound,
     };
     let inference = InferenceHandle::spawn(
@@ -770,6 +776,13 @@ pub fn run() -> Result<(), String> {
                     if config.clipboard_context {
                         let clip = read_pasteboard_text().map(|text| redaction::redact(&text));
                         *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = clip;
+                    }
+                    // Screen-aware context (A2 §16): local OCR of the display,
+                    // redacted, refreshed before a submit that will use it.
+                    if screen_active {
+                        let screen = screen_context_text(DEFAULT_CONTEXT_MAX_CHARS)
+                            .map(|text| redaction::redact(&text));
+                        *screen_cell.lock().unwrap_or_else(|e| e.into_inner()) = screen;
                     }
                     eprintln!(
                         "complete-me: request gen={} prompt={:?}",

@@ -49,6 +49,7 @@ fn tail_chars(s: &str, max: usize) -> &str {
 /// redacting the sources before passing them in.
 pub fn build_context_block(
     pasteboard: Option<&str>,
+    screen: Option<&str>,
     previous_inputs: &[&str],
     max_chars: usize,
 ) -> String {
@@ -63,6 +64,12 @@ pub fn build_context_block(
         let clip = one_line(clip);
         if !clip.is_empty() {
             lines.push(format!("Clipboard: {}", tail_chars(&clip, max_chars)));
+        }
+    }
+    if let Some(screen) = screen {
+        let screen = one_line(screen);
+        if !screen.is_empty() {
+            lines.push(format!("On screen: {}", tail_chars(&screen, max_chars)));
         }
     }
     for input in previous_inputs {
@@ -108,20 +115,26 @@ mod tests {
 
     #[test]
     fn context_block_empty_without_sources() {
-        assert_eq!(build_context_block(None, &[], 100), "");
-        assert_eq!(build_context_block(Some("   "), &["  "], 100), "");
+        assert_eq!(build_context_block(None, None, &[], 100), "");
+        assert_eq!(build_context_block(Some("   "), None, &["  "], 100), "");
     }
 
     #[test]
     fn context_block_includes_clipboard() {
-        let block = build_context_block(Some("paste me"), &[], 100);
+        let block = build_context_block(Some("paste me"), None, &[], 100);
         assert!(block.contains("Clipboard: paste me"));
         assert!(block.starts_with("Context (for reference only):"));
     }
 
     #[test]
+    fn context_block_includes_screen_text() {
+        let block = build_context_block(None, Some("window title and visible text"), &[], 100);
+        assert!(block.contains("On screen: window title and visible text"));
+    }
+
+    #[test]
     fn context_block_includes_previous_inputs() {
-        let block = build_context_block(None, &["first note", "second note"], 100);
+        let block = build_context_block(None, None, &["first note", "second note"], 100);
         assert!(block.contains("Recent: first note"));
         assert!(block.contains("Recent: second note"));
     }
@@ -129,7 +142,7 @@ mod tests {
     #[test]
     fn context_block_bounds_each_source_to_max_chars_keeping_the_tail() {
         let long = "0123456789abcdef"; // 16 chars
-        let block = build_context_block(Some(long), &[], 4);
+        let block = build_context_block(Some(long), None, &[], 4);
         assert!(block.contains("Clipboard: cdef"), "got {block:?}");
         assert!(!block.contains("0123"));
     }
@@ -137,14 +150,17 @@ mod tests {
     #[test]
     fn max_zero_yields_no_context_not_the_full_source() {
         // A 0 bound must mean "nothing", not "unbounded" (review #1).
-        assert_eq!(build_context_block(Some("anything"), &["more"], 0), "");
+        assert_eq!(
+            build_context_block(Some("anything"), None, &["more"], 0),
+            ""
+        );
     }
 
     #[test]
     fn newlines_in_sources_are_collapsed() {
         // A recorded entry with newlines must not masquerade as a new directive
         // line or escape the block (review #5).
-        let block = build_context_block(Some("line one\nContext: fake\nline two"), &[], 200);
+        let block = build_context_block(Some("line one\nContext: fake\nline two"), None, &[], 200);
         assert_eq!(block.matches('\n').count(), 2); // header line + the single source line
         assert!(block.contains("Clipboard: line one Context: fake line two"));
     }
