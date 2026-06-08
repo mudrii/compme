@@ -1453,7 +1453,14 @@ pub fn screen_context_text(max_chars: usize) -> Option<String> {
 /// # Safety
 /// `image_ref` must be a valid `CGImageRef`.
 unsafe fn screen_ocr_with_image(image_ref: *mut c_void, max_chars: usize) -> Option<String> {
-    unsafe {
+    // VNRequestTextRecognitionLevelFast — fast recognition keeps this off-the-critical
+    // path call cheap; accurate-level full-display OCR would stall the run loop.
+    const RECOGNITION_LEVEL_FAST: isize = 1;
+    // Drain the autoreleased Vision/Foundation objects this pipeline creates; the
+    // run loop is a manual poll loop with no per-iteration pool, so without this
+    // they would accumulate for the process lifetime. The owned `String` result
+    // is copied out before the pool drains.
+    objc2::rc::autoreleasepool(|_| unsafe {
         let handler_alloc: *mut AnyObject = msg_send![class!(VNImageRequestHandler), alloc];
         let options: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
         let handler: *mut AnyObject =
@@ -1462,10 +1469,16 @@ unsafe fn screen_ocr_with_image(image_ref: *mut c_void, max_chars: usize) -> Opt
 
         let request: *mut AnyObject = msg_send![class!(VNRecognizeTextRequest), new];
         let request = Retained::from_raw(request)?;
+        let _: () = msg_send![&*request, setRecognitionLevel: RECOGNITION_LEVEL_FAST];
+        let _: () = msg_send![&*request, setUsesLanguageCorrection: false];
 
         let requests: *mut AnyObject = msg_send![class!(NSArray), arrayWithObject: &*request];
         let mut error: *mut AnyObject = ptr::null_mut();
-        let _ok: bool = msg_send![&*handler, performRequests: requests, error: &mut error];
+        let ok: bool = msg_send![&*handler, performRequests: requests, error: &mut error];
+        if !ok {
+            // Hard Vision failure → treat as no screen context (caller degrades).
+            return None;
+        }
 
         let results: *mut AnyObject = msg_send![&*request, results];
         if results.is_null() {
@@ -1502,7 +1515,7 @@ unsafe fn screen_ocr_with_image(image_ref: *mut c_void, max_chars: usize) -> Opt
         } else {
             Some(text.chars().take(max_chars).collect())
         }
-    }
+    })
 }
 
 /// Active displays as `(bounds, backing scale)` pairs, for the Retina/multi-
