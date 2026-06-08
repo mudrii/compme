@@ -4749,6 +4749,62 @@ mod tests {
     }
 
     #[test]
+    fn caret_field_tracker_reuses_field_on_identical_element_id() {
+        // Same pid + same element_id (same pointer) takes the element-id fast path
+        // and returns the cached field without minting a new one.
+        let mut tracker = CaretFieldTracker::new();
+        let id = AxElementIdentity::new(
+            "ax:0x111",
+            Some(42),
+            Some("First Text View".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        let first = tracker.field_for_event(42, &id);
+        let again = tracker.field_for_event(42, &id);
+        assert_eq!(again, first);
+    }
+
+    #[test]
+    fn caret_field_tracker_mints_new_field_when_identity_diverges() {
+        // Different pointer AND different semantic identity → a genuinely new
+        // field (not the cached one).
+        let mut tracker = CaretFieldTracker::new();
+        let first_id = AxElementIdentity::new(
+            "ax:0x111",
+            Some(42),
+            Some("First Text View".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        let other_id = AxElementIdentity::new(
+            "ax:0x999",
+            Some(42),
+            Some("Search Field".into()),
+            Some("AXTextField".into()),
+            None,
+        );
+        let first = tracker.field_for_event(42, &first_id);
+        let other = tracker.field_for_event(42, &other_id);
+        assert_ne!(other, first);
+    }
+
+    #[test]
+    fn caret_field_tracker_uses_fallback_pid_when_identity_has_none() {
+        // An identity with no owner pid falls back to the event's pid.
+        let mut tracker = CaretFieldTracker::new();
+        let id = AxElementIdentity::new(
+            "ax:0x111",
+            None,
+            Some("First Text View".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        let field = tracker.field_for_event(7, &id);
+        assert_eq!(field.pid, Some(7));
+    }
+
+    #[test]
     fn caret_field_tracker_reuses_semantic_identity_when_pointer_changes() {
         let mut tracker = CaretFieldTracker::new();
         let first = AxElementIdentity::new(
