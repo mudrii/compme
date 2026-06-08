@@ -2043,7 +2043,7 @@ impl Drop for SafetyPoller {
     fn drop(&mut self) {
         let _ = self.stop_tx.take().map(|stop_tx| stop_tx.send(()));
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            join_unless_self(handle);
         }
     }
 }
@@ -2052,9 +2052,25 @@ impl Drop for RebindPoller {
     fn drop(&mut self) {
         let _ = self.stop_tx.take().map(|stop_tx| stop_tx.send(()));
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            join_unless_self(handle);
         }
     }
+}
+
+/// Join a poll thread, unless we are *on* that thread — a self-join makes
+/// `pthread_join` return `EDEADLK` ("Resource deadlock avoided") and
+/// `JoinHandle::join` panic. A reference cycle can land the last owner of a
+/// poller on its own poll thread at teardown: the `ObserverBinding` owns the
+/// `SafetyPoller`, whose poll-thread closure holds an `Arc` back into the binding
+/// through the observer `dispatch`, so when that `Arc` is the final one, dropping
+/// the binding runs `SafetyPoller::drop` on the caret-poll thread itself. Detach
+/// in that case — the thread is already exiting (stop signal sent / channels
+/// dropping), so its captured state is released either way.
+fn join_unless_self(handle: JoinHandle<()>) {
+    if handle.thread().id() == thread::current().id() {
+        return; // self-join would deadlock; detach instead.
+    }
+    let _ = handle.join();
 }
 
 struct WorkerObserverResource {
