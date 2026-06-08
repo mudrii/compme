@@ -6,6 +6,7 @@ members = [
     "crates/ranker",
     "crates/engine_core",
     "crates/personalization",
+    "crates/redaction",
     "crates/model_client",
     "crates/platform_macos",
     "crates/engine",

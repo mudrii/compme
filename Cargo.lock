@@ -603,6 +603,13 @@ name = "ranker"
 version = "0.1.0"
 
 [[package]]
+name = "redaction"
+version = "0.1.0"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
