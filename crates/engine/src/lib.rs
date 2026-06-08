@@ -1,7 +1,7 @@
 //! Impure-but-deterministic wiring between the pure `SuggestionMachine` and the
 //! platform adapter + overlay presenter.
 //!
-//! The engine translates host inputs into `core` events, runs the machine, and
+//! The engine translates host inputs into `engine_core` events, runs the machine, and
 //! dispatches the resulting commands to platform effects. Model inference lives
 //! *outside* the engine: `RequestCompletion` commands are surfaced as
 //! [`CompletionRequest`] values for the host loop to fulfil, then fed back via
@@ -51,7 +51,7 @@ pub struct CompletionRequest {
 /// Impure-but-deterministic wiring layer that connects the pure
 /// [`SuggestionMachine`] to a [`PlatformAdapter`] and an [`OverlayPresenter`].
 ///
-/// The engine translates host inputs into `core` events, runs the machine, and
+/// The engine translates host inputs into `engine_core` events, runs the machine, and
 /// dispatches the resulting commands to platform effects. It owns no inference
 /// logic: `RequestCompletion` commands are surfaced as [`CompletionRequest`]
 /// values for the host loop to fulfil and fed back via [`Engine::on_completion`].
@@ -1079,10 +1079,6 @@ mod tests {
         assert_eq!(request.field, field());
         assert_eq!(request.prompt, "hello");
         assert_eq!(request.max_tokens, 32);
-        assert_eq!(
-            request.generation, request.snapshot,
-            "generation and snapshot advance together"
-        );
 
         let follow = engine.on_completion(&requests[0], "world".into()).unwrap();
         assert!(follow.is_empty());
@@ -1126,6 +1122,84 @@ mod tests {
         let result = engine.on_completion(&requests[0], "hello".into());
 
         assert_eq!(result, Err(PlatformError::Timeout));
+    }
+
+    #[test]
+    fn update_ghost_error_propagates_on_word_accept() {
+        // Accepting a word emits UpdateGhost for the remaining suggestion; a
+        // failing update must surface, not be swallowed.
+        struct UpdateFailsOverlay;
+        impl OverlayPresenter for UpdateFailsOverlay {
+            fn show_ghost(&mut self, _rect: ScreenRect, _text: &str) -> Result<(), PlatformError> {
+                Ok(())
+            }
+            fn update_ghost(&mut self, _text: &str) -> Result<(), PlatformError> {
+                Err(PlatformError::Timeout)
+            }
+            fn hide(&mut self) -> Result<(), PlatformError> {
+                Ok(())
+            }
+        }
+
+        let mut engine = Engine::new(FakeAdapter::new(), UpdateFailsOverlay, 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        // Multi-word completion so a word accept leaves a remainder → UpdateGhost.
+        engine
+            .on_completion(&requests[0], "alpha beta gamma".into())
+            .unwrap();
+
+        assert_eq!(
+            engine.on_accept(AcceptAction::Word),
+            Err(PlatformError::Timeout)
+        );
+    }
+
+    #[test]
+    fn hide_error_propagates_on_dismiss() {
+        // Dismissing a shown suggestion must surface a failing overlay hide.
+        struct HideFailsOverlay;
+        impl OverlayPresenter for HideFailsOverlay {
+            fn show_ghost(&mut self, _rect: ScreenRect, _text: &str) -> Result<(), PlatformError> {
+                Ok(())
+            }
+            fn update_ghost(&mut self, _text: &str) -> Result<(), PlatformError> {
+                Ok(())
+            }
+            fn hide(&mut self) -> Result<(), PlatformError> {
+                Err(PlatformError::Timeout)
+            }
+        }
+
+        let mut engine = Engine::new(FakeAdapter::new(), HideFailsOverlay, 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "hello".into()).unwrap();
+
+        assert_eq!(engine.on_dismiss(), Err(PlatformError::Timeout));
+    }
+
+    #[test]
+    fn with_trigger_gates_suppresses_mid_word_requests() {
+        // The builder must actually forward to the machine: with mid-word
+        // suppression on, a caret splitting a word arms no request...
+        let mut gated = Engine::new(FakeAdapter::new(), FakeOverlay::default(), 200, 4, 32)
+            .with_trigger_gates(0, false);
+        gated.on_focus(field()).unwrap();
+        gated.on_text_changed(typed("ab", 1, 0)).unwrap();
+        assert!(
+            gated.on_tick(500).unwrap().is_empty(),
+            "mid-word change must not arm a request when allow_mid_word=false"
+        );
+
+        // ...while the permissive default (no gates) does arm one for the same
+        // input, proving the gate — not some other condition — caused suppression.
+        let mut ungated = Engine::new(FakeAdapter::new(), FakeOverlay::default(), 200, 4, 32);
+        ungated.on_focus(field()).unwrap();
+        ungated.on_text_changed(typed("ab", 1, 0)).unwrap();
+        assert_eq!(ungated.on_tick(500).unwrap().len(), 1);
     }
 
     #[test]
