@@ -203,6 +203,34 @@ fn offer_all(latest: &mut LatestRequest, requests: Vec<CompletionRequest>) {
     }
 }
 
+/// The engine-state transition implied by a change in global Secure Input,
+/// derived purely so the run loop's edge handling is unit-testable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SecureEdge {
+    /// Secure Input just turned on — block the engine and drop queued work.
+    Enter,
+    /// Secure Input just cleared (and Accessibility is trusted) — rehydrate the
+    /// focused field's capabilities so the machine unblocks without a new focus.
+    ClearRehydrate,
+    /// No secure transition this tick.
+    None,
+}
+
+fn secure_edge(prev_secure: bool, secure: bool, trusted: bool) -> SecureEdge {
+    match (prev_secure, secure) {
+        (false, true) => SecureEdge::Enter,
+        (true, false) if trusted => SecureEdge::ClearRehydrate,
+        // Cleared-but-untrusted stays blocked by Permission until trust returns.
+        _ => SecureEdge::None,
+    }
+}
+
+/// Whether disabling (enabled true→false) should dismiss the suggestion and drop
+/// queued requests. Pure so the run loop's enable-edge handling is testable.
+fn should_dismiss_on_disable(prev_enabled: bool, enabled: bool) -> bool {
+    prev_enabled && !enabled
+}
+
 fn secure_input_caps() -> Capabilities {
     Capabilities {
         readable_text: false,
@@ -436,26 +464,30 @@ pub fn run() -> Result<(), String> {
         // Secure input is a true engine-state transition, not only a UI state:
         // clear queued work and invalidate the machine so held requests cannot
         // submit after the secure block clears.
-        if !prev_secure && secure {
-            latest.clear();
-            offer_all(
-                &mut latest,
-                log_err(
-                    "on_secure_state",
-                    engine.on_secure_state(secure_input_caps()),
-                ),
-            );
-        } else if prev_secure && !secure && trusted {
-            // Rehydrate capabilities for the current field after the secure
-            // global block clears; otherwise the machine would stay blocked
-            // until a fresh focus event arrives.
-            if let Some(field) = current_field.clone() {
-                tracker.reset();
-                offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
+        match secure_edge(prev_secure, secure, trusted) {
+            SecureEdge::Enter => {
+                latest.clear();
+                offer_all(
+                    &mut latest,
+                    log_err(
+                        "on_secure_state",
+                        engine.on_secure_state(secure_input_caps()),
+                    ),
+                );
             }
+            SecureEdge::ClearRehydrate => {
+                // Rehydrate capabilities for the current field after the secure
+                // global block clears; otherwise the machine would stay blocked
+                // until a fresh focus event arrives.
+                if let Some(field) = current_field.clone() {
+                    tracker.reset();
+                    offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
+                }
+            }
+            SecureEdge::None => {}
         }
         // Disabling is user policy: dismiss visible UI and drop queued requests.
-        if prev_enabled && !enabled {
+        if should_dismiss_on_disable(prev_enabled, enabled) {
             latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
@@ -720,6 +752,64 @@ mod tests {
             w: 1.0,
             h: 14.0,
         })
+    }
+
+    fn req(generation: u64) -> CompletionRequest {
+        CompletionRequest {
+            generation,
+            field: host_field("f"),
+            snapshot: generation,
+            prompt: "p".into(),
+            max_tokens: 8,
+        }
+    }
+
+    #[test]
+    fn log_err_passes_through_ok_requests() {
+        let out = log_err("x", Ok(vec![req(1), req(2)]));
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn log_err_swallows_errors_into_empty_vec() {
+        // The "one failed effect never kills the loop" guarantee: an Err becomes
+        // an empty request list (logged), not a propagated failure.
+        let out = log_err("x", Err(PlatformError::Timeout));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn offer_all_keeps_newest_request() {
+        let mut latest = LatestRequest::new();
+        offer_all(&mut latest, vec![req(1), req(3), req(2)]);
+        assert_eq!(latest.take().unwrap().generation, 3);
+    }
+
+    #[test]
+    fn secure_edge_detects_enter() {
+        assert_eq!(secure_edge(false, true, true), SecureEdge::Enter);
+        assert_eq!(secure_edge(false, true, false), SecureEdge::Enter);
+    }
+
+    #[test]
+    fn secure_edge_clears_only_when_trusted() {
+        assert_eq!(secure_edge(true, false, true), SecureEdge::ClearRehydrate);
+        // Cleared but Accessibility not (yet) trusted → stay blocked, no rehydrate.
+        assert_eq!(secure_edge(true, false, false), SecureEdge::None);
+    }
+
+    #[test]
+    fn secure_edge_none_when_unchanged() {
+        assert_eq!(secure_edge(false, false, true), SecureEdge::None);
+        assert_eq!(secure_edge(true, true, true), SecureEdge::None);
+    }
+
+    #[test]
+    fn dismiss_only_on_enabled_to_disabled_edge() {
+        assert!(should_dismiss_on_disable(true, false));
+        assert!(!should_dismiss_on_disable(false, false)); // already disabled
+        assert!(!should_dismiss_on_disable(false, true)); // re-enabling
+        assert!(!should_dismiss_on_disable(true, true)); // still enabled
     }
 
     #[test]
