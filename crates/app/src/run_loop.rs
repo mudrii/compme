@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use engine::{CompletionRequest, Engine, TriggerPolicy};
+use personalization::{PersonalizationProfile, SenderIdentity, Strength};
 use platform::{
     AcceptAction, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode, OverlayPlacement,
     PlatformAdapter, PlatformError, ScreenRect, SecurityState, TapControl, Toolkit,
@@ -29,6 +30,7 @@ use platform_macos::{
     accessibility_trusted, display_scales, prompt_accessibility_trust, secure_input_enabled,
     MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
 };
+use prefs::Prefs;
 
 use crate::adapter::SharedAdapter;
 use crate::config::{self, parse_clamped};
@@ -122,6 +124,8 @@ struct Config {
     min_context_chars: usize,
     allow_mid_word: bool,
     diag_coords: bool,
+    personalization: PersonalizationProfile,
+    prefs: Prefs,
 }
 
 impl Config {
@@ -172,7 +176,49 @@ impl Config {
             // `COMPLETE_ME_MIDLINE=1` opts into them.
             allow_mid_word: lookup("COMPLETE_ME_MIDLINE").is_some_and(|v| v == "1" || v == "true"),
             diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
+            personalization: build_personalization(&lookup),
+            prefs: build_prefs(&lookup),
         }
+    }
+}
+
+/// Build the personalization profile from config (A2 §6). Per-app/per-domain
+/// instruction maps are an A3 settings concern; A2 wires the global instructions,
+/// strength stop, and sender identity, which are enough to steer completions.
+fn build_personalization(lookup: &impl Fn(&str) -> Option<String>) -> PersonalizationProfile {
+    let mut profile = PersonalizationProfile {
+        global_instructions: lookup("COMPLETE_ME_INSTRUCTIONS").unwrap_or_default(),
+        sender: SenderIdentity {
+            name: lookup("COMPLETE_ME_SENDER_NAME").unwrap_or_default(),
+            email: lookup("COMPLETE_ME_SENDER_EMAIL").unwrap_or_default(),
+        },
+        ..Default::default()
+    };
+    if let Some(stop) = lookup("COMPLETE_ME_STRENGTH").and_then(|raw| raw.parse::<u8>().ok()) {
+        profile.strength = Strength::from_stop(stop);
+    }
+    profile
+}
+
+/// Build suggestion-gating preferences from config (A2 §8). A comma-separated
+/// app-exclude list and a default-enabled toggle; finer per-app/domain overrides
+/// are an A3 settings concern.
+fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
+    let excluded_apps = lookup("COMPLETE_ME_EXCLUDED_APPS")
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    Prefs {
+        default_enabled: lookup("COMPLETE_ME_DEFAULT_ENABLED")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(true),
+        excluded_apps,
+        ..Default::default()
     }
 }
 
@@ -336,7 +382,8 @@ pub fn run() -> Result<(), String> {
         config.stub_completion.clone(),
         config.model_path.clone(),
     ))?;
-    let inference = InferenceHandle::spawn(model, config.prompt_mode)?;
+    let inference =
+        InferenceHandle::spawn(model, config.prompt_mode, config.personalization.clone())?;
 
     // Shared state for the tray; flipped by menu actions, observed by this loop.
     let flags = TrayFlags {
@@ -529,11 +576,18 @@ pub fn run() -> Result<(), String> {
         // (Ready ⇒ trusted + not secure + warm + enabled).
         if status.suggestions_allowed() {
             if let Some(request) = latest.take() {
-                eprintln!(
-                    "complete-me: request gen={} prompt={:?}",
-                    request.generation, request.prompt
-                );
-                inference.submit(request);
+                // Per-app/domain gating + pause/snooze (A2 §8). Domain is None
+                // until browser-domain extraction lands.
+                if config
+                    .prefs
+                    .should_suggest(Some(&request.field.app), None, now_ms)
+                {
+                    eprintln!(
+                        "complete-me: request gen={} prompt={:?}",
+                        request.generation, request.prompt
+                    );
+                    inference.submit(request);
+                }
             }
         }
 
@@ -587,6 +641,42 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         move |key: &str| map.get(key).cloned()
+    }
+
+    #[test]
+    fn personalization_built_from_config_keys() {
+        let profile = build_personalization(&lookup(&[
+            ("COMPLETE_ME_INSTRUCTIONS", "Be terse."),
+            ("COMPLETE_ME_STRENGTH", "5"),
+            ("COMPLETE_ME_SENDER_NAME", "Ada"),
+        ]));
+        assert_eq!(profile.strength, Strength::Max);
+        let preamble = profile.build_preamble(Some("com.apple.TextEdit"), None);
+        assert!(preamble.contains("Be terse."));
+        assert!(preamble.contains("Ada"));
+    }
+
+    #[test]
+    fn personalization_defaults_to_no_steer_when_keys_absent() {
+        let profile = build_personalization(&lookup(&[]));
+        assert_eq!(profile.build_preamble(Some("com.apple.TextEdit"), None), "");
+    }
+
+    #[test]
+    fn prefs_built_from_excluded_apps_list() {
+        let prefs = build_prefs(&lookup(&[(
+            "COMPLETE_ME_EXCLUDED_APPS",
+            "com.apple.Finder, com.tinyspeck.slackmacgap",
+        )]));
+        assert!(!prefs.should_suggest(Some("com.apple.Finder"), None, 0));
+        assert!(!prefs.should_suggest(Some("com.tinyspeck.slackmacgap"), None, 0));
+        assert!(prefs.should_suggest(Some("com.apple.TextEdit"), None, 0));
+    }
+
+    #[test]
+    fn prefs_default_enabled_toggle() {
+        assert!(build_prefs(&lookup(&[])).default_enabled);
+        assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "0")])).default_enabled);
     }
 
     #[test]

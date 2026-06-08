@@ -28,8 +28,10 @@ dependencies = [
  "engine",
  "libc",
  "model_client",
+ "personalization",
  "platform",
  "platform_macos",
+ "prefs",
 ]
 
 [[package]]

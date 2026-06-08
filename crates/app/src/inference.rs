@@ -14,6 +14,7 @@ use std::thread::{self, JoinHandle};
 
 use engine::CompletionRequest;
 use model_client::LocalModel;
+use personalization::PersonalizationProfile;
 
 use crate::model_select::{shape_prompt, PromptMode};
 
@@ -40,6 +41,7 @@ fn recv_latest(requests: &Receiver<CompletionRequest>) -> Option<CompletionReque
 fn run(
     model: Box<dyn LocalModel>,
     prompt_mode: PromptMode,
+    profile: PersonalizationProfile,
     requests: Receiver<CompletionRequest>,
     outcomes: Sender<CompletionOutcome>,
     ready: Arc<AtomicBool>,
@@ -52,9 +54,11 @@ fn run(
     eprintln!("complete-me: state=ready");
 
     while let Some(request) = recv_latest(&requests) {
-        // Shape the engine's raw left-context prefix per the configured strategy
-        // (terse continuation prompt by default — the A1a development default).
-        let prompt = shape_prompt(prompt_mode, &request.prompt);
+        // Personalization steering for the focused app (domain support is a later
+        // browser feature; None for now), then shape the engine's raw left-context
+        // prefix per the configured strategy (terse continuation by default).
+        let preamble = profile.build_preamble(Some(&request.field.app), None);
+        let prompt = shape_prompt(prompt_mode, &preamble, &request.prompt);
         match model.complete(&prompt, request.max_tokens) {
             Ok(text) => {
                 // A dropped receiver means the main loop is shutting down.
@@ -83,7 +87,11 @@ impl InferenceHandle {
     /// Returns `Err` if the OS refuses the thread (resource limits); the caller
     /// propagates it rather than panicking, matching the crate's no-panic-in-
     /// runtime-paths convention.
-    pub fn spawn(model: Box<dyn LocalModel>, prompt_mode: PromptMode) -> Result<Self, String> {
+    pub fn spawn(
+        model: Box<dyn LocalModel>,
+        prompt_mode: PromptMode,
+        profile: PersonalizationProfile,
+    ) -> Result<Self, String> {
         let (request_tx, request_rx) = channel::<CompletionRequest>();
         let (outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
         let ready = Arc::new(AtomicBool::new(false));
@@ -91,7 +99,16 @@ impl InferenceHandle {
 
         let handle = thread::Builder::new()
             .name("complete-me-inference".into())
-            .spawn(move || run(model, prompt_mode, request_rx, outcome_tx, ready_for_thread))
+            .spawn(move || {
+                run(
+                    model,
+                    prompt_mode,
+                    profile,
+                    request_rx,
+                    outcome_tx,
+                    ready_for_thread,
+                )
+            })
             .map_err(|err| format!("spawn inference thread: {err}"))?;
 
         Ok(Self {
@@ -192,8 +209,12 @@ mod tests {
 
     #[test]
     fn completes_a_request_with_the_model() {
-        let inference =
-            InferenceHandle::spawn(Box::new(StubModel::new(" world")), PromptMode::Terse).unwrap();
+        let inference = InferenceHandle::spawn(
+            Box::new(StubModel::new(" world")),
+            PromptMode::Terse,
+            PersonalizationProfile::default(),
+        )
+        .unwrap();
         assert!(inference.submit(request("hello", 1)));
 
         let outcome = inference.recv_outcome().expect("outcome");
@@ -205,7 +226,12 @@ mod tests {
 
     #[test]
     fn terse_mode_wraps_the_prompt_before_the_model_sees_it() {
-        let inference = InferenceHandle::spawn(Box::new(EchoModel), PromptMode::Terse).unwrap();
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Terse,
+            PersonalizationProfile::default(),
+        )
+        .unwrap();
         inference.submit(request("Dear team", 1));
         let outcome = inference.recv_outcome().expect("outcome");
         // Terse mode wraps the prefix before the model sees it: the echoed text
@@ -218,7 +244,12 @@ mod tests {
 
     #[test]
     fn raw_mode_passes_the_prompt_through_unchanged() {
-        let inference = InferenceHandle::spawn(Box::new(EchoModel), PromptMode::Raw).unwrap();
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+        )
+        .unwrap();
         inference.submit(request("Dear team", 1));
         let outcome = inference.recv_outcome().expect("outcome");
         assert_eq!(outcome.text, "Dear team");
@@ -226,9 +257,35 @@ mod tests {
     }
 
     #[test]
-    fn ready_flips_after_warm_up() {
+    fn personalization_preamble_is_prepended_before_the_model_sees_the_prompt() {
+        // A profile with instructions steers the prompt: the model sees the
+        // preamble ahead of the raw prefix (A2 §6 "suggestions steered by
+        // custom instructions").
+        let profile = PersonalizationProfile {
+            global_instructions: "Write in pirate dialect.".into(),
+            ..Default::default()
+        };
         let inference =
-            InferenceHandle::spawn(Box::new(StubModel::new("x")), PromptMode::Terse).unwrap();
+            InferenceHandle::spawn(Box::new(EchoModel), PromptMode::Raw, profile).unwrap();
+        inference.submit(request("Ahoy", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            outcome.text.contains("Write in pirate dialect."),
+            "steering preamble present: {:?}",
+            outcome.text
+        );
+        assert!(outcome.text.trim_end().ends_with("Ahoy"));
+        inference.shutdown();
+    }
+
+    #[test]
+    fn ready_flips_after_warm_up() {
+        let inference = InferenceHandle::spawn(
+            Box::new(StubModel::new("x")),
+            PromptMode::Terse,
+            PersonalizationProfile::default(),
+        )
+        .unwrap();
         // Submit + receive guarantees the worker has passed warm-up.
         inference.submit(request("p", 1));
         let _ = inference.recv_outcome();
@@ -239,7 +296,12 @@ mod tests {
     #[test]
     fn warm_up_failure_is_non_fatal() {
         // A failing warm-up must not block readiness or completions.
-        let inference = InferenceHandle::spawn(Box::new(WarmUpFailModel), PromptMode::Raw).unwrap();
+        let inference = InferenceHandle::spawn(
+            Box::new(WarmUpFailModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+        )
+        .unwrap();
         inference.submit(request("p", 1));
         let outcome = inference
             .recv_outcome()
@@ -253,8 +315,12 @@ mod tests {
     fn complete_error_is_non_fatal_worker_keeps_serving() {
         // The worker hits a complete() error on the "bad" request, then must
         // still serve the later "good" request.
-        let inference =
-            InferenceHandle::spawn(Box::new(ConditionalModel), PromptMode::Raw).unwrap();
+        let inference = InferenceHandle::spawn(
+            Box::new(ConditionalModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+        )
+        .unwrap();
         inference.submit(request("bad", 1));
         inference.submit(request("good", 2));
         let outcome = inference
@@ -266,8 +332,12 @@ mod tests {
 
     #[test]
     fn shutdown_without_work_joins_cleanly() {
-        let inference =
-            InferenceHandle::spawn(Box::new(StubModel::new("x")), PromptMode::Terse).unwrap();
+        let inference = InferenceHandle::spawn(
+            Box::new(StubModel::new("x")),
+            PromptMode::Terse,
+            PersonalizationProfile::default(),
+        )
+        .unwrap();
         inference.shutdown(); // must not hang
     }
 

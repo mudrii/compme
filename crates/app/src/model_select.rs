@@ -57,11 +57,18 @@ pub fn resolve_prompt_mode(raw: Option<String>) -> PromptMode {
     }
 }
 
-/// Apply the prompt mode to the engine's raw left-context prefix.
-pub fn shape_prompt(mode: PromptMode, prefix: &str) -> String {
-    match mode {
+/// Apply the prompt mode to the engine's raw left-context prefix, prepending the
+/// personalization steering `preamble` (empty when personalization is off or has
+/// nothing to steer with — see `personalization::PersonalizationProfile`).
+pub fn shape_prompt(mode: PromptMode, preamble: &str, prefix: &str) -> String {
+    let body = match mode {
         PromptMode::Terse => model_client::terse_continuation_prompt(prefix),
         PromptMode::Raw => prefix.to_string(),
+    };
+    if preamble.is_empty() {
+        body
+    } else {
+        format!("{preamble}{body}")
     }
 }
 
@@ -140,14 +147,27 @@ mod tests {
 
     #[test]
     fn terse_mode_wraps_prefix_raw_mode_passes_through() {
-        let raw = shape_prompt(PromptMode::Raw, "Dear team");
+        let raw = shape_prompt(PromptMode::Raw, "", "Dear team");
         assert_eq!(raw, "Dear team");
 
-        let terse = shape_prompt(PromptMode::Terse, "Dear team");
+        let terse = shape_prompt(PromptMode::Terse, "", "Dear team");
         // Behavioural check: terse wraps the prefix (contains it, differs from
         // raw) without pinning the template's exact prose — that literal lives in
         // its owner, `model_client::terse_continuation_prompt`'s own test.
         assert!(terse.contains("Dear team"));
         assert_ne!(terse, "Dear team");
+    }
+
+    #[test]
+    fn shape_prompt_prepends_a_nonempty_preamble() {
+        let out = shape_prompt(PromptMode::Raw, "STEER\n", "hello");
+        assert_eq!(out, "STEER\nhello");
+    }
+
+    #[test]
+    fn shape_prompt_preamble_precedes_the_terse_body() {
+        let out = shape_prompt(PromptMode::Terse, "STEER\n", "hello");
+        assert!(out.starts_with("STEER\n"));
+        assert!(out.contains("hello"));
     }
 }

@@ -12,5 +12,7 @@ platform = { path = "../platform" }
 platform_macos = { path = "../platform_macos" }
 engine = { path = "../engine" }
 model_client = { path = "../model_client" }
+personalization = { path = "../personalization" }
+prefs = { path = "../prefs" }
 core-foundation = "=0.10.1"
 libc = "0.2"
