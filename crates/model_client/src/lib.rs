@@ -588,7 +588,10 @@ mod tests {
         // Identical prompt: must leave at least one token to re-decode.
         let plan = plan_decode(&[1, 2, 3], &[1, 2, 3], 24, 2048);
         assert_eq!(plan.prompt_len, 3);
-        assert!(plan.reuse < plan.prompt_len, "reuse must leave >=1 to decode");
+        assert!(
+            plan.reuse < plan.prompt_len,
+            "reuse must leave >=1 to decode"
+        );
         assert_eq!(plan.reuse, 2);
     }
 

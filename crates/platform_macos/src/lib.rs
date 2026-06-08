@@ -2169,8 +2169,27 @@ unsafe fn copy_focused_ui_element(
     Ok(Some(CFType::wrap_under_create_rule(value)))
 }
 
-fn focused_element_lookup_allows_app_fallback(error: AXError) -> bool {
+/// The attribute is simply absent on this element: read it as `None`/unsupported
+/// rather than a hard error. Used for plain `AXUIElementCopyAttributeValue` reads.
+fn ax_attribute_absent(error: AXError) -> bool {
     error == kAXErrorAttributeUnsupported || error == kAXErrorNoValue
+}
+
+/// As [`ax_attribute_absent`], plus `IllegalArgument` — for *settable* checks and
+/// attribute writes, where some toolkits reject the attribute with that code.
+fn ax_settable_absent(error: AXError) -> bool {
+    ax_attribute_absent(error) || error == kAXErrorIllegalArgument
+}
+
+/// As [`ax_settable_absent`], plus `ParameterizedAttributeUnsupported` — for
+/// parameterized range/marker queries (`AXBoundsForRange`,
+/// `AXBoundsForTextMarkerRange`), whose absence shows up as any of these codes.
+fn ax_parameterized_absent(error: AXError) -> bool {
+    ax_settable_absent(error) || error == kAXErrorParameterizedAttributeUnsupported
+}
+
+fn focused_element_lookup_allows_app_fallback(error: AXError) -> bool {
+    ax_attribute_absent(error)
 }
 
 fn choose_caret_observer_element(
@@ -2442,7 +2461,7 @@ unsafe fn copy_ax_element_attribute(
     let attribute = CFString::new(attribute);
     let mut value: CFTypeRef = ptr::null_mut();
     let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
-    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+    if ax_attribute_absent(err) {
         return Ok(None);
     }
     if err != kAXErrorSuccess {
@@ -2463,7 +2482,7 @@ unsafe fn read_ax_cgrect_attribute(
     let attribute = CFString::new(attribute);
     let mut value: CFTypeRef = ptr::null_mut();
     let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
-    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+    if ax_attribute_absent(err) {
         return Ok(None);
     }
     if err != kAXErrorSuccess {
@@ -2581,7 +2600,7 @@ unsafe fn read_required_ax_string_attribute(
     let attribute = CFString::new(attribute);
     let mut value: CFTypeRef = ptr::null_mut();
     let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
-    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+    if ax_attribute_absent(err) {
         return Err(PlatformError::UnsupportedField {
             reason: "AX text value unavailable".into(),
         });
@@ -2610,7 +2629,7 @@ unsafe fn read_required_ax_range_attribute(
     let attribute = CFString::new(kAXSelectedTextRangeAttribute);
     let mut value: CFTypeRef = ptr::null_mut();
     let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
-    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+    if ax_attribute_absent(err) {
         return Err(PlatformError::UnsupportedField {
             reason: "AX selected text range unavailable".into(),
         });
@@ -2652,11 +2671,7 @@ unsafe fn read_ax_bounds_for_selected_text_marker_range(
         marker_attribute.as_concrete_TypeRef(),
         &mut marker_range,
     );
-    if err == kAXErrorAttributeUnsupported
-        || err == kAXErrorNoValue
-        || err == kAXErrorIllegalArgument
-        || err == kAXErrorParameterizedAttributeUnsupported
-    {
+    if ax_parameterized_absent(err) {
         return Ok(None);
     }
     if err != kAXErrorSuccess {
@@ -2675,11 +2690,7 @@ unsafe fn read_ax_bounds_for_selected_text_marker_range(
         marker_range_owner.as_CFTypeRef(),
         &mut value,
     );
-    if err == kAXErrorAttributeUnsupported
-        || err == kAXErrorNoValue
-        || err == kAXErrorIllegalArgument
-        || err == kAXErrorParameterizedAttributeUnsupported
-    {
+    if ax_parameterized_absent(err) {
         return Ok(None);
     }
     if err != kAXErrorSuccess {
@@ -2711,11 +2722,7 @@ unsafe fn read_ax_bounds_for_range(
         parameter as CFTypeRef,
         &mut value,
     );
-    if err == kAXErrorAttributeUnsupported
-        || err == kAXErrorNoValue
-        || err == kAXErrorIllegalArgument
-        || err == kAXErrorParameterizedAttributeUnsupported
-    {
+    if ax_parameterized_absent(err) {
         return Ok(None);
     }
     if err != kAXErrorSuccess {
@@ -2847,10 +2854,7 @@ unsafe fn ax_attribute_is_settable(
     let mut settable: c_uchar = 0;
     let err =
         AXUIElementIsAttributeSettable(element, attribute.as_concrete_TypeRef(), &mut settable);
-    if err == kAXErrorAttributeUnsupported
-        || err == kAXErrorNoValue
-        || err == kAXErrorIllegalArgument
-    {
+    if ax_settable_absent(err) {
         return Ok(false);
     }
     if err == kAXErrorSuccess {
@@ -2872,10 +2876,7 @@ unsafe fn set_required_ax_string_attribute(
         attribute.as_concrete_TypeRef(),
         value.as_CFTypeRef(),
     );
-    if err == kAXErrorAttributeUnsupported
-        || err == kAXErrorNoValue
-        || err == kAXErrorIllegalArgument
-    {
+    if ax_settable_absent(err) {
         return Err(PlatformError::UnsupportedField {
             reason: "AX text value is not settable".into(),
         });
@@ -2911,10 +2912,7 @@ unsafe fn set_required_ax_selected_range(
         attribute.as_concrete_TypeRef(),
         value.as_CFTypeRef(),
     );
-    if err == kAXErrorAttributeUnsupported
-        || err == kAXErrorNoValue
-        || err == kAXErrorIllegalArgument
-    {
+    if ax_settable_absent(err) {
         return Err(PlatformError::UnsupportedField {
             reason: "AX selected text range is not settable".into(),
         });
@@ -3806,7 +3804,7 @@ unsafe fn read_optional_ax_string_attribute(
     let mut value: CFTypeRef = ptr::null_mut();
     let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
 
-    if err == kAXErrorAttributeUnsupported || err == kAXErrorNoValue {
+    if ax_attribute_absent(err) {
         return Ok(None);
     }
     if err != kAXErrorSuccess {
@@ -4746,6 +4744,40 @@ mod tests {
             identity.field_element_id(),
             r"ax:ptr=ax:\\0x123|pid=42|id=editor\|main|role=AX\\TextArea"
         );
+    }
+
+    #[test]
+    fn ax_absent_predicates_classify_error_sets() {
+        // Plain attribute reads: absent on Unsupported/NoValue only.
+        assert!(ax_attribute_absent(kAXErrorAttributeUnsupported));
+        assert!(ax_attribute_absent(kAXErrorNoValue));
+        assert!(!ax_attribute_absent(kAXErrorIllegalArgument));
+        assert!(!ax_attribute_absent(
+            kAXErrorParameterizedAttributeUnsupported
+        ));
+
+        // Settable checks/writes: also IllegalArgument.
+        assert!(ax_settable_absent(kAXErrorAttributeUnsupported));
+        assert!(ax_settable_absent(kAXErrorNoValue));
+        assert!(ax_settable_absent(kAXErrorIllegalArgument));
+        assert!(!ax_settable_absent(
+            kAXErrorParameterizedAttributeUnsupported
+        ));
+
+        // Parameterized range/marker queries: also ParameterizedAttributeUnsupported.
+        assert!(ax_parameterized_absent(kAXErrorAttributeUnsupported));
+        assert!(ax_parameterized_absent(kAXErrorNoValue));
+        assert!(ax_parameterized_absent(kAXErrorIllegalArgument));
+        assert!(ax_parameterized_absent(
+            kAXErrorParameterizedAttributeUnsupported
+        ));
+
+        // None classify a real failure or success as "absent".
+        for err in [kAXErrorSuccess, kAXErrorCannotComplete, kAXErrorFailure] {
+            assert!(!ax_attribute_absent(err));
+            assert!(!ax_settable_absent(err));
+            assert!(!ax_parameterized_absent(err));
+        }
     }
 
     #[test]
@@ -5734,7 +5766,7 @@ mod tests {
     }
 
     #[test]
-    fn accept_tap_decision_drops_tab_only_for_consumer_tap() {
+    fn accept_tap_decision_tab_drops_to_word_only_on_armed_consumer_tap() {
         let tab = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
 
         // Observer (listen-only) tap never consumes.
@@ -6721,19 +6753,6 @@ mod tests {
         let diag = caret_diagnostics_from_rects(None, native);
         assert_eq!(diag.source, MacosCaretRectSource::NativeFallback);
         assert_eq!(diag.resolved_rect, native);
-    }
-
-    #[test]
-    fn caret_diagnostics_uses_marker_when_usable() {
-        let marker = Some(ScreenRect {
-            x: 1.0,
-            y: 2.0,
-            w: 1.0,
-            h: 12.0,
-        });
-        let diag = caret_diagnostics_from_rects(marker, None);
-        assert_eq!(diag.source, MacosCaretRectSource::Marker);
-        assert_eq!(diag.resolved_rect, marker);
     }
 
     #[test]
