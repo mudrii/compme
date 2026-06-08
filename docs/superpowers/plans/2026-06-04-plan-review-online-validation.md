@@ -12,6 +12,8 @@ This review validates the current project plan against the local spike and curre
 
 ## Online Validation Sources
 
+**Status note (2026-06-08, historical):** This section records the *original* validation pass, when the app shell was planned as a Tauri v2 tray app. The project has since pivoted to a **native Rust/AppKit shell with no Tauri dependency** (see the pivot note in `2026-06-03-engine-macos-mvp-design.md`). The Tauri v2 sources below are **historical** — they no longer describe the active design. The CGEventTap / AX / `llama-cpp-2` sources remain current.
+
 Context7 was used for Tauri v2 docs, per repo instructions:
 
 - `npx ctx7@latest library tauri "..."`
