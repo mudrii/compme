@@ -192,6 +192,12 @@ Required fix:
 - Decide whether internal offsets are UTF-16 code units, Unicode scalar values, or grapheme clusters.
 - If using AX ranges directly, introduce conversion helpers and do not scatter `.chars().take(caret)` through the engine.
 
+**Status (2026-06-08): RESOLVED.** The decision and conversion are in place, with the boundary in the right layer:
+
+- **Decision:** macOS AX offsets are **UTF-16 code units** (`TextContext.offset_encoding = OffsetEncoding::Utf16CodeUnits`); the **engine works in Unicode scalars** end-to-end.
+- **Conversion lives in the adapter**, not the engine. `platform_macos::byte_index_for_utf16_units` maps an AX UTF-16 offset to a char-boundary byte index (a target that bisects a surrogate pair rounds up to the char end — never a non-boundary byte). `text_context_from_value` uses it to split `left`/`right`; `splice_text_at_utf16_range` uses it for insertion. So the adapter hands the engine byte-correct substrings, and the engine's scalar `.chars().take(caret)` (re-derived in `app::wiring::value_and_caret` from `left.chars().count()`, ignoring the raw AX caret) is internally consistent. No scalar→UTF-16 conversion is needed anywhere because AX operations (caret rect, insertion) are done in UTF-16 directly against AX, never from engine offsets.
+- **Tests:** `byte_index_for_utf16_units` (0 / before / mid-surrogate / after / past-end), `text_context_from_value` astral split + selection + clamp, `splice_text_*` astral replace, plus scalar-vs-UTF-16 caret cases in `app::wiring` (emoji, skin-tone, combining accent, CJK). The remaining `.chars()` usage in `context`/`core` operates on those already-byte-correct substrings using the engine's scalar convention — by design, not a defect.
+
 ### 12. `TextContext` is too small for the spec
 
 The spec's platform contract reads left/right/selection and supports pasteboard fallback. A1a context only returns left context helpers.
