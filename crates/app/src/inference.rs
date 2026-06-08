@@ -7,7 +7,7 @@
 //! `recv → complete → send outcome`. On shutdown it drops the request sender,
 //! joins the thread, and the thread frees the model in deterministic order.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -19,34 +19,45 @@ use personalization::PersonalizationProfile;
 
 use crate::model_select::{shape_prompt, PromptMode};
 
-/// Bounded ring of recent accepted completions (redacted), shared between the
-/// run loop (which records on accept) and the inference worker (which reads them
-/// as previous-input context). A2 §16 context augmentation.
+/// Per-app bounded rings of recent accepted completions (redacted), shared
+/// between the run loop (which records on accept) and the inference worker (which
+/// reads them as previous-input context). A2 §16.
+///
+/// Scoping is **per app**: text accepted in one app only surfaces as context in
+/// that same app — cross-app previous inputs are a separate opt-in Cotypist
+/// ships behind `featureCrossAppPreviousInputs` (not cloned here), so the default
+/// must not leak prose across application boundaries.
 #[derive(Clone, Default)]
 pub struct PreviousInputs {
-    inner: Arc<Mutex<VecDeque<String>>>,
+    inner: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
 }
 
 impl PreviousInputs {
     const CAPACITY: usize = 5;
 
-    /// Record an already-redacted accepted completion, evicting the oldest.
-    pub fn record(&self, text: String) {
+    /// Record an already-redacted accepted completion for `app`, evicting the
+    /// oldest. Consecutive duplicates are ignored so word-by-word repeats don't
+    /// flood the ring.
+    pub fn record(&self, app: &str, text: String) {
         if text.trim().is_empty() {
             return;
         }
-        if let Ok(mut buf) = self.inner.lock() {
-            if buf.len() == Self::CAPACITY {
-                buf.pop_front();
-            }
-            buf.push_back(text);
+        // Recover the guard on poisoning rather than silently dropping forever.
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let buf = map.entry(app.to_string()).or_default();
+        if buf.back() == Some(&text) {
+            return;
         }
+        if buf.len() == Self::CAPACITY {
+            buf.pop_front();
+        }
+        buf.push_back(text);
     }
 
-    /// The recent inputs, newest first.
-    fn recent(&self) -> Vec<String> {
-        self.inner
-            .lock()
+    /// The recent inputs for `app`, newest first.
+    fn recent(&self, app: &str) -> Vec<String> {
+        let map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(app)
             .map(|buf| buf.iter().rev().cloned().collect())
             .unwrap_or_default()
     }
@@ -106,7 +117,7 @@ fn run(
         let full_preamble = if context_max_chars == 0 {
             preamble
         } else {
-            let recent = previous_inputs.recent();
+            let recent = previous_inputs.recent(&request.field.app);
             let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
             let block = context::build_context_block(None, &recent_refs, context_max_chars);
             format!("{block}{preamble}")
@@ -318,7 +329,8 @@ mod tests {
         // Recorded inputs surface as a context block ahead of the prompt the
         // model sees (A2 §16 context augmentation).
         let previous = PreviousInputs::default();
-        previous.record("earlier sentence".into());
+        // `request(..)` focuses app "TextEdit", so record under the same app.
+        previous.record("TextEdit", "earlier sentence".into());
         let inference = InferenceHandle::spawn(
             Box::new(EchoModel),
             PromptMode::Raw,
@@ -342,7 +354,7 @@ mod tests {
     #[test]
     fn context_disabled_prepends_nothing() {
         let previous = PreviousInputs::default();
-        previous.record("earlier".into());
+        previous.record("TextEdit", "earlier".into());
         let inference = InferenceHandle::spawn(
             Box::new(EchoModel),
             PromptMode::Raw,
@@ -362,12 +374,31 @@ mod tests {
     fn previous_inputs_ring_is_bounded_newest_first() {
         let previous = PreviousInputs::default();
         for i in 0..8 {
-            previous.record(format!("input{i}"));
+            previous.record("app", format!("input{i}"));
         }
-        let recent = previous.recent();
+        let recent = previous.recent("app");
         assert_eq!(recent.len(), PreviousInputs::CAPACITY);
         assert_eq!(recent[0], "input7"); // newest first
         assert!(!recent.contains(&"input0".to_string())); // oldest evicted
+    }
+
+    #[test]
+    fn previous_inputs_are_scoped_per_app() {
+        // Text accepted in one app must not surface as context in another
+        // (review #3: no cross-app leak by default).
+        let previous = PreviousInputs::default();
+        previous.record("app.a", "secret from A".into());
+        assert_eq!(previous.recent("app.a"), vec!["secret from A"]);
+        assert!(previous.recent("app.b").is_empty());
+    }
+
+    #[test]
+    fn consecutive_duplicate_inputs_are_ignored() {
+        let previous = PreviousInputs::default();
+        previous.record("app", "same".into());
+        previous.record("app", "same".into());
+        previous.record("app", "other".into());
+        assert_eq!(previous.recent("app"), vec!["other", "same"]);
     }
 
     #[test]

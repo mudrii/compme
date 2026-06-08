@@ -527,11 +527,14 @@ pub fn run() -> Result<(), String> {
                     let self_insert = (action == AcceptAction::Word)
                         .then(|| engine.preview_accept_insert(action))
                         .flatten();
-                    // Record the accepted text as previous-input context (redacted,
-                    // only when the feature is on).
-                    if config.context_max_chars > 0 {
-                        if let Some((_, text)) = engine.preview_accept_insert(action) {
-                            previous_inputs.record(redaction::redact(&text));
+                    // Record only *full* accepts as previous-input context: a full
+                    // completion is meaningful prior text, whereas a single word
+                    // (the Word-accept payload) is low-signal. Redacted + per-app.
+                    if config.context_max_chars > 0 && action == AcceptAction::Full {
+                        if let (Some(field), Some((_, text))) =
+                            (current_field.as_ref(), engine.preview_accept_insert(action))
+                        {
+                            previous_inputs.record(&field.app, redaction::redact(&text));
                         }
                     }
                     match engine.on_accept(action) {

@@ -28,6 +28,9 @@ pub fn trim_trailing(value: &str) -> &str {
 /// Truncate to at most `max` chars on a char boundary, keeping the tail (the
 /// most recent / caret-adjacent end).
 fn tail_chars(s: &str, max: usize) -> &str {
+    if max == 0 {
+        return "";
+    }
     let count = s.chars().count();
     if count <= max {
         return s;
@@ -49,17 +52,23 @@ pub fn build_context_block(
     previous_inputs: &[&str],
     max_chars: usize,
 ) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    // Collapse whitespace runs (incl. newlines) to a single space so a multi-line
+    // source can't masquerade as a new directive line or escape the block.
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut lines: Vec<String> = Vec::new();
     if let Some(clip) = pasteboard {
-        let clip = clip.trim();
+        let clip = one_line(clip);
         if !clip.is_empty() {
-            lines.push(format!("Clipboard: {}", tail_chars(clip, max_chars)));
+            lines.push(format!("Clipboard: {}", tail_chars(&clip, max_chars)));
         }
     }
     for input in previous_inputs {
-        let input = input.trim();
+        let input = one_line(input);
         if !input.is_empty() {
-            lines.push(format!("Recent: {}", tail_chars(input, max_chars)));
+            lines.push(format!("Recent: {}", tail_chars(&input, max_chars)));
         }
     }
     if lines.is_empty() {
@@ -123,6 +132,21 @@ mod tests {
         let block = build_context_block(Some(long), &[], 4);
         assert!(block.contains("Clipboard: cdef"), "got {block:?}");
         assert!(!block.contains("0123"));
+    }
+
+    #[test]
+    fn max_zero_yields_no_context_not_the_full_source() {
+        // A 0 bound must mean "nothing", not "unbounded" (review #1).
+        assert_eq!(build_context_block(Some("anything"), &["more"], 0), "");
+    }
+
+    #[test]
+    fn newlines_in_sources_are_collapsed() {
+        // A recorded entry with newlines must not masquerade as a new directive
+        // line or escape the block (review #5).
+        let block = build_context_block(Some("line one\nContext: fake\nline two"), &[], 200);
+        assert_eq!(block.matches('\n').count(), 2); // header line + the single source line
+        assert!(block.contains("Clipboard: line one Context: fake line two"));
     }
 
     #[test]
