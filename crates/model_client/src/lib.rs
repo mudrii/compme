@@ -52,6 +52,22 @@ impl std::error::Error for LocalModelError {}
 pub trait LocalModel: Send + Sync {
     fn complete(&self, prompt: &str, max_tokens: usize) -> LocalModelResult<String>;
 
+    /// Generate up to `n` candidate continuations (multi-candidate / cycle, A2
+    /// §16). The default returns a single candidate from `complete` — backends
+    /// without sampling variation (the stub, fakes) yield one. Real backends
+    /// override this with N independent samples (temperature/seed variation).
+    fn complete_n(
+        &self,
+        prompt: &str,
+        max_tokens: usize,
+        n: usize,
+    ) -> LocalModelResult<Vec<String>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        Ok(vec![self.complete(prompt, max_tokens)?])
+    }
+
     /// Warm up the model (e.g. run a dummy inference to prime the KV cache).
     /// Default is a no-op; override in production backends.
     fn warm_up(&self) -> Result<(), LocalModelError> {
@@ -96,9 +112,26 @@ enum Job {
         max_tokens: usize,
         reply: Sender<LocalModelResult<String>>,
     },
+    CompleteN {
+        prompt: String,
+        max_tokens: usize,
+        n: usize,
+        reply: Sender<LocalModelResult<Vec<String>>>,
+    },
     WarmUp {
         reply: Sender<Result<(), LocalModelError>>,
     },
+}
+
+/// The sampler for a candidate index: candidate 0 is greedy (the deterministic
+/// best continuation); later candidates use temperature + a per-candidate seed so
+/// they diverge (multi-candidate generation).
+fn sampler_for_candidate(index: usize) -> LlamaSampler {
+    if index == 0 {
+        LlamaSampler::greedy()
+    } else {
+        LlamaSampler::chain_simple([LlamaSampler::temp(0.8), LlamaSampler::dist(index as u32)])
+    }
 }
 
 /// A handle to a llama.cpp model running on a dedicated worker thread.
@@ -181,6 +214,23 @@ impl LlamaModel {
                                 &mut prev_tokens,
                                 &prompt,
                                 max_tokens,
+                                &mut sampler_for_candidate(0),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        Job::CompleteN {
+                            prompt,
+                            max_tokens,
+                            n,
+                            reply,
+                        } => {
+                            let result = complete_candidates_on_worker(
+                                &model,
+                                &mut context,
+                                &mut prev_tokens,
+                                &prompt,
+                                max_tokens,
+                                n,
                             );
                             let _ = reply.send(result);
                         }
@@ -191,6 +241,7 @@ impl LlamaModel {
                                 &mut prev_tokens,
                                 "warm up",
                                 1,
+                                &mut sampler_for_candidate(0),
                             )
                             .map(|_| ());
                             let _ = reply.send(result);
@@ -253,12 +304,42 @@ impl LlamaModel {
 /// Run one completion on the worker thread against the persistent context,
 /// reusing the KV cache for the shared prefix and re-decoding only the divergent
 /// suffix. On any FFI error the cache is reset so the next call starts clean.
+/// Generate `n` candidate continuations for one prompt. Each candidate decodes
+/// the prompt fresh (prev cleared) so candidates are independent; candidate 0 is
+/// greedy, the rest use temperature+seed sampling. `prev_tokens` is left holding
+/// the prompt so the next request can reuse its KV prefix.
+fn complete_candidates_on_worker(
+    model: &LlamaCppModel,
+    context: &mut LlamaContext<'_>,
+    prev_tokens: &mut Vec<LlamaToken>,
+    prompt: &str,
+    max_tokens: usize,
+    n: usize,
+) -> LocalModelResult<Vec<String>> {
+    let mut candidates = Vec::with_capacity(n);
+    for index in 0..n {
+        // Force a clean decode per candidate so they don't share generated KV.
+        prev_tokens.clear();
+        let text = complete_on_worker(
+            model,
+            context,
+            prev_tokens,
+            prompt,
+            max_tokens,
+            &mut sampler_for_candidate(index),
+        )?;
+        candidates.push(text);
+    }
+    Ok(candidates)
+}
+
 fn complete_on_worker(
     model: &LlamaCppModel,
     context: &mut LlamaContext<'_>,
     prev_tokens: &mut Vec<LlamaToken>,
     prompt: &str,
     max_tokens: usize,
+    sampler: &mut LlamaSampler,
 ) -> LocalModelResult<String> {
     let mut tokens = model
         .str_to_token(prompt, AddBos::Always)
@@ -302,7 +383,6 @@ fn complete_on_worker(
         return Err(LocalModelError::new("decode prompt", err));
     }
 
-    let mut sampler = LlamaSampler::greedy();
     let mut output = String::new();
     let mut decoder = encoding_rs::UTF_8.new_decoder();
 
@@ -347,6 +427,24 @@ impl LocalModel for LlamaModel {
         self.dispatch("complete", move |reply| Job::Complete {
             prompt,
             max_tokens,
+            reply,
+        })?
+    }
+
+    fn complete_n(
+        &self,
+        prompt: &str,
+        max_tokens: usize,
+        n: usize,
+    ) -> LocalModelResult<Vec<String>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let prompt = prompt.to_string();
+        self.dispatch("complete_n", move |reply| Job::CompleteN {
+            prompt,
+            max_tokens,
+            n,
             reply,
         })?
     }
@@ -479,6 +577,33 @@ mod tests {
         let model: Box<dyn LocalModel> = Box::new(Fixed("ok"));
 
         assert_eq!(model.complete("x", 8).expect("fixed completion"), "ok");
+    }
+
+    #[test]
+    fn default_complete_n_returns_a_single_candidate() {
+        let model: Box<dyn LocalModel> = Box::new(Fixed("only"));
+        assert_eq!(model.complete_n("x", 8, 3).unwrap(), vec!["only"]);
+    }
+
+    #[test]
+    fn complete_n_zero_is_empty() {
+        let model: Box<dyn LocalModel> = Box::new(Fixed("x"));
+        assert!(model.complete_n("x", 8, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn complete_n_override_can_return_multiple() {
+        struct Multi;
+        impl LocalModel for Multi {
+            fn complete(&self, _p: &str, _n: usize) -> LocalModelResult<String> {
+                Ok("a".into())
+            }
+            fn complete_n(&self, _p: &str, _max: usize, n: usize) -> LocalModelResult<Vec<String>> {
+                Ok((0..n).map(|i| format!("cand{i}")).collect())
+            }
+        }
+        let model: Box<dyn LocalModel> = Box::new(Multi);
+        assert_eq!(model.complete_n("x", 8, 2).unwrap(), vec!["cand0", "cand1"]);
     }
 
     #[test]

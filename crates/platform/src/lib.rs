@@ -123,6 +123,8 @@ pub enum AcceptAction {
 pub enum TapControl {
     Accept(AcceptAction),
     Dismiss,
+    /// Rotate to the next candidate (multi-candidate cycle key).
+    Cycle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

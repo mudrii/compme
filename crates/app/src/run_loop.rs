@@ -44,6 +44,8 @@ const DEFAULT_MAX_WORDS: usize = 8;
 const DEFAULT_MIN_CONTEXT_CHARS: usize = 3;
 const DEFAULT_MAX_TOKENS: usize = 24;
 const DEFAULT_HEARTBEAT_MS: u64 = 12;
+/// Candidate completions generated per request (1 = single, up to 5 for cycle).
+const DEFAULT_CANDIDATES: usize = 1;
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
 /// Re-poll secure input + Accessibility trust at most this often (wall-clock ms).
 const SECURE_POLL_INTERVAL_MS: u64 = 480;
@@ -84,6 +86,8 @@ enum HostEvent {
     Accept(AcceptAction),
     /// Esc: dismiss the ghost and suppress completions in the current field.
     Dismiss,
+    /// Down arrow: rotate to the next candidate (multi-candidate cycle).
+    Cycle,
 }
 
 /// Collapse a burst of consecutive same-field `Caret` events into just the last
@@ -124,6 +128,7 @@ struct Config {
     min_context_chars: usize,
     allow_mid_word: bool,
     diag_coords: bool,
+    candidates: usize,
     personalization: PersonalizationProfile,
     prefs: Prefs,
 }
@@ -176,6 +181,7 @@ impl Config {
             // `COMPLETE_ME_MIDLINE=1` opts into them.
             allow_mid_word: lookup("COMPLETE_ME_MIDLINE").is_some_and(|v| v == "1" || v == "true"),
             diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
+            candidates: parse_clamped(lookup("COMPLETE_ME_CANDIDATES"), DEFAULT_CANDIDATES, 1, 5),
             personalization: build_personalization(&lookup),
             prefs: build_prefs(&lookup),
         }
@@ -389,6 +395,7 @@ pub fn run() -> Result<(), String> {
             let event = match control {
                 TapControl::Accept(action) => HostEvent::Accept(action),
                 TapControl::Dismiss => HostEvent::Dismiss,
+                TapControl::Cycle => HostEvent::Cycle,
             };
             if let Ok(tx) = accept_tx.lock() {
                 let _ = tx.send(event);
@@ -401,8 +408,12 @@ pub fn run() -> Result<(), String> {
         config.stub_completion.clone(),
         config.model_path.clone(),
     ))?;
-    let inference =
-        InferenceHandle::spawn(model, config.prompt_mode, config.personalization.clone())?;
+    let inference = InferenceHandle::spawn(
+        model,
+        config.prompt_mode,
+        config.personalization.clone(),
+        config.candidates,
+    )?;
 
     // Shared state for the tray; flipped by menu actions, observed by this loop.
     let flags = TrayFlags {
@@ -502,20 +513,24 @@ pub fn run() -> Result<(), String> {
                         log_err("on_dismiss_suppress", engine.on_dismiss_suppress()),
                     );
                 }
+                HostEvent::Cycle => {
+                    eprintln!("complete-me: cycle candidate");
+                    offer_all(&mut latest, log_err("on_cycle", engine.on_cycle()));
+                }
             }
         }
 
         // 2. Inference outcomes → engine (stale ones are discarded internally).
         for outcome in inference.drain_outcomes() {
             eprintln!(
-                "complete-me: completion gen={} text={:?}",
-                outcome.request.generation, outcome.text
+                "complete-me: completion gen={} candidates={:?}",
+                outcome.request.generation, outcome.candidates
             );
             offer_all(
                 &mut latest,
                 log_err(
                     "on_completion",
-                    engine.on_completion(&outcome.request, outcome.text),
+                    engine.on_completion_multi(&outcome.request, outcome.candidates),
                 ),
             );
         }

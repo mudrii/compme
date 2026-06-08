@@ -189,6 +189,28 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    /// Feed multiple candidate completions for one request (multi-candidate, A2
+    /// §16). The engine shows the first and `on_cycle` rotates through the rest.
+    pub fn on_completion_multi(
+        &mut self,
+        request: &CompletionRequest,
+        candidates: Vec<String>,
+    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self.machine.on_event(Event::CompletionReadyMulti {
+            generation: request.generation,
+            field: request.field.clone(),
+            snapshot: request.snapshot,
+            candidates,
+        });
+        self.dispatch(commands)
+    }
+
+    /// Rotate to the next candidate while a suggestion is showing.
+    pub fn on_cycle(&mut self) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self.machine.on_event(Event::Cycle);
+        self.dispatch(commands)
+    }
+
     pub fn on_accept(
         &mut self,
         action: AcceptAction,

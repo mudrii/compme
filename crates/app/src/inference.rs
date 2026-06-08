@@ -23,7 +23,9 @@ use crate::model_select::{shape_prompt, PromptMode};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionOutcome {
     pub request: CompletionRequest,
-    pub text: String,
+    /// One or more candidate continuations (multi-candidate, A2 §16). At least
+    /// one; the engine shows the first and cycles through the rest.
+    pub candidates: Vec<String>,
 }
 
 /// Block for the next request, then drain any that piled up behind it and keep
@@ -42,6 +44,7 @@ fn run(
     model: Box<dyn LocalModel>,
     prompt_mode: PromptMode,
     profile: PersonalizationProfile,
+    candidates: usize,
     requests: Receiver<CompletionRequest>,
     outcomes: Sender<CompletionOutcome>,
     ready: Arc<AtomicBool>,
@@ -59,10 +62,16 @@ fn run(
         // prefix per the configured strategy (terse continuation by default).
         let preamble = profile.build_preamble(Some(&request.field.app), None);
         let prompt = shape_prompt(prompt_mode, &preamble, &request.prompt);
-        match model.complete(&prompt, request.max_tokens) {
-            Ok(text) => {
+        match model.complete_n(&prompt, request.max_tokens, candidates) {
+            Ok(candidates) => {
                 // A dropped receiver means the main loop is shutting down.
-                if outcomes.send(CompletionOutcome { request, text }).is_err() {
+                if outcomes
+                    .send(CompletionOutcome {
+                        request,
+                        candidates,
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -91,6 +100,7 @@ impl InferenceHandle {
         model: Box<dyn LocalModel>,
         prompt_mode: PromptMode,
         profile: PersonalizationProfile,
+        candidates: usize,
     ) -> Result<Self, String> {
         let (request_tx, request_rx) = channel::<CompletionRequest>();
         let (outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
@@ -104,6 +114,7 @@ impl InferenceHandle {
                     model,
                     prompt_mode,
                     profile,
+                    candidates.max(1),
                     request_rx,
                     outcome_tx,
                     ready_for_thread,
@@ -213,12 +224,13 @@ mod tests {
             Box::new(StubModel::new(" world")),
             PromptMode::Terse,
             PersonalizationProfile::default(),
+            1,
         )
         .unwrap();
         assert!(inference.submit(request("hello", 1)));
 
         let outcome = inference.recv_outcome().expect("outcome");
-        assert_eq!(outcome.text, " world");
+        assert_eq!(outcome.candidates[0], " world");
         assert_eq!(outcome.request.generation, 1);
 
         inference.shutdown();
@@ -230,6 +242,7 @@ mod tests {
             Box::new(EchoModel),
             PromptMode::Terse,
             PersonalizationProfile::default(),
+            1,
         )
         .unwrap();
         inference.submit(request("Dear team", 1));
@@ -237,8 +250,34 @@ mod tests {
         // Terse mode wraps the prefix before the model sees it: the echoed text
         // contains the prefix and differs from it. The exact template prose is
         // pinned in `model_client`, not coupled here.
-        assert!(outcome.text.contains("Dear team"));
-        assert_ne!(outcome.text, "Dear team");
+        assert!(outcome.candidates[0].contains("Dear team"));
+        assert_ne!(outcome.candidates[0], "Dear team");
+        inference.shutdown();
+    }
+
+    #[test]
+    fn requested_candidate_count_flows_to_the_model() {
+        // A model that yields N candidates surfaces all N in the outcome
+        // (multi-candidate, A2 §16).
+        struct MultiModel;
+        impl LocalModel for MultiModel {
+            fn complete(&self, _p: &str, _n: usize) -> LocalModelResult<String> {
+                Ok("one".into())
+            }
+            fn complete_n(&self, _p: &str, _max: usize, n: usize) -> LocalModelResult<Vec<String>> {
+                Ok((0..n).map(|i| format!("cand{i}")).collect())
+            }
+        }
+        let inference = InferenceHandle::spawn(
+            Box::new(MultiModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            3,
+        )
+        .unwrap();
+        inference.submit(request("x", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert_eq!(outcome.candidates, vec!["cand0", "cand1", "cand2"]);
         inference.shutdown();
     }
 
@@ -248,11 +287,12 @@ mod tests {
             Box::new(EchoModel),
             PromptMode::Raw,
             PersonalizationProfile::default(),
+            1,
         )
         .unwrap();
         inference.submit(request("Dear team", 1));
         let outcome = inference.recv_outcome().expect("outcome");
-        assert_eq!(outcome.text, "Dear team");
+        assert_eq!(outcome.candidates[0], "Dear team");
         inference.shutdown();
     }
 
@@ -266,15 +306,15 @@ mod tests {
             ..Default::default()
         };
         let inference =
-            InferenceHandle::spawn(Box::new(EchoModel), PromptMode::Raw, profile).unwrap();
+            InferenceHandle::spawn(Box::new(EchoModel), PromptMode::Raw, profile, 1).unwrap();
         inference.submit(request("Ahoy", 1));
         let outcome = inference.recv_outcome().expect("outcome");
         assert!(
-            outcome.text.contains("Write in pirate dialect."),
+            outcome.candidates[0].contains("Write in pirate dialect."),
             "steering preamble present: {:?}",
-            outcome.text
+            outcome.candidates[0]
         );
-        assert!(outcome.text.trim_end().ends_with("Ahoy"));
+        assert!(outcome.candidates[0].trim_end().ends_with("Ahoy"));
         inference.shutdown();
     }
 
@@ -284,6 +324,7 @@ mod tests {
             Box::new(StubModel::new("x")),
             PromptMode::Terse,
             PersonalizationProfile::default(),
+            1,
         )
         .unwrap();
         // Submit + receive guarantees the worker has passed warm-up.
@@ -300,13 +341,14 @@ mod tests {
             Box::new(WarmUpFailModel),
             PromptMode::Raw,
             PersonalizationProfile::default(),
+            1,
         )
         .unwrap();
         inference.submit(request("p", 1));
         let outcome = inference
             .recv_outcome()
             .expect("outcome despite warm-up failure");
-        assert_eq!(outcome.text, "served");
+        assert_eq!(outcome.candidates[0], "served");
         assert!(inference.is_ready());
         inference.shutdown();
     }
@@ -319,6 +361,7 @@ mod tests {
             Box::new(ConditionalModel),
             PromptMode::Raw,
             PersonalizationProfile::default(),
+            1,
         )
         .unwrap();
         inference.submit(request("bad", 1));
@@ -326,7 +369,7 @@ mod tests {
         let outcome = inference
             .recv_outcome()
             .expect("worker survives an error and serves later requests");
-        assert_eq!(outcome.text, "good");
+        assert_eq!(outcome.candidates[0], "good");
         inference.shutdown();
     }
 
@@ -336,6 +379,7 @@ mod tests {
             Box::new(StubModel::new("x")),
             PromptMode::Terse,
             PersonalizationProfile::default(),
+            1,
         )
         .unwrap();
         inference.shutdown(); // must not hang

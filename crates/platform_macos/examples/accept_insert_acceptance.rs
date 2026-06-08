@@ -130,8 +130,8 @@ fn main() {
     let accept = match adapter.subscribe_accept(Arc::new(move |control| {
         let action = match control {
             TapControl::Accept(action) => action,
-            // This accept-insert harness only exercises Tab/grave; ignore Esc.
-            TapControl::Dismiss => return,
+            // This accept-insert harness only exercises Tab/grave; ignore Esc/cycle.
+            TapControl::Dismiss | TapControl::Cycle => return,
         };
         println!("ACCEPT_ACTION {action:?}");
         let field = accept_state.lock().expect("state").field.clone();

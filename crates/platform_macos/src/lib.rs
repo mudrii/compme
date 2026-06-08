@@ -84,6 +84,9 @@ const KEYCODE_GRAVE: i64 = 50;
 /// Escape: dismisses the showing ghost and suppresses completions in the field
 /// until refocus/edit (Cotypist parity).
 const KEYCODE_ESCAPE: i64 = 53;
+/// Down arrow: rotate to the next candidate while a suggestion is visible
+/// (multi-candidate cycle).
+const KEYCODE_DOWN: i64 = 125;
 const SYNTHETIC_EVENT_TAG: i64 = 0x636d706c746d65;
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(1000);
 
@@ -539,6 +542,8 @@ enum AcceptTapDecision {
     Drop(AcceptAction),
     /// Consume the key and route a dismiss+suppress to the engine (Esc).
     DropDismiss,
+    /// Consume the key and route a candidate-cycle to the engine (Down arrow).
+    DropCycle,
     ReenableAndKeep,
 }
 
@@ -1678,6 +1683,7 @@ fn accept_consumer_tap_handler(
         let control = match decision {
             AcceptTapDecision::Drop(action) => Some(TapControl::Accept(action)),
             AcceptTapDecision::DropDismiss => Some(TapControl::Dismiss),
+            AcceptTapDecision::DropCycle => Some(TapControl::Cycle),
             _ => None,
         };
         if let Some(control) = control {
@@ -1719,6 +1725,7 @@ fn accept_tap_decision(
             KEYCODE_TAB => return AcceptTapDecision::Drop(AcceptAction::Word),
             KEYCODE_GRAVE => return AcceptTapDecision::Drop(AcceptAction::Full),
             KEYCODE_ESCAPE => return AcceptTapDecision::DropDismiss,
+            KEYCODE_DOWN => return AcceptTapDecision::DropCycle,
             _ => {}
         }
     }
@@ -1763,7 +1770,9 @@ fn install_worker_accept_tap_resource(
             };
             match handler(event) {
                 AcceptTapDecision::Keep => CallbackResult::Keep,
-                AcceptTapDecision::Drop(_) | AcceptTapDecision::DropDismiss => CallbackResult::Drop,
+                AcceptTapDecision::Drop(_)
+                | AcceptTapDecision::DropDismiss
+                | AcceptTapDecision::DropCycle => CallbackResult::Drop,
                 AcceptTapDecision::ReenableAndKeep => {
                     reenable_event_tap(tap_ref_for_callback.load(Ordering::Acquire));
                     CallbackResult::Keep
@@ -5889,6 +5898,25 @@ mod tests {
         // Grave on the observer (listen-only) tap is never consumed.
         assert_eq!(
             accept_tap_decision(AcceptTapKind::Observer, grave, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
+        );
+    }
+
+    #[test]
+    fn down_arrow_while_armed_cycles_candidates() {
+        let down = accept_tap_event(CGEventType::KeyDown, KEYCODE_DOWN, 0);
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, down, Some(AcceptAction::Full)),
+            AcceptTapDecision::DropCycle
+        );
+        // Unarmed (no suggestion): Down passes through for normal navigation.
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, down, None),
+            AcceptTapDecision::Keep
+        );
+        // Observer tap never consumes.
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Observer, down, Some(AcceptAction::Full)),
             AcceptTapDecision::Keep
         );
     }

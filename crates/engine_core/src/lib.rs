@@ -56,6 +56,16 @@ pub enum Event {
         snapshot: SnapshotId,
         text: String,
     },
+    /// Multiple candidate continuations for one request (multi-candidate, A2
+    /// §16). The first is the primary; `Cycle` rotates through the rest.
+    CompletionReadyMulti {
+        generation: u64,
+        field: FieldHandle,
+        snapshot: SnapshotId,
+        candidates: Vec<String>,
+    },
+    /// Rotate to the next candidate while a suggestion is showing.
+    Cycle,
     SecureStateChanged {
         caps: Capabilities,
     },
@@ -96,8 +106,16 @@ pub enum Command {
 struct Showing {
     field: FieldHandle,
     snapshot: SnapshotId,
-    remaining: String,
+    /// Shaped candidate continuations; `index` selects the one on screen.
+    candidates: Vec<String>,
+    index: usize,
     caret: usize,
+}
+
+impl Showing {
+    fn current(&self) -> &str {
+        &self.candidates[self.index]
+    }
 }
 
 pub struct SuggestionMachine {
@@ -270,46 +288,26 @@ impl SuggestionMachine {
                 snapshot,
                 text,
             } => {
-                // No explicit `suppressed` check is needed here: `DismissSuppress`
-                // advances the snapshot (staling any in-flight request) and clears
-                // `requested`, and a suppressed field cannot arm a fresh request
-                // (`TextChanged` clears suppression before arming), so no matching
-                // completion can arrive while suppressed.
-                let matches_request = self.requested.as_ref().is_some_and(|requested| {
-                    requested.generation == generation
-                        && requested.snapshot == snapshot
-                        && requested.field == field
-                        && generation == self.generation
-                        && snapshot == self.snapshot
-                });
-
-                if matches_request {
-                    // Shape the raw completion into a single inline offering:
-                    // cut at the first line break, then the first sentence end,
-                    // drop any tail that re-states text already after the caret,
-                    // and cap the word count.
-                    let line = trim_to_stop_boundary(&text);
-                    let sentence = truncate_at_sentence_end(line);
-                    let right = right_context(&self.value, self.caret);
-                    let de_overlapped = strip_suffix_overlap(sentence, &right);
-                    let capped = cap_words(&de_overlapped, self.max_words);
-                    let recent = left_context(&self.value, self.caret);
-                    let fresh = repetition_penalty(&capped, &recent) >= REPETITION_PENALTY_FLOOR
-                        && !is_degenerate_repetition(&capped);
-                    if !capped.is_empty() && fresh {
-                        self.showing = Some(Showing {
-                            field: field.clone(),
-                            snapshot,
-                            remaining: capped.clone(),
-                            caret: self.caret,
-                        });
-                        out.push(Command::ShowGhost {
-                            field,
-                            snapshot,
-                            text: capped,
+                self.on_completion_ready(generation, &field, snapshot, vec![text], &mut out);
+            }
+            Event::CompletionReadyMulti {
+                generation,
+                field,
+                snapshot,
+                candidates,
+            } => {
+                self.on_completion_ready(generation, &field, snapshot, candidates, &mut out);
+            }
+            Event::Cycle => {
+                if let Some(showing) = self.showing.as_mut() {
+                    if showing.candidates.len() > 1 {
+                        showing.index = (showing.index + 1) % showing.candidates.len();
+                        out.push(Command::UpdateGhost {
+                            field: showing.field.clone(),
+                            snapshot: showing.snapshot,
+                            text: showing.current().to_string(),
                         });
                     }
-                    self.requested = None;
                 }
             }
             Event::CaretMoved { field, caret } => {
@@ -345,7 +343,7 @@ impl SuggestionMachine {
                 if let Some(showing) = self.showing.take() {
                     out.push(Command::Insert {
                         field: showing.field,
-                        text: showing.remaining,
+                        text: showing.candidates[showing.index].clone(),
                     });
                     out.push(Command::Hide);
                     self.advance_snapshot();
@@ -353,7 +351,7 @@ impl SuggestionMachine {
             }
             Event::AcceptWord => {
                 if let Some(mut showing) = self.showing.take() {
-                    let (word, rest) = next_word(&showing.remaining);
+                    let (word, rest) = next_word(showing.current());
                     out.push(Command::Insert {
                         field: showing.field.clone(),
                         text: word.clone(),
@@ -363,7 +361,7 @@ impl SuggestionMachine {
                         self.advance_snapshot();
                     } else {
                         showing.caret += word.chars().count();
-                        showing.remaining = rest.clone();
+                        showing.candidates[showing.index] = rest.clone();
                         out.push(Command::UpdateGhost {
                             field: showing.field.clone(),
                             snapshot: showing.snapshot,
@@ -378,11 +376,73 @@ impl SuggestionMachine {
         out
     }
 
+    /// Shape raw candidates into inline offerings and, if any survive, show the
+    /// first. Shared by the single (`CompletionReady`) and multi
+    /// (`CompletionReadyMulti`) paths. Shaping: cut at the first line break, then
+    /// the first sentence end, drop any tail that re-states text after the caret,
+    /// cap the word count; drop empty/echoing/degenerate candidates and exact
+    /// duplicates.
+    fn on_completion_ready(
+        &mut self,
+        generation: u64,
+        field: &FieldHandle,
+        snapshot: SnapshotId,
+        raw_candidates: Vec<String>,
+        out: &mut Vec<Command>,
+    ) {
+        // No explicit `suppressed` check is needed here: `DismissSuppress`
+        // advances the snapshot (staling any in-flight request) and clears
+        // `requested`, and a suppressed field cannot arm a fresh request
+        // (`TextChanged` clears suppression before arming), so no matching
+        // completion can arrive while suppressed.
+        let matches_request = self.requested.as_ref().is_some_and(|requested| {
+            requested.generation == generation
+                && requested.snapshot == snapshot
+                && requested.field == *field
+                && generation == self.generation
+                && snapshot == self.snapshot
+        });
+        if !matches_request {
+            return;
+        }
+
+        let right = right_context(&self.value, self.caret);
+        let recent = left_context(&self.value, self.caret);
+        let mut shaped: Vec<String> = Vec::new();
+        for raw in raw_candidates {
+            let line = trim_to_stop_boundary(&raw);
+            let sentence = truncate_at_sentence_end(line);
+            let de_overlapped = strip_suffix_overlap(sentence, &right);
+            let capped = cap_words(&de_overlapped, self.max_words);
+            let fresh = repetition_penalty(&capped, &recent) >= REPETITION_PENALTY_FLOOR
+                && !is_degenerate_repetition(&capped);
+            if !capped.is_empty() && fresh && !shaped.contains(&capped) {
+                shaped.push(capped);
+            }
+        }
+
+        if let Some(first) = shaped.first().cloned() {
+            self.showing = Some(Showing {
+                field: field.clone(),
+                snapshot,
+                candidates: shaped,
+                index: 0,
+                caret: self.caret,
+            });
+            out.push(Command::ShowGhost {
+                field: field.clone(),
+                snapshot,
+                text: first,
+            });
+        }
+        self.requested = None;
+    }
+
     pub fn preview_accept_insert(&self, action: AcceptAction) -> Option<(FieldHandle, String)> {
         let showing = self.showing.as_ref()?;
         let text = match action {
-            AcceptAction::Full => showing.remaining.clone(),
-            AcceptAction::Word => next_word(&showing.remaining).0,
+            AcceptAction::Full => showing.current().to_string(),
+            AcceptAction::Word => next_word(showing.current()).0,
         };
         (!text.is_empty()).then(|| (showing.field.clone(), text))
     }
@@ -1098,6 +1158,128 @@ mod tests {
         let mut machine = showing_machine();
 
         assert_eq!(machine.on_event(Event::Dismiss), vec![Command::Hide]);
+    }
+
+    fn showing_candidates(texts: &[&str]) -> SuggestionMachine {
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReadyMulti {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            candidates: texts.iter().map(|s| s.to_string()).collect(),
+        });
+        machine
+    }
+
+    #[test]
+    fn multi_candidate_shows_the_first() {
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        assert_eq!(
+            machine.on_event(Event::CompletionReadyMulti {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                candidates: vec!["alpha".into(), "beta".into()],
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "alpha".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn cycle_rotates_to_the_next_candidate_and_wraps() {
+        let mut machine = showing_candidates(&["alpha", "beta", "gamma"]);
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "beta".into(),
+            }]
+        );
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "gamma".into(),
+            }]
+        );
+        // Wraps back to the first.
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "alpha".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn cycle_with_one_candidate_is_a_noop() {
+        let mut machine = showing_candidates(&["solo"]);
+        assert_eq!(machine.on_event(Event::Cycle), vec![]);
+    }
+
+    #[test]
+    fn cycle_with_nothing_showing_is_a_noop() {
+        let mut machine = machine();
+        assert_eq!(machine.on_event(Event::Cycle), vec![]);
+    }
+
+    #[test]
+    fn accept_full_inserts_the_cycled_candidate() {
+        let mut machine = showing_candidates(&["alpha", "beta"]);
+        machine.on_event(Event::Cycle); // now showing "beta"
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "beta".into(),
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_candidates_are_deduped() {
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReadyMulti {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            candidates: vec!["same".into(), "same".into(), "other".into()],
+        });
+        // Two distinct candidates survive → one Cycle reaches "other", the next
+        // wraps to "same" (not a third identical entry).
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "other".into(),
+            }]
+        );
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "same".into(),
+            }]
+        );
     }
 
     #[test]
