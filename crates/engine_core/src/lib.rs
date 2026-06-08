@@ -490,6 +490,31 @@ mod tests {
     }
 
     #[test]
+    fn trailing_whitespace_does_not_count_toward_min_context() {
+        // "ab  " has 4 left-context chars but trims to "ab" (2) < 3 → suppress.
+        let mut machine = machine().with_trigger_gates(3, false);
+        machine.on_event(text_changed("ab  ", 4, 1000));
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+    }
+
+    #[test]
+    fn underscore_counts_as_a_word_char_for_mid_word() {
+        // Caret at 4 in "foo_bar": left ends in '_', right starts with 'b' —
+        // both are word chars, so the caret splits an identifier → suppressed.
+        let mut machine = machine().with_trigger_gates(0, false);
+        machine.on_event(text_changed("foo_bar", 4, 1000));
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+    }
+
+    #[test]
+    fn non_ascii_letters_count_as_word_chars_for_mid_word() {
+        // CJK ideographs are alphanumeric: caret inside "日本語" splits a word.
+        let mut machine = machine().with_trigger_gates(0, false);
+        machine.on_event(text_changed("日本語", 1, 1000));
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+    }
+
+    #[test]
     fn mid_word_allowed_when_configured() {
         // Same mid-word caret, but allow_mid_word=true → arms anyway.
         let mut machine = machine().with_trigger_gates(0, true);

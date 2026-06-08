@@ -8,8 +8,8 @@
 //! [`Engine::on_completion`]. The engine therefore never blocks on inference and
 //! stays fully deterministic under test.
 
-use core::{Command, Event, SnapshotId, SuggestionMachine};
-pub use core::{EditKind, TriggerPolicy};
+use engine_core::{Command, Event, SnapshotId, SuggestionMachine};
+pub use engine_core::{EditKind, TriggerPolicy};
 use platform::{
     AcceptAction, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode, OverlayPlacement,
     OverlayPresenter, PlatformAdapter, SecurityState, Toolkit,

@@ -119,15 +119,6 @@ name = "context"
 version = "0.1.0"
 
 [[package]]
-name = "core"
-version = "0.1.0"
-dependencies = [
- "context",
- "platform",
- "ranker",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -196,8 +187,17 @@ dependencies = [
 name = "engine"
 version = "0.1.0"
 dependencies = [
- "core",
+ "engine_core",
  "platform",
+]
+
+[[package]]
+name = "engine_core"
+version = "0.1.0"
+dependencies = [
+ "context",
+ "platform",
+ "ranker",
 ]
 
 [[package]]

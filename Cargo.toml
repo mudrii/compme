@@ -4,7 +4,7 @@ members = [
     "crates/platform",
     "crates/context",
     "crates/ranker",
-    "crates/core",
+    "crates/engine_core",
     "crates/model_client",
     "crates/platform_macos",
     "crates/engine",

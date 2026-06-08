@@ -17,7 +17,7 @@ use platform::{FieldHandle, TextContext};
 
 /// Reconstruct the full field value and a char-indexed caret from a context read.
 ///
-/// `core::left_context` is char-indexed (`value.chars().take(caret)`), so pairing
+/// `context::left_context` is char-indexed (`value.chars().take(caret)`), so pairing
 /// `left + right` with `caret = left.chars().count()` reproduces the adapter's
 /// left text exactly as the engine's prompt — independent of the adapter's own
 /// caret offset encoding (UTF-16 on macOS).
