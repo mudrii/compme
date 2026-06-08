@@ -39,3 +39,50 @@ fn warm_completion_under_500ms() {
     // Exercise the real shutdown override (model dropped before backend).
     Box::new(model).shutdown();
 }
+
+// Guards G3 prefix-KV-cache reuse: the persistent context must produce the
+// *same* deterministic (greedy) output as a fresh context, across a sequence of
+// completions that share prefixes. A corrupt reuse (wrong seq_rm / position math)
+// would diverge here. Ignored by default — needs the GGUF + Metal.
+#[test]
+#[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
+fn prefix_reuse_matches_fresh_context_output() {
+    let path = model_path();
+    if !path.exists() {
+        eprintln!("SKIP: model not at {}", path.display());
+        return;
+    }
+
+    let reused = LlamaModel::load(&path).expect("load model");
+    reused.warm_up().expect("warm up");
+
+    let prompt_a = terse_continuation_prompt("The quick brown fox");
+    let prompt_b = terse_continuation_prompt("The quick brown fox jumps");
+
+    // Same prompt twice exercises the identical-prompt reuse path; the second
+    // result must equal the first (greedy → deterministic).
+    let a1 = reused.complete(&prompt_a, 12).expect("a1");
+    let a2 = reused.complete(&prompt_a, 12).expect("a2 (reuse)");
+    assert_eq!(a1, a2, "identical-prompt reuse changed the output");
+
+    // A shared-prefix prompt exercises partial reuse + a divergent tail.
+    let b_reused = reused.complete(&prompt_b, 12).expect("b reuse");
+    // Back to A exercises shrinking the cached prefix again.
+    let a3 = reused.complete(&prompt_a, 12).expect("a3 (reuse after b)");
+    assert_eq!(
+        a1, a3,
+        "reuse after a divergent prompt corrupted the output"
+    );
+
+    // Compare the partial-reuse result against a fresh, never-reused context.
+    let fresh = LlamaModel::load(&path).expect("load fresh model");
+    fresh.warm_up().expect("warm up fresh");
+    let b_fresh = fresh.complete(&prompt_b, 12).expect("b fresh");
+    assert_eq!(
+        b_reused, b_fresh,
+        "partial-reuse output diverged from a fresh context"
+    );
+
+    Box::new(reused).shutdown();
+    Box::new(fresh).shutdown();
+}
