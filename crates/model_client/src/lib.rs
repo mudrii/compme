@@ -260,11 +260,19 @@ fn complete_on_worker(
     prompt: &str,
     max_tokens: usize,
 ) -> LocalModelResult<String> {
-    let tokens = model
+    let mut tokens = model
         .str_to_token(prompt, AddBos::Always)
         .map_err(|err| LocalModelError::new("tokenize prompt", err))?;
     if tokens.is_empty() {
         return Ok(String::new());
+    }
+
+    // Clamp the prompt to the context window so prompt + generation fit; drop
+    // leading tokens, keeping the caret-adjacent tail. Otherwise an over-long
+    // prompt would fail every decode and silently yield no completion.
+    let skip = prompt_tokens_to_skip(tokens.len(), max_tokens, context.n_ctx() as usize);
+    if skip > 0 {
+        tokens.drain(..skip);
     }
 
     // Keep the shared prefix in the KV cache; drop everything from `reuse`
@@ -406,6 +414,19 @@ pub fn reusable_prefix_len<T: PartialEq>(prev: &[T], next: &[T]) -> usize {
     shared.min(next.len() - 1)
 }
 
+/// How many leading prompt tokens to drop so the prompt plus the generation
+/// budget fit in the context window. The completion needs `max_tokens` of room,
+/// so the prompt may use at most `n_ctx - max_tokens` tokens (at least 1). When
+/// the prompt is longer we drop from the *front*, keeping the caret-adjacent tail
+/// (the most relevant context). Without this, an over-long prompt makes every
+/// `decode` fail → reset → no completion at all for large-context fields.
+pub fn prompt_tokens_to_skip(prompt_len: usize, max_tokens: usize, n_ctx: usize) -> usize {
+    // Reserve room for the generated tokens; always leave the prompt at least one
+    // token so a tiny/zero window still decodes the caret-adjacent token.
+    let budget = n_ctx.saturating_sub(max_tokens).max(1);
+    prompt_len.saturating_sub(budget)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,6 +505,32 @@ mod tests {
         let model: Box<dyn LocalModel> = Box::new(Fixed("ok"));
 
         model.shutdown();
+    }
+
+    #[test]
+    fn prompt_skip_zero_when_prompt_fits() {
+        // 100-token prompt + 24 budget = 124 <= 2048 → nothing dropped.
+        assert_eq!(prompt_tokens_to_skip(100, 24, 2048), 0);
+    }
+
+    #[test]
+    fn prompt_skip_drops_front_when_over_budget() {
+        // budget = 2048 - 24 = 2024; prompt 2100 → drop 76 from the front.
+        assert_eq!(prompt_tokens_to_skip(2100, 24, 2048), 76);
+    }
+
+    #[test]
+    fn prompt_skip_at_exact_budget_keeps_all() {
+        // prompt == budget (2024) → nothing dropped.
+        assert_eq!(prompt_tokens_to_skip(2024, 24, 2048), 0);
+    }
+
+    #[test]
+    fn prompt_skip_reserves_at_least_one_prompt_token() {
+        // max_tokens >= n_ctx would leave a zero budget; clamp budget to >=1, so
+        // the worst case keeps exactly the last prompt token.
+        assert_eq!(prompt_tokens_to_skip(50, 2048, 2048), 49);
+        assert_eq!(prompt_tokens_to_skip(50, 9999, 2048), 49);
     }
 
     #[test]
