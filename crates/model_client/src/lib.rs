@@ -267,18 +267,16 @@ fn complete_on_worker(
         return Ok(String::new());
     }
 
-    // Clamp the prompt to the context window so prompt + generation fit; drop
-    // leading tokens, keeping the caret-adjacent tail. Otherwise an over-long
-    // prompt would fail every decode and silently yield no completion.
-    let skip = prompt_tokens_to_skip(tokens.len(), max_tokens, context.n_ctx() as usize);
-    if skip > 0 {
-        tokens.drain(..skip);
+    // All position arithmetic comes from the pure, unit-tested `plan_decode`:
+    // clamp the prompt to the context window (drop leading tokens, keep the
+    // caret-adjacent tail) and reuse the shared KV prefix, re-decoding only the
+    // divergent suffix from `reuse` onward (which also drops any generated tokens
+    // left over from the previous completion).
+    let plan = plan_decode(prev_tokens, &tokens, max_tokens, context.n_ctx() as usize);
+    if plan.skip > 0 {
+        tokens.drain(..plan.skip);
     }
-
-    // Keep the shared prefix in the KV cache; drop everything from `reuse`
-    // onward — that removes both the divergent prompt tail and any generated
-    // tokens left over from the previous completion.
-    let reuse = reusable_prefix_len(prev_tokens, &tokens);
+    let reuse = plan.reuse;
     let reset_on_err = |context: &mut LlamaContext<'_>, prev: &mut Vec<LlamaToken>| {
         let _ = context.clear_kv_cache_seq(Some(0), None, None);
         prev.clear();
@@ -427,6 +425,43 @@ pub fn prompt_tokens_to_skip(prompt_len: usize, max_tokens: usize, n_ctx: usize)
     prompt_len.saturating_sub(budget)
 }
 
+/// The arithmetic for one decode, derived purely from the previous (clamped)
+/// prompt tokens, the new prompt tokens, the generation budget, and the context
+/// window. Separated from the FFI so the position math — the part a "wrong
+/// `seq_rm` / position" bug would corrupt — is unit-testable without a model.
+///
+/// Given a plan, `complete_on_worker` must: drop the first `skip` tokens, keep
+/// KV positions `[0, reuse)` and clear `[reuse, ∞)`, decode the clamped tokens
+/// `[reuse, prompt_len)` at those same positions, then generate starting at
+/// position `prompt_len`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodePlan {
+    /// Leading prompt tokens to drop so prompt + generation fit the window.
+    pub skip: usize,
+    /// KV-cache prefix (of the clamped prompt) to reuse; the suffix is re-decoded.
+    pub reuse: usize,
+    /// Clamped prompt length; generation begins at this position.
+    pub prompt_len: usize,
+}
+
+/// Compute the [`DecodePlan`] for `current` prompt tokens against the `prev`
+/// (clamped) tokens still in the KV cache.
+pub fn plan_decode<T: PartialEq>(
+    prev: &[T],
+    current: &[T],
+    max_tokens: usize,
+    n_ctx: usize,
+) -> DecodePlan {
+    let skip = prompt_tokens_to_skip(current.len(), max_tokens, n_ctx);
+    let clamped = &current[skip..];
+    let reuse = reusable_prefix_len(prev, clamped);
+    DecodePlan {
+        skip,
+        reuse,
+        prompt_len: clamped.len(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,6 +540,56 @@ mod tests {
         let model: Box<dyn LocalModel> = Box::new(Fixed("ok"));
 
         model.shutdown();
+    }
+
+    #[test]
+    fn plan_decode_fresh_prompt_no_reuse_no_skip() {
+        // No prev tokens, prompt fits: decode the whole prompt from position 0.
+        let plan = plan_decode::<i32>(&[], &[1, 2, 3, 4], 24, 2048);
+        assert_eq!(
+            plan,
+            DecodePlan {
+                skip: 0,
+                reuse: 0,
+                prompt_len: 4
+            }
+        );
+    }
+
+    #[test]
+    fn plan_decode_reuses_shared_prefix() {
+        // prev=[1,2,3], current=[1,2,9]: keep [1,2], re-decode the divergent tail.
+        let plan = plan_decode(&[1, 2, 3], &[1, 2, 9], 24, 2048);
+        assert_eq!(
+            plan,
+            DecodePlan {
+                skip: 0,
+                reuse: 2,
+                prompt_len: 3
+            }
+        );
+    }
+
+    #[test]
+    fn plan_decode_clamps_then_computes_reuse_on_clamped_tokens() {
+        // n_ctx=6, max_tokens=2 → budget 4. current len 6 → skip 2, clamped is the
+        // last 4 tokens. reuse is computed against prev using the CLAMPED tokens.
+        let prev = vec![3, 4, 5, 6]; // matches the clamped tail [3,4,5,6]
+        let current = vec![1, 2, 3, 4, 5, 6];
+        let plan = plan_decode(&prev, &current, 2, 6);
+        assert_eq!(plan.skip, 2);
+        assert_eq!(plan.prompt_len, 4);
+        // clamped == prev → reuse leaves one to re-decode → 3.
+        assert_eq!(plan.reuse, 3);
+    }
+
+    #[test]
+    fn plan_decode_reuse_never_reaches_prompt_len() {
+        // Identical prompt: must leave at least one token to re-decode.
+        let plan = plan_decode(&[1, 2, 3], &[1, 2, 3], 24, 2048);
+        assert_eq!(plan.prompt_len, 3);
+        assert!(plan.reuse < plan.prompt_len, "reuse must leave >=1 to decode");
+        assert_eq!(plan.reuse, 2);
     }
 
     #[test]

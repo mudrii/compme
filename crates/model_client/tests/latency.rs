@@ -8,9 +8,13 @@ fn model_path() -> PathBuf {
         .join("../../tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf")
 }
 
-// Ignored by default: needs the qwen2.5-0.5b GGUF on disk and a Metal GPU, so a
-// plain `cargo test` reports it as *ignored* rather than silently passing. Run
-// the real ATDD with `cargo test -p model_client -- --ignored`.
+// Ignored by default: needs the qwen2.5-0.5b GGUF on disk and a Metal GPU. Run
+// with `cargo test -p model_client -- --ignored`. NOTE: even under `--ignored`
+// this SKIPs (and passes) when the GGUF is absent, so it is NOT a CI guard. The
+// position/skip/reuse arithmetic it would otherwise protect is covered in CI by
+// the pure `plan_decode`/`reusable_prefix_len`/`prompt_tokens_to_skip` unit tests
+// in `src/lib.rs`; this test adds an end-to-end real-model check when a GGUF and
+// GPU are available.
 #[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn warm_completion_under_500ms() {
