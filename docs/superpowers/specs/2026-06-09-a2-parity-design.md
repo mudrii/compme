@@ -26,12 +26,13 @@
 - **Already-visible ghost on a mid-session pref change / snooze is not retracted** (review finding #2). Gating runs at request-submission, so it blocks the *next* completion but does not dismiss a ghost already on screen. This is latent: snooze and runtime per-app toggling have no control surface yet (A3). When they do, the snooze/exclude edge must call `engine.on_dismiss()` like the disable/secure edges already do.
 - **A gate-dropped request leaves the engine's `requested` set** with no inbound completion (review finding #3). Benign: the next edit advances the snapshot and stales it; no ghost can show without a completion. Self-healing, documented for any future pending-generation throttle.
 
-## Remaining A2 — pure/implementable (deterministic, unit-testable)
+## Implemented since (deterministic, unit-tested + reviewed)
 
 | Feature | Plan | §16 gate |
 |---|---|---|
-| **Multi-candidate + cycle** | ✅ done — `model_client::complete_n` N-sample (greedy + temp/top_k/top_p/seed); `engine_core` `CompletionReadyMulti`/`Cycle` + candidate list; Down-arrow cycle key; accept inserts shown; AcceptWord collapses to active | ✅ N candidates generated; cycle switches; accept inserts shown |
-| **Pasteboard / previous-input context** | `context` augmentation + adapter pasteboard read (already present as fallback); opt-in; bounded; redacted | clipboard/previous-input augments prompt when enabled; off by default |
+| **Multi-candidate + cycle** | ✅ `model_client::complete_n` N-sample (greedy + temp/top_k/top_p/seed); `engine_core` `CompletionReadyMulti`/`Cycle` + candidate list; Down-arrow cycle key; accept inserts shown; AcceptWord collapses to active | ✅ N candidates generated; cycle switches; accept inserts shown |
+| **Previous-input context** | ✅ `context::build_context_block` (bounded, newline-collapsed, opt-in); `app` `PreviousInputs` per-app ring (redacted, deduped) recorded on Full-accept; worker prepends the block | ✅ previous-input augments prompt when on; off by default; per-app scoped (cross-app is a separate opt-in we don't clone). **Clipboard half:** assembler supports a pasteboard source; the live adapter pasteboard read wiring is the residual. |
+| **Compatibility tiers** | ✅ `compat::compatibility_tier(bundle_id)` → Works/SetupNeeded/MirrorOnly/Partial/SidebarOnly/Unsupported/Unknown; run loop gates out `Unsupported` apps | ◑ deterministic classifier + unsupported-gating done; **per-app live behavior verification** (each app behaves as its tier claims) is environment-bound. |
 
 ## Remaining A2 — GUI / permission / live-bound (specified; validation environment-bound)
 
@@ -43,7 +44,7 @@ These cannot be fully validated headlessly (need a console GUI session, TCC perm
 | Google Docs Accessibility setup | onboarding detects missing AX/Text-Metrics, guides; verified Docs round-trip | needs Chrome + a Google Doc, live |
 | Browser mirror-window fallback (Firefox/Zen) | mirror renders + accepts; documented UX | needs Firefox/Zen live |
 | Terminal/iTerm AI-agent prompt activation | activates only in NL prompt contexts, not arbitrary shell | needs Terminal/iTerm + heuristic tuning live |
-| Compatibility matrix (Works/Setup/Mirror/Partial/Sidebar/Unsupported) | inline+accept verified per app family; tiers explicit | needs each representative app live |
+| Compatibility matrix (Works/Setup/Mirror/Partial/Sidebar/Unsupported) | inline+accept verified per app family; tiers explicit | **deterministic classifier + unsupported-gating done (`compat`)**; per-app *live* verification needs each representative app |
 
 ## Testing strategy
 Every pure feature is unit-tested (RED→GREEN), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` stay green, and each lands with a code review whose findings are fixed before commit. GUI/permission-bound features are specified with executable/manual gates recorded in acceptance logs when run on a console session.
