@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use core_graphics::event::{CGEvent, CGEventTapLocation, KeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use platform::{AcceptAction, PlatformAdapter};
+use platform::{AcceptAction, PlatformAdapter, TapControl};
 use platform_macos::MacosPlatformAdapter;
 
 /// Grave/backtick (key above Tab). Must match the engine's accept binding:
@@ -33,9 +33,11 @@ fn main() {
 
     let actions = Arc::new(Mutex::new(Vec::new()));
     let actions_for_callback = Arc::clone(&actions);
-    let subscription = match adapter.subscribe_accept(Arc::new(move |action| {
-        println!("ACCEPT_ACTION {action:?}");
-        actions_for_callback.lock().expect("actions").push(action);
+    let subscription = match adapter.subscribe_accept(Arc::new(move |control| {
+        println!("ACCEPT_ACTION {control:?}");
+        if let TapControl::Accept(action) = control {
+            actions_for_callback.lock().expect("actions").push(action);
+        }
     })) {
         Ok(subscription) => subscription,
         Err(err) => {

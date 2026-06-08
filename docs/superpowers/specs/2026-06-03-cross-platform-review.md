@@ -155,7 +155,7 @@ Tier = best achievable interaction. "Accept" = how the user commits a suggestion
 
 | Platform / env | Tier | Accept mechanism | Overlay | Notes |
 |---|---|---|---|---|
-| **macOS 14+** | **Full inline** | CGEventTap (Input Monitoring) | NSPanel | Reference platform (Sub-project A) |
+| **macOS 14+** | **Full inline** | CGEventTap (Input Monitoring) — *our current impl* | NSPanel | Reference platform (Sub-project A). **[CORR 06-09 — F1/D1]** This is *Complete Me's* mechanism, **not Cotypist parity**: Cotypist ships **no CGEventTap** (AX + CGEvent synthesis + **Carbon `RegisterEventHotKey`**, Accessibility-only). Dropping the tap for a Carbon hotkey is the open A1b Task 5c go/no-go (design spec §15 F1). |
 | **Windows — WPF/WinForms/Win32/native Qt** | **Full inline** | WH_KEYBOARD_LL | layered window (PMv2) | The strong Windows tier |
 | **Windows — Electron/Chromium (forced a11y)** | **Popup** | WH_KEYBOARD_LL | layered window | Caret often whole-line; VS Code/Slack/Teams/browsers |
 | **Windows — Electron default / Terminal / elevated** | **Hotkey / Unsupported** | dedicated hotkey | popup panel | a11y off or UIPI-blocked |
@@ -165,6 +165,34 @@ Tier = best achievable interaction. "Accept" = how the user commits a suggestion
 | **Any — password / secure / elevated** | **Blocked** | — | — | Never read/insert |
 
 Per-platform inference (orthogonal, all tiers): macOS Metal; Windows/Linux Vulkan+CPU; CUDA optional.
+
+---
+
+## 7b. Cotypist feature × platform parity matrix **[added 2026-06-09 — D16]**
+
+Every cloned Cotypist feature (rows) against each target platform (cols). Legend: **✓** native parity · **◑** degraded/altered (works, reduced) · **⌨** hotkey/IME-only · **✗** not achievable on that platform · **n/a** not applicable. Payment/licensing/tiers/seats are out of scope everywhere (Project Scope). This matrix is the **source of truth for per-platform exit criteria** — a platform is "parity" only when every non-✗ cell has an acceptance gate passed.
+
+| Cotypist feature | macOS | Windows (strong) | Win Electron | Linux X11 | Linux Wayland KDE/wlroots | Linux Wayland GNOME |
+|---|---|---|---|---|---|---|
+| Read text + caret context | ✓ AX | ✓ UIA | ◑ forced-a11y | ✓ AT-SPI | ✓ AT-SPI | ✓ AT-SPI |
+| Inline ghost overlay at caret | ✓ NSPanel | ✓ layered | ◑ whole-line caret | ✓ override-redirect | ✓ layer-shell | ✗ (IME candidate UI only) |
+| Accept next-word (Tab) | ✓ | ✓ WH_KEYBOARD_LL | ✓ | ⌨ dedicated hotkey¹ | ◑ inhibit/hotkey | ⌨ IBus owns key |
+| Accept full (key-above-Tab) | ✓ | ✓ | ✓ | ⌨ hotkey | ◑ | ⌨ IME |
+| Esc dismiss + suppress (D11) | ◑ planned | ✓ | ✓ | ✓ | ✓ | ◑ IME |
+| Option/Alt+Tab literal-Tab bypass (D11) | ◑ planned | ✓ | ✓ | ✓ | ✓ | ◑ |
+| Per-app Tab disable + per-app/domain overrides | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Secure-field / password block | ✓ SecureInput | ✓ UIPI/secure | ✓ | ✓ | ✓ | ✓ |
+| Prompt-based personalization (global+per-app+per-domain, 6-stop full-reach) | ✓ portable | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Encrypted local memory (rusqlite + OS keystore) | ✓ Keychain | ✓ DPAPI/Credential | ✓ | ◑ Secret Service | ◑ Secret Service | ◑ Secret Service |
+| Pasteboard / previous-input context | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cross-app previous inputs | ✓ | ✓ | ✓ | ✓ | ◑ front-app best-effort | ✗ front-app extension-only |
+| Screen-recording / OCR context (opt-in) | ✓ ScreenCaptureKit+Vision | ✓ Graphics Capture+OCR | ✓ | ◑ X11 capture+OCR | ◑ portal capture | ◑ portal capture |
+| Native inline-prediction suppression | ◑ owned-only | ◑ detect/back-off | n/a | n/a | n/a | n/a |
+| Model catalog + download (hardware-gated, no price gate) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Pause/snooze, stats, launch-at-login | ✓ SMAppService | ✓ Run-key/Task | ✓ | ✓ autostart | ✓ autostart | ✓ autostart |
+| Local inference (llama.cpp) | ✓ Metal | ✓ Vulkan/CUDA | ✓ | ✓ Vulkan/CPU | ✓ | ✓ |
+
+¹ Plain Tab cannot be grabbed globally on X11/Wayland without breaking the desktop — Linux accept defaults to a dedicated hotkey, not bare Tab (documented divergence, not a bug). **GNOME/Wayland is the hard floor** (overlay ✗, key-intercept ✗, front-app ✗ → IME-backend reduced mode). Each ◑/⌨ cell needs an explicit, documented UX so users know what they get per platform.
 
 ---
 

@@ -6,7 +6,7 @@ use std::time::Duration;
 pub type AppId = String;
 pub type FocusCallback = Arc<dyn Fn(FieldHandle) + Send + Sync + 'static>;
 pub type CaretCallback = Arc<dyn Fn(FieldHandle, Option<ScreenRect>) + Send + Sync + 'static>;
-pub type AcceptCallback = Arc<dyn Fn(AcceptAction) + Send + Sync + 'static>;
+pub type AcceptCallback = Arc<dyn Fn(TapControl) + Send + Sync + 'static>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FieldHandle {
@@ -115,6 +115,14 @@ pub enum KeyInterceptMode {
 pub enum AcceptAction {
     Full,
     Word,
+}
+
+/// A control signal delivered by the accept key-interception tap. Either an
+/// accept (Tab/grave) or a dismiss+suppress (Esc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TapControl {
+    Accept(AcceptAction),
+    Dismiss,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

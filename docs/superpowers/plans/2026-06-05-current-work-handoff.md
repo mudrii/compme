@@ -1,5 +1,7 @@
 # Current Work Handoff - 2026-06-05
 
+> **⚠️ SUPERSEDED — historical snapshot (2026-06-05).** Point-in-time handoff; do not treat as current. Since written: the **post-flip grave→Full live GUI gates are CLOSED** (design spec §15 G6/I11, M4 Max 2026-06-08) — references below to "live grave-accept validation pending" / "fresh desktop rerun needed" are stale. The crate **`core` was renamed `engine_core`** (`crates/core` no longer exists). G3 (KV-cache reuse / persistent model actor) is **implemented and closed**. For current status see `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` §15 and the Project Scope note at its top (open-source, multi-platform, parity-minus-payment).
+
 ## Scope
 
 This handoff covers the plan-review and spike-validation work completed so far in `/Users/mudrii/src/compme`, focused on A0 readiness, P3-P7 manual acceptance, the P6 overlay redo, the P2 model decision, plan corrections, and current go/no-go.

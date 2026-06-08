@@ -1,7 +1,7 @@
 # P1 MVP Quality — Design
 
 **Date:** 2026-06-07
-**Status:** Implemented + live-validated on macOS (M4 Max). **[CORR 06-07]** All P1 items are *implemented*; live validation is complete **except** two hardware/UI-bound checks that stay manual: true-2× / multi-monitor coordinate offset (no second display available) and a literal tray-menu mouse click (the accessory-policy status item exposes no menu to System Events — the Enable toggle is validated via `SIGUSR1` instead). See "Live validation" and "Known environment limits" below.
+**Status:** Implemented + live-validated on macOS (M4 Max). **[CORR 06-07; updated 06-08 per §15 G7]** All P1 items are *implemented*; live validation is complete **except** two hardware/UI-bound residuals: (1) **true-2× / multi-monitor** caret offset — **since measured on two displays** (built-in 2× Retina + external 1×, design spec §15 G7) with the backing-scale helper unit-proven; only a **live 2× re-confirm needs the built-in Retina panel reconnected** (not "no second display"); and (2) a literal tray-menu mouse click (the accessory-policy status item exposes no menu to System Events — the Enable toggle is validated via `SIGUSR1` instead). See "Live validation" and "Known environment limits" below.
 **Scope:** P1 "MVP quality / correctness" items from the pending list:
 - **6** Retina/multi-monitor offset — quantify via diagnostic + manual measurement (coordinate code already exists).
 - **7** Tray / menu-bar UI — status + enable/disable toggle.
@@ -139,11 +139,11 @@ This is the bulk of the AppKit/objc2 glue: **build-verified + live**, not unit-t
 - **Tray instantiates** live (status item appears; binary exits clean) — smoke run, no panic, no "tray unavailable".
 - **Enable/disable toggle + gating + dismiss** verified live and headless via `SIGUSR1` (a scriptable equivalent of the tray's Enable item): `status=Ready` with completions flowing → SIGUSR1 → `status=Disabled enabled=false` (suggestions gated, showing ghost dismissed) → SIGUSR1 → `status=Ready`. The tray menu's Enable item flips the same `flags.enabled` atomic.
 - **Permissions:** `accessibility_trusted()` returns true (granted); status derivation + re-poll exercised live.
-- **Retina (item 6):** measured on the built-in display — `display_scales = [(0,0,3840×1600), 1.0]` and caret rect `(619.05, 215.0, 1×14)` global screen points. Scale 1.0 ⇒ AX points equal pixels, `normalize_ax_screen_rect` pass-through correct, **no offset**. The true-2× / multi-monitor case (scale > 1.0) remains hardware-bound (no second display available); the diagnostic + normalization code are ready for it.
+- **Retina (item 6):** measured on the built-in display — `display_scales = [(0,0,3840×1600), 1.0]` and caret rect `(619.05, 215.0, 1×14)` global screen points. Scale 1.0 ⇒ AX points equal pixels, `normalize_ax_screen_rect` pass-through correct, **no offset**. **[Updated 06-08 — §15 G7]** The true-2× / multi-monitor case (scale > 1.0) was **measured on two displays** (built-in 2× Retina + external 1×) and the backing-scale helper is unit-proven (3024/1512→2.0); only a **live 2× re-confirm remains** (needs the built-in Retina panel reconnected). The diagnostic + normalization code are ready and exercised.
 
 ### Known environment limits (manual QA only)
 - **Visual menu-bar click** of the tray cannot be automated: macOS exposes 0 menu bars for an accessory-policy status item to System Events. The toggle *behavior* is verified via SIGUSR1 + unit tests (`should_dismiss`, `derive_status`, `suggestions_allowed`); only the literal mouse-click on the menu item is manual.
-- **Multi-monitor Retina offset** needs a second display.
+- **Multi-monitor Retina offset** — measured on two displays (§15 G7); only a live 2× re-confirm needs the built-in Retina panel reconnected.
 
 ## Additional config knobs (implemented)
 
@@ -153,7 +153,7 @@ This is the bulk of the AppKit/objc2 glue: **build-verified + live**, not unit-t
 
 ## Out of scope (P2+)
 
-Per-app settings/personalization, per-domain browser controls, multi-candidate UI, local encrypted memory, optional Screen Recording / OCR context, native inline-prediction suppression, IME composition, KV-cache reuse, long-lived model actor, sentence/punctuation stop-boundary, Windows/Linux adapters. Automated multi-monitor geometry correction beyond the existing pixel/point guard (revisit only if measurement shows an offset).
+Per-app settings/personalization, per-domain browser controls, multi-candidate UI, local encrypted memory, optional Screen Recording / OCR context, native inline-prediction suppression, IME composition, sentence/punctuation stop-boundary, Windows/Linux adapters. Automated multi-monitor geometry correction beyond the existing pixel/point guard (revisit only if measurement shows an offset). **[CORR 06-08] Removed from this out-of-scope list: KV-cache reuse and the long-lived model actor — both are now implemented and closed (design spec §15 G3); see `model_client::LlamaModel` persistent context + `reusable_prefix_len`.**
 
 Specific Cotypist-alignment backlog:
 
@@ -162,11 +162,11 @@ Specific Cotypist-alignment backlog:
 - Terminal.app/iTerm AI-agent prompt activation, while leaving normal shell completion alone by default.
 - Current compatibility matrix, including Slack partial support, VS Code/Cursor/Windsurf sidebar-chat-only activation, TheBrain support verification, and explicit unsupported status for Pages/Scrivener/Thunderbird/OneNote/BBEdit/Sublime/Ghostty/cmux/Warp unless proven otherwise.
 - Full shortcut settings: next-word, full-completion, dismiss, force-activate, temporary app toggle, global toggle, and per-app Tab disable.
-- Custom instructions and personalization across global, per-app, and per-domain contexts, including a recheck of current Cotypist strength/tier semantics before choosing 3-level, 6-stop, or intentionally divergent behavior.
+- Custom instructions and personalization across global, per-app, and per-domain contexts. **[Scope-locked 2026-06-09]** Ship the **6-stop strength slider with full reach for every user — no tier caps** (design spec Project Scope / §15 D2/D15); no 3-level/divergent decision remains open.
 - Encrypted local typing-history database with Keychain-protected key, per-app/domain counts, delete-all, and per-scope deletion.
 - Typo/suggested-fix behavior separated from full autocorrect, because current public pages describe both and not all help copy agrees.
-- Product/tier decision: either implement feature gates for quotas, larger models, clipboard awareness, custom instructions, autocorrect, Labs, and device counts, or document an explicit no-pricing-gates divergence.
-- Telemetry decision and policy. P1 has no network telemetry; any future crash/usage reporting needs explicit payload, provider, region, default state, and opt-out/opt-in semantics.
+- ~~Product/tier decision~~ **[RESOLVED 2026-06-09 — design spec Project Scope / §15 D15]:** no pricing/feature gates. Quotas, larger models, clipboard awareness, custom instructions, autocorrect, Labs are **all available to every user**; device-count/seat licensing is **dropped**. The only gate is hardware capability. No decision remains.
+- Telemetry policy. **[Scope-locked 2026-06-09]** No proprietary telemetry (Sentry/BigQuery are Cotypist's, not ours). P1 has no network telemetry; default stays **no network analytics**. Any future diagnostics are local-only + opt-in, with explicit payload/provider/region/default/opt-in semantics — never typed/clipboard/OCR/prompt content.
 - Signed/notarized release packaging plus native updater artifacts, signing key handling, endpoint format, and failure recovery. Sparkle is the leading candidate because Cotypist ships Sparkle; any non-Sparkle updater needs an explicit A3 decision.
 
 ## Decisions (from brainstorming)

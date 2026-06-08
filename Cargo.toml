@@ -11,3 +11,6 @@ members = [
     "crates/app",
 ]
 exclude = ["tools/spike"]
+
+[workspace.package]
+license = "Apache-2.0"

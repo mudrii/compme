@@ -23,7 +23,7 @@ use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use engine::{CompletionRequest, Engine, TriggerPolicy};
 use platform::{
     AcceptAction, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode, OverlayPlacement,
-    PlatformAdapter, PlatformError, ScreenRect, SecurityState, Toolkit,
+    PlatformAdapter, PlatformError, ScreenRect, SecurityState, TapControl, Toolkit,
 };
 use platform_macos::{
     accessibility_trusted, display_scales, prompt_accessibility_trust, secure_input_enabled,
@@ -80,6 +80,8 @@ enum HostEvent {
     Focus(FieldHandle),
     Caret(FieldHandle, Option<ScreenRect>),
     Accept(AcceptAction),
+    /// Esc: dismiss the ghost and suppress completions in the current field.
+    Dismiss,
 }
 
 /// Collapse a burst of consecutive same-field `Caret` events into just the last
@@ -318,9 +320,13 @@ pub fn run() -> Result<(), String> {
 
     let accept_tx = Arc::clone(&tx);
     let accept_sub = adapter
-        .subscribe_accept(Arc::new(move |action| {
+        .subscribe_accept(Arc::new(move |control| {
+            let event = match control {
+                TapControl::Accept(action) => HostEvent::Accept(action),
+                TapControl::Dismiss => HostEvent::Dismiss,
+            };
             if let Ok(tx) = accept_tx.lock() {
-                let _ = tx.send(HostEvent::Accept(action));
+                let _ = tx.send(event);
             }
         }))
         .map_err(|err| format!("subscribe accept: {err:?}"))?;
@@ -422,6 +428,13 @@ pub fn run() -> Result<(), String> {
                         }
                         Err(err) => eprintln!("complete-me: on_accept error: {err:?}"),
                     }
+                }
+                HostEvent::Dismiss => {
+                    eprintln!("complete-me: dismiss (Esc)");
+                    offer_all(
+                        &mut latest,
+                        log_err("on_dismiss_suppress", engine.on_dismiss_suppress()),
+                    );
                 }
             }
         }

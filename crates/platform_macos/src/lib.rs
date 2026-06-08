@@ -52,8 +52,8 @@ use platform::{
     AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback,
     ContextSource, Environment, FieldHandle, FocusCallback, InsertStrategy, Inserted,
     KeyInterceptMode, OffsetEncoding, OperatingSystem, OverlayPlacement, OverlayPresenter,
-    PlatformAdapter, PlatformError, ScreenRect, SecurityState, Subscription, TextContext,
-    TextRange, Toolkit,
+    PlatformAdapter, PlatformError, ScreenRect, SecurityState, Subscription, TapControl,
+    TextContext, TextRange, Toolkit,
 };
 
 mod tray;
@@ -81,6 +81,9 @@ const ESRCH: i32 = 3;
 /// (partial), the grave/backtick key above Tab accepts the whole completion.
 const KEYCODE_TAB: i64 = 48;
 const KEYCODE_GRAVE: i64 = 50;
+/// Escape: dismisses the showing ghost and suppresses completions in the field
+/// until refocus/edit (Cotypist parity).
+const KEYCODE_ESCAPE: i64 = 53;
 const SYNTHETIC_EVENT_TAG: i64 = 0x636d706c746d65;
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(1000);
 
@@ -134,7 +137,7 @@ enum CallbackMessage {
     },
     Accept {
         callback: AcceptCallback,
-        action: AcceptAction,
+        control: TapControl,
     },
     Stop,
 }
@@ -525,12 +528,17 @@ struct AcceptTapEvent {
     event_type: CGEventType,
     keycode: i64,
     source_user_data: i64,
+    /// Whether the Option (Alternate) modifier is held — Option+Tab is a
+    /// literal-Tab bypass.
+    option_down: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AcceptTapDecision {
     Keep,
     Drop(AcceptAction),
+    /// Consume the key and route a dismiss+suppress to the engine (Esc).
+    DropDismiss,
     ReenableAndKeep,
 }
 
@@ -1657,10 +1665,15 @@ fn accept_consumer_tap_handler(
 
         let action = accept_action.lock().ok().and_then(|action| *action);
         let decision = accept_tap_decision(AcceptTapKind::Consumer, event, action);
-        if let AcceptTapDecision::Drop(action) = decision {
+        let control = match decision {
+            AcceptTapDecision::Drop(action) => Some(TapControl::Accept(action)),
+            AcceptTapDecision::DropDismiss => Some(TapControl::Dismiss),
+            _ => None,
+        };
+        if let Some(control) = control {
             let _ = callback_tx.send(CallbackMessage::Accept {
                 callback: Arc::clone(&callback),
-                action,
+                control,
             });
         }
         decision
@@ -1687,11 +1700,15 @@ fn accept_tap_decision(
     {
         // Cotypist binding: the keycode picks the action, not the armed value.
         // Tab accepts the next word (partial); the grave/backtick key above Tab
-        // accepts the whole completion. `action.is_some()` is only the
-        // armed/visible gate.
+        // accepts the whole completion; Esc dismisses + suppresses the field.
+        // `action.is_some()` is only the armed/visible gate.
         match event.keycode {
+            // Option+Tab is the per-app Tab bypass: pass a literal Tab through
+            // (no Word accept, no swallow).
+            KEYCODE_TAB if event.option_down => return AcceptTapDecision::Keep,
             KEYCODE_TAB => return AcceptTapDecision::Drop(AcceptAction::Word),
             KEYCODE_GRAVE => return AcceptTapDecision::Drop(AcceptAction::Full),
+            KEYCODE_ESCAPE => return AcceptTapDecision::DropDismiss,
             _ => {}
         }
     }
@@ -1730,10 +1747,13 @@ fn install_worker_accept_tap_resource(
                 event_type,
                 keycode: event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
                 source_user_data: event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA),
+                option_down: event
+                    .get_flags()
+                    .contains(CGEventFlags::CGEventFlagAlternate),
             };
             match handler(event) {
                 AcceptTapDecision::Keep => CallbackResult::Keep,
-                AcceptTapDecision::Drop(_) => CallbackResult::Drop,
+                AcceptTapDecision::Drop(_) | AcceptTapDecision::DropDismiss => CallbackResult::Drop,
                 AcceptTapDecision::ReenableAndKeep => {
                     reenable_event_tap(tap_ref_for_callback.load(Ordering::Acquire));
                     CallbackResult::Keep
@@ -3227,9 +3247,9 @@ fn run_callback_dispatcher(rx: mpsc::Receiver<CallbackMessage>) {
             CallbackMessage::Dispatch { dispatch, event } => {
                 dispatch_observer_event(dispatch, event);
             }
-            CallbackMessage::Accept { callback, action } => {
+            CallbackMessage::Accept { callback, control } => {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    callback(action);
+                    callback(control);
                 }));
             }
             CallbackMessage::Stop => break,
@@ -5762,7 +5782,50 @@ mod tests {
             event_type,
             keycode,
             source_user_data,
+            option_down: false,
         }
+    }
+
+    fn accept_tap_event_with_option(event_type: CGEventType, keycode: i64) -> AcceptTapEvent {
+        AcceptTapEvent {
+            event_type,
+            keycode,
+            source_user_data: 0,
+            option_down: true,
+        }
+    }
+
+    #[test]
+    fn option_tab_passes_through_as_literal_tab() {
+        // Option+Tab is Cotypist's per-app Tab bypass: a real Tab reaches the
+        // field (no Word accept, no swallow), even while armed.
+        let opt_tab = accept_tap_event_with_option(CGEventType::KeyDown, KEYCODE_TAB);
+
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, opt_tab, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
+        );
+    }
+
+    #[test]
+    fn escape_while_armed_dismisses_and_suppresses() {
+        let esc = accept_tap_event(CGEventType::KeyDown, KEYCODE_ESCAPE, 0);
+
+        // Armed consumer tap: Esc is consumed and routed as a dismiss+suppress.
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, esc, Some(AcceptAction::Full)),
+            AcceptTapDecision::DropDismiss
+        );
+        // Unarmed (no suggestion visible): Esc passes through to the app.
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Consumer, esc, None),
+            AcceptTapDecision::Keep
+        );
+        // Observer (listen-only) tap never consumes Esc.
+        assert_eq!(
+            accept_tap_decision(AcceptTapKind::Observer, esc, Some(AcceptAction::Full)),
+            AcceptTapDecision::Keep
+        );
     }
 
     #[test]
@@ -5883,7 +5946,7 @@ mod tests {
             action_rx
                 .recv_timeout(Duration::from_secs(1))
                 .expect("word accept action"),
-            AcceptAction::Word
+            TapControl::Accept(AcceptAction::Word)
         );
         assert_eq!(
             consumer_handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_GRAVE, 0)),
@@ -5893,7 +5956,7 @@ mod tests {
             action_rx
                 .recv_timeout(Duration::from_secs(1))
                 .expect("full accept action"),
-            AcceptAction::Full
+            TapControl::Accept(AcceptAction::Full)
         );
         subscription.set_accept_action(None).expect("disarm accept");
         assert_eq!(

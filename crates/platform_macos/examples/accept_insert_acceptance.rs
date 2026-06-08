@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use core_graphics::event::{CGEvent, CGEventTapLocation, KeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use platform::{
-    AcceptAction, FieldHandle, InsertStrategy, PlatformAdapter, PlatformError, TextContext,
+    AcceptAction, FieldHandle, InsertStrategy, PlatformAdapter, PlatformError, TapControl,
+    TextContext,
 };
 use platform_macos::MacosPlatformAdapter;
 
@@ -126,7 +127,12 @@ fn main() {
     let adapter_for_accept = Arc::clone(&adapter);
     let accept_state = Arc::clone(&state);
     let expected_for_accept = expected_text.clone();
-    let accept = match adapter.subscribe_accept(Arc::new(move |action| {
+    let accept = match adapter.subscribe_accept(Arc::new(move |control| {
+        let action = match control {
+            TapControl::Accept(action) => action,
+            // This accept-insert harness only exercises Tab/grave; ignore Esc.
+            TapControl::Dismiss => return,
+        };
         println!("ACCEPT_ACTION {action:?}");
         let field = accept_state.lock().expect("state").field.clone();
         let result = match field {

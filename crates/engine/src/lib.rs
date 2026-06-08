@@ -213,6 +213,15 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    /// Esc: hide the showing ghost AND suppress completions in the current field
+    /// until refocus/edit (Cotypist parity, A1b Task 5b / §15 D11).
+    pub fn on_dismiss_suppress(
+        &mut self,
+    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self.machine.on_event(Event::DismissSuppress);
+        self.dispatch(commands)
+    }
+
     fn dispatch(
         &mut self,
         commands: Vec<Command>,

@@ -1,10 +1,18 @@
 # Complete Me
 
-Complete Me is an experimental macOS inline-completion engine. The repository
-currently contains a Rust workspace for the core completion contract, a macOS
-platform adapter, a llama.cpp-backed local model seam, and a separate spike
-prototype used to validate low-level macOS behavior before it is promoted into
-the workspace.
+Complete Me is an **open-source, multi-platform** inline text-completion engine —
+a from-scratch re-implementation of all [Cotypist](https://cotypist.app) functionality
+**except payment, licensing, subscription tiers, and multi-device seats** (the only
+parts deliberately not cloned). Every feature is available to every user with no
+pricing gates; the only constraint on which local models are offered is hardware
+capability. macOS ships first; **Windows and Linux are committed deliverables** built
+behind a shared cross-platform `PlatformAdapter` contract. All inference is local
+(llama.cpp), with no proprietary telemetry.
+
+The repository currently contains a Rust workspace for the core completion contract, a
+macOS platform adapter, a llama.cpp-backed local model seam, and a separate spike
+prototype used to validate low-level macOS behavior before it is promoted into the
+workspace.
 
 The project is not packaged as an end-user app yet. The current codebase is a
 contract-first implementation and validation harness for:
@@ -161,6 +169,14 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 - [Engine/macOS MVP design](docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md)
 - [A1b macOS adapter contract](docs/superpowers/plans/2026-06-04-a1b-macos-adapter-contract.md)
 - [Current work handoff](docs/superpowers/plans/2026-06-05-current-work-handoff.md)
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). The Apache-2.0 patent
+grant is the deliberate choice for an inline-completion tool. Local model weights
+are downloaded under their own licenses (e.g. Gemma terms, Qwen Apache-2.0, Llama
+community license) and are never bundled — the download flow surfaces each
+model's license for acceptance.
 
 ## Status
 

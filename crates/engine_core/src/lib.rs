@@ -62,6 +62,9 @@ pub enum Event {
     AcceptFull,
     AcceptWord,
     Dismiss,
+    /// Esc: hide any showing ghost AND suppress new completions in the current
+    /// field until the user refocuses or makes another edit (Cotypist parity).
+    DismissSuppress,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,6 +114,9 @@ pub struct SuggestionMachine {
     pending_since: Option<u64>,
     requested: Option<RequestedCompletion>,
     showing: Option<Showing>,
+    /// Set by `DismissSuppress` (Esc); blocks completions in the current field
+    /// until cleared by a refocus or the next edit.
+    suppressed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +144,7 @@ impl SuggestionMachine {
             pending_since: None,
             requested: None,
             showing: None,
+            suppressed: false,
         }
     }
 
@@ -202,6 +209,7 @@ impl SuggestionMachine {
                 self.value.clear();
                 self.caret = 0;
                 self.pending_since = None;
+                self.suppressed = false;
                 self.advance_snapshot();
             }
             Event::TextChanged {
@@ -219,7 +227,12 @@ impl SuggestionMachine {
                 self.value = value;
                 self.caret = caret;
                 self.advance_snapshot();
-                self.pending_since = if edit != EditKind::Delete
+                // An edit clears Esc-suppression, but the clearing edit is itself
+                // still gated — triggering resumes on the edit after it.
+                let was_suppressed = self.suppressed;
+                self.suppressed = false;
+                self.pending_since = if !was_suppressed
+                    && edit != EditKind::Delete
                     && self.enabled()
                     && trigger == TriggerPolicy::Automatic
                     && self.passes_trigger_gates()
@@ -257,13 +270,14 @@ impl SuggestionMachine {
                 snapshot,
                 text,
             } => {
-                let matches_request = self.requested.as_ref().is_some_and(|requested| {
-                    requested.generation == generation
-                        && requested.snapshot == snapshot
-                        && requested.field == field
-                        && generation == self.generation
-                        && snapshot == self.snapshot
-                });
+                let matches_request = !self.suppressed
+                    && self.requested.as_ref().is_some_and(|requested| {
+                        requested.generation == generation
+                            && requested.snapshot == snapshot
+                            && requested.field == field
+                            && generation == self.generation
+                            && snapshot == self.snapshot
+                    });
 
                 if matches_request {
                     // Shape the raw completion into a single inline offering:
@@ -314,6 +328,14 @@ impl SuggestionMachine {
             }
             Event::Dismiss => {
                 self.hide_if_showing(&mut out);
+            }
+            Event::DismissSuppress => {
+                self.hide_if_showing(&mut out);
+                self.suppressed = true;
+                self.pending_since = None;
+                // Stale any in-flight request so its completion cannot pop a
+                // ghost back up after the dismiss.
+                self.advance_snapshot();
             }
             Event::AcceptFull => {
                 if let Some(showing) = self.showing.take() {
@@ -1072,6 +1094,82 @@ mod tests {
         let mut machine = showing_machine();
 
         assert_eq!(machine.on_event(Event::Dismiss), vec![Command::Hide]);
+    }
+
+    #[test]
+    fn dismiss_suppress_hides() {
+        let mut machine = showing_machine();
+
+        assert_eq!(
+            machine.on_event(Event::DismissSuppress),
+            vec![Command::Hide]
+        );
+    }
+
+    #[test]
+    fn dismiss_suppress_blocks_the_next_edit_then_resumes() {
+        // Esc (DismissSuppress) suppresses completions in the current field. The
+        // next user edit clears the flag but is itself still gated (no request);
+        // the edit after that resumes normal triggering.
+        let mut machine = showing_machine();
+        machine.on_event(Event::DismissSuppress);
+
+        // First edit after Esc: clears suppression, but does not arm.
+        machine.on_event(text_changed("xy", 2, 1000));
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 1200 }), vec![]);
+
+        // Second edit: suppression already cleared → arms and fires normally.
+        machine.on_event(text_changed("xyz", 3, 2000));
+        assert!(matches!(
+            machine.on_event(Event::Tick { now_ms: 2200 }).as_slice(),
+            [Command::RequestCompletion { .. }]
+        ));
+    }
+
+    #[test]
+    fn focus_to_other_field_clears_suppression() {
+        let mut machine = showing_machine();
+        machine.on_event(Event::DismissSuppress);
+
+        // Refocusing (a different field) clears suppression: the next edit arms.
+        machine.on_event(Event::Focus {
+            field: field("field-b"),
+            caps: inline_caps(),
+        });
+        machine.on_event(Event::TextChanged {
+            field: field("field-b"),
+            value: "hello".into(),
+            caret: 5,
+            edit: EditKind::Insert,
+            previous_caret: None,
+            previous_value_hash: None,
+            trigger: TriggerPolicy::Automatic,
+            now_ms: 3000,
+        });
+        assert!(matches!(
+            machine.on_event(Event::Tick { now_ms: 3200 }).as_slice(),
+            [Command::RequestCompletion { .. }]
+        ));
+    }
+
+    #[test]
+    fn dismiss_suppress_blocks_an_inflight_completion() {
+        // A request already in flight when Esc is pressed must not pop a ghost
+        // back up after the dismiss.
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 }); // requested gen=1, snapshot=1
+        machine.on_event(Event::DismissSuppress);
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "late ghost".into(),
+            }),
+            vec![]
+        );
     }
 
     fn showing_three_words() -> SuggestionMachine {
