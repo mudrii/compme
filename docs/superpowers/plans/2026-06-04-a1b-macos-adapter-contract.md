@@ -139,6 +139,10 @@ Acceptance:
 - Plain Tab still maps to Word accept while a suggestion is visible.
 - Unit tests: `suppressed` set/clear transitions; `accept_tap_decision` Option+Tab → `None`; Esc keycode (53) → `Dismiss`.
 
+**[Implemented 2026-06-09 — review-reconciled]** Done: `engine_core::Event::DismissSuppress` + per-field `suppressed` flag; `platform::TapControl{Accept,Dismiss}`; `accept_tap_decision` Esc(53)→`DropDismiss`, Option+Tab→`Keep`; `engine::on_dismiss_suppress`; `app` `HostEvent::Dismiss`. Two deliberate behaviors recorded from code review:
+- **One-edit cooldown:** the edit that clears suppression is itself gated (no request); triggering resumes on the *next* edit. Conservative-triggering choice (spec §11 "protect first-run") so the just-dismissed field does not immediately re-pop a suggestion on the very next keystroke.
+- **Known limitation — in-flight Esc:** Esc is only consumed/routed while a ghost is *visible* (the consuming tap is armed on `ShowGhost`). If Esc is pressed during the debounce/inference window (request in flight, no ghost yet), it passes through to the app (correct — Esc must reach the app's own handlers when nothing is shown) and the completion may still appear ~1 debounce+inference later. Suppressing it would require swallowing every Esc unconditionally (breaks app Esc) or routing Esc via the listen-only observer tap as a non-consuming dismiss — the latter is a viable A2 enhancement but broadens Esc-capture semantics and needs its own validation; out of Task 5b scope. Suppression of an *in-flight* completion is otherwise covered by snapshot-staling on `DismissSuppress`.
+
 ### Task 5c: Input Monitoring decision spike (F1 / D1)
 
 **[Added 2026-06-09 — converts §15 F1 from open question to a scheduled go/no-go.]** Decompile proved Cotypist ships **no CGEventTap** (AX + CGEvent synthesis + Carbon hotkeys) and its public docs require only Accessibility — our consuming tap imposes an extra Input-Monitoring TCC prompt. **Decision path (decided, not open-ended):**

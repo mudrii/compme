@@ -270,14 +270,18 @@ impl SuggestionMachine {
                 snapshot,
                 text,
             } => {
-                let matches_request = !self.suppressed
-                    && self.requested.as_ref().is_some_and(|requested| {
-                        requested.generation == generation
-                            && requested.snapshot == snapshot
-                            && requested.field == field
-                            && generation == self.generation
-                            && snapshot == self.snapshot
-                    });
+                // No explicit `suppressed` check is needed here: `DismissSuppress`
+                // advances the snapshot (staling any in-flight request) and clears
+                // `requested`, and a suppressed field cannot arm a fresh request
+                // (`TextChanged` clears suppression before arming), so no matching
+                // completion can arrive while suppressed.
+                let matches_request = self.requested.as_ref().is_some_and(|requested| {
+                    requested.generation == generation
+                        && requested.snapshot == snapshot
+                        && requested.field == field
+                        && generation == self.generation
+                        && snapshot == self.snapshot
+                });
 
                 if matches_request {
                     // Shape the raw completion into a single inline offering:
