@@ -2938,7 +2938,11 @@ fn resolve_caret_rect_with_marker_first(
 }
 
 fn usable_caret_rect(rect: ScreenRect) -> bool {
-    rect.w > 0.0
+    // A collapsed caret is a thin vertical bar — zero width is valid (Chrome/
+    // WebKit return zero-width marker rects, G5). Reject only negative or
+    // container-sized widths; a zero-width rect can never be a container, which
+    // always has positive width. Height must be a positive, caret-sized value.
+    rect.w >= 0.0
         && rect.w < MAX_USABLE_CARET_RECT_WIDTH
         && rect.h > 0.0
         && rect.h < MAX_USABLE_CARET_RECT_HEIGHT
@@ -6549,18 +6553,27 @@ mod tests {
             w: 1.0,
             h: 14.0,
         }));
-        // zero width / height rejected
-        assert!(!usable_caret_rect(ScreenRect {
+        // A collapsed caret is legitimately zero-width (a thin vertical bar);
+        // it must be accepted. Chrome/WebKit return such marker rects (G5).
+        assert!(usable_caret_rect(ScreenRect {
             x: 0.0,
             y: 0.0,
             w: 0.0,
             h: 14.0,
         }));
+        // Zero height is still rejected (a null/degenerate rect, not a caret).
         assert!(!usable_caret_rect(ScreenRect {
             x: 0.0,
             y: 0.0,
             w: 1.0,
             h: 0.0,
+        }));
+        // Negative width is rejected (malformed).
+        assert!(!usable_caret_rect(ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: -1.0,
+            h: 14.0,
         }));
         // over-max rejected (container-sized rects)
         assert!(!usable_caret_rect(ScreenRect {
