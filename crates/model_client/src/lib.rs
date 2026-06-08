@@ -130,7 +130,15 @@ fn sampler_for_candidate(index: usize) -> LlamaSampler {
     if index == 0 {
         LlamaSampler::greedy()
     } else {
-        LlamaSampler::chain_simple([LlamaSampler::temp(0.8), LlamaSampler::dist(index as u32)])
+        // Truncate the low-probability tail (top_k/top_p) before temperature
+        // sampling so divergent candidates stay coherent rather than drawing
+        // garbage/control tokens from the full vocabulary.
+        LlamaSampler::chain_simple([
+            LlamaSampler::top_k(40),
+            LlamaSampler::top_p(0.9, 1),
+            LlamaSampler::temp(0.8),
+            LlamaSampler::dist(index as u32),
+        ])
     }
 }
 
@@ -308,6 +316,11 @@ impl LlamaModel {
 /// the prompt fresh (prev cleared) so candidates are independent; candidate 0 is
 /// greedy, the rest use temperature+seed sampling. `prev_tokens` is left holding
 /// the prompt so the next request can reuse its KV prefix.
+///
+/// Tradeoff (accepted): this re-decodes the shared prompt prefix once per
+/// candidate rather than branching the prompt KV, so N candidates cost ~N prompt
+/// decodes. For small N (≤5) and short prompts the simplicity (no subtle KV-branch
+/// bug) is worth it; a prompt-prefix-reuse optimization is a future enhancement.
 fn complete_candidates_on_worker(
     model: &LlamaCppModel,
     context: &mut LlamaContext<'_>,

@@ -361,7 +361,12 @@ impl SuggestionMachine {
                         self.advance_snapshot();
                     } else {
                         showing.caret += word.chars().count();
-                        showing.candidates[showing.index] = rest.clone();
+                        // Collapse to the active candidate: the siblings still
+                        // begin with the just-accepted word and would re-offer it
+                        // on cycle, so once the user commits word-by-word the
+                        // alternatives are dropped.
+                        showing.candidates = vec![rest.clone()];
+                        showing.index = 0;
                         out.push(Command::UpdateGhost {
                             field: showing.field.clone(),
                             snapshot: showing.snapshot,
@@ -409,6 +414,7 @@ impl SuggestionMachine {
         let right = right_context(&self.value, self.caret);
         let recent = left_context(&self.value, self.caret);
         let mut shaped: Vec<String> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         for raw in raw_candidates {
             let line = trim_to_stop_boundary(&raw);
             let sentence = truncate_at_sentence_end(line);
@@ -416,7 +422,11 @@ impl SuggestionMachine {
             let capped = cap_words(&de_overlapped, self.max_words);
             let fresh = repetition_penalty(&capped, &recent) >= REPETITION_PENALTY_FLOOR
                 && !is_degenerate_repetition(&capped);
-            if !capped.is_empty() && fresh && !shaped.contains(&capped) {
+            // Dedup on a normalized key (trim + case-fold) so near-duplicates
+            // (trailing space, case) don't show as separate cycle options.
+            let key = capped.trim().to_lowercase();
+            if !capped.is_empty() && fresh && !seen.contains(&key) {
+                seen.push(key);
                 shaped.push(capped);
             }
         }
@@ -1248,6 +1258,53 @@ mod tests {
                 },
                 Command::Hide,
             ]
+        );
+    }
+
+    #[test]
+    fn accept_word_collapses_to_the_active_candidate() {
+        // After a partial (word) accept the sibling candidates are stale — they
+        // still begin with the just-accepted word — so cycling must not re-offer
+        // them (review finding #1).
+        let mut machine = showing_candidates(&["world there friend", "world other text"]);
+        machine.on_event(Event::AcceptWord); // inserts "world ", keeps "there friend"
+        assert_eq!(machine.on_event(Event::Cycle), vec![]);
+    }
+
+    #[test]
+    fn near_duplicate_candidates_are_deduped() {
+        // Candidates differing only by trailing space / case collapse to one
+        // (review finding #4), so cycling never shows a visual duplicate.
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReadyMulti {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            candidates: vec![
+                "Hello there".into(),
+                "hello there ".into(),
+                "other one".into(),
+            ],
+        });
+        // Only "Hello there" and "other one" survive → one Cycle reaches "other
+        // one", the next wraps back (no third near-duplicate).
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "other one".into(),
+            }]
+        );
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "Hello there".into(),
+            }]
         );
     }
 
