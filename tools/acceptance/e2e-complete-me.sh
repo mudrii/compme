@@ -3,7 +3,9 @@
 #
 # Drives the *product* binary through the whole pipeline against a real TextEdit
 # document with a deterministic stub completion, so the gate is reproducible:
-#   focus -> AX read -> infer (stub) -> show ghost -> Tab accept -> insert.
+#   focus -> AX read -> infer (stub) -> show ghost -> accept -> insert.
+#   Accept binding (Cotypist-parity): grave/backtick (key code 50) = full accept,
+#   Tab (key code 48) = next-word accept.
 #
 # Pass = the stub text ends up in the document AND the binary logged each stage.
 # A separate manual run (omit COMPLETE_ME_E2E_STUB / set a real model) exercises

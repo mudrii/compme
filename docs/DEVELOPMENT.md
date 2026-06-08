@@ -14,7 +14,7 @@ The root `Cargo.toml` is a Rust workspace with these members:
 - `crates/platform`
 - `crates/context`
 - `crates/ranker`
-- `crates/core`
+- `crates/engine_core`
 - `crates/model_client`
 - `crates/platform_macos`
 - `crates/engine`
@@ -152,7 +152,7 @@ Root workspace coverage includes:
 - pure text helpers in `context`
 - candidate shaping in `ranker`
 - UX classification and subscription behavior in `platform`
-- deterministic event/command behavior in `core`
+- deterministic event/command behavior in `engine_core`
 - local model trait and latency coverage in `model_client`
 - macOS adapter unit tests and example regression tests in `platform_macos`
 
@@ -212,7 +212,8 @@ tools/acceptance/run-a1b-live-gates.sh --skip-textedit --popup-pid <pid>
 
 - loads a GGUF model through `llama-cpp-2`
 - enables Metal offload through `with_n_gpu_layers(999)`
-- creates a fresh llama context for each completion
+- **[Updated 2026-06-08 — G3 closed]** runs on a dedicated worker thread owning a **persistent** `LlamaContext` (no longer a fresh context per completion) and **reuses the KV cache** for the shared prompt prefix (`reusable_prefix_len` + `clear_kv_cache_seq`), re-decoding only the divergent suffix
+- serializes `complete()` calls via a mutex held across the round-trip; the backend is a `'static` singleton
 - supports `warm_up()` so launch can trigger the first Metal decode before serving suggestions
 - supports ordered `shutdown()` so the model/backend are dropped before process teardown
 - greedily samples up to the requested max token count
@@ -220,11 +221,11 @@ tools/acceptance/run-a1b-live-gates.sh --skip-textedit --popup-pid <pid>
 
 Known future production work:
 
-- persistent model actor
-- serialized access
-- prefix-cache reuse
 - cancellation and timeout policy
-- production multi-candidate ranking, quality thresholds, and model-client stop/cancellation policy beyond the current `core`/`ranker` shaping
+- production multi-candidate ranking, quality thresholds, and model-client stop/cancellation policy beyond the current `engine_core`/`ranker` shaping
+
+(Persistent model actor, serialized access, and prefix-cache reuse are now
+implemented — see design spec §15 G3.)
 
 ## Documentation Updates
 

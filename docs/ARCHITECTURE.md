@@ -17,13 +17,13 @@ platform_macos::MacosPlatformAdapter
 platform contract types
         │  FieldHandle, TextContext, Capabilities, InsertStrategy
         ▼
-core::SuggestionMachine
+engine_core::SuggestionMachine
         │  deterministic event -> command state machine
         ▼
 model_client::LocalModel
         │  llama.cpp-backed completion
         ▼
-core::SuggestionMachine
+engine_core::SuggestionMachine
         │  validates generation + field snapshot
         ▼
 platform_macos
@@ -90,10 +90,11 @@ cases.
 The implementation stays small; per-app scoring and learned ranking remain
 future work.
 
-### `core`
+### `engine_core`
 
-`core` owns the deterministic suggestion workflow. `SuggestionMachine` consumes
-events and emits commands. It does not call macOS APIs or model APIs directly.
+`engine_core` (renamed from `core`) owns the deterministic suggestion workflow.
+`SuggestionMachine` consumes events and emits commands. It does not call macOS
+APIs or model APIs directly.
 
 Important events:
 
@@ -147,9 +148,13 @@ below `REPETITION_PENALTY_FLOOR` shows it repeats nearby text, or when
   before the backend, in order, to avoid the ggml exit-abort).
 - `terse_continuation_prompt`: the current development prompt shape.
 
-The current `LlamaModel` creates a fresh llama context per completion.
-Long-lived actor lifecycle, prefix-cache reuse, and serialized production model
-access are not implemented in this crate yet.
+**[Updated 2026-06-08 — G3 closed]** `LlamaModel` now runs on a dedicated worker
+thread owning a **persistent** `LlamaContext`. `complete()` reuses the KV cache
+for the shared prompt prefix (`reusable_prefix_len` + `clear_kv_cache_seq`,
+re-decoding only the divergent suffix) and serializes calls via a mutex held
+across the round-trip; the backend is a `'static` singleton. (Earlier drafts of
+this doc said a fresh context is created per completion — that is no longer true;
+see design spec §15 G3.)
 
 ### `engine`
 

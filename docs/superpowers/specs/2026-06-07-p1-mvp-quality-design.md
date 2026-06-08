@@ -10,7 +10,7 @@
 
 **Cotypist parity note (2026-06-07 audit):** P1 completes the MVP control/permission/config layer. It does not complete parity with Cotypist's installed app or current website. Parity work begins after P1 and needs explicit plans for optional Screen Recording / screen-aware context, encrypted local personalization, per-app/per-domain controls, Google Docs setup, browser mirror/Text Metrics guidance, Terminal/iTerm AI-agent prompt support, full shortcut customization, updater/signing, telemetry policy, emoji, typo correction, and advanced overlay/backdrop/mirror UI.
 
-Builds on the implemented P0 integration (`docs/superpowers/specs/2026-06-06-p0-mvp-integration-design.md`), with the post-accept-key-flip live GUI rerun still tracked there.
+Builds on the implemented P0 integration (`docs/superpowers/specs/2026-06-06-p0-mvp-integration-design.md`). **[CORR 06-08 — D8]** The post-accept-key-flip live GUI rerun is **done** (design spec §15 G6/I11, M4 Max 2026-06-08), not pending.
 
 ## Constraints (from the seam map)
 

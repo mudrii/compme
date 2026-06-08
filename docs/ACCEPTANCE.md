@@ -118,7 +118,10 @@ are validated outside the A1b gate runner:
   + ~500 ms re-poll exercised live; Input Monitoring has no public prompt API.
 - **Coordinate diagnostics** — `COMPLETE_ME_DIAG_COORDS=1` prints display scales +
   caret rect; measured scale 1.0 on the built-in display (no offset). True-2× /
-  multi-monitor (scale > 1) is hardware-bound and unverified.
+  multi-monitor (scale > 1) caret mapping was later measured on two displays and
+  the backing-scale helper is unit-proven (design spec §15 G7); a **live 2× re-run**
+  still needs the built-in Retina panel reconnected, so treat scale > 1 as
+  measurement-closed but not yet live-re-confirmed.
 - **Config surface** — `config.env` layered under env (`env > file > default`),
   `SIGUSR1` toggle, debounce/max-words/max-tokens/heartbeat keys (unit-tested in
   `crates/app`).
@@ -127,8 +130,10 @@ are validated outside the A1b gate runner:
 > grave → full), the `accept_tap_acceptance` and `accept_insert_acceptance` harnesses
 > now post the key matching the requirement — **grave (keycode 50) for `full`**, Tab
 > for `word` — so the `accept-tap-full` / `accept-insert-full` gates exercise the real
-> grave→full path. Unit tests cover grave→full; the live desktop run of these two gates
-> is still pending (FFI/GUI manual acceptance).
+> grave→full path. Unit tests cover grave→full. **[CORR 06-08]** The live desktop run is
+> now done: design spec §15 G6/I11 record `e2e-complete-me.sh` passing grave→full and
+> Tab→word against TextEdit (M4 Max, 2026-06-08), incl. a real-`LlamaModel` run. §15 is the
+> authoritative live-gate record.
 
 ### Useful Options
 

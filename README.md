@@ -29,9 +29,9 @@ contract-first implementation and validation harness for:
 │   ├── platform/                      # Cross-platform adapter and UX contract
 │   ├── context/                       # Pure caret/text-context helpers
 │   ├── ranker/                        # Candidate shaping helpers
-│   ├── core/                          # Deterministic suggestion state machine
+│   ├── engine_core/                   # Deterministic suggestion state machine
 │   ├── model_client/                  # Local model trait and llama.cpp backend
-│   ├── engine/                        # Runtime host for core + platform + overlay
+│   ├── engine/                        # Runtime host for engine_core + platform + overlay
 │   ├── platform_macos/                # macOS Accessibility/AppKit adapter
 │   └── app/                           # complete-me binary and run loop
 ├── tools/
@@ -54,7 +54,7 @@ from `tools/spike/`.
 | `platform` | Public platform abstraction: field handles, capabilities, insertion strategies, subscriptions, overlay presenter, and UX mode classification. |
 | `context` | Pure helpers for left/right context, left tail extraction, and prompt-prefix trimming. |
 | `ranker` | Candidate shaping helpers such as word capping, first-word extraction, and repetition penalty. |
-| `core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
+| `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2` with Metal. |
 | `engine` | Runtime host that wires the pure state machine to a `PlatformAdapter` and `OverlayPresenter`. |
 | `platform_macos` | macOS implementation of `PlatformAdapter` and `OverlayPresenter` using Accessibility, CoreGraphics, AppKit, and pasteboard APIs. |
@@ -142,10 +142,10 @@ At a high level:
 1. `platform_macos` observes focus and caret changes from the frontmost app.
 2. The platform adapter emits stable `FieldHandle` values and reads
    `TextContext` from Accessibility.
-3. `core::SuggestionMachine` debounces text changes and emits a
+3. `engine_core::SuggestionMachine` debounces text changes and emits a
    `RequestCompletion` command for the current field snapshot.
 4. `model_client::LocalModel` generates a short continuation from the prompt.
-5. `core` validates the returned generation/snapshot and emits `ShowGhost`,
+5. `engine_core` validates the returned generation/snapshot and emits `ShowGhost`,
    `UpdateGhost`, `Insert`, or `Hide`.
 6. `platform_macos` presents ghost text through an AppKit `NSPanel`, intercepts
    accept actions through `CGEventTap`, and inserts accepted text through the
