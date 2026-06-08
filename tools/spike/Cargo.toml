@@ -53,3 +53,7 @@ path = "src/bin/p6_overlay.rs"
 [[bin]]
 name = "p7_smoke"
 path = "src/bin/p7_smoke.rs"
+
+[[bin]]
+name = "p8_carbon_hotkey"
+path = "src/bin/p8_carbon_hotkey.rs"
