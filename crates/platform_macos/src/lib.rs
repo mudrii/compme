@@ -44,8 +44,8 @@ use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSPanel,
-    NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting, NSScreen,
-    NSTextField, NSWindowStyleMask, NSWorkspace,
+    NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting,
+    NSRunningApplication, NSScreen, NSTextField, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSData, NSPoint, NSProcessInfo, NSRect, NSSize, NSString};
 use platform::{
@@ -1328,6 +1328,16 @@ fn frontmost_app_pid() -> Option<i32> {
     } else {
         Some(pid)
     }
+}
+
+/// Resolve the bundle identifier (e.g. `com.apple.TextEdit`) for a process id,
+/// or `None` if the process is gone or has no bundle id. Used by the app layer
+/// to key per-app preferences/personalization on a stable bundle id rather than
+/// the volatile `pid:N` field id (A2 §8). `NSRunningApplication` lookups are
+/// callable off the main thread.
+pub fn bundle_id_for_pid(pid: i32) -> Option<String> {
+    let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?;
+    app.bundleIdentifier().map(|id| id.to_string())
 }
 
 fn wall_clock_now_ms() -> u64 {

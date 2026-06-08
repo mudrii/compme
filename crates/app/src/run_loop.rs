@@ -27,8 +27,8 @@ use platform::{
     PlatformAdapter, PlatformError, ScreenRect, SecurityState, TapControl, Toolkit,
 };
 use platform_macos::{
-    accessibility_trusted, display_scales, prompt_accessibility_trust, secure_input_enabled,
-    MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
+    accessibility_trusted, bundle_id_for_pid, display_scales, prompt_accessibility_trust,
+    secure_input_enabled, MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
 };
 use prefs::Prefs;
 
@@ -200,6 +200,27 @@ fn build_personalization(lookup: &impl Fn(&str) -> Option<String>) -> Personaliz
     profile
 }
 
+/// Resolve a focused field's pid to a stable bundle id for per-app preferences.
+/// Pure over the resolver so the wiring is testable without AppKit; the runtime
+/// passes `bundle_id_for_pid`. Returns `None` (fail-open) when there is no pid or
+/// the bundle id can't be resolved.
+fn resolve_app_key(pid: Option<u32>, resolver: impl Fn(i32) -> Option<String>) -> Option<String> {
+    pid.and_then(|p| i32::try_from(p).ok()).and_then(resolver)
+}
+
+/// Parse a fail-safe boolean: only explicit falsy values disable; anything else
+/// (incl. unrecognized strings) keeps the safe default so a typo never silently
+/// turns the whole product off.
+fn parse_enabled_default(raw: Option<String>) -> bool {
+    match raw {
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        None => true,
+    }
+}
+
 /// Build suggestion-gating preferences from config (A2 §8). A comma-separated
 /// app-exclude list and a default-enabled toggle; finer per-app/domain overrides
 /// are an A3 settings concern.
@@ -214,9 +235,7 @@ fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
         })
         .unwrap_or_default();
     Prefs {
-        default_enabled: lookup("COMPLETE_ME_DEFAULT_ENABLED")
-            .map(|v| v == "1" || v == "true")
-            .unwrap_or(true),
+        default_enabled: parse_enabled_default(lookup("COMPLETE_ME_DEFAULT_ENABLED")),
         excluded_apps,
         ..Default::default()
     }
@@ -576,11 +595,15 @@ pub fn run() -> Result<(), String> {
         // (Ready ⇒ trusted + not secure + warm + enabled).
         if status.suggestions_allowed() {
             if let Some(request) = latest.take() {
-                // Per-app/domain gating + pause/snooze (A2 §8). Domain is None
-                // until browser-domain extraction lands.
+                // Per-app/domain gating + pause/snooze (A2 §8). The exclude list
+                // is keyed on bundle ids, so resolve the focused pid to a bundle
+                // id (the field's own `app` is a volatile `pid:N`); fail-open if
+                // it can't be resolved. Domain is None until browser-domain
+                // extraction lands.
+                let app_key = resolve_app_key(request.field.pid, bundle_id_for_pid);
                 if config
                     .prefs
-                    .should_suggest(Some(&request.field.app), None, now_ms)
+                    .should_suggest(app_key.as_deref(), None, now_ms)
                 {
                     eprintln!(
                         "complete-me: request gen={} prompt={:?}",
@@ -674,9 +697,26 @@ mod tests {
     }
 
     #[test]
-    fn prefs_default_enabled_toggle() {
+    fn prefs_default_enabled_fails_safe() {
+        // Absent or unrecognized → enabled (a typo never silently kills the app);
+        // only explicit falsy values disable.
         assert!(build_prefs(&lookup(&[])).default_enabled);
+        assert!(build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "yes")])).default_enabled);
+        assert!(build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "True")])).default_enabled);
         assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "0")])).default_enabled);
+        assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "off")])).default_enabled);
+    }
+
+    #[test]
+    fn resolve_app_key_maps_pid_to_bundle_id() {
+        let resolver = |pid: i32| (pid == 42).then(|| "com.apple.TextEdit".to_string());
+        assert_eq!(
+            resolve_app_key(Some(42), resolver),
+            Some("com.apple.TextEdit".into())
+        );
+        // Unresolvable pid or absent pid → None (fail-open gating).
+        assert_eq!(resolve_app_key(Some(99), resolver), None);
+        assert_eq!(resolve_app_key(None, resolver), None);
     }
 
     #[test]
