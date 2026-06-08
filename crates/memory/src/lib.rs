@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use rusqlite::{params, Connection};
 
@@ -92,6 +92,9 @@ impl MemoryStore {
         key: &impl KeyProvider,
         mode: StorageMode,
     ) -> Result<Self> {
+        // secure_delete zeroes freed content so delete_all/delete_app actually
+        // erase ciphertext from disk (freelist pages), not just unlink rows.
+        conn.pragma_update(None, "secure_delete", true)?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS memories (
                  id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,14 +107,29 @@ impl MemoryStore {
         Ok(Self { conn, cipher, mode })
     }
 
-    /// Record `text` for `app`. No-op when storage is `Off`. The text is redacted,
-    /// then encrypted; only ciphertext is persisted.
+    /// Record an **accepted** completion for `app`. No-op when storage is `Off`.
+    /// The text is redacted, then encrypted (with `app` bound as AEAD AAD); only
+    /// ciphertext is persisted.
     pub fn remember(&self, app: &str, text: &str) -> Result<()> {
         if self.mode == StorageMode::Off {
             return Ok(());
         }
+        self.store(app, text)
+    }
+
+    /// Record **monitored-but-not-accepted** text for `app`. Only stored in
+    /// `AllMonitored` mode; a no-op in `AcceptedOnly`/`Off` (§16: accepted-only
+    /// mode must not persist non-accepted text).
+    pub fn monitor(&self, app: &str, text: &str) -> Result<()> {
+        if self.mode != StorageMode::AllMonitored {
+            return Ok(());
+        }
+        self.store(app, text)
+    }
+
+    fn store(&self, app: &str, text: &str) -> Result<()> {
         let redacted = redaction::redact(text);
-        let blob = self.encrypt(&redacted)?;
+        let blob = self.encrypt(&redacted, app.as_bytes())?;
         self.conn.execute(
             "INSERT INTO memories (app, blob) VALUES (?1, ?2)",
             params![app, blob],
@@ -136,7 +154,9 @@ impl MemoryStore {
         let blobs = stmt.query_map(params![app, limit as i64], |row| row.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
         for blob in blobs {
-            if let Some(text) = self.decrypt(&blob?) {
+            // Best-effort read: a row that fails to decrypt (wrong key, or app
+            // column tampered so the AAD no longer matches) is treated as absent.
+            if let Some(text) = self.decrypt(&blob?, app.as_bytes()) {
                 out.push(text);
             }
         }
@@ -157,13 +177,25 @@ impl MemoryStore {
         Ok(removed)
     }
 
-    fn encrypt(&self, plaintext: &str) -> Result<Vec<u8>> {
+    /// Encrypt `plaintext`, binding `aad` (the app id) so a record cannot be
+    /// authenticated under a different app. Random 12-byte nonce per record
+    /// (the store's record count is far below the GCM birthday bound); a
+    /// misuse-resistant nonce (XChaCha20) is a future hardening option.
+    fn encrypt(&self, plaintext: &str, aad: &[u8]) -> Result<Vec<u8>> {
         let mut nonce_bytes = [0u8; NONCE_LEN];
+        // Fail closed: if the RNG is unavailable, error rather than store a record
+        // with a weak/missing nonce.
         getrandom::getrandom(&mut nonce_bytes).map_err(|_| MemoryError::Crypto)?;
         let nonce = Nonce::from_slice(&nonce_bytes);
         let ciphertext = self
             .cipher
-            .encrypt(nonce, plaintext.as_bytes())
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: plaintext.as_bytes(),
+                    aad,
+                },
+            )
             .map_err(|_| MemoryError::Crypto)?;
         // Prepend the nonce so decryption can recover it.
         let mut blob = Vec::with_capacity(NONCE_LEN + ciphertext.len());
@@ -172,13 +204,22 @@ impl MemoryStore {
         Ok(blob)
     }
 
-    fn decrypt(&self, blob: &[u8]) -> Option<String> {
+    fn decrypt(&self, blob: &[u8], aad: &[u8]) -> Option<String> {
         if blob.len() < NONCE_LEN {
             return None;
         }
         let (nonce_bytes, ciphertext) = blob.split_at(NONCE_LEN);
         let nonce = Nonce::from_slice(nonce_bytes);
-        let plaintext = self.cipher.decrypt(nonce, ciphertext).ok()?;
+        let plaintext = self
+            .cipher
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: ciphertext,
+                    aad,
+                },
+            )
+            .ok()?;
         String::from_utf8(plaintext).ok()
     }
 }
@@ -254,6 +295,52 @@ mod tests {
         assert_eq!(store.count().unwrap(), 1);
         assert_eq!(store.recent("keep", 10).unwrap(), vec!["stay"]);
         assert!(store.recent("drop", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn accepted_only_mode_stores_accepted_but_not_monitored() {
+        let store = MemoryStore::open_in_memory(&key(9), StorageMode::AcceptedOnly).unwrap();
+        store.remember("app", "accepted").unwrap();
+        store.monitor("app", "just monitored").unwrap();
+        // Only the accepted completion is stored in AcceptedOnly mode (§16 gate).
+        assert_eq!(store.recent("app", 10).unwrap(), vec!["accepted"]);
+    }
+
+    #[test]
+    fn all_monitored_mode_stores_both() {
+        let store = MemoryStore::open_in_memory(&key(10), StorageMode::AllMonitored).unwrap();
+        store.remember("app", "accepted").unwrap();
+        store.monitor("app", "monitored").unwrap();
+        assert_eq!(store.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn off_mode_ignores_monitor_too() {
+        let store = MemoryStore::open_in_memory(&key(11), StorageMode::Off).unwrap();
+        store.monitor("app", "x").unwrap();
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn moving_a_blob_to_another_app_row_breaks_decryption() {
+        // The app is bound as AEAD AAD, so tampering with the app column makes the
+        // record fail authentication rather than decrypt under the wrong app.
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(12), StorageMode::AcceptedOnly).unwrap();
+            store.remember("real.app", "private note").unwrap();
+        }
+        // Tamper: relabel the row's app via a raw connection.
+        {
+            let raw = rusqlite::Connection::open(&path).unwrap();
+            raw.execute("UPDATE memories SET app = 'attacker.app'", [])
+                .unwrap();
+        }
+        let store = MemoryStore::open(&path, &key(12), StorageMode::AcceptedOnly).unwrap();
+        // The row is present but cannot be read under the forged app.
+        assert_eq!(store.count().unwrap(), 1);
+        assert!(store.recent("attacker.app", 10).unwrap().is_empty());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
