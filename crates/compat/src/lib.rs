@@ -36,6 +36,73 @@ impl CompatTier {
     pub fn sidebar_only(self) -> bool {
         matches!(self, CompatTier::SidebarOnly)
     }
+
+    /// Where suggestions should be rendered for this tier. `MirrorOnly` apps
+    /// (Firefox/Zen) cannot host an inline ghost, so they fall back to a mirror
+    /// window; everything else renders inline (with the engine's own per-field
+    /// popup fallback when caret geometry is missing).
+    pub fn placement(self) -> Placement {
+        match self {
+            CompatTier::MirrorOnly => Placement::Mirror,
+            _ => Placement::Inline,
+        }
+    }
+}
+
+/// How a suggestion is rendered for an app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    Inline,
+    Mirror,
+}
+
+/// Shell command leaders that mark a terminal line as a command, not an
+/// AI-agent natural-language prompt.
+const SHELL_LEADERS: &[&str] = &[
+    "cd", "ls", "git", "cat", "rm", "cp", "mv", "mkdir", "sudo", "brew", "npm", "cargo", "python",
+    "pip", "ssh", "curl", "grep", "echo", "vim", "nano", "make", "docker", "kubectl",
+];
+
+/// Whether a bundle id is a terminal emulator whose suggestions should only
+/// activate for AI-agent natural-language prompts, not arbitrary shell input.
+pub fn is_terminal(bundle_id: &str) -> bool {
+    matches!(bundle_id, "com.apple.Terminal" | "com.googlecode.iterm2")
+}
+
+/// Heuristic for terminal AI-agent prompt activation (design spec §16): in a
+/// terminal, only suggest when the current line looks like a natural-language
+/// prompt (several words, lowercase prose) rather than a shell command. Outside
+/// terminals this always returns true (no restriction).
+pub fn terminal_prompt_activates(bundle_id: &str, left_context: &str) -> bool {
+    if !is_terminal(bundle_id) {
+        return true;
+    }
+    let line = left_context
+        .rsplit('\n')
+        .next()
+        .unwrap_or(left_context)
+        .trim();
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.len() < 3 {
+        return false;
+    }
+    // A recognized shell command leader → treat as shell input, not a prompt.
+    let first = words[0]
+        .trim_start_matches(['$', '%', '>', '#'])
+        .to_lowercase();
+    if SHELL_LEADERS.contains(&first.as_str()) {
+        return false;
+    }
+    // Require some lowercase-alphabetic prose so a bare path/flags line is skipped.
+    line.chars().any(|c| c.is_ascii_lowercase())
+}
+
+/// Whether Google Docs needs Accessibility/Text-Metrics setup before inline
+/// suggestions work (design spec §16 "Setup needed"): on a Google Docs domain
+/// where the field text is not yet readable, onboarding should be surfaced.
+pub fn google_docs_needs_setup(domain: Option<&str>, readable_text: bool) -> bool {
+    domain.is_some_and(|d| d == "docs.google.com" || d.ends_with(".docs.google.com"))
+        && !readable_text
 }
 
 /// Classify a macOS application bundle id into a compatibility tier.
@@ -143,5 +210,51 @@ mod tests {
         assert!(compatibility_tier("com.microsoft.VSCode").sidebar_only());
         assert!(!compatibility_tier("com.apple.TextEdit").sidebar_only());
         assert!(!compatibility_tier("com.example.unknown").sidebar_only());
+    }
+
+    #[test]
+    fn mirror_only_apps_get_mirror_placement() {
+        assert_eq!(
+            compatibility_tier("org.mozilla.firefox").placement(),
+            Placement::Mirror
+        );
+        assert_eq!(
+            compatibility_tier("com.apple.TextEdit").placement(),
+            Placement::Inline
+        );
+    }
+
+    #[test]
+    fn terminal_activates_only_for_natural_language_prompts() {
+        let term = "com.googlecode.iterm2";
+        // Shell commands → no suggestions.
+        assert!(!terminal_prompt_activates(term, "git commit -m wip"));
+        assert!(!terminal_prompt_activates(term, "ls -la /tmp"));
+        // Too few words → no.
+        assert!(!terminal_prompt_activates(term, "hello there"));
+        // Natural-language agent prompt → yes.
+        assert!(terminal_prompt_activates(
+            term,
+            "please refactor the parser to"
+        ));
+        // Only the current line matters.
+        assert!(terminal_prompt_activates(
+            term,
+            "git status\nplease summarize the diff for"
+        ));
+    }
+
+    #[test]
+    fn non_terminal_apps_are_never_restricted_by_the_prompt_heuristic() {
+        assert!(terminal_prompt_activates("com.apple.TextEdit", "ls -la"));
+        assert!(terminal_prompt_activates("com.apple.mail", "cd"));
+    }
+
+    #[test]
+    fn google_docs_setup_detected_only_when_unreadable_on_docs_domain() {
+        assert!(google_docs_needs_setup(Some("docs.google.com"), false));
+        assert!(!google_docs_needs_setup(Some("docs.google.com"), true));
+        assert!(!google_docs_needs_setup(Some("example.com"), false));
+        assert!(!google_docs_needs_setup(None, false));
     }
 }
