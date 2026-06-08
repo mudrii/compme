@@ -2747,6 +2747,17 @@ struct DisplayScale {
     scale: f64,
 }
 
+/// The true backing scale factor for a display: native (mode) pixel width over
+/// the mode's point width. Use the current `CGDisplayMode`, not
+/// `CGDisplayPixelsWide`, which returns the *logical* (point) width for scaled
+/// Retina modes and so always yields ~1.0 (the G7 caveat).
+fn backing_scale(pixel_width: u64, point_width: u64) -> f64 {
+    if point_width == 0 {
+        return 1.0;
+    }
+    pixel_width as f64 / point_width as f64
+}
+
 /// Active displays with their point-space bounds and backing scale factor,
 /// read via thread-safe CoreGraphics (not NSScreen, which needs the main
 /// thread — caret rects are read off the AX worker thread).
@@ -2758,12 +2769,14 @@ fn active_display_scales() -> Vec<DisplayScale> {
         .map(|id| {
             let display = CGDisplay::new(*id);
             let bounds = display.bounds();
-            let point_width = bounds.size.width;
-            let scale = if point_width > 0.0 {
-                display.pixels_wide() as f64 / point_width
-            } else {
-                1.0
-            };
+            // True backing scale from the current display mode's native pixel
+            // width vs its point width (CGDisplayPixelsWide reports points for
+            // scaled Retina modes, so it can't tell 2x apart from 1x).
+            let scale = display
+                .display_mode()
+                .map(|mode| backing_scale(mode.pixel_width(), mode.width()))
+                .filter(|scale| *scale > 0.0)
+                .unwrap_or(1.0);
             DisplayScale { bounds, scale }
         })
         .collect()
@@ -6543,6 +6556,17 @@ mod tests {
         );
         assert_eq!(frame.h, 30.0);
         assert_eq!(frame.y, 1000.0 - 100.0 - 30.0);
+    }
+
+    #[test]
+    fn backing_scale_is_pixel_over_point_width() {
+        // 2x Retina: 3024 native px over 1512 points = 2.0 (the case
+        // CGDisplayPixelsWide could not detect).
+        assert_eq!(backing_scale(3024, 1512), 2.0);
+        // 1x display: native px == points = 1.0.
+        assert_eq!(backing_scale(3840, 3840), 1.0);
+        // Degenerate point width falls back to 1.0 (never divide by zero).
+        assert_eq!(backing_scale(3024, 0), 1.0);
     }
 
     #[test]
