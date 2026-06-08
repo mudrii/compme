@@ -9,6 +9,24 @@
 
 use std::collections::HashMap;
 
+/// Delimiter fencing the free-text instruction block so user/domain text (which
+/// can arrive from web-driven `setOverride` deep links — design spec §13) cannot
+/// dissolve the surrounding directive frame.
+const INSTRUCTION_FENCE: &str = "\"\"\"";
+
+/// Upper bound on instruction characters folded into a single preamble. The
+/// spec guides "a few hundred words"; this caps abuse/runaway config well above
+/// that while keeping the prompt prefill short.
+const MAX_INSTRUCTION_CHARS: usize = 2000;
+
+/// Truncate to at most `max` characters on a char boundary (never mid-scalar).
+fn truncate_chars(s: &str, max: usize) -> &str {
+    match s.char_indices().nth(max) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
+}
+
 /// Personalization strength: a 6-stop slider from `Off` to `Max`. Only the
 /// endpoints are labelled in the UI; the intermediate stops scale how forcefully
 /// the custom instructions steer the completion.
@@ -150,10 +168,16 @@ impl PersonalizationProfile {
         }
 
         let mut out = String::new();
-        out.push_str(self.strength.directive());
-        out.push_str(":\n");
+        // The directive only introduces actual instructions; a sender-only
+        // preamble must not promise "preferences" that aren't there.
         if !instructions.is_empty() {
-            out.push_str(&instructions);
+            out.push_str(self.strength.directive());
+            out.push_str(":\n");
+            out.push_str(INSTRUCTION_FENCE);
+            out.push('\n');
+            out.push_str(truncate_chars(&instructions, MAX_INSTRUCTION_CHARS));
+            out.push('\n');
+            out.push_str(INSTRUCTION_FENCE);
             out.push('\n');
         }
         if let Some(line) = sender_line {
@@ -279,5 +303,72 @@ mod tests {
             email: "  ".into(),
         };
         assert_eq!(sender.line(), Some("The writer's name Grace.".into()));
+    }
+
+    #[test]
+    fn sender_only_preamble_has_no_dangling_preferences_directive() {
+        // No instructions, only a sender → the preamble must not promise
+        // "preferences" that aren't there (review finding A).
+        let p = PersonalizationProfile {
+            strength: Strength::Max,
+            sender: SenderIdentity {
+                name: "Ada".into(),
+                email: String::new(),
+            },
+            ..Default::default()
+        };
+        let preamble = p.build_preamble(None, None);
+        assert!(preamble.contains("Ada"), "sender still rendered");
+        assert!(
+            !preamble.to_lowercase().contains("preferences"),
+            "no preferences directive when there are no instructions: {preamble:?}"
+        );
+    }
+
+    #[test]
+    fn every_stop_produces_a_distinct_preamble() {
+        // Each of the 6 slider positions must steer observably differently
+        // (review finding D): pin pairwise distinctness, not just endpoints.
+        let mut p = profile();
+        let preambles: Vec<String> = Strength::STOPS
+            .iter()
+            .map(|&s| {
+                p.strength = s;
+                p.build_preamble(None, None)
+            })
+            .collect();
+        for i in 0..preambles.len() {
+            for j in (i + 1)..preambles.len() {
+                assert_ne!(
+                    preambles[i], preambles[j],
+                    "stops {i} and {j} collapsed to identical preambles"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn instructions_are_fenced_in_the_preamble() {
+        // Free-text user/domain instructions are fenced so they cannot dissolve
+        // the directive frame (review finding C — per-domain text can arrive from
+        // web-driven setOverride deep links).
+        let p = profile();
+        let preamble = p.build_preamble(None, None);
+        assert!(
+            preamble.matches(INSTRUCTION_FENCE).count() >= 2,
+            "instructions wrapped in an open+close fence: {preamble:?}"
+        );
+    }
+
+    #[test]
+    fn overlong_instructions_are_capped() {
+        let mut p = profile();
+        p.global_instructions = "word ".repeat(2000); // ~10k chars
+        let preamble = p.build_preamble(None, None);
+        assert!(
+            preamble.chars().count() <= MAX_INSTRUCTION_CHARS + 200,
+            "preamble bounded by the instruction cap, got {} chars",
+            preamble.chars().count()
+        );
     }
 }
