@@ -1,6 +1,6 @@
 //! Deterministic suggestion state machine.
 
-use context::{left_context, right_context, trim_prefix};
+use context::{left_context, right_context, trim_trailing};
 use platform::{ux_mode, AcceptAction, Capabilities, FieldHandle, UxMode};
 use ranker::{
     cap_words, is_degenerate_repetition, next_word, repetition_penalty, strip_suffix_overlap,
@@ -235,7 +235,7 @@ impl SuggestionMachine {
                         let generation = self.generation;
                         let snapshot = self.snapshot;
                         let prompt =
-                            trim_prefix(&left_context(&self.value, self.caret)).to_string();
+                            trim_trailing(&left_context(&self.value, self.caret)).to_string();
                         self.requested = Some(RequestedCompletion {
                             generation,
                             field: field.clone(),
@@ -399,6 +399,15 @@ mod tests {
         caps
     }
 
+    fn popup_caps() -> Capabilities {
+        // No caret geometry → ux_mode derives Popup (not Inline). enabled()
+        // accepts both, so this exercises the Popup arm of the predicate.
+        let mut caps = inline_caps();
+        caps.readable_caret = false;
+        caps.overlay_at_caret = OverlayPlacement::None;
+        caps
+    }
+
     fn machine() -> SuggestionMachine {
         SuggestionMachine::new(inline_caps(), 200, 4)
     }
@@ -535,6 +544,39 @@ mod tests {
             .on_event(Event::Tick { now_ms: 1300 })
             .iter()
             .any(|c| matches!(c, Command::RequestCompletion { .. })));
+    }
+
+    #[test]
+    fn popup_mode_arms_and_shows_like_inline() {
+        // enabled() accepts UxMode::Popup as well as Inline; a popup-capable
+        // field must still arm a request and show a ghost.
+        let mut machine = SuggestionMachine::new(popup_caps(), 200, 4);
+        machine.on_event(text_changed("hello ", 6, 1000));
+        let armed = machine.on_event(Event::Tick { now_ms: 1200 });
+        assert!(armed
+            .iter()
+            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+
+        let shown = machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "world".into(),
+        });
+        assert!(shown.iter().any(|c| matches!(c, Command::ShowGhost { .. })));
+    }
+
+    #[test]
+    fn focus_cancels_a_request_armed_before_it() {
+        // A request armed by typing must be cancelled when focus moves away
+        // before the debounce fires (Focus clears value/caret/pending_since).
+        let mut machine = machine();
+        machine.on_event(text_changed("hello ", 6, 1000)); // arms pending_since
+        machine.on_event(Event::Focus {
+            field: field("field-b"),
+            caps: inline_caps(),
+        });
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
     }
 
     #[test]

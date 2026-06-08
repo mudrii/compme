@@ -17,7 +17,11 @@ pub fn left_tail(value: &str, caret: usize, n: usize) -> String {
     left[left.len().saturating_sub(n)..].iter().collect()
 }
 
-pub fn trim_prefix(value: &str) -> &str {
+/// Strip trailing whitespace from a left-context prompt (the model should not
+/// see a dangling space/newline after the caret). Leading whitespace is kept —
+/// it is part of the user's text. Named for what it does: trims the *trailing*
+/// end only, not the prefix.
+pub fn trim_trailing(value: &str) -> &str {
     value.trim_end()
 }
 
@@ -78,6 +82,21 @@ mod tests {
     }
 
     #[test]
+    fn context_split_is_scalar_not_grapheme_for_combining_marks() {
+        // "e" + U+0301 (combining acute) is one grapheme but two scalars. The
+        // caret is a scalar index, so caret 1 splits the grapheme — left keeps the
+        // base "e", right starts with the combining mark. This pins the API as
+        // scalar-based (callers must feed scalar carets, as wiring does).
+        assert_eq!(left_context("e\u{0301}x", 1), "e");
+        assert_eq!(right_context("e\u{0301}x", 1), "\u{0301}x");
+    }
+
+    #[test]
+    fn left_tail_caret_zero_is_empty() {
+        assert_eq!(left_tail("abc", 0, 2), "");
+    }
+
+    #[test]
     fn left_context_at_exact_len_returns_all() {
         // Caret exactly at the scalar count (not past-end) is the boundary case.
         assert_eq!(left_context("hé日", 3), "hé日");
@@ -105,13 +124,13 @@ mod tests {
     }
 
     #[test]
-    fn trim_prefix_strips_trailing_whitespace() {
-        assert_eq!(trim_prefix("hi  \n\t"), "hi");
+    fn trim_trailing_strips_trailing_whitespace() {
+        assert_eq!(trim_trailing("hi  \n\t"), "hi");
     }
 
     #[test]
-    fn trim_prefix_preserves_leading_whitespace() {
-        assert_eq!(trim_prefix("  hi "), "  hi");
+    fn trim_trailing_preserves_leading_whitespace() {
+        assert_eq!(trim_trailing("  hi "), "  hi");
     }
 
     #[test]
@@ -145,12 +164,12 @@ mod tests {
     }
 
     #[test]
-    fn trim_prefix_all_whitespace_is_empty() {
-        assert_eq!(trim_prefix("  \n\t"), "");
+    fn trim_trailing_all_whitespace_is_empty() {
+        assert_eq!(trim_trailing("  \n\t"), "");
     }
 
     #[test]
-    fn trim_prefix_empty_string_is_empty() {
-        assert_eq!(trim_prefix(""), "");
+    fn trim_trailing_empty_string_is_empty() {
+        assert_eq!(trim_trailing(""), "");
     }
 }
