@@ -234,6 +234,13 @@ fn parse_context_max_chars(raw: Option<String>) -> usize {
     }
 }
 
+/// Whether the focused app's compatibility tier permits suggestions (A2 §16):
+/// the `Unsupported` tier hard-blocks. Unresolved app → allow (fail-open), since
+/// the field's own capabilities still gate.
+fn app_allows_suggestions(app_key: Option<&str>) -> bool {
+    app_key.is_none_or(|app| compat::compatibility_tier(app).allows_suggestions())
+}
+
 /// Resolve a focused field's pid to a stable bundle id for per-app preferences.
 /// Pure over the resolver so the wiring is testable without AppKit; the runtime
 /// passes `bundle_id_for_pid`. Returns `None` (fail-open) when there is no pid or
@@ -657,9 +664,10 @@ pub fn run() -> Result<(), String> {
                 // it can't be resolved. Domain is None until browser-domain
                 // extraction lands.
                 let app_key = resolve_app_key(request.field.pid, bundle_id_for_pid);
-                if config
-                    .prefs
-                    .should_suggest(app_key.as_deref(), None, now_ms)
+                if app_allows_suggestions(app_key.as_deref())
+                    && config
+                        .prefs
+                        .should_suggest(app_key.as_deref(), None, now_ms)
                 {
                     eprintln!(
                         "complete-me: request gen={} prompt={:?}",
@@ -761,6 +769,14 @@ mod tests {
         assert!(build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "True")])).default_enabled);
         assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "0")])).default_enabled);
         assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "off")])).default_enabled);
+    }
+
+    #[test]
+    fn unsupported_apps_are_gated_out() {
+        assert!(!app_allows_suggestions(Some("com.mitchellh.ghostty")));
+        assert!(app_allows_suggestions(Some("com.apple.TextEdit")));
+        // Unresolved app → fail-open (field capabilities still gate).
+        assert!(app_allows_suggestions(None));
     }
 
     #[test]
