@@ -163,10 +163,10 @@ struct Config {
 }
 
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
-/// recorded; `path` is the on-disk SQLite database; `key` is the 32-byte AES key.
-/// Until the Keychain-backed `KeyProvider` lands (A3, §15 D-series), the key is
-/// supplied out-of-band via `COMPLETE_ME_MEMORY_KEY` (64 hex chars); without a
-/// key + path the store stays disabled even if a mode is set.
+/// recorded; `path` is the on-disk SQLite database; `key` is the optional
+/// explicit 32-byte AES key from `COMPLETE_ME_MEMORY_KEY` (64 hex chars) — when
+/// absent, `open_memory_store` falls back to the Keychain-backed key (generated
+/// on first use). Without a path the store stays disabled even if a mode is set.
 struct MemoryConfig {
     mode: memory::StorageMode,
     path: Option<PathBuf>,
@@ -406,17 +406,34 @@ fn parse_hex_key(raw: &str) -> Option<[u8; 32]> {
 }
 
 /// Open the encrypted memory store when enabled and fully configured. Returns
-/// `None` (disabled, logged) when the mode is `Off`, the key/path are missing, or
-/// the open fails — never fatal, mirroring the tray-unavailable fallback.
-fn open_memory_store(config: &MemoryConfig) -> Option<memory::MemoryStore> {
+/// `None` (disabled, logged) when the mode is `Off`, the path is missing, no key
+/// is available, or the open fails — never fatal, mirroring the tray-unavailable
+/// fallback.
+///
+/// Key precedence: an explicit `COMPLETE_ME_MEMORY_KEY` wins (the operator
+/// override, and the fail-closed path when the keychain is unavailable);
+/// otherwise `keychain_key` supplies the OS-keystore key (§16 "key in OS
+/// keystore"). The keychain is consulted only when the store would actually
+/// open (mode on, path present) — never as a side effect.
+fn open_memory_store(
+    config: &MemoryConfig,
+    keychain_key: impl Fn() -> Option<[u8; 32]>,
+) -> Option<memory::MemoryStore> {
     use memory::{MemoryStore, StaticKey, StorageMode};
     if config.mode == StorageMode::Off {
         return None;
     }
-    let (Some(path), Some(key)) = (config.path.as_ref(), config.key) else {
+    let Some(path) = config.path.as_ref() else {
         eprintln!(
-            "complete-me: COMPLETE_ME_MEMORY set but COMPLETE_ME_MEMORY_PATH/KEY missing — \
-             memory disabled (a Keychain key provider is an A3 item)"
+            "complete-me: COMPLETE_ME_MEMORY set but COMPLETE_ME_MEMORY_PATH missing — \
+             memory disabled"
+        );
+        return None;
+    };
+    let Some(key) = config.key.or_else(&keychain_key) else {
+        eprintln!(
+            "complete-me: COMPLETE_ME_MEMORY set but no key available (no \
+             COMPLETE_ME_MEMORY_KEY and the keychain provided none) — memory disabled"
         );
         return None;
     };
@@ -849,9 +866,21 @@ pub fn run() -> Result<(), String> {
 
     let previous_inputs = PreviousInputs::default();
     // Encrypted on-disk memory of accepted completions (A2 §6/§16). Off unless
-    // COMPLETE_ME_MEMORY + key/path are configured; lives on this thread (the
-    // rusqlite handle is not Send) and is only touched on Full-accept.
-    let memory = open_memory_store(&config.memory);
+    // COMPLETE_ME_MEMORY + path are configured; the key comes from
+    // COMPLETE_ME_MEMORY_KEY or (default) the macOS Keychain, generated on
+    // first use. Lives on this thread (the rusqlite handle is not Send) and is
+    // only touched on Full-accept.
+    let memory =
+        open_memory_store(
+            &config.memory,
+            || match platform_macos::keychain::KeychainKeyStore::new().load_or_create_memory_key() {
+                Ok(key) => Some(key),
+                Err(err) => {
+                    eprintln!("complete-me: keychain memory key unavailable: {err}");
+                    None
+                }
+            },
+        );
     let clipboard_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let screen_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     // Screen OCR only contributes when the grant is actually present this session.
@@ -1656,14 +1685,79 @@ mod tests {
             path: None,
             key: None,
         };
-        assert!(open_memory_store(&cfg).is_none());
+        assert!(open_memory_store(&cfg, || None).is_none());
         // Off mode is always disabled regardless of key/path.
         let cfg_off = MemoryConfig {
             mode: memory::StorageMode::Off,
             path: Some(PathBuf::from("/tmp/should-not-open.db")),
             key: Some([7u8; 32]),
         };
-        assert!(open_memory_store(&cfg_off).is_none());
+        assert!(open_memory_store(&cfg_off, || None).is_none());
+    }
+
+    #[test]
+    fn memory_opens_with_the_keychain_fallback_key_when_env_key_is_missing() {
+        let path = std::env::temp_dir().join(format!(
+            "complete-me-keychain-fallback-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let cfg = MemoryConfig {
+            mode: memory::StorageMode::AcceptedOnly,
+            path: Some(path.clone()),
+            key: None,
+        };
+
+        let store = open_memory_store(&cfg, || Some([7u8; 32]));
+        assert!(
+            store.is_some(),
+            "a keychain-provided key must open the store when the env key is absent"
+        );
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_explicit_env_key_takes_precedence_over_the_keychain() {
+        // The keychain must not even be consulted: an explicit
+        // COMPLETE_ME_MEMORY_KEY is the operator's override (and the
+        // fail-closed path when the keychain is unavailable).
+        let path = std::env::temp_dir().join(format!(
+            "complete-me-env-key-precedence-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let cfg = MemoryConfig {
+            mode: memory::StorageMode::AcceptedOnly,
+            path: Some(path.clone()),
+            key: Some([7u8; 32]),
+        };
+
+        let store = open_memory_store(&cfg, || panic!("keychain consulted despite env key"));
+        assert!(store.is_some());
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_keychain_is_not_consulted_when_memory_is_off_or_path_is_missing() {
+        let cfg_off = MemoryConfig {
+            mode: memory::StorageMode::Off,
+            path: Some(PathBuf::from("/tmp/should-not-open.db")),
+            key: None,
+        };
+        assert!(open_memory_store(&cfg_off, || panic!("keychain consulted while Off")).is_none());
+        // No path → no store to encrypt; creating a keychain key would be a
+        // side effect with no purpose.
+        let cfg_no_path = MemoryConfig {
+            mode: memory::StorageMode::AcceptedOnly,
+            path: None,
+            key: None,
+        };
+        assert!(
+            open_memory_store(&cfg_no_path, || panic!("keychain consulted without a path"))
+                .is_none()
+        );
     }
 
     #[test]

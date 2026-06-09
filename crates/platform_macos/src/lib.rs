@@ -54,6 +54,7 @@ use platform::{
     TextContext, TextRange, Toolkit,
 };
 
+pub mod keychain;
 mod tray;
 pub use tray::{MacosTray, TrayFlags};
 
