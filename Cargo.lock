@@ -71,11 +71,14 @@ dependencies = [
 name = "app"
 version = "0.1.0"
 dependencies = [
+ "autocorrect",
  "compat",
  "context",
  "core-foundation",
+ "emoji",
  "engine",
  "libc",
+ "localize",
  "memory",
  "model_client",
  "personalization",
@@ -530,6 +533,13 @@ dependencies = [
  "find_cuda_helper",
  "glob",
  "walkdir",
+]
+
+[[package]]
+name = "localize"
+version = "0.1.0"
+dependencies = [
+ "textcase",
 ]
 
 [[package]]
