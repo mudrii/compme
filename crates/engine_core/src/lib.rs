@@ -1,7 +1,7 @@
 //! Deterministic suggestion state machine.
 
 use context::{left_context, right_context, trim_trailing};
-use platform::{ux_mode, AcceptAction, Capabilities, FieldHandle, UxMode};
+use platform::{ux_mode, AcceptAction, Capabilities, FieldHandle, InsertStrategy, UxMode};
 use ranker::{
     cap_words, is_degenerate_repetition, next_word, repetition_penalty, strip_suffix_overlap,
     trim_to_stop_boundary, truncate_at_sentence_end,
@@ -109,6 +109,17 @@ pub enum Command {
         field: FieldHandle,
         text: String,
     },
+    /// Like `Insert`, but first delete `replace_left` characters immediately to
+    /// the left of the caret — a *replacement* (e.g. emoji `:smile`→😄, typo fix,
+    /// US→UK spelling). Emitted only for a `Showing` whose `replace_left > 0`
+    /// (produced by `offer_replacement`). The host honors the deletion at the
+    /// insertion boundary (AxSet range-extend; SyntheticKeys/Clipboard backspaces
+    /// are the live-validated residual — see the integration-phase design note).
+    Replace {
+        field: FieldHandle,
+        text: String,
+        replace_left: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,6 +130,9 @@ struct Showing {
     candidates: Vec<String>,
     index: usize,
     caret: usize,
+    /// Characters to delete left of the caret on accept (a replacement, set by
+    /// `offer_replacement`). `0` for ordinary model completions (append-only).
+    replace_left: usize,
 }
 
 impl Showing {
@@ -156,6 +170,11 @@ pub struct SuggestionMachine {
     /// Set by `DismissSuppress` (Esc); blocks completions in the current field
     /// until cleared by a refocus or the next edit.
     suppressed: bool,
+    /// Cotypist's "Include trailing space after single-word completions"
+    /// (`COMPLETE_ME_TRAILING_SPACE`). When set, accepting a single-word
+    /// completion inserts one trailing space. Default off → accept text is
+    /// byte-identical to before this flag existed.
+    trailing_space_single_word: bool,
     /// Buffered Shown/Superseded events drained by the host into usage stats.
     stat_events: Vec<StatEvent>,
 }
@@ -186,6 +205,7 @@ impl SuggestionMachine {
             requested: None,
             showing: None,
             suppressed: false,
+            trailing_space_single_word: false,
             stat_events: Vec::new(),
         }
     }
@@ -204,6 +224,22 @@ impl SuggestionMachine {
         self.min_context_chars = min_context_chars;
         self.allow_mid_word = allow_mid_word;
         self
+    }
+
+    /// Enable Cotypist's "Include trailing space after single-word completions".
+    /// Default off so existing callers are unaffected.
+    pub fn with_trailing_space(mut self, enabled: bool) -> Self {
+        self.trailing_space_single_word = enabled;
+        self
+    }
+
+    /// Apply the single-word trailing-space policy to accept-inserted text.
+    /// Self-gating: only single-word text not already ending in whitespace is
+    /// affected, so it is safe to call on every accept/preview path (multi-word
+    /// completions and word-by-word fragments — which `next_word` returns with
+    /// their own trailing space — pass through unchanged).
+    fn finalize_accept_text(&self, text: &str) -> String {
+        append_single_word_space(text, self.trailing_space_single_word)
     }
 
     fn enabled(&self) -> bool {
@@ -391,20 +427,50 @@ impl SuggestionMachine {
             }
             Event::AcceptFull => {
                 if let Some(showing) = self.showing.take() {
-                    out.push(Command::Insert {
-                        field: showing.field,
-                        text: showing.candidates[showing.index].clone(),
-                    });
+                    // A replacement (`replace_left > 0`) inserts its exact rendered
+                    // text (emoji glyph / synonym) — the trailing-space-after-
+                    // single-word policy applies only to append-only completions.
+                    let raw = &showing.candidates[showing.index];
+                    let text = if showing.replace_left > 0 {
+                        raw.clone()
+                    } else {
+                        self.finalize_accept_text(raw)
+                    };
+                    out.push(accept_insert_command(
+                        showing.field,
+                        text,
+                        showing.replace_left,
+                    ));
                     out.push(Command::Hide);
                     self.advance_snapshot();
                 }
             }
             Event::AcceptWord => {
                 if let Some(mut showing) = self.showing.take() {
+                    // A replacement (`replace_left > 0`, e.g. emoji/synonym) is
+                    // atomic — there is no "next word" of a glyph to partially
+                    // accept, and a multi-word synonym ("big deal") must not be
+                    // split (which would drop the deletion). Word-accept of a
+                    // replacement therefore commits the whole token like Full.
+                    if showing.replace_left > 0 {
+                        out.push(Command::Replace {
+                            field: showing.field,
+                            text: showing.candidates[showing.index].clone(),
+                            replace_left: showing.replace_left,
+                        });
+                        out.push(Command::Hide);
+                        self.advance_snapshot();
+                        return out;
+                    }
                     let (word, rest) = next_word(showing.current());
+                    // Single-word trailing-space applies only when this accept
+                    // completes the suggestion (no rest); `finalize_accept_text`
+                    // self-gates, but `word` already carries its own trailing
+                    // space when `rest` is non-empty, so it is a no-op there.
+                    let text = self.finalize_accept_text(&word);
                     out.push(Command::Insert {
                         field: showing.field.clone(),
-                        text: word.clone(),
+                        text,
                     });
                     if rest.is_empty() {
                         out.push(Command::Hide);
@@ -500,6 +566,7 @@ impl SuggestionMachine {
                 candidates: shaped,
                 index: 0,
                 caret: self.caret,
+                replace_left: 0,
             });
             out.push(Command::ShowGhost {
                 field: field.clone(),
@@ -524,13 +591,131 @@ impl SuggestionMachine {
         }
     }
 
-    pub fn preview_accept_insert(&self, action: AcceptAction) -> Option<(FieldHandle, String)> {
+    /// The exact `(field, text, replace_left)` the next accept would insert, so
+    /// the host can absorb its own self-insert echo (and record/replace) without
+    /// reading a divergent engine snapshot. Mirrors `on_event`'s accept paths
+    /// byte-for-byte: a replacement (`replace_left > 0`) is atomic + unfinalized;
+    /// an ordinary completion is word/full + trailing-space-finalized with
+    /// `replace_left == 0`.
+    pub fn preview_accept_insert(
+        &self,
+        action: AcceptAction,
+    ) -> Option<(FieldHandle, String, usize)> {
         let showing = self.showing.as_ref()?;
-        let text = match action {
+        if showing.replace_left > 0 {
+            let text = showing.current().to_string();
+            return (!text.is_empty()).then(|| (showing.field.clone(), text, showing.replace_left));
+        }
+        let raw = match action {
             AcceptAction::Full => showing.current().to_string(),
             AcceptAction::Word => next_word(showing.current()).0,
         };
-        (!text.is_empty()).then(|| (showing.field.clone(), text))
+        let text = self.finalize_accept_text(&raw);
+        (!raw.is_empty()).then(|| (showing.field.clone(), text, 0))
+    }
+
+    /// Offer a local *replacement* suggestion: show `text` as the ghost, and on
+    /// accept delete `replace_left` characters to the left of the caret before
+    /// inserting (emoji `:smile`→😄, typo fix, US→UK spelling). Host-driven — the
+    /// host detects the opportunity (e.g. `emoji::suggest`) and supplies the
+    /// rendered `text` + `replace_left`; `engine_core` takes no dependency on those
+    /// crates. Gated like a model completion: no offer when the field can't show
+    /// inline (`enabled`), the field is suppressed (post-Esc), or `text` is empty.
+    /// The offer rides the current snapshot and **disarms the model path** for it
+    /// (clears `pending_since` + `requested`), so neither a prior in-flight request
+    /// (stale by snapshot) nor a freshly-armed one (the debounce tick that
+    /// `on_text_changed` would fire) can issue a completion that supersedes this
+    /// ghost — the replacement genuinely preempts the model. Emits `ShowGhost`
+    /// (+ a `Shown` stat).
+    ///
+    /// Only offered on an `AxSet` field: the accept must *delete* `replace_left`
+    /// chars, which only the AX range-replace path honors. SyntheticKeys/Clipboard
+    /// can't (backspace-synthesis is a later live-validated step), so offering there
+    /// would both leave the typed token (`:smile😄`) and desync the host's diff
+    /// baseline — so we don't.
+    pub fn offer_replacement(
+        &mut self,
+        field: &FieldHandle,
+        text: String,
+        replace_left: usize,
+    ) -> Vec<Command> {
+        let mut out = Vec::new();
+        if !self.enabled()
+            || self.suppressed
+            || text.is_empty()
+            || self.caps.insert_strategy != InsertStrategy::AxSet
+        {
+            return out;
+        }
+        // Offer only into the currently focused field. The host detects the
+        // opportunity on a `TextChanged` and calls this synchronously, but a
+        // focus transition in between would otherwise let a ghost be tagged to a
+        // stale field (the model path gets this guard implicitly via the request
+        // match in `on_completion_ready`).
+        if self.field.as_ref() != Some(field) {
+            return out;
+        }
+        // A fresh offer replacing a still-showing ghost supersedes it (same
+        // accounting as the model-completion replacement site in
+        // `on_completion_ready`): the user never acted on the old one.
+        if self.showing.is_some() {
+            self.stat_events.push(StatEvent::Superseded);
+        }
+        self.showing = Some(Showing {
+            field: field.clone(),
+            snapshot: self.snapshot,
+            candidates: vec![text.clone()],
+            index: 0,
+            caret: self.caret,
+            replace_left,
+        });
+        // Disarm the model path for this snapshot: cancel the pending debounce so
+        // no `RequestCompletion` is issued, and drop any `requested` marker so a
+        // returning completion can't match-and-supersede this replacement ghost.
+        self.pending_since = None;
+        self.requested = None;
+        out.push(Command::ShowGhost {
+            field: field.clone(),
+            snapshot: self.snapshot,
+            text,
+        });
+        self.stat_events.push(StatEvent::Shown);
+        out
+    }
+}
+
+/// Cotypist's "Include trailing space after single-word completions": when
+/// `enabled`, append one trailing space to a completion that is a single word
+/// (no interior whitespace) and does not already end in whitespace. With
+/// `enabled == false` the text is returned unchanged, so default accept
+/// behavior is byte-identical to before this flag existed. Multi-word text and
+/// text already ending in whitespace pass through regardless of `enabled`.
+/// Build the accept-time insertion command: a plain `Insert` for an append-only
+/// completion (`replace_left == 0`), or a `Replace` that first deletes
+/// `replace_left` chars for a replacement suggestion (emoji/typo/spelling).
+fn accept_insert_command(field: FieldHandle, text: String, replace_left: usize) -> Command {
+    if replace_left > 0 {
+        Command::Replace {
+            field,
+            text,
+            replace_left,
+        }
+    } else {
+        Command::Insert { field, text }
+    }
+}
+
+fn append_single_word_space(text: &str, enabled: bool) -> String {
+    let is_single_word = !text.is_empty()
+        && !text.chars().next_back().is_some_and(char::is_whitespace)
+        && text.split_whitespace().count() == 1;
+    if enabled && is_single_word {
+        let mut out = String::with_capacity(text.len() + 1);
+        out.push_str(text);
+        out.push(' ');
+        out
+    } else {
+        text.to_string()
     }
 }
 
@@ -1790,7 +1975,7 @@ mod tests {
 
         assert_eq!(
             machine.preview_accept_insert(AcceptAction::Word),
-            Some((field("field-a"), "world ".into()))
+            Some((field("field-a"), "world ".into(), 0))
         );
     }
 
@@ -1800,7 +1985,7 @@ mod tests {
 
         assert_eq!(
             machine.preview_accept_insert(AcceptAction::Full),
-            Some((field("field-a"), "world there friend".into()))
+            Some((field("field-a"), "world there friend".into(), 0))
         );
     }
 
@@ -1825,6 +2010,380 @@ mod tests {
                 },
                 Command::Hide,
             ]
+        );
+    }
+
+    fn showing_solo(trailing: bool) -> SuggestionMachine {
+        let mut machine =
+            SuggestionMachine::new(inline_caps(), 200, 4).with_trailing_space(trailing);
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "solo".into(),
+        });
+        machine
+    }
+
+    #[test]
+    fn append_single_word_space_adds_only_when_enabled_and_single_word() {
+        // Enabled + single word, no existing trailing space → one space added.
+        assert_eq!(append_single_word_space("solo", true), "solo ");
+        // Disabled → unchanged regardless of shape.
+        assert_eq!(append_single_word_space("solo", false), "solo");
+        // Multi-word → never touched (self-gating), even when enabled.
+        assert_eq!(append_single_word_space("a b", true), "a b");
+        // Already ends in whitespace (e.g. `next_word`'s mid-completion word) →
+        // no double space.
+        assert_eq!(append_single_word_space("world ", true), "world ");
+        // Empty → unchanged (no spurious lone space).
+        assert_eq!(append_single_word_space("", true), "");
+        // Trailing punctuation is still a single word → space appended.
+        assert_eq!(append_single_word_space("hi!", true), "hi! ");
+    }
+
+    #[test]
+    fn full_accept_single_word_appends_trailing_space_when_enabled() {
+        let mut machine = showing_solo(true);
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "solo ".into(),
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn word_accept_single_word_appends_trailing_space_when_enabled() {
+        let mut machine = showing_solo(true);
+        assert_eq!(
+            machine.on_event(Event::AcceptWord),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "solo ".into(),
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn single_word_default_off_is_unchanged() {
+        let mut machine = showing_solo(false);
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "solo".into(),
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_word_accept_is_unaffected_by_trailing_space_flag() {
+        // Full-accept of a multi-word completion: no trailing space added.
+        let mut machine = showing_three_words();
+        machine = machine.with_trailing_space(true);
+        // Re-seed showing under the new flag (with_trailing_space consumes self).
+        machine.on_event(text_changed("xy", 2, 0));
+        machine.on_event(Event::Tick { now_ms: 1500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 2,
+            field: field("field-a"),
+            snapshot: 2,
+            text: "world there friend".into(),
+        });
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "world there friend".into(),
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn word_accept_first_of_many_keeps_single_native_space() {
+        // First word of a multi-word completion already carries its own space;
+        // the flag must not add a second one.
+        let mut machine = showing_solo(true); // reuse builder for the flag
+        machine.on_event(text_changed("xy", 2, 0));
+        machine.on_event(Event::Tick { now_ms: 1500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 2,
+            field: field("field-a"),
+            snapshot: 2,
+            text: "world there".into(),
+        });
+        let out = machine.on_event(Event::AcceptWord);
+        assert_eq!(
+            out[0],
+            Command::Insert {
+                field: field("field-a"),
+                text: "world ".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn preview_matches_inserted_bytes_under_trailing_space() {
+        // The host absorbs the self-insert echo using `preview`, so preview must
+        // equal what `on_event` inserts — including the trailing space.
+        let machine = showing_solo(true);
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "solo ".into(), 0))
+        );
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Word),
+            Some((field("field-a"), "solo ".into(), 0))
+        );
+    }
+
+    /// A machine with `field-a` focused (so `offer_replacement`'s field-identity
+    /// guard passes). Focus advances the snapshot to 1.
+    fn focused_machine() -> SuggestionMachine {
+        let mut machine = machine();
+        machine.on_event(Event::Focus {
+            field: field("field-a"),
+            caps: inline_caps(),
+        });
+        machine
+    }
+
+    #[test]
+    fn offer_replacement_shows_ghost_then_full_accept_emits_replace() {
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        assert_eq!(
+            machine.offer_replacement(&f, "😄".into(), 5),
+            vec![Command::ShowGhost {
+                field: f.clone(),
+                snapshot: 1,
+                text: "😄".into(),
+            }]
+        );
+        assert!(machine.take_stat_events().contains(&StatEvent::Shown));
+        // Accept deletes the typed ":smile" (5 chars) and inserts the glyph.
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Replace {
+                    field: f.clone(),
+                    text: "😄".into(),
+                    replace_left: 5,
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn offer_replacement_word_accept_also_replaces_atomic_token() {
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        machine.offer_replacement(&f, "😄".into(), 5);
+        // A replacement is a single atomic token: Word-accept completes it
+        // (no rest) and carries the deletion, exactly like Full.
+        assert_eq!(
+            machine.on_event(Event::AcceptWord),
+            vec![
+                Command::Replace {
+                    field: f,
+                    text: "😄".into(),
+                    replace_left: 5,
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn offer_replacement_blocked_when_suppressed_or_empty() {
+        let f = field("field-a");
+        // Post-Esc suppression blocks a local offer.
+        let mut suppressed = focused_machine();
+        suppressed.on_event(Event::DismissSuppress);
+        assert_eq!(suppressed.offer_replacement(&f, "😄".into(), 5), vec![]);
+        assert!(suppressed.showing.is_none());
+        // Empty text never offers (no spurious ghost).
+        let mut machine = focused_machine();
+        assert_eq!(machine.offer_replacement(&f, String::new(), 3), vec![]);
+    }
+
+    #[test]
+    fn offer_replacement_blocked_in_secure_or_unsupported_field() {
+        // Security-critical gate: a secure field (password) is `UxMode::Blocked`,
+        // so `enabled()` is false and no replacement ghost may be offered — a
+        // replacement must never surface a glyph/synonym into a password field.
+        // This is the `!self.enabled()` branch of `offer_replacement`.
+        let mut secure = machine();
+        secure.on_event(Event::Focus {
+            field: field("field-a"),
+            caps: secure_caps(),
+        });
+        assert_eq!(
+            secure.offer_replacement(&field("field-a"), "😄".into(), 5),
+            vec![]
+        );
+        assert!(secure.showing.is_none());
+        assert!(!secure.take_stat_events().contains(&StatEvent::Shown));
+    }
+
+    #[test]
+    fn offer_replacement_blocked_when_field_is_not_focused() {
+        // Focus-race guard: an offer for a field other than the focused one (or
+        // when nothing is focused) is dropped — no ghost tagged to a stale field.
+        let mut focused = focused_machine(); // field-a focused
+        assert_eq!(
+            focused.offer_replacement(&field("other-field"), "😄".into(), 5),
+            vec![]
+        );
+        assert!(focused.showing.is_none());
+        let mut unfocused = machine();
+        assert_eq!(
+            unfocused.offer_replacement(&field("field-a"), "😄".into(), 5),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn offer_replacement_disarms_pending_model_request_so_it_cannot_supersede() {
+        let mut machine = focused_machine();
+        // An edit arms the debounce for a model completion (same turn the host
+        // detects an emoji/typo and offers a replacement).
+        machine.on_event(text_changed("color", 5, 0));
+        machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+        let _ = machine.take_stat_events();
+        // The debounce tick must NOT fire a model request — the offer preempted it.
+        let tick = machine.on_event(Event::Tick { now_ms: 10_000 });
+        assert!(
+            !tick
+                .iter()
+                .any(|c| matches!(c, Command::RequestCompletion { .. })),
+            "model request armed despite a local replacement offer: {tick:?}"
+        );
+        // The replacement ghost is still the one showing (not superseded).
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "😄".into(), 5))
+        );
+    }
+
+    #[test]
+    fn offer_replacement_only_on_axset_fields() {
+        // A non-range-replace field (SyntheticKeys/Clipboard) can't honor the
+        // deletion, so no replacement is offered there (avoids `:smile😄` + a
+        // desynced host diff baseline).
+        let mut caps = inline_caps();
+        caps.insert_strategy = InsertStrategy::SyntheticKeys;
+        let mut machine = SuggestionMachine::new(caps.clone(), 200, 4);
+        machine.on_event(Event::Focus {
+            field: field("field-a"),
+            caps,
+        });
+        assert_eq!(
+            machine.offer_replacement(&field("field-a"), "😄".into(), 5),
+            vec![]
+        );
+        assert!(machine.showing.is_none());
+    }
+
+    #[test]
+    fn offer_replacement_supersedes_a_showing_completion() {
+        let mut machine = showing_three_words(); // TextChanged focuses field-a
+        let _ = machine.take_stat_events(); // drop the completion's Shown
+        let events_before = machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+        assert!(!events_before.is_empty()); // it showed
+        let stats = machine.take_stat_events();
+        assert!(stats.contains(&StatEvent::Superseded));
+        assert!(stats.contains(&StatEvent::Shown));
+    }
+
+    #[test]
+    fn replacement_word_accept_is_atomic_even_for_multi_word_text() {
+        // A multi-word synonym must not be split on Word-accept — that would drop
+        // the deletion and leave the typed token. It commits whole, like Full.
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        machine.offer_replacement(&f, "big deal".into(), 6);
+        assert_eq!(
+            machine.on_event(Event::AcceptWord),
+            vec![
+                Command::Replace {
+                    field: f,
+                    text: "big deal".into(),
+                    replace_left: 6,
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn replacement_text_is_not_trailing_spaced() {
+        // The trailing-space-after-single-word policy must not append to a
+        // replacement glyph (the replacement text is inserted exactly).
+        let mut machine = SuggestionMachine::new(inline_caps(), 200, 4).with_trailing_space(true);
+        machine.on_event(Event::Focus {
+            field: field("field-a"),
+            caps: inline_caps(),
+        });
+        let f = field("field-a");
+        machine.offer_replacement(&f, "😄".into(), 5);
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Replace {
+                    field: f,
+                    text: "😄".into(),
+                    replace_left: 5,
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn preview_reports_replace_left_for_a_replacement_offer() {
+        // The host absorbs the echo via preview, so preview must carry the same
+        // (text, replace_left) the accept will Replace with — atomic + unfinalized
+        // for both Full and Word.
+        let mut machine = focused_machine();
+        machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "😄".into(), 5))
+        );
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Word),
+            Some((field("field-a"), "😄".into(), 5))
+        );
+    }
+
+    #[test]
+    fn model_completion_accept_still_emits_plain_insert_not_replace() {
+        // Regression guard: ordinary completions (replace_left == 0) must never
+        // emit Replace — only append-only Insert.
+        let mut machine = showing_three_words();
+        let out = machine.on_event(Event::AcceptFull);
+        assert!(
+            matches!(out.first(), Some(Command::Insert { .. })),
+            "expected Insert, got {:?}",
+            out.first()
         );
     }
 

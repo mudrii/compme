@@ -825,6 +825,79 @@ impl MacosPlatformAdapter {
         Self::with_worker(AxWorker::new()?)
     }
 
+    /// Shared insert path. `replace_left` (characters to delete left of the caret
+    /// before inserting — a replacement) is honored only by `AxSet`, which can
+    /// range-replace; `SyntheticKeys`/`Clipboard` cannot read-modify-write a range,
+    /// so they fall back to an append-only insert (synthesizing backspaces is the
+    /// live-validated residual — see the integration-phase design note).
+    /// `replace_left == 0` is byte-identical to the prior append-only behavior.
+    fn insert_impl(
+        &self,
+        field: &FieldHandle,
+        text: &str,
+        replace_left: usize,
+        strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        if (self.secure_input_enabled)() {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            });
+        }
+        if field_has_secure_text_subrole(field) {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            });
+        }
+        if text.is_empty() {
+            return Ok(Inserted {
+                bytes: 0,
+                chars: 0,
+                strategy,
+            });
+        }
+
+        let field = field.clone();
+        let app = field.app.clone();
+        let text = text.to_string();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for insert".into(),
+            })?;
+
+        match strategy {
+            InsertStrategy::AxSet => {
+                let result = self
+                    .worker
+                    .run(move || insert_for_field(pid, field, text, replace_left, strategy))?;
+                self.map_app_exited(pid, app, result)
+            }
+            InsertStrategy::SyntheticKeys => {
+                self.ensure_global_insert_target(pid)?;
+                let result = (self.synthetic_key_poster)(pid, &text).map(|()| Inserted {
+                    bytes: text.len(),
+                    chars: text.chars().count(),
+                    strategy,
+                });
+                self.map_app_exited(pid, app, result)
+            }
+            InsertStrategy::Clipboard => {
+                self.ensure_global_insert_target(pid)?;
+                let result = (self.pasteboard_poster)(pid, &text).map(|()| Inserted {
+                    bytes: text.len(),
+                    chars: text.chars().count(),
+                    strategy,
+                });
+                self.map_app_exited(pid, app, result)
+            }
+            other => Err(PlatformError::UnsupportedField {
+                reason: format!("macOS insert strategy {other:?} not implemented yet"),
+            }),
+        }
+    }
+
     pub fn with_worker(worker: AxWorker) -> Result<Self, PlatformError> {
         Ok(Self {
             worker,
@@ -1329,64 +1402,17 @@ impl PlatformAdapter for MacosPlatformAdapter {
         text: &str,
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError> {
-        if (self.secure_input_enabled)() {
-            return Err(PlatformError::SecureInput {
-                state: SecurityState::SecureInputEnabled,
-            });
-        }
-        if field_has_secure_text_subrole(field) {
-            return Err(PlatformError::SecureInput {
-                state: SecurityState::SecureField,
-            });
-        }
-        if text.is_empty() {
-            return Ok(Inserted {
-                bytes: 0,
-                chars: 0,
-                strategy,
-            });
-        }
+        self.insert_impl(field, text, 0, strategy)
+    }
 
-        let field = field.clone();
-        let app = field.app.clone();
-        let text = text.to_string();
-        let pid = field
-            .pid
-            .and_then(|pid| i32::try_from(pid).ok())
-            .or_else(|| (self.frontmost_pid)())
-            .ok_or_else(|| PlatformError::CannotComplete {
-                reason: "no pid available for insert".into(),
-            })?;
-
-        match strategy {
-            InsertStrategy::AxSet => {
-                let result = self
-                    .worker
-                    .run(move || insert_for_field(pid, field, text, strategy))?;
-                self.map_app_exited(pid, app, result)
-            }
-            InsertStrategy::SyntheticKeys => {
-                self.ensure_global_insert_target(pid)?;
-                let result = (self.synthetic_key_poster)(pid, &text).map(|()| Inserted {
-                    bytes: text.len(),
-                    chars: text.chars().count(),
-                    strategy,
-                });
-                self.map_app_exited(pid, app, result)
-            }
-            InsertStrategy::Clipboard => {
-                self.ensure_global_insert_target(pid)?;
-                let result = (self.pasteboard_poster)(pid, &text).map(|()| Inserted {
-                    bytes: text.len(),
-                    chars: text.chars().count(),
-                    strategy,
-                });
-                self.map_app_exited(pid, app, result)
-            }
-            other => Err(PlatformError::UnsupportedField {
-                reason: format!("macOS insert strategy {other:?} not implemented yet"),
-            }),
-        }
+    fn insert_replacing(
+        &self,
+        field: &FieldHandle,
+        text: &str,
+        replace_left: usize,
+        strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        self.insert_impl(field, text, replace_left, strategy)
     }
 }
 
@@ -1936,6 +1962,24 @@ pub enum KeymapError {
     /// A keycode was negative (macOS virtual keycodes are non-negative).
     InvalidKeycode(i64),
 }
+
+impl std::fmt::Display for KeymapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeymapError::Collision(keycode) => {
+                write!(
+                    f,
+                    "keymap collision: keycode {keycode} bound more than once"
+                )
+            }
+            KeymapError::InvalidKeycode(keycode) => {
+                write!(f, "invalid keycode: {keycode} (must be non-negative)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for KeymapError {}
 
 impl Default for AcceptKeymap {
     fn default() -> Self {
@@ -2995,6 +3039,7 @@ fn insert_for_field(
     pid: i32,
     field: FieldHandle,
     text: String,
+    replace_left: usize,
     strategy: InsertStrategy,
 ) -> Result<Inserted, PlatformError> {
     let (element, _owners) = copy_focused_or_app_element(pid)?;
@@ -3005,6 +3050,9 @@ fn insert_for_field(
 
     let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
     let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    // For a replacement, extend the splice range left to cover the typed token
+    // (`replace_left` characters) so it is deleted before the new text is inserted.
+    let selected_range = extend_range_left(&value, selected_range, replace_left);
     let (new_value, new_caret) = splice_text_at_utf16_range(&value, selected_range, &text);
 
     unsafe {
@@ -3434,6 +3482,38 @@ fn usable_caret_rect(rect: ScreenRect) -> bool {
         && rect.w < MAX_USABLE_CARET_RECT_WIDTH
         && rect.h > 0.0
         && rect.h < MAX_USABLE_CARET_RECT_HEIGHT
+}
+
+/// Extend a caret/selection range left by `replace_left` characters so a
+/// subsequent splice deletes the typed token before inserting (a replacement,
+/// e.g. emoji `:smile`→😄). `replace_left` is in **characters**; the AX range is
+/// in **UTF-16 units**, so this walks char boundaries to convert. Clamped to the
+/// text available left of the caret; `replace_left == 0` returns the range
+/// unchanged (so ordinary inserts are byte-identical).
+fn extend_range_left(value: &str, range: CFRange, replace_left: usize) -> CFRange {
+    if replace_left == 0 {
+        return range;
+    }
+    let utf16_len = value.encode_utf16().count();
+    let caret = (range.location.max(0) as usize).min(utf16_len);
+    // UTF-16 offset at each char boundary from the start up to the caret.
+    let mut boundaries = vec![0usize];
+    let mut offset = 0usize;
+    for ch in value.chars() {
+        if offset >= caret {
+            break;
+        }
+        offset += ch.len_utf16();
+        boundaries.push(offset);
+    }
+    let chars_before_caret = boundaries.len().saturating_sub(1);
+    let start_char = chars_before_caret.saturating_sub(replace_left);
+    let start = boundaries[start_char];
+    let delta = caret.saturating_sub(start);
+    CFRange {
+        location: start as isize,
+        length: range.length + delta as isize,
+    }
 }
 
 fn splice_text_at_utf16_range(
@@ -6886,6 +6966,69 @@ mod tests {
 
         assert_eq!(value, "Hi 😀! there");
         assert_eq!(caret, 6);
+    }
+
+    #[test]
+    fn extend_range_left_covers_typed_token_then_splice_replaces_it() {
+        // ":smile" typed after "x"; caret at UTF-16 7. A replacement deletes those
+        // 6 chars and inserts the glyph → "x😄".
+        let range = extend_range_left(
+            "x:smile",
+            CFRange {
+                location: 7,
+                length: 0,
+            },
+            6,
+        );
+        assert_eq!(range.location, 1);
+        assert_eq!(range.length, 6);
+        let (value, caret) = splice_text_at_utf16_range("x:smile", range, "😄");
+        assert_eq!(value, "x😄");
+        assert_eq!(caret, 3); // "x" (1) + 😄 (2 UTF-16 units)
+    }
+
+    #[test]
+    fn extend_range_left_is_utf16_aware_for_astral_prefix() {
+        // "🎉:1" — 🎉 is 2 UTF-16 units; caret at 4 (after "1"). Delete ":1" (2 chars).
+        let range = extend_range_left(
+            "🎉:1",
+            CFRange {
+                location: 4,
+                length: 0,
+            },
+            2,
+        );
+        assert_eq!(range.location, 2); // immediately after 🎉
+        assert_eq!(range.length, 2); // ":1" spans 2 UTF-16 units
+    }
+
+    #[test]
+    fn extend_range_left_zero_replace_is_unchanged() {
+        let range = extend_range_left(
+            "abc",
+            CFRange {
+                location: 2,
+                length: 0,
+            },
+            0,
+        );
+        assert_eq!(range.location, 2);
+        assert_eq!(range.length, 0);
+    }
+
+    #[test]
+    fn extend_range_left_clamps_to_available_chars() {
+        // replace_left larger than chars-before-caret deletes only what exists.
+        let range = extend_range_left(
+            ":1",
+            CFRange {
+                location: 2,
+                length: 0,
+            },
+            99,
+        );
+        assert_eq!(range.location, 0);
+        assert_eq!(range.length, 2);
     }
 
     #[test]

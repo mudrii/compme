@@ -105,6 +105,13 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self
     }
 
+    /// Forward to [`SuggestionMachine::with_trailing_space`] — enable Cotypist's
+    /// "Include trailing space after single-word completions" policy.
+    pub fn with_trailing_space(mut self, enabled: bool) -> Self {
+        self.machine = self.machine.with_trailing_space(enabled);
+        self
+    }
+
     /// Provide the accept-tap subscription so the engine can arm the consuming
     /// tap only while a suggestion is visible (the two-tap design from spec §4).
     // Extended beyond A1b contract table: accept-tap lifecycle requires
@@ -235,8 +242,26 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
-    pub fn preview_accept_insert(&self, action: AcceptAction) -> Option<(FieldHandle, String)> {
+    pub fn preview_accept_insert(
+        &self,
+        action: AcceptAction,
+    ) -> Option<(FieldHandle, String, usize)> {
         self.machine.preview_accept_insert(action)
+    }
+
+    /// Offer a local *replacement* suggestion (emoji/typo/spelling): show `text`
+    /// as the ghost; accepting it deletes `replace_left` chars left of the caret
+    /// before inserting. The host detects the opportunity (e.g. `emoji::suggest`)
+    /// and supplies the rendered `text` + count. See the integration-phase design
+    /// note; honoring the deletion is the adapter's `insert_replacing`.
+    pub fn offer_replacement(
+        &mut self,
+        field: &FieldHandle,
+        text: String,
+        replace_left: usize,
+    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self.machine.offer_replacement(field, text, replace_left);
+        self.dispatch(commands)
     }
 
     /// Drain machine-internal Shown/Superseded stat events for the host to record
@@ -319,6 +344,20 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // show→accept→hide cycle.
                     let strategy = self.caps.insert_strategy;
                     self.adapter.insert(&field, &text, strategy)?;
+                    delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
+                }
+                Command::Replace {
+                    field,
+                    text,
+                    replace_left,
+                } => {
+                    // A replacement deletes `replace_left` chars left of the caret
+                    // before inserting (emoji/typo/spelling). Same self-insert echo
+                    // contract as `Insert`. Adapters that cannot range-replace fall
+                    // back to a plain insert (the deletion is the FFI/live residual).
+                    let strategy = self.caps.insert_strategy;
+                    self.adapter
+                        .insert_replacing(&field, &text, replace_left, strategy)?;
                     delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
                 }
                 Command::UpdateGhost { text, .. } => self.overlay.update_ghost(&text)?,
@@ -444,6 +483,9 @@ mod tests {
         }
     }
 
+    /// A recorded replacement insert: (field, text, replace_left, strategy).
+    type ReplacingInsert = (FieldHandle, String, usize, InsertStrategy);
+
     #[derive(Clone)]
     struct FakeAdapter {
         caps: Capabilities,
@@ -453,6 +495,7 @@ mod tests {
         fail_popup: bool,
         fail_insert: bool,
         inserts: Arc<Mutex<Vec<(FieldHandle, String, InsertStrategy)>>>,
+        replacing_inserts: Arc<Mutex<Vec<ReplacingInsert>>>,
     }
 
     impl FakeAdapter {
@@ -470,6 +513,7 @@ mod tests {
                 fail_popup: false,
                 fail_insert: false,
                 inserts: Arc::new(Mutex::new(Vec::new())),
+                replacing_inserts: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -541,6 +585,28 @@ mod tests {
                 strategy,
             })
         }
+        fn insert_replacing(
+            &self,
+            field: &FieldHandle,
+            text: &str,
+            replace_left: usize,
+            strategy: InsertStrategy,
+        ) -> Result<Inserted, PlatformError> {
+            if self.fail_insert {
+                return Err(PlatformError::StaleField);
+            }
+            self.replacing_inserts.lock().unwrap().push((
+                field.clone(),
+                text.into(),
+                replace_left,
+                strategy,
+            ));
+            Ok(Inserted {
+                bytes: text.len(),
+                chars: text.chars().count(),
+                strategy,
+            })
+        }
     }
 
     fn engine() -> (Engine<FakeAdapter, FakeOverlay>, FakeAdapter, FakeOverlay) {
@@ -559,6 +625,22 @@ mod tests {
         engine.on_completion(&requests[0], text.into()).unwrap();
         overlay.calls.lock().unwrap().clear();
         (engine, adapter, overlay)
+    }
+
+    #[test]
+    fn replacement_accept_forwards_replace_left_through_dispatch() {
+        // Integration step 3: a replacement accept must reach the adapter via
+        // `insert_replacing` carrying `replace_left` (not the plain insert path).
+        let (mut engine, adapter, _overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.offer_replacement(&field(), "😄".into(), 5).unwrap();
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert_eq!(
+            *adapter.replacing_inserts.lock().unwrap(),
+            vec![(field(), "😄".to_string(), 5, InsertStrategy::AxSet)]
+        );
+        // It went through insert_replacing, NOT the append-only insert path.
+        assert!(adapter.inserts.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1229,7 +1311,7 @@ mod tests {
 
         assert_eq!(
             engine.preview_accept_insert(AcceptAction::Word),
-            Some((field(), "world ".into()))
+            Some((field(), "world ".into(), 0))
         );
     }
 
@@ -1239,7 +1321,7 @@ mod tests {
 
         assert_eq!(
             engine.preview_accept_insert(AcceptAction::Full),
-            Some((field(), "world there friend".into()))
+            Some((field(), "world there friend".into(), 0))
         );
     }
 

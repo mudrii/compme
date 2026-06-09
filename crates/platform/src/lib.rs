@@ -173,6 +173,30 @@ pub enum PlatformError {
     AppExited { app: AppId },
 }
 
+impl std::fmt::Display for PlatformError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlatformError::PermissionMissing { permission } => {
+                write!(f, "required permission missing: {permission}")
+            }
+            PlatformError::SecureInput { state } => {
+                write!(f, "secure input active: {state:?}")
+            }
+            PlatformError::CannotComplete { reason } => {
+                write!(f, "cannot complete: {reason}")
+            }
+            PlatformError::UnsupportedField { reason } => {
+                write!(f, "unsupported field: {reason}")
+            }
+            PlatformError::Timeout => write!(f, "platform operation timed out"),
+            PlatformError::StaleField => write!(f, "field is stale"),
+            PlatformError::AppExited { app } => write!(f, "app exited: {app}"),
+        }
+    }
+}
+
+impl std::error::Error for PlatformError {}
+
 pub struct Subscription {
     id: u64,
     cancel: Option<Box<dyn FnOnce() + Send + 'static>>,
@@ -293,6 +317,21 @@ pub trait PlatformAdapter: Send + Sync {
         text: &str,
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError>;
+    /// Insert `text` after deleting `replace_left` characters immediately to the
+    /// left of the caret — a *replacement* (emoji/typo/US→UK spelling). The
+    /// default delegates to [`insert`](Self::insert) and **ignores**
+    /// `replace_left` (append-only); adapters that can range-replace (AxSet) or
+    /// synthesize backspaces override this. Honoring it is the integration-phase
+    /// FFI/live step — until then a replacement degrades to a plain insert.
+    fn insert_replacing(
+        &self,
+        field: &FieldHandle,
+        text: &str,
+        _replace_left: usize,
+        strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        self.insert(field, text, strategy)
+    }
 }
 
 pub trait OverlayPresenter {
