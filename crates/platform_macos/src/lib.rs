@@ -39,7 +39,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{class, msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEventMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEventMask, NSFont,
     NSPanel, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting,
     NSRunningApplication, NSScreen, NSTextField, NSWindowStyleMask, NSWorkspace,
 };
@@ -836,17 +836,20 @@ fn primary_screen_height(mtm: MainThreadMarker) -> f64 {
 
 fn overlay_frame_for_text(rect: ScreenRect, text: &str, primary_height: f64) -> OverlayFrame {
     let text_width = (text.chars().count() as f64 * 7.0) + 24.0;
-    let h = (rect.h + 10.0).clamp(30.0, 48.0);
+    // HUG the caret line: 2pt pad above and below it. A box noticeably taller
+    // than the line (the old 30pt floor over a typical 14pt line) floats the
+    // label text off the typed line no matter how the box is anchored, because
+    // the label's cell top-aligns its text inside the box (live step-6
+    // finding, two rounds: top-anchored AND line-centered 30pt boxes both
+    // looked misaligned).
+    let h = (rect.h + 4.0).clamp(16.0, 48.0);
     OverlayFrame {
         x: rect.x,
         // AX gives a top-left-origin (Y-down) global rect; Cocoa windows use a
         // bottom-left-origin (Y-up) global space sharing the primary screen's
         // corner. Flip against the primary height so the overlay lands at the
-        // caret on any display, including non-primary monitors. Center the box
-        // on the caret line's vertical midpoint — the box is taller than the
-        // line (min 30pt vs a typical 14pt line), so anchoring its top at the
-        // caret top pushed the label text visibly off the typed line (live
-        // step-6 finding: ghost not on the same level as the text).
+        // caret on any display, including non-primary monitors, centering the
+        // box on the caret line's vertical midpoint.
         y: primary_height - rect.y - rect.h / 2.0 - h / 2.0,
         w: text_width.clamp(240.0, 720.0),
         h,
@@ -856,10 +859,19 @@ fn overlay_frame_for_text(rect: ScreenRect, text: &str, primary_height: f64) -> 
 fn overlay_label_frame(frame: OverlayFrame) -> OverlayFrame {
     OverlayFrame {
         x: 8.0,
-        y: 4.0,
+        y: 2.0,
         w: (frame.w - 16.0).max(1.0),
-        h: (frame.h - 8.0).max(1.0),
+        h: (frame.h - 4.0).max(1.0),
     }
+}
+
+/// Ghost label font size for a given overlay box height: the box hugs the
+/// caret line (`line height + 4`), so `box height - 6` tracks the field's
+/// visual text size (a 14pt TextEdit line → 18pt box → 12pt font, TextEdit's
+/// default body size) instead of the fixed 13pt label default. Clamped to a
+/// legible floor and a sane cap for tall (clamped-48) boxes.
+fn overlay_font_size(frame_h: f64) -> f64 {
+    (frame_h - 6.0).clamp(9.0, 28.0)
 }
 
 fn ns_rect(frame: OverlayFrame) -> NSRect {
@@ -872,6 +884,7 @@ fn ns_rect(frame: OverlayFrame) -> NSRect {
 fn configure_overlay_label(label: &NSTextField, frame: OverlayFrame, text: &str) {
     label.setFrame(ns_rect(overlay_label_frame(frame)));
     label.setStringValue(&NSString::from_str(text));
+    label.setFont(Some(&NSFont::systemFontOfSize(overlay_font_size(frame.h))));
     label.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.5, 0.9)));
     label.setDrawsBackground(false);
     label.setBezeled(false);
@@ -6343,12 +6356,13 @@ mod tests {
     }
 
     #[test]
-    fn overlay_frame_centers_box_on_the_caret_line() {
-        // Live step-6 finding: anchoring the box TOP at the caret top pushes the
-        // label text visibly off the typed line (the box is min-30pt over a
-        // 14pt line). The ghost must sit ON the line: center the box on the
-        // caret line's vertical center. Line center (AX, Y-down) = 240 + 14/2 =
-        // 247 → Cocoa center = 1000 - 247 = 753 → box bottom = 753 - 30/2 = 738.
+    fn overlay_frame_hugs_the_caret_line_height_and_centers_on_it() {
+        // Live step-6 finding (second round): centering a 30pt-min box on a
+        // 14pt line still floats the label text off the line, because the
+        // label's cell top-aligns its text inside the oversized box. The box
+        // must HUG the line instead: h = line height + 4 (2pt pad each side),
+        // centered on the line. Line center (AX, Y-down) = 240 + 14/2 = 247 →
+        // Cocoa center = 1000 - 247 = 753 → box bottom = 753 - 18/2 = 744.
         let frame = overlay_frame_for_text(
             ScreenRect {
                 x: 120.0,
@@ -6360,15 +6374,27 @@ mod tests {
             1000.0,
         );
 
-        assert_eq!(frame.y, 738.0);
-        assert_eq!(frame.h, 30.0);
+        assert_eq!(frame.h, 18.0);
+        assert_eq!(frame.y, 744.0);
+    }
+
+    #[test]
+    fn overlay_font_size_tracks_the_box_height() {
+        // A 14pt line → 18pt box → 12pt font (TextEdit's default body size),
+        // so the ghost glyphs match the typed text scale instead of the fixed
+        // 13pt label default.
+        assert_eq!(overlay_font_size(18.0), 12.0);
+        // Tiny boxes never go below a legible floor…
+        assert_eq!(overlay_font_size(10.0), 9.0);
+        // …and tall boxes (clamped 48) cap so the glyphs stay sane.
+        assert_eq!(overlay_font_size(48.0), 28.0);
     }
 
     #[test]
     fn overlay_frame_uses_caret_origin_and_minimum_size() {
         // Primary screen 1000pt tall: a caret at AX y=240 (top-left origin),
-        // line height 14, box height 30, centered on the line: 1000 - 240 -
-        // 14/2 - 30/2 = 738.
+        // line height 14 → box hugs the line (14 + 4 = 18), centered on it:
+        // 1000 - 240 - 14/2 - 18/2 = 744.
         let frame = overlay_frame_for_text(
             ScreenRect {
                 x: 120.0,
@@ -6384,9 +6410,9 @@ mod tests {
             frame,
             OverlayFrame {
                 x: 120.0,
-                y: 738.0,
+                y: 744.0,
                 w: 240.0,
-                h: 30.0,
+                h: 18.0,
             }
         );
     }
@@ -6406,7 +6432,7 @@ mod tests {
             1000.0,
         );
 
-        assert_eq!(frame.y, 1000.0 - 1200.0 - 7.0 - 15.0);
+        assert_eq!(frame.y, 1000.0 - 1200.0 - 7.0 - 9.0);
     }
 
     #[test]
@@ -6428,20 +6454,22 @@ mod tests {
 
     #[test]
     fn overlay_label_frame_keeps_fixed_inset() {
+        // 8pt horizontal inset; 2pt vertical (the box hugs the caret line, so
+        // the label must hug the box for the text to sit on the line).
         let label = overlay_label_frame(OverlayFrame {
             x: 120.0,
             y: 240.0,
             w: 240.0,
-            h: 30.0,
+            h: 18.0,
         });
 
         assert_eq!(
             label,
             OverlayFrame {
                 x: 8.0,
-                y: 4.0,
+                y: 2.0,
                 w: 224.0,
-                h: 22.0,
+                h: 14.0,
             }
         );
     }
@@ -7708,8 +7736,8 @@ mod tests {
             "x",
             0.0,
         );
-        // 0 - 50 - 14/2 - 30/2
-        assert_eq!(frame.y, -72.0);
+        // 0 - 50 - 14/2 - 18/2
+        assert_eq!(frame.y, -66.0);
         assert!(frame.y.is_finite());
     }
 
@@ -7725,12 +7753,12 @@ mod tests {
             "x",
             1000.0,
         );
-        assert_eq!(frame.y, 1000.0 - 1000.0 - 7.0 - 15.0);
+        assert_eq!(frame.y, 1000.0 - 1000.0 - 7.0 - 9.0);
     }
 
     #[test]
     fn overlay_frame_small_caret_height_clamps_and_flips() {
-        // h clamps up to the 30 minimum; centering uses the LINE height (2) for
+        // h clamps up to the 16 floor; centering uses the LINE height (2) for
         // the line midpoint and the clamped BOX height for the box midpoint.
         let frame = overlay_frame_for_text(
             ScreenRect {
@@ -7742,8 +7770,8 @@ mod tests {
             "x",
             1000.0,
         );
-        assert_eq!(frame.h, 30.0);
-        assert_eq!(frame.y, 1000.0 - 100.0 - 1.0 - 15.0);
+        assert_eq!(frame.h, 16.0);
+        assert_eq!(frame.y, 1000.0 - 100.0 - 1.0 - 8.0);
     }
 
     #[test]
