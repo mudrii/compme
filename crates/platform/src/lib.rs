@@ -318,20 +318,23 @@ pub trait PlatformAdapter: Send + Sync {
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError>;
     /// Insert `text` after deleting `replace_left` characters immediately to the
-    /// left of the caret — a *replacement* (emoji/typo/US→UK spelling). The
-    /// default delegates to [`insert`](Self::insert) and **ignores**
-    /// `replace_left` (append-only); adapters that can range-replace (AxSet) or
-    /// synthesize backspaces override this. Honoring it is the integration-phase
-    /// FFI/live step — until then a replacement degrades to a plain insert.
+    /// left of the caret — a *replacement* (emoji/typo/US→UK spelling). Adapters
+    /// that can range-replace (AxSet) honor the deletion; ones that cannot
+    /// (yet) must still implement this explicitly — typically delegating to
+    /// [`insert`](Self::insert) — so the degradation is a stated decision.
+    ///
+    /// REQUIRED (no default) on purpose: this used to default to an append-only
+    /// `insert` delegate, and a forwarding wrapper (`SharedAdapter`) silently
+    /// inherited it — live result was `:smile😄` (emoji appended, typed token
+    /// never deleted). A missing implementation must be a compile error, not a
+    /// silent behavior downgrade.
     fn insert_replacing(
         &self,
         field: &FieldHandle,
         text: &str,
-        _replace_left: usize,
+        replace_left: usize,
         strategy: InsertStrategy,
-    ) -> Result<Inserted, PlatformError> {
-        self.insert(field, text, strategy)
-    }
+    ) -> Result<Inserted, PlatformError>;
 }
 
 pub trait OverlayPresenter {
