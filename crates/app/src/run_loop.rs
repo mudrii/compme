@@ -361,11 +361,15 @@ fn replacement_offer(left: &str, config: &Config) -> Option<(String, usize)> {
 fn replacement_decision(
     left: &str,
     config: &Config,
+    prefs: &Prefs,
     app_key: Option<&str>,
     enabled: bool,
     now_ms: u64,
 ) -> Option<(String, usize)> {
-    if !enabled || !suggestion_gates_pass(app_key, left, &config.prefs, now_ms) {
+    // `prefs` is passed separately from `config` because the run loop mutates
+    // its prefs at runtime (snooze); reading `config.prefs` here would split
+    // the policy source and let a local offer show while the model is snoozed.
+    if !enabled || !suggestion_gates_pass(app_key, left, prefs, now_ms) {
         return None;
     }
     replacement_offer(left, config)
@@ -664,6 +668,20 @@ fn canonicalize_field_app(
     (field, app_key)
 }
 
+/// How long a tray "Snooze" pauses suggestions. One fixed duration for now
+/// (Cotypist-style pause); a duration submenu is a future settings surface.
+const SNOOZE_MINUTES: u64 = 60;
+
+/// Apply a consumed tray snooze request: pause all suggestions for
+/// [`SNOOZE_MINUTES`] from `now_ms` (the monotonic loop clock — a relaunch
+/// deliberately clears a snooze). Returns whether a snooze was applied.
+fn apply_snooze_request(requested: bool, prefs: &mut Prefs, now_ms: u64) -> bool {
+    if requested {
+        prefs.snooze(now_ms, SNOOZE_MINUTES);
+    }
+    requested
+}
+
 /// Parse a fail-safe boolean: only explicit falsy values disable; anything else
 /// (incl. unrecognized strings) keeps the safe default so a typo never silently
 /// turns the whole product off.
@@ -924,7 +942,12 @@ pub fn run() -> Result<(), String> {
         enabled: Arc::new(AtomicBool::new(config.enabled)),
         quit: Arc::new(AtomicBool::new(false)),
         open_settings: Arc::new(AtomicBool::new(false)),
+        snooze_requested: Arc::new(AtomicBool::new(false)),
     };
+    // Runtime-mutable policy (snooze); starts from the configured prefs. The
+    // ONE prefs the loop reads — never read config.prefs after this point, or
+    // the policy source splits.
+    let mut prefs = config.prefs.clone();
     // A tray failure is non-fatal — the engine still runs headless.
     let tray = match MacosTray::new(flags.clone()) {
         Ok(tray) => Some(tray),
@@ -1053,6 +1076,7 @@ pub fn run() -> Result<(), String> {
                                     let decision = replacement_decision(
                                         &ctx.left,
                                         &config,
+                                        &prefs,
                                         replace_app_key.as_deref(),
                                         flags.enabled.load(Ordering::Relaxed),
                                         now_ms,
@@ -1233,6 +1257,16 @@ pub fn run() -> Result<(), String> {
             let now = flags.enabled.load(Ordering::Relaxed);
             flags.enabled.store(!now, Ordering::Relaxed);
         }
+        // Tray "Snooze for 1 hour": pause suggestions on the monotonic clock
+        // (a relaunch deliberately clears it). Consumed with swap so one click
+        // is one snooze.
+        if apply_snooze_request(
+            flags.snooze_requested.swap(false, Ordering::Relaxed),
+            &mut prefs,
+            now_ms,
+        ) {
+            eprintln!("complete-me: suggestions snoozed for {SNOOZE_MINUTES} minutes");
+        }
         let enabled = flags.enabled.load(Ordering::Relaxed);
         let status = derive_status(trusted, secure, inference.is_ready(), enabled);
         // Secure input is a true engine-state transition, not only a UI state:
@@ -1327,8 +1361,7 @@ pub fn run() -> Result<(), String> {
                 // it can't be resolved. Domain is None until browser-domain
                 // extraction lands.
                 let app_key = resolve_app_key(request.field.pid, bundle_id_for_pid);
-                if request_passes_submit_gates(&request, app_key.as_deref(), &config.prefs, now_ms)
-                {
+                if request_passes_submit_gates(&request, app_key.as_deref(), &prefs, now_ms) {
                     // Refresh the clipboard context cell (redacted) just before a
                     // submit that will use it (A2 §16 clipboard context). Invariant:
                     // the cell is rewritten before *every* gated submit, so the
@@ -1459,6 +1492,19 @@ mod tests {
         assert!(!prefs.should_suggest(Some("com.apple.Finder"), None, 0));
         assert!(!prefs.should_suggest(Some("com.tinyspeck.slackmacgap"), None, 0));
         assert!(prefs.should_suggest(Some("com.apple.TextEdit"), None, 0));
+    }
+
+    #[test]
+    fn snooze_request_snoozes_for_an_hour_and_is_consumed() {
+        let mut prefs = Prefs::default();
+        // Not requested → untouched.
+        assert!(!apply_snooze_request(false, &mut prefs, 1_000));
+        assert!(!prefs.is_snoozed(1_000));
+        // Requested → snoozed for exactly SNOOZE_MINUTES from now.
+        assert!(apply_snooze_request(true, &mut prefs, 1_000));
+        assert!(prefs.is_snoozed(1_000));
+        assert!(prefs.is_snoozed(1_000 + 59 * 60 * 1_000));
+        assert!(!prefs.is_snoozed(1_000 + 60 * 60 * 1_000));
     }
 
     #[test]
@@ -2196,16 +2242,27 @@ mod tests {
         let config = Config::from_lookup(lookup(&[("COMPLETE_ME_EMOJI", "1")]));
         let allowed = Some("com.apple.TextEdit");
         // Enabled (tray) + allowed app + a shortcode → offers.
-        assert!(replacement_decision("hi :smile", &config, allowed, true, 0).is_some());
-        // Tray-disabled → no offer even with a match.
-        assert!(replacement_decision("hi :smile", &config, allowed, false, 0).is_none());
-        // Sidebar-only / blocked app → no offer even when enabled.
         assert!(
-            replacement_decision("hi :smile", &config, Some("com.microsoft.VSCode"), true, 0)
-                .is_none()
+            replacement_decision("hi :smile", &config, &config.prefs, allowed, true, 0).is_some()
         );
+        // Tray-disabled → no offer even with a match.
+        assert!(
+            replacement_decision("hi :smile", &config, &config.prefs, allowed, false, 0).is_none()
+        );
+        // Sidebar-only / blocked app → no offer even when enabled.
+        assert!(replacement_decision(
+            "hi :smile",
+            &config,
+            &config.prefs,
+            Some("com.microsoft.VSCode"),
+            true,
+            0
+        )
+        .is_none());
         // No matching token → no offer.
-        assert!(replacement_decision("hello world", &config, allowed, true, 0).is_none());
+        assert!(
+            replacement_decision("hello world", &config, &config.prefs, allowed, true, 0).is_none()
+        );
     }
 
     #[test]

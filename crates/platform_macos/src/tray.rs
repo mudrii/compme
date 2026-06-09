@@ -28,6 +28,9 @@ pub struct TrayFlags {
     pub quit: Arc<AtomicBool>,
     /// Set when the user picks Open Accessibility Settings.
     pub open_settings: Arc<AtomicBool>,
+    /// Set when the user picks Snooze; the run loop consumes it (swap false)
+    /// and applies the snooze to its prefs.
+    pub snooze_requested: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -63,6 +66,11 @@ define_class!(
         #[unsafe(method(requestQuit:))]
         fn request_quit(&self, _sender: Option<&AnyObject>) {
             self.ivars().flags.quit.store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(requestSnooze:))]
+        fn request_snooze(&self, _sender: Option<&AnyObject>) {
+            self.ivars().flags.snooze_requested.store(true, Ordering::Relaxed);
         }
     }
 );
@@ -122,6 +130,16 @@ impl MacosTray {
             enabled_item.setAction(Some(sel!(toggleEnabled:)));
         }
         menu.addItem(&enabled_item);
+
+        // Snooze (pause suggestions for a fixed hour; run loop applies it).
+        let snooze_item = NSMenuItem::new(mtm);
+        snooze_item.setTitle(&NSString::from_str("Snooze for 1 hour"));
+        // SAFETY: as above.
+        unsafe {
+            snooze_item.setTarget(Some(target_as_any(&target)));
+            snooze_item.setAction(Some(sel!(requestSnooze:)));
+        }
+        menu.addItem(&snooze_item);
 
         // Open Accessibility Settings (hidden unless blocked on permission).
         let settings_item = NSMenuItem::new(mtm);
