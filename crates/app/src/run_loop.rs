@@ -1266,6 +1266,12 @@ pub fn run() -> Result<(), String> {
             now_ms,
         ) {
             eprintln!("complete-me: suggestions snoozed for {SNOOZE_MINUTES} minutes");
+            // A snooze must retract an already-visible ghost, exactly like the
+            // disable edge below: gating runs at request-submission, so without
+            // this a ghost already on screen would survive the snooze — and its
+            // armed accept key would still insert it (a2-parity review #2).
+            latest.clear();
+            let _ = log_err("on_dismiss", engine.on_dismiss());
         }
         let enabled = flags.enabled.load(Ordering::Relaxed);
         let status = derive_status(trusted, secure, inference.is_ready(), enabled);
