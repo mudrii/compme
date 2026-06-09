@@ -991,7 +991,7 @@ pub fn run() -> Result<(), String> {
     let mut secure = false;
     let mut prev_secure = false;
     let mut last_secure_poll_ms: Option<u64> = None;
-    let mut last_render: Option<(crate::status::AppStatus, bool)> = None;
+    let mut last_render: Option<(crate::status::AppStatus, bool, bool)> = None;
     let mut last_stats_line: Option<String> = None;
     let start = Instant::now();
 
@@ -1323,20 +1323,23 @@ pub fn run() -> Result<(), String> {
         }
         prev_enabled = enabled;
         prev_secure = secure;
-        // Only touch AppKit when the rendered state actually changed.
-        if last_render != Some((status, enabled)) {
-            eprintln!("complete-me: status={status:?} enabled={enabled}");
+        // Only touch AppKit when the rendered state actually changed. The
+        // snoozed flag is part of the render state so the title/line flip both
+        // when a snooze starts AND when it auto-expires mid-Ready.
+        let snoozed = prefs.is_snoozed(now_ms);
+        if last_render != Some((status, enabled, snoozed)) {
+            eprintln!("complete-me: status={status:?} enabled={enabled} snoozed={snoozed}");
             if let Some(tray) = &tray {
                 if let Err(err) = tray.set_status(
-                    status.menu_title(),
-                    status.status_line(),
+                    status.render_title(snoozed),
+                    status.render_line(snoozed),
                     enabled,
                     status.needs_accessibility(),
                 ) {
                     eprintln!("complete-me: tray update failed: {err:?}");
                 }
             }
-            last_render = Some((status, enabled));
+            last_render = Some((status, enabled, snoozed));
         }
         // Menu-bar 30-day usage line (§11). The string only changes when a
         // stat event landed or the window rolled, so the compare keeps AppKit
@@ -1492,6 +1495,18 @@ mod tests {
         assert!(!prefs.should_suggest(Some("com.apple.Finder"), None, 0));
         assert!(!prefs.should_suggest(Some("com.tinyspeck.slackmacgap"), None, 0));
         assert!(prefs.should_suggest(Some("com.apple.TextEdit"), None, 0));
+    }
+
+    #[test]
+    fn snooze_duration_matches_the_rendered_wording() {
+        // AppStatus::render_line says "Snoozed for up to 1 hour" (a &'static
+        // str). If SNOOZE_MINUTES ever changes, that wording must follow.
+        assert_eq!(
+            SNOOZE_MINUTES, 60,
+            "update AppStatus::render_line's 'up to 1 hour' wording (status.rs) \
+             together with SNOOZE_MINUTES"
+        );
+        assert!(AppStatus::Ready.render_line(true).contains("1 hour"));
     }
 
     #[test]

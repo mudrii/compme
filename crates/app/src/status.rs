@@ -73,6 +73,25 @@ impl AppStatus {
             AppStatus::Blocked(BlockReason::SecureInput) => "Paused: secure input active",
         }
     }
+
+    /// [`Self::menu_title`] with the snooze overlay: snooze is a PREFS gate
+    /// (not an `AppStatus` — `suggestions_allowed` is untouched and the submit
+    /// gate keeps doing the blocking), so it renders only over `Ready` and
+    /// never masks a more severe state.
+    pub fn render_title(self, snoozed: bool) -> &'static str {
+        match self {
+            AppStatus::Ready if snoozed => "CM💤",
+            other => other.menu_title(),
+        }
+    }
+
+    /// [`Self::status_line`] with the snooze overlay; see [`Self::render_title`].
+    pub fn render_line(self, snoozed: bool) -> &'static str {
+        match self {
+            AppStatus::Ready if snoozed => "Snoozed for up to 1 hour",
+            other => other.status_line(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +171,30 @@ mod tests {
         assert!(AppStatus::Blocked(BlockReason::Permission).needs_accessibility());
         assert!(!AppStatus::Blocked(BlockReason::SecureInput).needs_accessibility());
         assert!(!AppStatus::Ready.needs_accessibility());
+    }
+
+    #[test]
+    fn snoozed_renders_only_over_ready() {
+        // Display-only: snooze is a prefs gate, not an AppStatus — but the
+        // user needs visible feedback. It must never mask a more severe state.
+        assert_eq!(AppStatus::Ready.render_title(true), "CM💤");
+        assert_eq!(
+            AppStatus::Ready.render_line(true),
+            "Snoozed for up to 1 hour"
+        );
+        // Not snoozed → plain Ready strings.
+        assert_eq!(AppStatus::Ready.render_title(false), "CM");
+        assert_eq!(AppStatus::Ready.render_line(false), "Ready");
+        // Severer states win even while snoozed.
+        for s in [
+            AppStatus::Loading,
+            AppStatus::Disabled,
+            AppStatus::Blocked(BlockReason::Permission),
+            AppStatus::Blocked(BlockReason::SecureInput),
+        ] {
+            assert_eq!(s.render_title(true), s.menu_title(), "{s:?}");
+            assert_eq!(s.render_line(true), s.status_line(), "{s:?}");
+        }
     }
 
     #[test]
