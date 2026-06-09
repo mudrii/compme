@@ -513,6 +513,18 @@ mod tests {
     }
 
     #[test]
+    fn self_replace_noops_without_baseline() {
+        // No observation yet → no baseline → apply_self_replace is a no-op (no
+        // panic), and the first real observation still reads as a fresh Insert.
+        let mut tracker = FieldTracker::new();
+        tracker.apply_self_replace(&field("f"), "😄", 2);
+        let first =
+            typed(tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 1));
+        assert_eq!(first.edit, EditKind::Insert);
+        assert_eq!(first.previous_caret, None);
+    }
+
+    #[test]
     fn self_insert_noops_without_matching_baseline() {
         let mut tracker = FieldTracker::new();
         tracker.apply_self_insert(&field("f"), "ignored");

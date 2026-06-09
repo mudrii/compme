@@ -7032,6 +7032,25 @@ mod tests {
     }
 
     #[test]
+    fn extend_range_left_preserves_an_existing_selection_length() {
+        // Caret-anchored replacements use a collapsed range, but the helper also
+        // handles a non-collapsed selection (e.g. a future selection-triggered
+        // replacement): it extends the left edge by `replace_left` chars and keeps
+        // the original selection length. "abcde", select "de" (loc 3, len 2),
+        // extend left 2 → covers utf16 [1,5] = "bcde".
+        let range = extend_range_left(
+            "abcde",
+            CFRange {
+                location: 3,
+                length: 2,
+            },
+            2,
+        );
+        assert_eq!(range.location, 1);
+        assert_eq!(range.length, 4); // original 2 + 2 extended-left
+    }
+
+    #[test]
     fn splice_text_replaces_selected_utf16_range() {
         let (value, caret) = splice_text_at_utf16_range(
             "Hello world",
