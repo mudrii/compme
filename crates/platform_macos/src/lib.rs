@@ -848,9 +848,12 @@ fn overlay_frame_for_text(rect: ScreenRect, text: &str, primary_height: f64) -> 
         // AX gives a top-left-origin (Y-down) global rect; Cocoa windows use a
         // bottom-left-origin (Y-up) global space sharing the primary screen's
         // corner. Flip against the primary height so the overlay lands at the
-        // caret on any display, including non-primary monitors, centering the
-        // box on the caret line's vertical midpoint.
-        y: primary_height - rect.y - rect.h / 2.0 - h / 2.0,
+        // caret on any display, centering the box on the caret line's vertical
+        // midpoint. LIVE-CALIBRATED (step-6 screenshot + debug log): the AX
+        // caret rect's bottom edge (rect.y + rect.h) is the caret line's TOP —
+        // treating rect.y as the line top rendered the ghost exactly one line
+        // high on every line — so the line's midpoint is rect.y + 1.5*rect.h.
+        y: primary_height - rect.y - 1.5 * rect.h - h / 2.0,
         w: text_width.clamp(240.0, 720.0),
         h,
     }
@@ -6357,12 +6360,14 @@ mod tests {
 
     #[test]
     fn overlay_frame_hugs_the_caret_line_height_and_centers_on_it() {
-        // Live step-6 finding (second round): centering a 30pt-min box on a
-        // 14pt line still floats the label text off the line, because the
-        // label's cell top-aligns its text inside the oversized box. The box
-        // must HUG the line instead: h = line height + 4 (2pt pad each side),
-        // centered on the line. Line center (AX, Y-down) = 240 + 14/2 = 247 →
-        // Cocoa center = 1000 - 247 = 753 → box bottom = 753 - 18/2 = 744.
+        // Live step-6 calibration (screenshot + debug log, cycle 44): the AX
+        // caret rect's BOTTOM edge (rect.y + rect.h) is the caret line's TOP —
+        // treating rect.y as the line top rendered the ghost exactly one line
+        // above the typed text, on every line of the TextEdit gate doc. The
+        // caret line therefore spans [y+h, y+2h] in AX (Y-down) coords. Box
+        // hugs the line (h = 14 + 4 = 18) centered on the line's midpoint:
+        // line center = 240 + 1.5*14 = 261 → Cocoa center = 1000 - 261 = 739
+        // → box bottom = 739 - 18/2 = 730.
         let frame = overlay_frame_for_text(
             ScreenRect {
                 x: 120.0,
@@ -6375,7 +6380,7 @@ mod tests {
         );
 
         assert_eq!(frame.h, 18.0);
-        assert_eq!(frame.y, 744.0);
+        assert_eq!(frame.y, 730.0);
     }
 
     #[test]
@@ -6392,9 +6397,9 @@ mod tests {
 
     #[test]
     fn overlay_frame_uses_caret_origin_and_minimum_size() {
-        // Primary screen 1000pt tall: a caret at AX y=240 (top-left origin),
-        // line height 14 → box hugs the line (14 + 4 = 18), centered on it:
-        // 1000 - 240 - 14/2 - 18/2 = 744.
+        // Primary screen 1000pt tall: a caret rect at AX y=240 (its bottom edge
+        // 254 = the caret line's top), line height 14 → box hugs the line
+        // (14 + 4 = 18), centered on it: 1000 - 240 - 1.5*14 - 18/2 = 730.
         let frame = overlay_frame_for_text(
             ScreenRect {
                 x: 120.0,
@@ -6410,7 +6415,7 @@ mod tests {
             frame,
             OverlayFrame {
                 x: 120.0,
-                y: 744.0,
+                y: 730.0,
                 w: 240.0,
                 h: 18.0,
             }
@@ -6432,7 +6437,7 @@ mod tests {
             1000.0,
         );
 
-        assert_eq!(frame.y, 1000.0 - 1200.0 - 7.0 - 9.0);
+        assert_eq!(frame.y, 1000.0 - 1200.0 - 21.0 - 9.0);
     }
 
     #[test]
@@ -7736,8 +7741,8 @@ mod tests {
             "x",
             0.0,
         );
-        // 0 - 50 - 14/2 - 18/2
-        assert_eq!(frame.y, -66.0);
+        // 0 - 50 - 1.5*14 - 18/2
+        assert_eq!(frame.y, -80.0);
         assert!(frame.y.is_finite());
     }
 
@@ -7753,7 +7758,7 @@ mod tests {
             "x",
             1000.0,
         );
-        assert_eq!(frame.y, 1000.0 - 1000.0 - 7.0 - 9.0);
+        assert_eq!(frame.y, 1000.0 - 1000.0 - 21.0 - 9.0);
     }
 
     #[test]
@@ -7771,7 +7776,7 @@ mod tests {
             1000.0,
         );
         assert_eq!(frame.h, 16.0);
-        assert_eq!(frame.y, 1000.0 - 100.0 - 1.0 - 8.0);
+        assert_eq!(frame.y, 1000.0 - 100.0 - 3.0 - 8.0);
     }
 
     #[test]
