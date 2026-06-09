@@ -102,6 +102,24 @@ mod tests {
     }
 
     #[test]
+    fn secure_input_outranks_an_unwarmed_model() {
+        // Trusted but secure input is active while the model is still warming
+        // (ready=false). The docstring promises "secure input outranks
+        // readiness", so this must report Blocked(SecureInput), NOT Loading —
+        // otherwise a branch reorder (check readiness before secure) would
+        // silently surface "Loading model…" while focus sits in a password
+        // field, hiding the secure-input pause. The toggle is irrelevant here.
+        assert_eq!(
+            derive_status(true, true, false, true),
+            AppStatus::Blocked(BlockReason::SecureInput)
+        );
+        assert_eq!(
+            derive_status(true, true, false, false),
+            AppStatus::Blocked(BlockReason::SecureInput)
+        );
+    }
+
+    #[test]
     fn not_ready_is_loading_when_trusted_and_unsecured() {
         assert_eq!(derive_status(true, false, false, true), AppStatus::Loading);
     }

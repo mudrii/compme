@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
+use emoji::{EmojiPrefs, Gender, SkinTone};
 use engine::{CompletionRequest, Engine, TriggerPolicy};
 use personalization::{PersonalizationProfile, SenderIdentity, Strength};
 use platform::{
@@ -139,6 +140,7 @@ struct Config {
     heartbeat_ms: u64,
     min_context_chars: usize,
     allow_mid_word: bool,
+    trailing_space: bool,
     diag_coords: bool,
     candidates: usize,
     context_max_chars: usize,
@@ -148,6 +150,16 @@ struct Config {
     personalization: PersonalizationProfile,
     prefs: Prefs,
     memory: MemoryConfig,
+    /// Emoji completion (A2 §8/§16). `Some` = enabled with the user's skin-tone/
+    /// gender prefs; `None` = off (default). Drives the local `:shortcode`
+    /// replacement offer in the observe path.
+    emoji: Option<EmojiPrefs>,
+    /// Inline typo autocorrect (A2 §8/§16, `COMPLETE_ME_AUTOCORRECT`, default off):
+    /// offer the correction when the trailing word is a known typo.
+    autocorrect: bool,
+    /// British-English normalization (A2 §16, `COMPLETE_ME_BRITISH_ENGLISH`, default
+    /// off): offer the UK spelling when the trailing word is a known US-only form.
+    british_english: bool,
 }
 
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
@@ -208,6 +220,10 @@ impl Config {
             // design §4 trigger gating + plan-review F5, "protect first-run").
             // `COMPLETE_ME_MIDLINE=1` opts into them.
             allow_mid_word: lookup("COMPLETE_ME_MIDLINE").is_some_and(|v| v == "1" || v == "true"),
+            // Cotypist "Include trailing space after single-word completions".
+            // Off by default → accept text is byte-identical to before the flag.
+            trailing_space: lookup("COMPLETE_ME_TRAILING_SPACE")
+                .is_some_and(|v| v == "1" || v == "true"),
             diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
             candidates: parse_clamped(lookup("COMPLETE_ME_CANDIDATES"), DEFAULT_CANDIDATES, 1, 5),
             context_max_chars: parse_context_max_chars(lookup(
@@ -222,8 +238,124 @@ impl Config {
             personalization: build_personalization(&lookup),
             prefs: build_prefs(&lookup),
             memory: build_memory_config(&lookup),
+            emoji: build_emoji_config(&lookup),
+            autocorrect: lookup("COMPLETE_ME_AUTOCORRECT")
+                .is_some_and(|v| v == "1" || v == "true" || v == "on"),
+            british_english: lookup("COMPLETE_ME_BRITISH_ENGLISH")
+                .is_some_and(|v| v == "1" || v == "true" || v == "on"),
         }
     }
+}
+
+/// Parse emoji-completion config (A2 §8/§16). `Some(prefs)` when
+/// `COMPLETE_ME_EMOJI` is on (opt-in, default off → `None` = disabled);
+/// `COMPLETE_ME_EMOJI_SKIN_TONE` (default/light/medium-light/medium/medium-dark/
+/// dark) and `COMPLETE_ME_EMOJI_GENDER` (neutral/female/male) select modifiers.
+fn build_emoji_config(lookup: &impl Fn(&str) -> Option<String>) -> Option<EmojiPrefs> {
+    let enabled = lookup("COMPLETE_ME_EMOJI").is_some_and(|v| v == "1" || v == "true" || v == "on");
+    if !enabled {
+        return None;
+    }
+    Some(EmojiPrefs {
+        skin_tone: parse_skin_tone(lookup("COMPLETE_ME_EMOJI_SKIN_TONE")),
+        gender: parse_gender(lookup("COMPLETE_ME_EMOJI_GENDER")),
+    })
+}
+
+fn parse_skin_tone(raw: Option<String>) -> SkinTone {
+    match raw
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("light") => SkinTone::Light,
+        Some("medium-light") | Some("medium_light") => SkinTone::MediumLight,
+        Some("medium") => SkinTone::Medium,
+        Some("medium-dark") | Some("medium_dark") => SkinTone::MediumDark,
+        Some("dark") => SkinTone::Dark,
+        _ => SkinTone::Default,
+    }
+}
+
+fn parse_gender(raw: Option<String>) -> Gender {
+    match raw
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("female") => Gender::Female,
+        Some("male") => Gender::Male,
+        _ => Gender::Neutral,
+    }
+}
+
+/// A local emoji *replacement* for the typed left-context, when emoji completion
+/// is enabled: `Some((glyph, replace_chars))` to offer, else `None`. Pure wrapper
+/// over `emoji::suggest` behind the enable flag so the run-loop wiring is testable.
+fn emoji_offer(left: &str, cfg: &Option<EmojiPrefs>) -> Option<(String, usize)> {
+    let prefs = cfg.as_ref()?;
+    let suggestion = emoji::suggest(left, prefs)?;
+    Some((suggestion.glyph, suggestion.replace_chars))
+}
+
+/// The trailing run of alphabetic characters at the caret (the word being typed),
+/// or `None` when the left context ends in a non-letter (boundary). Used to gate
+/// the word-based replacement offers (typo fix, US→UK) on an exact whole-word
+/// match — the same "token at the caret" model emoji uses for `:shortcode`.
+fn trailing_word(left: &str) -> Option<&str> {
+    let start = left
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_alphabetic())
+        .last()
+        .map(|(i, _)| i)?;
+    let word = &left[start..];
+    (!word.is_empty()).then_some(word)
+}
+
+/// A local *replacement* to offer for the typed left-context, or `None`. Tries the
+/// enabled features in priority order: emoji (`:shortcode`, explicit intent), then
+/// the word-based fixes on the trailing word — typo autocorrect, then US→UK
+/// spelling. Returns `(replacement_text, chars_to_replace)`. Pure over its inputs
+/// so the observe-path wiring stays testable.
+fn replacement_offer(left: &str, config: &Config) -> Option<(String, usize)> {
+    if let Some(offer) = emoji_offer(left, &config.emoji) {
+        return Some(offer);
+    }
+    let word = trailing_word(left)?;
+    let word_len = word.chars().count();
+    if config.autocorrect {
+        if let Some(fix) = autocorrect::correct(word) {
+            return Some((fix, word_len));
+        }
+    }
+    if config.british_english {
+        if let Some(uk) = localize::to_british(word) {
+            return Some((uk, word_len));
+        }
+    }
+    None
+}
+
+/// The full observe-path decision for a local replacement: a `(text, replace_left)`
+/// to offer, or `None`. Combines the suggestion gate (tray `enabled` + per-app
+/// exclude / snooze / terminal-NL, the SAME policy as a model completion) with the
+/// feature lookup, so a local offer never shows where a model one wouldn't. Pure
+/// over its inputs so the gate+offer interaction is unit-testable (warm-up is
+/// intentionally not gated — replacements are local and need no model).
+fn replacement_decision(
+    left: &str,
+    config: &Config,
+    app_key: Option<&str>,
+    enabled: bool,
+    now_ms: u64,
+) -> Option<(String, usize)> {
+    if !enabled || !suggestion_gates_pass(app_key, left, &config.prefs, now_ms) {
+        return None;
+    }
+    replacement_offer(left, config)
 }
 
 /// Parse the encrypted-memory config (A2 §6/§16). `COMPLETE_ME_MEMORY` selects the
@@ -373,15 +505,24 @@ fn app_allows_suggestions(app_key: Option<&str>) -> bool {
     })
 }
 
+/// Whether suggestions are allowed for `app_key` given `text` as the candidate
+/// prompt/context: the app's compatibility tier allows inline (and isn't
+/// sidebar-only), a terminal only when `text` reads as a natural-language prompt,
+/// and per-app exclude / snooze (`should_suggest`) pass. Shared by the model
+/// submit gate and the local replacement-offer gate so both honor the same
+/// per-app/snooze/terminal policy.
+fn suggestion_gates_pass(app_key: Option<&str>, text: &str, prefs: &Prefs, now_ms: u64) -> bool {
+    let terminal_ok = app_key.is_none_or(|app| compat::terminal_prompt_activates(app, text));
+    app_allows_suggestions(app_key) && terminal_ok && prefs.should_suggest(app_key, None, now_ms)
+}
+
 fn request_passes_submit_gates(
     request: &CompletionRequest,
     app_key: Option<&str>,
     prefs: &Prefs,
     now_ms: u64,
 ) -> bool {
-    let terminal_ok =
-        app_key.is_none_or(|app| compat::terminal_prompt_activates(app, &request.prompt));
-    app_allows_suggestions(app_key) && terminal_ok && prefs.should_suggest(app_key, None, now_ms)
+    suggestion_gates_pass(app_key, &request.prompt, prefs, now_ms)
 }
 
 /// First-suggestion latency (ms) for a completed request's `generation`: the
@@ -643,7 +784,8 @@ pub fn run() -> Result<(), String> {
         config.max_words,
         config.max_tokens,
     )
-    .with_trigger_gates(config.min_context_chars, config.allow_mid_word);
+    .with_trigger_gates(config.min_context_chars, config.allow_mid_word)
+    .with_trailing_space(config.trailing_space);
 
     // Callbacks fire on the dispatcher thread; mpsc::Sender is !Sync, so share it
     // through a Mutex (the callbacks must be Send + Sync).
@@ -840,10 +982,49 @@ pub fn run() -> Result<(), String> {
                                 }
                             }
                             match tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms) {
-                                Observation::Typed(change) => offer_all(
-                                    &mut latest,
-                                    log_err("on_text_changed", engine.on_text_changed(change)),
-                                ),
+                                Observation::Typed(change) => {
+                                    offer_all(
+                                        &mut latest,
+                                        log_err("on_text_changed", engine.on_text_changed(change)),
+                                    );
+                                    // Local replacement (A2 §8/§16): a typed
+                                    // `:shortcode` (emoji), typo (autocorrect), or
+                                    // US-only spelling (British English) offers a
+                                    // replacement ghost and PREEMPTS the model
+                                    // completion for this turn (Cotypist behavior —
+                                    // local offers are instant + high-confidence).
+                                    // `ctx.left` is the left-of-caret text. Each
+                                    // feature is off by default. Honor the SAME
+                                    // gating as a model completion — tray-enabled +
+                                    // per-app exclude / snooze / terminal — so a
+                                    // local offer never shows where a model one
+                                    // wouldn't (warm-up is intentionally not required:
+                                    // replacements are local and need no model).
+                                    let replace_app_key =
+                                        resolve_app_key(field.pid, bundle_id_for_pid);
+                                    if let Some((glyph, replace_left)) = replacement_decision(
+                                        &ctx.left,
+                                        &config,
+                                        replace_app_key.as_deref(),
+                                        flags.enabled.load(Ordering::Relaxed),
+                                        now_ms,
+                                    ) {
+                                        // Drop the just-queued model request so it
+                                        // can't supersede the emoji ghost.
+                                        latest.clear();
+                                        offer_all(
+                                            &mut latest,
+                                            log_err(
+                                                "offer_replacement",
+                                                engine.offer_replacement(
+                                                    &field,
+                                                    glyph,
+                                                    replace_left,
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                }
                                 Observation::CaretMoved { field, caret } => offer_all(
                                     &mut latest,
                                     log_err("on_caret_moved", engine.on_caret_moved(field, caret)),
@@ -878,7 +1059,7 @@ pub fn run() -> Result<(), String> {
                     // prior text, whereas a single word (the Word-accept payload)
                     // is low-signal. Routed to two opt-in sinks — the volatile
                     // previous-input ring and the encrypted on-disk memory store.
-                    if let (Some(field), Some((_, text))) =
+                    if let (Some(field), Some((_, text, _))) =
                         (current_field.as_ref(), preview.as_ref())
                     {
                         record_full_accept(
@@ -898,8 +1079,17 @@ pub fn run() -> Result<(), String> {
                             // typing — otherwise the echo would arm a spurious
                             // post-accept completion request (engine-macos §4 step
                             // 9: the accept's own insert is not a new edit).
-                            if let Some((field, text)) = &preview {
-                                tracker.apply_self_insert(field, text);
+                            if let Some((field, text, replace_left)) = &preview {
+                                // Absorb the accept's echo. A replacement
+                                // (`replace_left > 0`, e.g. emoji) deletes the
+                                // typed token before inserting, so the baseline
+                                // must delete-then-insert to match the field; an
+                                // ordinary completion is append-only.
+                                if *replace_left > 0 {
+                                    tracker.apply_self_replace(field, text, *replace_left);
+                                } else {
+                                    tracker.apply_self_insert(field, text);
+                                }
                                 // Local usage stats (§11/§16): count every accept
                                 // (both Word and Full — unlike the full-only
                                 // previous-inputs/memory block above) and the words
@@ -1215,6 +1405,33 @@ mod tests {
     }
 
     #[test]
+    fn suggestion_gates_apply_to_local_replacements_too() {
+        // The local replacement offer (emoji/typo/UK) shares this gate, so it is
+        // suppressed exactly where a model completion would be.
+        let prefs = Prefs::default();
+        assert!(suggestion_gates_pass(
+            Some("com.apple.TextEdit"),
+            "color",
+            &prefs,
+            0
+        ));
+        // Sidebar-only app → blocked.
+        assert!(!suggestion_gates_pass(
+            Some("com.microsoft.VSCode"),
+            "color",
+            &prefs,
+            0
+        ));
+        // Terminal with a shell-command line → blocked (not a natural-language prompt).
+        assert!(!suggestion_gates_pass(
+            Some("com.googlecode.iterm2"),
+            "git status && ls -la",
+            &prefs,
+            0
+        ));
+    }
+
+    #[test]
     fn submit_gate_combines_app_terminal_and_preference_policy() {
         let prefs = Prefs::default();
         assert!(request_passes_submit_gates(
@@ -1346,6 +1563,19 @@ mod tests {
         // Unresolvable pid or absent pid → None (fail-open gating).
         assert_eq!(resolve_app_key(Some(99), resolver), None);
         assert_eq!(resolve_app_key(None, resolver), None);
+    }
+
+    #[test]
+    fn resolve_app_key_returns_none_for_pid_above_i32_range() {
+        // A u32 pid larger than i32::MAX can't be a real macOS pid; `i32::try_from`
+        // fails so the resolver must never be called and gating fails open (None),
+        // rather than panicking or wrapping to a negative pid.
+        let resolver = |_pid: i32| -> Option<String> {
+            panic!("resolver must not be called for an out-of-range pid");
+        };
+        let too_big = (i32::MAX as u32) + 1;
+        assert_eq!(resolve_app_key(Some(too_big), resolver), None);
+        assert_eq!(resolve_app_key(Some(u32::MAX), resolver), None);
     }
 
     #[test]
@@ -1686,6 +1916,119 @@ mod tests {
         assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_MIDLINE", "1")])).allow_mid_word);
         assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_MIDLINE", "true")])).allow_mid_word);
         assert!(!Config::from_lookup(lookup(&[("COMPLETE_ME_MIDLINE", "no")])).allow_mid_word);
+    }
+
+    #[test]
+    fn trailing_space_opt_in_by_one_or_true_and_off_by_default() {
+        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_TRAILING_SPACE", "1")])).trailing_space);
+        assert!(
+            Config::from_lookup(lookup(&[("COMPLETE_ME_TRAILING_SPACE", "true")])).trailing_space
+        );
+        assert!(
+            !Config::from_lookup(lookup(&[("COMPLETE_ME_TRAILING_SPACE", "no")])).trailing_space
+        );
+        // Off by default when the key is absent (byte-identical accept behavior).
+        assert!(!Config::from_lookup(lookup(&[])).trailing_space);
+    }
+
+    #[test]
+    fn emoji_config_off_by_default_and_parses_prefs_when_enabled() {
+        // Absent / falsy → disabled (None).
+        assert!(Config::from_lookup(lookup(&[])).emoji.is_none());
+        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_EMOJI", "no")]))
+            .emoji
+            .is_none());
+        // Enabled → Some with default prefs.
+        let on = Config::from_lookup(lookup(&[("COMPLETE_ME_EMOJI", "1")]))
+            .emoji
+            .expect("enabled");
+        assert_eq!(on, EmojiPrefs::default());
+        // Skin tone + gender parsed.
+        let custom = Config::from_lookup(lookup(&[
+            ("COMPLETE_ME_EMOJI", "on"),
+            ("COMPLETE_ME_EMOJI_SKIN_TONE", "medium-dark"),
+            ("COMPLETE_ME_EMOJI_GENDER", "female"),
+        ]))
+        .emoji
+        .expect("enabled");
+        assert_eq!(custom.skin_tone, SkinTone::MediumDark);
+        assert_eq!(custom.gender, Gender::Female);
+    }
+
+    #[test]
+    fn emoji_offer_gated_by_enable_and_shortcode() {
+        let prefs = Some(EmojiPrefs::default());
+        // Enabled + a trailing :shortcode → offers (glyph, chars-to-replace).
+        let (glyph, replace_left) = emoji_offer("hi :smile", &prefs).expect("offer");
+        assert!(!glyph.is_empty());
+        assert_eq!(replace_left, 6); // ":smile"
+                                     // Enabled but no shortcode → no offer.
+        assert!(emoji_offer("hello world", &prefs).is_none());
+        // Disabled (None) → never offers, even with a shortcode.
+        assert!(emoji_offer("hi :smile", &None).is_none());
+    }
+
+    #[test]
+    fn trailing_word_extracts_the_word_at_the_caret() {
+        assert_eq!(trailing_word("I teh"), Some("teh"));
+        assert_eq!(trailing_word("color"), Some("color"));
+        assert_eq!(trailing_word("café"), Some("café")); // multibyte
+        assert_eq!(trailing_word("x:smile"), Some("smile")); // ':' is a boundary
+        assert_eq!(trailing_word("done "), None); // trailing space = boundary
+        assert_eq!(trailing_word("a1b"), Some("b")); // digit is a boundary
+        assert_eq!(trailing_word(""), None);
+    }
+
+    #[test]
+    fn autocorrect_and_british_off_by_default() {
+        let config = Config::from_lookup(lookup(&[]));
+        assert!(!config.autocorrect);
+        assert!(!config.british_english);
+        // Off → no word-based offer even on a known typo / americanism.
+        assert!(replacement_offer("teh", &config).is_none());
+        assert!(replacement_offer("color", &config).is_none());
+    }
+
+    #[test]
+    fn replacement_offer_fires_for_enabled_word_features() {
+        let ac = Config::from_lookup(lookup(&[("COMPLETE_ME_AUTOCORRECT", "1")]));
+        assert_eq!(replacement_offer("I teh", &ac), Some(("the".into(), 3)));
+        // A correctly-spelled word never offers.
+        assert!(replacement_offer("the", &ac).is_none());
+
+        let uk = Config::from_lookup(lookup(&[("COMPLETE_ME_BRITISH_ENGLISH", "on")]));
+        assert_eq!(replacement_offer("color", &uk), Some(("colour".into(), 5)));
+        assert!(replacement_offer("colour", &uk).is_none());
+    }
+
+    #[test]
+    fn replacement_offer_prioritizes_emoji_then_word_features() {
+        // Emoji shortcode wins over the word-based features when all are enabled.
+        let all = Config::from_lookup(lookup(&[
+            ("COMPLETE_ME_EMOJI", "1"),
+            ("COMPLETE_ME_AUTOCORRECT", "1"),
+            ("COMPLETE_ME_BRITISH_ENGLISH", "1"),
+        ]));
+        let (glyph, replace_left) = replacement_offer("teh :smile", &all).expect("emoji wins");
+        assert!(!glyph.is_empty());
+        assert_eq!(replace_left, 6); // ":smile", not the word "teh"
+    }
+
+    #[test]
+    fn replacement_decision_combines_gate_and_offer() {
+        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_EMOJI", "1")]));
+        let allowed = Some("com.apple.TextEdit");
+        // Enabled (tray) + allowed app + a shortcode → offers.
+        assert!(replacement_decision("hi :smile", &config, allowed, true, 0).is_some());
+        // Tray-disabled → no offer even with a match.
+        assert!(replacement_decision("hi :smile", &config, allowed, false, 0).is_none());
+        // Sidebar-only / blocked app → no offer even when enabled.
+        assert!(
+            replacement_decision("hi :smile", &config, Some("com.microsoft.VSCode"), true, 0)
+                .is_none()
+        );
+        // No matching token → no offer.
+        assert!(replacement_decision("hello world", &config, allowed, true, 0).is_none());
     }
 
     #[test]

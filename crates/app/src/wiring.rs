@@ -165,6 +165,35 @@ impl FieldTracker {
         last.value.insert_str(byte_index, text);
         last.caret = last.caret.saturating_add(text.chars().count());
     }
+
+    /// Absorb a *replacement* self-insert (emoji `:smile`→😄, typo fix, US→UK
+    /// spelling): delete `replace_left` characters immediately left of the caret,
+    /// then insert `text`. Mirrors the field after a `Command::Replace`
+    /// (delete-then-insert) so the next AX readback registers the accept's own
+    /// edit, not new typing — the same echo-absorption guarantee
+    /// `apply_self_insert` gives append-only completions. `replace_left` is
+    /// clamped to the characters actually available left of the caret.
+    pub fn apply_self_replace(&mut self, field: &FieldHandle, text: &str, replace_left: usize) {
+        let Some(last) = &mut self.last else {
+            return;
+        };
+        if &last.field != field {
+            return;
+        }
+        let delete = replace_left.min(last.caret);
+        if delete > 0 {
+            let start_char = last.caret - delete;
+            let start = byte_index_for_char(&last.value, start_char);
+            let end = byte_index_for_char(&last.value, last.caret);
+            last.value.replace_range(start..end, "");
+            last.caret = start_char;
+        }
+        if !text.is_empty() {
+            let byte_index = byte_index_for_char(&last.value, last.caret);
+            last.value.insert_str(byte_index, text);
+            last.caret = last.caret.saturating_add(text.chars().count());
+        }
+    }
 }
 
 fn byte_index_for_char(value: &str, target_chars: usize) -> usize {
@@ -414,6 +443,71 @@ mod tests {
             Observation::CaretMoved {
                 field: field("f"),
                 caret: 3
+            }
+        );
+    }
+
+    #[test]
+    fn self_replace_deletes_then_inserts_so_readback_is_caret_move() {
+        // User typed ":smile" after "x" (caret at 7); accepting the emoji
+        // replacement deletes those 6 chars and inserts the glyph. The baseline
+        // must end at "x😄" so the AX readback is absorbed as a caret move.
+        let mut tracker = FieldTracker::new();
+        tracker.observe(
+            &field("f"),
+            &ctx("x:smile", ""),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        tracker.apply_self_replace(&field("f"), "😄", 6);
+        let observed = tracker.observe(&field("f"), &ctx("x😄", ""), TriggerPolicy::Automatic, 1);
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 2
+            }
+        );
+    }
+
+    #[test]
+    fn self_replace_clamps_replace_left_to_available_chars() {
+        // `replace_left` larger than the caret position clamps to what's there.
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx(":1", ""), TriggerPolicy::Automatic, 0);
+        tracker.apply_self_replace(&field("f"), "👍", 99);
+        let observed = tracker.observe(&field("f"), &ctx("👍", ""), TriggerPolicy::Automatic, 1);
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 1
+            }
+        );
+    }
+
+    #[test]
+    fn self_replace_noops_on_wrong_field() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(
+            &field("f"),
+            &ctx("x:smile", ""),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        tracker.apply_self_replace(&field("other"), "😄", 6);
+        // Baseline unchanged → the real field's next readback is unaffected.
+        let observed = tracker.observe(
+            &field("f"),
+            &ctx("x:smile", ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 7
             }
         );
     }

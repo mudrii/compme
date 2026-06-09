@@ -2,6 +2,7 @@
 name = "app"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [[bin]]
 name = "complete-me"
@@ -19,5 +20,8 @@ redaction = { path = "../redaction" }
 memory = { path = "../memory" }
 stats = { path = "../stats" }
 compat = { path = "../compat" }
+emoji = { path = "../emoji" }
+autocorrect = { path = "../autocorrect" }
+localize = { path = "../localize" }
 core-foundation = "=0.10.1"
 libc = "0.2"
