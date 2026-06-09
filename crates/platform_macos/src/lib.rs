@@ -701,7 +701,7 @@ impl OverlayPresenter for MacosOverlayPresenter {
         let mtm = overlay_main_thread_marker()?;
         let primary_height = primary_screen_height(mtm);
         let frame = overlay_frame_for_text(rect, text, primary_height);
-        if overlay_debug_enabled() {
+        if debug_enabled() {
             // Diagnostic for live overlay-placement bugs (ghost vertical
             // alignment): dump the AX caret rect (top-left/Y-down), the primary
             // screen height used for the Y-flip, and the resulting Cocoa
@@ -753,9 +753,10 @@ impl OverlayPresenter for MacosOverlayPresenter {
     }
 }
 
-/// True when `COMPLETE_ME_DEBUG` is set — gates verbose overlay placement
-/// diagnostics. Off by default (no env var) → zero production output.
-fn overlay_debug_enabled() -> bool {
+/// True when `COMPLETE_ME_DEBUG` is set — gates verbose live diagnostics
+/// (overlay placement, Carbon hotkey registration/fires). Off by default (no
+/// env var) → zero production output.
+fn debug_enabled() -> bool {
     std::env::var_os("COMPLETE_ME_DEBUG").is_some()
 }
 
@@ -2242,6 +2243,12 @@ impl WorkerAcceptTapResource {
                 reason: format!("failed to register Carbon accept-key {keycode}: status {status}"),
             });
         }
+        if debug_enabled() {
+            // Live diagnostic: proves which accept keys were actually
+            // registered (and on which arm cycle) when a physical press
+            // appears to do nothing.
+            eprintln!("complete-me: carbon hotkey registered id={id} keycode={keycode}");
+        }
         self.hotkeys.push(hotkey_ref);
         Ok(())
     }
@@ -2268,6 +2275,15 @@ extern "C" fn carbon_accept_hotkey_handler(
             std::mem::size_of::<EventHotKeyID>(),
             ptr::null_mut(),
             (&mut hotkey_id as *mut EventHotKeyID).cast::<c_void>(),
+        );
+    }
+    if debug_enabled() {
+        // Live diagnostic: fires on ANY hotkey event Carbon delivers to us,
+        // before the signature/id filters — distinguishes "handler never runs"
+        // (registration/dispatch problem) from "handler runs but filters out".
+        eprintln!(
+            "complete-me: carbon hotkey fired signature=0x{:x} id={} (ours=0x{:x})",
+            hotkey_id.signature, hotkey_id.id, HOTKEY_SIGNATURE
         );
     }
     if hotkey_id.signature != HOTKEY_SIGNATURE {
