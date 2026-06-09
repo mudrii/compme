@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::ffi::{c_uchar, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, Once};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -39,11 +39,13 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{class, msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSPanel,
-    NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEventMask,
+    NSPanel, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting,
     NSRunningApplication, NSScreen, NSTextField, NSWindowStyleMask, NSWorkspace,
 };
-use objc2_foundation::{NSArray, NSData, NSPoint, NSProcessInfo, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSArray, NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
+};
 use platform::{
     AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback,
     ContextSource, Environment, FieldHandle, FocusCallback, InsertStrategy, Inserted,
@@ -620,6 +622,39 @@ impl std::fmt::Debug for MacosPlatformAdapter {
     }
 }
 
+/// One-time `finishLaunching` guard for [`pump_app_events`].
+static APP_FINISH_LAUNCHING: Once = Once::new();
+
+/// Drain pending AppKit/window-server events without blocking.
+///
+/// The product binary paces its own heartbeat loop with `CFRunLoopRunInMode`
+/// instead of `[NSApp run]` — and a plain CFRunLoop pump services run-loop
+/// sources but never DEQUEUES window-server events from the application event
+/// queue. Carbon dispatches `RegisterEventHotKey` presses to the installed
+/// handler during event dequeue, so the accept hotkeys registered fine but the
+/// handler never fired on a physical key (observed live in step-6: four
+/// registrations per arm cycle, zero fires). Draining here each heartbeat makes
+/// hotkey presses — and any other queued AppKit events — actually dispatch.
+/// No-op when called off the main thread.
+pub fn pump_app_events() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    APP_FINISH_LAUNCHING.call_once(|| app.finishLaunching());
+    let distant_past = NSDate::distantPast();
+    loop {
+        let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+            NSEventMask::Any,
+            Some(&distant_past),
+            unsafe { NSDefaultRunLoopMode },
+            true,
+        );
+        let Some(event) = event else { break };
+        app.sendEvent(&event);
+    }
+}
+
 impl MacosOverlayPresenter {
     pub fn new() -> Result<Self, PlatformError> {
         let mtm = overlay_main_thread_marker()?;
@@ -807,8 +842,12 @@ fn overlay_frame_for_text(rect: ScreenRect, text: &str, primary_height: f64) -> 
         // AX gives a top-left-origin (Y-down) global rect; Cocoa windows use a
         // bottom-left-origin (Y-up) global space sharing the primary screen's
         // corner. Flip against the primary height so the overlay lands at the
-        // caret on any display, including non-primary monitors.
-        y: primary_height - rect.y - h,
+        // caret on any display, including non-primary monitors. Center the box
+        // on the caret line's vertical midpoint — the box is taller than the
+        // line (min 30pt vs a typical 14pt line), so anchoring its top at the
+        // caret top pushed the label text visibly off the typed line (live
+        // step-6 finding: ghost not on the same level as the text).
+        y: primary_height - rect.y - rect.h / 2.0 - h / 2.0,
         w: text_width.clamp(240.0, 720.0),
         h,
     }
@@ -6304,9 +6343,32 @@ mod tests {
     }
 
     #[test]
+    fn overlay_frame_centers_box_on_the_caret_line() {
+        // Live step-6 finding: anchoring the box TOP at the caret top pushes the
+        // label text visibly off the typed line (the box is min-30pt over a
+        // 14pt line). The ghost must sit ON the line: center the box on the
+        // caret line's vertical center. Line center (AX, Y-down) = 240 + 14/2 =
+        // 247 → Cocoa center = 1000 - 247 = 753 → box bottom = 753 - 30/2 = 738.
+        let frame = overlay_frame_for_text(
+            ScreenRect {
+                x: 120.0,
+                y: 240.0,
+                w: 1.0,
+                h: 14.0,
+            },
+            "short",
+            1000.0,
+        );
+
+        assert_eq!(frame.y, 738.0);
+        assert_eq!(frame.h, 30.0);
+    }
+
+    #[test]
     fn overlay_frame_uses_caret_origin_and_minimum_size() {
-        // Primary screen 1000pt tall: a caret at AX y=240 (top-left origin) maps
-        // to a Cocoa bottom-left origin of 1000 - 240 - 30 = 730.
+        // Primary screen 1000pt tall: a caret at AX y=240 (top-left origin),
+        // line height 14, box height 30, centered on the line: 1000 - 240 -
+        // 14/2 - 30/2 = 738.
         let frame = overlay_frame_for_text(
             ScreenRect {
                 x: 120.0,
@@ -6322,7 +6384,7 @@ mod tests {
             frame,
             OverlayFrame {
                 x: 120.0,
-                y: 730.0,
+                y: 738.0,
                 w: 240.0,
                 h: 30.0,
             }
@@ -6344,7 +6406,7 @@ mod tests {
             1000.0,
         );
 
-        assert_eq!(frame.y, 1000.0 - 1200.0 - 30.0);
+        assert_eq!(frame.y, 1000.0 - 1200.0 - 7.0 - 15.0);
     }
 
     #[test]
@@ -7646,8 +7708,8 @@ mod tests {
             "x",
             0.0,
         );
-        // 0 - 50 - 30
-        assert_eq!(frame.y, -80.0);
+        // 0 - 50 - 14/2 - 30/2
+        assert_eq!(frame.y, -72.0);
         assert!(frame.y.is_finite());
     }
 
@@ -7663,12 +7725,13 @@ mod tests {
             "x",
             1000.0,
         );
-        assert_eq!(frame.y, -30.0);
+        assert_eq!(frame.y, 1000.0 - 1000.0 - 7.0 - 15.0);
     }
 
     #[test]
     fn overlay_frame_small_caret_height_clamps_and_flips() {
-        // h clamps up to the 30 minimum, and the flip uses the clamped height.
+        // h clamps up to the 30 minimum; centering uses the LINE height (2) for
+        // the line midpoint and the clamped BOX height for the box midpoint.
         let frame = overlay_frame_for_text(
             ScreenRect {
                 x: 0.0,
@@ -7680,7 +7743,7 @@ mod tests {
             1000.0,
         );
         assert_eq!(frame.h, 30.0);
-        assert_eq!(frame.y, 1000.0 - 100.0 - 30.0);
+        assert_eq!(frame.y, 1000.0 - 100.0 - 1.0 - 15.0);
     }
 
     #[test]

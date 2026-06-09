@@ -1309,7 +1309,12 @@ pub fn run() -> Result<(), String> {
             }
         }
 
-        // 8. Pump the main run loop: paces the loop and services the overlay.
+        // 8. Drain queued AppKit/window-server events, then pump the main run
+        // loop. The drain is what dispatches Carbon accept-hotkey presses to
+        // their handler (a bare CFRunLoop pump never dequeues them — live
+        // step-6 finding: hotkeys registered, handler never fired); the
+        // CFRunLoop pump paces the loop and services the overlay.
+        platform_macos::pump_app_events();
         // SAFETY: `kCFRunLoopDefaultMode` is a Core Foundation extern static.
         let mode = unsafe { kCFRunLoopDefaultMode };
         CFRunLoop::run_in_mode(mode, heartbeat, false);
