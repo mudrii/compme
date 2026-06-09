@@ -55,7 +55,7 @@ impl PreviousInputs {
     }
 
     /// The recent inputs for `app`, newest first.
-    fn recent(&self, app: &str) -> Vec<String> {
+    pub(crate) fn recent(&self, app: &str) -> Vec<String> {
         let map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         map.get(app)
             .map(|buf| buf.iter().rev().cloned().collect())
@@ -76,7 +76,7 @@ pub struct WorkerContext {
 }
 
 impl WorkerContext {
-    fn block_for(&self, app: &str) -> String {
+    pub(crate) fn block_for(&self, app: &str) -> String {
         if self.max_chars == 0 {
             return String::new();
         }
@@ -560,6 +560,51 @@ mod tests {
             outcome.candidates[0]
         );
         assert!(outcome.candidates[0].trim_end().ends_with("Ahoy"));
+        inference.shutdown();
+    }
+
+    #[test]
+    fn per_app_personalization_uses_request_app() {
+        let mut profile = PersonalizationProfile {
+            global_instructions: "Use short completions.".into(),
+            ..Default::default()
+        };
+        profile
+            .per_app
+            .insert("com.apple.TextEdit".into(), "Use a plain-text tone.".into());
+
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            profile,
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        assert!(inference.submit(CompletionRequest {
+            field: FieldHandle {
+                app: "com.apple.TextEdit".into(),
+                ..request("TextEdit draft", 1).field
+            },
+            ..request("TextEdit draft", 1)
+        }));
+        let first = inference.recv_outcome().expect("TextEdit outcome");
+
+        assert!(inference.submit(CompletionRequest {
+            field: FieldHandle {
+                app: "com.apple.Notes".into(),
+                ..request("Notes draft", 2).field
+            },
+            ..request("Notes draft", 2)
+        }));
+        let second = inference.recv_outcome().expect("Notes outcome");
+
+        assert!(first.candidates[0].contains("Use short completions."));
+        assert!(first.candidates[0].contains("Use a plain-text tone."));
+        assert!(first.candidates[0].contains("TextEdit draft"));
+        assert!(second.candidates[0].contains("Use short completions."));
+        assert!(!second.candidates[0].contains("Use a plain-text tone."));
+        assert!(second.candidates[0].contains("Notes draft"));
         inference.shutdown();
     }
 

@@ -12,8 +12,9 @@
 # the same path with the real LlamaModel; that asserts an insert occurred but not
 # exact text, since real output is nondeterministic.
 #
-# Requires: macOS, osascript, Accessibility + Input Monitoring granted to the
-# terminal, an unlocked session, and the TextEdit pid in COMPLETE_ME_ACCEPTANCE_PID.
+# Requires: macOS, osascript, Accessibility granted to the terminal, an unlocked
+# session, and the TextEdit pid in COMPLETE_ME_ACCEPTANCE_PID. Production accept
+# keys use Carbon hotkeys and do not require Input Monitoring.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

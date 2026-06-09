@@ -113,16 +113,16 @@ fn main() {
         env::var("COMPLETE_ME_ACCEPTANCE_FULL_TEXT").unwrap_or_else(|_| " accepted-full".into());
     let word_text =
         env::var("COMPLETE_ME_ACCEPTANCE_WORD_TEXT").unwrap_or_else(|_| " accepted".into());
-    let (action, expected_text) = match requirement.as_str() {
-        "full" => (AcceptAction::Full, full_text),
-        "word" => (AcceptAction::Word, word_text),
-        other => {
-            eprintln!("unknown requirement {other:?}; expected full or word");
-            drop(caret);
-            drop(focus);
-            process::exit(2);
-        }
-    };
+    let (action, expected_text) =
+        match accept_plan_for_requirement(&requirement, full_text, word_text) {
+            Some(plan) => plan,
+            None => {
+                eprintln!("unknown requirement {requirement:?}; expected full or word");
+                drop(caret);
+                drop(focus);
+                process::exit(2);
+            }
+        };
 
     let adapter_for_accept = Arc::clone(&adapter);
     let accept_state = Arc::clone(&state);
@@ -166,10 +166,7 @@ fn main() {
 
     // grave accepts the full completion, Tab accepts the next word — post the key
     // that matches the requirement so the gate exercises the real accept path.
-    let (accept_keycode, accept_key_label): (u16, &str) = match requirement.as_str() {
-        "full" => (KEYCODE_GRAVE, "GRAVE"),
-        _ => (KeyCode::TAB, "TAB"),
-    };
+    let (accept_keycode, accept_key_label) = key_to_post_for_requirement(&requirement);
     let post_after = env::var("COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
@@ -224,6 +221,25 @@ fn main() {
     }
 }
 
+fn accept_plan_for_requirement(
+    requirement: &str,
+    full_text: String,
+    word_text: String,
+) -> Option<(AcceptAction, String)> {
+    match requirement {
+        "full" => Some((AcceptAction::Full, full_text)),
+        "word" => Some((AcceptAction::Word, word_text)),
+        _ => None,
+    }
+}
+
+fn key_to_post_for_requirement(requirement: &str) -> (u16, &'static str) {
+    match requirement {
+        "full" => (KEYCODE_GRAVE, "GRAVE"),
+        _ => (KeyCode::TAB, "TAB"),
+    }
+}
+
 fn wait_for_field(
     adapter: &MacosPlatformAdapter,
     state: &Arc<Mutex<HarnessState>>,
@@ -270,4 +286,99 @@ fn post_accept_key(keycode: u16) -> Result<(), String> {
     key_down.post(CGEventTapLocation::HID);
     key_up.post(CGEventTapLocation::HID);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use platform::{ContextSource, OffsetEncoding, TextRange};
+
+    fn context(left: &str, right: &str, caret: usize) -> TextContext {
+        TextContext {
+            left: left.into(),
+            right: right.into(),
+            caret,
+            selection: None,
+            source: ContextSource::Accessibility,
+            field_id: FieldHandle {
+                app: "pid:1".into(),
+                pid: Some(1),
+                element_id: "ax:ptr=1|role=AXTextArea".into(),
+                generation: 1,
+            },
+            offset_encoding: OffsetEncoding::Utf16CodeUnits,
+        }
+    }
+
+    #[test]
+    fn accept_plan_matches_full_and_word_contract() {
+        assert_eq!(
+            accept_plan_for_requirement("full", " all".into(), " one".into()),
+            Some((AcceptAction::Full, " all".into()))
+        );
+        assert_eq!(
+            accept_plan_for_requirement("word", " all".into(), " one".into()),
+            Some((AcceptAction::Word, " one".into()))
+        );
+        assert_eq!(
+            accept_plan_for_requirement("escape", " all".into(), " one".into()),
+            None
+        );
+    }
+
+    #[test]
+    fn key_to_post_matches_accept_contract() {
+        assert_eq!(
+            key_to_post_for_requirement("full"),
+            (KEYCODE_GRAVE, "GRAVE")
+        );
+        assert_eq!(key_to_post_for_requirement("word"), (KeyCode::TAB, "TAB"));
+    }
+
+    #[test]
+    fn inserted_delta_matches_utf16_caret_growth() {
+        let before = context("Hi ", "!", 3);
+        let after = context("Hi 😀", "!", 5);
+
+        assert!(inserted_delta_matches(&before, &after, "😀"));
+    }
+
+    #[test]
+    fn inserted_delta_rejects_empty_or_wrong_readback() {
+        let before = context("Hi", "!", 2);
+        let valid_after = context("Hi there", "!", 8);
+        assert!(!inserted_delta_matches(&before, &valid_after, ""));
+
+        let wrong_right = context("Hi there", "?", 8);
+        assert!(!inserted_delta_matches(&before, &wrong_right, " there"));
+
+        let mut selected = context("Hi there", "!", 8);
+        selected.selection = Some(TextRange { start: 2, end: 4 });
+        assert!(!inserted_delta_matches(&before, &selected, " there"));
+
+        let wrong_caret = context("Hi there", "!", 7);
+        assert!(!inserted_delta_matches(&before, &wrong_caret, " there"));
+    }
+
+    #[test]
+    fn looks_like_text_field_uses_role_metadata() {
+        assert!(looks_like_text_field(&FieldHandle {
+            app: "pid:1".into(),
+            pid: Some(1),
+            element_id: "ax:ptr=1|role=AXTextArea".into(),
+            generation: 1,
+        }));
+        assert!(looks_like_text_field(&FieldHandle {
+            app: "pid:1".into(),
+            pid: Some(1),
+            element_id: "ax:ptr=1|role=AXTextField".into(),
+            generation: 1,
+        }));
+        assert!(!looks_like_text_field(&FieldHandle {
+            app: "pid:1".into(),
+            pid: Some(1),
+            element_id: "ax:ptr=1|role=AXButton".into(),
+            generation: 1,
+        }));
+    }
 }

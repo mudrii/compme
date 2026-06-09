@@ -16,6 +16,8 @@ personalization = { path = "../personalization" }
 prefs = { path = "../prefs" }
 context = { path = "../context" }
 redaction = { path = "../redaction" }
+memory = { path = "../memory" }
+stats = { path = "../stats" }
 compat = { path = "../compat" }
 core-foundation = "=0.10.1"
 libc = "0.2"

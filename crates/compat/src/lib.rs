@@ -26,7 +26,9 @@ pub enum CompatTier {
 impl CompatTier {
     /// Whether the engine should attempt completions in this app at all. The
     /// `Unsupported` tier hard-blocks; everything else may suggest (subject to the
-    /// app's own field capabilities and the user's preferences).
+    /// app's own field capabilities and the user's preferences). `SidebarOnly`
+    /// needs an additional field-level check by callers before suggestions are
+    /// safe in code editors.
     pub fn allows_suggestions(self) -> bool {
         !matches!(self, CompatTier::Unsupported)
     }
@@ -192,13 +194,12 @@ mod tests {
     }
 
     #[test]
-    fn only_unsupported_blocks() {
+    fn unsupported_is_the_only_global_block() {
         for app in [
             "com.apple.TextEdit",
             "company.thebrowser.Browser",
             "org.mozilla.firefox",
             "com.tinyspeck.slackmacgap",
-            "com.microsoft.VSCode",
             "com.example.unknown",
         ] {
             assert!(
@@ -206,6 +207,7 @@ mod tests {
                 "{app} should allow suggestions"
             );
         }
+        assert!(compatibility_tier("com.microsoft.VSCode").allows_suggestions());
     }
 
     #[test]

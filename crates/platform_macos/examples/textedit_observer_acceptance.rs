@@ -375,7 +375,7 @@ mod tests {
             toolkit: Toolkit::AppKit,
             multiline: false,
             insert_strategy: InsertStrategy::AxSet,
-            accept_intercept: KeyInterceptMode::CgEventTap,
+            accept_intercept: KeyInterceptMode::CarbonHotkey,
             overlay_at_caret: OverlayPlacement::None,
             coords_global_screen: true,
         }))

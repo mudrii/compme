@@ -11,13 +11,14 @@
 //!   engine, submits the newest pending request, then pumps the CFRunLoop for one
 //!   heartbeat (which paces the loop and services the overlay).
 
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use engine::{CompletionRequest, Engine, TriggerPolicy};
@@ -28,9 +29,8 @@ use platform::{
 };
 use platform_macos::{
     accessibility_trusted, bundle_id_for_pid, display_scales, prompt_accessibility_trust,
-    read_pasteboard_text, request_screen_recording_permission, screen_context_text,
-    screen_recording_permission, secure_input_enabled, MacosOverlayPresenter, MacosPlatformAdapter,
-    MacosTray, TrayFlags,
+    read_pasteboard_text, request_screen_recording_permission, screen_recording_permission,
+    secure_input_enabled, MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
 };
 use prefs::Prefs;
 
@@ -38,6 +38,7 @@ use crate::adapter::SharedAdapter;
 use crate::config::{self, parse_clamped};
 use crate::inference::{InferenceHandle, PreviousInputs, WorkerContext};
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
+use crate::screen_ocr::ScreenOcr;
 use crate::status::{derive_status, AppStatus, BlockReason};
 use crate::wiring::{FieldTracker, LatestRequest, Observation};
 
@@ -118,6 +119,13 @@ fn coalesce_caret_reads(events: Vec<HostEvent>) -> Vec<HostEvent> {
     out
 }
 
+fn host_event_invalidates_pending_request(event: &HostEvent) -> bool {
+    matches!(
+        event,
+        HostEvent::Focus(_) | HostEvent::Caret(_, _) | HostEvent::Accept(_) | HostEvent::Dismiss
+    )
+}
+
 /// Runtime configuration, all from the environment (full config surface is P1).
 struct Config {
     acceptance_pid: Option<i32>,
@@ -136,8 +144,21 @@ struct Config {
     context_max_chars: usize,
     clipboard_context: bool,
     screen_context: bool,
+    diag_context: bool,
     personalization: PersonalizationProfile,
     prefs: Prefs,
+    memory: MemoryConfig,
+}
+
+/// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
+/// recorded; `path` is the on-disk SQLite database; `key` is the 32-byte AES key.
+/// Until the Keychain-backed `KeyProvider` lands (A3, §15 D-series), the key is
+/// supplied out-of-band via `COMPLETE_ME_MEMORY_KEY` (64 hex chars); without a
+/// key + path the store stays disabled even if a mode is set.
+struct MemoryConfig {
+    mode: memory::StorageMode,
+    path: Option<PathBuf>,
+    key: Option<[u8; 32]>,
 }
 
 impl Config {
@@ -196,8 +217,82 @@ impl Config {
                 .is_some_and(|v| v == "1" || v == "true"),
             screen_context: lookup("COMPLETE_ME_SCREEN_CONTEXT")
                 .is_some_and(|v| v == "1" || v == "true"),
+            diag_context: lookup("COMPLETE_ME_DIAG_CONTEXT")
+                .is_some_and(|v| v == "1" || v == "true"),
             personalization: build_personalization(&lookup),
             prefs: build_prefs(&lookup),
+            memory: build_memory_config(&lookup),
+        }
+    }
+}
+
+/// Parse the encrypted-memory config (A2 §6/§16). `COMPLETE_ME_MEMORY` selects the
+/// storage mode (off/accepted/all, default off); `COMPLETE_ME_MEMORY_PATH` the db
+/// file; `COMPLETE_ME_MEMORY_KEY` a 64-hex-char (32-byte) AES key.
+fn build_memory_config(lookup: &impl Fn(&str) -> Option<String>) -> MemoryConfig {
+    MemoryConfig {
+        mode: parse_storage_mode(lookup("COMPLETE_ME_MEMORY")),
+        path: lookup("COMPLETE_ME_MEMORY_PATH").map(PathBuf::from),
+        key: lookup("COMPLETE_ME_MEMORY_KEY").and_then(|raw| parse_hex_key(&raw)),
+    }
+}
+
+/// Map `COMPLETE_ME_MEMORY` to a storage mode. Unset/unrecognized/falsy → `Off`
+/// (opt-in, §16: default off). `accepted`/`1`/`true`/`on` → `AcceptedOnly`;
+/// `all`/`monitored` → `AllMonitored`.
+fn parse_storage_mode(raw: Option<String>) -> memory::StorageMode {
+    use memory::StorageMode;
+    match raw.as_deref().map(str::trim).map(str::to_ascii_lowercase) {
+        Some(v) if v == "accepted" || v == "1" || v == "true" || v == "on" => {
+            StorageMode::AcceptedOnly
+        }
+        Some(v) if v == "all" || v == "monitored" || v == "all_monitored" => {
+            StorageMode::AllMonitored
+        }
+        _ => StorageMode::Off,
+    }
+}
+
+/// Decode a 64-char hex string into a 32-byte key. Returns `None` on wrong length
+/// or a non-hex digit (the store then stays disabled — fail-closed).
+fn parse_hex_key(raw: &str) -> Option<[u8; 32]> {
+    let raw = raw.trim();
+    if raw.len() != 64 {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    for (i, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(raw.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(key)
+}
+
+/// Open the encrypted memory store when enabled and fully configured. Returns
+/// `None` (disabled, logged) when the mode is `Off`, the key/path are missing, or
+/// the open fails — never fatal, mirroring the tray-unavailable fallback.
+fn open_memory_store(config: &MemoryConfig) -> Option<memory::MemoryStore> {
+    use memory::{MemoryStore, StaticKey, StorageMode};
+    if config.mode == StorageMode::Off {
+        return None;
+    }
+    let (Some(path), Some(key)) = (config.path.as_ref(), config.key) else {
+        eprintln!(
+            "complete-me: COMPLETE_ME_MEMORY set but COMPLETE_ME_MEMORY_PATH/KEY missing — \
+             memory disabled (a Keychain key provider is an A3 item)"
+        );
+        return None;
+    };
+    match MemoryStore::open(path, &StaticKey(key), config.mode) {
+        Ok(store) => {
+            eprintln!(
+                "complete-me: encrypted memory enabled (mode={:?})",
+                config.mode
+            );
+            Some(store)
+        }
+        Err(err) => {
+            eprintln!("complete-me: memory store unavailable: {err} — memory disabled");
+            None
         }
     }
 }
@@ -266,11 +361,117 @@ fn log_compat_guidance(app: &str) {
     }
 }
 
-/// Whether the focused app's compatibility tier permits suggestions (A2 §16):
-/// the `Unsupported` tier hard-blocks. Unresolved app → allow (fail-open), since
+/// Whether the focused app's compatibility tier permits suggestions (A2 §16).
+/// `Unsupported` hard-blocks. `SidebarOnly` is also blocked until A3 adds a real
+/// editor-vs-sidebar detector; fail-closed is safer than suggesting in editor
+/// panes the spec explicitly excludes. Unresolved app → allow (fail-open), since
 /// the field's own capabilities still gate.
 fn app_allows_suggestions(app_key: Option<&str>) -> bool {
-    app_key.is_none_or(|app| compat::compatibility_tier(app).allows_suggestions())
+    app_key.is_none_or(|app| {
+        let tier = compat::compatibility_tier(app);
+        tier.allows_suggestions() && !tier.sidebar_only()
+    })
+}
+
+fn request_passes_submit_gates(
+    request: &CompletionRequest,
+    app_key: Option<&str>,
+    prefs: &Prefs,
+    now_ms: u64,
+) -> bool {
+    let terminal_ok =
+        app_key.is_none_or(|app| compat::terminal_prompt_activates(app, &request.prompt));
+    app_allows_suggestions(app_key) && terminal_ok && prefs.should_suggest(app_key, None, now_ms)
+}
+
+/// First-suggestion latency (ms) for a completed request's `generation`: the
+/// elapsed time since it was submitted. Removes the matched submit timestamp and
+/// prunes older ones (requests coalesced away in the inference channel never
+/// produce an outcome), so the map stays bounded. Returns `None` when the
+/// generation has no recorded submit (already pruned / never tracked).
+///
+/// Relies on the engine's `generation` being **globally monotonic** — it only
+/// ever increases (`SuggestionMachine::advance_snapshot` does `generation += 1`
+/// and never resets, including across field/focus changes) — so pruning every
+/// entry `<= generation` can never drop a still-pending newer request. Latency is
+/// measured at run-loop (heartbeat) resolution, so a completion returned within
+/// the same tick reads as 0 ms; that is the true measured value at this
+/// resolution, not an error.
+fn latency_sample(
+    submit_times: &mut HashMap<u64, u64>,
+    generation: u64,
+    now_ms: u64,
+) -> Option<u32> {
+    let submit_ms = submit_times.remove(&generation)?;
+    // Generations are monotonic; anything at or below this one is done or stale.
+    submit_times.retain(|&gen, _| gen > generation);
+    Some(u32::try_from(now_ms.saturating_sub(submit_ms)).unwrap_or(u32::MAX))
+}
+
+/// Route a *Full*-accept's text to the opt-in recording sinks (design spec
+/// §6/§16): the volatile previous-input ring (when context is enabled) and the
+/// encrypted memory store (when configured). Word-accepts (low-signal) and
+/// volatile `pid:N` field keys (unresolved bundle id, would never match the
+/// canonicalized lookup/personalization key) are skipped. Pure over its inputs so
+/// the accept-routing logic is testable without the run loop.
+fn record_full_accept(
+    action: AcceptAction,
+    field: &FieldHandle,
+    text: &str,
+    context_max_chars: usize,
+    previous_inputs: &PreviousInputs,
+    memory: Option<&memory::MemoryStore>,
+) {
+    if action != AcceptAction::Full || field.app.starts_with("pid:") {
+        return;
+    }
+    if context_max_chars > 0 {
+        previous_inputs.record(&field.app, redaction::redact(text));
+    }
+    if let Some(store) = memory {
+        // The store redacts + encrypts before persisting; a no-op when its mode
+        // is Off.
+        if let Err(err) = store.remember(&field.app, text) {
+            eprintln!("complete-me: memory remember failed: {err}");
+        }
+    }
+}
+
+/// Words inserted by an accept, for the menu-bar word count — at least one per
+/// accept so an empty/whitespace payload still counts as one acceptance.
+fn accept_word_count(text: &str) -> usize {
+    text.split_whitespace().count().max(1)
+}
+
+/// Wall-clock epoch milliseconds, for `stats`'s rolling 30-day window (which
+/// needs an absolute clock, unlike the loop's monotonic `now_ms` used for
+/// latency/debounce deltas). Falls back to 0 if the system clock is before the
+/// epoch (never, in practice).
+fn wall_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Whether the focused app should render in the floating mirror window instead
+/// of inline — true only for the `MirrorOnly` compat tier (Firefox/Zen). An
+/// unresolved app (`None`) renders inline (A2 §16).
+fn mirror_mode_for(app_key: Option<&str>) -> bool {
+    app_key.is_some_and(|app| {
+        matches!(
+            compat::compatibility_tier(app),
+            compat::CompatTier::MirrorOnly
+        )
+    })
+}
+
+/// Map an engine stat event to a usage-stats outcome.
+fn stat_outcome(event: engine::StatEvent) -> stats::Outcome {
+    match event {
+        engine::StatEvent::Shown => stats::Outcome::Shown,
+        engine::StatEvent::Superseded => stats::Outcome::Superseded,
+    }
 }
 
 /// Resolve a focused field's pid to a stable bundle id for per-app preferences.
@@ -279,6 +480,17 @@ fn app_allows_suggestions(app_key: Option<&str>) -> bool {
 /// the bundle id can't be resolved.
 fn resolve_app_key(pid: Option<u32>, resolver: impl Fn(i32) -> Option<String>) -> Option<String> {
     pid.and_then(|p| i32::try_from(p).ok()).and_then(resolver)
+}
+
+fn canonicalize_field_app(
+    mut field: FieldHandle,
+    resolver: impl Fn(i32) -> Option<String>,
+) -> (FieldHandle, Option<String>) {
+    let app_key = resolve_app_key(field.pid, resolver);
+    if let Some(app) = &app_key {
+        field.app = app.clone();
+    }
+    (field, app_key)
 }
 
 /// Parse a fail-safe boolean: only explicit falsy values disable; anything else
@@ -488,6 +700,10 @@ pub fn run() -> Result<(), String> {
     }
 
     let previous_inputs = PreviousInputs::default();
+    // Encrypted on-disk memory of accepted completions (A2 §6/§16). Off unless
+    // COMPLETE_ME_MEMORY + key/path are configured; lives on this thread (the
+    // rusqlite handle is not Send) and is only touched on Full-accept.
+    let memory = open_memory_store(&config.memory);
     let clipboard_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let screen_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     // Screen OCR only contributes when the grant is actually present this session.
@@ -529,8 +745,33 @@ pub fn run() -> Result<(), String> {
         }
     };
 
+    // Screen OCR (Vision, ~200–800 ms) runs on its own thread so it never
+    // stalls this AppKit run loop (overlay repaint + Carbon accept callbacks).
+    // It publishes redacted text into `screen_cell`, which the inference worker
+    // reads; one-submit staleness is accepted (as for clipboard).
+    let screen_ocr = if screen_active {
+        match ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context) {
+            Ok(ocr) => Some(ocr),
+            Err(err) => {
+                eprintln!(
+                    "complete-me: screen OCR worker unavailable: {err}; screen context disabled"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let heartbeat = Duration::from_millis(config.heartbeat_ms);
     let mut tracker = FieldTracker::new();
+    // Local 30-day usage stats (§11/§16). Accepts/dismisses are recorded from the
+    // host inputs; Shown/Superseded are drained from the engine each loop turn.
+    // The menu-bar display + persistence are A3 surfaces.
+    let mut usage = stats::Stats::new();
+    // Submit timestamps keyed by request generation, used to derive
+    // first-suggestion latency when the matching outcome returns (§11 p95 floor).
+    let mut submit_times: HashMap<u64, u64> = HashMap::new();
     let mut latest = LatestRequest::new();
     let mut current_field: Option<FieldHandle> = None;
     let mut hinted_apps: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -550,6 +791,9 @@ pub fn run() -> Result<(), String> {
 
     while !STOP.load(Ordering::Relaxed) {
         let now_ms = start.elapsed().as_millis() as u64;
+        // Wall-clock stamp for usage stats only (its 30-day window needs an
+        // absolute clock); `now_ms` stays monotonic for latency/debounce deltas.
+        let wall_ms = wall_now_ms();
 
         // 1. Host events → engine. The caret callback is the typing driver: read
         // context (executes on the adapter's AX worker), diff into a TextChange.
@@ -557,90 +801,116 @@ pub fn run() -> Result<(), String> {
         // we issue at most one AX round-trip per field per heartbeat.
         let drained: Vec<HostEvent> = rx.try_iter().collect();
         for event in coalesce_caret_reads(drained) {
+            if host_event_invalidates_pending_request(&event) {
+                latest.clear();
+            }
             match event {
                 HostEvent::Focus(field) => {
+                    let (field, app_key) = canonicalize_field_app(field, bundle_id_for_pid);
                     eprintln!("complete-me: focus {}", field.element_id);
                     // Compatibility onboarding (A2 §16): surface tier-specific
                     // guidance once per app (mirror-window apps, setup-needed
                     // browsers like Google Docs/Arc).
-                    if let Some(app) = resolve_app_key(field.pid, bundle_id_for_pid) {
-                        // MirrorOnly apps (Firefox/Zen) render the ghost in the
-                        // floating mirror window, not inline (A2 §16).
-                        engine.set_mirror_mode(matches!(
-                            compat::compatibility_tier(&app),
-                            compat::CompatTier::MirrorOnly
-                        ));
+                    // MirrorOnly apps (Firefox/Zen) render the ghost in the
+                    // floating mirror window, not inline (A2 §16).
+                    engine.set_mirror_mode(mirror_mode_for(app_key.as_deref()));
+                    if let Some(app) = app_key {
                         if hinted_apps.insert(app.clone()) {
                             log_compat_guidance(&app);
                         }
-                    } else {
-                        engine.set_mirror_mode(false);
                     }
                     current_field = Some(field.clone());
                     tracker.reset();
                     offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
                 }
-                HostEvent::Caret(field, _rect) => match adapter.read_context(&field) {
-                    // One selection-changed notification covers both typing and a
-                    // bare cursor move. Typing schedules a completion; a cursor
-                    // move only invalidates a showing ghost (no re-request).
-                    Ok(ctx) => {
-                        current_field = Some(field.clone());
-                        if config.diag_coords {
-                            if let Ok(rect) = adapter.caret_rect(&field) {
-                                eprintln!(
-                                    "complete-me: diag caret rect={rect:?} scales={:?}",
-                                    display_scales()
-                                );
+                HostEvent::Caret(field, _rect) => {
+                    let (field, _app_key) = canonicalize_field_app(field, bundle_id_for_pid);
+                    match adapter.read_context(&field) {
+                        // One selection-changed notification covers both typing and a
+                        // bare cursor move. Typing schedules a completion; a cursor
+                        // move only invalidates a showing ghost (no re-request).
+                        Ok(ctx) => {
+                            current_field = Some(field.clone());
+                            if config.diag_coords {
+                                if let Ok(rect) = adapter.caret_rect(&field) {
+                                    eprintln!(
+                                        "complete-me: diag caret rect={rect:?} scales={:?}",
+                                        display_scales()
+                                    );
+                                }
+                            }
+                            match tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms) {
+                                Observation::Typed(change) => offer_all(
+                                    &mut latest,
+                                    log_err("on_text_changed", engine.on_text_changed(change)),
+                                ),
+                                Observation::CaretMoved { field, caret } => offer_all(
+                                    &mut latest,
+                                    log_err("on_caret_moved", engine.on_caret_moved(field, caret)),
+                                ),
                             }
                         }
-                        match tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms) {
-                            Observation::Typed(change) => offer_all(
-                                &mut latest,
-                                log_err("on_text_changed", engine.on_text_changed(change)),
-                            ),
-                            Observation::CaretMoved { field, caret } => offer_all(
-                                &mut latest,
-                                log_err("on_caret_moved", engine.on_caret_moved(field, caret)),
-                            ),
-                        }
-                    }
-                    Err(err) => {
-                        eprintln!("complete-me: read_context: {err:?}");
-                        // Setup-needed onboarding (A2 §16): a browser/Arc/Dia field
-                        // that won't read may need Accessibility/Text-Metrics setup
-                        // (the Google-Docs-in-Chrome case). Surface guidance once.
-                        if let Some(app) = resolve_app_key(field.pid, bundle_id_for_pid) {
-                            if compat::needs_accessibility_setup(&app, false)
-                                && hinted_apps.insert(format!("setup:{app}"))
-                            {
-                                eprintln!(
-                                    "complete-me: {app} field not readable — may need \
+                        Err(err) => {
+                            eprintln!("complete-me: read_context: {err:?}");
+                            // Setup-needed onboarding (A2 §16): a browser/Arc/Dia field
+                            // that won't read may need Accessibility/Text-Metrics setup
+                            // (the Google-Docs-in-Chrome case). Surface guidance once.
+                            if let Some(app) = resolve_app_key(field.pid, bundle_id_for_pid) {
+                                if compat::needs_accessibility_setup(&app, false)
+                                    && hinted_apps.insert(format!("setup:{app}"))
+                                {
+                                    eprintln!(
+                                        "complete-me: {app} field not readable — may need \
                                      Accessibility/Text-Metrics setup (e.g. Google Docs)"
-                                );
+                                    );
+                                }
                             }
                         }
                     }
-                },
+                }
                 HostEvent::Accept(action) => {
                     eprintln!("complete-me: accept {action:?}");
-                    let self_insert = (action == AcceptAction::Word)
-                        .then(|| engine.preview_accept_insert(action))
-                        .flatten();
-                    // Record only *full* accepts as previous-input context: a full
-                    // completion is meaningful prior text, whereas a single word
-                    // (the Word-accept payload) is low-signal. Redacted + per-app.
-                    if config.context_max_chars > 0 && action == AcceptAction::Full {
-                        if let (Some(field), Some((_, text))) =
-                            (current_field.as_ref(), engine.preview_accept_insert(action))
-                        {
-                            previous_inputs.record(&field.app, redaction::redact(&text));
-                        }
+                    // Preview the engine's accept payload once and reuse it for
+                    // both the Word self-insert and the Full context record, so
+                    // the two never read divergent engine snapshots.
+                    let preview = engine.preview_accept_insert(action);
+                    // Record only *full* accepts: a full completion is meaningful
+                    // prior text, whereas a single word (the Word-accept payload)
+                    // is low-signal. Routed to two opt-in sinks — the volatile
+                    // previous-input ring and the encrypted on-disk memory store.
+                    if let (Some(field), Some((_, text))) =
+                        (current_field.as_ref(), preview.as_ref())
+                    {
+                        record_full_accept(
+                            action,
+                            field,
+                            text,
+                            config.context_max_chars,
+                            &previous_inputs,
+                            memory.as_ref(),
+                        );
                     }
                     match engine.on_accept(action) {
                         Ok(requests) => {
-                            if let Some((field, text)) = self_insert {
-                                tracker.apply_self_insert(&field, &text);
+                            // Absorb the accept's own insertion echo (Word OR
+                            // Full) into the diff baseline so the AX readback of
+                            // the inserted text registers as a caret move, not new
+                            // typing — otherwise the echo would arm a spurious
+                            // post-accept completion request (engine-macos §4 step
+                            // 9: the accept's own insert is not a new edit).
+                            if let Some((field, text)) = &preview {
+                                tracker.apply_self_insert(field, text);
+                                // Local usage stats (§11/§16): count every accept
+                                // (both Word and Full — unlike the full-only
+                                // previous-inputs/memory block above) and the words
+                                // it inserted (menu-bar word count). At least one
+                                // word per accept.
+                                usage.record(
+                                    wall_ms,
+                                    stats::Outcome::Accepted {
+                                        words: accept_word_count(text),
+                                    },
+                                );
                             }
                             offer_all(&mut latest, requests);
                         }
@@ -649,6 +919,7 @@ pub fn run() -> Result<(), String> {
                 }
                 HostEvent::Dismiss => {
                     eprintln!("complete-me: dismiss (Esc)");
+                    usage.record(wall_ms, stats::Outcome::Dismissed);
                     offer_all(
                         &mut latest,
                         log_err("on_dismiss_suppress", engine.on_dismiss_suppress()),
@@ -667,6 +938,12 @@ pub fn run() -> Result<(), String> {
                 "complete-me: completion gen={} candidates={:?}",
                 outcome.request.generation, outcome.candidates
             );
+            // First-suggestion latency for this completed request (§11).
+            if let Some(latency) =
+                latency_sample(&mut submit_times, outcome.request.generation, now_ms)
+            {
+                usage.record_latency(wall_ms, latency);
+            }
             offer_all(
                 &mut latest,
                 log_err(
@@ -678,6 +955,13 @@ pub fn run() -> Result<(), String> {
 
         // 3. Debounce tick.
         offer_all(&mut latest, log_err("on_tick", engine.on_tick(now_ms)));
+
+        // 3b. Drain engine-internal Shown/Superseded events into usage stats
+        // (§11/§16): the engine surfaces these; Accepted/Dismissed are recorded
+        // from the host inputs above.
+        for event in engine.take_stat_events() {
+            usage.record(wall_ms, stat_outcome(event));
+        }
 
         // 4. Derive status (permission/secure/ready/enabled) and update the tray.
         // Re-poll secure input and trust on a wall-clock throttle so granting
@@ -757,16 +1041,7 @@ pub fn run() -> Result<(), String> {
                 // it can't be resolved. Domain is None until browser-domain
                 // extraction lands.
                 let app_key = resolve_app_key(request.field.pid, bundle_id_for_pid);
-                // Terminal apps only suggest for natural-language agent prompts,
-                // not shell commands (A2 §16).
-                let terminal_ok = app_key
-                    .as_deref()
-                    .is_none_or(|app| compat::terminal_prompt_activates(app, &request.prompt));
-                if app_allows_suggestions(app_key.as_deref())
-                    && terminal_ok
-                    && config
-                        .prefs
-                        .should_suggest(app_key.as_deref(), None, now_ms)
+                if request_passes_submit_gates(&request, app_key.as_deref(), &config.prefs, now_ms)
                 {
                     // Refresh the clipboard context cell (redacted) just before a
                     // submit that will use it (A2 §16 clipboard context). Invariant:
@@ -775,19 +1050,25 @@ pub fn run() -> Result<(), String> {
                     // coalesced request) never attaches a prior app's clipboard.
                     if config.clipboard_context {
                         let clip = read_pasteboard_text().map(|text| redaction::redact(&text));
+                        if config.diag_context {
+                            eprintln!("complete-me: clipboard_context={clip:?}");
+                        }
                         *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = clip;
                     }
-                    // Screen-aware context (A2 §16): local OCR of the display,
-                    // redacted, refreshed before a submit that will use it.
-                    if screen_active {
-                        let screen = screen_context_text(DEFAULT_CONTEXT_MAX_CHARS)
-                            .map(|text| redaction::redact(&text));
-                        *screen_cell.lock().unwrap_or_else(|e| e.into_inner()) = screen;
+                    // Screen-aware context (A2 §16): hand the caret's display to
+                    // the off-thread OCR worker (it captures, OCRs, redacts, and
+                    // publishes into `screen_cell`). Fire-and-forget so the run
+                    // loop never blocks on Vision. caret_rect read is the only
+                    // on-loop AX touch and is cheap.
+                    if let Some(ocr) = &screen_ocr {
+                        let caret_rect = adapter.caret_rect(&request.field).ok().flatten();
+                        ocr.request(caret_rect);
                     }
                     eprintln!(
                         "complete-me: request gen={} prompt={:?}",
                         request.generation, request.prompt
                     );
+                    submit_times.insert(request.generation, now_ms);
                     inference.submit(request);
                 }
             }
@@ -822,6 +1103,20 @@ pub fn run() -> Result<(), String> {
     }
 
     eprintln!("complete-me: shutting down");
+    // Session usage summary (§11/§16).
+    let final_ms = start.elapsed().as_millis() as u64;
+    let counts = usage.counts(final_ms);
+    eprintln!(
+        "complete-me: usage shown={} accepted={} dismissed={} superseded={} words={} \
+         latency_avg={:?} latency_p95={:?}",
+        counts.shown,
+        counts.accepted,
+        counts.dismissed,
+        counts.superseded,
+        usage.words_completed(final_ms),
+        usage.latency_avg_ms(final_ms),
+        usage.latency_p95_ms(final_ms),
+    );
     drop(tray); // remove the status item before AppKit teardown
     drop(caret_sub);
     drop(focus_sub);
@@ -891,12 +1186,15 @@ mod tests {
         let off = Config::from_lookup(lookup(&[]));
         assert!(!off.clipboard_context);
         assert!(!off.screen_context);
+        assert!(!off.diag_context);
         let on = Config::from_lookup(lookup(&[
             ("COMPLETE_ME_CLIPBOARD_CONTEXT", "1"),
             ("COMPLETE_ME_SCREEN_CONTEXT", "true"),
+            ("COMPLETE_ME_DIAG_CONTEXT", "true"),
         ]));
         assert!(on.clipboard_context);
         assert!(on.screen_context);
+        assert!(on.diag_context);
     }
 
     #[test]
@@ -905,6 +1203,124 @@ mod tests {
         assert!(app_allows_suggestions(Some("com.apple.TextEdit")));
         // Unresolved app → fail-open (field capabilities still gate).
         assert!(app_allows_suggestions(None));
+    }
+
+    #[test]
+    fn sidebar_only_apps_are_blocked_until_field_detector_exists() {
+        assert!(!app_allows_suggestions(Some("com.microsoft.VSCode")));
+        assert!(!app_allows_suggestions(Some(
+            "com.todesktop.230313mzl4w4u92"
+        )));
+        assert!(!app_allows_suggestions(Some("com.exafunction.windsurf")));
+    }
+
+    #[test]
+    fn submit_gate_combines_app_terminal_and_preference_policy() {
+        let prefs = Prefs::default();
+        assert!(request_passes_submit_gates(
+            &req_with_prompt("Dear team"),
+            Some("com.apple.TextEdit"),
+            &prefs,
+            0
+        ));
+        assert!(!request_passes_submit_gates(
+            &req_with_prompt("Dear team"),
+            Some("com.mitchellh.ghostty"),
+            &prefs,
+            0
+        ));
+        assert!(!request_passes_submit_gates(
+            &req_with_prompt("Dear team"),
+            Some("com.microsoft.VSCode"),
+            &prefs,
+            0
+        ));
+        assert!(!request_passes_submit_gates(
+            &req_with_prompt("git status && ls -la"),
+            Some("com.googlecode.iterm2"),
+            &prefs,
+            0
+        ));
+        assert!(request_passes_submit_gates(
+            &req_with_prompt("please summarize the recent changes"),
+            Some("com.googlecode.iterm2"),
+            &prefs,
+            0
+        ));
+
+        let excluded = build_prefs(&lookup(&[(
+            "COMPLETE_ME_EXCLUDED_APPS",
+            "com.apple.TextEdit",
+        )]));
+        assert!(!request_passes_submit_gates(
+            &req_with_prompt("Dear team"),
+            Some("com.apple.TextEdit"),
+            &excluded,
+            0
+        ));
+    }
+
+    #[test]
+    fn submit_gate_blocks_while_snoozed_then_auto_resumes() {
+        // Snooze must gate suggestions through the *integration* submit gate, not
+        // only the standalone prefs unit — and auto-resume after the window
+        // (A2 §16 pause/snooze).
+        let mut prefs = Prefs::default();
+        prefs.snooze(1_000, 5); // paused until t = 1_000 + 5*60_000 = 301_000 ms
+        let req = req_with_prompt("Dear team");
+        let app = Some("com.apple.TextEdit");
+        // Blocked at the start of and midway through the window.
+        assert!(!request_passes_submit_gates(&req, app, &prefs, 1_000));
+        assert!(!request_passes_submit_gates(&req, app, &prefs, 61_000));
+        // Auto-resumes once the window elapses.
+        assert!(request_passes_submit_gates(&req, app, &prefs, 301_001));
+    }
+
+    #[test]
+    fn submit_gate_uses_resolved_bundle_id_not_volatile_field_app() {
+        let volatile = CompletionRequest {
+            field: FieldHandle {
+                app: "pid:42".into(),
+                pid: Some(42),
+                element_id: "f".into(),
+                generation: 1,
+            },
+            ..req_with_prompt("Dear team")
+        };
+
+        let sidebar_key = resolve_app_key(volatile.field.pid, |pid| {
+            (pid == 42).then(|| "com.microsoft.VSCode".to_string())
+        });
+        assert!(!request_passes_submit_gates(
+            &volatile,
+            sidebar_key.as_deref(),
+            &Prefs::default(),
+            0
+        ));
+
+        let textedit_key = resolve_app_key(volatile.field.pid, |pid| {
+            (pid == 42).then(|| "com.apple.TextEdit".to_string())
+        });
+        let excluded = build_prefs(&lookup(&[(
+            "COMPLETE_ME_EXCLUDED_APPS",
+            "com.apple.TextEdit",
+        )]));
+        assert!(!request_passes_submit_gates(
+            &volatile,
+            textedit_key.as_deref(),
+            &excluded,
+            0
+        ));
+
+        // Unresolved pid fails open and does not treat the volatile `pid:42`
+        // field app as a preference key.
+        let unresolved = resolve_app_key(volatile.field.pid, |_| None);
+        assert!(request_passes_submit_gates(
+            &volatile,
+            unresolved.as_deref(),
+            &build_prefs(&lookup(&[("COMPLETE_ME_EXCLUDED_APPS", "pid:42")])),
+            0
+        ));
     }
 
     #[test]
@@ -930,6 +1346,291 @@ mod tests {
         // Unresolvable pid or absent pid → None (fail-open gating).
         assert_eq!(resolve_app_key(Some(99), resolver), None);
         assert_eq!(resolve_app_key(None, resolver), None);
+    }
+
+    #[test]
+    fn memory_storage_mode_defaults_off_and_parses_modes() {
+        use memory::StorageMode;
+        // Unset, falsy, and unknown all stay Off (opt-in §16 default).
+        assert_eq!(parse_storage_mode(None), StorageMode::Off);
+        assert_eq!(parse_storage_mode(Some("off".into())), StorageMode::Off);
+        assert_eq!(
+            parse_storage_mode(Some("nonsense".into())),
+            StorageMode::Off
+        );
+        // Accepted-only synonyms.
+        assert_eq!(
+            parse_storage_mode(Some("accepted".into())),
+            StorageMode::AcceptedOnly
+        );
+        assert_eq!(
+            parse_storage_mode(Some("  TRUE ".into())),
+            StorageMode::AcceptedOnly
+        );
+        // All-monitored synonyms.
+        assert_eq!(
+            parse_storage_mode(Some("all".into())),
+            StorageMode::AllMonitored
+        );
+        assert_eq!(
+            parse_storage_mode(Some("monitored".into())),
+            StorageMode::AllMonitored
+        );
+    }
+
+    #[test]
+    fn hex_key_parses_64_chars_and_rejects_bad_input() {
+        let hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let key = parse_hex_key(hex).expect("valid 64-hex key");
+        assert_eq!(key[0], 0x00);
+        assert_eq!(key[1], 0x11);
+        assert_eq!(key[31], 0xff);
+        // Wrong length and non-hex digits fail closed (store stays disabled).
+        assert!(parse_hex_key("deadbeef").is_none());
+        assert!(parse_hex_key(&"z".repeat(64)).is_none());
+    }
+
+    #[test]
+    fn memory_disabled_without_key_or_path_even_when_mode_set() {
+        // Mode on but no key/path → no store (fail-closed, logged).
+        let cfg = MemoryConfig {
+            mode: memory::StorageMode::AcceptedOnly,
+            path: None,
+            key: None,
+        };
+        assert!(open_memory_store(&cfg).is_none());
+        // Off mode is always disabled regardless of key/path.
+        let cfg_off = MemoryConfig {
+            mode: memory::StorageMode::Off,
+            path: Some(PathBuf::from("/tmp/should-not-open.db")),
+            key: Some([7u8; 32]),
+        };
+        assert!(open_memory_store(&cfg_off).is_none());
+    }
+
+    #[test]
+    fn latency_sample_computes_elapsed_and_prunes_older_generations() {
+        let mut submit = HashMap::new();
+        submit.insert(1u64, 100u64);
+        submit.insert(2u64, 150u64);
+        submit.insert(3u64, 220u64);
+        // Outcome for gen 2 at t=210 → latency 60ms; gen 1 (older) is pruned, gen
+        // 3 (newer, still pending) is kept.
+        assert_eq!(latency_sample(&mut submit, 2, 210), Some(60));
+        assert!(!submit.contains_key(&1));
+        assert!(!submit.contains_key(&2));
+        assert!(submit.contains_key(&3));
+    }
+
+    #[test]
+    fn latency_sample_is_none_for_an_untracked_generation() {
+        let mut submit = HashMap::new();
+        submit.insert(5u64, 100u64);
+        // A coalesced-away or already-pruned generation has no submit time.
+        assert_eq!(latency_sample(&mut submit, 9, 200), None);
+        // The unrelated entry is untouched.
+        assert!(submit.contains_key(&5));
+    }
+
+    #[test]
+    fn latency_sample_saturates_rather_than_overflowing() {
+        let mut submit = HashMap::new();
+        submit.insert(1u64, 0u64);
+        // An implausibly large elapsed value clamps to u32::MAX, never panics.
+        assert_eq!(latency_sample(&mut submit, 1, u64::MAX), Some(u32::MAX));
+    }
+
+    #[test]
+    fn latency_sample_prunes_all_lower_generations_in_one_call() {
+        let mut submit = HashMap::new();
+        for (gen, at) in [(1u64, 100u64), (2, 110), (3, 120)] {
+            submit.insert(gen, at);
+        }
+        // Outcome for the newest pending gen prunes every entry at or below it.
+        assert_eq!(latency_sample(&mut submit, 3, 200), Some(80));
+        assert!(submit.is_empty());
+    }
+
+    #[test]
+    fn latency_sample_returns_zero_when_outcome_same_ms_as_submit() {
+        // A completion returned within the same heartbeat reads as 0 ms — the
+        // true measured value at run-loop resolution, not None.
+        let mut submit = HashMap::new();
+        submit.insert(1u64, 100u64);
+        assert_eq!(latency_sample(&mut submit, 1, 100), Some(0));
+    }
+
+    #[test]
+    fn latency_sample_empty_map_is_none() {
+        let mut submit: HashMap<u64, u64> = HashMap::new();
+        assert_eq!(latency_sample(&mut submit, 1, 100), None);
+        assert!(submit.is_empty());
+    }
+
+    #[test]
+    fn latency_sample_supports_repeated_calls_against_a_shared_map() {
+        // The runtime pattern: one persistent map, sampled per outcome.
+        let mut submit = HashMap::new();
+        submit.insert(2u64, 100u64);
+        submit.insert(3u64, 130u64);
+        assert_eq!(latency_sample(&mut submit, 2, 150), Some(50));
+        assert_eq!(latency_sample(&mut submit, 3, 200), Some(70));
+        assert!(submit.is_empty());
+    }
+
+    fn field_with_app(app: &str) -> FieldHandle {
+        FieldHandle {
+            app: app.into(),
+            pid: Some(7),
+            element_id: "ax:field".into(),
+            generation: 1,
+        }
+    }
+
+    fn accepted_store() -> memory::MemoryStore {
+        memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([3u8; 32]),
+            memory::StorageMode::AcceptedOnly,
+        )
+        .expect("open in-memory store")
+    }
+
+    #[test]
+    fn full_accept_records_to_both_sinks_under_a_resolved_bundle_id() {
+        let prev = PreviousInputs::default();
+        let store = accepted_store();
+        record_full_accept(
+            AcceptAction::Full,
+            &field_with_app("com.apple.TextEdit"),
+            "the quick brown fox",
+            160,
+            &prev,
+            Some(&store),
+        );
+        assert_eq!(store.count().unwrap(), 1);
+        assert_eq!(prev.recent("com.apple.TextEdit").len(), 1);
+    }
+
+    #[test]
+    fn word_accept_records_nothing() {
+        let prev = PreviousInputs::default();
+        let store = accepted_store();
+        record_full_accept(
+            AcceptAction::Word,
+            &field_with_app("com.apple.TextEdit"),
+            "fox",
+            160,
+            &prev,
+            Some(&store),
+        );
+        assert_eq!(store.count().unwrap(), 0);
+        assert!(prev.recent("com.apple.TextEdit").is_empty());
+    }
+
+    #[test]
+    fn full_accept_under_a_volatile_pid_key_records_nothing() {
+        let prev = PreviousInputs::default();
+        let store = accepted_store();
+        record_full_accept(
+            AcceptAction::Full,
+            &field_with_app("pid:42"),
+            "ignored",
+            160,
+            &prev,
+            Some(&store),
+        );
+        assert_eq!(store.count().unwrap(), 0);
+        assert!(prev.recent("pid:42").is_empty());
+    }
+
+    #[test]
+    fn full_accept_with_context_disabled_still_records_to_memory() {
+        // context_max_chars == 0 disables the previous-input ring, but the
+        // encrypted store (its own opt-in) still records.
+        let prev = PreviousInputs::default();
+        let store = accepted_store();
+        record_full_accept(
+            AcceptAction::Full,
+            &field_with_app("com.apple.TextEdit"),
+            "remembered",
+            0,
+            &prev,
+            Some(&store),
+        );
+        assert_eq!(store.count().unwrap(), 1);
+        assert!(prev.recent("com.apple.TextEdit").is_empty());
+    }
+
+    #[test]
+    fn accept_word_count_is_at_least_one() {
+        assert_eq!(accept_word_count("the quick brown fox"), 4);
+        assert_eq!(accept_word_count("solo"), 1);
+        assert_eq!(accept_word_count("   "), 1); // whitespace-only still counts as one
+        assert_eq!(accept_word_count(""), 1);
+    }
+
+    #[test]
+    fn mirror_mode_only_for_mirror_only_apps() {
+        assert!(mirror_mode_for(Some("org.mozilla.firefox")));
+        assert!(!mirror_mode_for(Some("com.apple.TextEdit")));
+        assert!(!mirror_mode_for(None)); // unresolved app → inline
+    }
+
+    #[test]
+    fn stat_outcome_maps_engine_events() {
+        assert_eq!(
+            stat_outcome(engine::StatEvent::Shown),
+            stats::Outcome::Shown
+        );
+        assert_eq!(
+            stat_outcome(engine::StatEvent::Superseded),
+            stats::Outcome::Superseded
+        );
+    }
+
+    #[test]
+    fn canonicalize_field_app_replaces_volatile_pid_app_with_bundle_id() {
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: "ax:field".into(),
+            generation: 7,
+        };
+        let (canonical, app_key) = canonicalize_field_app(field, |pid| {
+            (pid == 42).then(|| "com.apple.TextEdit".into())
+        });
+
+        assert_eq!(app_key.as_deref(), Some("com.apple.TextEdit"));
+        assert_eq!(canonical.app, "com.apple.TextEdit");
+        assert_eq!(canonical.pid, Some(42));
+        assert_eq!(canonical.element_id, "ax:field");
+    }
+
+    #[test]
+    fn previous_inputs_record_and_read_with_canonical_bundle_id() {
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: "ax:field".into(),
+            generation: 7,
+        };
+        let (canonical, _) = canonicalize_field_app(field, |pid| {
+            (pid == 42).then(|| "com.apple.TextEdit".into())
+        });
+        let previous_inputs = PreviousInputs::default();
+        previous_inputs.record(&canonical.app, "accepted completion".into());
+        let worker_context = WorkerContext {
+            previous_inputs,
+            max_chars: 200,
+            ..WorkerContext::default()
+        };
+
+        assert!(worker_context
+            .block_for("com.apple.TextEdit")
+            .contains("accepted completion"));
+        assert!(!worker_context
+            .block_for("pid:42")
+            .contains("accepted completion"));
     }
 
     #[test]
@@ -1013,6 +1714,26 @@ mod tests {
         assert_eq!(config.max_words, DEFAULT_MAX_WORDS);
         assert_eq!(config.max_tokens, DEFAULT_MAX_TOKENS);
         assert_eq!(config.heartbeat_ms, DEFAULT_HEARTBEAT_MS);
+    }
+
+    #[test]
+    fn candidate_count_parses_and_clamps() {
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPLETE_ME_CANDIDATES", "3")])).candidates,
+            3
+        );
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPLETE_ME_CANDIDATES", "0")])).candidates,
+            1
+        );
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPLETE_ME_CANDIDATES", "99")])).candidates,
+            5
+        );
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPLETE_ME_CANDIDATES", "many")])).candidates,
+            DEFAULT_CANDIDATES
+        );
     }
 
     #[test]
@@ -1117,6 +1838,13 @@ mod tests {
             snapshot: generation,
             prompt: "p".into(),
             max_tokens: 8,
+        }
+    }
+
+    fn req_with_prompt(prompt: &str) -> CompletionRequest {
+        CompletionRequest {
+            prompt: prompt.into(),
+            ..req(1)
         }
     }
 
@@ -1230,6 +1958,22 @@ mod tests {
             HostEvent::Accept(AcceptAction::Word),
         ];
         assert_eq!(coalesce_caret_reads(events.clone()), events);
+    }
+
+    #[test]
+    fn focus_caret_accept_and_dismiss_clear_pending_requests() {
+        assert!(host_event_invalidates_pending_request(&HostEvent::Focus(
+            host_field("a")
+        )));
+        assert!(host_event_invalidates_pending_request(&HostEvent::Caret(
+            host_field("a"),
+            None
+        )));
+        assert!(host_event_invalidates_pending_request(&HostEvent::Accept(
+            AcceptAction::Full
+        )));
+        assert!(host_event_invalidates_pending_request(&HostEvent::Dismiss));
+        assert!(!host_event_invalidates_pending_request(&HostEvent::Cycle));
     }
 
     #[test]

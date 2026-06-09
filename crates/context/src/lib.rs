@@ -140,11 +140,56 @@ mod tests {
     }
 
     #[test]
+    fn context_block_preserves_source_order_labels_and_final_newline() {
+        assert_eq!(
+            build_context_block(
+                Some("clipboard text"),
+                Some("screen text"),
+                &["newer accepted", "older accepted"],
+                100
+            ),
+            "Context (for reference only):\n\
+Clipboard: clipboard text\n\
+On screen: screen text\n\
+Recent: newer accepted\n\
+Recent: older accepted\n"
+        );
+    }
+
+    #[test]
+    fn context_block_omits_empty_sources_without_blank_lines() {
+        assert_eq!(
+            build_context_block(Some("  "), Some("visible text"), &["\n\t", "recent"], 100),
+            "Context (for reference only):\n\
+On screen: visible text\n\
+Recent: recent\n"
+        );
+    }
+
+    #[test]
     fn context_block_bounds_each_source_to_max_chars_keeping_the_tail() {
         let long = "0123456789abcdef"; // 16 chars
         let block = build_context_block(Some(long), None, &[], 4);
         assert!(block.contains("Clipboard: cdef"), "got {block:?}");
         assert!(!block.contains("0123"));
+    }
+
+    #[test]
+    fn context_block_bounds_after_whitespace_collapse_per_source() {
+        let block = build_context_block(
+            Some("clip\none two three"),
+            Some("screen\nalpha beta"),
+            &["recent\nred green blue"],
+            10,
+        );
+
+        assert_eq!(
+            block,
+            "Context (for reference only):\n\
+Clipboard:  two three\n\
+On screen: alpha beta\n\
+Recent: green blue\n"
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //! stays fully deterministic under test.
 
 use engine_core::{Command, Event, SnapshotId, SuggestionMachine};
-pub use engine_core::{EditKind, TriggerPolicy};
+pub use engine_core::{EditKind, StatEvent, TriggerPolicy};
 use platform::{
     AcceptAction, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode, OverlayPlacement,
     OverlayPresenter, PlatformAdapter, SecurityState, Toolkit,
@@ -239,11 +239,19 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.machine.preview_accept_insert(action)
     }
 
+    /// Drain machine-internal Shown/Superseded stat events for the host to record
+    /// into local usage stats (design spec §11).
+    pub fn take_stat_events(&mut self) -> Vec<StatEvent> {
+        self.machine.take_stat_events()
+    }
+
     /// Dismiss any showing suggestion (e.g. the user disabled the app via the
-    /// tray). Wraps the machine's `Dismiss` event so a visible ghost hides
-    /// immediately rather than lingering until the next focus/caret change.
+    /// tray). Wraps the machine's `DismissDiscard` event so a visible ghost
+    /// hides immediately AND any in-flight request is staled — otherwise a
+    /// completion already submitted to the inference worker could pop a ghost
+    /// back up after the user disabled the app.
     pub fn on_dismiss(&mut self) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
-        let commands = self.machine.on_event(Event::Dismiss);
+        let commands = self.machine.on_event(Event::DismissDiscard);
         self.dispatch(commands)
     }
 
@@ -330,6 +338,9 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
             // placed, the accept tap was never armed). `Dismiss` emits a `Hide`,
             // which is a no-op against the already-hidden overlay/tap. Depth-1
             // recursion: `Dismiss` never yields another `ShowGhost`.
+            // The ghost was emitted but never presented, so retract the `Shown`
+            // stat event the machine buffered (design spec §11 accuracy).
+            self.machine.cancel_last_shown();
             let dismiss = self.machine.on_event(Event::Dismiss);
             requests.extend(self.dispatch(dismiss)?);
         }
@@ -628,6 +639,99 @@ mod tests {
     }
 
     #[test]
+    fn completion_multi_cycles_overlay_and_wraps() {
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+
+        engine
+            .on_completion_multi(
+                &requests[0],
+                vec!["alpha".into(), "beta".into(), "gamma".into()],
+            )
+            .unwrap();
+        engine.on_cycle().unwrap();
+        engine.on_cycle().unwrap();
+        engine.on_cycle().unwrap();
+
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![
+                OverlayCall::Show(
+                    ScreenRect {
+                        x: 10.0,
+                        y: 20.0,
+                        w: 1.0,
+                        h: 14.0,
+                    },
+                    "alpha".into()
+                ),
+                OverlayCall::Update("beta".into()),
+                OverlayCall::Update("gamma".into()),
+                OverlayCall::Update("alpha".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn accept_full_inserts_the_cycled_candidate_and_hides() {
+        let (mut engine, adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion_multi(&requests[0], vec!["alpha".into(), "beta".into()])
+            .unwrap();
+        engine.on_cycle().unwrap();
+        overlay.calls.lock().unwrap().clear();
+
+        engine.on_accept(AcceptAction::Full).unwrap();
+
+        assert_eq!(
+            *adapter.inserts.lock().unwrap(),
+            vec![(field(), "beta".into(), InsertStrategy::AxSet)]
+        );
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+    }
+
+    #[test]
+    fn dismiss_suppress_hides_overlay_and_disarms_accept_tap() {
+        let (mut engine, _adapter, overlay) = engine();
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let actions: Arc<Mutex<Vec<Option<AcceptAction>>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        let a = Arc::clone(&actions);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            |_delay| Ok(()),
+            move |action| {
+                a.lock().unwrap().push(action);
+                Ok(())
+            },
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "hello".into()).unwrap();
+        overlay.calls.lock().unwrap().clear();
+
+        engine.on_dismiss_suppress().unwrap();
+
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+        assert_eq!(*visible.lock().unwrap(), vec![true, false]);
+        assert_eq!(
+            *actions.lock().unwrap(),
+            vec![Some(AcceptAction::Full), None]
+        );
+    }
+
+    #[test]
     fn popup_anchor_used_when_caret_rect_absent() {
         let mut adapter = FakeAdapter::new();
         adapter.rect = None;
@@ -736,6 +840,36 @@ mod tests {
             inserts.lock().unwrap().is_empty(),
             "accept after a failed show must not insert a never-seen ghost"
         );
+    }
+
+    #[test]
+    fn failed_placement_does_not_count_as_shown() {
+        // No geometry → ghost emitted but never presented → the buffered Shown is
+        // retracted, so usage stats don't overcount an invisible suggestion.
+        let mut adapter = FakeAdapter::new();
+        adapter.rect = None;
+        adapter.popup = None;
+        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "nope".into()).unwrap();
+
+        assert_eq!(engine.take_stat_events(), vec![]);
+    }
+
+    #[test]
+    fn successful_placement_counts_as_shown() {
+        // With geometry the ghost is presented → exactly one Shown.
+        let mut engine = Engine::new(FakeAdapter::new(), FakeOverlay::default(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "nope".into()).unwrap();
+
+        assert_eq!(engine.take_stat_events(), vec![StatEvent::Shown]);
     }
 
     fn other_field() -> FieldHandle {

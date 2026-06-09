@@ -71,7 +71,16 @@ pub enum Event {
     },
     AcceptFull,
     AcceptWord,
+    /// Snapshot-neutral hide: drop the showing ghost without invalidating any
+    /// in-flight request. Used for idempotent reconciliation (e.g. an overlay
+    /// placement that failed) where a freshly-requested completion must still be
+    /// allowed to arrive.
     Dismiss,
+    /// Hide AND stale any in-flight request (advances the snapshot) without
+    /// suppressing the field. Used for the tray Disable path: dropping only the
+    /// queued requests would let one already submitted to the inference worker
+    /// pop a ghost back up after the user disabled the app.
+    DismissDiscard,
     /// Esc: hide any showing ghost AND suppress new completions in the current
     /// field until the user refocuses or makes another edit (Cotypist parity).
     DismissSuppress,
@@ -118,6 +127,18 @@ impl Showing {
     }
 }
 
+/// Suggestion-lifecycle events worth counting for local usage stats (design spec
+/// §11). `Accepted`/`Dismissed` are observed by the host from the accept/dismiss
+/// inputs; these two are machine-internal and surfaced via `take_stat_events`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatEvent {
+    /// A ghost suggestion was presented (a `ShowGhost` command was emitted).
+    Shown,
+    /// A presented ghost was discarded by a non-user event (new typing, caret
+    /// move, focus change, secure-state change) before the user acted on it.
+    Superseded,
+}
+
 pub struct SuggestionMachine {
     caps: Capabilities,
     debounce_ms: u64,
@@ -135,6 +156,8 @@ pub struct SuggestionMachine {
     /// Set by `DismissSuppress` (Esc); blocks completions in the current field
     /// until cleared by a refocus or the next edit.
     suppressed: bool,
+    /// Buffered Shown/Superseded events drained by the host into usage stats.
+    stat_events: Vec<StatEvent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,7 +186,14 @@ impl SuggestionMachine {
             requested: None,
             showing: None,
             suppressed: false,
+            stat_events: Vec::new(),
         }
+    }
+
+    /// Drain the buffered Shown/Superseded stat events (design spec §11). The
+    /// host calls this each loop turn and records them into local usage stats.
+    pub fn take_stat_events(&mut self) -> Vec<StatEvent> {
+        std::mem::take(&mut self.stat_events)
     }
 
     /// Configure conservative trigger gating (spec §4, "protect first-run"):
@@ -218,6 +248,18 @@ impl SuggestionMachine {
 
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
         let mut out = Vec::new();
+
+        // A ghost showing before a non-user event (typing, caret move, focus or
+        // secure-state change) that ends with it hidden was *superseded* — shown
+        // but replaced before the user accepted or dismissed it (design spec §11).
+        let was_showing = self.showing.is_some();
+        let non_user_event = matches!(
+            event,
+            Event::Focus { .. }
+                | Event::TextChanged { .. }
+                | Event::CaretMoved { .. }
+                | Event::SecureStateChanged { .. }
+        );
 
         match event {
             Event::Focus { field, caps } => {
@@ -311,10 +353,7 @@ impl SuggestionMachine {
                 }
             }
             Event::CaretMoved { field, caret } => {
-                let moved = self
-                    .showing
-                    .as_ref()
-                    .is_some_and(|showing| showing.field != field || showing.caret != caret);
+                let moved = self.field.as_ref() != Some(&field) || self.caret != caret;
                 if moved {
                     self.hide_if_showing(&mut out);
                     self.advance_snapshot();
@@ -329,7 +368,18 @@ impl SuggestionMachine {
                 self.advance_snapshot();
             }
             Event::Dismiss => {
+                // Snapshot-neutral: hide only, leaving any in-flight request
+                // valid (the show-failed reconciliation path relies on this).
                 self.hide_if_showing(&mut out);
+            }
+            Event::DismissDiscard => {
+                self.hide_if_showing(&mut out);
+                self.pending_since = None;
+                // Stale any in-flight request so its completion cannot pop a
+                // ghost back up after the user disabled the app (the tray Disable
+                // path only drops *queued* requests; one already submitted to the
+                // inference worker would otherwise re-show on return).
+                self.advance_snapshot();
             }
             Event::DismissSuppress => {
                 self.hide_if_showing(&mut out);
@@ -361,6 +411,7 @@ impl SuggestionMachine {
                         self.advance_snapshot();
                     } else {
                         showing.caret += word.chars().count();
+                        self.caret = showing.caret;
                         // Collapse to the active candidate: the siblings still
                         // begin with the just-accepted word and would re-offer it
                         // on cycle, so once the user commits word-by-word the
@@ -376,6 +427,10 @@ impl SuggestionMachine {
                     }
                 }
             }
+        }
+
+        if was_showing && non_user_event && self.showing.is_none() {
+            self.stat_events.push(StatEvent::Superseded);
         }
 
         out
@@ -432,6 +487,13 @@ impl SuggestionMachine {
         }
 
         if let Some(first) = shaped.first().cloned() {
+            // A fresh inference result replacing a still-showing ghost supersedes
+            // it (the user never acted on the old one). The central on_event guard
+            // does not see this — CompletionReady isn't a "non-user" hide event —
+            // so account for it explicitly at the replacement site.
+            if self.showing.is_some() {
+                self.stat_events.push(StatEvent::Superseded);
+            }
             self.showing = Some(Showing {
                 field: field.clone(),
                 snapshot,
@@ -444,8 +506,22 @@ impl SuggestionMachine {
                 snapshot,
                 text: first,
             });
+            self.stat_events.push(StatEvent::Shown);
         }
         self.requested = None;
+    }
+
+    /// Retract the most recent `Shown` stat event — used by the host when an
+    /// overlay placement failed, so a ghost that was emitted but never actually
+    /// presented to the user is not counted as shown (design spec §11).
+    pub fn cancel_last_shown(&mut self) {
+        if let Some(pos) = self
+            .stat_events
+            .iter()
+            .rposition(|e| *e == StatEvent::Shown)
+        {
+            self.stat_events.remove(pos);
+        }
     }
 
     pub fn preview_accept_insert(&self, action: AcceptAction) -> Option<(FieldHandle, String)> {
@@ -1056,6 +1132,39 @@ mod tests {
     }
 
     #[test]
+    fn discards_completion_after_caret_move_advances_boundary() {
+        // A request is in flight (gen/snap = 1). A bare caret move, before any
+        // ghost is showing, must still stale that request so old prompt text cannot
+        // render at the new caret.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello world", 11, 1000));
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 1200 }),
+            vec![Command::RequestCompletion {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                prompt: "hello world".into(),
+            }]
+        );
+
+        machine.on_event(Event::CaretMoved {
+            field: field("field-a"),
+            caret: 5,
+        });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "old tail".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
     fn transition_to_secure_blocks_subsequent_requests() {
         // Field starts Normal, then a secure-state change flips caps to secure.
         // Typing afterwards must never arm a request (privacy invariant, §7).
@@ -1413,6 +1522,217 @@ mod tests {
             }),
             vec![]
         );
+    }
+
+    #[test]
+    fn dismiss_discard_blocks_an_inflight_completion() {
+        // The tray Disable path (`Event::DismissDiscard`) must stale an in-flight
+        // request: dropping only the queued requests leaves one already submitted
+        // to the inference worker, which would otherwise re-show a ghost after the
+        // user disabled the app.
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 }); // requested gen=1, snapshot=1
+        machine.on_event(Event::DismissDiscard);
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "late ghost".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn dismiss_is_snapshot_neutral_and_keeps_an_inflight_completion() {
+        // Plain `Event::Dismiss` is the idempotent show-failed reconciliation: it
+        // hides without advancing the snapshot, so a completion already requested
+        // for the current snapshot still shows when it arrives. (Regression guard:
+        // the tray-disable fix must NOT leak snapshot-advance into this path.)
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 }); // requested gen=1, snapshot=1
+        machine.on_event(Event::Dismiss);
+
+        assert!(matches!(
+            machine
+                .on_event(Event::CompletionReady {
+                    generation: 1,
+                    field: field("field-a"),
+                    snapshot: 1,
+                    text: "still valid".into(),
+                })
+                .as_slice(),
+            [Command::ShowGhost { .. }]
+        ));
+    }
+
+    /// Drive a machine to a showing ghost and drain the resulting Shown event,
+    /// returning the machine ready for a supersede/accept/dismiss step.
+    fn machine_showing() -> SuggestionMachine {
+        let mut machine = machine();
+        machine.on_event(text_changed("hello", 5, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "world".into(),
+        });
+        machine
+    }
+
+    #[test]
+    fn shown_stat_event_recorded_when_a_ghost_is_presented() {
+        let mut machine = machine();
+        machine.on_event(text_changed("hello", 5, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        let cmds = machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "world".into(),
+        });
+        assert!(cmds.iter().any(|c| matches!(c, Command::ShowGhost { .. })));
+        assert_eq!(machine.take_stat_events(), vec![StatEvent::Shown]);
+        // Drained: a second take is empty.
+        assert_eq!(machine.take_stat_events(), vec![]);
+    }
+
+    #[test]
+    fn typing_over_a_showing_ghost_records_superseded() {
+        let mut machine = machine_showing();
+        assert_eq!(machine.take_stat_events(), vec![StatEvent::Shown]);
+        // The user keeps typing → the visible ghost is replaced, not acted on.
+        machine.on_event(text_changed("hello w", 7, 0));
+        assert_eq!(machine.take_stat_events(), vec![StatEvent::Superseded]);
+    }
+
+    #[test]
+    fn focus_change_over_a_showing_ghost_records_superseded() {
+        let mut machine = machine_showing();
+        let _ = machine.take_stat_events(); // drop the Shown
+        machine.on_event(Event::Focus {
+            field: field("field-b"),
+            caps: inline_caps(),
+        });
+        assert_eq!(machine.take_stat_events(), vec![StatEvent::Superseded]);
+    }
+
+    #[test]
+    fn accept_and_dismiss_do_not_record_superseded() {
+        // Accept is a user action, not a supersede. Anchor the pre-drain to the
+        // Shown so the post-action empty assertion can't pass on a broken `take`.
+        let mut accepted = machine_showing();
+        assert_eq!(accepted.take_stat_events(), vec![StatEvent::Shown]);
+        accepted.on_event(Event::AcceptFull);
+        assert_eq!(accepted.take_stat_events(), vec![]);
+
+        // Dismiss (Esc) is a user action, not a supersede.
+        let mut dismissed = machine_showing();
+        assert_eq!(dismissed.take_stat_events(), vec![StatEvent::Shown]);
+        dismissed.on_event(Event::DismissSuppress);
+        assert_eq!(dismissed.take_stat_events(), vec![]);
+    }
+
+    #[test]
+    fn caret_move_over_a_showing_ghost_records_superseded() {
+        let mut machine = machine_showing();
+        let _ = machine.take_stat_events(); // drop the Shown
+        machine.on_event(Event::CaretMoved {
+            field: field("field-a"),
+            caret: 2, // moved away from caret 5 → ghost invalidated
+        });
+        assert_eq!(machine.take_stat_events(), vec![StatEvent::Superseded]);
+    }
+
+    #[test]
+    fn noop_caret_move_keeps_the_ghost_and_records_nothing() {
+        let mut machine = machine_showing();
+        let _ = machine.take_stat_events();
+        // Same field + same caret (5, after "hello") → not moved → ghost stays.
+        machine.on_event(Event::CaretMoved {
+            field: field("field-a"),
+            caret: 5,
+        });
+        assert_eq!(machine.take_stat_events(), vec![]);
+    }
+
+    #[test]
+    fn secure_state_change_over_a_showing_ghost_records_superseded() {
+        let mut machine = machine_showing();
+        let _ = machine.take_stat_events();
+        machine.on_event(Event::SecureStateChanged {
+            caps: inline_caps(),
+        });
+        assert_eq!(machine.take_stat_events(), vec![StatEvent::Superseded]);
+    }
+
+    #[test]
+    fn no_supersede_when_nothing_is_showing() {
+        // The `was_showing` half of the guard: a non-user event with no ghost up
+        // must not record a supersede.
+        let mut machine = machine();
+        machine.on_event(text_changed("hi", 2, 0));
+        machine.on_event(Event::Focus {
+            field: field("field-b"),
+            caps: inline_caps(),
+        });
+        assert_eq!(machine.take_stat_events(), vec![]);
+    }
+
+    #[test]
+    fn cycle_and_word_accept_keep_the_ghost_without_extra_events() {
+        // Cycle rotates candidates (UpdateGhost, not ShowGhost) → no new Shown,
+        // not a supersede. Word-accept with remaining text keeps the ghost too.
+        let mut machine = showing_three_words();
+        let _ = machine.take_stat_events(); // drop the initial Shown
+        machine.on_event(Event::Cycle);
+        assert_eq!(machine.take_stat_events(), vec![]);
+        machine.on_event(Event::AcceptWord);
+        assert_eq!(machine.take_stat_events(), vec![]);
+    }
+
+    #[test]
+    fn stat_events_accumulate_across_turns_until_drained() {
+        // Two show cycles without an intermediate drain: cycle-2's typing
+        // supersedes cycle-1's ghost, so the buffer holds [Shown, Superseded,
+        // Shown]; a second drain is empty.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello", 5, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "world".into(),
+        });
+        // New edit supersedes the showing ghost and arms a fresh request.
+        machine.on_event(text_changed("hello world ", 12, 1000));
+        machine.on_event(Event::Tick { now_ms: 1500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 2,
+            field: field("field-a"),
+            snapshot: 2,
+            text: "again".into(),
+        });
+        assert_eq!(
+            machine.take_stat_events(),
+            vec![StatEvent::Shown, StatEvent::Superseded, StatEvent::Shown]
+        );
+        assert_eq!(machine.take_stat_events(), vec![]);
+    }
+
+    #[test]
+    fn cancel_last_shown_removes_only_the_trailing_shown() {
+        // The host calls this when an overlay placement failed: the emitted-but-
+        // never-presented ghost must not be counted as shown.
+        let mut machine = machine_showing();
+        machine.cancel_last_shown();
+        assert_eq!(machine.take_stat_events(), vec![]);
     }
 
     fn showing_three_words() -> SuggestionMachine {

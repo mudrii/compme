@@ -12,18 +12,21 @@
 #   terminal-cmd Terminal/iTerm, type a shell command  → NO request.
 #   terminal-nlp Terminal/iTerm, type a natural-language prompt → request.
 #   clipboard    works app + COMPLETE_ME_CLIPBOARD_CONTEXT=1; the copied text
-#                shows up in the binary's `request`/prompt path (manual eyeball).
+#                is logged by the diagnostic context path before submit.
+#   screen       works app + COMPLETE_ME_SCREEN_CONTEXT=1; Screen Recording must
+#                be granted and OCR must return context before submit.
 #
 # This is the executable form of the §16 compatibility-matrix gate. It needs a
-# console GUI session, Accessibility + Input Monitoring granted, the relevant
-# apps installed/focused, and the target pid in COMPLETE_ME_ACCEPTANCE_PID.
+# console GUI session, Accessibility granted, the relevant apps installed/focused,
+# and the target pid in COMPLETE_ME_ACCEPTANCE_PID. The `screen` gate also needs
+# Screen Recording permission.
 # Per-app coverage is recorded in tools/acceptance/logs/ when run.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="${COMPLETE_ME_BIN:-$ROOT_DIR/target/debug/complete-me}"
 PID="${COMPLETE_ME_ACCEPTANCE_PID:-}"
-KIND="${1:-works}"            # works | unsupported | terminal-cmd | terminal-nlp | clipboard
+KIND="${1:-works}"            # works | unsupported | terminal-cmd | terminal-nlp | clipboard | screen
 RUN_MS="${COMPLETE_ME_RUN_MS:-3500}"
 WARMUP_MS="${COMPLETE_ME_WARMUP_MS:-1200}"
 PREFIX="${COMPLETE_ME_PREFIX:-Dear team, I wanted to }"
@@ -48,9 +51,15 @@ case "$KIND" in
 esac
 
 clip_env=()
+screen_env=()
+
 if [[ "$KIND" == "clipboard" ]]; then
   /usr/bin/osascript -e 'set the clipboard to "CLIPBOARD-CONTEXT-MARKER"' >/dev/null 2>&1 || true
-  clip_env=(COMPLETE_ME_CLIPBOARD_CONTEXT=1)
+  clip_env=(COMPLETE_ME_CLIPBOARD_CONTEXT=1 COMPLETE_ME_DIAG_CONTEXT=1)
+fi
+
+if [[ "$KIND" == "screen" ]]; then
+  screen_env=(COMPLETE_ME_SCREEN_CONTEXT=1 COMPLETE_ME_DIAG_CONTEXT=1)
 fi
 
 # Seed the field, then run the binary against it with a deterministic stub.
@@ -62,11 +71,13 @@ delay 0.4
 tell application "System Events" to keystroke "$PREFIX"
 OSA
 
-COMPLETE_ME_STUB_COMPLETION="$STUB" \
-COMPLETE_ME_ACCEPTANCE_PID="$PID" \
-COMPLETE_ME_RUN_MS="$RUN_MS" \
-"${clip_env[@]}" \
-"$BIN" >"$LOG" 2>&1 &
+env \
+  COMPLETE_ME_STUB_COMPLETION="$STUB" \
+  COMPLETE_ME_ACCEPTANCE_PID="$PID" \
+  COMPLETE_ME_RUN_MS="$RUN_MS" \
+  ${clip_env[@]+"${clip_env[@]}"} \
+  ${screen_env[@]+"${screen_env[@]}"} \
+  "$BIN" >"$LOG" 2>&1 &
 BIN_PID=$!
 sleep "$(awk "BEGIN{print ($WARMUP_MS+$RUN_MS)/1000}")"
 wait "$BIN_PID" 2>/dev/null || true
@@ -78,12 +89,22 @@ pass() { echo "PASS: $KIND — $1 (log: $LOG)"; exit 0; }
 fail() { echo "FAIL: $KIND — $1 (log: $LOG)"; exit 1; }
 
 case "$KIND" in
-  works|terminal-nlp|clipboard)
+  works|terminal-nlp)
     [[ "$requested" == 1 ]] && pass "completion requested as expected" \
       || fail "expected a completion request, none logged" ;;
+  clipboard)
+    [[ "$requested" == 1 ]] || fail "expected a completion request, none logged"
+    grep -q 'clipboard_context=Some("CLIPBOARD-CONTEXT-MARKER")' "$LOG" \
+      && pass "clipboard context marker reached the submit path" \
+      || fail "expected CLIPBOARD-CONTEXT-MARKER in diagnostic clipboard context" ;;
+  screen)
+    [[ "$requested" == 1 ]] || fail "expected a completion request, none logged"
+    grep -Eq 'screen_context=Some\([1-9][0-9]*\)' "$LOG" \
+      && pass "screen OCR context reached the submit path" \
+      || fail "expected non-empty screen_context diagnostic; check Screen Recording grant and visible text" ;;
   unsupported|terminal-cmd)
     [[ "$requested" == 0 ]] && pass "completion correctly gated out" \
       || fail "expected NO completion request, but one was logged" ;;
   *)
-    fail "unknown KIND '$KIND' (works|unsupported|terminal-cmd|terminal-nlp|clipboard)" ;;
+    fail "unknown KIND '$KIND' (works|unsupported|terminal-cmd|terminal-nlp|clipboard|screen)" ;;
 esac

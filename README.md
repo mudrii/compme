@@ -23,8 +23,10 @@ contract-first implementation and validation harness for:
 - deciding whether a field can support inline, popup, blocked, hotkey-only, or
   unsupported UX
 - showing a non-activating AppKit ghost-text overlay
-- intercepting accept keys (Tab = next word, grave/`` ` `` = full) through a
-  split observer/consumer `CGEventTap`
+- intercepting accept keys (Tab = next word, grave/`` ` `` = full) through
+  transient Carbon hotkeys (`RegisterEventHotKey`), registered only while a
+  suggestion is armed and unregistered on hide — no Input Monitoring, matching
+  Cotypist's Accessibility-only accept mechanism
 - inserting accepted text through Accessibility, synthetic keys, or clipboard
   paste fallback
 
@@ -74,7 +76,9 @@ from `tools/spike/`.
 - Rust toolchain compatible with the workspace.
 - Xcode Command Line Tools for native macOS frameworks.
 - Accessibility permission for the terminal running live probes.
-- Input Monitoring permission for acceptance-tap live probes.
+- Input Monitoring is **not** required by the production accept path (transient
+  Carbon hotkeys); it is only relevant to the historical A0 CGEventTap spike
+  probes under `tools/spike`.
 - Local GGUF model files for model latency tests and spike inference probes.
 
 The checked-in local model paths used by current tests and probes are:
@@ -120,8 +124,9 @@ tools/acceptance/run-a1b-live-gates.sh
 ```
 
 Before running live gates, unlock the session, disable global Secure Input, grant
-Accessibility/Input Monitoring to the launching terminal, open TextEdit, and
-focus an editable document.
+Accessibility to the launching terminal, open TextEdit, and focus an editable
+document. (Input Monitoring is only needed for the historical CGEventTap spike
+probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 
 ## Current Validation Gates
 
@@ -156,8 +161,9 @@ At a high level:
 5. `engine_core` validates the returned generation/snapshot and emits `ShowGhost`,
    `UpdateGhost`, `Insert`, or `Hide`.
 6. `platform_macos` presents ghost text through an AppKit `NSPanel`, intercepts
-   accept actions through `CGEventTap`, and inserts accepted text through the
-   safest available strategy.
+   accept actions through transient Carbon hotkeys (`RegisterEventHotKey`,
+   armed only while a suggestion is shown), and inserts accepted text through
+   the safest available strategy.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 

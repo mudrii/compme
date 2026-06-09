@@ -44,7 +44,6 @@ Before running:
 
 - unlock the macOS session
 - grant Accessibility permission to the terminal
-- grant Input Monitoring permission to the terminal for event-tap gates
 - open TextEdit and focus an editable document
 - avoid password fields and apps that enable global Secure Input
 
@@ -56,29 +55,48 @@ The runner preflights:
 
 Use `--force` only when intentionally collecting blocked harness logs.
 
-### Default Gates
+### Automated Default Gates
 
 By default the runner builds the `platform_macos` examples, builds the
-`complete-me` product binary, and runs:
+`complete-me` product binary, and runs the deterministic/scriptable gates:
 
 - `textedit-read`
 - `textedit-insert-synthetic`
 - `textedit-insert-clipboard`
 - `textedit-insert-axset`
 - `caret-marker-textedit-any`
-- `accept-insert-full`
-- `accept-insert-word`
-- `e2e-complete-me-pipeline`
-- `e2e-complete-me-word-remainder`
 - `popup-fallback-fixture`
-- `accept-tap-inactive`
-- `accept-tap-full`
-- `accept-tap-word`
-- `accept-tap-delayed-hide`
 - `overlay-presenter`
 
 If TextEdit is not running, TextEdit-dependent gates are skipped instead of
 misreporting app-focus failures as product failures.
+
+The historical `accept-tap-*`, `accept-insert-*`, and `e2e-complete-me-*`
+harnesses are no longer default automated evidence for product accept-key
+consumption after the Carbon migration. macOS synthetic key posts do not fire
+`RegisterEventHotKey` the same way physical keyboard input does, so those gates
+can still be useful as historical CGEventTap probes or insertion-path smoke
+tests, but they must not close the current Carbon consume gate by themselves.
+The runner reports these as `MANUAL`, not `SKIP`, when they are the remaining
+Carbon evidence requirement. `--self-test` pins the runner's blocker
+classification logic.
+
+### Manual Physical Carbon Gates
+
+Run these on an unlocked GUI session with Accessibility granted and no global
+Secure Input process. Launch `complete-me`, focus TextEdit (or the app named by
+the gate), type enough text to show a suggestion, then use a physical keyboard:
+
+- grave/key-above-Tab accepts the full shown completion
+- Tab accepts the next word and leaves the remainder visible
+- Esc hides the suggestion and suppresses that field until refocus/edit
+- Down cycles candidates without insertion
+- Option+Tab passes a literal Tab through to the app
+- revoke Input Monitoring and confirm accept behavior is unchanged
+
+Record the product log line, target app, keyboard action, and resulting field
+contents for each run. These manual runs are the authoritative evidence for
+current Carbon hotkey consumption.
 
 ### Optional Gates
 
@@ -115,7 +133,10 @@ are validated outside the A1b gate runner:
   `Ready`. A literal tray-menu mouse click stays manual (accessory-policy item
   exposes no menu to System Events).
 - **Permissions** — `accessibility_trusted()` true when granted; status derivation
-  + ~500 ms re-poll exercised live; Input Monitoring has no public prompt API.
+  + ~500 ms re-poll exercised live. Production accept keys use Carbon hotkeys
+  and no longer require Input Monitoring; historical A0 CGEventTap probes still do.
+  Carbon hotkey consumption is a manual physical-key gate because macOS synthetic
+  key posts do not fire `RegisterEventHotKey` the way real keyboard input does.
 - **Coordinate diagnostics** — `COMPLETE_ME_DIAG_COORDS=1` prints display scales +
   caret rect; measured scale 1.0 on the built-in display (no offset). True-2× /
   multi-monitor (scale > 1) caret mapping was later measured on two displays and
@@ -126,14 +147,13 @@ are validated outside the A1b gate runner:
   `SIGUSR1` toggle, debounce/max-words/max-tokens/heartbeat keys (unit-tested in
   `crates/app`).
 
-> **[CORR 06-08] Accept-key harness:** after the accept-key flip (Tab → next word,
-> grave → full), the `accept_tap_acceptance` and `accept_insert_acceptance` harnesses
-> now post the key matching the requirement — **grave (keycode 50) for `full`**, Tab
-> for `word` — so the `accept-tap-full` / `accept-insert-full` gates exercise the real
-> grave→full path. Unit tests cover grave→full. **[CORR 06-08]** The live desktop run is
-> now done: design spec §15 G6/I11 record `e2e-complete-me.sh` passing grave→full and
-> Tab→word against TextEdit (M4 Max, 2026-06-08), incl. a real-`LlamaModel` run. §15 is the
-> authoritative live-gate record.
+> **[CORR 06-09] Accept-key evidence boundary:** the 2026-06-08 synthetic
+> harnesses closed the old consuming-CGEventTap path only. Production accept
+> keys now use transient Carbon hotkeys; deterministic tests cover key mapping,
+> engine accept/dismiss/cycle behavior, and insertion strategies, but physical
+> keyboard runs are required to close Carbon product consumption. Design spec
+> §15 G6/I11 is the authoritative record and must distinguish old tap evidence
+> from current Carbon evidence.
 
 ### Useful Options
 
@@ -167,9 +187,31 @@ Failure classification looks for common blockers:
 
 - locked screen
 - global Secure Input
-- missing Accessibility/Input Monitoring permission
+- missing Accessibility permission
 - wrong focused target
 - transient AX observer setup failures
+
+## A2 Compatibility And Context Gates
+
+Run:
+
+```sh
+tools/acceptance/run-a2-compat-gates.sh <kind>
+```
+
+Supported kinds:
+
+- `works`
+- `unsupported`
+- `terminal-cmd`
+- `terminal-nlp`
+- `clipboard`
+- `screen`
+
+The `clipboard` and `screen` gates enable `COMPLETE_ME_DIAG_CONTEXT=1`; clipboard
+requires the marker `CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and
+screen requires non-empty OCR context. The screen gate also requires Screen
+Recording permission and visible text on the focused display.
 
 ## Example Acceptance Binaries
 

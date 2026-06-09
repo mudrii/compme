@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use core_graphics::event::{CGEvent, CGEventTapLocation, KeyCode};
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, KeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use platform::{AcceptAction, PlatformAdapter, TapControl};
 use platform_macos::MacosPlatformAdapter;
@@ -12,6 +12,8 @@ use platform_macos::MacosPlatformAdapter;
 /// Grave/backtick (key above Tab). Must match the engine's accept binding:
 /// Tab accepts the next word, grave accepts the full completion.
 const KEYCODE_GRAVE: u16 = 50;
+const KEYCODE_ESCAPE: u16 = 53;
+const KEYCODE_DOWN: u16 = 125;
 
 fn main() {
     let duration = env::args()
@@ -31,13 +33,14 @@ fn main() {
 
     println!("front_app={:?}", adapter.front_app());
 
-    let actions = Arc::new(Mutex::new(Vec::new()));
-    let actions_for_callback = Arc::clone(&actions);
+    let controls = Arc::new(Mutex::new(Vec::new()));
+    let controls_for_callback = Arc::clone(&controls);
     let subscription = match adapter.subscribe_accept(Arc::new(move |control| {
         println!("ACCEPT_ACTION {control:?}");
-        if let TapControl::Accept(action) = control {
-            actions_for_callback.lock().expect("actions").push(action);
-        }
+        controls_for_callback
+            .lock()
+            .expect("controls")
+            .push(control);
     })) {
         Ok(subscription) => subscription,
         Err(err) => {
@@ -50,10 +53,10 @@ fn main() {
         "inactive" => subscription
             .set_suggestion_visible(false)
             .expect("set inactive"),
-        "full" => {
+        "full" | "escape" | "option-tab" | "cycle" => {
             subscription
                 .set_suggestion_visible(true)
-                .expect("show full suggestion");
+                .expect("show suggestion");
             subscription
                 .set_accept_action(Some(AcceptAction::Full))
                 .expect("arm full accept");
@@ -81,7 +84,7 @@ fn main() {
         }
         other => {
             eprintln!(
-                "unknown requirement {other:?}; expected inactive, full, word, or delayed-hide"
+                "unknown requirement {other:?}; expected inactive, full, word, delayed-hide, escape, option-tab, or cycle"
             );
             process::exit(2);
         }
@@ -90,11 +93,7 @@ fn main() {
     // The posted key must match the requirement: grave accepts the full
     // completion, Tab accepts the next word. Posting Tab for "full" would now
     // resolve to a word accept under the keycode-driven binding.
-    let (accept_keycode, accept_key_label): (u16, &str) = if requirement == "full" {
-        (KEYCODE_GRAVE, "GRAVE")
-    } else {
-        (KeyCode::TAB, "TAB")
-    };
+    let (accept_keycode, accept_key_label, option_down) = key_to_post_for_requirement(&requirement);
     if let Some(delay) = env::var("COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
@@ -102,7 +101,7 @@ fn main() {
     {
         thread::spawn(move || {
             thread::sleep(delay);
-            match post_accept_key(accept_keycode) {
+            match post_accept_key(accept_keycode, option_down) {
                 Ok(()) => println!("POSTED_{accept_key_label}"),
                 Err(err) => eprintln!("POST_KEY_ERROR {err}"),
             }
@@ -114,29 +113,108 @@ fn main() {
         thread::sleep(Duration::from_millis(50));
     }
 
-    let actions = actions.lock().expect("actions").clone();
-    println!("SUMMARY actions={actions:?}");
+    let controls = controls.lock().expect("controls").clone();
+    println!("SUMMARY controls={controls:?}");
 
-    let accepted = match requirement.as_str() {
-        "inactive" => actions.is_empty(),
-        "full" => actions.contains(&AcceptAction::Full),
-        "word" => actions.contains(&AcceptAction::Word),
-        "delayed-hide" => actions.is_empty(),
-        _ => false,
-    };
+    let accepted = controls_satisfy_requirement(&requirement, &controls);
     if !accepted {
         process::exit(1);
     }
 }
 
-fn post_accept_key(keycode: u16) -> Result<(), String> {
+fn key_to_post_for_requirement(requirement: &str) -> (u16, &'static str, bool) {
+    match requirement {
+        "full" => (KEYCODE_GRAVE, "GRAVE", false),
+        "escape" => (KEYCODE_ESCAPE, "ESCAPE", false),
+        "option-tab" => (KeyCode::TAB, "OPTION_TAB", true),
+        "cycle" => (KEYCODE_DOWN, "DOWN", false),
+        _ => (KeyCode::TAB, "TAB", false),
+    }
+}
+
+fn controls_satisfy_requirement(requirement: &str, controls: &[TapControl]) -> bool {
+    match requirement {
+        "inactive" | "delayed-hide" | "option-tab" => controls.is_empty(),
+        "full" => controls.contains(&TapControl::Accept(AcceptAction::Full)),
+        "word" => controls.contains(&TapControl::Accept(AcceptAction::Word)),
+        "escape" => controls.contains(&TapControl::Dismiss),
+        "cycle" => controls.contains(&TapControl::Cycle),
+        _ => false,
+    }
+}
+
+fn post_accept_key(keycode: u16, option_down: bool) -> Result<(), String> {
     let source = CGEventSource::new(CGEventSourceStateID::Private)
         .map_err(|_| "failed to create CGEventSource".to_string())?;
     let key_down = CGEvent::new_keyboard_event(source.clone(), keycode, true)
         .map_err(|_| "failed to create key-down event".to_string())?;
     let key_up = CGEvent::new_keyboard_event(source, keycode, false)
         .map_err(|_| "failed to create key-up event".to_string())?;
+    if option_down {
+        key_down.set_flags(CGEventFlags::CGEventFlagAlternate);
+        key_up.set_flags(CGEventFlags::CGEventFlagAlternate);
+    }
     key_down.post(CGEventTapLocation::HID);
     key_up.post(CGEventTapLocation::HID);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_to_post_matches_accept_contract() {
+        assert_eq!(
+            key_to_post_for_requirement("full"),
+            (KEYCODE_GRAVE, "GRAVE", false)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("word"),
+            (KeyCode::TAB, "TAB", false)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("option-tab"),
+            (KeyCode::TAB, "OPTION_TAB", true)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("escape"),
+            (KEYCODE_ESCAPE, "ESCAPE", false)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("cycle"),
+            (KEYCODE_DOWN, "DOWN", false)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("inactive"),
+            (KeyCode::TAB, "TAB", false)
+        );
+    }
+
+    #[test]
+    fn controls_satisfy_only_the_requested_behavior() {
+        assert!(controls_satisfy_requirement(
+            "full",
+            &[TapControl::Accept(AcceptAction::Full)]
+        ));
+        assert!(!controls_satisfy_requirement(
+            "full",
+            &[TapControl::Accept(AcceptAction::Word)]
+        ));
+        assert!(controls_satisfy_requirement(
+            "word",
+            &[TapControl::Accept(AcceptAction::Word)]
+        ));
+        assert!(controls_satisfy_requirement(
+            "escape",
+            &[TapControl::Dismiss]
+        ));
+        assert!(controls_satisfy_requirement("cycle", &[TapControl::Cycle]));
+        assert!(controls_satisfy_requirement("option-tab", &[]));
+        assert!(!controls_satisfy_requirement(
+            "option-tab",
+            &[TapControl::Accept(AcceptAction::Word)]
+        ));
+        assert!(!controls_satisfy_requirement("unknown", &[]));
+    }
 }

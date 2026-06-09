@@ -27,6 +27,10 @@ fn truncate_chars(s: &str, max: usize) -> &str {
     }
 }
 
+fn instruction_block_text(s: &str) -> String {
+    truncate_chars(s, MAX_INSTRUCTION_CHARS).replace(INSTRUCTION_FENCE, "\" \" \"")
+}
+
 /// Personalization strength: a 6-stop slider from `Off` to `Max`. Only the
 /// endpoints are labelled in the UI; the intermediate stops scale how forcefully
 /// the custom instructions steer the completion.
@@ -175,7 +179,7 @@ impl PersonalizationProfile {
             out.push_str(":\n");
             out.push_str(INSTRUCTION_FENCE);
             out.push('\n');
-            out.push_str(truncate_chars(&instructions, MAX_INSTRUCTION_CHARS));
+            out.push_str(&instruction_block_text(&instructions));
             out.push('\n');
             out.push_str(INSTRUCTION_FENCE);
             out.push('\n');
@@ -244,6 +248,32 @@ mod tests {
         assert_ne!(gentle, max);
         assert!(max.contains("Strictly"));
         assert!(!gentle.contains("Strictly"));
+    }
+
+    #[test]
+    fn strength_stops_are_monotonic_full_reach_and_roundtrip() {
+        // The slider is a strictly-increasing 6-stop scale 0..=5 with no tier cap
+        // (§6 / §16: full reach for every user). Pin the ordering contract and the
+        // tick↔stop round-trip so an intermediate stop can't silently reorder.
+        let indices: Vec<u8> = Strength::STOPS.iter().map(|s| s.stop()).collect();
+        assert_eq!(indices, vec![0, 1, 2, 3, 4, 5]);
+        for (i, stop) in Strength::STOPS.iter().enumerate() {
+            assert_eq!(Strength::from_stop(i as u8), *stop);
+            assert_eq!(stop.stop() as usize, i);
+        }
+        // Every stop above Off yields a non-empty, distinct directive (the steer
+        // is observable and never collapses two stops to the same forcefulness).
+        let directives: Vec<&str> = Strength::STOPS
+            .iter()
+            .filter(|s| **s != Strength::Off)
+            .map(|s| s.directive())
+            .collect();
+        assert!(directives.iter().all(|d| !d.is_empty()));
+        for i in 0..directives.len() {
+            for j in (i + 1)..directives.len() {
+                assert_ne!(directives[i], directives[j]);
+            }
+        }
     }
 
     #[test]
@@ -358,6 +388,20 @@ mod tests {
             preamble.matches(INSTRUCTION_FENCE).count() >= 2,
             "instructions wrapped in an open+close fence: {preamble:?}"
         );
+    }
+
+    #[test]
+    fn embedded_instruction_fences_are_neutralized() {
+        let mut p = profile();
+        p.global_instructions = "Prefer \"\"\" break out \"\"\" wording.".into();
+        let preamble = p.build_preamble(None, None);
+
+        assert_eq!(
+            preamble.matches(INSTRUCTION_FENCE).count(),
+            2,
+            "only the wrapper fences should remain: {preamble:?}"
+        );
+        assert!(preamble.contains("\" \" \" break out \" \" \""));
     }
 
     #[test]

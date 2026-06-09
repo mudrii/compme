@@ -85,6 +85,42 @@ impl Prefs {
     pub fn is_snoozed(&self, now_ms: u64) -> bool {
         self.snooze_until_ms.is_some_and(|until| now_ms < until)
     }
+
+    /// Apply a validated web-driven-config override (design spec §8/§16). The
+    /// command has already passed `webconfig`'s strict fail-closed parsing, so
+    /// this only maps the reversible action onto the policy store:
+    /// - App enable is a full "allow": it sets the per-app `enabled` policy on
+    ///   AND clears any hard-block exclude, so `Enable` is a true inverse of
+    ///   `Exclude`/`Disable` (otherwise a deep-link enable would silently no-op
+    ///   on an excluded app, since `excluded_apps` short-circuits `should_suggest`).
+    /// - App disable sets the per-app `enabled` policy off (soft).
+    /// - App exclude/include adds to / removes from the hard-block app set.
+    /// - Domain has no per-domain policy struct, so enable/include un-excludes
+    ///   the domain and disable/exclude adds it to the domain hard-block set.
+    pub fn apply_override(&mut self, command: &webconfig::OverrideCommand) {
+        use webconfig::{OverrideAction::*, Scope};
+        match (&command.scope, command.action) {
+            (Scope::App(app), Enable) => {
+                self.excluded_apps.remove(app);
+                self.per_app.entry(app.clone()).or_default().enabled = Some(true);
+            }
+            (Scope::App(app), Disable) => {
+                self.per_app.entry(app.clone()).or_default().enabled = Some(false);
+            }
+            (Scope::App(app), Exclude) => {
+                self.excluded_apps.insert(app.clone());
+            }
+            (Scope::App(app), Include) => {
+                self.excluded_apps.remove(app);
+            }
+            (Scope::Domain(domain), Disable | Exclude) => {
+                self.excluded_domains.insert(domain.clone());
+            }
+            (Scope::Domain(domain), Enable | Include) => {
+                self.excluded_domains.remove(domain);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +131,114 @@ mod tests {
     fn default_allows_suggestions() {
         let p = Prefs::default();
         assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1000));
+    }
+
+    /// Parse a deep link and apply it — the end-to-end web-config path (§16).
+    fn apply(prefs: &mut Prefs, url: &str) {
+        let cmd = webconfig::parse_deep_link(url).expect("valid deep link");
+        prefs.apply_override(&cmd);
+    }
+
+    #[test]
+    fn web_override_disables_then_re_enables_an_app() {
+        let mut p = Prefs::default();
+        apply(
+            &mut p,
+            "complete-me://setOverride?app=com.foo.bar&enabled=false",
+        );
+        assert!(!p.should_suggest(Some("com.foo.bar"), None, 0));
+        apply(
+            &mut p,
+            "complete-me://setOverride?app=com.foo.bar&enabled=true",
+        );
+        assert!(p.should_suggest(Some("com.foo.bar"), None, 0));
+    }
+
+    #[test]
+    fn web_override_excludes_then_includes_an_app() {
+        let mut p = Prefs::default();
+        apply(
+            &mut p,
+            "complete-me://setOverride?app=com.foo.bar&excluded=true",
+        );
+        assert!(p.excluded_apps.contains("com.foo.bar"));
+        assert!(!p.should_suggest(Some("com.foo.bar"), None, 0));
+        apply(
+            &mut p,
+            "complete-me://setOverride?app=com.foo.bar&excluded=false",
+        );
+        assert!(!p.excluded_apps.contains("com.foo.bar"));
+        assert!(p.should_suggest(Some("com.foo.bar"), None, 0));
+    }
+
+    #[test]
+    fn web_override_excludes_then_includes_a_domain() {
+        let mut p = Prefs::default();
+        apply(
+            &mut p,
+            "complete-me://setOverride?domain=docs.google.com&excluded=true",
+        );
+        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("docs.google.com"), 0));
+        // Domain enable un-excludes (no per-domain policy struct exists).
+        apply(
+            &mut p,
+            "complete-me://setOverride?domain=docs.google.com&enabled=true",
+        );
+        assert!(p.should_suggest(Some("com.apple.Safari"), Some("docs.google.com"), 0));
+    }
+
+    #[test]
+    fn web_override_app_enable_clears_a_prior_exclude() {
+        // Enable must be a true allow: an excluded app becomes suggestable again
+        // (excluded_apps short-circuits should_suggest, so a bare per-app enable
+        // would otherwise silently no-op).
+        let mut p = Prefs::default();
+        p.excluded_apps.insert("com.foo.bar".into());
+        apply(
+            &mut p,
+            "complete-me://setOverride?app=com.foo.bar&enabled=true",
+        );
+        assert!(!p.excluded_apps.contains("com.foo.bar"));
+        assert_eq!(p.per_app["com.foo.bar"].enabled, Some(true));
+        assert!(p.should_suggest(Some("com.foo.bar"), None, 0));
+    }
+
+    #[test]
+    fn web_override_disable_sets_explicit_per_app_state() {
+        let mut p = Prefs::default();
+        apply(
+            &mut p,
+            "complete-me://setOverride?app=com.foo.bar&enabled=false",
+        );
+        assert_eq!(p.per_app["com.foo.bar"].enabled, Some(false));
+    }
+
+    #[test]
+    fn web_override_domain_disable_excludes_and_include_unexcludes() {
+        let mut p = Prefs::default();
+        // The other half of the domain matrix: enabled=false → exclude.
+        apply(
+            &mut p,
+            "complete-me://setOverride?domain=evil.example&enabled=false",
+        );
+        assert!(p.excluded_domains.contains("evil.example"));
+        // excluded=false → include (un-exclude).
+        apply(
+            &mut p,
+            "complete-me://setOverride?domain=evil.example&excluded=false",
+        );
+        assert!(!p.excluded_domains.contains("evil.example"));
+    }
+
+    #[test]
+    fn web_override_app_include_on_unexcluded_app_is_a_harmless_noop() {
+        let mut p = Prefs::default();
+        apply(
+            &mut p,
+            "complete-me://setOverride?app=com.foo.bar&excluded=false",
+        );
+        assert!(p.excluded_apps.is_empty());
+        assert!(p.should_suggest(Some("com.foo.bar"), None, 0));
     }
 
     #[test]

@@ -103,6 +103,7 @@ pub enum InsertStrategy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyInterceptMode {
     CgEventTap,
+    CarbonHotkey,
     LowLevelHook,
     XGrabKey,
     FocusScopedInhibit,

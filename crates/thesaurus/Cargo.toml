@@ -1,8 +1,8 @@
 [package]
-name = "prefs"
+name = "thesaurus"
 version = "0.1.0"
 edition = "2021"
 license.workspace = true
 
 [dependencies]
-webconfig = { path = "../webconfig" }
+textcase = { path = "../textcase" }

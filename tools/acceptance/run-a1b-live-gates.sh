@@ -7,6 +7,7 @@ FORCE=0
 SKIP_BUILD=0
 SKIP_TEXTEDIT=0
 SKIP_E2E=0
+SELF_TEST=0
 TIMEOUT_MS=3000
 SHORT_TIMEOUT_MS=1500
 RETRIES="${A1B_RETRIES:-3}"
@@ -22,6 +23,7 @@ HIDE_AFTER_MS="${A1B_HIDE_AFTER_MS:-100}"
 passes=0
 failures=0
 skips=0
+manuals=0
 
 usage() {
   cat <<'USAGE'
@@ -37,6 +39,7 @@ Options:
   --skip-textedit        Do not run TextEdit gates. Useful when a browser or
                          popup target must stay focused.
   --skip-e2e             Do not run the end-to-end complete-me pipeline gate.
+  --self-test            Run runner classification self-tests and exit.
   --textedit-pid PID     Use this TextEdit pid instead of pgrep -x TextEdit.
   --popup-pid PID        Also run popup fallback gate against a focused writable no-rect target.
   --browser-pid PID      Also run the browser marker gate requiring marker geometry.
@@ -53,6 +56,11 @@ Popup fallback uses the repo-local AppKit fixture by default. Pass --popup-pid
 only when you intentionally want to validate a separate focused writable target
 with no usable caret geometry.
 For browser marker validation, focus a Chrome/Safari text field and pass --browser-pid.
+
+Production accept keys use transient Carbon hotkeys. macOS synthetic key posts
+(`System Events` / `CGEventPost`) do not exercise `RegisterEventHotKey` the way
+physical keypresses do, so Carbon accept/consume gates are recorded as manual
+physical-key gates rather than automated pass/fail checks.
 USAGE
 }
 
@@ -63,6 +71,7 @@ while [ "$#" -gt 0 ]; do
     --skip-build) SKIP_BUILD=1 ;;
     --skip-textedit) SKIP_TEXTEDIT=1 ;;
     --skip-e2e) SKIP_E2E=1 ;;
+    --self-test) SELF_TEST=1 ;;
     --textedit-pid)
       [ "$#" -ge 2 ] || { echo "--textedit-pid requires a pid" >&2; exit 2; }
       TEXTEDIT_PID="$2"
@@ -158,7 +167,7 @@ classify_blocker() {
   elif grep -Eq 'SecureInputEnabled|SecureInput \{ state: SecureInputEnabled \}|kCGSSessionSecureInputPID' "$log_file"; then
     echo "secure-input: global Secure Input is enabled"
   elif grep -Eq 'PermissionMissing|AXIsProcessTrusted|not trusted|failed to subscribe accept' "$log_file"; then
-    echo "permission: check Accessibility and Input Monitoring grants"
+    echo "permission: check Accessibility grant"
   elif grep -Eq 'AX text value unavailable|AX selected text range unavailable|DIAG_ERROR no field observed' "$log_file"; then
     echo "focus-target: focus an editable text field, not the app shell"
   elif grep -q 'front_app=Some("pid:' "$log_file" && pgrep -x loginwindow >/dev/null 2>&1; then
@@ -260,6 +269,15 @@ skip_gate() {
   skips=$((skips + 1))
 }
 
+manual_gate() {
+  name="$1"
+  reason="$2"
+  echo
+  echo "== $name =="
+  echo "MANUAL $name: $reason"
+  manuals=$((manuals + 1))
+}
+
 check_preflight() {
   preflight_log="$LOG_DIR/preflight.log"
   : >"$preflight_log"
@@ -294,6 +312,45 @@ check_preflight() {
   return 0
 }
 
+assert_classifies() {
+  name="$1"
+  body="$2"
+  expected="$3"
+  log_file="$self_test_dir/$name.log"
+  printf '%s\n' "$body" >"$log_file"
+  actual="$(classify_blocker "$log_file")"
+  if [ "$actual" = "$expected" ]; then
+    echo "PASS classify-$name"
+    return 0
+  fi
+  echo "FAIL classify-$name: expected '$expected' got '$actual'" >&2
+  return 1
+}
+
+run_self_tests() {
+  self_test_dir="$(mktemp -d "${TMPDIR:-/tmp}/a1b-runner-tests.XXXXXX")"
+  self_failures=0
+
+  assert_classifies "locked-screen" 'CGSSessionScreenIsLocked = Yes' \
+    "locked-screen: CGSSessionScreenIsLocked=Yes" || self_failures=$((self_failures + 1))
+  assert_classifies "secure-input" 'kCGSSessionSecureInputPID=1234' \
+    "secure-input: global Secure Input is enabled" || self_failures=$((self_failures + 1))
+  assert_classifies "permission" 'PermissionMissing("Accessibility")' \
+    "permission: check Accessibility grant" || self_failures=$((self_failures + 1))
+  assert_classifies "focus-target" 'DIAG_ERROR no field observed' \
+    "focus-target: focus an editable text field, not the app shell" || self_failures=$((self_failures + 1))
+  assert_classifies "unknown" 'some unrelated output' \
+    "unknown: see log" || self_failures=$((self_failures + 1))
+
+  rm -rf "$self_test_dir"
+  if [ "$self_failures" -gt 0 ]; then
+    echo "Self-test failures: $self_failures" >&2
+    return 1
+  fi
+  echo "Self-tests passed"
+  return 0
+}
+
 resolve_textedit_pid() {
   if [ -n "$TEXTEDIT_PID" ]; then
     return 0
@@ -318,6 +375,11 @@ require_bins() {
 
 echo "A1b live acceptance runner"
 echo "Root: $ROOT_DIR"
+
+if [ "$SELF_TEST" -eq 1 ]; then
+  run_self_tests
+  exit $?
+fi
 
 if [ "$DRY_RUN" -eq 0 ]; then
   check_preflight
@@ -367,18 +429,10 @@ else
     run_retryable_gate "textedit-insert-clipboard" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-clipboard" "$TEXTEDIT_BIN" "$TIMEOUT_MS" clipboard
     run_retryable_gate "textedit-insert-axset" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT" "$TEXTEDIT_BIN" "$TIMEOUT_MS" insert
     run_retryable_gate "caret-marker-textedit-any" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$MARKER_BIN" "$SHORT_TIMEOUT_MS" any
-    run_retryable_gate "accept-insert-full" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" COMPLETE_ME_ACCEPTANCE_FULL_TEXT="$INSERT_TEXT-accept-full" "$ACCEPT_INSERT_BIN" "$TIMEOUT_MS" full
-    run_retryable_gate "accept-insert-word" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" COMPLETE_ME_ACCEPTANCE_WORD_TEXT="$INSERT_TEXT-accept-word" "$ACCEPT_INSERT_BIN" "$TIMEOUT_MS" word
-    if [ "$SKIP_E2E" -eq 1 ]; then
-      skip_gate "e2e-complete-me-pipeline" "--skip-e2e"
-      skip_gate "e2e-complete-me-word-remainder" "--skip-e2e"
-    elif [ "$DRY_RUN" -eq 0 ] && [ ! -x "$COMPLETE_ME_BIN" ]; then
-      skip_gate "e2e-complete-me-pipeline" "complete-me not built (drop --skip-build or run: cargo build -p app)"
-      skip_gate "e2e-complete-me-word-remainder" "complete-me not built (drop --skip-build or run: cargo build -p app)"
-    else
-      run_gate "e2e-complete-me-pipeline" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_BIN="$COMPLETE_ME_BIN" "$E2E_SCRIPT"
-      run_gate "e2e-complete-me-word-remainder" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_BIN="$COMPLETE_ME_BIN" COMPLETE_ME_E2E_ACCEPT=word "$E2E_SCRIPT"
-    fi
+    manual_gate "accept-insert-full" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+    manual_gate "accept-insert-word" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+    manual_gate "e2e-complete-me-pipeline" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+    manual_gate "e2e-complete-me-word-remainder" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
   fi
 fi
 
@@ -394,15 +448,18 @@ else
   run_gate "popup-fallback-fixture" "$POPUP_FIXTURE_BIN" "$SHORT_TIMEOUT_MS"
 fi
 
-run_gate "accept-tap-inactive" env COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" inactive
-run_gate "accept-tap-full" env COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" full
-run_gate "accept-tap-word" env COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" word
-run_gate "accept-tap-delayed-hide" env COMPLETE_ME_ACCEPTANCE_HIDE_AFTER_MS="$HIDE_AFTER_MS" COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" delayed-hide
+manual_gate "accept-tap-inactive" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+manual_gate "accept-tap-full" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+manual_gate "accept-tap-word" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+manual_gate "accept-tap-escape" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+manual_gate "accept-tap-option-tab" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+manual_gate "accept-tap-cycle" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+manual_gate "accept-tap-delayed-hide" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
 
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
 
 echo
-echo "Summary: pass=$passes fail=$failures skip=$skips logs=$LOG_DIR"
+echo "Summary: pass=$passes fail=$failures skip=$skips manual=$manuals logs=$LOG_DIR"
 if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi

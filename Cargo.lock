@@ -76,12 +76,21 @@ dependencies = [
  "core-foundation",
  "engine",
  "libc",
+ "memory",
  "model_client",
  "personalization",
  "platform",
  "platform_macos",
  "prefs",
  "redaction",
+ "stats",
+]
+
+[[package]]
+name = "autocorrect"
+version = "0.1.0"
+dependencies = [
+ "textcase",
 ]
 
 [[package]]
@@ -268,6 +277,10 @@ name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+
+[[package]]
+name = "emoji"
+version = "0.1.0"
 
 [[package]]
 name = "encoding_rs"
@@ -777,6 +790,9 @@ dependencies = [
 [[package]]
 name = "prefs"
 version = "0.1.0"
+dependencies = [
+ "webconfig",
+]
 
 [[package]]
 name = "prettyplease"
@@ -909,6 +925,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
+name = "stats"
+version = "0.1.0"
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -923,6 +943,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "textcase"
+version = "0.1.0"
+
+[[package]]
+name = "thesaurus"
+version = "0.1.0"
+dependencies = [
+ "textcase",
 ]
 
 [[package]]
@@ -1041,6 +1072,10 @@ checksum = "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
 dependencies = [
  "wit-bindgen",
 ]
+
+[[package]]
+name = "webconfig"
+version = "0.1.0"
 
 [[package]]
 name = "winapi-util"

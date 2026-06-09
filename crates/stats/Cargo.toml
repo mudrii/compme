@@ -1,8 +1,5 @@
 [package]
-name = "prefs"
+name = "stats"
 version = "0.1.0"
 edition = "2021"
 license.workspace = true
-
-[dependencies]
-webconfig = { path = "../webconfig" }

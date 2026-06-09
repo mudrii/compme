@@ -27,16 +27,12 @@ use accessibility_sys::{
 use core_foundation::base::{CFRange, CFRelease, CFRetain, CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
-use core_foundation::mach_port::CFMachPortRef;
 use core_foundation::runloop::{
     kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopSource,
 };
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::display::CGDisplay;
-use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventType, CallbackResult, EventField, KeyCode,
-};
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField, KeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use objc2::rc::Retained;
@@ -89,6 +85,28 @@ const KEYCODE_ESCAPE: i64 = 53;
 const KEYCODE_DOWN: i64 = 125;
 const SYNTHETIC_EVENT_TAG: i64 = 0x636d706c746d65;
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(1000);
+const K_EVENT_CLASS_KEYBOARD: OSType = u32::from_be_bytes(*b"keyb");
+const K_EVENT_HOTKEY_PRESSED: u32 = 5;
+const K_EVENT_PARAM_DIRECT_OBJECT: OSType = u32::from_be_bytes(*b"----");
+const TYPE_EVENT_HOTKEY_ID: OSType = u32::from_be_bytes(*b"hkid");
+const HOTKEY_SIGNATURE: OSType = u32::from_be_bytes(*b"cmAK");
+const CARBON_HOTKEY_TAB: u32 = 1;
+const CARBON_HOTKEY_GRAVE: u32 = 2;
+const CARBON_HOTKEY_ESCAPE: u32 = 3;
+const CARBON_HOTKEY_DOWN: u32 = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EventHotKeyID {
+    signature: OSType,
+    id: u32,
+}
+
+#[repr(C)]
+struct EventTypeSpec {
+    event_class: OSType,
+    event_kind: u32,
+}
 
 type Job = Box<dyn FnOnce() -> Box<dyn Any + Send> + Send + 'static>;
 type WorkerResource = Box<dyn Any + 'static>;
@@ -115,12 +133,48 @@ type AcceptTapInstallerFn = dyn Fn(AcceptTapKind, Arc<AcceptTapHandler>) -> Resu
     + Send
     + Sync
     + 'static;
+type OSStatus = i32;
+type OSType = u32;
+type EventTargetRef = *mut c_void;
+type EventHotKeyRef = *mut c_void;
+type EventHandlerRef = *mut c_void;
+type EventHandlerCallRef = *mut c_void;
+type EventRef = *mut c_void;
+type EventHandlerUPP = extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
 
 static SECURE_INPUT_QUERY_LOCK: Mutex<()> = Mutex::new(());
 
 #[link(name = "Carbon", kind = "framework")]
 extern "C" {
     fn IsSecureEventInputEnabled() -> c_uchar;
+    fn GetApplicationEventTarget() -> EventTargetRef;
+    fn RegisterEventHotKey(
+        in_hot_key_code: u32,
+        in_hot_key_modifiers: u32,
+        in_hot_key_id: EventHotKeyID,
+        in_target: EventTargetRef,
+        in_options: u32,
+        out_ref: *mut EventHotKeyRef,
+    ) -> OSStatus;
+    fn UnregisterEventHotKey(in_hot_key: EventHotKeyRef) -> OSStatus;
+    fn InstallEventHandler(
+        in_target: EventTargetRef,
+        in_handler: EventHandlerUPP,
+        in_num_types: u32,
+        in_list: *const EventTypeSpec,
+        in_user_data: *mut c_void,
+        out_ref: *mut EventHandlerRef,
+    ) -> OSStatus;
+    fn RemoveEventHandler(in_handler_ref: EventHandlerRef) -> OSStatus;
+    fn GetEventParameter(
+        in_event: EventRef,
+        in_name: OSType,
+        in_desired_type: OSType,
+        out_actual_type: *mut OSType,
+        in_buffer_size: usize,
+        out_actual_size: *mut usize,
+        out_data: *mut c_void,
+    ) -> OSStatus;
 }
 
 // Linked so the Vision OCR classes (VNImageRequestHandler / VNRecognizeTextRequest)
@@ -130,7 +184,6 @@ extern "C" {}
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
-    fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
     /// Whether this process already has Screen Recording permission (no prompt).
     fn CGPreflightScreenCaptureAccess() -> bool;
     /// Request Screen Recording permission, firing the system prompt if needed.
@@ -424,8 +477,19 @@ impl AcceptTapController {
             Some(AcceptAction::Full)
         } else {
             None
-        })?;
+        })
+    }
 
+    fn set_accept_action(&self, action: Option<AcceptAction>) -> Result<(), PlatformError> {
+        {
+            let mut accept_action =
+                self.accept_action
+                    .lock()
+                    .map_err(|_| PlatformError::CannotComplete {
+                        reason: "accept action lock poisoned".into(),
+                    })?;
+            *accept_action = action;
+        }
         let mut consumer_tap =
             self.consumer_tap
                 .lock()
@@ -433,7 +497,7 @@ impl AcceptTapController {
                     reason: "accept tap controller lock poisoned".into(),
                 })?;
 
-        match (visible, consumer_tap.is_some()) {
+        match (action.is_some(), consumer_tap.is_some()) {
             (true, false) => {
                 let handler = accept_consumer_tap_handler(
                     Arc::clone(&self.active),
@@ -449,17 +513,6 @@ impl AcceptTapController {
             _ => {}
         }
 
-        Ok(())
-    }
-
-    fn set_accept_action(&self, action: Option<AcceptAction>) -> Result<(), PlatformError> {
-        let mut accept_action =
-            self.accept_action
-                .lock()
-                .map_err(|_| PlatformError::CannotComplete {
-                    reason: "accept action lock poisoned".into(),
-                })?;
-        *accept_action = action;
         Ok(())
     }
 
@@ -1422,12 +1475,13 @@ pub fn request_screen_recording_permission() -> bool {
     unsafe { CGRequestScreenCaptureAccess() }
 }
 
-/// Screen-aware context (A2 §16): capture the main display and OCR it locally
+/// Screen-aware context (A2 §16): capture the display containing the focused
+/// caret when available (falling back to the main display) and OCR it locally
 /// with Vision (`VNRecognizeTextRequest`), returning up to `max_chars` of
 /// recognized on-screen text. Returns `None` when Screen Recording is not
 /// granted, capture fails, or nothing is recognized — so the caller degrades to
 /// field-only context ("works without it"). Local-only; no network, no storage.
-pub fn screen_context_text(max_chars: usize) -> Option<String> {
+pub fn screen_context_text(caret_rect: Option<ScreenRect>, max_chars: usize) -> Option<String> {
     if max_chars == 0 || !screen_recording_permission() {
         return None;
     }
@@ -1437,7 +1491,10 @@ pub fn screen_context_text(max_chars: usize) -> Option<String> {
     // scope returns. The handler/request are owned (+1 from alloc/init / new); the
     // captured CGImage is +1 from `CGDisplayCreateImage` and released below.
     unsafe {
-        let image_ref = CGDisplayCreateImage(CGMainDisplayID());
+        let display_id = caret_rect
+            .and_then(display_id_containing_rect)
+            .unwrap_or_else(|| CGMainDisplayID());
+        let image_ref = CGDisplayCreateImage(display_id);
         if image_ref.is_null() {
             return None;
         }
@@ -1445,6 +1502,23 @@ pub fn screen_context_text(max_chars: usize) -> Option<String> {
         CFRelease(image_ref as CFTypeRef);
         result
     }
+}
+
+fn display_id_containing_rect(rect: ScreenRect) -> Option<u32> {
+    let ids = CGDisplay::active_displays().ok()?;
+    ids.into_iter().find(|id| {
+        let bounds = CGDisplay::new(*id).bounds();
+        rect_center_is_inside_bounds(rect, bounds)
+    })
+}
+
+fn rect_center_is_inside_bounds(rect: ScreenRect, bounds: CGRect) -> bool {
+    let center_x = rect.x + rect.w / 2.0;
+    let center_y = rect.y + rect.h / 2.0;
+    center_x >= bounds.origin.x
+        && center_x <= bounds.origin.x + bounds.size.width
+        && center_y >= bounds.origin.y
+        && center_y <= bounds.origin.y + bounds.size.height
 }
 
 /// Run Vision text recognition over a captured `CGImageRef`. Split out so the
@@ -1827,6 +1901,113 @@ fn accept_consumer_tap_handler(
     })
 }
 
+/// The accept binding a physical key maps to (design spec §16 accept-key
+/// reconfiguration).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcceptBinding {
+    Word,
+    Full,
+    Dismiss,
+    Cycle,
+}
+
+/// Configurable map from macOS keycode → accept binding. The default matches
+/// Cotypist (Tab→next-word, grave/key-above-Tab→full, Esc→dismiss, Down→cycle);
+/// users may rebind the two accept keys (word/full). Pure + validated; the
+/// `accept_tap_decision` and Carbon registration both consult it, so a rebind is
+/// honored everywhere from one source of truth.
+///
+/// Public so the app's config layer can build a rebound map from
+/// `COMPLETE_ME_ACCEPT_WORD_KEY`/`_FULL_KEY`. Threading a *configured* (non-
+/// default) map through the live tap/registration is the remaining wiring step
+/// (the decision/registration currently use [`AcceptKeymap::default`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AcceptKeymap {
+    word: i64,
+    full: i64,
+    dismiss: i64,
+    cycle: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeymapError {
+    /// Two bindings would share the same keycode.
+    Collision(i64),
+    /// A keycode was negative (macOS virtual keycodes are non-negative).
+    InvalidKeycode(i64),
+}
+
+impl Default for AcceptKeymap {
+    fn default() -> Self {
+        Self {
+            word: KEYCODE_TAB,
+            full: KEYCODE_GRAVE,
+            dismiss: KEYCODE_ESCAPE,
+            cycle: KEYCODE_DOWN,
+        }
+    }
+}
+
+impl AcceptKeymap {
+    /// The binding for a keycode, or `None` if the key is unbound.
+    pub fn binding_for(&self, keycode: i64) -> Option<AcceptBinding> {
+        if keycode == self.word {
+            Some(AcceptBinding::Word)
+        } else if keycode == self.full {
+            Some(AcceptBinding::Full)
+        } else if keycode == self.dismiss {
+            Some(AcceptBinding::Dismiss)
+        } else if keycode == self.cycle {
+            Some(AcceptBinding::Cycle)
+        } else {
+            None
+        }
+    }
+
+    /// The Carbon `(hotkey-id, keycode)` pairs to register for this keymap.
+    pub fn carbon_bindings(&self) -> [(u32, i64); 4] {
+        [
+            (CARBON_HOTKEY_TAB, self.word),
+            (CARBON_HOTKEY_GRAVE, self.full),
+            (CARBON_HOTKEY_ESCAPE, self.dismiss),
+            (CARBON_HOTKEY_DOWN, self.cycle),
+        ]
+    }
+
+    /// The keycode a registered Carbon hotkey id resolves to under this keymap —
+    /// the inverse of [`AcceptKeymap::carbon_bindings`], used to translate a fired
+    /// hotkey back into the keycode the decision logic expects.
+    pub fn keycode_for_hotkey_id(&self, id: u32) -> Option<i64> {
+        self.carbon_bindings()
+            .iter()
+            .find(|(hid, _)| *hid == id)
+            .map(|&(_, keycode)| keycode)
+    }
+
+    /// Rebind the two accept keys (word/full) by keycode; `None` keeps the
+    /// default for that key. Dismiss (Esc) and cycle (Down) are fixed. Fails if a
+    /// keycode is negative, or if any two of the four bindings would collide.
+    pub fn from_accept_keys(word: Option<i64>, full: Option<i64>) -> Result<Self, KeymapError> {
+        let map = Self {
+            word: word.unwrap_or(KEYCODE_TAB),
+            full: full.unwrap_or(KEYCODE_GRAVE),
+            ..Self::default()
+        };
+        let keys = [map.word, map.full, map.dismiss, map.cycle];
+        if let Some(&bad) = keys.iter().find(|&&k| k < 0) {
+            return Err(KeymapError::InvalidKeycode(bad));
+        }
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                if keys[i] == keys[j] {
+                    return Err(KeymapError::Collision(keys[i]));
+                }
+            }
+        }
+        Ok(map)
+    }
+}
+
 fn accept_tap_decision(
     kind: AcceptTapKind,
     event: AcceptTapEvent,
@@ -1846,32 +2027,64 @@ fn accept_tap_decision(
         && action.is_some()
     {
         // Cotypist binding: the keycode picks the action, not the armed value.
-        // Tab accepts the next word (partial); the grave/backtick key above Tab
-        // accepts the whole completion; Esc dismisses + suppresses the field.
-        // `action.is_some()` is only the armed/visible gate.
-        match event.keycode {
-            // Option+Tab is the per-app Tab bypass: pass a literal Tab through
-            // (no Word accept, no swallow).
-            KEYCODE_TAB if event.option_down => return AcceptTapDecision::Keep,
-            KEYCODE_TAB => return AcceptTapDecision::Drop(AcceptAction::Word),
-            KEYCODE_GRAVE => return AcceptTapDecision::Drop(AcceptAction::Full),
-            KEYCODE_ESCAPE => return AcceptTapDecision::DropDismiss,
-            KEYCODE_DOWN => return AcceptTapDecision::DropCycle,
-            _ => {}
+        // The word key accepts the next word (partial); the full key (default the
+        // grave/backtick above Tab) accepts the whole completion; Esc dismisses +
+        // suppresses the field. `action.is_some()` is only the armed/visible gate.
+        // Driven by `AcceptKeymap` so a rebind is honored from one source.
+        match accept_keymap().binding_for(event.keycode) {
+            // Option+<word key> is the per-app Tab bypass: pass it through
+            // literally (no Word accept, no swallow).
+            Some(AcceptBinding::Word) if event.option_down => return AcceptTapDecision::Keep,
+            Some(AcceptBinding::Word) => return AcceptTapDecision::Drop(AcceptAction::Word),
+            Some(AcceptBinding::Full) => return AcceptTapDecision::Drop(AcceptAction::Full),
+            Some(AcceptBinding::Dismiss) => return AcceptTapDecision::DropDismiss,
+            Some(AcceptBinding::Cycle) => return AcceptTapDecision::DropCycle,
+            None => {}
         }
     }
 
     AcceptTapDecision::Keep
 }
 
+struct CarbonHotkeyContext {
+    handler: Arc<AcceptTapHandler>,
+}
+
 struct WorkerAcceptTapResource {
-    _tap: CGEventTap<'static>,
-    source: CFRunLoopSource,
+    handler_ref: Option<EventHandlerRef>,
+    hotkeys: Vec<EventHotKeyRef>,
+    context: *mut CarbonHotkeyContext,
 }
 
 impl Drop for WorkerAcceptTapResource {
+    // KNOWN RACE (R2-5, narrow, GUI-bound): this teardown runs on the AX worker
+    // thread, while `carbon_accept_hotkey_handler` fires on the main thread (the
+    // application event target's run loop). If the user physically presses an
+    // accept key in the instant between `RemoveEventHandler` returning and
+    // `Box::from_raw(self.context)` freeing the context, the handler could deref
+    // freed memory. The correct fix is structural — install the Carbon handler
+    // ONCE for the process lifetime and only arm/disarm the hotkey
+    // *registrations* per suggestion (so `context` is never freed during
+    // operation) — and is deferred because it cannot be unit-validated without
+    // physical key input. Until then the window is single-keystroke-wide on a
+    // disarm and has not been observed.
     fn drop(&mut self) {
-        CFRunLoop::get_current().remove_source(&self.source, unsafe { kCFRunLoopCommonModes });
+        for hotkey in self.hotkeys.drain(..) {
+            unsafe {
+                let _ = UnregisterEventHotKey(hotkey);
+            }
+        }
+        if let Some(handler_ref) = self.handler_ref.take() {
+            unsafe {
+                let _ = RemoveEventHandler(handler_ref);
+            }
+        }
+        if !self.context.is_null() {
+            unsafe {
+                drop(Box::from_raw(self.context));
+            }
+            self.context = ptr::null_mut();
+        }
     }
 }
 
@@ -1879,64 +2092,142 @@ fn install_worker_accept_tap_resource(
     kind: AcceptTapKind,
     handler: Arc<AcceptTapHandler>,
 ) -> Result<WorkerResource, PlatformError> {
-    let options = match kind {
-        AcceptTapKind::Observer => CGEventTapOptions::ListenOnly,
-        AcceptTapKind::Consumer => CGEventTapOptions::Default,
-    };
-    let tap_ref = Arc::new(AtomicU64::new(0));
-    let tap_ref_for_callback = Arc::clone(&tap_ref);
-    let tap = CGEventTap::new(
-        CGEventTapLocation::Session,
-        CGEventTapPlacement::HeadInsertEventTap,
-        options,
-        vec![CGEventType::KeyDown],
-        move |_proxy, event_type, event| {
-            let event = AcceptTapEvent {
-                event_type,
-                keycode: event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
-                source_user_data: event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA),
-                option_down: event
-                    .get_flags()
-                    .contains(CGEventFlags::CGEventFlagAlternate),
-            };
-            match handler(event) {
-                AcceptTapDecision::Keep => CallbackResult::Keep,
-                AcceptTapDecision::Drop(_)
-                | AcceptTapDecision::DropDismiss
-                | AcceptTapDecision::DropCycle => CallbackResult::Drop,
-                AcceptTapDecision::ReenableAndKeep => {
-                    reenable_event_tap(tap_ref_for_callback.load(Ordering::Acquire));
-                    CallbackResult::Keep
-                }
-            }
-        },
-    )
-    .map_err(|_| PlatformError::PermissionMissing {
-        permission: "Input Monitoring".into(),
-    })?;
-    tap_ref.store(
-        tap.mach_port().as_concrete_TypeRef() as usize as u64,
-        Ordering::Release,
-    );
-    let source =
-        tap.mach_port()
-            .create_runloop_source(0)
-            .map_err(|_| PlatformError::CannotComplete {
-                reason: "failed to create CGEventTap run-loop source".into(),
-            })?;
-    CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopCommonModes });
-    tap.enable();
+    if kind == AcceptTapKind::Observer {
+        return Ok(Box::new(()) as WorkerResource);
+    }
 
-    Ok(Box::new(WorkerAcceptTapResource { _tap: tap, source }) as WorkerResource)
+    install_carbon_accept_hotkeys(handler)
 }
 
-fn reenable_event_tap(tap_ref: u64) {
-    if tap_ref == 0 {
-        return;
+fn install_carbon_accept_hotkeys(
+    handler: Arc<AcceptTapHandler>,
+) -> Result<WorkerResource, PlatformError> {
+    let target = unsafe { GetApplicationEventTarget() };
+    let context = Box::into_raw(Box::new(CarbonHotkeyContext { handler }));
+    let spec = EventTypeSpec {
+        event_class: K_EVENT_CLASS_KEYBOARD,
+        event_kind: K_EVENT_HOTKEY_PRESSED,
+    };
+    let mut handler_ref: EventHandlerRef = ptr::null_mut();
+    let handler_status = unsafe {
+        InstallEventHandler(
+            target,
+            carbon_accept_hotkey_handler,
+            1,
+            &spec,
+            context.cast::<c_void>(),
+            &mut handler_ref,
+        )
+    };
+    if handler_status != 0 {
+        unsafe {
+            drop(Box::from_raw(context));
+        }
+        return Err(PlatformError::CannotComplete {
+            reason: format!("failed to install Carbon accept-key handler: status {handler_status}"),
+        });
     }
+
+    let mut resource = WorkerAcceptTapResource {
+        handler_ref: Some(handler_ref),
+        hotkeys: Vec::new(),
+        context,
+    };
+    for (id, keycode) in carbon_accept_hotkey_bindings() {
+        resource.register_hotkey(target, id, keycode)?;
+    }
+
+    Ok(Box::new(resource) as WorkerResource)
+}
+
+/// The active accept keymap. Single indirection so that when a *configured*
+/// (rebound) keymap is threaded from the app layer, the decision logic, Carbon
+/// registration, and the handler's id→keycode inverse all switch together.
+fn accept_keymap() -> AcceptKeymap {
+    AcceptKeymap::default()
+}
+
+fn carbon_accept_hotkey_bindings() -> [(u32, i64); 4] {
+    accept_keymap().carbon_bindings()
+}
+
+impl WorkerAcceptTapResource {
+    fn register_hotkey(
+        &mut self,
+        target: EventTargetRef,
+        id: u32,
+        keycode: i64,
+    ) -> Result<(), PlatformError> {
+        let keycode = u32::try_from(keycode).map_err(|_| PlatformError::CannotComplete {
+            reason: format!("invalid Carbon accept-key keycode: {keycode}"),
+        })?;
+        let mut hotkey_ref: EventHotKeyRef = ptr::null_mut();
+        let status = unsafe {
+            RegisterEventHotKey(
+                keycode,
+                0,
+                EventHotKeyID {
+                    signature: HOTKEY_SIGNATURE,
+                    id,
+                },
+                target,
+                0,
+                &mut hotkey_ref,
+            )
+        };
+        if status != 0 {
+            return Err(PlatformError::CannotComplete {
+                reason: format!("failed to register Carbon accept-key {keycode}: status {status}"),
+            });
+        }
+        self.hotkeys.push(hotkey_ref);
+        Ok(())
+    }
+}
+
+extern "C" fn carbon_accept_hotkey_handler(
+    _call: EventHandlerCallRef,
+    event: EventRef,
+    user: *mut c_void,
+) -> OSStatus {
+    if user.is_null() {
+        return 0;
+    }
+    let mut hotkey_id = EventHotKeyID {
+        signature: 0,
+        id: 0,
+    };
     unsafe {
-        CGEventTapEnable(tap_ref as usize as CFMachPortRef, true);
+        let _ = GetEventParameter(
+            event,
+            K_EVENT_PARAM_DIRECT_OBJECT,
+            TYPE_EVENT_HOTKEY_ID,
+            ptr::null_mut(),
+            std::mem::size_of::<EventHotKeyID>(),
+            ptr::null_mut(),
+            (&mut hotkey_id as *mut EventHotKeyID).cast::<c_void>(),
+        );
     }
+    if hotkey_id.signature != HOTKEY_SIGNATURE {
+        return 0;
+    }
+    let Some(keycode) = carbon_hotkey_keycode(hotkey_id.id) else {
+        return 0;
+    };
+    let context = unsafe { &*(user.cast::<CarbonHotkeyContext>()) };
+    let _ = (context.handler)(AcceptTapEvent {
+        event_type: CGEventType::KeyDown,
+        keycode,
+        source_user_data: 0,
+        option_down: false,
+    });
+    0
+}
+
+fn carbon_hotkey_keycode(id: u32) -> Option<i64> {
+    // Derive from the same keymap that drives registration, so the handler's
+    // id→keycode translation can never diverge from what was registered.
+    accept_keymap().keycode_for_hotkey_id(id)
 }
 
 fn field_has_secure_text_subrole(field: &FieldHandle) -> bool {
@@ -3199,7 +3490,7 @@ fn editable_capabilities(
             .as_deref()
             .is_some_and(|role| role == "AXTextArea"),
         insert_strategy,
-        accept_intercept: KeyInterceptMode::CgEventTap,
+        accept_intercept: KeyInterceptMode::CarbonHotkey,
         overlay_at_caret: if selected_range_settable && has_caret_rect {
             OverlayPlacement::NativePanel
         } else {
@@ -5208,6 +5499,30 @@ mod tests {
     }
 
     #[test]
+    fn rect_center_inside_bounds_drives_screen_capture_display_choice() {
+        let bounds = CGRect::new(&CGPoint::new(100.0, -50.0), &CGSize::new(800.0, 600.0));
+
+        assert!(rect_center_is_inside_bounds(
+            ScreenRect {
+                x: 120.0,
+                y: 10.0,
+                w: 10.0,
+                h: 20.0
+            },
+            bounds
+        ));
+        assert!(!rect_center_is_inside_bounds(
+            ScreenRect {
+                x: 20.0,
+                y: 10.0,
+                w: 10.0,
+                h: 20.0
+            },
+            bounds
+        ));
+    }
+
+    #[test]
     fn resolve_retained_observer_event_without_element_is_pointer_only() {
         // No retained AX element → pointer-only identity, no rect, no FFI deref.
         let event = resolve_retained_observer_event(
@@ -5339,7 +5654,7 @@ mod tests {
         assert_eq!(caps.toolkit, Toolkit::AppKit);
         assert!(caps.multiline);
         assert_eq!(caps.insert_strategy, InsertStrategy::AxSet);
-        assert_eq!(caps.accept_intercept, KeyInterceptMode::CgEventTap);
+        assert_eq!(caps.accept_intercept, KeyInterceptMode::CarbonHotkey);
         assert_eq!(caps.overlay_at_caret, OverlayPlacement::NativePanel);
         assert!(caps.coords_global_screen);
         assert_eq!(platform::ux_mode(&caps), platform::UxMode::Inline);
@@ -6053,6 +6368,168 @@ mod tests {
     }
 
     #[test]
+    fn carbon_hotkey_ids_map_to_accept_keys() {
+        assert_eq!(carbon_hotkey_keycode(CARBON_HOTKEY_TAB), Some(KEYCODE_TAB));
+        assert_eq!(
+            carbon_hotkey_keycode(CARBON_HOTKEY_GRAVE),
+            Some(KEYCODE_GRAVE)
+        );
+        assert_eq!(
+            carbon_hotkey_keycode(CARBON_HOTKEY_ESCAPE),
+            Some(KEYCODE_ESCAPE)
+        );
+        assert_eq!(
+            carbon_hotkey_keycode(CARBON_HOTKEY_DOWN),
+            Some(KEYCODE_DOWN)
+        );
+        assert_eq!(carbon_hotkey_keycode(99), None);
+    }
+
+    #[test]
+    fn carbon_hotkey_installer_registers_every_accept_binding() {
+        let bindings = carbon_accept_hotkey_bindings();
+
+        assert_eq!(
+            bindings,
+            [
+                (CARBON_HOTKEY_TAB, KEYCODE_TAB),
+                (CARBON_HOTKEY_GRAVE, KEYCODE_GRAVE),
+                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE),
+                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN),
+            ]
+        );
+        for (id, keycode) in bindings {
+            assert_eq!(carbon_hotkey_keycode(id), Some(keycode));
+        }
+    }
+
+    #[test]
+    fn default_keymap_matches_the_cotypist_bindings() {
+        let map = AcceptKeymap::default();
+        assert_eq!(map.binding_for(KEYCODE_TAB), Some(AcceptBinding::Word));
+        assert_eq!(map.binding_for(KEYCODE_GRAVE), Some(AcceptBinding::Full));
+        assert_eq!(
+            map.binding_for(KEYCODE_ESCAPE),
+            Some(AcceptBinding::Dismiss)
+        );
+        assert_eq!(map.binding_for(KEYCODE_DOWN), Some(AcceptBinding::Cycle));
+        assert_eq!(map.binding_for(999), None);
+        // Default Carbon registration content (explicit, not a self-comparison).
+        assert_eq!(
+            map.carbon_bindings(),
+            [
+                (CARBON_HOTKEY_TAB, KEYCODE_TAB),
+                (CARBON_HOTKEY_GRAVE, KEYCODE_GRAVE),
+                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE),
+                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN),
+            ]
+        );
+        // The id→keycode inverse used by the Carbon handler agrees with it.
+        assert_eq!(
+            map.keycode_for_hotkey_id(CARBON_HOTKEY_TAB),
+            Some(KEYCODE_TAB)
+        );
+        assert_eq!(
+            map.keycode_for_hotkey_id(CARBON_HOTKEY_DOWN),
+            Some(KEYCODE_DOWN)
+        );
+        assert_eq!(map.keycode_for_hotkey_id(999), None);
+    }
+
+    #[test]
+    fn rebinding_accept_keys_changes_the_mapping() {
+        // Rebind word→F1 (122) and full→F2 (120); Esc/Down stay fixed.
+        let map = AcceptKeymap::from_accept_keys(Some(122), Some(120)).expect("valid rebind");
+        assert_eq!(map.binding_for(122), Some(AcceptBinding::Word));
+        assert_eq!(map.binding_for(120), Some(AcceptBinding::Full));
+        assert_eq!(map.binding_for(KEYCODE_TAB), None); // old word key no longer bound
+        assert_eq!(
+            map.binding_for(KEYCODE_ESCAPE),
+            Some(AcceptBinding::Dismiss)
+        );
+        // Carbon registration reflects the rebind.
+        assert_eq!(
+            map.carbon_bindings(),
+            [
+                (CARBON_HOTKEY_TAB, 122),
+                (CARBON_HOTKEY_GRAVE, 120),
+                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE),
+                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN),
+            ]
+        );
+    }
+
+    #[test]
+    fn from_accept_keys_defaults_unset_keys() {
+        let map = AcceptKeymap::from_accept_keys(None, None).unwrap();
+        assert_eq!(map, AcceptKeymap::default());
+        // Setting only the full key keeps the default word key.
+        let only_full = AcceptKeymap::from_accept_keys(None, Some(122)).unwrap();
+        assert_eq!(only_full.word, KEYCODE_TAB);
+        assert_eq!(only_full.full, 122);
+        // Setting only the word key keeps the default full key.
+        let only_word = AcceptKeymap::from_accept_keys(Some(122), None).unwrap();
+        assert_eq!(only_word.word, 122);
+        assert_eq!(only_word.full, KEYCODE_GRAVE);
+    }
+
+    #[test]
+    fn from_accept_keys_rejects_every_colliding_pair() {
+        // word == full.
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(Some(122), Some(122)),
+            Err(KeymapError::Collision(122))
+        );
+        // word collides with the fixed Esc (dismiss) and Down (cycle) bindings.
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(Some(KEYCODE_ESCAPE), None),
+            Err(KeymapError::Collision(KEYCODE_ESCAPE))
+        );
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(Some(KEYCODE_DOWN), None),
+            Err(KeymapError::Collision(KEYCODE_DOWN))
+        );
+        // full collides with the fixed Esc (dismiss) and Down (cycle) bindings.
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(None, Some(KEYCODE_ESCAPE)),
+            Err(KeymapError::Collision(KEYCODE_ESCAPE))
+        );
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(None, Some(KEYCODE_DOWN)),
+            Err(KeymapError::Collision(KEYCODE_DOWN))
+        );
+    }
+
+    #[test]
+    fn identity_rebind_is_ok_but_same_key_collides() {
+        // Explicitly rebinding to the current defaults is a valid no-op.
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(Some(KEYCODE_TAB), Some(KEYCODE_GRAVE)),
+            Ok(AcceptKeymap::default())
+        );
+        // Binding both accept keys to the same physical key (even the legacy Tab)
+        // collides.
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(Some(KEYCODE_TAB), Some(KEYCODE_TAB)),
+            Err(KeymapError::Collision(KEYCODE_TAB))
+        );
+    }
+
+    #[test]
+    fn from_accept_keys_rejects_negative_keycodes() {
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(Some(-1), None),
+            Err(KeymapError::InvalidKeycode(-1))
+        );
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(None, Some(-99)),
+            Err(KeymapError::InvalidKeycode(-99))
+        );
+        // Zero is a valid macOS keycode (the 'a' key), so it is accepted.
+        assert!(AcceptKeymap::from_accept_keys(Some(0), None).is_ok());
+    }
+
+    #[test]
     fn accept_tap_decision_ignores_self_generated_tab() {
         let event = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, SYNTHETIC_EVENT_TAG);
 
@@ -6060,6 +6537,90 @@ mod tests {
             accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
             AcceptTapDecision::Keep
         );
+    }
+
+    /// Build a bare `AcceptTapController` for the epoch-guard tests. The
+    /// installer/callback are no-op fakes (the guard never invokes them); only
+    /// `teardown_generation`, `active`, `consumer_tap`, and `accept_action`
+    /// matter to the teardown-race logic under test.
+    fn test_accept_controller(
+        generation: u64,
+        action: Option<AcceptAction>,
+        active: bool,
+        consumer_armed: bool,
+    ) -> AcceptTapController {
+        let (callback_tx, _rx) = mpsc::channel::<CallbackMessage>();
+        let installer: Arc<AcceptTapInstallerFn> =
+            Arc::new(|_kind, _handler| Ok(AcceptTapResource::new("test-tap")));
+        let callback: AcceptCallback = Arc::new(|_| {});
+        AcceptTapController {
+            installer,
+            callback_tx,
+            callback,
+            active: Arc::new(AtomicBool::new(active)),
+            consumer_tap: Mutex::new(consumer_armed.then(|| AcceptTapResource::new("test-tap"))),
+            accept_action: Arc::new(Mutex::new(action)),
+            teardown_generation: AtomicU64::new(generation),
+        }
+    }
+
+    #[test]
+    fn clear_accept_action_only_clears_when_generation_matches() {
+        // The epoch guard protects against a stale delayed-teardown clearing an
+        // accept action that was re-armed under a newer generation.
+        let controller = test_accept_controller(5, Some(AcceptAction::Word), true, false);
+
+        // Stale generation → must NOT clear (a newer arm superseded it).
+        controller.clear_accept_action_if_generation(3).unwrap();
+        assert_eq!(
+            *controller.accept_action.lock().unwrap(),
+            Some(AcceptAction::Word)
+        );
+
+        // Matching generation → clears.
+        controller.clear_accept_action_if_generation(5).unwrap();
+        assert_eq!(*controller.accept_action.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn deactivate_if_generation_respects_epoch_and_active_flag() {
+        // Stale generation: nothing torn down.
+        let stale = test_accept_controller(5, Some(AcceptAction::Full), true, true);
+        stale.deactivate_if_generation(3).unwrap();
+        assert!(stale.consumer_tap.lock().unwrap().is_some());
+        assert_eq!(
+            *stale.accept_action.lock().unwrap(),
+            Some(AcceptAction::Full)
+        );
+
+        // Matching generation: consumer tap dropped AND accept action cleared.
+        let matched = test_accept_controller(5, Some(AcceptAction::Full), true, true);
+        matched.deactivate_if_generation(5).unwrap();
+        assert!(matched.consumer_tap.lock().unwrap().is_none());
+        assert_eq!(*matched.accept_action.lock().unwrap(), None);
+
+        // Inactive controller: early return, no teardown even on a matching gen.
+        let inactive = test_accept_controller(5, Some(AcceptAction::Full), false, true);
+        inactive.deactivate_if_generation(5).unwrap();
+        assert!(inactive.consumer_tap.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn hide_suggestion_after_zero_delay_deactivates_synchronously_and_bumps_generation() {
+        // A zero delay runs the teardown inline (no spawned thread): it advances
+        // the epoch and deactivates at that new generation.
+        let controller = Arc::new(test_accept_controller(
+            0,
+            Some(AcceptAction::Word),
+            true,
+            true,
+        ));
+        AcceptTapController::hide_suggestion_after(Arc::clone(&controller), Duration::ZERO)
+            .unwrap();
+
+        assert_eq!(controller.teardown_generation.load(Ordering::Acquire), 1);
+        assert!(controller.consumer_tap.lock().unwrap().is_none());
+        assert_eq!(*controller.accept_action.lock().unwrap(), None);
     }
 
     #[test]
