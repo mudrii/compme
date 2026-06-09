@@ -169,7 +169,6 @@ extern "C" {
         in_user_data: *mut c_void,
         out_ref: *mut EventHandlerRef,
     ) -> OSStatus;
-    fn RemoveEventHandler(in_handler_ref: EventHandlerRef) -> OSStatus;
     fn GetEventParameter(
         in_event: EventRef,
         in_name: OSType,
@@ -2240,45 +2239,86 @@ fn accept_tap_decision(
     AcceptTapDecision::Keep
 }
 
-struct CarbonHotkeyContext {
-    handler: Arc<AcceptTapHandler>,
+/// The swappable target of the process-lifetime Carbon hotkey handler (R2-5
+/// structural fix). The Carbon `InstallEventHandler` callback reads THIS slot
+/// on every fire instead of a per-arm heap context, so there is no freed
+/// memory for a late keypress to dereference: the slot is a `static`, and the
+/// `Arc` cloned out of it keeps the engine handler alive for the duration of
+/// the call even if a disarm lands concurrently.
+///
+/// Arms are tagged with a unique id; `disarm` only clears a slot still owned
+/// by that id, so an out-of-order `drop` of a previous resource can never
+/// silently disarm a newer one.
+struct CarbonHandlerSlot {
+    slot: Mutex<Option<(u64, Arc<AcceptTapHandler>)>>,
 }
 
+impl CarbonHandlerSlot {
+    const fn new() -> Self {
+        Self {
+            slot: Mutex::new(None),
+        }
+    }
+
+    // All three methods recover a poisoned lock (`into_inner`): `current` runs
+    // inside an extern "C" Carbon callback where a panic would unwind across
+    // FFI (abort/UB), and the slot state (a plain Option) cannot be left
+    // logically inconsistent by whatever panic poisoned it.
+    fn arm(&self, id: u64, handler: Arc<AcceptTapHandler>) {
+        *self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((id, handler));
+    }
+
+    fn disarm(&self, id: u64) {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.as_ref().is_some_and(|(owner, _)| *owner == id) {
+            *slot = None;
+        }
+    }
+
+    fn current(&self) -> Option<Arc<AcceptTapHandler>> {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|(_, handler)| Arc::clone(handler))
+    }
+}
+
+/// The single process-lifetime slot the Carbon handler reads (R2-5).
+static CARBON_HANDLER_SLOT: CarbonHandlerSlot = CarbonHandlerSlot::new();
+/// Unique arm ids for [`CARBON_HANDLER_SLOT`] ownership checks.
+static CARBON_ARM_ID: AtomicU64 = AtomicU64::new(1);
+/// Whether the process-lifetime Carbon handler is installed. A plain flag
+/// (not `Once`) so a failed install can be retried on the next arm.
+static CARBON_HANDLER_INSTALLED: Mutex<bool> = Mutex::new(false);
+
 struct WorkerAcceptTapResource {
-    handler_ref: Option<EventHandlerRef>,
     hotkeys: Vec<EventHotKeyRef>,
-    context: *mut CarbonHotkeyContext,
+    /// This resource's arm id; `drop` disarms only a slot it still owns.
+    arm_id: u64,
 }
 
 impl Drop for WorkerAcceptTapResource {
-    // KNOWN RACE (R2-5, narrow, GUI-bound): this teardown runs on the AX worker
-    // thread, while `carbon_accept_hotkey_handler` fires on the main thread (the
-    // application event target's run loop). If the user physically presses an
-    // accept key in the instant between `RemoveEventHandler` returning and
-    // `Box::from_raw(self.context)` freeing the context, the handler could deref
-    // freed memory. The correct fix is structural — install the Carbon handler
-    // ONCE for the process lifetime and only arm/disarm the hotkey
-    // *registrations* per suggestion (so `context` is never freed during
-    // operation) — and is deferred because it cannot be unit-validated without
-    // physical key input. Until then the window is single-keystroke-wide on a
-    // disarm and has not been observed.
+    // R2-5 RESOLVED structurally: the Carbon handler is installed once for the
+    // process lifetime and reads the static CARBON_HANDLER_SLOT, so teardown
+    // only unregisters the hotkey registrations and disarms the slot. A press
+    // racing this drop either sees the slot already empty (no-op) or clones
+    // the Arc out first and completes against a still-alive handler — there
+    // is no freed context to dereference anymore. (Live hotkey re-validation
+    // after this restructure is the remaining human step.)
     fn drop(&mut self) {
         for hotkey in self.hotkeys.drain(..) {
             unsafe {
                 let _ = UnregisterEventHotKey(hotkey);
             }
         }
-        if let Some(handler_ref) = self.handler_ref.take() {
-            unsafe {
-                let _ = RemoveEventHandler(handler_ref);
-            }
-        }
-        if !self.context.is_null() {
-            unsafe {
-                drop(Box::from_raw(self.context));
-            }
-            self.context = ptr::null_mut();
-        }
+        CARBON_HANDLER_SLOT.disarm(self.arm_id);
     }
 }
 
@@ -2297,7 +2337,35 @@ fn install_carbon_accept_hotkeys(
     handler: Arc<AcceptTapHandler>,
 ) -> Result<WorkerResource, PlatformError> {
     let target = unsafe { GetApplicationEventTarget() };
-    let context = Box::into_raw(Box::new(CarbonHotkeyContext { handler }));
+    ensure_carbon_handler_installed(target)?;
+
+    let arm_id = CARBON_ARM_ID.fetch_add(1, Ordering::Relaxed);
+    CARBON_HANDLER_SLOT.arm(arm_id, handler);
+
+    let mut resource = WorkerAcceptTapResource {
+        hotkeys: Vec::new(),
+        arm_id,
+    };
+    for (id, keycode) in carbon_accept_hotkey_bindings() {
+        resource.register_hotkey(target, id, keycode)?;
+    }
+
+    Ok(Box::new(resource) as WorkerResource)
+}
+
+/// Install the Carbon hotkey handler ONCE for the process lifetime (R2-5).
+/// The handler reads [`CARBON_HANDLER_SLOT`] — no per-arm context pointer —
+/// and the `EventHandlerRef` is intentionally never removed (it must outlive
+/// every possible late keypress). A failed install leaves the flag false so
+/// the next arm retries.
+fn ensure_carbon_handler_installed(target: EventTargetRef) -> Result<(), PlatformError> {
+    // Held across the InstallEventHandler FFI call below — safe because the
+    // Carbon callback never touches THIS lock (it reads CARBON_HANDLER_SLOT).
+    // Do not add CARBON_HANDLER_SLOT operations inside this critical section.
+    let mut installed = CARBON_HANDLER_INSTALLED.lock().unwrap();
+    if *installed {
+        return Ok(());
+    }
     let spec = EventTypeSpec {
         event_class: K_EVENT_CLASS_KEYBOARD,
         event_kind: K_EVENT_HOTKEY_PRESSED,
@@ -2309,29 +2377,17 @@ fn install_carbon_accept_hotkeys(
             carbon_accept_hotkey_handler,
             1,
             &spec,
-            context.cast::<c_void>(),
+            ptr::null_mut(),
             &mut handler_ref,
         )
     };
     if handler_status != 0 {
-        unsafe {
-            drop(Box::from_raw(context));
-        }
         return Err(PlatformError::CannotComplete {
             reason: format!("failed to install Carbon accept-key handler: status {handler_status}"),
         });
     }
-
-    let mut resource = WorkerAcceptTapResource {
-        handler_ref: Some(handler_ref),
-        hotkeys: Vec::new(),
-        context,
-    };
-    for (id, keycode) in carbon_accept_hotkey_bindings() {
-        resource.register_hotkey(target, id, keycode)?;
-    }
-
-    Ok(Box::new(resource) as WorkerResource)
+    *installed = true;
+    Ok(())
 }
 
 /// The active accept keymap. Single indirection so that when a *configured*
@@ -2388,11 +2444,8 @@ impl WorkerAcceptTapResource {
 extern "C" fn carbon_accept_hotkey_handler(
     _call: EventHandlerCallRef,
     event: EventRef,
-    user: *mut c_void,
+    _user: *mut c_void,
 ) -> OSStatus {
-    if user.is_null() {
-        return 0;
-    }
     let mut hotkey_id = EventHotKeyID {
         signature: 0,
         id: 0,
@@ -2423,8 +2476,13 @@ extern "C" fn carbon_accept_hotkey_handler(
     let Some(keycode) = carbon_hotkey_keycode(hotkey_id.id) else {
         return 0;
     };
-    let context = unsafe { &*(user.cast::<CarbonHotkeyContext>()) };
-    let _ = (context.handler)(AcceptTapEvent {
+    // R2-5: read the process-lifetime slot; the cloned Arc keeps the handler
+    // alive through this call even if a disarm lands concurrently. Slot empty
+    // (disarmed between dispatch and here) → drop the event safely.
+    let Some(handler) = CARBON_HANDLER_SLOT.current() else {
+        return 0;
+    };
+    let _ = handler(AcceptTapEvent {
         event_type: CGEventType::KeyDown,
         keycode,
         source_user_data: 0,
@@ -6280,6 +6338,72 @@ mod tests {
             Err(PlatformError::StaleField)
         );
         assert!(posted.lock().unwrap().is_empty());
+    }
+
+    fn keep_handler(log: Arc<Mutex<Vec<i64>>>) -> Arc<AcceptTapHandler> {
+        Arc::new(move |event: AcceptTapEvent| {
+            log.lock().unwrap().push(event.keycode);
+            AcceptTapDecision::Keep
+        })
+    }
+
+    fn tap_event(keycode: i64) -> AcceptTapEvent {
+        AcceptTapEvent {
+            event_type: CGEventType::KeyDown,
+            keycode,
+            source_user_data: 0,
+            option_down: false,
+        }
+    }
+
+    #[test]
+    fn carbon_slot_serves_the_armed_handler_and_clears_on_matching_disarm() {
+        let slot = CarbonHandlerSlot::new();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        assert!(slot.current().is_none(), "starts disarmed");
+
+        slot.arm(1, keep_handler(Arc::clone(&log)));
+        let handler = slot.current().expect("armed");
+        let _ = handler(tap_event(48));
+        assert_eq!(*log.lock().unwrap(), vec![48]);
+
+        slot.disarm(1);
+        assert!(slot.current().is_none(), "matching disarm clears");
+    }
+
+    #[test]
+    fn carbon_slot_stale_disarm_never_clears_a_newer_arm() {
+        // The R2-5 out-of-order guard: resource A armed (id 1), resource B
+        // arms (id 2) before A's drop runs — A's disarm must be a no-op.
+        let slot = CarbonHandlerSlot::new();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        slot.arm(1, keep_handler(Arc::clone(&log)));
+        slot.arm(2, keep_handler(Arc::clone(&log)));
+
+        slot.disarm(1);
+        assert!(
+            slot.current().is_some(),
+            "a stale disarm must not clear the newer arm"
+        );
+        slot.disarm(2);
+        assert!(slot.current().is_none());
+    }
+
+    #[test]
+    fn carbon_slot_handler_cloned_out_survives_a_concurrent_disarm() {
+        // The race R2-5 fixes: a fire that read the slot just before a disarm
+        // must complete safely — the cloned Arc keeps the handler alive.
+        let slot = CarbonHandlerSlot::new();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        slot.arm(7, keep_handler(Arc::clone(&log)));
+        let in_flight = slot.current().expect("armed");
+        slot.disarm(7);
+        let _ = in_flight(tap_event(50));
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![50],
+            "the in-flight handler must still be callable after disarm"
+        );
     }
 
     #[test]
