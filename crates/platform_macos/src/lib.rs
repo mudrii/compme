@@ -699,7 +699,19 @@ impl MacosOverlayPresenter {
 impl OverlayPresenter for MacosOverlayPresenter {
     fn show_ghost(&mut self, rect: ScreenRect, text: &str) -> Result<(), PlatformError> {
         let mtm = overlay_main_thread_marker()?;
-        let frame = overlay_frame_for_text(rect, text, primary_screen_height(mtm));
+        let primary_height = primary_screen_height(mtm);
+        let frame = overlay_frame_for_text(rect, text, primary_height);
+        if overlay_debug_enabled() {
+            // Diagnostic for live overlay-placement bugs (ghost vertical
+            // alignment): dump the AX caret rect (top-left/Y-down), the primary
+            // screen height used for the Y-flip, and the resulting Cocoa
+            // (bottom-left/Y-up) window frame. Gated by COMPLETE_ME_DEBUG.
+            eprintln!(
+                "complete-me: ghost caret_rect=(x{:.1} y{:.1} w{:.1} h{:.1}) primary_h={:.1} \
+                 overlay_frame=(x{:.1} y{:.1} w{:.1} h{:.1})",
+                rect.x, rect.y, rect.w, rect.h, primary_height, frame.x, frame.y, frame.w, frame.h
+            );
+        }
         self.last_rect = Some(rect);
         self.ensure_panel(mtm, frame, text)?;
         if let Some(panel) = &self.panel {
@@ -739,6 +751,12 @@ impl OverlayPresenter for MacosOverlayPresenter {
         }
         Ok(())
     }
+}
+
+/// True when `COMPLETE_ME_DEBUG` is set — gates verbose overlay placement
+/// diagnostics. Off by default (no env var) → zero production output.
+fn overlay_debug_enabled() -> bool {
+    std::env::var_os("COMPLETE_ME_DEBUG").is_some()
 }
 
 fn overlay_main_thread_marker() -> Result<MainThreadMarker, PlatformError> {
