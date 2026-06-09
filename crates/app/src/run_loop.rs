@@ -294,6 +294,12 @@ fn parse_gender(raw: Option<String>) -> Gender {
 /// A local emoji *replacement* for the typed left-context, when emoji completion
 /// is enabled: `Some((glyph, replace_chars))` to offer, else `None`. Pure wrapper
 /// over `emoji::suggest` behind the enable flag so the run-loop wiring is testable.
+/// True when `COMPLETE_ME_DEBUG` is set — gates verbose run-loop diagnostics
+/// (replacement decision, etc.). Off by default → zero production output.
+fn debug_enabled() -> bool {
+    std::env::var_os("COMPLETE_ME_DEBUG").is_some()
+}
+
 fn emoji_offer(left: &str, cfg: &Option<EmojiPrefs>) -> Option<(String, usize)> {
     let prefs = cfg.as_ref()?;
     let suggestion = emoji::suggest(left, prefs)?;
@@ -1002,13 +1008,30 @@ pub fn run() -> Result<(), String> {
                                     // replacements are local and need no model).
                                     let replace_app_key =
                                         resolve_app_key(field.pid, bundle_id_for_pid);
-                                    if let Some((glyph, replace_left)) = replacement_decision(
+                                    let decision = replacement_decision(
                                         &ctx.left,
                                         &config,
                                         replace_app_key.as_deref(),
                                         flags.enabled.load(Ordering::Relaxed),
                                         now_ms,
-                                    ) {
+                                    );
+                                    if debug_enabled() {
+                                        // Diagnose emoji/typo/spelling preempt vs the
+                                        // model: the left context the decision saw, the
+                                        // feature toggles, and what (if anything) it
+                                        // offered. `decision == None` while a model
+                                        // request fires for the same text = the local
+                                        // offer is not matching/gating as expected.
+                                        eprintln!(
+                                            "complete-me: replace left={:?} emoji={} \
+                                             autocorrect={} british={} decision={decision:?}",
+                                            ctx.left,
+                                            config.emoji.is_some(),
+                                            config.autocorrect,
+                                            config.british_english,
+                                        );
+                                    }
+                                    if let Some((glyph, replace_left)) = decision {
                                         // Drop the just-queued model request so it
                                         // can't supersede the emoji ghost.
                                         latest.clear();

@@ -707,8 +707,8 @@ impl OverlayPresenter for MacosOverlayPresenter {
             // screen height used for the Y-flip, and the resulting Cocoa
             // (bottom-left/Y-up) window frame. Gated by COMPLETE_ME_DEBUG.
             eprintln!(
-                "complete-me: ghost caret_rect=(x{:.1} y{:.1} w{:.1} h{:.1}) primary_h={:.1} \
-                 overlay_frame=(x{:.1} y{:.1} w{:.1} h{:.1})",
+                "complete-me: ghost text={text:?} caret_rect=(x{:.1} y{:.1} w{:.1} h{:.1}) \
+                 primary_h={:.1} overlay_frame=(x{:.1} y{:.1} w{:.1} h{:.1})",
                 rect.x, rect.y, rect.w, rect.h, primary_height, frame.x, frame.y, frame.w, frame.h
             );
         }
