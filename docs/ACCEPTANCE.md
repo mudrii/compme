@@ -259,6 +259,17 @@ apps); the suppression spot-checks (excluded app / snoozed / terminal / tray
 off) were not separately exercised live — the gating is shared with model
 completions and unit-tested (`suggestion_gates_apply_to_local_replacements_too`).
 
+**RE-VALIDATED 2026-06-10 (post R2-5 restructure)** — after the Carbon handler
+moved to a process-lifetime install with a swappable handler slot (one
+`InstallEventHandler` per process, per-arm hotkey registrations only), a live
+TextEdit run re-confirmed the full path: all four hotkeys registered per arm
+cycle (Tab 48 / grave 50 / Esc 53 / Down 125), physical Tab dispatched
+(`carbon hotkey fired signature=0x636d414b id=1`) and accepted (`accept Word`,
+twice), emoji ghost offered/placed, and per-app exclusion held
+(`com.mitchellh.ghostty … suggestions disabled`). The restructure did not
+regress hotkey dispatch. Not exercised in that run: snooze click, keychain key
+creation, toggle-relaunch persistence (separate residuals).
+
 ## Example Acceptance Binaries
 
 The live runner uses `platform_macos` examples:
