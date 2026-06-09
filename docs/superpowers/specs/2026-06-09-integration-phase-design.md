@@ -1,12 +1,16 @@
 # Integration Phase — Wiring the Pure Cores into the Live Loop
 
 **Date:** 2026-06-09
-**Status:** **Steps 1–5 built (uncommitted working tree), unit/build-verified.**
-Emoji + autocorrect + British-English are wired through the replacement pipeline,
-default-off, gated, race-free, AxSet-only. The remaining hop is **step 6: the live
-macOS §16 accept gate** (and the SyntheticKeys/Clipboard backspace-synthesis
-residual) — GUI/FFI-bound, needs live validation, not loop-cyclable. Per-step
-status markers are inline below.
+**Status:** **COMPLETE — steps 1–6 done. Step 6 (live macOS §16 accept gate)
+PASSED 2026-06-10** (physical Tab accept in TextEdit: `:smile`→😄 with deletion,
+`teh`→`the`; `color`→`colour` offered + placed; Esc-dismiss verified — see
+ACCEPTANCE.md, A2 Local-Replacement Live Gate). The live validation also
+surfaced and fixed four real integration bugs: Carbon hotkey events were never
+dispatched (no NSApp event drain — `pump_app_events`), `SharedAdapter` silently
+dropped `replace_left` (trait default removed, method now required), and the
+overlay placement needed live calibration (AX caret rect bottom edge = line
+top; box/font hug the line). Remaining residual: SyntheticKeys/Clipboard
+backspace-synthesis (non-AxSet apps).
 
 ## Why this exists
 
@@ -84,8 +88,9 @@ to record `replace_left` for the wiring test.
   helper to widen the splice range left by the typed token's UTF-16 width before
   the existing `splice_text_at_utf16_range`. `extend_range_left` is unit-tested
   (ASCII end-to-end, astral/UTF-16, zero=unchanged, clamp). `replace_left == 0` is
-  byte-identical (the 164 existing platform_macos tests pass unchanged). Only the
-  live AX deletion behavior in real apps remains to confirm (step 6).
+  byte-identical (the 164 existing platform_macos tests pass unchanged). **Live AX
+  deletion CONFIRMED (step 6, 2026-06-10):** the typed token is physically deleted
+  and replaced in TextEdit.
 - **`platform_macos` honoring — SyntheticKeys / Clipboard:** cannot read-modify-write
   a range. `insert_impl` falls these back to a plain append-only insert
   (`replace_left` ignored), so they would leave the typed token in place. Honoring
@@ -120,13 +125,15 @@ the corresponding crate in the `TextChanged` replacement-detection step.
    helpers are unit-tested. Preempt is safe: `on_text_changed` advances the snapshot
    (stale prior requests discarded) and the current model request is cleared, so no
    completion can supersede the emoji ghost.
-6. **Live validation (manual, §16):** physical-key accept of an emoji/typo/UK-spelling
-   replacement in TextEdit (AxSet) deletes the typed token and inserts the
-   replacement; then SyntheticKeys/Clipboard backspace-synthesis + live re-run.
+6. **[DONE, 2026-06-10] Live validation (manual, §16):** physical-key accept of an
+   emoji/typo replacement in TextEdit (AxSet) deletes the typed token and inserts
+   the replacement — PASSED (`:smile`→😄, `teh`→`the`; `colour` offered + placed;
+   Esc-dismiss verified; ACCEPTANCE.md). SyntheticKeys/Clipboard
+   backspace-synthesis remains the follow-on residual.
 
-Steps 1–5 are unit/build-verified; step 6 is the live §16 gate (mirrors the existing
-Carbon-accept manual gates). First consumer to wire: **emoji** (simplest, already
-returns `replace_chars`), then autocorrect/localize/thesaurus reuse the same path.
+Steps 1–6 are done; step 6 passed live (mirrors the existing Carbon-accept manual
+gates). Emoji was the first consumer wired; autocorrect/localize reuse the same
+path (thesaurus deferred — selection-trigger design).
 
 ## Pre-wiring checklist (from the step 1–3 code review)
 

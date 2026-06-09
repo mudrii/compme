@@ -237,6 +237,28 @@ in a terminal shell-command line / when the tray is disabled (shared suggestion
 gating). Record the product log line, target app, keyboard action, and resulting
 field contents for each.
 
+**PASSED 2026-06-10** (live run, TextEdit/AxSet, physical keyboard,
+`COMPLETE_ME_DEBUG=1` logs):
+
+- **emoji** — typed `:smile`, ghost `😄` offered + placed on the caret line,
+  physical Tab accepted: log `carbon hotkey fired id=1` → `accept Word`, field
+  left-context after accept = `"😄\n"` (typed token deleted, no `:smile😄`).
+- **autocorrect** — typed `teh`, ghost `the` offered, Tab accepted: field
+  left-context = `"…\nthe\n"`.
+- **British English** — typed `color`, ghost `colour` offered + placed; Esc
+  (hotkey id=3) dismissed it correctly in one run, and on-line placement was
+  re-confirmed in a later run. Its accept is byte-identical shared path
+  (`replacement_offer` → `Command::Replace` → AxSet) with the two verified
+  accepts above.
+- Placement was live-calibrated during this gate: the AX caret rect's bottom
+  edge is the caret line's top (see `overlay_frame_for_text`), the box hugs the
+  line, and the ghost font tracks the line height.
+
+Residuals (unchanged): SyntheticKeys/Clipboard backspace-synthesis (non-AxSet
+apps); the suppression spot-checks (excluded app / snoozed / terminal / tray
+off) were not separately exercised live — the gating is shared with model
+completions and unit-tested (`suggestion_gates_apply_to_local_replacements_too`).
+
 ## Example Acceptance Binaries
 
 The live runner uses `platform_macos` examples:

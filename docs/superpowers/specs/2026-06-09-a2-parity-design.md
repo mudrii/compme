@@ -94,9 +94,11 @@ British English, RTL, multilingual, and mid-line completion
 ## Next phase — integration (design committed)
 
 Pure parity is exhausted. **Emoji + autocorrect + British-English (`localize`) are
-now WIRED** through the `replace_left` replacement pipeline (run_loop detection →
-`offer_replacement` → `Command::Replace` → AxSet honoring), default-off, gated,
-race-free; only the live §16 accept gate (step 6) remains for them. The remaining
+WIRED and LIVE-VALIDATED** through the `replace_left` replacement pipeline
+(run_loop detection → `offer_replacement` → `Command::Replace` → AxSet honoring),
+default-off, gated, race-free; **the live §16 accept gate (step 6) PASSED
+2026-06-10** (physical Tab accept with deletion in TextEdit — ACCEPTANCE.md, A2
+Local-Replacement Live Gate). The remaining
 *unwired* cores are **`thesaurus`** (deliberate compme superset, selection-triggered
 — a different trigger design) and **`webconfig`** (A3 URL-scheme reception +
 signing). Full resolved design — `replace_left`
