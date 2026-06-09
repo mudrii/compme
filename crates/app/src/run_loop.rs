@@ -969,6 +969,7 @@ pub fn run() -> Result<(), String> {
     let mut prev_secure = false;
     let mut last_secure_poll_ms: Option<u64> = None;
     let mut last_render: Option<(crate::status::AppStatus, bool)> = None;
+    let mut last_stats_line: Option<String> = None;
     let start = Instant::now();
 
     eprintln!(
@@ -1302,6 +1303,18 @@ pub fn run() -> Result<(), String> {
                 }
             }
             last_render = Some((status, enabled));
+        }
+        // Menu-bar 30-day usage line (§11). The string only changes when a
+        // stat event landed or the window rolled, so the compare keeps AppKit
+        // untouched on idle heartbeats.
+        if let Some(tray) = &tray {
+            let stats_line = usage.summary_line(wall_ms);
+            if last_stats_line.as_deref() != Some(stats_line.as_str()) {
+                if let Err(err) = tray.set_stats_line(&stats_line) {
+                    eprintln!("complete-me: tray stats update failed: {err:?}");
+                }
+                last_stats_line = Some(stats_line);
+            }
         }
 
         // 5. Submit the newest pending request only when suggestions are allowed

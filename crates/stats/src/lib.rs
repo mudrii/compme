@@ -183,6 +183,23 @@ impl Stats {
     pub fn retained_len(&self) -> usize {
         self.entries.len() + self.latencies.len()
     }
+
+    /// One human-readable line for the menu bar (§11 "words completed" display):
+    /// `"{words} words · {accepted} accepted ({rate}%)"` over the 30-day window.
+    /// The rate is omitted when nothing was shown (no meaningless 0%), and a
+    /// fully idle window reads as a friendly placeholder instead of zeros.
+    pub fn summary_line(&self, now_ms: u64) -> String {
+        let counts = self.counts(now_ms);
+        let words = self.words_completed(now_ms);
+        if counts == Counts::default() && words == 0 {
+            return "No completions in the last 30 days".to_string();
+        }
+        let mut line = format!("{words} words · {} accepted", counts.accepted);
+        if let Some(rate) = self.acceptance_rate(now_ms) {
+            line.push_str(&format!(" ({:.0}%)", rate * 100.0));
+        }
+        line
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +207,43 @@ mod tests {
     use super::*;
 
     const T0: u64 = 1_000_000_000_000; // a fixed base timestamp
+
+    #[test]
+    fn summary_line_formats_words_accepts_and_rate() {
+        let mut s = Stats::new();
+        s.record(T0, Outcome::Shown);
+        s.record(T0, Outcome::Shown);
+        s.record(T0, Outcome::Shown);
+        s.record(T0, Outcome::Shown);
+        s.record(T0, Outcome::Accepted { words: 3 });
+        s.record(T0, Outcome::Accepted { words: 5 });
+        // 8 words, 2 accepted of 4 shown = 50%.
+        assert_eq!(s.summary_line(T0), "8 words · 2 accepted (50%)");
+    }
+
+    #[test]
+    fn summary_line_reads_as_placeholder_when_idle() {
+        assert_eq!(
+            Stats::new().summary_line(T0),
+            "No completions in the last 30 days"
+        );
+        // Entries older than the window roll out → placeholder again.
+        let mut s = Stats::new();
+        s.record(T0, Outcome::Accepted { words: 4 });
+        assert_eq!(
+            s.summary_line(T0 + WINDOW_MS + 1),
+            "No completions in the last 30 days"
+        );
+    }
+
+    #[test]
+    fn summary_line_omits_the_rate_when_nothing_was_shown() {
+        // Accepts without shown events (e.g. local replacements accepted via
+        // a path that never emitted Shown) must not render a bogus percent.
+        let mut s = Stats::new();
+        s.record(T0, Outcome::Accepted { words: 2 });
+        assert_eq!(s.summary_line(T0), "2 words · 1 accepted");
+    }
 
     #[test]
     fn empty_stats_are_all_zero_and_none() {

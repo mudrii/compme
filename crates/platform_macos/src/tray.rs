@@ -79,6 +79,7 @@ impl TrayTarget {
 pub struct MacosTray {
     status_item: Retained<NSStatusItem>,
     status_line_item: Retained<NSMenuItem>,
+    stats_line_item: Retained<NSMenuItem>,
     enabled_item: Retained<NSMenuItem>,
     settings_item: Retained<NSMenuItem>,
     // The menu item's `target` is a weak reference; keep the target alive here.
@@ -103,6 +104,13 @@ impl MacosTray {
         status_line_item.setTitle(&NSString::from_str("Ready"));
         status_line_item.setEnabled(false);
         menu.addItem(&status_line_item);
+
+        // 30-day usage stats line (§11 "words completed"; non-interactive).
+        let stats_line_item = NSMenuItem::new(mtm);
+        stats_line_item.setTitle(&NSString::from_str("No completions in the last 30 days"));
+        stats_line_item.setEnabled(false);
+        menu.addItem(&stats_line_item);
+
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         // Enable/disable toggle.
@@ -146,6 +154,7 @@ impl MacosTray {
         Ok(Self {
             status_item,
             status_line_item,
+            stats_line_item,
             enabled_item,
             settings_item,
             _target: target,
@@ -179,6 +188,16 @@ impl MacosTray {
             NSControlStateValueOff
         });
         self.settings_item.setHidden(!needs_accessibility);
+        Ok(())
+    }
+
+    /// Render the 30-day usage line (a precomputed string — the math lives in
+    /// the pure `stats` crate). Same main-thread contract as [`Self::set_status`].
+    pub fn set_stats_line(&self, line: &str) -> Result<(), PlatformError> {
+        MainThreadMarker::new().ok_or_else(|| PlatformError::CannotComplete {
+            reason: "tray set_stats_line must run on the main thread".into(),
+        })?;
+        self.stats_line_item.setTitle(&NSString::from_str(line));
         Ok(())
     }
 }
