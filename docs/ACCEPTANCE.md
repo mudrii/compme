@@ -213,6 +213,30 @@ requires the marker `CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and
 screen requires non-empty OCR context. The screen gate also requires Screen
 Recording permission and visible text on the focused display.
 
+## A2 Local-Replacement Live Gate (emoji / autocorrect / British English)
+
+The local-replacement pipeline (`offer_replacement` → `Command::Replace` → AxSet
+range-replace) is unit/build-verified but its physical-key accept is a **manual
+live §16 gate** (synthetic key posts don't fire the Carbon accept the way real
+input does, same boundary as the A1b accept gates).
+
+Run `complete-me` with the feature enabled, focus an **AxSet** field (e.g.
+TextEdit — the offer is gated to AxSet-capable fields; SyntheticKeys/Clipboard
+apps are a separate backspace-synthesis residual), then with a physical keyboard:
+
+- `COMPLETE_ME_EMOJI=1` — type `:smile`, accept → the `:smile` is deleted and the
+  emoji glyph (skin-tone/gender per `_SKIN_TONE`/`_GENDER`) is inserted.
+- `COMPLETE_ME_AUTOCORRECT=1` — type a known typo (e.g. `teh`), accept → replaced
+  with the correction (`the`).
+- `COMPLETE_ME_BRITISH_ENGLISH=1` — type a US-only spelling (e.g. `color`), accept
+  → replaced with the UK form (`colour`).
+
+Confirm the typed token is deleted (not left as `:smile😄`), the field value is
+correct, and that the offer is **suppressed** in an excluded app / while snoozed /
+in a terminal shell-command line / when the tray is disabled (shared suggestion
+gating). Record the product log line, target app, keyboard action, and resulting
+field contents for each.
+
 ## Example Acceptance Binaries
 
 The live runner uses `platform_macos` examples:

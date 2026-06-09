@@ -93,11 +93,13 @@ British English, RTL, multilingual, and mid-line completion
 
 ## Next phase — integration (design committed)
 
-Pure parity is exhausted. The substantive remaining work is wiring the pure cores
-(`emoji`/`autocorrect`/`localize`/`thesaurus`/`webconfig`) into the live completion
-loop, blocked on a delete-before-insert (`replace_left`) replacement primitive.
-This is GUI/FFI-bound (final hop needs live macOS validation) and should be built
-as one focused effort, not loop fragments. Full resolved design — `replace_left`
+Pure parity is exhausted. **Emoji + autocorrect + British-English (`localize`) are
+now WIRED** through the `replace_left` replacement pipeline (run_loop detection →
+`offer_replacement` → `Command::Replace` → AxSet honoring), default-off, gated,
+race-free; only the live §16 accept gate (step 6) remains for them. The remaining
+*unwired* cores are **`thesaurus`** (deliberate compme superset, selection-triggered
+— a different trigger design) and **`webconfig`** (A3 URL-scheme reception +
+signing). Full resolved design — `replace_left`
 shape, `Showing.replace_left` model, `offer_replacement` entry point, offer-vs-model
 priority, `insert_replacing` adapter contract, AxSet honoring, SyntheticKeys
 residual, build order, default-off flags — is in

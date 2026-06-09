@@ -1,10 +1,12 @@
 # Integration Phase — Wiring the Pure Cores into the Live Loop
 
 **Date:** 2026-06-09
-**Status:** Design committed; not yet built. This is the next phase after A2's pure
-features. It is **GUI/FFI-bound** — the final hop needs live macOS validation —
-so it is *not* loop-cyclable as fragments; it should be executed as one focused
-effort against this design.
+**Status:** **Steps 1–5 built (uncommitted working tree), unit/build-verified.**
+Emoji + autocorrect + British-English are wired through the replacement pipeline,
+default-off, gated, race-free, AxSet-only. The remaining hop is **step 6: the live
+macOS §16 accept gate** (and the SyntheticKeys/Clipboard backspace-synthesis
+residual) — GUI/FFI-bound, needs live validation, not loop-cyclable. Per-step
+status markers are inline below.
 
 ## Why this exists
 
