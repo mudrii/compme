@@ -69,6 +69,69 @@ pub fn load_file_map(path: &Path) -> HashMap<String, String> {
     }
 }
 
+/// Rewrite `contents` so `key` holds `value`, preserving everything else:
+/// comments, blank lines, unknown keys, and line order all survive untouched.
+/// Every line bearing `key` is rewritten (the read side is last-wins, so
+/// leaving a stale duplicate would shadow the update); a missing key is
+/// appended as a final `key=value` line.
+pub fn update_env_file_contents(contents: &str, key: &str, value: &str) -> String {
+    let mut found = false;
+    let mut lines: Vec<String> = contents
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('#') {
+                if let Some((k, _)) = trimmed.split_once('=') {
+                    if k.trim() == key {
+                        found = true;
+                        return format!("{key}={value}");
+                    }
+                }
+            }
+            line.to_string()
+        })
+        .collect();
+    if !found {
+        lines.push(format!("{key}={value}"));
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Persist one `key=value` into the config file at `path`, preserving all other
+/// content (comments, unknown keys, order). The write is atomic — a temp file
+/// in the same directory is renamed over the target — so a crash mid-write can
+/// never leave a truncated config. Parent directories are created on first use.
+///
+/// Fail-closed on read: only a MISSING file is treated as empty. Any other
+/// read error (permissions, IO) aborts the persist — rewriting a config we
+/// could not read would replace the user's whole file with one key.
+///
+/// Concurrency: callers are the single-threaded run loop, so writes never
+/// interleave. A concurrent hand-edit of the file races last-writer-wins
+/// within the microseconds between read and rename — accepted for a settings
+/// file toggled a few times a day.
+pub fn persist_setting(path: &Path, key: &str, value: &str) -> std::io::Result<()> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+    let updated = update_env_file_contents(&existing, key, value);
+
+    let dir = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "config path has no parent",
+        )
+    })?;
+    std::fs::create_dir_all(dir)?;
+    let temp = dir.join(format!(".config.env.tmp.{}", std::process::id()));
+    std::fs::write(&temp, &updated)?;
+    std::fs::rename(&temp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +176,124 @@ mod tests {
     fn skips_lines_without_equals_or_empty_key() {
         let pairs = parse_env_file("no equals here\n=novalue\nGOOD=1");
         assert_eq!(pairs, vec![("GOOD".to_string(), "1".to_string())]);
+    }
+
+    #[test]
+    fn update_replaces_the_value_in_place_preserving_everything_else() {
+        let existing = "# complete-me config\nCOMPLETE_ME_MAX_WORDS=12\n\nCOMPLETE_ME_ENABLED=true\n# trailing comment\n";
+        assert_eq!(
+            update_env_file_contents(existing, "COMPLETE_ME_ENABLED", "false"),
+            "# complete-me config\nCOMPLETE_ME_MAX_WORDS=12\n\nCOMPLETE_ME_ENABLED=false\n# trailing comment\n"
+        );
+    }
+
+    #[test]
+    fn update_appends_a_missing_key_as_a_final_line() {
+        // With and without a trailing newline on the existing contents.
+        assert_eq!(update_env_file_contents("A=1\n", "B", "2"), "A=1\nB=2\n");
+        assert_eq!(update_env_file_contents("A=1", "B", "2"), "A=1\nB=2\n");
+        assert_eq!(update_env_file_contents("", "B", "2"), "B=2\n");
+    }
+
+    #[test]
+    fn update_rewrites_every_duplicate_of_the_key() {
+        // The read side is last-wins (HashMap collect), so a stale duplicate
+        // left behind would silently shadow the update.
+        assert_eq!(
+            update_env_file_contents("K=old1\nOTHER=x\nK=old2\n", "K", "new"),
+            "K=new\nOTHER=x\nK=new\n"
+        );
+    }
+
+    #[test]
+    fn update_leaves_comments_mentioning_the_key_untouched() {
+        assert_eq!(
+            update_env_file_contents("# set K=1 to enable\nK=0\n", "K", "1"),
+            "# set K=1 to enable\nK=1\n"
+        );
+    }
+
+    #[test]
+    fn update_matches_a_key_padded_with_whitespace() {
+        // parse_env_file trims the key, so `  K  = v` IS key K on the read
+        // side; the updater must agree or the stale padded line would win.
+        assert_eq!(
+            update_env_file_contents("  K  = old\n", "K", "new"),
+            "K=new\n"
+        );
+    }
+
+    #[test]
+    fn persist_setting_creates_updates_and_survives_reload() {
+        let dir =
+            std::env::temp_dir().join(format!("complete-me-persist-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("config.env");
+
+        // Missing file + parent dirs → created with just the key.
+        persist_setting(&path, "COMPLETE_ME_ENABLED", "false").expect("create");
+        assert_eq!(
+            load_file_map(&path).get("COMPLETE_ME_ENABLED"),
+            Some(&"false".to_string())
+        );
+
+        // Add unrelated content, then update: both survive, value replaced.
+        std::fs::write(
+            &path,
+            "# keep me\nCOMPLETE_ME_MAX_WORDS=12\nCOMPLETE_ME_ENABLED=false\n",
+        )
+        .expect("seed");
+        persist_setting(&path, "COMPLETE_ME_ENABLED", "true").expect("update");
+        let contents = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(
+            contents,
+            "# keep me\nCOMPLETE_ME_MAX_WORDS=12\nCOMPLETE_ME_ENABLED=true\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_normalizes_crlf_input_to_lf() {
+        // `str::lines` strips the `\r` of CRLF pairs; the rewrite joins with
+        // plain `\n`. Documented (not accidental): the parser treats both the
+        // same, so normalizing on first persist is harmless.
+        assert_eq!(
+            update_env_file_contents("K=old\r\nOTHER=x\r\n", "K", "new"),
+            "K=new\nOTHER=x\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn persist_setting_never_rewrites_a_config_it_could_not_read() {
+        // An unreadable-but-existing config must FAIL the persist, not be
+        // silently replaced by a one-line file (that would destroy every other
+        // setting the user has).
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "complete-me-unreadable-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.env");
+        std::fs::write(&path, "PRECIOUS=keep\n").expect("seed");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+
+        let result = persist_setting(&path, "COMPLETE_ME_ENABLED", "false");
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("unchmod");
+        assert!(
+            result.is_err(),
+            "an unreadable config must fail the persist"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "PRECIOUS=keep\n",
+            "the original content must survive untouched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

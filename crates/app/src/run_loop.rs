@@ -129,6 +129,9 @@ fn host_event_invalidates_pending_request(event: &HostEvent) -> bool {
 
 /// Runtime configuration, all from the environment (full config surface is P1).
 struct Config {
+    /// Global on/off at launch (`COMPLETE_ME_ENABLED`, default on). The tray
+    /// toggle flips the runtime flag and persists back to this key.
+    enabled: bool,
     acceptance_pid: Option<i32>,
     stub_completion: Option<String>,
     model_path: PathBuf,
@@ -188,6 +191,10 @@ impl Config {
     /// clamped numeric knobs) are unit-testable without touching the environment.
     fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
         Self {
+            // Global on/off (the tray-toggle state, persisted on toggle).
+            // Distinct from COMPLETE_ME_DEFAULT_ENABLED, the per-app
+            // suggestion-policy default in prefs.
+            enabled: parse_enabled_default(lookup("COMPLETE_ME_ENABLED")),
             acceptance_pid: lookup("COMPLETE_ME_ACCEPTANCE_PID")
                 .and_then(|raw| raw.parse::<i32>().ok()),
             stub_completion: lookup("COMPLETE_ME_STUB_COMPLETION").filter(|s| !s.is_empty()),
@@ -660,6 +667,11 @@ fn canonicalize_field_app(
 /// Parse a fail-safe boolean: only explicit falsy values disable; anything else
 /// (incl. unrecognized strings) keeps the safe default so a typo never silently
 /// turns the whole product off.
+///
+/// Shared by two distinct keys on purpose — `COMPLETE_ME_ENABLED` (the global
+/// tray-toggle state, persisted on toggle) and `COMPLETE_ME_DEFAULT_ENABLED`
+/// (the per-app suggestion-policy default in prefs). Both want the same
+/// fail-safe-on parse; their SEMANTICS stay separate.
 fn parse_enabled_default(raw: Option<String>) -> bool {
     match raw {
         Some(v) => !matches!(
@@ -909,7 +921,7 @@ pub fn run() -> Result<(), String> {
 
     // Shared state for the tray; flipped by menu actions, observed by this loop.
     let flags = TrayFlags {
-        enabled: Arc::new(AtomicBool::new(true)),
+        enabled: Arc::new(AtomicBool::new(config.enabled)),
         quit: Arc::new(AtomicBool::new(false)),
         open_settings: Arc::new(AtomicBool::new(false)),
     };
@@ -952,7 +964,7 @@ pub fn run() -> Result<(), String> {
     let mut latest = LatestRequest::new();
     let mut current_field: Option<FieldHandle> = None;
     let mut hinted_apps: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut prev_enabled = true;
+    let mut prev_enabled = config.enabled;
     let mut secure = false;
     let mut prev_secure = false;
     let mut last_secure_poll_ms: Option<u64> = None;
@@ -1255,6 +1267,25 @@ pub fn run() -> Result<(), String> {
         if status_drops_pending_requests(status) {
             latest.clear();
         }
+        // Persist a user enable/disable toggle (tray or SIGUSR1) so the next
+        // launch starts in the same state (A3 settings persistence). Skipped on
+        // the first iteration (prev starts equal to the configured value) and
+        // never fatal — a read-only disk only costs persistence, not operation.
+        if prev_enabled != enabled {
+            if let Some(path) = config::config_file_path() {
+                match config::persist_setting(
+                    &path,
+                    "COMPLETE_ME_ENABLED",
+                    if enabled { "true" } else { "false" },
+                ) {
+                    Ok(()) => eprintln!(
+                        "complete-me: persisted enabled={enabled} to {}",
+                        path.display()
+                    ),
+                    Err(err) => eprintln!("complete-me: could not persist enabled state: {err}"),
+                }
+            }
+        }
         prev_enabled = enabled;
         prev_secure = secure;
         // Only touch AppKit when the rendered state actually changed.
@@ -1415,6 +1446,17 @@ mod tests {
         assert!(!prefs.should_suggest(Some("com.apple.Finder"), None, 0));
         assert!(!prefs.should_suggest(Some("com.tinyspeck.slackmacgap"), None, 0));
         assert!(prefs.should_suggest(Some("com.apple.TextEdit"), None, 0));
+    }
+
+    #[test]
+    fn config_enabled_reads_complete_me_enabled_and_defaults_on() {
+        // The global tray-toggle state, persisted on toggle and read back at
+        // launch. Distinct from COMPLETE_ME_DEFAULT_ENABLED (the per-app
+        // suggestion-policy default in prefs).
+        assert!(Config::from_lookup(lookup(&[])).enabled);
+        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_ENABLED", "true")])).enabled);
+        assert!(!Config::from_lookup(lookup(&[("COMPLETE_ME_ENABLED", "false")])).enabled);
+        assert!(!Config::from_lookup(lookup(&[("COMPLETE_ME_ENABLED", "0")])).enabled);
     }
 
     #[test]
