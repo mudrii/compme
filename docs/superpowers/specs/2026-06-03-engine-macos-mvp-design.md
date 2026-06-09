@@ -465,7 +465,9 @@ A feature is not "Cotypist parity" until its gate below passes (automated where 
 **2026-06-09 test-audit status:** current code has deterministic coverage for
 prompt construction, per-request app-scoped personalization, redaction, and
 memory core behavior. §16 acceptance stays partial until settings persistence,
-Keychain-backed storage, and live before/after completion diffs are recorded.
+live keychain validation (the Keychain-backed `KeyProvider` is code-complete:
+`platform_macos::keychain`, generate-on-first-use, env key as operator
+override), and live before/after completion diffs are recorded.
 
 ### Context-source parity (A2)
 | Feature | Acceptance gate |
@@ -509,7 +511,7 @@ and onboarding copy.
 | Custom model override (`featureCustomModelOverride`) | A3 | User points at own GGUF; loads behind `LocalModel`; surfaces the model's license (ties to D14 manual-placement) |
 | Per-app display overrides (`featurePerAppFontStyleOverrides`, smart-quotes, text-mirroring, size-thresholds) | A3 | Each override persists, applies per app, and has an observable effect; size-threshold suppresses suggestions in tiny fields |
 | Labs / experimental (`featureCotypistLabsAccess`) | A3 | Labs flags are user-toggleable and surfaced; no tier gating present (all open per Project Scope) |
-| Local stats / menu-bar word count (`shouldShowCompletedWordCountInMenuBar`) | A3 | 30-day shown/accepted/dismissed/superseded + latency + words computed and displayable; menu-bar word-count toggle works. **Compute half implemented**: `crates/stats` rolling-30-day accumulator (counts, words_completed, acceptance_rate, latency avg/p95 nearest-rank; time-injected, 20 tests) wired in `app` run loop. All four outcomes now recorded live: Accepted/Dismissed from host inputs; **Shown/Superseded surfaced by `engine_core` (`StatEvent` + `take_stat_events`, with failed-placement `Shown` retraction and completion-replace supersede) and drained each loop turn**. **Latency recorded too**: the run loop times submit→outcome per request generation (`latency_sample`, monotonic-generation pruned, heartbeat-resolution) → `usage.record_latency`; shutdown summary prints all counts + words + latency avg/p95. Residual (A3): menu-bar display + toggle, and persistence. |
+| Local stats / menu-bar word count (`shouldShowCompletedWordCountInMenuBar`) | A3 | 30-day shown/accepted/dismissed/superseded + latency + words computed and displayable; menu-bar word-count toggle works. **Compute half implemented**: `crates/stats` rolling-30-day accumulator (counts, words_completed, acceptance_rate, latency avg/p95 nearest-rank; time-injected, 20 tests) wired in `app` run loop. All four outcomes now recorded live: Accepted/Dismissed from host inputs; **Shown/Superseded surfaced by `engine_core` (`StatEvent` + `take_stat_events`, with failed-placement `Shown` retraction and completion-replace supersede) and drained each loop turn**. **Latency recorded too**: the run loop times submit→outcome per request generation (`latency_sample`, monotonic-generation pruned, heartbeat-resolution) → `usage.record_latency`; shutdown summary prints all counts + words + latency avg/p95. **Menu-bar display SHIPPED**: `stats::summary_line` (words · accepted (rate%); rate omitted when nothing shown; idle placeholder) rendered as a non-interactive `MacosTray::set_stats_line` menu row, diffed per heartbeat on the wall clock. Residual (A3): live LOOK validation, display toggle, and persistence across launches. |
 | Quality / reuse thresholds (`deepMatchThreshold`, `reuseThreshold`, `meetsQualityThresholds`) | A2/A3 | Internal completion-quality tuning; either surfaced in a Labs/General control or explicitly marked non-user-facing |
 
 **Multi-platform rule:** each gate above is written platform-agnostically; per-platform achievability (✓/◑/⌨/✗) is in `cross-platform-review.md` §7b. A platform claims a feature only when its gate passes there with that platform's mechanism.
