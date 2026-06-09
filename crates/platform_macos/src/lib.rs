@@ -130,6 +130,7 @@ type SecureInputProvider = dyn Fn() -> bool + Send + Sync + 'static;
 type ProcessExistsProvider = dyn Fn(i32) -> bool + Send + Sync + 'static;
 type SyntheticKeyPoster = dyn Fn(i32, &str) -> Result<(), PlatformError> + Send + Sync + 'static;
 type PasteboardPoster = dyn Fn(i32, &str) -> Result<(), PlatformError> + Send + Sync + 'static;
+type BackspacePoster = dyn Fn(i32, usize) -> Result<(), PlatformError> + Send + Sync + 'static;
 type AcceptTapHandler = dyn Fn(AcceptTapEvent) -> AcceptTapDecision + Send + Sync + 'static;
 type AcceptTapInstallerFn = dyn Fn(AcceptTapKind, Arc<AcceptTapHandler>) -> Result<AcceptTapResource, PlatformError>
     + Send
@@ -317,6 +318,7 @@ pub struct MacosPlatformAdapter {
     process_exists: Arc<ProcessExistsProvider>,
     synthetic_key_poster: Arc<SyntheticKeyPoster>,
     pasteboard_poster: Arc<PasteboardPoster>,
+    backspace_poster: Arc<BackspacePoster>,
     observer_installer: AdapterObserverInstaller,
     accept_tap_installer: AdapterAcceptTapInstaller,
 }
@@ -446,6 +448,7 @@ struct AdapterTestHooks {
     process_exists: Arc<ProcessExistsProvider>,
     synthetic_key_poster: Arc<SyntheticKeyPoster>,
     pasteboard_poster: Arc<PasteboardPoster>,
+    backspace_poster: Arc<BackspacePoster>,
     observer_installer: Arc<AdapterObserverInstallerFn>,
     accept_tap_installer: Arc<AcceptTapInstallerFn>,
 }
@@ -903,11 +906,14 @@ impl MacosPlatformAdapter {
     }
 
     /// Shared insert path. `replace_left` (characters to delete left of the caret
-    /// before inserting — a replacement) is honored only by `AxSet`, which can
-    /// range-replace; `SyntheticKeys`/`Clipboard` cannot read-modify-write a range,
-    /// so they fall back to an append-only insert (synthesizing backspaces is the
-    /// live-validated residual — see the integration-phase design note).
-    /// `replace_left == 0` is byte-identical to the prior append-only behavior.
+    /// before inserting — a replacement) is honored by every strategy: `AxSet`
+    /// range-replaces atomically; `SyntheticKeys`/`Clipboard` cannot
+    /// read-modify-write a range, so they synthesize `replace_left` backspace
+    /// key presses BEFORE posting the text (a failed backspace post aborts the
+    /// insert — never insert without deleting first).
+    /// `replace_left == 0` is byte-identical to the prior append-only behavior
+    /// (the backspace poster is never invoked). The empty-text early return
+    /// precedes deletion: nothing is deleted when there is nothing to insert.
     fn insert_impl(
         &self,
         field: &FieldHandle,
@@ -953,20 +959,26 @@ impl MacosPlatformAdapter {
             }
             InsertStrategy::SyntheticKeys => {
                 self.ensure_global_insert_target(pid)?;
-                let result = (self.synthetic_key_poster)(pid, &text).map(|()| Inserted {
-                    bytes: text.len(),
-                    chars: text.chars().count(),
-                    strategy,
-                });
+                let result = self
+                    .delete_left_via_backspaces(pid, replace_left)
+                    .and_then(|()| (self.synthetic_key_poster)(pid, &text))
+                    .map(|()| Inserted {
+                        bytes: text.len(),
+                        chars: text.chars().count(),
+                        strategy,
+                    });
                 self.map_app_exited(pid, app, result)
             }
             InsertStrategy::Clipboard => {
                 self.ensure_global_insert_target(pid)?;
-                let result = (self.pasteboard_poster)(pid, &text).map(|()| Inserted {
-                    bytes: text.len(),
-                    chars: text.chars().count(),
-                    strategy,
-                });
+                let result = self
+                    .delete_left_via_backspaces(pid, replace_left)
+                    .and_then(|()| (self.pasteboard_poster)(pid, &text))
+                    .map(|()| Inserted {
+                        bytes: text.len(),
+                        chars: text.chars().count(),
+                        strategy,
+                    });
                 self.map_app_exited(pid, app, result)
             }
             other => Err(PlatformError::UnsupportedField {
@@ -987,6 +999,7 @@ impl MacosPlatformAdapter {
             process_exists: Arc::new(process_exists),
             synthetic_key_poster: Arc::new(post_synthetic_text),
             pasteboard_poster: Arc::new(post_clipboard_text),
+            backspace_poster: Arc::new(post_synthetic_backspaces),
             observer_installer: AdapterObserverInstaller::Worker,
             accept_tap_installer: AdapterAcceptTapInstaller::Worker,
         })
@@ -1051,6 +1064,7 @@ impl MacosPlatformAdapter {
             process_exists,
             synthetic_key_poster,
             pasteboard_poster,
+            backspace_poster,
             observer_installer,
             accept_tap_installer,
         } = hooks;
@@ -1066,6 +1080,7 @@ impl MacosPlatformAdapter {
             process_exists,
             synthetic_key_poster,
             pasteboard_poster,
+            backspace_poster,
             observer_installer: AdapterObserverInstaller::Custom(observer_installer),
             accept_tap_installer: AdapterAcceptTapInstaller::Custom(accept_tap_installer),
         }
@@ -1094,6 +1109,20 @@ impl MacosPlatformAdapter {
         (self.frontmost_pid)().ok_or_else(|| PlatformError::CannotComplete {
             reason: "no frontmost application pid".into(),
         })
+    }
+
+    /// Deletes `replace_left` characters left of the caret on the global insert
+    /// channels by synthesizing backspace presses. No-op (poster never invoked)
+    /// when `replace_left == 0`, keeping plain inserts byte-identical.
+    fn delete_left_via_backspaces(
+        &self,
+        pid: i32,
+        replace_left: usize,
+    ) -> Result<(), PlatformError> {
+        if replace_left == 0 {
+            return Ok(());
+        }
+        (self.backspace_poster)(pid, replace_left)
     }
 
     fn ensure_global_insert_target(&self, pid: i32) -> Result<(), PlatformError> {
@@ -1755,6 +1784,49 @@ fn post_synthetic_text(pid: i32, text: &str) -> Result<(), PlatformError> {
     tag_synthetic_event(&key_up);
     key_down.post_to_pid(pid);
     key_up.post_to_pid(pid);
+    Ok(())
+}
+
+/// Synthesizes `count` Delete (backspace, keycode 0x33) key presses to `pid`.
+/// This is the only way the write-only `SyntheticKeys`/`Clipboard` insert
+/// channels can remove the typed token before a replacement insert — they
+/// cannot range-replace like `AxSet`.
+///
+/// `count` is a number of backspace PRESSES: the app deletes one grapheme
+/// cluster per press. Callers pass the typed token's char count, which equals
+/// the press count for the ASCII shortcodes/words replacements use today; a
+/// future ZWJ-sequence token would need a grapheme-aware count.
+///
+/// All 2N events are created BEFORE any is posted, so a creation failure
+/// leaves the field untouched (no partial deletion).
+fn post_synthetic_backspaces(pid: i32, count: usize) -> Result<(), PlatformError> {
+    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| {
+        PlatformError::CannotComplete {
+            reason: "failed to create CGEventSource for synthetic backspaces".into(),
+        }
+    })?;
+    let mut events = Vec::with_capacity(count * 2);
+    for _ in 0..count {
+        let key_down =
+            CGEvent::new_keyboard_event(source.clone(), KeyCode::DELETE, true).map_err(|_| {
+                PlatformError::CannotComplete {
+                    reason: "failed to create synthetic backspace key-down event".into(),
+                }
+            })?;
+        let key_up =
+            CGEvent::new_keyboard_event(source.clone(), KeyCode::DELETE, false).map_err(|_| {
+                PlatformError::CannotComplete {
+                    reason: "failed to create synthetic backspace key-up event".into(),
+                }
+            })?;
+        tag_synthetic_event(&key_down);
+        tag_synthetic_event(&key_up);
+        events.push(key_down);
+        events.push(key_up);
+    }
+    for event in events {
+        event.post_to_pid(pid);
+    }
     Ok(())
 }
 
@@ -4929,6 +5001,7 @@ mod tests {
         process_exists: Arc<ProcessExistsProvider>,
         synthetic_key_poster: Arc<SyntheticKeyPoster>,
         pasteboard_poster: Arc<PasteboardPoster>,
+        backspace_poster: Arc<BackspacePoster>,
         accept_tap_installs: Arc<Mutex<Vec<FakeAcceptTapInstall>>>,
     }
 
@@ -4947,6 +5020,7 @@ mod tests {
                 process_exists: Arc::new(|_| true),
                 synthetic_key_poster: Arc::new(|_, _| Ok(())),
                 pasteboard_poster: Arc::new(|_, _| Ok(())),
+                backspace_poster: Arc::new(|_, _| Ok(())),
                 accept_tap_installs: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -4980,6 +5054,7 @@ mod tests {
             process_exists,
             synthetic_key_poster,
             pasteboard_poster,
+            backspace_poster,
             accept_tap_installs,
         } = config;
         let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
@@ -5015,6 +5090,7 @@ mod tests {
                 process_exists,
                 synthetic_key_poster,
                 pasteboard_poster,
+                backspace_poster,
                 observer_installer,
                 accept_tap_installer,
             },
@@ -5055,6 +5131,7 @@ mod tests {
                 process_exists: Arc::new(|_| true),
                 synthetic_key_poster: Arc::new(|_, _| Ok(())),
                 pasteboard_poster: Arc::new(|_, _| Ok(())),
+                backspace_poster: Arc::new(|_, _| Ok(())),
                 observer_installer,
                 accept_tap_installer,
             },
@@ -6202,6 +6279,255 @@ mod tests {
             Err(PlatformError::StaleField)
         );
         assert!(posted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn insert_replacing_synthetic_keys_posts_backspaces_before_text() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        let log_in_keys = Arc::clone(&log);
+        config.synthetic_key_poster = Arc::new(move |pid, text| {
+            log_in_keys
+                .lock()
+                .unwrap()
+                .push(format!("text:{pid}:{text}"));
+            Ok(())
+        });
+        let log_in_backspaces = Arc::clone(&log);
+        config.backspace_poster = Arc::new(move |pid, count| {
+            log_in_backspaces
+                .lock()
+                .unwrap()
+                .push(format!("backspace:{pid}x{count}"));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert_replacing(&field, "the", 3, InsertStrategy::SyntheticKeys),
+            Ok(Inserted {
+                bytes: 3,
+                chars: 3,
+                strategy: InsertStrategy::SyntheticKeys,
+            })
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["backspace:42x3".to_string(), "text:42:the".to_string()]
+        );
+    }
+
+    #[test]
+    fn insert_replacing_blocks_when_global_secure_input_is_enabled() {
+        let adapter = test_adapter_with_secure_input(true);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert_replacing(&field, "the", 3, InsertStrategy::SyntheticKeys),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
+    }
+
+    #[test]
+    fn insert_replacing_with_empty_text_is_noop_and_never_invokes_backspace_poster() {
+        let backspace_calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_in_hook = Arc::clone(&backspace_calls);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.backspace_poster = Arc::new(move |pid, count| {
+            calls_in_hook.lock().unwrap().push((pid, count));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert_replacing(&field, "", 5, InsertStrategy::SyntheticKeys),
+            Ok(Inserted {
+                bytes: 0,
+                chars: 0,
+                strategy: InsertStrategy::SyntheticKeys,
+            })
+        );
+        assert!(
+            backspace_calls.lock().unwrap().is_empty(),
+            "the empty-text early return precedes deletion: nothing is deleted when there is nothing to insert"
+        );
+    }
+
+    #[test]
+    fn insert_replacing_clipboard_posts_backspaces_before_paste() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        let log_in_paste = Arc::clone(&log);
+        config.pasteboard_poster = Arc::new(move |pid, text| {
+            log_in_paste
+                .lock()
+                .unwrap()
+                .push(format!("paste:{pid}:{text}"));
+            Ok(())
+        });
+        let log_in_backspaces = Arc::clone(&log);
+        config.backspace_poster = Arc::new(move |pid, count| {
+            log_in_backspaces
+                .lock()
+                .unwrap()
+                .push(format!("backspace:{pid}x{count}"));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert_replacing(&field, "😄", 6, InsertStrategy::Clipboard),
+            Ok(Inserted {
+                bytes: "😄".len(),
+                chars: 1,
+                strategy: InsertStrategy::Clipboard,
+            })
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["backspace:42x6".to_string(), "paste:42:😄".to_string()]
+        );
+    }
+
+    #[test]
+    fn insert_replacing_aborts_text_post_when_backspace_synthesis_fails() {
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let posted_in_hook = Arc::clone(&posted);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.synthetic_key_poster = Arc::new(move |pid, text| {
+            posted_in_hook.lock().unwrap().push((pid, text.to_string()));
+            Ok(())
+        });
+        config.backspace_poster = Arc::new(|_, _| {
+            Err(PlatformError::CannotComplete {
+                reason: "backspace synthesis failed".into(),
+            })
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert_replacing(&field, "the", 3, InsertStrategy::SyntheticKeys),
+            Err(PlatformError::CannotComplete {
+                reason: "backspace synthesis failed".into(),
+            })
+        );
+        assert!(
+            posted.lock().unwrap().is_empty(),
+            "text must never be posted when the preceding deletion failed"
+        );
+    }
+
+    #[test]
+    fn insert_with_zero_replace_left_never_invokes_the_backspace_poster() {
+        let backspace_calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_in_hook = Arc::clone(&backspace_calls);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.backspace_poster = Arc::new(move |pid, count| {
+            calls_in_hook.lock().unwrap().push((pid, count));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert!(adapter
+            .insert(&field, "x", InsertStrategy::SyntheticKeys)
+            .is_ok());
+        assert!(adapter
+            .insert(&field, "x", InsertStrategy::Clipboard)
+            .is_ok());
+        assert!(
+            backspace_calls.lock().unwrap().is_empty(),
+            "plain inserts must stay byte-identical: no backspace synthesis"
+        );
+    }
+
+    #[test]
+    fn insert_replacing_axset_never_invokes_the_backspace_poster() {
+        let backspace_calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_in_hook = Arc::clone(&backspace_calls);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.backspace_poster = Arc::new(move |pid, count| {
+            calls_in_hook.lock().unwrap().push((pid, count));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        // AxSet range-replaces in-process on the AX worker; the result here is
+        // irrelevant (no live AX element) — only the non-invocation matters.
+        let _ = adapter.insert_replacing(&field, "the", 3, InsertStrategy::AxSet);
+        assert!(
+            backspace_calls.lock().unwrap().is_empty(),
+            "AxSet deletes via range-replace, never via synthetic backspaces"
+        );
+    }
+
+    #[test]
+    fn insert_replacing_posts_no_backspaces_when_frontmost_pid_moved() {
+        let backspace_calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_in_hook = Arc::clone(&backspace_calls);
+        let mut config = TestAdapterConfig::new(Some(99), Arc::new(Mutex::new(Vec::new())), None);
+        config.backspace_poster = Arc::new(move |pid, count| {
+            calls_in_hook.lock().unwrap().push((pid, count));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert_replacing(&field, "the", 3, InsertStrategy::SyntheticKeys),
+            Err(PlatformError::StaleField)
+        );
+        assert!(
+            backspace_calls.lock().unwrap().is_empty(),
+            "backspaces must never reach an app the user already switched away from"
+        );
     }
 
     #[test]
