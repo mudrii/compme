@@ -4805,6 +4805,23 @@ mod tests {
         dispatch: ObserverDispatch,
     }
 
+    /// Boxed inside the fake observer's `ObserverResource` so a test can observe
+    /// teardown deterministically instead of sleeping. When the rebind poller
+    /// replaces a binding (e.g. frontmost → None), the old `ObserverResource`
+    /// drops, dropping this and recording the torn-down pid.
+    struct TeardownSignal {
+        pid: i32,
+        log: Arc<Mutex<Vec<i32>>>,
+    }
+
+    impl Drop for TeardownSignal {
+        fn drop(&mut self) {
+            if let Ok(mut log) = self.log.lock() {
+                log.push(self.pid);
+            }
+        }
+    }
+
     #[derive(Clone)]
     struct FakeAcceptTapInstall {
         kind: AcceptTapKind,
@@ -4915,6 +4932,7 @@ mod tests {
     fn test_adapter_with_dynamic_frontmost(
         frontmost_pid: Arc<Mutex<Option<i32>>>,
         installs: Arc<Mutex<Vec<FakeObserverInstall>>>,
+        teardowns: Arc<Mutex<Vec<i32>>>,
     ) -> MacosPlatformAdapter {
         let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
         let frontmost_pid = Arc::new(move || *frontmost_pid.lock().unwrap());
@@ -4925,7 +4943,10 @@ mod tests {
                 notifications,
                 dispatch,
             });
-            Ok(ObserverResource::new("observer"))
+            Ok(ObserverResource::new(TeardownSignal {
+                pid,
+                log: Arc::clone(&teardowns),
+            }))
         });
         let accept_tap_installer = Arc::new(|kind, handler: Arc<AcceptTapHandler>| {
             let _ = (kind, handler);
@@ -4948,8 +4969,19 @@ mod tests {
         )
     }
 
+    /// Upper bound for the test polling waits below. Generous on purpose: the
+    /// full `cargo test --workspace` run launches many test binaries in
+    /// parallel, oversubscribing the cores, so the 250 ms
+    /// (`APP_REBIND_POLL_INTERVAL`) rebind-poll thread can be scheduled slowly.
+    /// Each waiter returns the instant the count is reached, so a large ceiling
+    /// costs nothing on green and only bounds genuine hangs. (The historical
+    /// `focus_subscription_rebinds_*` flake was a synchronization race on the
+    /// binding swap, fixed by waiting on the teardown signal — not a deadline
+    /// timeout; this ceiling is defensive insurance against load, not that fix.)
+    const WAIT_DEADLINE: Duration = Duration::from_secs(10);
+
     fn wait_for_install_count(installs: &Arc<Mutex<Vec<FakeObserverInstall>>>, expected: usize) {
-        let deadline = SystemTime::now() + Duration::from_secs(2);
+        let deadline = SystemTime::now() + WAIT_DEADLINE;
         while SystemTime::now() < deadline {
             if installs.lock().unwrap().len() >= expected {
                 return;
@@ -4964,7 +4996,7 @@ mod tests {
         installs: &Arc<Mutex<Vec<FakeAcceptTapInstall>>>,
         expected: usize,
     ) {
-        let deadline = SystemTime::now() + Duration::from_secs(2);
+        let deadline = SystemTime::now() + WAIT_DEADLINE;
         while SystemTime::now() < deadline {
             if installs.lock().unwrap().len() >= expected {
                 return;
@@ -4976,7 +5008,7 @@ mod tests {
     }
 
     fn wait_for_vec_count<T>(items: &Arc<Mutex<Vec<T>>>, expected: usize) {
-        let deadline = SystemTime::now() + Duration::from_secs(2);
+        let deadline = SystemTime::now() + WAIT_DEADLINE;
         while SystemTime::now() < deadline {
             if items.lock().unwrap().len() >= expected {
                 return;
@@ -8406,8 +8438,12 @@ mod tests {
     fn focus_subscription_rebinds_to_new_frontmost_pid_and_ignores_old_events() {
         let frontmost_pid = Arc::new(Mutex::new(Some(42)));
         let installs = Arc::new(Mutex::new(Vec::new()));
-        let adapter =
-            test_adapter_with_dynamic_frontmost(Arc::clone(&frontmost_pid), Arc::clone(&installs));
+        let teardowns = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter_with_dynamic_frontmost(
+            Arc::clone(&frontmost_pid),
+            Arc::clone(&installs),
+            Arc::clone(&teardowns),
+        );
         let focused = Arc::new(Mutex::new(Vec::new()));
         let focused_in_cb = Arc::clone(&focused);
 
@@ -8420,6 +8456,13 @@ mod tests {
 
         *frontmost_pid.lock().unwrap() = Some(99);
         wait_for_install_count(&installs, 2);
+        // The poller pushes install #1 *before* it swaps the live binding to
+        // pid 99 (and drops the old pid-42 binding). Waiting only on the install
+        // count races that swap: a dispatch could still filter against pid 42.
+        // The pid-42 teardown fires during the swap, so it is the correct
+        // happens-after signal that the live binding is now pid 99.
+        wait_for_vec_count(&teardowns, 1);
+        assert_eq!(teardowns.lock().unwrap().as_slice(), [42]);
         let installs_snapshot = installs.lock().unwrap().clone();
         assert_eq!(installs_snapshot[0].pid, 42);
         assert_eq!(installs_snapshot[1].pid, 99);
@@ -8449,8 +8492,12 @@ mod tests {
     fn caret_subscription_rebinds_and_does_not_reuse_same_pointer_across_pids() {
         let frontmost_pid = Arc::new(Mutex::new(Some(42)));
         let installs = Arc::new(Mutex::new(Vec::new()));
-        let adapter =
-            test_adapter_with_dynamic_frontmost(Arc::clone(&frontmost_pid), Arc::clone(&installs));
+        let teardowns = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter_with_dynamic_frontmost(
+            Arc::clone(&frontmost_pid),
+            Arc::clone(&installs),
+            Arc::clone(&teardowns),
+        );
         let carets = Arc::new(Mutex::new(Vec::new()));
         let carets_in_cb = Arc::clone(&carets);
 
@@ -8470,6 +8517,11 @@ mod tests {
 
         *frontmost_pid.lock().unwrap() = Some(99);
         wait_for_install_count(&installs, 2);
+        // Wait for the pid-42 teardown so the live binding swap to pid 99 has
+        // completed before dispatching (see the focus rebind test for why the
+        // install count alone races the swap).
+        wait_for_vec_count(&teardowns, 1);
+        assert_eq!(teardowns.lock().unwrap().as_slice(), [42]);
         let installs_snapshot = installs.lock().unwrap().clone();
         assert_eq!(installs_snapshot[1].pid, 99);
         assert_eq!(
@@ -8503,8 +8555,12 @@ mod tests {
     fn focus_subscription_clears_binding_when_no_app_is_frontmost_then_rebinds() {
         let frontmost_pid = Arc::new(Mutex::new(Some(42)));
         let installs = Arc::new(Mutex::new(Vec::new()));
-        let adapter =
-            test_adapter_with_dynamic_frontmost(Arc::clone(&frontmost_pid), Arc::clone(&installs));
+        let teardowns = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter_with_dynamic_frontmost(
+            Arc::clone(&frontmost_pid),
+            Arc::clone(&installs),
+            Arc::clone(&teardowns),
+        );
         let focused = Arc::new(Mutex::new(Vec::new()));
         let focused_in_cb = Arc::clone(&focused);
 
@@ -8517,7 +8573,11 @@ mod tests {
         let first_dispatch = installs.lock().unwrap()[0].dispatch.clone();
 
         *frontmost_pid.lock().unwrap() = None;
-        thread::sleep(APP_REBIND_POLL_INTERVAL + Duration::from_millis(100));
+        // Wait until the rebind poller has actually torn down the pid-42 binding
+        // (deterministic), rather than sleeping a fixed interval and hoping the
+        // poll thread ran — that fixed sleep flaked under heavy parallel load.
+        wait_for_vec_count(&teardowns, 1);
+        assert_eq!(teardowns.lock().unwrap().as_slice(), [42]);
         first_dispatch(observer_event_for_pid(
             42,
             ObserverNotification::FocusChanged,
