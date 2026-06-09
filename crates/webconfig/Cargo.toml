@@ -3,3 +3,6 @@ name = "webconfig"
 version = "0.1.0"
 edition = "2021"
 license.workspace = true
+
+[dependencies]
+ed25519-dalek = "=2.2.0"

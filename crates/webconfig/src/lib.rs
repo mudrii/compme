@@ -16,8 +16,14 @@
 //!   anything outside the allow-list is an error, never silently ignored.
 //!
 //! It deliberately CANNOT set custom instructions, model paths, security
-//! settings, or anything non-reversible — those would need cryptographic signing
-//! and an explicit trust origin (an A3 item).
+//! settings, or anything non-reversible — those require [`LinkTrust::Signed`].
+//!
+//! **Signing (A3):** [`parse_deep_link_with_trust`] verifies a trailing
+//! `&sig=<128 hex>` Ed25519 signature over the exact URL bytes preceding
+//! `&sig=` against a host-pinned [`TrustedKey`]. No canonicalization: the
+//! signed payload is the byte prefix, so the signature must be the final
+//! parameter and anything after it fails closed. With no trusted key
+//! configured, signed links are rejected (fail-closed default-off).
 //!
 //! **Reversibility is NOT a full substitute for signing.** Because any page can
 //! fire a deep link, an unsigned link can still nuisance-toggle a user's apps
@@ -25,9 +31,9 @@
 //! therefore mandatory, not optional: (1) the host MUST surface every applied
 //! command to the user (the §16 "user-visible" requirement) and SHOULD allow
 //! undo; (2) any future non-reversible command (custom instructions, model
-//! override, security settings) MUST require a signature + trusted origin before
-//! it is added here (A3). The §16 web-config gate stays *partial* until signing
-//! lands.
+//! override, security settings) MUST be gated on [`LinkTrust::Signed`] when it
+//! is added here. The §16 web-config gate stays *partial* until the URL-scheme
+//! event reception (FFI) and the host confirmation prompt land.
 
 /// What a parsed, validated deep link asks us to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +86,15 @@ pub enum ParseError {
     AmbiguousAction,
     /// An action value was not a boolean.
     InvalidValue(String),
+    /// The `sig` value was not 128 hex chars (a 64-byte Ed25519 signature).
+    MalformedSignature,
+    /// `sig` was present but not the final query parameter (the signed payload
+    /// must be the exact byte prefix, so the signature must come last).
+    MisplacedSignature,
+    /// A signed link arrived but no trusted key is configured (fail-closed).
+    UntrustedSignature,
+    /// The signature did not verify against the trusted key for this payload.
+    InvalidSignature,
 }
 
 impl std::fmt::Display for ParseError {
@@ -109,6 +124,16 @@ impl std::fmt::Display for ParseError {
                 )
             }
             ParseError::InvalidValue(value) => write!(f, "invalid boolean value: {value}"),
+            ParseError::MalformedSignature => {
+                write!(f, "malformed signature (need 128 hex chars)")
+            }
+            ParseError::MisplacedSignature => {
+                write!(f, "misplaced signature (`sig` must be the final parameter)")
+            }
+            ParseError::UntrustedSignature => {
+                write!(f, "signed link but no trusted key configured")
+            }
+            ParseError::InvalidSignature => write!(f, "signature verification failed"),
         }
     }
 }
@@ -171,6 +196,87 @@ pub fn parse_deep_link(url: &str) -> Result<OverrideCommand, ParseError> {
     };
 
     Ok(OverrideCommand { scope, action })
+}
+
+/// An Ed25519 public key the host trusts to sign deep links (A3 §16 signing).
+/// The host pins exactly one; links signed by anything else fail verification.
+pub struct TrustedKey(ed25519_dalek::VerifyingKey);
+
+impl TrustedKey {
+    /// Decode a 64-hex-char (32-byte) Ed25519 public key. `None` on any
+    /// malformation or a cryptographically invalid point — the host then has
+    /// no trusted key and signed links are rejected (fail-closed).
+    pub fn from_hex(raw: &str) -> Option<Self> {
+        let bytes: [u8; 32] = parse_hex(raw.trim())?.try_into().ok()?;
+        ed25519_dalek::VerifyingKey::from_bytes(&bytes)
+            .ok()
+            .map(Self)
+    }
+}
+
+/// Whether a parsed link carried a verified signature. Today both levels can
+/// only express the reversible [`OverrideCommand`] subset; any future
+/// non-reversible command MUST require [`LinkTrust::Signed`] at the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkTrust {
+    Unsigned,
+    Signed,
+}
+
+/// Like [`parse_deep_link`], but signature-aware: a trailing
+/// `&sig=<128 hex>` parameter is split off and verified (Ed25519, over the
+/// exact URL bytes preceding `&sig=`) against the host's trusted key before
+/// the payload is parsed. Unsigned links still parse (the reversible subset
+/// needs no signature) and are labeled [`LinkTrust::Unsigned`].
+pub fn parse_deep_link_with_trust(
+    url: &str,
+    trusted: Option<&TrustedKey>,
+) -> Result<(OverrideCommand, LinkTrust), ParseError> {
+    match split_trailing_signature(url)? {
+        None => parse_deep_link(url).map(|command| (command, LinkTrust::Unsigned)),
+        Some((payload, signature)) => {
+            let key = trusted.ok_or(ParseError::UntrustedSignature)?;
+            key.0
+                .verify_strict(payload.as_bytes(), &signature)
+                .map_err(|_| ParseError::InvalidSignature)?;
+            parse_deep_link(payload).map(|command| (command, LinkTrust::Signed))
+        }
+    }
+}
+
+/// Split a trailing `&sig=<hex>` off the URL. The signature MUST be the final
+/// parameter (the signed payload is the exact byte prefix before `&sig=`, so
+/// anything after the value would be unsigned, attacker-appendable bytes).
+/// A first `&sig=` followed by more parameters — including a second `sig` —
+/// therefore fails closed as misplaced.
+fn split_trailing_signature(
+    url: &str,
+) -> Result<Option<(&str, ed25519_dalek::Signature)>, ParseError> {
+    let Some(index) = url.find("&sig=") else {
+        return Ok(None);
+    };
+    let payload = &url[..index];
+    let value = &url[index + "&sig=".len()..];
+    if value.contains('&') {
+        return Err(ParseError::MisplacedSignature);
+    }
+    let bytes: [u8; 64] = parse_hex(value)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(ParseError::MalformedSignature)?;
+    Ok(Some((
+        payload,
+        ed25519_dalek::Signature::from_bytes(&bytes),
+    )))
+}
+
+/// Decode a hex string into bytes; `None` on odd length or a non-hex digit.
+fn parse_hex(raw: &str) -> Option<Vec<u8>> {
+    if !raw.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..raw.len() / 2)
+        .map(|i| u8::from_str_radix(raw.get(i * 2..i * 2 + 2)?, 16).ok())
+        .collect()
 }
 
 /// Set an option exactly once; a second assignment for the same `key` is a
@@ -425,5 +531,163 @@ mod tests {
         assert!(
             parse_deep_link(&format!("complete-me://setOverride?app={max}&enabled=true")).is_ok()
         );
+    }
+
+    // ---- signed links ----
+
+    /// Deterministic test keypair: the signer the host trusts.
+    fn test_signer() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn test_trusted_key() -> TrustedKey {
+        let hex = encode_hex(test_signer().verifying_key().as_bytes());
+        TrustedKey::from_hex(&hex).expect("valid test key")
+    }
+
+    fn encode_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Sign `payload` with the test signer and append the trailing sig param.
+    fn signed_url(payload: &str) -> String {
+        use ed25519_dalek::Signer;
+        let sig = test_signer().sign(payload.as_bytes());
+        format!("{payload}&sig={}", encode_hex(&sig.to_bytes()))
+    }
+
+    #[test]
+    fn an_unsigned_link_parses_as_unsigned_trust() {
+        assert_eq!(
+            parse_deep_link_with_trust(
+                "complete-me://setOverride?app=com.apple.TextEdit&enabled=true",
+                None,
+            ),
+            Ok((
+                OverrideCommand {
+                    scope: Scope::App("com.apple.TextEdit".into()),
+                    action: OverrideAction::Enable,
+                },
+                LinkTrust::Unsigned,
+            ))
+        );
+    }
+
+    #[test]
+    fn a_validly_signed_link_parses_as_signed_trust() {
+        let url = signed_url("complete-me://setOverride?app=com.apple.TextEdit&excluded=true");
+        assert_eq!(
+            parse_deep_link_with_trust(&url, Some(&test_trusted_key())),
+            Ok((
+                OverrideCommand {
+                    scope: Scope::App("com.apple.TextEdit".into()),
+                    action: OverrideAction::Exclude,
+                },
+                LinkTrust::Signed,
+            ))
+        );
+    }
+
+    #[test]
+    fn a_signed_link_without_a_trusted_key_fails_closed() {
+        let url = signed_url("complete-me://setOverride?app=com.apple.TextEdit&enabled=true");
+        assert_eq!(
+            parse_deep_link_with_trust(&url, None),
+            Err(ParseError::UntrustedSignature)
+        );
+    }
+
+    #[test]
+    fn a_tampered_payload_fails_verification() {
+        let url = signed_url("complete-me://setOverride?app=com.apple.TextEdit&enabled=true");
+        // Flip the payload after signing: enable → disable.
+        let tampered = url.replace("enabled=true", "enabled=false");
+        assert_eq!(
+            parse_deep_link_with_trust(&tampered, Some(&test_trusted_key())),
+            Err(ParseError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn a_signature_from_an_untrusted_signer_fails_verification() {
+        use ed25519_dalek::Signer;
+        let payload = "complete-me://setOverride?app=com.apple.TextEdit&enabled=true";
+        let rogue = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let sig = rogue.sign(payload.as_bytes());
+        let url = format!("{payload}&sig={}", encode_hex(&sig.to_bytes()));
+        assert_eq!(
+            parse_deep_link_with_trust(&url, Some(&test_trusted_key())),
+            Err(ParseError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn a_malformed_signature_value_is_rejected_before_verification() {
+        let payload = "complete-me://setOverride?app=com.apple.TextEdit&enabled=true";
+        for bad in [
+            "",               // empty
+            "deadbeef",       // too short
+            &"z".repeat(128), // non-hex
+            &"ab".repeat(63), // wrong length (126 chars)
+            &"ab".repeat(65), // wrong length (130 chars)
+        ] {
+            assert_eq!(
+                parse_deep_link_with_trust(
+                    &format!("{payload}&sig={bad}"),
+                    Some(&test_trusted_key()),
+                ),
+                Err(ParseError::MalformedSignature),
+                "sig value {bad:?} must be rejected as malformed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_signature_that_is_not_the_final_parameter_is_misplaced() {
+        // Anything after the sig value would be unsigned, attacker-appendable
+        // bytes — including a second sig.
+        let url = signed_url("complete-me://setOverride?app=com.apple.TextEdit&enabled=true");
+        for appended in ["&excluded=true", "&sig=00", "&x=1"] {
+            assert_eq!(
+                parse_deep_link_with_trust(&format!("{url}{appended}"), Some(&test_trusted_key()),),
+                Err(ParseError::MisplacedSignature),
+                "appending {appended:?} after the signature must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sig_as_the_first_parameter_is_an_unknown_param_not_a_signature() {
+        // Only a trailing `&sig=` is the signature envelope; `?sig=` means the
+        // payload has no parameters before it, which the safe subset never
+        // produces — it falls through to the strict parser and fails closed.
+        assert_eq!(
+            parse_deep_link_with_trust(
+                "complete-me://setOverride?sig=00",
+                Some(&test_trusted_key()),
+            ),
+            Err(ParseError::UnknownParam("sig".into()))
+        );
+    }
+
+    #[test]
+    fn the_unsigned_parser_still_rejects_sig_as_unknown() {
+        // Regression pin: the pre-signing API never silently accepts a signed
+        // link (it would drop the signature semantics on the floor).
+        assert_eq!(
+            parse_deep_link("complete-me://setOverride?app=com.apple.TextEdit&enabled=true&sig=00",),
+            Err(ParseError::UnknownParam("sig".into()))
+        );
+    }
+
+    #[test]
+    fn trusted_key_from_hex_rejects_malformed_input() {
+        assert!(TrustedKey::from_hex("").is_none());
+        assert!(TrustedKey::from_hex("deadbeef").is_none()); // too short
+        assert!(TrustedKey::from_hex(&"z".repeat(64)).is_none()); // non-hex
+        assert!(TrustedKey::from_hex(&"ab".repeat(33)).is_none()); // too long
+                                                                   // A valid key round-trips.
+        let hex = encode_hex(test_signer().verifying_key().as_bytes());
+        assert!(TrustedKey::from_hex(&hex).is_some());
     }
 }
