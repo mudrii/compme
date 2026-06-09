@@ -2284,6 +2284,52 @@ mod tests {
     }
 
     #[test]
+    fn offer_replacement_drops_a_prior_in_flight_completion_that_returns_after() {
+        // The other half of the disarm guarantee (the sibling test pins the
+        // freshly-armed debounce tick): a model request that was *already
+        // in-flight* when the offer was made must not match-and-supersede the
+        // replacement ghost when its completion finally returns. `offer_replacement`
+        // clears `requested`, so the late completion fails the `matches_request`
+        // guard in `on_completion_ready` and is dropped.
+        let mut machine = focused_machine();
+        // Arm and actually issue a model request (debounce elapsed).
+        machine.on_event(text_changed("color", 5, 0));
+        let issued = machine.on_event(Event::Tick { now_ms: 10_000 });
+        let req = issued
+            .iter()
+            .find_map(|c| match c {
+                Command::RequestCompletion {
+                    generation,
+                    snapshot,
+                    ..
+                } => Some((*generation, *snapshot)),
+                _ => None,
+            })
+            .expect("a model request must have been issued");
+        // The host detects an emoji/typo on the same snapshot and offers a
+        // replacement — this disarms the in-flight request.
+        machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+        let _ = machine.take_stat_events();
+        // The previously-issued completion now returns (same generation+snapshot
+        // it was requested with). It must be ignored — no ghost command at all.
+        let late = machine.on_event(Event::CompletionReady {
+            generation: req.0,
+            field: field("field-a"),
+            snapshot: req.1,
+            text: "colorful".into(),
+        });
+        assert!(
+            late.is_empty(),
+            "a disarmed in-flight completion produced commands: {late:?}"
+        );
+        // The replacement ghost is untouched — still the one showing.
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "😄".into(), 5))
+        );
+    }
+
+    #[test]
     fn offer_replacement_only_on_axset_fields() {
         // A non-range-replace field (SyntheticKeys/Clipboard) can't honor the
         // deletion, so no replacement is offered there (avoids `:smile😄` + a
