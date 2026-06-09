@@ -8,7 +8,7 @@
 
 | Feature | Crate(s) | Tests | §16 gate status |
 |---|---|---|---|
-| **Custom instructions (global)** prompt steering | `personalization` + `app` wiring | 14 + integration | Partial: global steers completions live (preamble prepended per request). Per-app/per-domain *maps* are crate-tested but not yet config-wired (A3 settings). |
+| **Custom instructions (global)** prompt steering | `personalization` + `app` wiring | 17 + integration | Partial: global steers completions live (preamble prepended per request). Per-app/per-domain *maps* are crate-tested but not yet config-wired (A3 settings). |
 | **6-stop strength slider, full reach (no caps)** | `personalization` | ✓ (pairwise-distinct stops) | Partial/deterministic: six distinct stops and no tier caps in the pure profile. §16 still needs settings persistence/UI evidence plus live before/after completion steering at multiple stops. |
 | **Sender identity** in prompt | `personalization` | ✓ | Partial/deterministic: name/email feed the preamble; editable settings/live prompt evidence remains with the A3 settings surface. |
 | **Per-app enable/exclude + pause/snooze** | `prefs` + `app` gate | 8 + 2 builder + resolve | Partial: per-app exclude gates live (keyed on resolved bundle id); snooze logic done but not yet UI/signal-triggerable (A3 control surface). |
@@ -33,6 +33,8 @@
 | **Multi-candidate + cycle** | ✅ `model_client::complete_n` N-sample (greedy + temp/top_k/top_p/seed); `engine_core` `CompletionReadyMulti`/`Cycle` + candidate list; Down-arrow cycle key; accept inserts shown; AcceptWord collapses to active; public `Engine` behavior now has cycle/wrap/accept tests | Deterministic engine/model coverage done. §16 live product evidence still needs the physical Down-cycle + accept path after the Carbon re-close. |
 | **Previous-input context** | ✅ `context::build_context_block` (bounded, newline-collapsed, opt-in); `app` `PreviousInputs` per-app ring (redacted, deduped) recorded on Full-accept under the resolved bundle id (not volatile `pid:N`); worker prepends the block; app tests pin same-app bundle scoping | Deterministic prompt augmentation done; off by default. §16 live evidence still needs accepted-completion recording through the product loop. **Clipboard context is implemented separately** via `read_pasteboard_text` + run-loop refresh. |
 | **Compatibility tiers** | ✅ `compat::compatibility_tier(bundle_id)` → Works/SetupNeeded/MirrorOnly/Partial/SidebarOnly/Unsupported/Unknown; run loop gates out `Unsupported` and fail-closes `SidebarOnly` until an AI-chat/sidebar field detector exists | ◑ deterministic classifier + unsupported/sidebar gating done; **per-app live behavior verification** (each app behaves as its tier claims) is environment-bound. |
+| **British English normalization** (Cotypist 0.22 Labs) | ✅ new pure crate `localize`: curated US→UK spelling map keyed only on US-only forms (shared spellings untouched — no false positives), query-case reapplied via shared `crates/textcase::CasePattern` (lower/Title/UPPER), mirrors the `autocorrect`/`thesaurus` shape; default **off** via `COMPLETE_ME_BRITISH_ENGLISH` | ◑ pure crate + unit tests done; §16 live product evidence (toggle steers inserted completions toward UK spelling end-to-end) is the FFI residual — host integration like `autocorrect`/`thesaurus`. |
+| **Trailing space after single-word completions** (Cotypist Shortcuts toggle) | ✅ **wired** end-to-end: `engine_core` self-gating `append_single_word_space` applied at AcceptFull/AcceptWord/preview behind `SuggestionMachine::with_trailing_space`; `engine` passthrough; `app` reads `COMPLETE_ME_TRAILING_SPACE` (default **off** → byte-identical accept) and chains it onto the engine. Preview mirrors the inserted bytes so echo-absorption stays consistent. Unit + integration + config tests. | Deterministic accept-path coverage done; off by default. §16 live evidence is the physical-key accept after the Carbon re-close (the toggle's effect on the inserted text). |
 
 ## Remaining A2 — GUI / permission / live-bound (specified; validation environment-bound)
 
@@ -61,3 +63,42 @@ live/manual evidence before marking the matching §16 gates closed. `cargo
 clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` stay
 green, and each feature lands with a code review whose findings are fixed before
 commit.
+
+## Parity notes — compme supersets beyond Cotypist
+Cotypist deliberately omits two things compme implements. (a) Candidate/suggestion
+**cycling** — Cotypist's docs state this "removes the temptation to look for a
+next-suggestion shortcut." (b) A **thesaurus/synonym** tool. compme implements
+both: the Down-arrow multi-candidate cycle (`engine_core` `Cycle`) and
+`crates/thesaurus`. These are **intentional supersets, not parity requirements**,
+and should **not** be treated as parity gaps in future audits.
+Source: cotypist.app/help/tips.
+
+## Parity re-check vs Cotypist 0.22 "Cotypist Labs" (2026-06-09)
+A fresh re-check against Cotypist's 0.22 "Cotypist Labs" release **supersedes the
+prior "pure §16 features exhausted" conclusion**: the 0.22 Labs headlines are
+British English, RTL, multilingual, and mid-line completion
+(source: cotypist.app + its Labs/changelog). Of these:
+
+- **British English normalization** was a freshly-surfaced *pure* gap — compme did
+  not have it and it is fully pure-buildable. It is being closed **this cycle** by
+  the new `localize` crate (US→UK spelling map + `textcase::CasePattern` case
+  reapplication + `COMPLETE_ME_BRITISH_ENGLISH` host toggle, default off), mirroring
+  the existing `autocorrect`/`thesaurus` crates (see the row above). RTL/multilingual
+  remain model/locale-bound, not pure-table features.
+- **Mid-line completion** is **NOT a separate gap** — it is already a pure capability
+  in compme. `engine_core::passes_trigger_gates` only suppresses mid-*word*, not
+  mid-*line*: a caret at a word boundary with right-context already triggers, and
+  `ranker::strip_suffix_overlap` dedupes the right side so the completion does not
+  duplicate following text. No new work is required for it.
+
+## Next phase — integration (design committed)
+
+Pure parity is exhausted. The substantive remaining work is wiring the pure cores
+(`emoji`/`autocorrect`/`localize`/`thesaurus`/`webconfig`) into the live completion
+loop, blocked on a delete-before-insert (`replace_left`) replacement primitive.
+This is GUI/FFI-bound (final hop needs live macOS validation) and should be built
+as one focused effort, not loop fragments. Full resolved design — `replace_left`
+shape, `Showing.replace_left` model, `offer_replacement` entry point, offer-vs-model
+priority, `insert_replacing` adapter contract, AxSet honoring, SyntheticKeys
+residual, build order, default-off flags — is in
+[`2026-06-09-integration-phase-design.md`](2026-06-09-integration-phase-design.md).
