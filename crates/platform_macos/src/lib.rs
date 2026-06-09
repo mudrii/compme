@@ -860,10 +860,13 @@ fn overlay_frame_for_text(rect: ScreenRect, text: &str, primary_height: f64) -> 
 }
 
 fn overlay_label_frame(frame: OverlayFrame) -> OverlayFrame {
+    // 2pt insets all around: the box starts at the caret x and hugs the line,
+    // so the label hugs the box — the old 8pt horizontal inset showed as a
+    // visible gap between the typed word and the ghost (live step-6 finding).
     OverlayFrame {
-        x: 8.0,
+        x: 2.0,
         y: 2.0,
-        w: (frame.w - 16.0).max(1.0),
+        w: (frame.w - 4.0).max(1.0),
         h: (frame.h - 4.0).max(1.0),
     }
 }
@@ -6459,8 +6462,10 @@ mod tests {
 
     #[test]
     fn overlay_label_frame_keeps_fixed_inset() {
-        // 8pt horizontal inset; 2pt vertical (the box hugs the caret line, so
-        // the label must hug the box for the text to sit on the line).
+        // 2pt insets all around: the box hugs the caret line and starts at the
+        // caret x, so the label must hug the box for the ghost text to sit on
+        // the line AND directly after the typed text (live finding: the old
+        // 8pt horizontal inset read as a visible gap after the typed word).
         let label = overlay_label_frame(OverlayFrame {
             x: 120.0,
             y: 240.0,
@@ -6471,9 +6476,9 @@ mod tests {
         assert_eq!(
             label,
             OverlayFrame {
-                x: 8.0,
+                x: 2.0,
                 y: 2.0,
-                w: 224.0,
+                w: 236.0,
                 h: 14.0,
             }
         );
