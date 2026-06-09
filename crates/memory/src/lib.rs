@@ -344,6 +344,50 @@ mod tests {
     }
 
     #[test]
+    fn same_plaintext_gets_a_fresh_nonce_each_time() {
+        // GCM security rests on a unique nonce per encryption under a given key.
+        // Recording the SAME (app, text) twice must produce blobs whose leading
+        // NONCE_LEN nonce bytes differ — a guard against a future fixed/zero-nonce
+        // regression, which would be catastrophic for AES-GCM.
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(13), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "identical text").unwrap();
+            store.remember("app", "identical text").unwrap();
+        }
+        // Read the raw stored ciphertext blobs back via a plain connection.
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        let mut stmt = raw
+            .prepare("SELECT blob FROM memories WHERE app = 'app' ORDER BY id")
+            .unwrap();
+        let blobs: Vec<Vec<u8>> = stmt
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .map(|b| b.unwrap())
+            .collect();
+        drop(stmt);
+        drop(raw);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(blobs.len(), 2, "both records were stored");
+        let nonce_a = &blobs[0][..NONCE_LEN];
+        let nonce_b = &blobs[1][..NONCE_LEN];
+        assert_ne!(
+            nonce_a, nonce_b,
+            "per-record nonce must be fresh, not reused for identical plaintext"
+        );
+        // And the full blobs differ too (distinct nonce → distinct ciphertext).
+        assert_ne!(blobs[0], blobs[1]);
+    }
+
+    #[test]
+    fn recent_with_zero_limit_returns_empty() {
+        let store = MemoryStore::open_in_memory(&key(14), StorageMode::AcceptedOnly).unwrap();
+        store.remember("app", "stored").unwrap();
+        assert!(store.recent("app", 0).unwrap().is_empty());
+    }
+
+    #[test]
     fn records_are_not_decryptable_with_a_different_key() {
         let path = temp_db_path();
         {

@@ -247,6 +247,29 @@ mod tests {
     }
 
     #[test]
+    fn terminal_skips_uppercase_or_pathy_lines_with_no_prose() {
+        let term = "com.googlecode.iterm2";
+        // >=3 tokens, leader not a known shell command, and no lowercase prose at
+        // all → the no-lowercase-prose `false` branch (line ~110).
+        assert!(!terminal_prompt_activates(term, "RUN BUILD NOW"));
+        // An all-uppercase pathy/flags line likewise has no lowercase prose → false.
+        assert!(!terminal_prompt_activates(
+            term,
+            "/USR/LOCAL/BIN/TOOL --FLAG /TMP/OUT"
+        ));
+        // The same shape but lowercased contains prose → activates (true).
+        // NOTE: the originally-suggested "/usr/local/bin/tool --flag /tmp/OUT"
+        // actually ACTIVATES because the path/flag segments are lowercase ASCII
+        // prose, so the guard does not skip it. We assert the real behavior.
+        assert!(terminal_prompt_activates(
+            term,
+            "/usr/local/bin/tool --flag /tmp/OUT"
+        ));
+        // Lowercase prose present (mixed-case line) → activates.
+        assert!(terminal_prompt_activates(term, "RUN the build now"));
+    }
+
+    #[test]
     fn non_terminal_apps_are_never_restricted_by_the_prompt_heuristic() {
         assert!(terminal_prompt_activates("com.apple.TextEdit", "ls -la"));
         assert!(terminal_prompt_activates("com.apple.mail", "cd"));

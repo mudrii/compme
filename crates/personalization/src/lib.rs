@@ -405,6 +405,34 @@ mod tests {
     }
 
     #[test]
+    fn overlong_multibyte_instructions_truncate_on_a_char_boundary() {
+        // Multibyte prose ending in a fence-like sequence, well over the cap. The
+        // truncation must (a) not panic mid-scalar, (b) keep the output within the
+        // documented cap, and (c) yield a valid UTF-8 String (proving char-boundary
+        // safety: a byte-index split through a multibyte char would have panicked).
+        let mut p = profile();
+        // "日本語" is 3 chars / 9 bytes each repeat; 1000 repeats = 3000 chars,
+        // ending in the """ fence convention.
+        p.global_instructions = format!("{}{}", "日本語".repeat(1000), INSTRUCTION_FENCE);
+        let preamble = p.build_preamble(None, None);
+
+        // (a) reaching here means no panic.
+        // (b) bounded by the instruction cap (plus directive/fence overhead, same
+        // slack the sibling cap test uses).
+        assert!(
+            preamble.chars().count() <= MAX_INSTRUCTION_CHARS + 200,
+            "preamble bounded by the instruction cap, got {} chars",
+            preamble.chars().count()
+        );
+        // (c) valid UTF-8 with no replacement char from a mid-scalar split.
+        assert!(!preamble.contains('\u{FFFD}'));
+        assert!(preamble.contains("日本語"));
+        // The wrapper fences are still present and the embedded fence neutralized
+        // (if any survived truncation, it would have been rewritten).
+        assert!(preamble.matches(INSTRUCTION_FENCE).count() >= 2);
+    }
+
+    #[test]
     fn overlong_instructions_are_capped() {
         let mut p = profile();
         p.global_instructions = "word ".repeat(2000); // ~10k chars

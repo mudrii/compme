@@ -185,6 +185,26 @@ mod tests {
     }
 
     #[test]
+    fn no_word_appears_in_more_than_one_group() {
+        // The dedup path in synonyms() (`!seen.contains(&syn)`) only fires when a
+        // word lives in more than one group. A prior cycle merged the overlapping
+        // groups (e.g. "happy") so today every word is in exactly one group,
+        // leaving that path dead. This pins the no-overlap invariant permanently:
+        // if a future edit reintroduces a duplicate, this fails first, flagging
+        // that the (still-present) dedup defense is once again load-bearing.
+        use std::collections::HashMap;
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for group in GROUPS {
+            for &word in *group {
+                *counts.entry(word).or_insert(0) += 1;
+            }
+        }
+        let max = counts.values().copied().max().unwrap_or(0);
+        let dupes: Vec<_> = counts.iter().filter(|(_, &c)| c > 1).collect();
+        assert_eq!(max, 1, "words appearing in multiple groups: {dupes:?}");
+    }
+
+    #[test]
     fn excludes_the_queried_word_even_in_a_different_case() {
         let syns = synonyms("BIG");
         assert!(!syns.contains(&"BIG".to_string()));

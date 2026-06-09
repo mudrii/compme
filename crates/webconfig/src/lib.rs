@@ -82,6 +82,39 @@ pub enum ParseError {
     InvalidValue(String),
 }
 
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::NotOurScheme => write!(f, "not a complete-me:// URL"),
+            ParseError::UnknownCommand(cmd) => write!(f, "unknown command: {cmd}"),
+            ParseError::UnknownParam(name) => write!(f, "unknown query parameter: {name}"),
+            ParseError::DuplicateParam(name) => write!(f, "duplicate query parameter: {name}"),
+            ParseError::MalformedParam(token) => {
+                write!(f, "malformed query parameter (no `=`): {token}")
+            }
+            ParseError::MissingScope => write!(f, "missing scope (need `app` or `domain`)"),
+            ParseError::AmbiguousScope => {
+                write!(f, "ambiguous scope (only one of `app` or `domain` allowed)")
+            }
+            ParseError::InvalidScope => {
+                write!(f, "invalid scope (empty, too long, or illegal characters)")
+            }
+            ParseError::MissingAction => {
+                write!(f, "missing action (need `enabled` or `excluded`)")
+            }
+            ParseError::AmbiguousAction => {
+                write!(
+                    f,
+                    "ambiguous action (only one of `enabled` or `excluded` allowed)"
+                )
+            }
+            ParseError::InvalidValue(value) => write!(f, "invalid boolean value: {value}"),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 const SCHEME: &str = "complete-me://";
 /// Bundle ids / domains are short; cap to reject absurd inputs.
 const MAX_SCOPE_LEN: usize = 253;

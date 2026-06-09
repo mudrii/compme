@@ -280,10 +280,15 @@ pub fn suggest(left_context: &str, prefs: &EmojiPrefs) -> Option<Suggestion> {
     })
 }
 
-/// Whether `left_context` ends with a `:shortcode` token that could trigger emoji
-/// completion — a cheap (allocation-free) early-exit gate for the host, mirroring
-/// `thesaurus::has_synonyms` / `autocorrect::is_typo`. Does NOT confirm a table
-/// match; `suggest` is the authoritative call.
+/// Whether `left_context` ends with a `:shortcode`-like token — i.e. it detects
+/// the emoji-trigger *token shape* (a trailing `:`-prefixed token), a cheap
+/// (allocation-free) early-exit gate for the host.
+///
+/// This is a SHAPE gate, not a table-match gate: it returns `true` for shapes
+/// like `:s` or `:zzznotreal` where `suggest` ultimately returns `None`. That
+/// makes it weaker than `thesaurus::has_synonyms` / `autocorrect::is_typo`, which
+/// have predicate↔table parity (a `true` from those guarantees a non-empty
+/// lookup). Here `suggest` remains the authoritative call that confirms a match.
 pub fn has_emoji_trigger(left_context: &str) -> bool {
     trailing_shortcode(left_context).is_some()
 }
