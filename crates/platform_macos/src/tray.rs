@@ -6,7 +6,7 @@
 //! observes them. AppKit/objc2 glue: build- and live-verified, not unit-tested.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -31,6 +31,22 @@ pub struct TrayFlags {
     /// Set when the user picks Snooze; the run loop consumes it (swap false)
     /// and applies the snooze to its prefs.
     pub snooze_requested: Arc<AtomicBool>,
+    /// Set when the user picks a "Disable Completions in Current App" arm;
+    /// the run loop consumes it (take) and applies it to the FRONTMOST app's
+    /// prefs (the tray never resolves app identity itself).
+    pub app_disable: Arc<Mutex<Option<DisableArm>>>,
+}
+
+/// Which "Disable Completions in Current App" arm the user picked
+/// (Cotypist-style tray submenu).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisableArm {
+    /// Pause in this app for one hour (auto-resumes).
+    Hour,
+    /// Pause in this app until the app relaunches (session-only).
+    UntilRelaunch,
+    /// Permanently exclude this app (persisted).
+    Always,
 }
 
 #[derive(Clone)]
@@ -71,6 +87,21 @@ define_class!(
         #[unsafe(method(requestSnooze:))]
         fn request_snooze(&self, _sender: Option<&AnyObject>) {
             self.ivars().flags.snooze_requested.store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(disableAppHour:))]
+        fn disable_app_hour(&self, _sender: Option<&AnyObject>) {
+            *self.ivars().flags.app_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::Hour);
+        }
+
+        #[unsafe(method(disableAppRelaunch:))]
+        fn disable_app_relaunch(&self, _sender: Option<&AnyObject>) {
+            *self.ivars().flags.app_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::UntilRelaunch);
+        }
+
+        #[unsafe(method(disableAppAlways:))]
+        fn disable_app_always(&self, _sender: Option<&AnyObject>) {
+            *self.ivars().flags.app_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::Always);
         }
     }
 );
@@ -130,6 +161,30 @@ impl MacosTray {
             enabled_item.setAction(Some(sel!(toggleEnabled:)));
         }
         menu.addItem(&enabled_item);
+
+        // Disable Completions in Current App ▸ (Cotypist-style). Static
+        // "Current App" wording for now — the run loop resolves the actual
+        // frontmost app on consumption; a dynamic app-name title needs an
+        // NSMenuDelegate menuNeedsUpdate hook (future polish).
+        let disable_app_item = NSMenuItem::new(mtm);
+        disable_app_item.setTitle(&NSString::from_str("Disable Completions in Current App"));
+        let disable_menu = NSMenu::new(mtm);
+        for (title, sel) in [
+            ("For 1 Hour", sel!(disableAppHour:)),
+            ("Until Relaunch", sel!(disableAppRelaunch:)),
+            ("Always", sel!(disableAppAlways:)),
+        ] {
+            let item = NSMenuItem::new(mtm);
+            item.setTitle(&NSString::from_str(title));
+            // SAFETY: as above — target outlives the menu via `_target`.
+            unsafe {
+                item.setTarget(Some(target_as_any(&target)));
+                item.setAction(Some(sel));
+            }
+            disable_menu.addItem(&item);
+        }
+        disable_app_item.setSubmenu(Some(&disable_menu));
+        menu.addItem(&disable_app_item);
 
         // Snooze (pause suggestions for a fixed hour; run loop applies it).
         let snooze_item = NSMenuItem::new(mtm);

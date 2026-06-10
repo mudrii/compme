@@ -28,6 +28,7 @@ use platform::{
     AcceptAction, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode, OverlayPlacement,
     PlatformAdapter, PlatformError, ScreenRect, SecurityState, TapControl, Toolkit,
 };
+use platform_macos::DisableArm;
 use platform_macos::{
     accessibility_trusted, bundle_id_for_pid, display_scales, prompt_accessibility_trust,
     read_pasteboard_text, request_screen_recording_permission, screen_recording_permission,
@@ -680,6 +681,27 @@ impl LogSquelch {
     }
 }
 
+/// Map a tray per-app disable arm onto the prefs store. `Always` is a hard
+/// exclude — the caller persists it (COMPME_EXCLUDED_APPS); the timed arms are
+/// session-only by design.
+fn apply_app_disable(arm: DisableArm, app: &str, prefs: &mut Prefs, now_ms: u64) {
+    match arm {
+        DisableArm::Hour => prefs.snooze_app(app, now_ms, 60),
+        DisableArm::UntilRelaunch => prefs.snooze_app(app, now_ms, u64::MAX),
+        DisableArm::Always => {
+            prefs.excluded_apps.insert(app.to_string());
+        }
+    }
+}
+
+/// The COMPME_EXCLUDED_APPS persistence value: comma-joined, sorted for a
+/// stable file diff, round-trippable through the build_prefs parser.
+fn excluded_apps_value(prefs: &Prefs) -> String {
+    let mut apps: Vec<&str> = prefs.excluded_apps.iter().map(String::as_str).collect();
+    apps.sort_unstable();
+    apps.join(",")
+}
+
 /// How long a tray "Snooze" pauses suggestions. One fixed duration for now
 /// (Cotypist-style pause); a duration submenu is a future settings surface.
 const SNOOZE_MINUTES: u64 = 60;
@@ -955,6 +977,7 @@ pub fn run() -> Result<(), String> {
         quit: Arc::new(AtomicBool::new(false)),
         open_settings: Arc::new(AtomicBool::new(false)),
         snooze_requested: Arc::new(AtomicBool::new(false)),
+        app_disable: Arc::new(Mutex::new(None)),
     };
     // Runtime-mutable policy (snooze); starts from the configured prefs. The
     // ONE prefs the loop reads — never read config.prefs after this point, or
@@ -1290,6 +1313,41 @@ pub fn run() -> Result<(), String> {
             latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
+        // Tray "Disable Completions in Current App" ▸ arm: resolve the CURRENT
+        // frontmost app at consumption time (the tray never knows app identity)
+        // and apply. Same dismiss edge as snooze/disable — the pref change must
+        // retract a visible ghost (a2-parity review #2, pre-documented for
+        // exactly this surface).
+        if let Some(arm) = flags
+            .app_disable
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            match current_field
+                .as_ref()
+                .and_then(|f| resolve_app_key(f.pid, bundle_id_for_pid))
+            {
+                Some(app) => {
+                    apply_app_disable(arm, &app, &mut prefs, now_ms);
+                    eprintln!("compme: completions disabled in {app} ({arm:?})");
+                    if arm == DisableArm::Always {
+                        if let Some(path) = config::config_file_path() {
+                            if let Err(err) = config::persist_setting(
+                                &path,
+                                "COMPME_EXCLUDED_APPS",
+                                &excluded_apps_value(&prefs),
+                            ) {
+                                eprintln!("compme: could not persist excluded apps: {err}");
+                            }
+                        }
+                    }
+                    latest.clear();
+                    let _ = log_err("on_dismiss", engine.on_dismiss());
+                }
+                None => eprintln!("compme: disable-in-app ignored — no focused app to resolve"),
+            }
+        }
         let enabled = flags.enabled.load(Ordering::Relaxed);
         let status = derive_status(trusted, secure, inference.is_ready(), enabled);
         // Secure input is a true engine-state transition, not only a UI state:
@@ -1544,6 +1602,38 @@ mod tests {
              together with SNOOZE_MINUTES"
         );
         assert!(AppStatus::Ready.render_line(true).contains("1 hour"));
+    }
+
+    #[test]
+    fn app_disable_arms_map_to_the_right_prefs_mutation() {
+        let mut prefs = Prefs::default();
+        // Hour: per-app snooze for 60 minutes, auto-resuming.
+        apply_app_disable(DisableArm::Hour, "com.apple.TextEdit", &mut prefs, 1_000);
+        assert!(prefs.is_app_snoozed("com.apple.TextEdit", 1_000 + 59 * 60_000));
+        assert!(!prefs.is_app_snoozed("com.apple.TextEdit", 1_000 + 60 * 60_000));
+        // UntilRelaunch: saturated deadline, session-only.
+        apply_app_disable(
+            DisableArm::UntilRelaunch,
+            "com.apple.Safari",
+            &mut prefs,
+            1_000,
+        );
+        assert!(prefs.is_app_snoozed("com.apple.Safari", u64::MAX - 1));
+        // Always: hard exclude (persisted by the caller).
+        apply_app_disable(
+            DisableArm::Always,
+            "com.googlecode.iterm2",
+            &mut prefs,
+            1_000,
+        );
+        assert!(prefs.excluded_apps.contains("com.googlecode.iterm2"));
+        // Excluded-apps persistence value: stable comma-joined sorted list,
+        // round-trippable through the COMPME_EXCLUDED_APPS parser.
+        prefs.excluded_apps.insert("com.apple.Finder".into());
+        assert_eq!(
+            excluded_apps_value(&prefs),
+            "com.apple.Finder,com.googlecode.iterm2"
+        );
     }
 
     #[test]

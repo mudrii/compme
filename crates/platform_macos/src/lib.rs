@@ -56,7 +56,7 @@ use platform::{
 
 pub mod keychain;
 mod tray;
-pub use tray::{MacosTray, TrayFlags};
+pub use tray::{DisableArm, MacosTray, TrayFlags};
 
 const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.05;
 const AX_WORKER_PUMP_INTERVAL: Duration = Duration::from_millis(5);
