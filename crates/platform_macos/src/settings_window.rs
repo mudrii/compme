@@ -19,8 +19,9 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSControlStateValueOn,
-    NSFont, NSSwitch, NSTabView, NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
+    NSControlStateValueOn, NSFont, NSSwitch, NSTabView, NSTabViewItem, NSTextField, NSView,
+    NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
@@ -41,6 +42,11 @@ pub struct SettingsFlags {
     /// Setup rows (permission/model readiness), composed by the run loop
     /// right before each show; one label per line, refreshed like stats.
     pub setup_lines: Arc<Mutex<Vec<String>>>,
+    /// Setup buttons (tray-flags pattern): the button stores true, the run
+    /// loop consumes the edge and performs the privileged call on its side.
+    pub setup_grant_ax: Arc<AtomicBool>,
+    pub setup_request_screen: Arc<AtomicBool>,
+    pub setup_reveal_model: Arc<AtomicBool>,
 }
 
 struct SettingsTargetIvars {
@@ -58,6 +64,27 @@ define_class!(
     unsafe impl NSObjectProtocol for SettingsTarget {}
 
     impl SettingsTarget {
+        #[unsafe(method(grantAccessibility:))]
+        fn grant_accessibility(&self, _sender: Option<&NSButton>) {
+            self.ivars().flags.setup_grant_ax.store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(requestScreenRecording:))]
+        fn request_screen_recording(&self, _sender: Option<&NSButton>) {
+            self.ivars()
+                .flags
+                .setup_request_screen
+                .store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(revealModel:))]
+        fn reveal_model(&self, _sender: Option<&NSButton>) {
+            self.ivars()
+                .flags
+                .setup_reveal_model
+                .store(true, Ordering::Relaxed);
+        }
+
         #[unsafe(method(toggleMidline:))]
         fn toggle_midline(&self, sender: Option<&NSSwitch>) {
             if let Some(switch) = sender {
@@ -137,6 +164,16 @@ impl MacosSettingsWindow {
         }
         app.activate();
         Ok(())
+    }
+
+    /// Re-render the Setup rows from `flags.setup_lines` while the window
+    /// stays open (the visible-only poll edge; show() covers the open edge).
+    pub fn refresh_setup_labels(&self) {
+        if let Ok(lines) = self.flags.setup_lines.lock() {
+            for (label, line) in self.setup_labels.iter().zip(lines.iter()) {
+                label.setStringValue(&NSString::from_str(line));
+            }
+        }
     }
 
     /// Whether the window is visible to the app — TRUE while miniaturized
@@ -234,6 +271,37 @@ fn build_window(
             ));
             setup.addSubview(&label);
             setup_labels.push(label);
+        }
+
+        // Action buttons (always present; each is a harmless no-op when its
+        // item is already ready). The privileged calls happen in the run
+        // loop — buttons only set flags.
+        let buttons: [(&str, objc2::runtime::Sel); 3] = [
+            ("Grant Accessibility\u{2026}", sel!(grantAccessibility:)),
+            (
+                "Request Screen Recording\u{2026}",
+                sel!(requestScreenRecording:),
+            ),
+            ("Reveal Model in Finder", sel!(revealModel:)),
+        ];
+        for (i, (title, action)) in buttons.into_iter().enumerate() {
+            // SAFETY: target outlives the window (held by MacosSettingsWindow).
+            let button = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(title),
+                    Some({
+                        let any: &AnyObject = target.as_ref();
+                        any
+                    }),
+                    Some(action),
+                    mtm,
+                )
+            };
+            button.setFrame(NSRect::new(
+                NSPoint::new(20.0, 150.0 - i as f64 * 36.0),
+                NSSize::new(230.0, 28.0),
+            ));
+            setup.addSubview(&button);
         }
     }
 

@@ -808,6 +808,28 @@ fn stats_pane_lines(buckets: &[stats::DayBucket]) -> Vec<String> {
         .collect()
 }
 
+/// Whether the Setup tab's permission re-probe is due: only while the
+/// settings window is visible (hidden windows must cost nothing), at most
+/// every `SECURE_POLL_INTERVAL_MS`.
+fn setup_poll_due(visible: bool, last_poll_ms: Option<u64>, now_ms: u64) -> bool {
+    visible
+        && last_poll_ms.is_none_or(|last| now_ms.saturating_sub(last) >= SECURE_POLL_INTERVAL_MS)
+}
+
+/// The Setup tab's current rows as display lines: probe permissions and the
+/// model file NOW (cheap queries) and render through `setup_row_line`.
+fn compose_setup_lines(trusted: bool, config: &Config) -> Vec<String> {
+    crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
+        ax_trusted: trusted,
+        screen_context_enabled: config.screen_context,
+        screen_recording: screen_recording_permission(),
+        model_exists: config.stub_completion.is_some() || config.model_path.exists(),
+    })
+    .iter()
+    .map(setup_row_line)
+    .collect()
+}
+
 /// One Setup-tab row: readiness glyph + label (the pane's display form of
 /// `setup_state::SetupRow`).
 fn setup_row_line(row: &crate::setup_state::SetupRow) -> String {
@@ -1313,7 +1335,12 @@ pub fn run() -> Result<(), String> {
         stats_lines: Arc::new(Mutex::new(Vec::new())),
         about_text: crate::about::about_text(),
         setup_lines: Arc::new(Mutex::new(Vec::new())),
+        setup_grant_ax: Arc::new(AtomicBool::new(false)),
+        setup_request_screen: Arc::new(AtomicBool::new(false)),
+        setup_reveal_model: Arc::new(AtomicBool::new(false)),
     };
+    // Visible-only Setup re-probe cadence (setup_poll_due).
+    let mut last_setup_poll_ms: Option<u64> = None;
     // Lifetime stats baseline, read once: the file only changes at shutdown,
     // so startup state + live session is the whole truth while running.
     let lifetime_base = stats::parse_stats_file(
@@ -1632,18 +1659,11 @@ pub fn run() -> Result<(), String> {
                 ));
             }
             // Setup tab: re-probe permissions/model at every open (cheap
-            // queries; a 480ms visible-only poll is the next slice).
+            // queries; the visible-only poll below covers stays-open).
             if let Ok(mut lines) = settings_flags.setup_lines.lock() {
-                *lines = crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
-                    ax_trusted: trusted,
-                    screen_context_enabled: config.screen_context,
-                    screen_recording: screen_recording_permission(),
-                    model_exists: config.stub_completion.is_some() || config.model_path.exists(),
-                })
-                .iter()
-                .map(setup_row_line)
-                .collect();
+                *lines = compose_setup_lines(trusted, &config);
             }
+            last_setup_poll_ms = Some(now_ms);
             if let Err(err) = settings_window.show() {
                 eprintln!("compme: settings window unavailable: {err}");
             }
@@ -1658,6 +1678,34 @@ pub fn run() -> Result<(), String> {
             }
         }
         settings_was_visible = settings_visible;
+        // Setup buttons (tray-flags pattern): consume edges, perform the
+        // privileged calls here on the main thread.
+        if settings_flags.setup_grant_ax.swap(false, Ordering::Relaxed) {
+            prompt_accessibility_trust();
+        }
+        if settings_flags
+            .setup_request_screen
+            .swap(false, Ordering::Relaxed)
+        {
+            request_screen_recording_permission();
+        }
+        if settings_flags
+            .setup_reveal_model
+            .swap(false, Ordering::Relaxed)
+        {
+            if let Err(err) = platform_macos::reveal_file_in_finder(&config.model_path) {
+                eprintln!("compme: reveal model failed: {err:?}");
+            }
+        }
+        // Visible-only Setup re-probe: granting a permission while the
+        // window stays open flips its row within ~480ms.
+        if setup_poll_due(settings_visible, last_setup_poll_ms, now_ms) {
+            last_setup_poll_ms = Some(now_ms);
+            if let Ok(mut lines) = settings_flags.setup_lines.lock() {
+                *lines = compose_setup_lines(trusted, &config);
+            }
+            settings_window.refresh_setup_labels();
+        }
         // Labs-pane watcher: on a switch edge, persist COMPME_MIDLINE and
         // re-apply the engine gate for the current app immediately (per-app
         // overrides still win; the switch changes only the global default).
@@ -2057,6 +2105,40 @@ mod tests {
         let mut lines = stats_pane_lines(&[stats::DayBucket::default()]);
         lines.push(lifetime_line(&stats::PersistedStats::default()));
         assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn setup_poll_fires_only_while_visible_and_spaced() {
+        // The Setup tab re-probes permissions on a 480ms cadence, but ONLY
+        // while the window is visible — hidden windows must cost nothing.
+        assert!(!setup_poll_due(false, None, 10_000), "hidden: never");
+        assert!(setup_poll_due(true, None, 10_000), "first visible poll");
+        assert!(
+            !setup_poll_due(true, Some(10_000), 10_479),
+            "inside the interval"
+        );
+        assert!(
+            setup_poll_due(true, Some(10_000), 10_480),
+            "interval elapsed"
+        );
+        assert!(
+            !setup_poll_due(false, Some(10_000), 99_999),
+            "hidden again: never, regardless of elapsed"
+        );
+    }
+
+    #[test]
+    fn setup_pane_composition_respects_the_row_limit() {
+        // The window builds 3 setup labels (SETUP_ROWS in platform_macos);
+        // zip-truncation would silently hide overflow rows (review-c106,
+        // c103 precedent).
+        let rows = crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
+            ax_trusted: true,
+            screen_context_enabled: true,
+            screen_recording: true,
+            model_exists: true,
+        });
+        assert!(rows.len() <= 3);
     }
 
     #[test]

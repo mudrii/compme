@@ -1679,6 +1679,20 @@ pub fn request_screen_recording_permission() -> bool {
     unsafe { CGRequestScreenCaptureAccess() }
 }
 
+/// Reveal `path` in Finder (the Setup pane's model row). Main-thread only.
+pub fn reveal_file_in_finder(path: &std::path::Path) -> Result<(), PlatformError> {
+    use objc2_foundation::{NSArray, NSURL};
+    if MainThreadMarker::new().is_none() {
+        return Err(PlatformError::CannotComplete {
+            reason: "reveal requires the main thread".into(),
+        });
+    }
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    let urls = NSArray::from_retained_slice(&[url]);
+    NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&urls);
+    Ok(())
+}
+
 /// Screen-aware context (A2 §16): capture the display containing the focused
 /// caret when available (falling back to the main display) and OCR it locally
 /// with Vision (`VNRecognizeTextRequest`), returning up to `max_chars` of
