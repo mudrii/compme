@@ -817,7 +817,7 @@ fn setup_poll_due(visible: bool, last_poll_ms: Option<u64>, now_ms: u64) -> bool
 }
 
 /// The Apps tab's rows: top apps by recorded-input count (capped at the
-/// window's 8 labels), or an honest status line when collection is off /
+/// window's label count), or an honest status line when collection is off /
 /// nothing is recorded.
 fn apps_pane_lines(counts: &[(String, u64)], collection_on: bool) -> Vec<String> {
     if !collection_on {
@@ -828,7 +828,7 @@ fn apps_pane_lines(counts: &[(String, u64)], collection_on: bool) -> Vec<String>
     }
     counts
         .iter()
-        .take(8)
+        .take(platform_macos::APPS_ROWS)
         .map(|(app, n)| format!("{app} \u{2014} {n}"))
         .collect()
 }
@@ -869,9 +869,10 @@ fn lifetime_line(merged: &stats::PersistedStats) -> String {
     )
 }
 
-/// The COMPME_MIDLINE persistence value for a given switch state, paired with
-/// the launch parser (`"1"`/`"true"` are truthy; everything else is off).
-fn midline_value(enabled: bool) -> &'static str {
+/// The persistence value for a boolean settings switch (COMPME_MIDLINE,
+/// COMPME_AUTOCORRECT), paired with the launch parsers (`"1"`/`"true"`
+/// truthy; everything else off).
+fn switch_value(enabled: bool) -> &'static str {
     if enabled {
         "1"
     } else {
@@ -1087,7 +1088,9 @@ pub fn run() -> Result<(), String> {
         }
     };
 
-    let config = Config::from_env();
+    // Mutable: General-tab switches update globals live (autocorrect today;
+    // enabled/trailing-space later) — field writes between heartbeats only.
+    let mut config = Config::from_env();
     install_signal_handlers();
 
     // Permissions: if Accessibility isn't granted, fire the system prompt once.
@@ -1351,6 +1354,7 @@ pub fn run() -> Result<(), String> {
     let mut global_mid_word = config.allow_mid_word;
     let settings_flags = platform_macos::SettingsFlags {
         labs_midline: Arc::new(AtomicBool::new(global_mid_word)),
+        general_autocorrect: Arc::new(AtomicBool::new(config.autocorrect)),
         stats_lines: Arc::new(Mutex::new(Vec::new())),
         about_text: crate::about::about_text(),
         setup_lines: Arc::new(Mutex::new(Vec::new())),
@@ -1749,6 +1753,30 @@ pub fn run() -> Result<(), String> {
             }
             settings_window.refresh_setup_labels();
         }
+        // General-tab Autocorrect watcher: persist + apply on the edge. The
+        // decision path reads config.autocorrect per offer, so a field write
+        // IS the live apply (per-app overrides still win).
+        let general_autocorrect = settings_flags.general_autocorrect.load(Ordering::Relaxed);
+        if general_autocorrect != config.autocorrect {
+            config.autocorrect = general_autocorrect;
+            if let Some(path) = config::config_file_path() {
+                if let Err(err) = config::persist_setting(
+                    &path,
+                    "COMPME_AUTOCORRECT",
+                    switch_value(general_autocorrect),
+                ) {
+                    eprintln!("compme: failed to persist COMPME_AUTOCORRECT: {err}");
+                }
+            }
+            eprintln!(
+                "compme: autocorrect {}",
+                if general_autocorrect {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
         // Labs-pane watcher: on a switch edge, persist COMPME_MIDLINE and
         // re-apply the engine gate for the current app immediately (per-app
         // overrides still win; the switch changes only the global default).
@@ -1764,7 +1792,7 @@ pub fn run() -> Result<(), String> {
             );
             if let Some(path) = config::config_file_path() {
                 if let Err(err) =
-                    config::persist_setting(&path, "COMPME_MIDLINE", midline_value(global_mid_word))
+                    config::persist_setting(&path, "COMPME_MIDLINE", switch_value(global_mid_word))
                 {
                     eprintln!("compme: failed to persist COMPME_MIDLINE: {err}");
                 }
@@ -2193,9 +2221,12 @@ mod tests {
                 "com.google.Chrome \u{2014} 3".to_string(),
             ]
         );
-        // Capped at the window's row count (8 labels).
+        // Capped at the window's row count (shared const, review-c108).
         let many: Vec<(String, u64)> = (0..20).map(|i| (format!("app{i:02}"), 20 - i)).collect();
-        assert_eq!(apps_pane_lines(&many, true).len(), 8);
+        assert_eq!(
+            apps_pane_lines(&many, true).len(),
+            platform_macos::APPS_ROWS
+        );
     }
 
     #[test]
@@ -2271,15 +2302,27 @@ mod tests {
     }
 
     #[test]
-    fn midline_persist_value_round_trips_through_the_parser() {
-        // The Labs-pane watcher persists midline_value(flag); the launch-time
-        // parser must read it back to the same bool, both ways.
+    fn autocorrect_persist_value_round_trips_through_the_parser() {
+        // The General-tab Autocorrect switch persists switch_value(flag);
+        // the launch parser must read it back to the same bool, both ways.
         assert!(
-            Config::from_lookup(lookup(&[("COMPME_MIDLINE", midline_value(true))])).allow_mid_word
+            Config::from_lookup(lookup(&[("COMPME_AUTOCORRECT", switch_value(true))])).autocorrect
         );
         assert!(
-            !Config::from_lookup(lookup(&[("COMPME_MIDLINE", midline_value(false))]))
-                .allow_mid_word
+            !Config::from_lookup(lookup(&[("COMPME_AUTOCORRECT", switch_value(false))]))
+                .autocorrect
+        );
+    }
+
+    #[test]
+    fn midline_persist_value_round_trips_through_the_parser() {
+        // The Labs-pane watcher persists switch_value(flag); the launch-time
+        // parser must read it back to the same bool, both ways.
+        assert!(
+            Config::from_lookup(lookup(&[("COMPME_MIDLINE", switch_value(true))])).allow_mid_word
+        );
+        assert!(
+            !Config::from_lookup(lookup(&[("COMPME_MIDLINE", switch_value(false))])).allow_mid_word
         );
     }
 

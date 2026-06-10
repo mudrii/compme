@@ -33,6 +33,9 @@ pub struct SettingsFlags {
     /// Labs: global mid-line completions (`COMPME_MIDLINE`). The run loop
     /// watches edges, persists, and re-applies the engine gate live.
     pub labs_midline: Arc<AtomicBool>,
+    /// General: global typo autocorrect (`COMPME_AUTOCORRECT`). Same watcher
+    /// pattern: the run loop persists and applies on the edge.
+    pub general_autocorrect: Arc<AtomicBool>,
     /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
     /// before each show; the window only renders them (one label per line).
     pub stats_lines: Arc<Mutex<Vec<String>>>,
@@ -86,6 +89,17 @@ define_class!(
                 .flags
                 .setup_reveal_model
                 .store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(toggleAutocorrect:))]
+        fn toggle_autocorrect(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars()
+                    .flags
+                    .general_autocorrect
+                    .store(on, Ordering::Relaxed);
+            }
         }
 
         #[unsafe(method(toggleMidline:))]
@@ -347,6 +361,36 @@ fn build_window(
             switch.setAction(Some(sel!(toggleMidline:)));
         }
         general.addSubview(&switch);
+
+        // Autocorrect row, same switch pattern one row below.
+        let ac_label = NSTextField::labelWithString(
+            &NSString::from_str("Autocorrect typos (offer the fix as you type)"),
+            mtm,
+        );
+        ac_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 260.0),
+            NSSize::new(400.0, 20.0),
+        ));
+        general.addSubview(&ac_label);
+        let ac_switch = NSSwitch::new(mtm);
+        ac_switch.setFrame(NSRect::new(
+            NSPoint::new(420.0, 256.0),
+            NSSize::new(60.0, 26.0),
+        ));
+        ac_switch.setState(if flags.general_autocorrect.load(Ordering::Relaxed) {
+            objc2_app_kit::NSControlStateValueOn
+        } else {
+            objc2_app_kit::NSControlStateValueOff
+        });
+        // SAFETY: target outlives the window (held by MacosSettingsWindow).
+        unsafe {
+            ac_switch.setTarget(Some({
+                let any: &AnyObject = target.as_ref();
+                any
+            }));
+            ac_switch.setAction(Some(sel!(toggleAutocorrect:)));
+        }
+        general.addSubview(&ac_switch);
     }
 
     // Apps tab: per-app recorded-input counts (encrypted memory store).
@@ -457,7 +501,9 @@ struct BuiltWindow {
 const SETUP_ROWS: usize = 3;
 
 /// Max Apps rows (top apps by recorded-input count, plus status lines).
-const APPS_ROWS: usize = 8;
+/// Public: the run loop's line composer caps to this same number
+/// (review-c108 — a drifting duplicate would silently waste label slots).
+pub const APPS_ROWS: usize = 8;
 
 /// Fixed Statistics row count (shown / accepted / words / lifetime).
 const STATS_ROWS: usize = 4;
