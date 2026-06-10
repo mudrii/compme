@@ -3176,11 +3176,40 @@ fn caret_rect_for_field(pid: i32, field: FieldHandle) -> Result<Option<ScreenRec
 
     let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
     let caret = selected_range.location.max(0);
-    resolve_caret_rect_with_marker_first(
+    let rect = resolve_caret_rect_with_marker_first(
         caret,
         || unsafe { read_ax_bounds_for_selected_text_marker_range(element) },
         |location, length| unsafe { read_ax_bounds_for_range(element, location, length) },
-    )
+    )?;
+    Ok(rect.map(|rect| normalize_caret_rect(rect, bundle_id_for_pid(pid).as_deref())))
+}
+
+/// Chromium-family bundles whose AX caret rect IS the caret line (`[y, y+h]`),
+/// unlike the TextEdit-calibrated default where the line sits one rect below
+/// (`[y+h, y+2h]`, cycle-44 live finding). Evidence-only list (2026-06-10
+/// live screenshots: ghost exactly one line low in Chrome); extend per app on
+/// evidence, never by guess.
+const RECT_IS_LINE_BUNDLE_PREFIXES: [&str; 2] = ["com.google.Chrome", "org.chromium."];
+
+/// Normalize an app-specific caret rect to the calibrated default semantics
+/// by shifting rect-is-line apps up one line. Degenerate rects (element
+/// bounds, not carets) pass through untouched — the overlay's bounds fallback
+/// owns those.
+fn normalize_caret_rect(rect: ScreenRect, bundle_id: Option<&str>) -> ScreenRect {
+    let plausible_caret = rect.w <= CARET_MAX_W && rect.h <= CARET_MAX_H;
+    let rect_is_line = bundle_id.is_some_and(|id| {
+        RECT_IS_LINE_BUNDLE_PREFIXES
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+    });
+    if plausible_caret && rect_is_line {
+        ScreenRect {
+            y: rect.y - rect.h,
+            ..rect
+        }
+    } else {
+        rect
+    }
 }
 
 /// Popup-mode fallback anchor: the focused field's window frame, used when no
@@ -6835,6 +6864,65 @@ mod tests {
                 .stringForType(pasteboard_string_type())
                 .map(|value| value.to_string()),
             Some("external".into())
+        );
+    }
+
+    #[test]
+    fn chromium_caret_rects_are_normalized_to_textedit_semantics() {
+        // Live screenshots (2026-06-10, g5.html textarea + google.com search):
+        // the emoji ghost rendered exactly ONE LINE BELOW the typed text in
+        // Chrome. Chrome's caret rect IS the caret line ([y, y+h]); the
+        // TextEdit-calibrated formula assumes the line is one rect BELOW
+        // ([y+h, y+2h], cycle-44 finding). Shifting Chrome rects up by h makes
+        // the downstream math correct unchanged.
+        let chrome_rect = ScreenRect {
+            x: 911.0,
+            y: 353.0,
+            w: 0.0,
+            h: 21.0,
+        };
+        let normalized = normalize_caret_rect(chrome_rect, Some("com.google.Chrome"));
+        assert_eq!(normalized.y, 332.0, "shift up by one line height");
+        assert_eq!(
+            (normalized.x, normalized.w, normalized.h),
+            (911.0, 0.0, 21.0)
+        );
+
+        // Chromium-family prefix matches too.
+        assert_eq!(
+            normalize_caret_rect(chrome_rect, Some("org.chromium.Chromium")).y,
+            332.0
+        );
+    }
+
+    #[test]
+    fn caret_normalization_leaves_other_apps_and_degenerate_rects_alone() {
+        let rect = ScreenRect {
+            x: 120.0,
+            y: 240.0,
+            w: 1.0,
+            h: 14.0,
+        };
+        // TextEdit semantics are the calibrated default — untouched.
+        assert_eq!(
+            normalize_caret_rect(rect, Some("com.apple.TextEdit")).y,
+            240.0
+        );
+        // Unknown app — untouched (no-false-positive discipline: only
+        // evidence-backed bundles shift).
+        assert_eq!(normalize_caret_rect(rect, None).y, 240.0);
+        // A Chrome ELEMENT-BOUNDS rect (the degenerate case) must NOT shift —
+        // the overlay's bounds fallback owns that path, and shifting y by a
+        // 1225px "height" would garble it.
+        let bounds = ScreenRect {
+            x: 835.0,
+            y: 168.0,
+            w: 1799.0,
+            h: 1225.0,
+        };
+        assert_eq!(
+            normalize_caret_rect(bounds, Some("com.google.Chrome")).y,
+            168.0
         );
     }
 

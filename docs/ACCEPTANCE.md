@@ -73,10 +73,15 @@ misreporting app-focus failures as product failures.
 
 The historical `accept-tap-*`, `accept-insert-*`, and `e2e-complete-me-*`
 harnesses are no longer default automated evidence for product accept-key
-consumption after the Carbon migration. macOS synthetic key posts do not fire
-`RegisterEventHotKey` the same way physical keyboard input does, so those gates
-can still be useful as historical CGEventTap probes or insertion-path smoke
-tests, but they must not close the current Carbon consume gate by themselves.
+consumption after the Carbon migration. **[CORR 2026-06-10]** The long-standing
+claim that synthetic key posts cannot fire `RegisterEventHotKey` was
+re-tested and is STALE: with the NSApp event pump in place (the cycle-41
+fix), a System Events synthetic Tab DID fire the Carbon hotkey and accepted
+live (`carbon hotkey fired id=1` → `accept Word`, scripted run, Chrome
+textarea). The historical "registered but never fired" evidence was the
+missing event pump, misattributed to synthetic-event filtering. Scripted
+accept-key tests are therefore possible again; keep physical-key runs as the
+final UX confirmation for gate records.
 The runner reports these as `MANUAL`, not `SKIP`, when they are the remaining
 Carbon evidence requirement. `--self-test` pins the runner's blocker
 classification logic.
