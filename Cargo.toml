@@ -17,6 +17,7 @@ members = [
     "crates/autocorrect",
     "crates/localize",
     "crates/compat",
+    "crates/model_catalog",
     "crates/model_client",
     "crates/platform_macos",
     "crates/engine",

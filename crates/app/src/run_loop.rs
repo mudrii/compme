@@ -2026,6 +2026,16 @@ mod tests {
     }
 
     #[test]
+    fn statistics_pane_composition_is_exactly_stats_rows_deep() {
+        // The window builds STATS_ROWS(=4) labels and zips them with these
+        // lines; a composition that stopped producing 4 would silently leave
+        // a stale label (review-c103). Pin the contract here.
+        let mut lines = stats_pane_lines(&[stats::DayBucket::default()]);
+        lines.push(lifetime_line(&stats::PersistedStats::default()));
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
     fn lifetime_line_formats_persisted_plus_session_totals() {
         // Statistics pane 4th row: lifetime totals (stats.env base merged
         // with the live session) — words and accepted only, no sparkline.

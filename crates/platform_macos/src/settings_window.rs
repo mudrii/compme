@@ -253,16 +253,19 @@ fn build_window(
         // About section: static for the process lifetime, so build-once is
         // fine here (unlike the Statistics rows above).
         let about_header = NSTextField::labelWithString(&NSString::from_str("About"), mtm);
+        // Below the 4th Statistics row ([190,210]) with clear margin — the
+        // header sat at [168,192] when there were 3 rows, which the Lifetime
+        // row would now clip by 2px.
         about_header.setFrame(NSRect::new(
-            NSPoint::new(20.0, 168.0),
-            NSSize::new(200.0, 24.0),
+            NSPoint::new(20.0, 162.0),
+            NSSize::new(200.0, 20.0),
         ));
         content.addSubview(&about_header);
         let about =
             NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.about_text), mtm);
         about.setFrame(NSRect::new(
-            NSPoint::new(20.0, 28.0),
-            NSSize::new(480.0, 136.0),
+            NSPoint::new(20.0, 24.0),
+            NSSize::new(480.0, 134.0),
         ));
         // Display-only: wrappingLabelWithString is selectable by default,
         // which is fine (lets the user copy the repo URL), but it must not
