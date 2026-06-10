@@ -100,7 +100,9 @@ pub fn download_url(
 ) -> Result<std::path::PathBuf, FetchError> {
     // Timeouts are mandatory (review-c118 CRITICAL): without a read timeout
     // a stalled server hangs the download — and the worker thread's
-    // shutdown — forever. 30s reads tolerate slow CDNs; connect fails fast.
+    // shutdown — forever. timeout_read is PER READ CALL (socket-level), not
+    // whole-body: each 64KB chunk gets a fresh 30s window, so multi-GB
+    // downloads on slow links are fine; only a true stall trips it.
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout_read(std::time::Duration::from_secs(30))
@@ -123,10 +125,20 @@ fn download_with_agent(
     if let Some(range) = resume_range_header(existing) {
         request = request.set("Range", &range);
     }
-    let response = request.call().map_err(|e| match e {
-        ureq::Error::Status(code, _) => FetchError::Http(code),
-        other => FetchError::Network(other.to_string()),
-    })?;
+    let response = match request.call() {
+        Ok(response) => response,
+        // 416 with a part on disk = the server's file is smaller than our
+        // resume offset (it shrank/changed). Keeping the part would 416 on
+        // every retry forever (review-c119) — drop it and restart unranged.
+        // Recursion is bounded: the retry sends no Range, so it cannot 416
+        // down this arm again (the `existing > 0` guard).
+        Err(ureq::Error::Status(416, _)) if existing > 0 => {
+            let _ = std::fs::remove_file(&part);
+            return download_with_agent(agent, url, dest, expected_sha256, progress);
+        }
+        Err(ureq::Error::Status(code, _)) => return Err(FetchError::Http(code)),
+        Err(other) => return Err(FetchError::Network(other.to_string())),
+    };
 
     let status = response.status();
     // Trust a 206 only when its Content-Range start matches OUR offset —
@@ -295,6 +307,8 @@ mod tests {
         /// LIE: reply 206 but serve the FULL body from offset 0 with a
         /// Content-Range that contradicts the request (corruption trap).
         Lie,
+        /// Reply 416 to ANY ranged request (shrunk-file scenario).
+        Unsatisfiable,
     }
 
     fn serve(body: &'static [u8], mode: RangeMode) -> String {
@@ -312,6 +326,14 @@ mod tests {
                     .and_then(|r| r.split('-').next())
                     .and_then(|s| s.parse::<usize>().ok())
                     .filter(|&s| s < body.len());
+                let ranged = req.lines().any(|l| l.starts_with("Range:"));
+                if matches!(mode, RangeMode::Unsatisfiable) && ranged {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    continue;
+                }
                 let (status, slice, content_range) = match (&mode, requested) {
                     (RangeMode::Honor, Some(s)) => (
                         "206 Partial Content",
@@ -482,6 +504,21 @@ mod tests {
         std::fs::write(&part, b"0123").unwrap();
         let got = download_url(&url, &dest, None, |_, _| {}).unwrap();
         assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn http_416_restarts_from_zero_instead_of_looping_forever() {
+        // review-c119 MEDIUM: an oversized part (server file shrank) makes
+        // every resume reply 416; keeping the part would 416 forever. The
+        // fix deletes the part and restarts unranged exactly once.
+        let url = serve(b"shrunk", RangeMode::Unsatisfiable);
+        let dest = temp_dest("u416");
+        let part = dest.with_extension("part");
+        std::fs::write(&part, b"way longer than the new body").unwrap();
+        let got = download_url(&url, &dest, None, |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"shrunk");
+        assert!(!part.exists());
         let _ = std::fs::remove_file(&dest);
     }
 
