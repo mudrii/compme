@@ -28,6 +28,10 @@ pub struct Prefs {
     pub per_app: HashMap<String, AppPolicy>,
     /// When set and in the future, suggestions are paused until this instant.
     pub snooze_until_ms: Option<u64>,
+    /// Per-app timed pauses (tray "Disable Completions in <app>" — the
+    /// Cotypist-style submenu). `u64::MAX` = until relaunch (session-only,
+    /// like the global snooze; the permanent arm is `excluded_apps`).
+    pub app_snooze_until_ms: HashMap<String, u64>,
 }
 
 impl Default for Prefs {
@@ -38,6 +42,7 @@ impl Default for Prefs {
             excluded_domains: HashSet::new(),
             per_app: HashMap::new(),
             snooze_until_ms: None,
+            app_snooze_until_ms: HashMap::new(),
         }
     }
 }
@@ -51,6 +56,9 @@ impl Prefs {
         }
         if let Some(app) = app {
             if self.excluded_apps.contains(app) {
+                return false;
+            }
+            if self.is_app_snoozed(app, now_ms) {
                 return false;
             }
         }
@@ -74,6 +82,27 @@ impl Prefs {
     /// Pause suggestions for `minutes` from `now_ms` ("disable for N minutes").
     pub fn snooze(&mut self, now_ms: u64, minutes: u64) {
         self.snooze_until_ms = Some(now_ms.saturating_add(minutes.saturating_mul(MS_PER_MINUTE)));
+    }
+
+    /// Pause suggestions in ONE app for `minutes` from `now_ms` (the tray
+    /// per-app disable). `u64::MAX` minutes saturates to "until relaunch".
+    pub fn snooze_app(&mut self, app: &str, now_ms: u64, minutes: u64) {
+        self.app_snooze_until_ms.insert(
+            app.to_string(),
+            now_ms.saturating_add(minutes.saturating_mul(MS_PER_MINUTE)),
+        );
+    }
+
+    /// Cancel a per-app snooze (re-enable before the deadline).
+    pub fn clear_app_snooze(&mut self, app: &str) {
+        self.app_snooze_until_ms.remove(app);
+    }
+
+    /// Whether `app` is per-app snoozed at `now_ms` (auto-resumes after).
+    pub fn is_app_snoozed(&self, app: &str, now_ms: u64) -> bool {
+        self.app_snooze_until_ms
+            .get(app)
+            .is_some_and(|until| now_ms < *until)
     }
 
     /// Cancel any active snooze.
@@ -126,6 +155,33 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_snooze_until_relaunch_saturates_and_clear_reenables() {
+        let mut p = Prefs::default();
+        // u64::MAX minutes saturates: effectively "until relaunch".
+        p.snooze_app("com.googlecode.iterm2", 5_000, u64::MAX);
+        assert!(!p.should_suggest(Some("com.googlecode.iterm2"), None, u64::MAX - 1));
+        // Clearing re-enables before any deadline.
+        p.clear_app_snooze("com.googlecode.iterm2");
+        assert!(p.should_suggest(Some("com.googlecode.iterm2"), None, 5_000));
+        // A hard exclude still dominates regardless of snooze state.
+        p.excluded_apps.insert("com.googlecode.iterm2".into());
+        assert!(!p.should_suggest(Some("com.googlecode.iterm2"), None, 5_000));
+    }
+
+    #[test]
+    fn app_snooze_gates_only_that_app_and_auto_resumes() {
+        let mut p = Prefs::default();
+        p.snooze_app("com.apple.TextEdit", 1_000, 60);
+        // The snoozed app is gated…
+        assert!(!p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        assert!(!p.should_suggest(Some("com.apple.TextEdit"), None, 1_000 + 59 * 60_000));
+        // …other apps are not…
+        assert!(p.should_suggest(Some("com.apple.Safari"), None, 1_000));
+        // …and it auto-resumes at the deadline.
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000 + 60 * 60_000));
+    }
 
     #[test]
     fn default_allows_suggestions() {
