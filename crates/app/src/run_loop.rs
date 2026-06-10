@@ -845,17 +845,19 @@ fn keycode_label(code: i64) -> String {
     }
 }
 
-/// The Shortcuts tab's text (persist-only slice): resolved current bindings
-/// (config override else the platform defaults: Tab / backtick), the fixed
-/// non-rebindable keys, and how to change them. Static per process —
-/// bindings are read at launch until the live-rebind refactor lands.
-fn shortcuts_text(word_key: Option<i64>, full_key: Option<i64>) -> String {
+/// The Shortcuts tab's text (persist-only slice): the EFFECTIVE bindings
+/// (post-validation, from the platform's registered keymap — review-c114:
+/// rendering raw config would lie when a colliding pair was rejected and
+/// the runtime fell back to defaults), the fixed non-rebindable keys, and
+/// how to change them. Static per process — bindings are read at launch
+/// until the live-rebind refactor lands.
+fn shortcuts_text(word_key: i64, full_key: i64) -> String {
     format!(
         "Accept word: {}\nAccept full: {}\nDismiss: Esc\nCycle candidates: Down arrow\n\n\
          To change: set COMPME_ACCEPT_WORD_KEY / COMPME_ACCEPT_FULL_KEY (macOS \
          keycodes) in config.env \u{2014} applies at relaunch.",
-        keycode_label(word_key.unwrap_or(48)),
-        keycode_label(full_key.unwrap_or(50)),
+        keycode_label(word_key),
+        keycode_label(full_key),
     )
 }
 
@@ -1438,7 +1440,12 @@ pub fn run() -> Result<(), String> {
         setup_reveal_model: Arc::new(AtomicBool::new(false)),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
-        shortcuts_text: shortcuts_text(config.accept_word_key, config.accept_full_key),
+        shortcuts_text: {
+            // Effective keys, not raw config: set_accept_keymap_from_config
+            // ran above, so the platform holds the post-validation truth.
+            let (word, full) = platform_macos::effective_accept_keys();
+            shortcuts_text(word, full)
+        },
     };
     // The app ids behind the Apps rows as last rendered (index == row).
     let mut apps_ids: Vec<String> = Vec::new();
@@ -2338,7 +2345,7 @@ mod tests {
         // Shortcuts tab (persist-only slice): current bindings by NAME for
         // the known codes, numeric fallback for exotic rebinds, fixed rows
         // for the non-rebindable keys, and the how-to-change note.
-        let text = shortcuts_text(None, None);
+        let text = shortcuts_text(48, 50);
         assert!(text.contains("Accept word: Tab"));
         assert!(text.contains("Accept full: ` (backtick)"));
         assert!(text.contains("Dismiss: Esc"));
@@ -2346,7 +2353,7 @@ mod tests {
         assert!(text.contains("COMPME_ACCEPT_WORD_KEY"));
         assert!(text.contains("relaunch"));
 
-        let custom = shortcuts_text(Some(125), Some(7));
+        let custom = shortcuts_text(125, 7);
         assert!(custom.contains("Accept word: Down arrow"));
         assert!(custom.contains("Accept full: keycode 7"));
     }

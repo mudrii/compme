@@ -2501,6 +2501,16 @@ fn accept_keymap() -> AcceptKeymap {
     ACCEPT_KEYMAP.get().copied().unwrap_or_default()
 }
 
+/// The EFFECTIVE accept keys (word, full) after validation fallback — what
+/// the runtime actually registered. The Shortcuts pane renders these, never
+/// raw config: a rejected collision falls back to defaults here exactly as
+/// it did at registration (review-c114 collision-masquerade fix), and the
+/// defaults live in one place (drift fix).
+pub fn effective_accept_keys() -> (i64, i64) {
+    let map = accept_keymap();
+    (map.word, map.full)
+}
+
 fn carbon_accept_hotkey_bindings() -> [(u32, i64); 4] {
     accept_keymap().carbon_bindings()
 }
@@ -7562,6 +7572,14 @@ mod tests {
                 (CARBON_HOTKEY_DOWN, KEYCODE_DOWN),
             ]
         );
+    }
+
+    #[test]
+    fn effective_accept_keys_default_to_tab_and_grave() {
+        // The Shortcuts pane renders THESE, not raw config — a rejected
+        // collision must surface as the defaults the runtime actually uses
+        // (review-c114). In this test process the keymap is unset → defaults.
+        assert_eq!(effective_accept_keys(), (48, 50));
     }
 
     #[test]
