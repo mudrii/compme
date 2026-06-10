@@ -103,6 +103,18 @@ Record the product log line, target app, keyboard action, and resulting field
 contents for each run. These manual runs are the authoritative evidence for
 current Carbon hotkey consumption.
 
+**PASSED 2026-06-10** (TextEdit, physical keyboard, two runs — one on a
+secondary display): grave full-accept replaced `:smile` with the emoji
+(`accept Full`), Tab word-accept advanced the caret and re-placed the
+remainder ghost correctly (`accept Word`), Esc dismissed (`dismiss (Esc)`),
+Down fired (`cycle candidate`; visible rotation needs
+`COMPLETE_ME_CANDIDATES>1` — the default single candidate has nothing to
+rotate). Not yet exercised: Option+Tab literal passthrough and the
+revoke-Input-Monitoring re-check. Watch-item: one screenshot showed a
+remainder ghost overlapping typed text after a word-accept; not reproduced
+in the logged runs (caret advance was correct) — needs a repro with the log
+preserved.
+
 ### Optional Gates
 
 Browser marker geometry:
