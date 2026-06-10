@@ -54,8 +54,10 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 1. **S1 tray submenus** — per-app timed disable + global submenu + per-app
    input-collection (pure prefs additions + tray plumbing; pattern = c54
    snooze).
-2. **Emoji `includeVanillaVariants`** (small pure emoji-crate change, closes
-   the §8 unmodeled note).
+2. ~~Emoji `includeVanillaVariants`~~ **DEFERRED (corrected 2026-06-10)**:
+   not a small crate change — an alternate vanilla glyph has no display path
+   in the single-ghost replacement pipeline. Revisit when a multi-candidate
+   replacement display exists.
 3. **Launch-at-login** via SMAppService (bundle exists; default-off, D13).
 4. **S2 window skeleton** + the pure panes first (Labs, Emoji, Context,
    Personalization — backing complete, persistence via persist_setting).
