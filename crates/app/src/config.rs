@@ -135,32 +135,43 @@ pub fn persist_setting(path: &Path, key: &str, value: &str) -> std::io::Result<(
 /// Holds the single-instance flock for the process lifetime; the kernel
 /// releases it on ANY exit (crash included) — the reason this is flock and
 /// not a pid file. Dropping releases explicitly.
+#[derive(Debug)]
 pub struct InstanceLock {
     _file: std::fs::File,
 }
 
+/// Why the instance lock was not acquired — the caller's message must not
+/// claim "another instance" when the truth is an IO/permissions failure
+/// (review finding: misleading diagnostics send users down the wrong path).
+#[derive(Debug, PartialEq, Eq)]
+pub enum InstanceLockError {
+    /// Another live process holds the lock.
+    Held,
+    /// The lock could not even be attempted (permissions, unwritable dir…).
+    Io(String),
+}
+
 /// Try to become THE compme instance: `flock(LOCK_EX | LOCK_NB)` on `path`
-/// (parent dirs created). `None` = another instance holds it — the caller
-/// logs and exits. Launch-method-agnostic: a LaunchServices-spawned copy and
-/// a direct-exec'd binary contend on the same file (the c92 finding — two
-/// instances would double AX observers and hotkey registrations).
-pub fn try_acquire_instance_lock(path: &Path) -> Option<InstanceLock> {
+/// (parent dirs created). Launch-method-agnostic: a LaunchServices-spawned
+/// copy and a direct-exec'd binary contend on the same file (the c92 finding
+/// — two instances would double AX observers and hotkey registrations).
+pub fn try_acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLockError> {
     use std::os::unix::io::AsRawFd;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).ok()?;
+        std::fs::create_dir_all(dir).map_err(|e| InstanceLockError::Io(e.to_string()))?;
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(path)
-        .ok()?;
+        .map_err(|e| InstanceLockError::Io(e.to_string()))?;
     // SAFETY: flock on an owned, open fd; no memory contracts involved.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
-        Some(InstanceLock { _file: file })
+        Ok(InstanceLock { _file: file })
     } else {
-        None
+        Err(InstanceLockError::Held)
     }
 }
 
@@ -270,15 +281,23 @@ mod tests {
 
         let first = try_acquire_instance_lock(&path).expect("first acquire");
         // flock conflicts apply across separate open file descriptions even
-        // within one process, so a second acquire must fail while held…
-        assert!(
-            try_acquire_instance_lock(&path).is_none(),
-            "second instance must be refused"
+        // within one process, so a second acquire must report HELD…
+        assert_eq!(
+            try_acquire_instance_lock(&path).unwrap_err(),
+            InstanceLockError::Held,
+            "second instance must be refused as Held"
         );
         // …and succeed after the first holder drops (kernel releases the
         // lock — crash-safe, unlike pid files).
         drop(first);
-        assert!(try_acquire_instance_lock(&path).is_some());
+        assert!(try_acquire_instance_lock(&path).is_ok());
+        // An IO failure must NOT masquerade as Held (misleading diagnostics):
+        // a lock path whose parent is an unwritable pseudo-dir errors as Io.
+        let bad = Path::new("/dev/null/cannot/exist/instance.lock");
+        assert!(matches!(
+            try_acquire_instance_lock(bad),
+            Err(InstanceLockError::Io(_))
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
