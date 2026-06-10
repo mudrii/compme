@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::ffi::{c_uchar, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::OnceLock;
 use std::sync::{mpsc, Arc, Mutex, Once};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -2478,9 +2477,25 @@ fn ensure_carbon_handler_installed(target: EventTargetRef) -> Result<(), Platfor
 
 /// The process-wide accept keymap (cycle-13 design: ONE source so the
 /// decision logic, Carbon registration, and the handler's id→keycode inverse
-/// can never diverge). Set once at startup from config, before the first
-/// arm; unset (tests, default config) reads as the default bindings.
-static ACCEPT_KEYMAP: OnceLock<AcceptKeymap> = OnceLock::new();
+/// can never diverge). RwLock (was OnceLock until c121): the Shortcuts
+/// recorder rebinds at runtime — concurrent readers (decision path, Carbon
+/// handler's inverse lookup) stay parallel, the rare write is one struct
+/// copy. Never-set reads as the default bindings.
+static ACCEPT_KEYMAP: std::sync::RwLock<AcceptKeymap> = std::sync::RwLock::new(AcceptKeymap {
+    word: KEYCODE_TAB,
+    full: KEYCODE_GRAVE,
+    dismiss: KEYCODE_ESCAPE,
+    cycle: KEYCODE_DOWN,
+});
+
+/// Swap the active keymap (live rebind). Write FIRST, re-register hotkeys
+/// SECOND — an old hotkey firing between the two reads the new map, which
+/// is consistent (banked c115 recorder design).
+pub fn set_accept_keymap(map: AcceptKeymap) {
+    *ACCEPT_KEYMAP
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = map;
+}
 
 /// Install the configured keymap. Must run BEFORE the platform adapter arms
 /// any accept tap (the run loop does this right after config parse). Returns
@@ -2491,14 +2506,16 @@ pub fn set_accept_keymap_from_config(
     full: Option<i64>,
 ) -> Result<(), KeymapError> {
     let map = AcceptKeymap::from_accept_keys(word, full)?;
-    let _ = ACCEPT_KEYMAP.set(map);
+    set_accept_keymap(map);
     Ok(())
 }
 
 /// The active accept keymap. Single indirection so the three call sites
 /// (decision, registration, inverse) always agree.
 fn accept_keymap() -> AcceptKeymap {
-    ACCEPT_KEYMAP.get().copied().unwrap_or_default()
+    *ACCEPT_KEYMAP
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The EFFECTIVE accept keys (word, full) after validation fallback — what
@@ -7575,10 +7592,14 @@ mod tests {
     }
 
     #[test]
-    fn effective_accept_keys_default_to_tab_and_grave() {
-        // The Shortcuts pane renders THESE, not raw config — a rejected
-        // collision must surface as the defaults the runtime actually uses
-        // (review-c114). In this test process the keymap is unset → defaults.
+    fn effective_accept_keys_default_then_follow_runtime_swaps() {
+        // ONE test owns the global keymap (parallel tests would race it):
+        // unset → defaults; set_accept_keymap → effective follows at runtime
+        // (the live-rebind core, recorder tick 5a); restored afterward.
+        assert_eq!(effective_accept_keys(), (48, 50));
+        set_accept_keymap(AcceptKeymap::from_accept_keys(Some(35), Some(38)).unwrap());
+        assert_eq!(effective_accept_keys(), (35, 38));
+        set_accept_keymap(AcceptKeymap::default());
         assert_eq!(effective_accept_keys(), (48, 50));
     }
 

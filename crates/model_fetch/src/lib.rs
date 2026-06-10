@@ -216,7 +216,8 @@ pub enum DownloadState {
 pub struct DownloadStatus {
     /// Bytes written so far (resume offset included).
     pub downloaded: std::sync::atomic::AtomicU64,
-    /// Total bytes if the server said (0 = unknown).
+    /// Total bytes if the server said (0 = no Content-Length, size unknown;
+    /// a genuinely zero-byte file would read the same, but no model is).
     pub total: std::sync::atomic::AtomicU64,
     pub state: std::sync::Mutex<DownloadState>,
 }
@@ -233,6 +234,11 @@ pub struct DownloadRequest {
 /// channel coalesces bursts, requests run one at a time on a dedicated
 /// thread, and Drop detaches rather than joins — a mid-download shutdown
 /// must not block on a slow server (the part file makes it resumable).
+///
+/// ONE per process (review-c120): the detached thread finishes its current
+/// item after Drop, so a drop-and-respawn pattern could put two workers on
+/// the same dest.part concurrently. The run loop owns a single instance for
+/// the process lifetime.
 pub struct ModelDownloader {
     tx: Option<std::sync::mpsc::SyncSender<DownloadRequest>>,
     _handle: std::thread::JoinHandle<()>,
