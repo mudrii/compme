@@ -304,8 +304,15 @@ minutes`, the render state flipped `snoozed=true`, and a fully typed
 `:smile` while snoozed produced `decision=None` on every keystroke with
 zero ghosts or model requests — the unified prefs gate blocks local
 replacements and model completions alike. (The ghost-dismiss-on-snooze
-edge ran with no ghost visible, so it stays unit-covered only.) Still
-open live: backspace-synthesis in a non-AxSet app.
+edge ran with no ghost visible, so it stays unit-covered only.)
+
+**Backspace-synthesis VALIDATED LIVE 2026-06-10** via the AxSet
+readback fallback in iTerm2 (a scripted, fully autonomous run): typed
+`:smile`, synthetic Tab accepted, the log shows `AxSet write silently
+ignored — falling back to synthetic input`, and reading the iTerm
+session contents back showed the prompt holding `😄` alone — the typed
+token was backspaced away and the emoji synthetically typed. The
+cycle-47 machinery's live residual is closed.
 
 ## Example Acceptance Binaries
 
