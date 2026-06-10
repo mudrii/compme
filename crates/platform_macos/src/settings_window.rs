@@ -35,6 +35,9 @@ pub struct SettingsFlags {
     /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
     /// before each show; the window only renders them (one label per line).
     pub stats_lines: Arc<Mutex<Vec<String>>>,
+    /// About text (version/license/no-telemetry/repo/credits), composed once
+    /// at startup — static for the process lifetime, rendered verbatim.
+    pub about_text: String,
 }
 
 struct SettingsTargetIvars {
@@ -246,6 +249,26 @@ fn build_window(
             content.addSubview(&label);
             stats_labels.push(label);
         }
+
+        // About section: static for the process lifetime, so build-once is
+        // fine here (unlike the Statistics rows above).
+        let about_header = NSTextField::labelWithString(&NSString::from_str("About"), mtm);
+        about_header.setFrame(NSRect::new(
+            NSPoint::new(20.0, 168.0),
+            NSSize::new(200.0, 24.0),
+        ));
+        content.addSubview(&about_header);
+        let about =
+            NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.about_text), mtm);
+        about.setFrame(NSRect::new(
+            NSPoint::new(20.0, 28.0),
+            NSSize::new(480.0, 136.0),
+        ));
+        // Display-only: wrappingLabelWithString is selectable by default,
+        // which is fine (lets the user copy the repo URL), but it must not
+        // be editable.
+        about.setEditable(false);
+        content.addSubview(&about);
     }
     // Keep the instance alive across closes: AppKit's default releases a
     // window on close, which would dangle our Retained pointer.

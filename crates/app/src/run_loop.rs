@@ -1044,6 +1044,7 @@ pub fn run() -> Result<(), String> {
     // ghosts won't appear (missing permission, missing model file).
     for row in crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
         ax_trusted: trusted,
+        screen_context_enabled: config.screen_context,
         screen_recording: screen_recording_permission(),
         model_exists: config.stub_completion.is_some() || config.model_path.exists(),
     }) {
@@ -1290,6 +1291,7 @@ pub fn run() -> Result<(), String> {
     let settings_flags = platform_macos::SettingsFlags {
         labs_midline: Arc::new(AtomicBool::new(global_mid_word)),
         stats_lines: Arc::new(Mutex::new(Vec::new())),
+        about_text: crate::about::about_text(),
     };
     let mut settings_window = platform_macos::MacosSettingsWindow::new(settings_flags.clone());
     let mut settings_was_visible = false;
