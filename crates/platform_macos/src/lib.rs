@@ -837,17 +837,38 @@ fn primary_screen_height(mtm: MainThreadMarker) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// A real caret rect is a sliver: at most a few px wide, one text line tall.
+/// Anything bigger is the app answering the caret query with ELEMENT BOUNDS
+/// (live Chrome AXTextField finding, 2026-06-10: rect = 1799×1225 → the
+/// line-midpoint flip placed the ghost at y = -429.5, offscreen).
+const CARET_MAX_W: f64 = 4.0;
+/// Generous: display-size fonts produce tall caret lines (an 80pt line is a
+/// real heading — the box cap handles it), while element bounds run to
+/// hundreds or thousands of px.
+const CARET_MAX_H: f64 = 160.0;
+/// Fallback box height when the rect is bounds, not a caret (a default 14pt
+/// line hugged: 14 + 4).
+const DEGENERATE_BOX_H: f64 = 18.0;
+
 fn overlay_frame_for_text(rect: ScreenRect, text: &str, primary_height: f64) -> OverlayFrame {
     let text_width = (text.chars().count() as f64 * 7.0) + 24.0;
-    // HUG the caret line: 2pt pad above and below it. A box noticeably taller
-    // than the line (the old 30pt floor over a typical 14pt line) floats the
-    // label text off the typed line no matter how the box is anchored, because
-    // the label's cell top-aligns its text inside the box (live step-6
-    // finding, two rounds: top-anchored AND line-centered 30pt boxes both
-    // looked misaligned).
-    let h = (rect.h + 4.0).clamp(16.0, 48.0);
-    OverlayFrame {
-        x: rect.x,
+    let w = text_width.clamp(240.0, 720.0);
+
+    let (h, y) = if rect.w > CARET_MAX_W || rect.h > CARET_MAX_H {
+        // Degenerate: treat the rect as the focused element's bounds and hug
+        // its inside top-left (where the field's text starts) with a default
+        // line box. Re-calibrate from a debug log if a real app's text sits
+        // elsewhere — same playbook as the step-6 caret calibration.
+        let h = DEGENERATE_BOX_H;
+        (h, primary_height - rect.y - h)
+    } else {
+        // HUG the caret line: 2pt pad above and below it. A box noticeably
+        // taller than the line (the old 30pt floor over a typical 14pt line)
+        // floats the label text off the typed line no matter how the box is
+        // anchored, because the label's cell top-aligns its text inside the
+        // box (live step-6 finding, two rounds: top-anchored AND line-centered
+        // 30pt boxes both looked misaligned).
+        let h = (rect.h + 4.0).clamp(16.0, 48.0);
         // AX gives a top-left-origin (Y-down) global rect; Cocoa windows use a
         // bottom-left-origin (Y-up) global space sharing the primary screen's
         // corner. Flip against the primary height so the overlay lands at the
@@ -856,10 +877,15 @@ fn overlay_frame_for_text(rect: ScreenRect, text: &str, primary_height: f64) -> 
         // caret rect's bottom edge (rect.y + rect.h) is the caret line's TOP —
         // treating rect.y as the line top rendered the ghost exactly one line
         // high on every line — so the line's midpoint is rect.y + 1.5*rect.h.
-        y: primary_height - rect.y - 1.5 * rect.h - h / 2.0,
-        w: text_width.clamp(240.0, 720.0),
-        h,
-    }
+        (h, primary_height - rect.y - 1.5 * rect.h - h / 2.0)
+    };
+
+    // NO blanket onscreen clamp: in Cocoa's global space a display BELOW the
+    // primary has legitimately negative y, so clamping would break
+    // multi-display placement (the existing secondary-display test pins this).
+    // The degenerate branch above is what keeps the known bad case onscreen:
+    // an element-bounds position is inside a visible element.
+    OverlayFrame { x: rect.x, y, w, h }
 }
 
 fn overlay_label_frame(frame: OverlayFrame) -> OverlayFrame {
@@ -6809,6 +6835,35 @@ mod tests {
                 .stringForType(pasteboard_string_type())
                 .map(|value| value.to_string()),
             Some("external".into())
+        );
+    }
+
+    #[test]
+    fn overlay_frame_treats_an_element_bounds_rect_as_degenerate_and_stays_onscreen() {
+        // Live Chrome finding (2026-06-10 log): an AXTextField answered the
+        // caret query with its ELEMENT BOUNDS — rect=(835, 168, 1799, 1225) —
+        // and the line-midpoint flip placed the ghost at y = -429.5, fully
+        // offscreen. A real caret rect is a sliver (w ≤ a few px, h = one
+        // line); anything wider/taller is bounds, so fall back to a default
+        // line box hugging the element's inside top-left:
+        // y = 1600 - 168 - 18 = 1414.
+        let frame = overlay_frame_for_text(
+            ScreenRect {
+                x: 835.0,
+                y: 168.0,
+                w: 1799.0,
+                h: 1225.0,
+            },
+            "😄",
+            1600.0,
+        );
+
+        assert_eq!(frame.x, 835.0);
+        assert_eq!(frame.h, 18.0);
+        assert_eq!(frame.y, 1414.0);
+        assert!(
+            frame.y >= 0.0 && frame.y + frame.h <= 1600.0,
+            "the ghost must land onscreen"
         );
     }
 
