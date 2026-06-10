@@ -792,6 +792,16 @@ fn excluded_apps_value(prefs: &Prefs) -> String {
     apps.join(",")
 }
 
+/// The COMPME_MIDLINE persistence value for a given switch state, paired with
+/// the launch parser (`"1"`/`"true"` are truthy; everything else is off).
+fn midline_value(enabled: bool) -> &'static str {
+    if enabled {
+        "1"
+    } else {
+        "0"
+    }
+}
+
 /// How long a tray "Snooze" pauses suggestions. One fixed duration for now
 /// (Cotypist-style pause); a duration submenu is a future settings surface.
 const SNOOZE_MINUTES: u64 = 60;
@@ -1244,8 +1254,18 @@ pub fn run() -> Result<(), String> {
     let mut last_stats_line: Option<String> = None;
     let mut read_err_squelch = LogSquelch::default();
     // S2 settings window (lazy NSWindow) + the activation-policy poll state.
-    let mut settings_window = platform_macos::MacosSettingsWindow::new();
+    // Labs pane: the NSSwitch writes this flag; the watcher below persists and
+    // re-applies it. `global_mid_word` is the live global default (config is
+    // only the launch-time snapshot once the pane can change it).
+    let mut global_mid_word = config.allow_mid_word;
+    let settings_flags = platform_macos::SettingsFlags {
+        labs_midline: Arc::new(AtomicBool::new(global_mid_word)),
+    };
+    let mut settings_window = platform_macos::MacosSettingsWindow::new(settings_flags.clone());
     let mut settings_was_visible = false;
+    // The most recent focused app key, so settings edges can re-apply per-app
+    // gates without waiting for the next Focus event.
+    let mut last_app_key: Option<String> = None;
     let start = Instant::now();
 
     eprintln!(
@@ -1284,8 +1304,9 @@ pub fn run() -> Result<(), String> {
                     // engine's trigger gate for the newly focused app — the
                     // f8ebf33 model's deferred merge, now live.
                     engine.set_allow_mid_word(
-                        prefs.mid_line_enabled(app_key.as_deref(), config.allow_mid_word),
+                        prefs.mid_line_enabled(app_key.as_deref(), global_mid_word),
                     );
+                    last_app_key = app_key.clone();
                     if let Some(app) = app_key {
                         if hinted_apps.insert(app.clone()) {
                             log_compat_guidance(&app);
@@ -1556,6 +1577,31 @@ pub fn run() -> Result<(), String> {
             }
         }
         settings_was_visible = settings_visible;
+        // Labs-pane watcher: on a switch edge, persist COMPME_MIDLINE and
+        // re-apply the engine gate for the current app immediately (per-app
+        // overrides still win; the switch changes only the global default).
+        let labs_mid_word = settings_flags.labs_midline.load(Ordering::Relaxed);
+        if labs_mid_word != global_mid_word {
+            global_mid_word = labs_mid_word;
+            engine.set_allow_mid_word(
+                prefs.mid_line_enabled(last_app_key.as_deref(), global_mid_word),
+            );
+            if let Some(path) = config::config_file_path() {
+                if let Err(err) =
+                    config::persist_setting(&path, "COMPME_MIDLINE", midline_value(global_mid_word))
+                {
+                    eprintln!("compme: failed to persist COMPME_MIDLINE: {err}");
+                }
+            }
+            eprintln!(
+                "compme: labs mid-line completions {}",
+                if global_mid_word {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
         // Drain received compme:// deep links (strict fail-closed parse →
         // reversible override). Every outcome is logged (the §16 user-visible
         // requirement; a confirmation prompt is the follow-up). An applied
@@ -1903,6 +1949,19 @@ mod tests {
         // A successful read resets: the next error is a new episode.
         squelch.reset();
         assert!(squelch.should_log("StaleField"));
+    }
+
+    #[test]
+    fn midline_persist_value_round_trips_through_the_parser() {
+        // The Labs-pane watcher persists midline_value(flag); the launch-time
+        // parser must read it back to the same bool, both ways.
+        assert!(
+            Config::from_lookup(lookup(&[("COMPME_MIDLINE", midline_value(true))])).allow_mid_word
+        );
+        assert!(
+            !Config::from_lookup(lookup(&[("COMPME_MIDLINE", midline_value(false))]))
+                .allow_mid_word
+        );
     }
 
     #[test]

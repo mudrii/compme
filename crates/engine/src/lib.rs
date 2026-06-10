@@ -95,14 +95,16 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.mirror_mode = mirror;
     }
 
-    /// Configure conservative trigger gating on the underlying machine (spec §4):
-    /// minimum left-context length and mid-word suppression. Forwards to
-    /// [`SuggestionMachine::with_trigger_gates`].
-    /// Runtime flip of the mid-word gate (per-app override; applied on focus).
+    /// Runtime flip of the mid-word gate (per-app override / Labs switch).
+    /// Re-applied on every focus change and on Labs-switch edges in the run
+    /// loop; [`Self::with_trigger_gates`] sets the launch-time default.
     pub fn set_allow_mid_word(&mut self, allow_mid_word: bool) {
         self.machine.set_allow_mid_word(allow_mid_word);
     }
 
+    /// Configure conservative trigger gating on the underlying machine (spec §4):
+    /// minimum left-context length and mid-word suppression. Forwards to
+    /// [`SuggestionMachine::with_trigger_gates`].
     pub fn with_trigger_gates(mut self, min_context_chars: usize, allow_mid_word: bool) -> Self {
         self.machine = self
             .machine

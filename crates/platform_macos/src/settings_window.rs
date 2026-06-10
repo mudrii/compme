@@ -12,13 +12,60 @@
 //! and live-verified, not unit-tested (tray convention); the policy-edge
 //! decision is the unit-tested pure part.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::runtime::AnyObject;
+use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSControlStateValueOn,
+    NSSwitch, NSTextField, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
+
+/// Settings-pane toggles, flipped by controls on the main thread and observed
+/// by the run loop (the tray-flags pattern: render-only UI, policy outside).
+#[derive(Clone)]
+pub struct SettingsFlags {
+    /// Labs: global mid-line completions (`COMPME_MIDLINE`). The run loop
+    /// watches edges, persists, and re-applies the engine gate live.
+    pub labs_midline: Arc<AtomicBool>,
+}
+
+struct SettingsTargetIvars {
+    flags: SettingsFlags,
+}
+
+define_class!(
+    // SAFETY: a plain NSObject subclass used only as a control action target;
+    // its methods read control state and flip atomics.
+    #[unsafe(super = objc2_foundation::NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = SettingsTargetIvars]
+    struct SettingsTarget;
+
+    unsafe impl NSObjectProtocol for SettingsTarget {}
+
+    impl SettingsTarget {
+        #[unsafe(method(toggleMidline:))]
+        fn toggle_midline(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars().flags.labs_midline.store(on, Ordering::Relaxed);
+            }
+        }
+    }
+);
+
+impl SettingsTarget {
+    fn new(flags: SettingsFlags, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(SettingsTargetIvars { flags });
+        // SAFETY: NSObject's init signature is correct for this subclass.
+        unsafe { objc2::msg_send![super(this), init] }
+    }
+}
 
 /// Whether a visibility transition requires demoting the activation policy
 /// back to `Accessory` (pure: the run loop feeds it the polled states).
@@ -28,12 +75,19 @@ pub fn policy_restore_needed(was_visible: bool, visible_now: bool) -> bool {
 
 pub struct MacosSettingsWindow {
     window: Option<Retained<NSWindow>>,
+    flags: SettingsFlags,
+    // Keep the action target alive for the window's lifetime.
+    target: Option<Retained<SettingsTarget>>,
 }
 
 impl MacosSettingsWindow {
-    pub fn new() -> Self {
+    pub fn new(flags: SettingsFlags) -> Self {
         // Lazy: the NSWindow is created on first show (main thread).
-        Self { window: None }
+        Self {
+            window: None,
+            flags,
+            target: None,
+        }
     }
 
     /// Show the window (creating it on first use) and promote the activation
@@ -41,7 +95,9 @@ impl MacosSettingsWindow {
     pub fn show(&mut self) -> Result<(), PlatformError> {
         let mtm = main_thread()?;
         if self.window.is_none() {
-            self.window = Some(build_window(mtm));
+            let target = SettingsTarget::new(self.flags.clone(), mtm);
+            self.window = Some(build_window(mtm, &target, &self.flags));
+            self.target = Some(target);
         }
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -71,19 +127,17 @@ impl MacosSettingsWindow {
     }
 }
 
-impl Default for MacosSettingsWindow {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 fn main_thread() -> Result<MainThreadMarker, PlatformError> {
     MainThreadMarker::new().ok_or_else(|| PlatformError::CannotComplete {
         reason: "settings window requires the main thread".into(),
     })
 }
 
-fn build_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
+fn build_window(
+    mtm: MainThreadMarker,
+    target: &Retained<SettingsTarget>,
+    flags: &SettingsFlags,
+) -> Retained<NSWindow> {
     let frame = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(520.0, 420.0));
     let style =
         NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable;
@@ -100,6 +154,47 @@ fn build_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     };
     window.setTitle(&NSString::from_str("Compme Settings"));
     window.center();
+
+    // Labs pane (the first functional pane): one labeled NSSwitch for the
+    // global mid-line toggle, initialized from the CURRENT config state.
+    if let Some(content) = window.contentView() {
+        let header = NSTextField::labelWithString(&NSString::from_str("Labs"), mtm);
+        header.setFrame(NSRect::new(
+            NSPoint::new(20.0, 370.0),
+            NSSize::new(200.0, 24.0),
+        ));
+        content.addSubview(&header);
+
+        let label = NSTextField::labelWithString(
+            &NSString::from_str("Mid-line completions (show even with text after the cursor)"),
+            mtm,
+        );
+        label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 340.0),
+            NSSize::new(400.0, 20.0),
+        ));
+        content.addSubview(&label);
+
+        let switch = NSSwitch::new(mtm);
+        switch.setFrame(NSRect::new(
+            NSPoint::new(430.0, 336.0),
+            NSSize::new(60.0, 26.0),
+        ));
+        switch.setState(if flags.labs_midline.load(Ordering::Relaxed) {
+            objc2_app_kit::NSControlStateValueOn
+        } else {
+            objc2_app_kit::NSControlStateValueOff
+        });
+        // SAFETY: target outlives the window (held by MacosSettingsWindow).
+        unsafe {
+            switch.setTarget(Some({
+                let any: &AnyObject = target.as_ref();
+                any
+            }));
+            switch.setAction(Some(sel!(toggleMidline:)));
+        }
+        content.addSubview(&switch);
+    }
     // Keep the instance alive across closes: AppKit's default releases a
     // window on close, which would dangle our Retained pointer.
     // SAFETY: documented NSWindow property setter.

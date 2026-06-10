@@ -62,7 +62,7 @@ mod tray;
 mod ui_prompt;
 mod url_events;
 pub use login_item::set_launch_at_login;
-pub use settings_window::{policy_restore_needed, MacosSettingsWindow};
+pub use settings_window::{policy_restore_needed, MacosSettingsWindow, SettingsFlags};
 pub use tray::{DisableArm, MacosTray, TrayFlags};
 pub use ui_prompt::confirm_deep_link_prompt;
 pub use url_events::{install_url_event_handler, UrlEventHandler};
