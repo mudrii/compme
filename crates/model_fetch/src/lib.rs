@@ -61,6 +61,9 @@ pub enum FetchError {
     Http(u16),
     /// Local filesystem failure (.part create/write/rename).
     Io(String),
+    /// Downloaded bytes hash differently than the catalog expects. The part
+    /// file is KEPT for inspection; dest is never created.
+    HashMismatch { expected: String, actual: String },
 }
 
 impl std::fmt::Display for FetchError {
@@ -69,13 +72,21 @@ impl std::fmt::Display for FetchError {
             FetchError::Network(msg) => write!(f, "network error: {msg}"),
             FetchError::Http(code) => write!(f, "http error: status {code}"),
             FetchError::Io(msg) => write!(f, "io error: {msg}"),
+            FetchError::HashMismatch { expected, actual } => {
+                write!(f, "sha256 mismatch: expected {expected}, got {actual}")
+            }
         }
     }
 }
 
 impl std::error::Error for FetchError {}
 
-/// Download `url` to `dest` with resume. Strategy (banked D14 design):
+/// Download `url` to `dest` with resume. Redirects (HF resolve URLs hop to
+/// a CDN) are followed by ureq; whatever the final host does with our Range
+/// header is safe either way — a 206 is only trusted after Content-Range
+/// validation and anything else restarts from zero.
+///
+/// Strategy (banked D14 design):
 /// partial bytes live in `dest.part`; a non-empty part sends `Range:
 /// bytes=N-`. A 206 appends from N; a 200 means the server ignored Range —
 /// truncate and restart from zero. Any failure KEEPS the part file for the
@@ -84,12 +95,31 @@ impl std::error::Error for FetchError {}
 pub fn download_url(
     url: &str,
     dest: &std::path::Path,
+    expected_sha256: Option<&str>,
+    progress: impl Fn(u64, Option<u64>),
+) -> Result<std::path::PathBuf, FetchError> {
+    // Timeouts are mandatory (review-c118 CRITICAL): without a read timeout
+    // a stalled server hangs the download — and the worker thread's
+    // shutdown — forever. 30s reads tolerate slow CDNs; connect fails fast.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout_read(std::time::Duration::from_secs(30))
+        .build();
+    download_with_agent(&agent, url, dest, expected_sha256, progress)
+}
+
+/// Agent-injectable core — tests drive it with millisecond timeouts.
+fn download_with_agent(
+    agent: &ureq::Agent,
+    url: &str,
+    dest: &std::path::Path,
+    expected_sha256: Option<&str>,
     progress: impl Fn(u64, Option<u64>),
 ) -> Result<std::path::PathBuf, FetchError> {
     let part = dest.with_extension("part");
     let existing = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
-    let mut request = ureq::get(url);
+    let mut request = agent.get(url);
     if let Some(range) = resume_range_header(existing) {
         request = request.set("Range", &range);
     }
@@ -99,7 +129,13 @@ pub fn download_url(
     })?;
 
     let status = response.status();
-    let resumed = status == 206;
+    // Trust a 206 only when its Content-Range start matches OUR offset —
+    // a lying/buggy server stitched at the wrong offset would corrupt the
+    // file silently (review-c118 CRITICAL). Anything else → safe restart.
+    let resumed = status == 206
+        && response
+            .header("Content-Range")
+            .is_some_and(|cr| cr.starts_with(&format!("bytes {existing}-")));
     let total = response
         .header("Content-Length")
         .and_then(|h| h.parse::<u64>().ok())
@@ -134,6 +170,20 @@ pub fn download_url(
         }
     }
     drop(file);
+    // Verify BEFORE the rename: dest must never exist with wrong bytes. A
+    // mismatch keeps the part for inspection (resume would re-download from
+    // its end and mismatch again — the caller decides whether to delete).
+    if let Some(expected) = expected_sha256 {
+        let file = std::fs::File::open(&part).map_err(|e| FetchError::Io(e.to_string()))?;
+        let actual = read_sha256_hex(std::io::BufReader::new(file))
+            .map_err(|e| FetchError::Io(e.to_string()))?;
+        if actual != expected.to_ascii_lowercase() {
+            return Err(FetchError::HashMismatch {
+                expected: expected.to_ascii_lowercase(),
+                actual,
+            });
+        }
+    }
     std::fs::rename(&part, dest).map_err(|e| FetchError::Io(e.to_string()))?;
     Ok(dest.to_path_buf())
 }
@@ -148,7 +198,17 @@ mod tests {
     /// parses an optional `Range: bytes=N-` header; honors it with 206 when
     /// `support_range`, else always replies 200 with the full body (the
     /// server-ignores-Range case the download loop must restart on).
-    fn serve(body: &'static [u8], support_range: bool) -> String {
+    enum RangeMode {
+        /// Honor Range with a correct 206 + Content-Range.
+        Honor,
+        /// Always 200 with the full body (server ignores Range).
+        Ignore,
+        /// LIE: reply 206 but serve the FULL body from offset 0 with a
+        /// Content-Range that contradicts the request (corruption trap).
+        Lie,
+    }
+
+    fn serve(body: &'static [u8], mode: RangeMode) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -157,20 +217,32 @@ mod tests {
                 let mut req = [0u8; 2048];
                 let n = stream.read(&mut req).unwrap_or(0);
                 let req = String::from_utf8_lossy(&req[..n]);
-                let start = req
+                let requested = req
                     .lines()
                     .find_map(|l| l.strip_prefix("Range: bytes="))
                     .and_then(|r| r.split('-').next())
                     .and_then(|s| s.parse::<usize>().ok())
-                    .filter(|_| support_range)
                     .filter(|&s| s < body.len());
-                let (status, slice) = match start {
-                    Some(s) => ("206 Partial Content", &body[s..]),
-                    None => ("200 OK", body),
+                let (status, slice, content_range) = match (&mode, requested) {
+                    (RangeMode::Honor, Some(s)) => (
+                        "206 Partial Content",
+                        &body[s..],
+                        Some(format!("bytes {s}-{}/{}", body.len() - 1, body.len())),
+                    ),
+                    (RangeMode::Lie, Some(_)) => (
+                        "206 Partial Content",
+                        body,
+                        Some(format!("bytes 0-{}/{}", body.len() - 1, body.len())),
+                    ),
+                    _ => ("200 OK", body, None),
                 };
+                let _ = write!(stream, "HTTP/1.1 {status}\r\n");
+                if let Some(cr) = content_range {
+                    let _ = write!(stream, "Content-Range: {cr}\r\n");
+                }
                 let _ = write!(
                     stream,
-                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
                     slice.len()
                 );
                 let _ = stream.write_all(slice);
@@ -184,11 +256,74 @@ mod tests {
     }
 
     #[test]
+    fn stalled_server_times_out_instead_of_hanging_forever() {
+        // review-c118 CRITICAL: no read timeout = a stalled server hangs the
+        // download (and later the worker thread's shutdown) forever. The
+        // agent must carry a read timeout; here a short one proves the
+        // stall surfaces as a Network error instead of a hang.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n"
+                );
+                // Headers sent, body never arrives.
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        });
+        let agent = ureq::AgentBuilder::new()
+            .timeout_read(std::time::Duration::from_millis(300))
+            .build();
+        let dest = temp_dest("stall");
+        let err = download_with_agent(
+            &agent,
+            &format!("http://{addr}/model.bin"),
+            &dest,
+            None,
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, FetchError::Network(_)));
+        let _ = std::fs::remove_file(dest.with_extension("part"));
+    }
+
+    #[test]
+    fn sha_mismatch_errors_and_keeps_the_part_file_for_inspection() {
+        let url = serve(b"corrupted bytes", RangeMode::Honor);
+        let dest = temp_dest("badsha");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(dest.with_extension("part"));
+        let expected = sha256_hex(b"expected bytes");
+        let err = download_url(&url, &dest, Some(&expected), |_, _| {}).unwrap_err();
+        assert!(matches!(err, FetchError::HashMismatch { .. }));
+        assert!(
+            dest.with_extension("part").exists(),
+            "part kept for inspection"
+        );
+        assert!(!dest.exists(), "dest never appears on mismatch");
+        let _ = std::fs::remove_file(dest.with_extension("part"));
+    }
+
+    #[test]
+    fn matching_sha_verifies_and_renames() {
+        let url = serve(b"good bytes", RangeMode::Honor);
+        let dest = temp_dest("goodsha");
+        let _ = std::fs::remove_file(&dest);
+        let expected = sha256_hex(b"good bytes");
+        let got = download_url(&url, &dest, Some(&expected), |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"good bytes");
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
     fn fresh_download_writes_dest_and_removes_the_part_file() {
-        let url = serve(b"hello model bytes", true);
+        let url = serve(b"hello model bytes", RangeMode::Honor);
         let dest = temp_dest("fresh");
         let _ = std::fs::remove_file(&dest);
-        let got = download_url(&url, &dest, |_, _| {}).unwrap();
+        let got = download_url(&url, &dest, None, |_, _| {}).unwrap();
         assert_eq!(std::fs::read(&got).unwrap(), b"hello model bytes");
         assert!(!dest.with_extension("part").exists());
         let _ = std::fs::remove_file(&dest);
@@ -196,22 +331,36 @@ mod tests {
 
     #[test]
     fn resume_appends_from_the_part_file_offset() {
-        let url = serve(b"0123456789", true);
+        let url = serve(b"0123456789", RangeMode::Honor);
         let dest = temp_dest("resume");
         let part = dest.with_extension("part");
         std::fs::write(&part, b"0123").unwrap();
-        let got = download_url(&url, &dest, |_, _| {}).unwrap();
+        let got = download_url(&url, &dest, None, |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn lying_206_with_wrong_content_range_restarts_instead_of_corrupting() {
+        // review-c118 CRITICAL: a 206 whose Content-Range start does not
+        // match our offset must NOT be appended — blind stitching corrupts
+        // the file silently. The safe move is a from-zero restart.
+        let url = serve(b"0123456789", RangeMode::Lie);
+        let dest = temp_dest("lie206");
+        let part = dest.with_extension("part");
+        std::fs::write(&part, b"0123").unwrap();
+        let got = download_url(&url, &dest, None, |_, _| {}).unwrap();
         assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
         let _ = std::fs::remove_file(&dest);
     }
 
     #[test]
     fn server_ignoring_range_restarts_from_zero() {
-        let url = serve(b"0123456789", false); // always 200, full body
+        let url = serve(b"0123456789", RangeMode::Ignore); // always 200, full body
         let dest = temp_dest("restart");
         let part = dest.with_extension("part");
         std::fs::write(&part, b"GARBAGE").unwrap();
-        let got = download_url(&url, &dest, |_, _| {}).unwrap();
+        let got = download_url(&url, &dest, None, |_, _| {}).unwrap();
         assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
         let _ = std::fs::remove_file(&dest);
     }
