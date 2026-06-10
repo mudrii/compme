@@ -248,6 +248,9 @@ impl MacosTray {
             settings_window_item.setTarget(Some(target_as_any(&target)));
             settings_window_item.setAction(Some(sel!(openSettingsWindow:)));
         }
+        // Standard macOS Settings shortcut (⌘, — Command is the default
+        // modifier for key equivalents).
+        settings_window_item.setKeyEquivalent(&NSString::from_str(","));
         menu.addItem(&settings_window_item);
 
         menu.addItem(&NSMenuItem::separatorItem(mtm));

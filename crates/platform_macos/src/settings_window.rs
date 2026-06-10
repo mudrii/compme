@@ -52,7 +52,11 @@ impl MacosSettingsWindow {
         Ok(())
     }
 
-    /// Whether the window is currently on screen. Main-thread only.
+    /// Whether the window is visible to the app — TRUE while miniaturized
+    /// (AppKit `isVisible` semantics). That is deliberate for the policy
+    /// dance: a minimized window needs the Dock (its tile is the restore
+    /// path), so the activation policy must stay `Regular` until the window
+    /// actually closes. Main-thread only.
     pub fn is_visible(&self) -> bool {
         self.window.as_ref().is_some_and(|w| w.isVisible())
     }
