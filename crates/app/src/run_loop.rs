@@ -736,9 +736,17 @@ fn handle_deep_link(
     url: &str,
     trusted: Option<&webconfig::TrustedKey>,
     prefs: &mut Prefs,
+    confirm: impl Fn(&webconfig::PromptDecision) -> bool,
 ) -> Result<String, String> {
     match webconfig::parse_deep_link_with_trust(url, trusted) {
         Ok((command, trust)) => {
+            // §16 mandatory host confirmation: the pure decision says what to
+            // ask; the injected closure renders it (NSAlert in production,
+            // a constant in tests). Declined = rejected, prefs untouched.
+            let decision = webconfig::prompt_decision_for_link(&command, trust);
+            if !confirm(&decision) {
+                return Err("declined by user".to_string());
+            }
             prefs.apply_override(&command);
             Ok(format!(
                 "applied {:?} override for {:?} ({trust:?} link)",
@@ -1529,7 +1537,18 @@ pub fn run() -> Result<(), String> {
             std::mem::take(&mut *lock)
         };
         for url in pending_links {
-            match handle_deep_link(&url, config.trusted_key.as_ref(), &mut prefs) {
+            let confirm = |decision: &webconfig::PromptDecision| -> bool {
+                let webconfig::PromptDecision::PromptRequired {
+                    scope,
+                    action,
+                    trust,
+                } = decision
+                else {
+                    return true; // reserved silent class (unreachable today)
+                };
+                platform_macos::confirm_deep_link_prompt(scope, action, trust).unwrap_or(false)
+            };
+            match handle_deep_link(&url, config.trusted_key.as_ref(), &mut prefs, confirm) {
                 Ok(summary) => {
                     eprintln!("compme: deep link {summary}");
                     if let Some(path) = config::config_file_path() {
@@ -1875,12 +1894,13 @@ mod tests {
             "compme://setOverride?app=com.apple.TextEdit&excluded=true",
             None,
             &mut prefs,
+            |_| true,
         )
         .expect("valid link applies");
         assert!(summary.contains("com.apple.TextEdit"), "{summary}");
         assert!(prefs.excluded_apps.contains("com.apple.TextEdit"));
         // Garbage fails with the parser's message, prefs untouched.
-        let err = handle_deep_link("compme://setEverything?x=1", None, &mut prefs)
+        let err = handle_deep_link("compme://setEverything?x=1", None, &mut prefs, |_| true)
             .expect_err("unknown command must fail");
         assert!(err.contains("unknown command"), "{err}");
         // A signed link without a configured trusted key fails closed.
@@ -1891,6 +1911,7 @@ mod tests {
             ),
             None,
             &mut prefs,
+            |_| true,
         )
         .expect_err("signed link without a key must fail");
         assert!(err.contains("no trusted key"), "{err}");
@@ -1909,6 +1930,20 @@ mod tests {
         let junk = Config::from_lookup(lookup(&[("COMPME_ACCEPT_WORD_KEY", "tab")]));
         assert_eq!(junk.accept_word_key, None);
         assert_eq!(Config::from_lookup(lookup(&[])).accept_word_key, None);
+    }
+
+    #[test]
+    fn a_declined_prompt_rejects_the_link_and_leaves_prefs_untouched() {
+        let mut prefs = Prefs::default();
+        let err = handle_deep_link(
+            "compme://setOverride?app=com.apple.TextEdit&excluded=true",
+            None,
+            &mut prefs,
+            |_| false, // user clicks Cancel
+        )
+        .expect_err("declined prompt must reject");
+        assert!(err.contains("declined"), "{err}");
+        assert!(prefs.excluded_apps.is_empty(), "prefs must be untouched");
     }
 
     #[test]

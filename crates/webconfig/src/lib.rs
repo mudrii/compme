@@ -269,6 +269,41 @@ fn split_trailing_signature(
     )))
 }
 
+/// Whether a parsed deep link may apply silently or must be confirmed by the
+/// user first (the §16 mandatory host confirmation). Pure — the host's UI
+/// layer renders the prompt; tests inject the answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PromptDecision {
+    /// Show a confirmation prompt before applying; the fields are
+    /// human-readable pieces for the prompt text.
+    PromptRequired {
+        scope: String,
+        action: String,
+        trust: String,
+    },
+    /// Reserved for future signed non-reversible commands; unreachable today
+    /// (every current command is reversible and prompts).
+    ApplySilently,
+}
+
+/// Decide the confirmation requirement for a parsed link. Today EVERY link
+/// prompts — reversible-but-unsigned links can still nuisance-toggle (module
+/// docs), and no silent-eligible command class exists yet.
+pub fn prompt_decision_for_link(command: &OverrideCommand, trust: LinkTrust) -> PromptDecision {
+    let scope = match &command.scope {
+        Scope::App(app) => app.clone(),
+        Scope::Domain(domain) => domain.clone(),
+    };
+    PromptDecision::PromptRequired {
+        scope,
+        action: format!("{:?}", command.action),
+        trust: match trust {
+            LinkTrust::Unsigned => "unsigned link".to_string(),
+            LinkTrust::Signed => "signed link, verified".to_string(),
+        },
+    }
+}
+
 /// Decode a hex string into bytes; `None` on odd length or a non-hex digit.
 fn parse_hex(raw: &str) -> Option<Vec<u8>> {
     if !raw.len().is_multiple_of(2) {
@@ -525,6 +560,33 @@ mod tests {
         // Exactly MAX_SCOPE_LEN passes; +1 fails (covered elsewhere).
         let max = "a".repeat(MAX_SCOPE_LEN);
         assert!(parse_deep_link(&format!("compme://setOverride?app={max}&enabled=true")).is_ok());
+    }
+
+    #[test]
+    fn prompt_decision_requires_confirmation_and_names_the_command() {
+        let command = OverrideCommand {
+            scope: Scope::App("com.apple.Mail".into()),
+            action: OverrideAction::Exclude,
+        };
+        // Unsigned reversible link: prompt, with human-readable pieces.
+        let decision = prompt_decision_for_link(&command, LinkTrust::Unsigned);
+        let PromptDecision::PromptRequired {
+            scope,
+            action,
+            trust,
+        } = decision
+        else {
+            panic!("unsigned links must prompt");
+        };
+        assert_eq!(scope, "com.apple.Mail");
+        assert!(action.contains("Exclude"), "{action}");
+        assert!(trust.contains("unsigned"), "{trust}");
+        // Signed links ALSO prompt today (no non-reversible commands exist;
+        // the silent path is reserved and unreachable until they do).
+        let signed = prompt_decision_for_link(&command, LinkTrust::Signed);
+        assert!(
+            matches!(signed, PromptDecision::PromptRequired { trust, .. } if trust.contains("signed"))
+        );
     }
 
     // ---- signed links ----
