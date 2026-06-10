@@ -13,6 +13,7 @@ mod inference;
 mod model_select;
 mod run_loop;
 mod screen_ocr;
+mod setup_state;
 mod status;
 mod wiring;
 

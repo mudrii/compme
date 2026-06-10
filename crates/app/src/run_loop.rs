@@ -1039,6 +1039,19 @@ pub fn run() -> Result<(), String> {
         prompt_accessibility_trust();
     }
 
+    // Setup status (the Setup pane's row model doubles as the startup
+    // diagnostic): one line per not-ready item, so a log alone explains why
+    // ghosts won't appear (missing permission, missing model file).
+    for row in crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
+        ax_trusted: trusted,
+        screen_recording: screen_recording_permission(),
+        model_exists: config.stub_completion.is_some() || config.model_path.exists(),
+    }) {
+        if !row.ready {
+            eprintln!("compme: setup: {} not ready", row.label);
+        }
+    }
+
     if config.diag_coords {
         eprintln!("compme: diag display_scales={:?}", display_scales());
     }
