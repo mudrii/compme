@@ -978,9 +978,12 @@ impl MacosPlatformAdapter {
 
         match strategy {
             InsertStrategy::AxSet => {
-                let result = self
-                    .worker
-                    .run(move || insert_for_field(pid, field, text, replace_left, strategy))?;
+                let text_for_worker = text.clone();
+                let apply = self.worker.run(move || {
+                    insert_for_field(pid, field, text_for_worker, replace_left, strategy)
+                })?;
+                let result = apply
+                    .and_then(|apply| self.finish_axset_insert(pid, apply, &text, replace_left));
                 self.map_app_exited(pid, app, result)
             }
             InsertStrategy::SyntheticKeys => {
@@ -1135,6 +1138,40 @@ impl MacosPlatformAdapter {
         (self.frontmost_pid)().ok_or_else(|| PlatformError::CannotComplete {
             reason: "no frontmost application pid".into(),
         })
+    }
+
+    /// Complete an AxSet insert from its readback-classified outcome. A
+    /// silently ignored write (live: iTerm2 — settable AXValue, successful
+    /// set, content untouched) falls back to synthetic input: backspaces for
+    /// the replaced token, then synthetic typing — the cycle-47 machinery's
+    /// first live consumer. The fallback needs the field's app frontmost
+    /// (same contract as the SyntheticKeys strategy); otherwise the insert
+    /// fails honestly instead of typing into the wrong app.
+    fn finish_axset_insert(
+        &self,
+        pid: i32,
+        apply: AxSetApply,
+        text: &str,
+        replace_left: usize,
+    ) -> Result<Inserted, PlatformError> {
+        match apply {
+            AxSetApply::Applied(inserted) => Ok(inserted),
+            AxSetApply::SilentlyIgnored => {
+                if debug_enabled() {
+                    eprintln!(
+                        "complete-me: AxSet write silently ignored — falling back to synthetic input"
+                    );
+                }
+                self.ensure_global_insert_target(pid)?;
+                self.delete_left_via_backspaces(pid, replace_left)
+                    .and_then(|()| (self.synthetic_key_poster)(pid, text))
+                    .map(|()| Inserted {
+                        bytes: text.len(),
+                        chars: text.chars().count(),
+                        strategy: InsertStrategy::SyntheticKeys,
+                    })
+            }
+        }
     }
 
     /// Deletes `replace_left` characters left of the caret on the global insert
@@ -3317,13 +3354,38 @@ fn caret_diagnostics_from_rects(
     }
 }
 
+/// Outcome of an AxSet value write, classified by readback (the iTerm2
+/// finding, 2026-06-10: `AXUIElementSetAttributeValue` can return success
+/// while the terminal's content stays untouched — a SILENT no-op that made
+/// accepts count without inserting anything).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AxSetApply {
+    Applied(Inserted),
+    /// The readback equals the ORIGINAL value: the write silently did
+    /// nothing. (A readback that differs from both original and expected —
+    /// e.g. app-side normalization — counts as Applied: falling back there
+    /// would double-insert.)
+    SilentlyIgnored,
+}
+
+/// Classify an AxSet write by comparing the post-write readback against the
+/// original and expected values. Conservative: only a byte-identical-to-
+/// original readback is a silent failure.
+fn axset_readback_outcome(original: &str, readback: &str, inserted: Inserted) -> AxSetApply {
+    if readback == original {
+        AxSetApply::SilentlyIgnored
+    } else {
+        AxSetApply::Applied(inserted)
+    }
+}
+
 fn insert_for_field(
     pid: i32,
     field: FieldHandle,
     text: String,
     replace_left: usize,
     strategy: InsertStrategy,
-) -> Result<Inserted, PlatformError> {
+) -> Result<AxSetApply, PlatformError> {
     let (element, _owners) = copy_focused_or_app_element(pid)?;
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
@@ -3348,11 +3410,22 @@ fn insert_for_field(
         }
     }
 
-    Ok(Inserted {
-        bytes: text.len(),
-        chars: text.chars().count(),
-        strategy,
-    })
+    // Read the value back: some apps (live: iTerm2) report a settable
+    // AXValue, return success from the set, and change NOTHING. A readback
+    // still equal to the original is that silent no-op; the adapter then
+    // falls back to synthetic input. Readback failure is treated as Applied
+    // (fail open — the set reported success and we cannot prove otherwise).
+    let readback = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }
+        .unwrap_or_else(|_| new_value.clone());
+    Ok(axset_readback_outcome(
+        &value,
+        &readback,
+        Inserted {
+            bytes: text.len(),
+            chars: text.chars().count(),
+            strategy,
+        },
+    ))
 }
 
 fn copy_focused_or_app_element(pid: i32) -> Result<(AXUIElementRef, Vec<CFType>), PlatformError> {
@@ -6413,6 +6486,127 @@ mod tests {
             source_user_data: 0,
             option_down: false,
         }
+    }
+
+    #[test]
+    fn axset_readback_classifies_only_an_unchanged_value_as_silent_failure() {
+        fn inserted() -> Inserted {
+            Inserted {
+                bytes: 4,
+                chars: 1,
+                strategy: InsertStrategy::AxSet,
+            }
+        }
+        // Readback == original → the write silently did nothing (iTerm2).
+        assert_eq!(
+            axset_readback_outcome(":smile", ":smile", inserted()),
+            AxSetApply::SilentlyIgnored
+        );
+        // Readback == expected → applied.
+        assert_eq!(
+            axset_readback_outcome(":smile", "😄", inserted()),
+            AxSetApply::Applied(inserted())
+        );
+        // Readback differs from BOTH (app normalization) → applied — a
+        // fallback here would double-insert.
+        assert_eq!(
+            axset_readback_outcome(":smile", "\u{1f604} ", inserted()),
+            AxSetApply::Applied(inserted())
+        );
+    }
+
+    #[test]
+    fn silently_ignored_axset_falls_back_to_backspaces_then_synthetic_text() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        let log_in_keys = Arc::clone(&log);
+        config.synthetic_key_poster = Arc::new(move |pid, text| {
+            log_in_keys
+                .lock()
+                .unwrap()
+                .push(format!("text:{pid}:{text}"));
+            Ok(())
+        });
+        let log_in_backspaces = Arc::clone(&log);
+        config.backspace_poster = Arc::new(move |pid, count| {
+            log_in_backspaces
+                .lock()
+                .unwrap()
+                .push(format!("backspace:{pid}x{count}"));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+
+        let result = adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "😄", 6);
+        assert_eq!(
+            result,
+            Ok(Inserted {
+                bytes: "😄".len(),
+                chars: 1,
+                strategy: InsertStrategy::SyntheticKeys,
+            }),
+            "the fallback reports the strategy that actually inserted"
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["backspace:42x6".to_string(), "text:42:😄".to_string()]
+        );
+    }
+
+    #[test]
+    fn applied_axset_touches_no_synthetic_posters() {
+        let touched = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        let t1 = Arc::clone(&touched);
+        config.synthetic_key_poster = Arc::new(move |_, _| {
+            t1.lock().unwrap().push("text");
+            Ok(())
+        });
+        let t2 = Arc::clone(&touched);
+        config.backspace_poster = Arc::new(move |_, _| {
+            t2.lock().unwrap().push("backspace");
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+
+        let inserted = Inserted {
+            bytes: 4,
+            chars: 1,
+            strategy: InsertStrategy::AxSet,
+        };
+        assert_eq!(
+            adapter.finish_axset_insert(42, AxSetApply::Applied(inserted), "😄", 6),
+            Ok(Inserted {
+                bytes: 4,
+                chars: 1,
+                strategy: InsertStrategy::AxSet,
+            })
+        );
+        assert!(touched.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn silently_ignored_axset_fails_honestly_when_the_app_is_not_frontmost() {
+        let touched = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(99), Arc::new(Mutex::new(Vec::new())), None);
+        let t1 = Arc::clone(&touched);
+        config.synthetic_key_poster = Arc::new(move |_, _| {
+            t1.lock().unwrap().push("text");
+            Ok(())
+        });
+        let t2 = Arc::clone(&touched);
+        config.backspace_poster = Arc::new(move |_, _| {
+            t2.lock().unwrap().push("backspace");
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+
+        assert_eq!(
+            adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "😄", 6),
+            Err(PlatformError::StaleField),
+            "synthetic input must never reach an app the user switched away from"
+        );
+        assert!(touched.lock().unwrap().is_empty());
     }
 
     #[test]
