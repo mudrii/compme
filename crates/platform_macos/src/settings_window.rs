@@ -13,14 +13,14 @@
 //! decision is the unit-tested pure part.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSControlStateValueOn,
-    NSSwitch, NSTextField, NSWindow, NSWindowStyleMask,
+    NSFont, NSSwitch, NSTextField, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
@@ -32,6 +32,9 @@ pub struct SettingsFlags {
     /// Labs: global mid-line completions (`COMPME_MIDLINE`). The run loop
     /// watches edges, persists, and re-applies the engine gate live.
     pub labs_midline: Arc<AtomicBool>,
+    /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
+    /// before each show; the window only renders them (one label per line).
+    pub stats_lines: Arc<Mutex<Vec<String>>>,
 }
 
 struct SettingsTargetIvars {
@@ -78,6 +81,9 @@ pub struct MacosSettingsWindow {
     flags: SettingsFlags,
     // Keep the action target alive for the window's lifetime.
     target: Option<Retained<SettingsTarget>>,
+    // Statistics row labels, refreshed from `flags.stats_lines` on every show
+    // (the window is built once; data rows must not go stale on reopen).
+    stats_labels: Vec<Retained<NSTextField>>,
 }
 
 impl MacosSettingsWindow {
@@ -87,6 +93,7 @@ impl MacosSettingsWindow {
             window: None,
             flags,
             target: None,
+            stats_labels: Vec::new(),
         }
     }
 
@@ -96,8 +103,17 @@ impl MacosSettingsWindow {
         let mtm = main_thread()?;
         if self.window.is_none() {
             let target = SettingsTarget::new(self.flags.clone(), mtm);
-            self.window = Some(build_window(mtm, &target, &self.flags));
+            let (window, stats_labels) = build_window(mtm, &target, &self.flags);
+            self.window = Some(window);
+            self.stats_labels = stats_labels;
             self.target = Some(target);
+        }
+        // Refresh data rows on EVERY show — the lazily built window is reused
+        // across opens, so stale strings would otherwise survive a reopen.
+        if let Ok(lines) = self.flags.stats_lines.lock() {
+            for (label, line) in self.stats_labels.iter().zip(lines.iter()) {
+                label.setStringValue(&NSString::from_str(line));
+            }
         }
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -137,7 +153,7 @@ fn build_window(
     mtm: MainThreadMarker,
     target: &Retained<SettingsTarget>,
     flags: &SettingsFlags,
-) -> Retained<NSWindow> {
+) -> (Retained<NSWindow>, Vec<Retained<NSTextField>>) {
     let frame = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(520.0, 420.0));
     let style =
         NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable;
@@ -154,6 +170,7 @@ fn build_window(
     };
     window.setTitle(&NSString::from_str("Compme Settings"));
     window.center();
+    let mut stats_labels: Vec<Retained<NSTextField>> = Vec::new();
 
     // Labs pane (the first functional pane): one labeled NSSwitch for the
     // global mid-line toggle, initialized from the CURRENT config state.
@@ -194,13 +211,51 @@ fn build_window(
             switch.setAction(Some(sel!(toggleMidline:)));
         }
         content.addSubview(&switch);
+
+        // Statistics section: header + three data rows (shown/accepted/words).
+        // Row strings come from the run loop via flags.stats_lines; show()
+        // refreshes them on every open. Monospaced font keeps the fixed-width
+        // labels and sparkline glyphs column-aligned.
+        let stats_header = NSTextField::labelWithString(
+            &NSString::from_str("Statistics \u{2014} this session"),
+            mtm,
+        );
+        stats_header.setFrame(NSRect::new(
+            NSPoint::new(20.0, 290.0),
+            NSSize::new(200.0, 24.0),
+        ));
+        content.addSubview(&stats_header);
+
+        let initial: Vec<String> = flags
+            .stats_lines
+            .lock()
+            .map(|l| l.clone())
+            .unwrap_or_default();
+        // SAFETY: NSFontWeightRegular is a constant extern static.
+        let mono = NSFont::monospacedSystemFontOfSize_weight(12.0, unsafe {
+            objc2_app_kit::NSFontWeightRegular
+        });
+        for row in 0..STATS_ROWS {
+            let text = initial.get(row).map(String::as_str).unwrap_or("");
+            let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
+            label.setFont(Some(&mono));
+            label.setFrame(NSRect::new(
+                NSPoint::new(20.0, 262.0 - row as f64 * 24.0),
+                NSSize::new(420.0, 20.0),
+            ));
+            content.addSubview(&label);
+            stats_labels.push(label);
+        }
     }
     // Keep the instance alive across closes: AppKit's default releases a
     // window on close, which would dangle our Retained pointer.
     // SAFETY: documented NSWindow property setter.
     unsafe { window.setReleasedWhenClosed(false) };
-    window
+    (window, stats_labels)
 }
+
+/// Fixed Statistics row count (shown / accepted / words).
+const STATS_ROWS: usize = 3;
 
 #[cfg(test)]
 mod tests {

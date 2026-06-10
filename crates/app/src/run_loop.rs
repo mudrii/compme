@@ -792,6 +792,22 @@ fn excluded_apps_value(prefs: &Prefs) -> String {
     apps.join(",")
 }
 
+/// Statistics-pane rows (T2): one fixed line per metric (shown/accepted/
+/// words), each with a per-day sparkline over `buckets` and the span total.
+/// Pure — the window only renders these strings.
+fn stats_pane_lines(buckets: &[stats::DayBucket]) -> Vec<String> {
+    let shown: Vec<usize> = buckets.iter().map(|b| b.counts.shown).collect();
+    let accepted: Vec<usize> = buckets.iter().map(|b| b.counts.accepted).collect();
+    let words: Vec<usize> = buckets.iter().map(|b| b.words).collect();
+    [("Shown", shown), ("Accepted", accepted), ("Words", words)]
+        .into_iter()
+        .map(|(label, series)| {
+            let total: usize = series.iter().sum();
+            format!("{label:<9}{}  {total}", stats::sparkline(&series))
+        })
+        .collect()
+}
+
 /// The COMPME_MIDLINE persistence value for a given switch state, paired with
 /// the launch parser (`"1"`/`"true"` are truthy; everything else is off).
 fn midline_value(enabled: bool) -> &'static str {
@@ -1260,6 +1276,7 @@ pub fn run() -> Result<(), String> {
     let mut global_mid_word = config.allow_mid_word;
     let settings_flags = platform_macos::SettingsFlags {
         labs_midline: Arc::new(AtomicBool::new(global_mid_word)),
+        stats_lines: Arc::new(Mutex::new(Vec::new())),
     };
     let mut settings_window = platform_macos::MacosSettingsWindow::new(settings_flags.clone());
     let mut settings_was_visible = false;
@@ -1563,6 +1580,11 @@ pub fn run() -> Result<(), String> {
         // Tray "Settings…": show the S2 window (promotes activation policy so
         // a menu-bar app's window can become key).
         if flags.open_settings_window.swap(false, Ordering::Relaxed) {
+            // Compose the Statistics rows right before showing — the window
+            // renders strings only; data stays on this side of the seam.
+            if let Ok(mut lines) = settings_flags.stats_lines.lock() {
+                *lines = stats_pane_lines(&usage.daily_buckets(wall_ms, 7));
+            }
             if let Err(err) = settings_window.show() {
                 eprintln!("compme: settings window unavailable: {err}");
             }
@@ -1953,6 +1975,30 @@ mod tests {
         // A successful read resets: the next error is a new episode.
         squelch.reset();
         assert!(squelch.should_log("StaleField"));
+    }
+
+    #[test]
+    fn stats_pane_lines_render_one_sparkline_row_per_metric() {
+        // Statistics pane T2: three fixed rows (shown/accepted/words), each
+        // label-padded with a per-day sparkline and the span total.
+        let mk = |shown: usize, accepted: usize, words: usize| stats::DayBucket {
+            counts: stats::Counts {
+                shown,
+                accepted,
+                dismissed: 0,
+                superseded: 0,
+            },
+            words,
+        };
+        let buckets = [mk(0, 0, 0), mk(2, 1, 2), mk(4, 1, 5)];
+        assert_eq!(
+            stats_pane_lines(&buckets),
+            vec![
+                "Shown    \u{2581}\u{2585}\u{2588}  6",
+                "Accepted \u{2581}\u{2588}\u{2588}  2",
+                "Words    \u{2581}\u{2584}\u{2588}  7",
+            ]
+        );
     }
 
     #[test]
