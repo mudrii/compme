@@ -31,6 +31,10 @@ pub struct TrayFlags {
     /// Set when the user picks Snooze; the run loop consumes it (swap false)
     /// and applies the snooze to its prefs.
     pub snooze_requested: Arc<AtomicBool>,
+    /// Set when the user picks "Toggle Input Collection in Current App"; the
+    /// run loop consumes it (swap false) and flips the frontmost app's
+    /// typing-history collection override.
+    pub collection_toggle: Arc<AtomicBool>,
     /// Set when the user picks a "Disable Completions in Current App" arm;
     /// the run loop consumes it (take) and applies it to the FRONTMOST app's
     /// prefs (the tray never resolves app identity itself).
@@ -87,6 +91,11 @@ define_class!(
         #[unsafe(method(requestSnooze:))]
         fn request_snooze(&self, _sender: Option<&AnyObject>) {
             self.ivars().flags.snooze_requested.store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(toggleCollection:))]
+        fn toggle_collection(&self, _sender: Option<&AnyObject>) {
+            self.ivars().flags.collection_toggle.store(true, Ordering::Relaxed);
         }
 
         #[unsafe(method(disableAppHour:))]
@@ -185,6 +194,20 @@ impl MacosTray {
         }
         disable_app_item.setSubmenu(Some(&disable_menu));
         menu.addItem(&disable_app_item);
+
+        // Toggle Input Collection in Current App (Cotypist's per-app data-
+        // collection control; single toggle item — their stateful submenu is
+        // future polish alongside the dynamic app-name titles).
+        let collection_item = NSMenuItem::new(mtm);
+        collection_item.setTitle(&NSString::from_str(
+            "Toggle Input Collection in Current App",
+        ));
+        // SAFETY: as above.
+        unsafe {
+            collection_item.setTarget(Some(target_as_any(&target)));
+            collection_item.setAction(Some(sel!(toggleCollection:)));
+        }
+        menu.addItem(&collection_item);
 
         // Snooze (pause suggestions for a fixed hour; run loop applies it).
         let snooze_item = NSMenuItem::new(mtm);

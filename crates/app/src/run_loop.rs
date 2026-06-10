@@ -697,6 +697,33 @@ fn apply_app_disable(arm: DisableArm, app: &str, prefs: &mut Prefs, now_ms: u64)
     }
 }
 
+/// Flip per-app input collection for `app`; returns whether collection is now
+/// allowed there. Re-enabling resets to inherit (None) rather than Some(true),
+/// so the persisted no-collect list stays the single source.
+fn toggle_app_collection(prefs: &mut Prefs, app: &str) -> bool {
+    let policy = prefs.per_app.entry(app.to_string()).or_default();
+    if policy.collect_inputs == Some(false) {
+        policy.collect_inputs = None;
+        true
+    } else {
+        policy.collect_inputs = Some(false);
+        false
+    }
+}
+
+/// The COMPME_NO_COLLECT_APPS persistence value: sorted comma-joined apps with
+/// collection explicitly off, round-trippable through build_prefs.
+fn no_collect_apps_value(prefs: &Prefs) -> String {
+    let mut apps: Vec<&str> = prefs
+        .per_app
+        .iter()
+        .filter(|(_, policy)| policy.collect_inputs == Some(false))
+        .map(|(app, _)| app.as_str())
+        .collect();
+    apps.sort_unstable();
+    apps.join(",")
+}
+
 /// The COMPME_EXCLUDED_APPS persistence value: comma-joined, sorted for a
 /// stable file diff, round-trippable through the build_prefs parser.
 fn excluded_apps_value(prefs: &Prefs) -> String {
@@ -750,11 +777,23 @@ fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
                 .collect()
         })
         .unwrap_or_default();
-    Prefs {
+    let mut prefs = Prefs {
         default_enabled: parse_enabled_default(lookup("COMPME_DEFAULT_ENABLED")),
         excluded_apps,
         ..Default::default()
+    };
+    // Per-app typing-history opt-outs (tray "Input Collection in <app>"),
+    // mirroring the COMPME_EXCLUDED_APPS comma-list format.
+    if let Some(raw) = lookup("COMPME_NO_COLLECT_APPS") {
+        for app in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            prefs
+                .per_app
+                .entry(app.to_string())
+                .or_default()
+                .collect_inputs = Some(false);
+        }
     }
+    prefs
 }
 
 /// Resolve one config key with env-over-file precedence: the environment value
@@ -980,6 +1019,7 @@ pub fn run() -> Result<(), String> {
         quit: Arc::new(AtomicBool::new(false)),
         open_settings: Arc::new(AtomicBool::new(false)),
         snooze_requested: Arc::new(AtomicBool::new(false)),
+        collection_toggle: Arc::new(AtomicBool::new(false)),
         app_disable: Arc::new(Mutex::new(None)),
     };
     // Runtime-mutable policy (snooze); starts from the configured prefs. The
@@ -1317,6 +1357,35 @@ pub fn run() -> Result<(), String> {
             latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
+        // Tray "Toggle Input Collection in Current App": flip the frontmost
+        // app's typing-history override and persist the no-collect list. No
+        // dismiss edge — collection gates RECORDING, not suggestion display.
+        if flags.collection_toggle.swap(false, Ordering::Relaxed) {
+            match current_field
+                .as_ref()
+                .and_then(|f| resolve_app_key(f.pid, bundle_id_for_pid))
+            {
+                Some(app) => {
+                    let allowed = toggle_app_collection(&mut prefs, &app);
+                    eprintln!(
+                        "compme: input collection in {app} now {}",
+                        if allowed { "ENABLED" } else { "DISABLED" }
+                    );
+                    if let Some(path) = config::config_file_path() {
+                        if let Err(err) = config::persist_setting(
+                            &path,
+                            "COMPME_NO_COLLECT_APPS",
+                            &no_collect_apps_value(&prefs),
+                        ) {
+                            eprintln!("compme: could not persist no-collect apps: {err}");
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("compme: collection toggle ignored — no focused app to resolve")
+                }
+            }
+        }
         // Tray "Disable Completions in Current App" ▸ arm: resolve the CURRENT
         // frontmost app at consumption time (the tray never knows app identity)
         // and apply. Same dismiss edge as snooze/disable — the pref change must
@@ -1606,6 +1675,34 @@ mod tests {
              together with SNOOZE_MINUTES"
         );
         assert!(AppStatus::Ready.render_line(true).contains("1 hour"));
+    }
+
+    #[test]
+    fn no_collect_apps_env_parses_into_per_app_collect_overrides() {
+        let prefs = build_prefs(&lookup(&[(
+            "COMPME_NO_COLLECT_APPS",
+            "com.apple.TextEdit, com.googlecode.iterm2",
+        )]));
+        assert!(!prefs.collection_allowed(Some("com.apple.TextEdit")));
+        assert!(!prefs.collection_allowed(Some("com.googlecode.iterm2")));
+        assert!(prefs.collection_allowed(Some("com.apple.Safari")));
+    }
+
+    #[test]
+    fn toggling_app_collection_flips_state_and_serializes_stably() {
+        let mut prefs = Prefs::default();
+        // First toggle: disable.
+        assert!(!toggle_app_collection(&mut prefs, "com.apple.TextEdit"));
+        assert!(!prefs.collection_allowed(Some("com.apple.TextEdit")));
+        // Stable sorted persistence value.
+        assert!(!toggle_app_collection(&mut prefs, "com.apple.Finder"));
+        assert_eq!(
+            no_collect_apps_value(&prefs),
+            "com.apple.Finder,com.apple.TextEdit"
+        );
+        // Second toggle: re-enable; value shrinks.
+        assert!(toggle_app_collection(&mut prefs, "com.apple.Finder"));
+        assert_eq!(no_collect_apps_value(&prefs), "com.apple.TextEdit");
     }
 
     #[test]
