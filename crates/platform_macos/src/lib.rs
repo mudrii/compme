@@ -3189,7 +3189,11 @@ fn caret_rect_for_field(pid: i32, field: FieldHandle) -> Result<Option<ScreenRec
 /// (`[y+h, y+2h]`, cycle-44 live finding). Evidence-only list (2026-06-10
 /// live screenshots: ghost exactly one line low in Chrome); extend per app on
 /// evidence, never by guess.
-const RECT_IS_LINE_BUNDLE_PREFIXES: [&str; 2] = ["com.google.Chrome", "org.chromium."];
+const RECT_IS_LINE_BUNDLE_PREFIXES: [&str; 3] = [
+    "com.google.Chrome",
+    "org.chromium.",
+    "com.googlecode.iterm2",
+];
 
 /// Normalize an app-specific caret rect to the calibrated default semantics
 /// by shifting rect-is-line apps up one line. Degenerate rects (element
@@ -6891,6 +6895,12 @@ mod tests {
         // Chromium-family prefix matches too.
         assert_eq!(
             normalize_caret_rect(chrome_rect, Some("org.chromium.Chromium")).y,
+            332.0
+        );
+        // iTerm2 exhibits the same semantics (live screenshots 2026-06-10:
+        // ghost one line low in iTerm2, twice — user run + scripted self-test).
+        assert_eq!(
+            normalize_caret_rect(chrome_rect, Some("com.googlecode.iterm2")).y,
             332.0
         );
     }
