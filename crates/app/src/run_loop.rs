@@ -668,6 +668,30 @@ fn canonicalize_field_app(
     (field, app_key)
 }
 
+/// Squelch for repeating error logs: a failing `read_context` fires every
+/// caret/typed event (heartbeat rate) while focus sits on an unsupported
+/// element, flooding the log with identical lines (observed live: dozens of
+/// `UnsupportedField` repeats per second). Log only when the message CHANGES;
+/// a successful read resets it so the next failure is a new episode.
+#[derive(Default)]
+struct LogSquelch {
+    last: Option<String>,
+}
+
+impl LogSquelch {
+    fn should_log(&mut self, message: &str) -> bool {
+        if self.last.as_deref() == Some(message) {
+            return false;
+        }
+        self.last = Some(message.to_string());
+        true
+    }
+
+    fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
 /// How long a tray "Snooze" pauses suggestions. One fixed duration for now
 /// (Cotypist-style pause); a duration submenu is a future settings surface.
 const SNOOZE_MINUTES: u64 = 60;
@@ -993,6 +1017,7 @@ pub fn run() -> Result<(), String> {
     let mut last_secure_poll_ms: Option<u64> = None;
     let mut last_render: Option<(crate::status::AppStatus, bool, bool)> = None;
     let mut last_stats_line: Option<String> = None;
+    let mut read_err_squelch = LogSquelch::default();
     let start = Instant::now();
 
     eprintln!(
@@ -1043,6 +1068,7 @@ pub fn run() -> Result<(), String> {
                         // bare cursor move. Typing schedules a completion; a cursor
                         // move only invalidates a showing ghost (no re-request).
                         Ok(ctx) => {
+                            read_err_squelch.reset();
                             current_field = Some(field.clone());
                             if config.diag_coords {
                                 if let Ok(rect) = adapter.caret_rect(&field) {
@@ -1121,7 +1147,12 @@ pub fn run() -> Result<(), String> {
                             }
                         }
                         Err(err) => {
-                            eprintln!("complete-me: read_context: {err:?}");
+                            // Squelched: identical failures repeat at heartbeat
+                            // rate while focus sits on an unsupported element.
+                            let message = format!("{err:?}");
+                            if read_err_squelch.should_log(&message) {
+                                eprintln!("complete-me: read_context: {message}");
+                            }
                             // Setup-needed onboarding (A2 §16): a browser/Arc/Dia field
                             // that won't read may need Accessibility/Text-Metrics setup
                             // (the Google-Docs-in-Chrome case). Surface guidance once.
@@ -1501,6 +1532,21 @@ mod tests {
         assert!(!prefs.should_suggest(Some("com.apple.Finder"), None, 0));
         assert!(!prefs.should_suggest(Some("com.tinyspeck.slackmacgap"), None, 0));
         assert!(prefs.should_suggest(Some("com.apple.TextEdit"), None, 0));
+    }
+
+    #[test]
+    fn log_squelch_logs_changes_and_resumes_after_reset() {
+        let mut squelch = LogSquelch::default();
+        // First occurrence logs; identical repeats are squelched.
+        assert!(squelch.should_log("UnsupportedField"));
+        assert!(!squelch.should_log("UnsupportedField"));
+        assert!(!squelch.should_log("UnsupportedField"));
+        // A DIFFERENT error logs (state changed).
+        assert!(squelch.should_log("StaleField"));
+        assert!(!squelch.should_log("StaleField"));
+        // A successful read resets: the next error is a new episode.
+        squelch.reset();
+        assert!(squelch.should_log("StaleField"));
     }
 
     #[test]
