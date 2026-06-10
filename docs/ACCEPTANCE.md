@@ -270,6 +270,15 @@ twice), emoji ghost offered/placed, and per-app exclusion held
 regress hotkey dispatch. Not exercised in that run: snooze click, keychain key
 creation, toggle-relaunch persistence (separate residuals).
 
+**Follow-up runs same day closed three of those**: (1) keychain key
+created on first use and reused across three runs (one login-keychain
+`genp` entry, store reopened over existing records); (2) two Full-accept
+records landed and the db shows no typed plaintext under `strings` —
+ciphertext-only-on-disk holds live; (3) the tray Enable toggle persisted
+`COMPLETE_ME_ENABLED=false` to config.env and a relaunch started
+`status=Disabled` directly from it. Still open live: the snooze click
+(ghost dismiss + CMð¤) and backspace-synthesis in a non-AxSet app.
+
 ## Example Acceptance Binaries
 
 The live runner uses `platform_macos` examples:
