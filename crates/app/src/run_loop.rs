@@ -1580,6 +1580,10 @@ pub fn run() -> Result<(), String> {
         // Labs-pane watcher: on a switch edge, persist COMPME_MIDLINE and
         // re-apply the engine gate for the current app immediately (per-app
         // overrides still win; the switch changes only the global default).
+        // A persist failure is logged but not retried — the runtime global
+        // wins until relaunch (deliberate graceful degradation, same stance
+        // as the instance lock: an IO hiccup must not stall the app, at the
+        // cost of config.env staying stale until the next successful write).
         let labs_mid_word = settings_flags.labs_midline.load(Ordering::Relaxed);
         if labs_mid_word != global_mid_word {
             global_mid_word = labs_mid_word;

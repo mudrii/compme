@@ -17,6 +17,17 @@ use std::collections::VecDeque;
 /// The rolling window: 30 days in milliseconds.
 pub const WINDOW_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
+/// One day in milliseconds (the Statistics-pane chart bucket size).
+pub const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// One chart bar for the Statistics pane: outcome counts plus accepted words
+/// over a single 24h slice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DayBucket {
+    pub counts: Counts,
+    pub words: usize,
+}
+
 /// A completion-lifecycle outcome worth counting (design spec §11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -184,6 +195,36 @@ impl Stats {
         self.entries.len() + self.latencies.len()
     }
 
+    /// Chart data for the Statistics pane: `days` trailing 24h slices ending
+    /// at `now_ms`, oldest first. Slices are sliding (anchored to `now_ms`),
+    /// not calendar days — timezone-free and deterministic like every other
+    /// query here. An entry at exactly `now_ms` lands in the newest bucket.
+    pub fn daily_buckets(&self, now_ms: u64, days: usize) -> Vec<DayBucket> {
+        let mut buckets = vec![DayBucket::default(); days];
+        if days == 0 {
+            return buckets;
+        }
+        let cutoff = now_ms.saturating_sub(days as u64 * DAY_MS);
+        for e in self
+            .entries
+            .iter()
+            .filter(|e| e.at_ms >= cutoff && e.at_ms <= now_ms)
+        {
+            let idx = (((e.at_ms - cutoff) / DAY_MS) as usize).min(days - 1);
+            let b = &mut buckets[idx];
+            match e.outcome {
+                Outcome::Shown => b.counts.shown += 1,
+                Outcome::Accepted { words } => {
+                    b.counts.accepted += 1;
+                    b.words += words;
+                }
+                Outcome::Dismissed => b.counts.dismissed += 1,
+                Outcome::Superseded => b.counts.superseded += 1,
+            }
+        }
+        buckets
+    }
+
     /// One human-readable line for the menu bar (§11 "words completed" display):
     /// `"{words} words · {accepted} accepted ({rate}%)"` over the 30-day window.
     /// The rate is omitted when nothing was shown (no meaningless 0%), and a
@@ -207,6 +248,43 @@ mod tests {
     use super::*;
 
     const T0: u64 = 1_000_000_000_000; // a fixed base timestamp
+
+    const DAY_MS_T: u64 = 24 * 60 * 60 * 1000;
+
+    #[test]
+    fn daily_buckets_split_the_window_into_trailing_day_slices() {
+        // Statistics-pane chart data: `days` trailing 24h slices ending at
+        // `now_ms`, oldest first, each with outcome counts + accepted words.
+        let mut s = Stats::new();
+        let now = T0 + 10 * DAY_MS_T;
+        s.record(now, Outcome::Accepted { words: 3 }); // most recent slice
+        s.record(now - DAY_MS_T - 1, Outcome::Shown); // middle slice
+        s.record(now - 3 * DAY_MS_T + 1, Outcome::Dismissed); // oldest slice
+        let buckets = s.daily_buckets(now, 3);
+        assert_eq!(buckets.len(), 3);
+        assert_eq!(buckets[2].counts.accepted, 1);
+        assert_eq!(buckets[2].words, 3);
+        assert_eq!(buckets[1].counts.shown, 1);
+        assert_eq!(buckets[1].words, 0);
+        assert_eq!(buckets[0].counts.dismissed, 1);
+        assert_eq!(buckets[0].counts.shown, 0);
+    }
+
+    #[test]
+    fn daily_buckets_exclude_entries_older_than_the_requested_days() {
+        // Retained 30-day entries older than the asked-for span must not
+        // leak into the oldest bucket; an entry exactly at the cutoff is in.
+        let mut s = Stats::new();
+        let now = T0 + 10 * DAY_MS_T;
+        s.record(now - 2 * DAY_MS_T - 1, Outcome::Accepted { words: 9 }); // outside 2-day span
+        s.record(now - 2 * DAY_MS_T, Outcome::Shown); // exactly at the cutoff
+        let buckets = s.daily_buckets(now, 2);
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets[0].counts.shown, 1);
+        assert_eq!(buckets[0].counts.accepted, 0);
+        assert_eq!(buckets[0].words, 0);
+        assert!(s.daily_buckets(now, 0).is_empty());
+    }
 
     #[test]
     fn summary_line_formats_words_accepts_and_rate() {
