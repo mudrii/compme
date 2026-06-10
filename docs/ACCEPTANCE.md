@@ -276,8 +276,14 @@ created on first use and reused across three runs (one login-keychain
 records landed and the db shows no typed plaintext under `strings` —
 ciphertext-only-on-disk holds live; (3) the tray Enable toggle persisted
 `COMPLETE_ME_ENABLED=false` to config.env and a relaunch started
-`status=Disabled` directly from it. Still open live: the snooze click
-(ghost dismiss + CMð¤) and backspace-synthesis in a non-AxSet app.
+`status=Disabled` directly from it. A later run validated the
+snooze flow live: the tray click logged `suggestions snoozed for 60
+minutes`, the render state flipped `snoozed=true`, and a fully typed
+`:smile` while snoozed produced `decision=None` on every keystroke with
+zero ghosts or model requests — the unified prefs gate blocks local
+replacements and model completions alike. (The ghost-dismiss-on-snooze
+edge ran with no ghost visible, so it stays unit-covered only.) Still
+open live: backspace-synthesis in a non-AxSet app.
 
 ## Example Acceptance Binaries
 
