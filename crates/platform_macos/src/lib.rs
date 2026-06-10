@@ -57,8 +57,10 @@ use platform::{
 pub mod keychain;
 mod login_item;
 mod tray;
+mod url_events;
 pub use login_item::set_launch_at_login;
 pub use tray::{DisableArm, MacosTray, TrayFlags};
+pub use url_events::{install_url_event_handler, UrlEventHandler};
 
 const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.05;
 const AX_WORKER_PUMP_INTERVAL: Duration = Duration::from_millis(5);

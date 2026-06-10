@@ -168,6 +168,10 @@ struct Config {
     /// registers/unregisters the SMAppService login item at startup; `None`
     /// (absent or unrecognized) leaves the user's Login Items setting alone.
     launch_at_login: Option<bool>,
+    /// Host-pinned Ed25519 key for SIGNED deep links (`COMPME_TRUSTED_KEY`,
+    /// 64 hex). `None` (default, incl. malformed) = signed links rejected
+    /// fail-closed; unsigned reversible links work either way.
+    trusted_key: Option<webconfig::TrustedKey>,
 }
 
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
@@ -201,6 +205,8 @@ impl Config {
             // suggestion-policy default in prefs.
             enabled: parse_enabled_default(lookup("COMPME_ENABLED")),
             launch_at_login: parse_tri_state(lookup("COMPME_LAUNCH_AT_LOGIN")),
+            trusted_key: lookup("COMPME_TRUSTED_KEY")
+                .and_then(|raw| webconfig::TrustedKey::from_hex(&raw)),
             acceptance_pid: lookup("COMPME_ACCEPTANCE_PID").and_then(|raw| raw.parse::<i32>().ok()),
             stub_completion: lookup("COMPME_STUB_COMPLETION").filter(|s| !s.is_empty()),
             model_path: lookup("COMPME_MODEL_PATH")
@@ -702,6 +708,29 @@ fn apply_app_disable(arm: DisableArm, app: &str, prefs: &mut Prefs, now_ms: u64)
     }
 }
 
+/// Apply one received `compme://` deep link (web-driven config, §8/§16):
+/// strict fail-closed parse (signature-aware — a signed link needs the
+/// host-pinned trusted key) then map the reversible command onto prefs.
+/// Returns a user-visible summary or the failure reason; the caller logs
+/// either way (the §16 "user-visible" requirement; a confirmation PROMPT is
+/// the follow-up host work).
+fn handle_deep_link(
+    url: &str,
+    trusted: Option<&webconfig::TrustedKey>,
+    prefs: &mut Prefs,
+) -> Result<String, String> {
+    match webconfig::parse_deep_link_with_trust(url, trusted) {
+        Ok((command, trust)) => {
+            prefs.apply_override(&command);
+            Ok(format!(
+                "applied {:?} override for {:?} ({trust:?} link)",
+                command.action, command.scope
+            ))
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 /// Flip per-app input collection for `app`; returns whether collection is now
 /// allowed there. Re-enabling resets to inherit (None) rather than Some(true),
 /// so the persisted no-collect list stays the single source.
@@ -985,6 +1014,25 @@ pub fn run() -> Result<(), String> {
         // and re-reads TCC at startup), so screen context is inactive this run.
         eprintln!("compme: restart after granting Screen Recording to enable screen context");
     }
+
+    // compme:// deep-link reception (web-driven config §8/§16): Launch
+    // Services routes scheme opens as Apple Events; the handler enqueues the
+    // raw URL and the heartbeat drains it through the strict fail-closed
+    // parser. Install failure is non-fatal (deep links just stay inert).
+    let deep_links: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deep_links_in_handler = Arc::clone(&deep_links);
+    let _url_handler = match platform_macos::install_url_event_handler(Arc::new(move |url| {
+        deep_links_in_handler
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(url);
+    })) {
+        Ok(handler) => Some(handler),
+        Err(err) => {
+            eprintln!("compme: deep-link handler unavailable: {err}");
+            None
+        }
+    };
 
     // Launch-at-login (A3 D13): apply only an EXPLICIT config choice; absent
     // leaves the user's Login Items alone. Non-fatal — a bare cargo binary
@@ -1387,6 +1435,36 @@ pub fn run() -> Result<(), String> {
             latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
+        // Drain received compme:// deep links (strict fail-closed parse →
+        // reversible override). Every outcome is logged (the §16 user-visible
+        // requirement; a confirmation prompt is the follow-up). An applied
+        // override changes suggestion policy, so fire the dismiss edge
+        // (a2-parity review #2) and persist the exclude list.
+        let pending_links: Vec<String> = {
+            let mut lock = deep_links
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *lock)
+        };
+        for url in pending_links {
+            match handle_deep_link(&url, config.trusted_key.as_ref(), &mut prefs) {
+                Ok(summary) => {
+                    eprintln!("compme: deep link {summary}");
+                    if let Some(path) = config::config_file_path() {
+                        if let Err(err) = config::persist_setting(
+                            &path,
+                            "COMPME_EXCLUDED_APPS",
+                            &excluded_apps_value(&prefs),
+                        ) {
+                            eprintln!("compme: could not persist excluded apps: {err}");
+                        }
+                    }
+                    latest.clear();
+                    let _ = log_err("on_dismiss", engine.on_dismiss());
+                }
+                Err(err) => eprintln!("compme: deep link rejected: {err}"),
+            }
+        }
         // Tray "Toggle Input Collection in Current App": flip the frontmost
         // app's typing-history override and persist the no-collect list. No
         // dismiss edge — collection gates RECORDING, not suggestion display.
@@ -1705,6 +1783,35 @@ mod tests {
              together with SNOOZE_MINUTES"
         );
         assert!(AppStatus::Ready.render_line(true).contains("1 hour"));
+    }
+
+    #[test]
+    fn deep_links_apply_overrides_and_fail_closed() {
+        let mut prefs = Prefs::default();
+        // A valid unsigned exclude applies and names the action.
+        let summary = handle_deep_link(
+            "compme://setOverride?app=com.apple.TextEdit&excluded=true",
+            None,
+            &mut prefs,
+        )
+        .expect("valid link applies");
+        assert!(summary.contains("com.apple.TextEdit"), "{summary}");
+        assert!(prefs.excluded_apps.contains("com.apple.TextEdit"));
+        // Garbage fails with the parser's message, prefs untouched.
+        let err = handle_deep_link("compme://setEverything?x=1", None, &mut prefs)
+            .expect_err("unknown command must fail");
+        assert!(err.contains("unknown command"), "{err}");
+        // A signed link without a configured trusted key fails closed.
+        let err = handle_deep_link(
+            &format!(
+                "compme://setOverride?app=com.apple.TextEdit&enabled=true&sig={}",
+                "ab".repeat(64)
+            ),
+            None,
+            &mut prefs,
+        )
+        .expect_err("signed link without a key must fail");
+        assert!(err.contains("no trusted key"), "{err}");
     }
 
     #[test]

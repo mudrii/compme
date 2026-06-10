@@ -15,6 +15,7 @@ engine = { path = "../engine" }
 model_client = { path = "../model_client" }
 personalization = { path = "../personalization" }
 prefs = { path = "../prefs" }
+webconfig = { path = "../webconfig" }
 context = { path = "../context" }
 redaction = { path = "../redaction" }
 memory = { path = "../memory" }

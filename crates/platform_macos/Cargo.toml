@@ -10,7 +10,7 @@ core-foundation = "=0.10.1"
 core-graphics = { version = "=0.25.0", features = ["elcapitan"] }
 objc2 = "=0.6.4"
 objc2-app-kit = "=0.3.2"
-objc2-foundation = { version = "=0.3.2", features = ["NSValue"] }
+objc2-foundation = { version = "=0.3.2", features = ["NSValue", "NSAppleEventManager", "NSAppleEventDescriptor", "objc2-core-services"] }
 platform = { path = "../platform" }
 objc2-service-management = { version = "=0.3.2", features = ["SMAppService"] }
 security-framework = "=3.7.0"
