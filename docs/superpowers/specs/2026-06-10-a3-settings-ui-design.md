@@ -1,0 +1,71 @@
+# A3 Settings UI + Tray Menu — Cotypist-Reference Plan
+
+Reference: 13 Cotypist 2026.1 screenshots captured 2026-06-10 (tray menu +
+every settings pane). This maps each surface to compme's existing backing and
+sequences the build. Native AppKit, no web view (engine-macos §9 A3 "no
+Tauri"). Most logic already exists as crates + `COMPME_*` env config; the UI
+is a front-end over `config.env` via `config::persist_setting` (c50) plus the
+live tray flags.
+
+## Deliberate divergences (Project Scope)
+
+- **No Subscription pane** — compme is Apache-2.0, all features open.
+- **No telemetry toggle** — Cotypist's "share anonymous usage statistics"
+  pane has no compme equivalent because nothing is ever sent (local-only).
+  The About pane states this instead.
+- **No Sparkle/Check-for-Updates initially** — updater is its own A3 ship
+  item (engine-macos §9).
+
+## Phase S1 — Tray menu extensions (loop-doable now)
+
+Cotypist tray: per-app disable submenu, global disable submenu, per-app
+input-collection submenu, Settings (⌘,), support links, updates, Quit.
+
+| Item | Backing | Status |
+|---|---|---|
+| Disable Completions in <frontmost app> ▸ (1h / until relaunch / always) | `prefs` per-app exclude + snooze-style timer keyed by app | exclude exists; per-app TIMED disable is new pure prefs work |
+| Disable Completions Globally ▸ (1h / until relaunch / always) | snooze (c54) = the 1h arm; "always" = enable toggle (c50) | submenu wiring only |
+| Input Collection in <app> ▸ | `memory` per-app — needs per-app collection override in prefs | new pure prefs field + gate |
+| Settings… ⌘, | opens the S2 window | stub until S2 |
+| Visit Website / Contact Support | repo URLs, `NSWorkspace.open` | trivial |
+| Quit | exists | done |
+
+## Phase S2 — Settings window skeleton + panes
+
+Sidebar + pane layout (NSWindow + NSTableView/NSStackView or SwiftUI-free
+AppKit). Pane order mirrors Cotypist. Every toggle persists through
+`persist_setting` → `config.env` → read at launch (env still wins).
+
+| Pane | Cotypist contents | compme backing | Gap |
+|---|---|---|---|
+| Setup | permission states (AX, Screen Recording), model downloaded, macOS text-suggestions off, clipboard context | `accessibility_trusted`, `screen_recording_permission`, model_select, compat | pane only; "disable macOS suggestions" helper is new |
+| General | launch-at-login; menu-bar icon toggle; accessory button; model picker + reveal; enable-by-default; max length (S/M/L); autocorrect toggles | SMAppService (bundle exists, c80); tray exists; model_select + `COMPME_MODEL_PATH`; `COMPME_ENABLED`; `COMPME_MAX_WORDS`; `COMPME_AUTOCORRECT` | launch-at-login wiring; model CATALOG/download mgr (§15 D14 — big, own item); accessory floating button = new feature (defer) |
+| Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | appearance sub-toggle has no equivalent (defer) |
+| Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS` | pane only — backing complete |
+| Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | `includeVanillaVariants` is the one unmodeled item (§8 note) — small emoji-crate addition |
+| Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; keymap threading from config is the open c13 residual | shortcut RECORDER UI; force-activate + the two toggle shortcuts are new hotkeys |
+| App Settings | per-app list (usage counts) with enable/mid-line/autocorrect/Tab-disable, compat mode, per-app instructions, per-app history | `prefs` overrides + `tab_disabled` (unwired); `memory` per-app counts; personalization per-app maps (unwired, c1 #5) | per-app mid-line/autocorrect overrides are new prefs fields; pane is the largest |
+| Labs | mid-line toggle | `COMPME_MIDLINE` | pane only |
+| Statistics | today + 30-day charts (range/group/metric) | `stats` crate (counts/words/latency) — menu line shipped c51 | chart view; longer retention than 30d if ranges grow |
+| About | version, acks, links | LICENSE, deps | pane only; states the no-telemetry guarantee |
+
+## Build order (each loop-tick-sized unless noted)
+
+1. **S1 tray submenus** — per-app timed disable + global submenu + per-app
+   input-collection (pure prefs additions + tray plumbing; pattern = c54
+   snooze).
+2. **Emoji `includeVanillaVariants`** (small pure emoji-crate change, closes
+   the §8 unmodeled note).
+3. **Launch-at-login** via SMAppService (bundle exists; default-off, D13).
+4. **S2 window skeleton** + the pure panes first (Labs, Emoji, Context,
+   Personalization — backing complete, persistence via persist_setting).
+5. **Shortcuts pane** + keymap threading (closes the c13 residual) — the
+   recorder UI is the hard part.
+6. **App Settings pane** (largest; needs the new per-app prefs fields).
+7. Statistics charts; Setup/onboarding pane; About.
+8. Out of scope here: model catalog/download manager (§15 D14), accessory
+   floating button, updater — separate items.
+
+GUI panes are live-LOOK validated (human or scripted screenshot reads);
+underlying toggles stay env/config-file-backed so every behavior remains
+headless-testable.
