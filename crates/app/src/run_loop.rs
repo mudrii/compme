@@ -1924,6 +1924,19 @@ pub fn run() -> Result<(), String> {
         usage.latency_avg_ms(final_ms),
         usage.latency_p95_ms(final_ms),
     );
+    // Lifetime stats: load existing totals, add this session, write back
+    // (T3). Fail-soft end to end — a stats hiccup must not block shutdown.
+    if let Some(path) = config::stats_file_path() {
+        let lifetime = stats::parse_stats_file(&std::fs::read_to_string(&path).unwrap_or_default());
+        let merged = lifetime.merged(counts, usage.words_completed(final_ms));
+        let tmp = path.with_extension("env.tmp");
+        let write = std::fs::create_dir_all(path.parent().unwrap_or(&path))
+            .and_then(|()| std::fs::write(&tmp, stats::render_stats_file(&merged)))
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(err) = write {
+            eprintln!("compme: stats persist failed: {err}");
+        }
+    }
     drop(tray); // remove the status item before AppKit teardown
     drop(caret_sub);
     drop(focus_sub);

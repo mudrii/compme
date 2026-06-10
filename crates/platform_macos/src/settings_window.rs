@@ -266,7 +266,10 @@ fn build_window(
         ));
         // Display-only: wrappingLabelWithString is selectable by default,
         // which is fine (lets the user copy the repo URL), but it must not
-        // be editable.
+        // be editable. Small font: the credits line wraps to ~3 lines; at
+        // the default size the block runs flush against its 136px box
+        // (review-c101), at 11pt it fits with headroom.
+        about.setFont(Some(&NSFont::systemFontOfSize(11.0)));
         about.setEditable(false);
         content.addSubview(&about);
     }

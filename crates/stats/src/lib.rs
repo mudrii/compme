@@ -20,6 +20,65 @@ pub const WINDOW_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// One day in milliseconds (the Statistics-pane chart bucket size).
 pub const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 
+/// Lifetime outcome totals as persisted to `stats.env` on shutdown (T3).
+/// Distinct from the rolling 30-day window: these only ever grow. Pure
+/// string parse/render here; file IO stays in the app crate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PersistedStats {
+    pub shown: u64,
+    pub accepted: u64,
+    pub dismissed: u64,
+    pub superseded: u64,
+    pub words: u64,
+}
+
+impl PersistedStats {
+    /// These totals plus one session's counts and accepted words.
+    pub fn merged(self, session: Counts, session_words: usize) -> Self {
+        Self {
+            shown: self.shown + session.shown as u64,
+            accepted: self.accepted + session.accepted as u64,
+            dismissed: self.dismissed + session.dismissed as u64,
+            superseded: self.superseded + session.superseded as u64,
+            words: self.words + session_words as u64,
+        }
+    }
+}
+
+/// Parse `stats.env` contents. Fail-soft: missing keys, malformed values,
+/// and unknown lines all read as zero/ignored — a corrupt stats file must
+/// never break startup or shutdown (worst case: lifetime counters reset).
+pub fn parse_stats_file(contents: &str) -> PersistedStats {
+    let mut out = PersistedStats::default();
+    for line in contents.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let Ok(value) = value.trim().parse::<u64>() else {
+            continue;
+        };
+        match key.trim() {
+            "STATS_SHOWN" => out.shown = value,
+            "STATS_ACCEPTED" => out.accepted = value,
+            "STATS_DISMISSED" => out.dismissed = value,
+            "STATS_SUPERSEDED" => out.superseded = value,
+            "STATS_WORDS" => out.words = value,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Render totals in the dotenv-style format `parse_stats_file` reads.
+pub fn render_stats_file(stats: &PersistedStats) -> String {
+    format!(
+        "# compme lifetime stats (written on shutdown)\n\
+         STATS_SHOWN={}\nSTATS_ACCEPTED={}\nSTATS_DISMISSED={}\n\
+         STATS_SUPERSEDED={}\nSTATS_WORDS={}\n",
+        stats.shown, stats.accepted, stats.dismissed, stats.superseded, stats.words,
+    )
+}
+
 /// Render a series as unicode block-bars (▁▂▃▄▅▆▇█), one glyph per value,
 /// ceiling-scaled to the series maximum: the max is always full-height, zero
 /// is always the baseline glyph, and any nonzero value rises above it (a
@@ -273,6 +332,43 @@ mod tests {
     const T0: u64 = 1_000_000_000_000; // a fixed base timestamp
 
     const DAY_MS_T: u64 = 24 * 60 * 60 * 1000;
+
+    #[test]
+    fn persisted_stats_round_trip_and_merge_session_counts() {
+        // Shutdown persistence (T3): lifetime totals survive render→parse
+        // unchanged; merging a session adds counts and words on top.
+        let lifetime = PersistedStats {
+            shown: 100,
+            accepted: 40,
+            dismissed: 10,
+            superseded: 25,
+            words: 320,
+        };
+        assert_eq!(parse_stats_file(&render_stats_file(&lifetime)), lifetime);
+
+        let session = Counts {
+            shown: 5,
+            accepted: 2,
+            dismissed: 1,
+            superseded: 0,
+        };
+        let merged = lifetime.merged(session, 17);
+        assert_eq!(merged.shown, 105);
+        assert_eq!(merged.accepted, 42);
+        assert_eq!(merged.dismissed, 11);
+        assert_eq!(merged.superseded, 25);
+        assert_eq!(merged.words, 337);
+
+        // Missing file / malformed values fail soft to zero — never panic.
+        assert_eq!(parse_stats_file(""), PersistedStats::default());
+        assert_eq!(
+            parse_stats_file("STATS_SHOWN=abc\nGARBAGE\nSTATS_WORDS=7"),
+            PersistedStats {
+                words: 7,
+                ..PersistedStats::default()
+            }
+        );
+    }
 
     #[test]
     fn sparkline_scales_bars_to_the_series_maximum() {

@@ -44,6 +44,13 @@ where
     value.clamp(min, max)
 }
 
+/// Resolve the lifetime-stats file path: sibling of the config file
+/// (`stats.env` next to `config.env`, honoring a `COMPME_CONFIG` override's
+/// directory). `None` when no config home is resolvable.
+pub fn stats_file_path() -> Option<PathBuf> {
+    config_file_path().map(|p| p.with_file_name("stats.env"))
+}
+
 /// Resolve the config file path: `COMPME_CONFIG` override, else
 /// `$HOME/Library/Application Support/compme/config.env`. `None` if neither
 /// is available.
