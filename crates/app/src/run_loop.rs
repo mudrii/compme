@@ -869,6 +869,31 @@ fn lifetime_line(merged: &stats::PersistedStats) -> String {
     )
 }
 
+/// The runtime-mutable switch keys (the Settings switches persist these to
+/// config.env). Env-over-file layering means a set env var silently wins at
+/// relaunch — `env_shadow_warnings` names the shadowed ones at startup.
+const SWITCH_KEYS: [&str; 3] = [
+    "COMPME_MIDLINE",
+    "COMPME_AUTOCORRECT",
+    "COMPME_TRAILING_SPACE",
+];
+
+/// One warning line per switch key currently set in the environment
+/// (review-c109: a flipped switch persists to file, then the env var
+/// resurrects the old value at relaunch — confusing without this notice).
+fn env_shadow_warnings(is_env_set: impl Fn(&str) -> bool) -> Vec<String> {
+    SWITCH_KEYS
+        .iter()
+        .filter(|key| is_env_set(key))
+        .map(|key| {
+            format!(
+                "{key} is set in the environment \u{2014} Settings changes persist to \
+                 config.env but the environment wins at relaunch"
+            )
+        })
+        .collect()
+}
+
 /// The persistence value for a boolean settings switch (COMPME_MIDLINE,
 /// COMPME_AUTOCORRECT), paired with the launch parsers (`"1"`/`"true"`
 /// truthy; everything else off).
@@ -1101,6 +1126,12 @@ pub fn run() -> Result<(), String> {
     if !trusted {
         eprintln!("compme: Accessibility not granted — requesting permission");
         prompt_accessibility_trust();
+    }
+
+    // Env-shadow notice (review-c109): switches whose env var will override
+    // the persisted file at relaunch.
+    for warning in env_shadow_warnings(|key| env::var(key).is_ok()) {
+        eprintln!("compme: {warning}");
     }
 
     // Setup status (the Setup pane's row model doubles as the startup
@@ -2327,6 +2358,24 @@ mod tests {
                 "Words    \u{2581}\u{2584}\u{2588}  7",
             ]
         );
+    }
+
+    #[test]
+    fn env_shadow_warnings_name_only_set_switch_keys() {
+        // A set env var silently overrides the file a Settings switch writes
+        // (env-over-file layering) — warn at startup per shadowed key.
+        let warnings = env_shadow_warnings(|key| key == "COMPME_AUTOCORRECT");
+        assert_eq!(
+            warnings,
+            vec![
+                "COMPME_AUTOCORRECT is set in the environment \u{2014} Settings changes \
+                 persist to config.env but the environment wins at relaunch"
+                    .to_string()
+            ]
+        );
+        assert!(env_shadow_warnings(|_| false).is_empty());
+        // Every runtime-mutable switch key is covered.
+        assert_eq!(env_shadow_warnings(|_| true).len(), 3);
     }
 
     #[test]
