@@ -982,10 +982,16 @@ pub fn run() -> Result<(), String> {
     // launch-method-agnostic and kernel-released on any exit.
     let _instance_lock = match config::instance_lock_path() {
         Some(path) => match config::try_acquire_instance_lock(&path) {
-            Some(lock) => Some(lock),
-            None => {
+            Ok(lock) => Some(lock),
+            Err(config::InstanceLockError::Held) => {
                 eprintln!("compme: another instance is already running — exiting");
                 return Ok(());
+            }
+            Err(config::InstanceLockError::Io(err)) => {
+                // An IO failure is NOT "another instance" — say so, and keep
+                // running unguarded rather than refusing to start.
+                eprintln!("compme: instance lock unavailable ({err}) — continuing unguarded");
+                None
             }
         },
         None => {
@@ -1274,6 +1280,12 @@ pub fn run() -> Result<(), String> {
                     // MirrorOnly apps (Firefox/Zen) render the ghost in the
                     // floating mirror window, not inline (A2 §16).
                     engine.set_mirror_mode(mirror_mode_for(app_key.as_deref()));
+                    // Per-app mid-line override (App Settings): re-apply the
+                    // engine's trigger gate for the newly focused app — the
+                    // f8ebf33 model's deferred merge, now live.
+                    engine.set_allow_mid_word(
+                        prefs.mid_line_enabled(app_key.as_deref(), config.allow_mid_word),
+                    );
                     if let Some(app) = app_key {
                         if hinted_apps.insert(app.clone()) {
                             log_compat_guidance(&app);

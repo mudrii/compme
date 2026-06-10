@@ -220,6 +220,13 @@ impl SuggestionMachine {
     /// require at least `min_context_chars` of trimmed left context before
     /// requesting, and (unless `allow_mid_word`) suppress requests when the caret
     /// splits a word. Defaults are permissive so existing callers are unaffected.
+    /// Runtime flip of the mid-word gate (the per-app App-Settings override —
+    /// the run loop re-applies it on every focus change; `with_trigger_gates`
+    /// stays the builder for the global default).
+    pub fn set_allow_mid_word(&mut self, allow_mid_word: bool) {
+        self.allow_mid_word = allow_mid_word;
+    }
+
     pub fn with_trigger_gates(mut self, min_context_chars: usize, allow_mid_word: bool) -> Self {
         self.min_context_chars = min_context_chars;
         self.allow_mid_word = allow_mid_word;
@@ -799,6 +806,35 @@ mod tests {
             .on_event(Event::Tick { now_ms: 1300 })
             .iter()
             .any(|c| matches!(c, Command::RequestCompletion { .. })));
+    }
+
+    #[test]
+    fn set_allow_mid_word_flips_the_gate_at_runtime() {
+        // The per-app override (App Settings) re-applies the gate on focus
+        // change — the SAME machine must flip suppression on and off live.
+        let mut machine = machine().with_trigger_gates(0, false);
+        machine.on_event(text_changed("hello world", 3, 1000));
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 2000 }),
+            vec![],
+            "suppressed while disallowed"
+        );
+        machine.set_allow_mid_word(true);
+        machine.on_event(text_changed("hello worlds", 3, 3000));
+        assert!(
+            machine
+                .on_event(Event::Tick { now_ms: 4000 })
+                .iter()
+                .any(|c| matches!(c, Command::RequestCompletion { .. })),
+            "allowed after the runtime flip"
+        );
+        machine.set_allow_mid_word(false);
+        machine.on_event(text_changed("hello worldly", 3, 5000));
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 6000 }),
+            vec![],
+            "suppressed again after flipping back"
+        );
     }
 
     #[test]

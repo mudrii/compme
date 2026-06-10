@@ -98,6 +98,11 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
     /// Configure conservative trigger gating on the underlying machine (spec §4):
     /// minimum left-context length and mid-word suppression. Forwards to
     /// [`SuggestionMachine::with_trigger_gates`].
+    /// Runtime flip of the mid-word gate (per-app override; applied on focus).
+    pub fn set_allow_mid_word(&mut self, allow_mid_word: bool) {
+        self.machine.set_allow_mid_word(allow_mid_word);
+    }
+
     pub fn with_trigger_gates(mut self, min_context_chars: usize, allow_mid_word: bool) -> Self {
         self.machine = self
             .machine
