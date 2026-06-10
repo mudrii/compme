@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Compme</string>
+	<key>CFBundleExecutable</key>
+	<string>compme</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.compme.app</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Compme</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<!-- Menu-bar app: tray NSStatusItem only, no Dock icon, no app menu. -->
+	<key>LSUIElement</key>
+	<true/>
+	<!-- The compme:// deep-link scheme (webconfig setOverride links). The
+	     in-app Apple Events handler that RECEIVES these is a separate step;
+	     declaring the scheme here is what registers the bundle with Launch
+	     Services as its handler. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.compme.app.deeplink</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>compme</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Compme contributors. Apache-2.0.</string>
+</dict>
+</plist>

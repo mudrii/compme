@@ -3,6 +3,17 @@
 This document describes the current development workflow for the Compme
 Rust workspace and the separate spike package.
 
+## App Bundle
+
+`tools/bundle/make-app.sh` assembles an ad-hoc-signed `Compme.app` under
+`target/bundle/` from the release binary: `LSUIElement` menu-bar app, bundle id
+`com.compme.app`, and the `compme://` URL scheme declared (Launch Services
+registration). The bundle is the unlock for URL-scheme reception,
+`SMAppService` launch-at-login, and a stable TCC identity. Real
+codesign/notarization (Developer ID) is the A3 ship item.
+
+Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
+
 ## Repository State
 
 The current checkout has no git tags. Treat the code as unreleased workspace
