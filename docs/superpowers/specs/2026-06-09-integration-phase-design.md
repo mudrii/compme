@@ -9,8 +9,11 @@ surfaced and fixed four real integration bugs: Carbon hotkey events were never
 dispatched (no NSApp event drain — `pump_app_events`), `SharedAdapter` silently
 dropped `replace_left` (trait default removed, method now required), and the
 overlay placement needed live calibration (AX caret rect bottom edge = line
-top; box/font hug the line). Remaining residual: SyntheticKeys/Clipboard
-backspace-synthesis (non-AxSet apps).
+top; box/font hug the line). The final residual — SyntheticKeys/Clipboard
+backspace-synthesis — was built (backspace poster seam) and then LIVE-VALIDATED
+2026-06-10 as the fallback for silently-ignored AxSet writes (iTerm2: settable
+AXValue that changes nothing; readback detection → backspaces + synthetic
+typing; the prompt held the emoji alone afterwards). No open residuals.
 
 ## Why this exists
 
@@ -92,10 +95,11 @@ to record `replace_left` for the wiring test.
   deletion CONFIRMED (step 6, 2026-06-10):** the typed token is physically deleted
   and replaced in TextEdit.
 - **`platform_macos` honoring — SyntheticKeys / Clipboard:** cannot read-modify-write
-  a range. `insert_impl` falls these back to a plain append-only insert
-  (`replace_left` ignored), so they would leave the typed token in place. Honoring
-  means synthesizing N backspaces before the insert, verified live in target apps.
-  **This is the one true live-validated residual** (built in a later cycle). Safe because production emits `replace_left > 0` only
+  a range. Honoring synthesizes N backspaces before the insert (the backspace
+  poster, all-events-created-before-posting). **Built and live-validated
+  2026-06-10**: the same machinery is the fallback when an AxSet write is
+  silently ignored (readback == original; live case iTerm2), proven by a
+  scripted accept whose terminal contents held the replacement alone. Safe because production emits `replace_left > 0` only
   once the offer path + AxSet honoring ship together, and replacement features are
   gated to AxSet-capable fields first.
 
@@ -128,8 +132,9 @@ the corresponding crate in the `TextChanged` replacement-detection step.
 6. **[DONE, 2026-06-10] Live validation (manual, §16):** physical-key accept of an
    emoji/typo replacement in TextEdit (AxSet) deletes the typed token and inserts
    the replacement — PASSED (`:smile`→😄, `teh`→`the`; `colour` offered + placed;
-   Esc-dismiss verified; ACCEPTANCE.md). SyntheticKeys/Clipboard
-   backspace-synthesis remains the follow-on residual.
+   Esc-dismiss verified; ACCEPTANCE.md). The SyntheticKeys/Clipboard
+   backspace-synthesis follow-on was subsequently built and live-validated
+   (iTerm2 readback-fallback, 2026-06-10).
 
 Steps 1–6 are done; step 6 passed live (mirrors the existing Carbon-accept manual
 gates). Emoji was the first consumer wired; autocorrect/localize reuse the same
