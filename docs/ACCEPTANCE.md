@@ -160,9 +160,11 @@ are validated outside the A1b gate runner:
 - **Coordinate diagnostics** — `COMPLETE_ME_DIAG_COORDS=1` prints display scales +
   caret rect; measured scale 1.0 on the built-in display (no offset). True-2× /
   multi-monitor (scale > 1) caret mapping was later measured on two displays and
-  the backing-scale helper is unit-proven (design spec §15 G7); a **live 2× re-run**
-  still needs the built-in Retina panel reconnected, so treat scale > 1 as
-  measurement-closed but not yet live-re-confirmed.
+  the backing-scale helper is unit-proven (design spec §15 G7). **Live-confirmed
+  2026-06-10**: ghost placement worked on both the built-in Retina panel and an
+  external display in one session (two caret clusters in the debug log, both
+  overlay frames onscreen; user confirmed visually on each) — G7 is
+  live-re-confirmed.
 - **Config surface** — `config.env` layered under env (`env > file > default`),
   `SIGUSR1` toggle, debounce/max-words/max-tokens/heartbeat keys (unit-tested in
   `crates/app`).
