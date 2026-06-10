@@ -349,3 +349,13 @@ cargo build -p platform_macos --examples
 
 Those records are historical evidence. New production acceptance should prefer
 the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
+
+## Pending Manual Gates [added 2026-06-10]
+
+- **Settings window LOOK gate (pending):** 6 tabs render; General switches
+  live-flip + persist; Setup rows re-probe ≤480ms while open; Apps Delete
+  prompts with Cancel default.
+- **Encrypted memory live gate (pending):** `COMPME_MEMORY=accepted` run,
+  Keychain key created, Apps tab counts appear, ciphertext-only on disk.
+- **Lifetime stats gate (pending):** quit creates `stats.env`; relaunch shows
+  Lifetime row including prior session.

@@ -88,6 +88,24 @@ tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf
 tools/spike/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 ```
 
+## Configuration keys
+
+Settings layer as `env > config.env file > default`; keys with Settings
+switches persist to the file, and an env var overrides the file at relaunch.
+
+| Key | Meaning |
+|-----|---------|
+| `COMPME_ENABLED` | Master suggestion on/off (also a tray toggle). |
+| `COMPME_MIDLINE` | Allow mid-line completions (also a Settings switch). |
+| `COMPME_AUTOCORRECT` | Local autocorrect replacements (also a Settings switch). |
+| `COMPME_TRAILING_SPACE` | Append a trailing space on word accept (also a Settings switch). |
+| `COMPME_ACCEPT_WORD_KEY` | macOS keycode for word accept (default Tab). |
+| `COMPME_ACCEPT_FULL_KEY` | macOS keycode for full accept (default backtick). |
+| `COMPME_MEMORY` | Typing-memory collection mode: `off` / `accepted` / `all`. |
+| `COMPME_MEMORY_PATH` | Override path for the encrypted memory store. |
+| `COMPME_MEMORY_KEY` | 64-hex memory encryption key (default: Keychain-managed). |
+| `COMPME_TRUSTED_KEY` | 64-hex Ed25519 public key for signed `compme://` links. |
+
 ## Quick Start
 
 Build the root workspace:

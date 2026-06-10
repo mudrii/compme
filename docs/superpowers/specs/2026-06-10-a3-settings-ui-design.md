@@ -1,5 +1,8 @@
 # A3 Settings UI + Tray Menu — Cotypist-Reference Plan
 
+> **Status annotations updated 2026-06-10 (cycles c95-c115):** window shipped
+> as 6 tabs (Setup/General/Apps/Shortcuts/Statistics/About) via NSTabView.
+
 Reference: 13 Cotypist 2026.1 screenshots captured 2026-06-10 (tray menu +
 every settings pane). This maps each surface to compme's existing backing and
 sequences the build. Native AppKit, no web view (engine-macos §9 A3 "no
@@ -38,33 +41,37 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 
 | Pane | Cotypist contents | compme backing | Gap |
 |---|---|---|---|
-| Setup | permission states (AX, Screen Recording), model downloaded, macOS text-suggestions off, clipboard context | `accessibility_trusted`, `screen_recording_permission`, model_select, compat | pane only; "disable macOS suggestions" helper is new |
-| General | launch-at-login; menu-bar icon toggle; accessory button; model picker + reveal; enable-by-default; max length (S/M/L); autocorrect toggles | SMAppService (bundle exists, c80); tray exists; model_select + `COMPME_MODEL_PATH`; `COMPME_ENABLED`; `COMPME_MAX_WORDS`; `COMPME_AUTOCORRECT` | launch-at-login wiring; model CATALOG/download mgr (§15 D14 — big, own item); accessory floating button = new feature (defer) |
-| Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | appearance sub-toggle has no equivalent (defer) |
-| Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS` | pane only — backing complete |
-| Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | `includeVanillaVariants` is the one unmodeled item (§8 note) — small emoji-crate addition |
-| Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; keymap threading from config is the open c13 residual | shortcut RECORDER UI; force-activate + the two toggle shortcuts are new hotkeys |
-| App Settings | per-app list (usage counts) with enable/mid-line/autocorrect/Tab-disable, compat mode, per-app instructions, per-app history | `prefs` overrides + `tab_disabled` (unwired); `memory` per-app counts; personalization per-app maps (unwired, c1 #5) | per-app mid-line/autocorrect overrides are new prefs fields; pane is the largest |
-| Labs | mid-line toggle | `COMPME_MIDLINE` | pane only |
-| Statistics | today + 30-day charts (range/group/metric) | `stats` crate (counts/words/latency) — menu line shipped c51 | chart view; longer retention than 30d if ranges grow |
-| About | version, acks, links | LICENSE, deps | pane only; states the no-telemetry guarantee |
+| Setup | permission states (AX, Screen Recording), model downloaded, macOS text-suggestions off, clipboard context | `accessibility_trusted`, `screen_recording_permission`, model_select, compat | pane only; "disable macOS suggestions" helper is new — **[2026-06-10] DONE** (checklist + Grant/Request/Reveal buttons + 480ms visible-only poll) |
+| General | launch-at-login; menu-bar icon toggle; accessory button; model picker + reveal; enable-by-default; max length (S/M/L); autocorrect toggles | SMAppService (bundle exists, c80); tray exists; model_select + `COMPME_MODEL_PATH`; `COMPME_ENABLED`; `COMPME_MAX_WORDS`; `COMPME_AUTOCORRECT` | launch-at-login wiring; model CATALOG/download mgr (§15 D14 — big, own item); accessory floating button = new feature (defer) — **[2026-06-10] DONE** for 3 live switches (mid-line/autocorrect/trailing-space); launch-at-login wiring done via SMAppService; model catalog still separate D14 |
+| Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | appearance sub-toggle has no equivalent (defer) — **[2026-06-10] NOT SHIPPED** (deferred) |
+| Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS` | pane only — backing complete — **[2026-06-10] NOT SHIPPED** (deferred) |
+| Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | `includeVanillaVariants` is the one unmodeled item (§8 note) — small emoji-crate addition — **[2026-06-10] NOT SHIPPED** (deferred) |
+| Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; keymap threading from config is the open c13 residual | shortcut RECORDER UI; force-activate + the two toggle shortcuts are new hotkeys — **[2026-06-10] PARTIAL** (effective-bindings display shipped; recorder UI deferred) |
+| App Settings | per-app list (usage counts) with enable/mid-line/autocorrect/Tab-disable, compat mode, per-app instructions, per-app history | `prefs` overrides + `tab_disabled` (unwired); `memory` per-app counts; personalization per-app maps (unwired, c1 #5) | per-app mid-line/autocorrect overrides are new prefs fields; pane is the largest — **[2026-06-10] PARTIAL** (Apps tab: per-app counts + confirmed per-row Delete; per-app override FIELDS live since c91 but per-app UI rows deferred) |
+| Labs | mid-line toggle | `COMPME_MIDLINE` | pane only — **[2026-06-10] DONE** (shipped as a switch in the General tab — the Labs pane content moved to General) |
+| Statistics | today + 30-day charts (range/group/metric) | `stats` crate (counts/words/latency) — menu line shipped c51 | chart view; longer retention than 30d if ranges grow — **[2026-06-10] DONE-MVP** (sparkline rows + lifetime row + stats.env persistence; chart view = sparklines, range/group/metric controls deferred) |
+| About | version, acks, links | LICENSE, deps | pane only; states the no-telemetry guarantee — **[2026-06-10] DONE** |
 
 ## Build order (each loop-tick-sized unless noted)
 
 1. **S1 tray submenus** — per-app timed disable + global submenu + per-app
    input-collection (pure prefs additions + tray plumbing; pattern = c54
-   snooze).
+   snooze). **[2026-06-10] DONE.**
 2. ~~Emoji `includeVanillaVariants`~~ **DEFERRED (corrected 2026-06-10)**:
    not a small crate change — an alternate vanilla glyph has no display path
    in the single-ghost replacement pipeline. Revisit when a multi-candidate
    replacement display exists.
 3. **Launch-at-login** via SMAppService (bundle exists; default-off, D13).
+   **[2026-06-10] DONE** (wired via SMAppService).
 4. **S2 window skeleton** + the pure panes first (Labs, Emoji, Context,
    Personalization — backing complete, persistence via persist_setting).
+   **[2026-06-10] PARTIAL** — skeleton DONE (6 tabs via NSTabView); Labs DONE
+   as a General-tab switch; Emoji/Context/Personalization panes deferred.
 5. **Shortcuts pane** + keymap threading (closes the c13 residual) — the
    recorder UI is the hard part.
 6. **App Settings pane** (largest; needs the new per-app prefs fields).
-7. Statistics charts; Setup/onboarding pane; About.
+7. Statistics charts; Setup/onboarding pane; About. **[2026-06-10] DONE**
+   (Statistics DONE-MVP as sparklines; Setup and About panes shipped).
 8. Out of scope here: model catalog/download manager (§15 D14), accessory
    floating button, updater — separate items.
 
