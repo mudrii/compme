@@ -833,6 +833,32 @@ fn apps_pane_lines(counts: &[(String, u64)], collection_on: bool) -> Vec<String>
         .collect()
 }
 
+/// Human name for a rebindable accept keycode; numeric fallback so an
+/// exotic rebind still renders something true.
+fn keycode_label(code: i64) -> String {
+    match code {
+        48 => "Tab".to_string(),
+        50 => "` (backtick)".to_string(),
+        53 => "Esc".to_string(),
+        125 => "Down arrow".to_string(),
+        other => format!("keycode {other}"),
+    }
+}
+
+/// The Shortcuts tab's text (persist-only slice): resolved current bindings
+/// (config override else the platform defaults: Tab / backtick), the fixed
+/// non-rebindable keys, and how to change them. Static per process —
+/// bindings are read at launch until the live-rebind refactor lands.
+fn shortcuts_text(word_key: Option<i64>, full_key: Option<i64>) -> String {
+    format!(
+        "Accept word: {}\nAccept full: {}\nDismiss: Esc\nCycle candidates: Down arrow\n\n\
+         To change: set COMPME_ACCEPT_WORD_KEY / COMPME_ACCEPT_FULL_KEY (macOS \
+         keycodes) in config.env \u{2014} applies at relaunch.",
+        keycode_label(word_key.unwrap_or(48)),
+        keycode_label(full_key.unwrap_or(50)),
+    )
+}
+
 /// The app ids behind the Apps-tab rows, in render order with the render
 /// cap — index `i` here IS row `i` of `apps_pane_lines`, the contract the
 /// per-row Delete buttons rely on.
@@ -1412,6 +1438,7 @@ pub fn run() -> Result<(), String> {
         setup_reveal_model: Arc::new(AtomicBool::new(false)),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
+        shortcuts_text: shortcuts_text(config.accept_word_key, config.accept_full_key),
     };
     // The app ids behind the Apps rows as last rendered (index == row).
     let mut apps_ids: Vec<String> = Vec::new();
@@ -2304,6 +2331,24 @@ mod tests {
             !setup_poll_due(false, Some(10_000), 99_999),
             "hidden again: never, regardless of elapsed"
         );
+    }
+
+    #[test]
+    fn shortcuts_text_names_known_keycodes_and_falls_back_numerically() {
+        // Shortcuts tab (persist-only slice): current bindings by NAME for
+        // the known codes, numeric fallback for exotic rebinds, fixed rows
+        // for the non-rebindable keys, and the how-to-change note.
+        let text = shortcuts_text(None, None);
+        assert!(text.contains("Accept word: Tab"));
+        assert!(text.contains("Accept full: ` (backtick)"));
+        assert!(text.contains("Dismiss: Esc"));
+        assert!(text.contains("Cycle candidates: Down arrow"));
+        assert!(text.contains("COMPME_ACCEPT_WORD_KEY"));
+        assert!(text.contains("relaunch"));
+
+        let custom = shortcuts_text(Some(125), Some(7));
+        assert!(custom.contains("Accept word: Down arrow"));
+        assert!(custom.contains("Accept full: keycode 7"));
     }
 
     #[test]

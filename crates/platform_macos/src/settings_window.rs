@@ -59,6 +59,10 @@ pub struct SettingsFlags {
     /// A clicked Apps-row Delete button: the ROW INDEX (the run loop resolves
     /// it to an app id via apps_row_ids and performs the delete).
     pub apps_delete_row: Arc<Mutex<Option<usize>>>,
+    /// Shortcuts text (current bindings + how to change them), composed once
+    /// at startup — static for the process lifetime like `about_text`
+    /// (rebinding applies at relaunch until the live-rebind refactor).
+    pub shortcuts_text: String,
 }
 
 struct SettingsTargetIvars {
@@ -511,11 +515,26 @@ fn build_window(
         }
     }
 
+    // Shortcuts tab: static for the process lifetime (bindings are read at
+    // launch; the live-rebind refactor is banked), so build-once like About.
+    {
+        let shortcuts_view = &pane_views[3];
+        let text =
+            NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.shortcuts_text), mtm);
+        text.setFrame(NSRect::new(
+            NSPoint::new(20.0, 160.0),
+            NSSize::new(460.0, 170.0),
+        ));
+        text.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+        text.setEditable(false);
+        shortcuts_view.addSubview(&text);
+    }
+
     // Statistics tab: header + STATS_ROWS data rows. Row strings come from
     // the run loop via flags.stats_lines; show() refreshes them on every
     // open. Monospaced font keeps sparkline glyphs column-aligned.
     {
-        let stats = &pane_views[3];
+        let stats = &pane_views[4];
         let stats_header =
             NSTextField::labelWithString(&NSString::from_str("This session + lifetime"), mtm);
         stats_header.setFrame(NSRect::new(
@@ -549,7 +568,7 @@ fn build_window(
     // About tab: static for the process lifetime, so build-once is fine
     // here (unlike the Statistics rows above).
     {
-        let about_view = &pane_views[4];
+        let about_view = &pane_views[5];
         let about =
             NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.about_text), mtm);
         about.setFrame(NSRect::new(
@@ -598,12 +617,19 @@ pub const APPS_ROWS: usize = 8;
 const STATS_ROWS: usize = 4;
 
 /// Number of settings tabs.
-pub const PANE_COUNT: usize = 5;
+pub const PANE_COUNT: usize = 6;
 
 /// Tab titles in display order (Cotypist order) — Setup first, About last;
 /// new panes insert between, never around.
 pub fn pane_titles() -> [&'static str; PANE_COUNT] {
-    ["Setup", "General", "Apps", "Statistics", "About"]
+    [
+        "Setup",
+        "General",
+        "Apps",
+        "Shortcuts",
+        "Statistics",
+        "About",
+    ]
 }
 
 #[cfg(test)]
@@ -616,7 +642,14 @@ mod tests {
         // Setup first, About last. New panes insert between, never around.
         assert_eq!(
             pane_titles(),
-            ["Setup", "General", "Apps", "Statistics", "About"]
+            [
+                "Setup",
+                "General",
+                "Apps",
+                "Shortcuts",
+                "Statistics",
+                "About"
+            ]
         );
         assert_eq!(pane_titles().len(), PANE_COUNT);
     }
