@@ -164,6 +164,10 @@ struct Config {
     /// British-English normalization (A2 §16, `COMPME_BRITISH_ENGLISH`, default
     /// off): offer the UK spelling when the trailing word is a known US-only form.
     british_english: bool,
+    /// Launch-at-login (A3 D13, `COMPME_LAUNCH_AT_LOGIN`): `Some(true/false)`
+    /// registers/unregisters the SMAppService login item at startup; `None`
+    /// (absent or unrecognized) leaves the user's Login Items setting alone.
+    launch_at_login: Option<bool>,
 }
 
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
@@ -196,6 +200,7 @@ impl Config {
             // Distinct from COMPME_DEFAULT_ENABLED, the per-app
             // suggestion-policy default in prefs.
             enabled: parse_enabled_default(lookup("COMPME_ENABLED")),
+            launch_at_login: parse_tri_state(lookup("COMPME_LAUNCH_AT_LOGIN")),
             acceptance_pid: lookup("COMPME_ACCEPTANCE_PID").and_then(|raw| raw.parse::<i32>().ok()),
             stub_completion: lookup("COMPME_STUB_COMPLETION").filter(|s| !s.is_empty()),
             model_path: lookup("COMPME_MODEL_PATH")
@@ -746,6 +751,17 @@ fn apply_snooze_request(requested: bool, prefs: &mut Prefs, now_ms: u64) -> bool
     requested
 }
 
+/// Strict tri-state boolean: explicit truthy → `Some(true)`, explicit falsy →
+/// `Some(false)`, absent/unrecognized → `None` (callers treat `None` as
+/// "leave the current state alone" — a typo must never flip a login item).
+fn parse_tri_state(raw: Option<String>) -> Option<bool> {
+    match raw.as_deref().map(str::trim).map(str::to_ascii_lowercase) {
+        Some(v) if v == "1" || v == "true" || v == "on" || v == "yes" => Some(true),
+        Some(v) if v == "0" || v == "false" || v == "off" || v == "no" => Some(false),
+        _ => None,
+    }
+}
+
 /// Parse a fail-safe boolean: only explicit falsy values disable; anything else
 /// (incl. unrecognized strings) keeps the safe default so a typo never silently
 /// turns the whole product off.
@@ -968,6 +984,20 @@ pub fn run() -> Result<(), String> {
         // The grant takes effect on the NEXT launch (macOS shows the prompt async
         // and re-reads TCC at startup), so screen context is inactive this run.
         eprintln!("compme: restart after granting Screen Recording to enable screen context");
+    }
+
+    // Launch-at-login (A3 D13): apply only an EXPLICIT config choice; absent
+    // leaves the user's Login Items alone. Non-fatal — a bare cargo binary
+    // (no bundle) is expected to fail here, and the bundled app is the real
+    // consumer.
+    if let Some(enabled) = config.launch_at_login {
+        match platform_macos::set_launch_at_login(enabled) {
+            Ok(()) => eprintln!(
+                "compme: launch at login {}",
+                if enabled { "ON" } else { "OFF" }
+            ),
+            Err(err) => eprintln!("compme: launch-at-login unavailable: {err}"),
+        }
     }
 
     let previous_inputs = PreviousInputs::default();
@@ -1675,6 +1705,26 @@ mod tests {
              together with SNOOZE_MINUTES"
         );
         assert!(AppStatus::Ready.render_line(true).contains("1 hour"));
+    }
+
+    #[test]
+    fn launch_at_login_applies_only_when_the_key_is_explicitly_set() {
+        // Absent: leave the user's Login Items setting alone.
+        assert_eq!(Config::from_lookup(lookup(&[])).launch_at_login, None);
+        // Explicit true/false apply.
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPME_LAUNCH_AT_LOGIN", "true")])).launch_at_login,
+            Some(true)
+        );
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPME_LAUNCH_AT_LOGIN", "0")])).launch_at_login,
+            Some(false)
+        );
+        // Junk fails safe to leave-alone, NOT to a register/unregister.
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPME_LAUNCH_AT_LOGIN", "maybe")])).launch_at_login,
+            None
+        );
     }
 
     #[test]

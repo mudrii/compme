@@ -55,7 +55,9 @@ use platform::{
 };
 
 pub mod keychain;
+mod login_item;
 mod tray;
+pub use login_item::set_launch_at_login;
 pub use tray::{DisableArm, MacosTray, TrayFlags};
 
 const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.05;
