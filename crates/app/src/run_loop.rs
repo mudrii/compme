@@ -1355,6 +1355,7 @@ pub fn run() -> Result<(), String> {
     let settings_flags = platform_macos::SettingsFlags {
         labs_midline: Arc::new(AtomicBool::new(global_mid_word)),
         general_autocorrect: Arc::new(AtomicBool::new(config.autocorrect)),
+        general_trailing_space: Arc::new(AtomicBool::new(config.trailing_space)),
         stats_lines: Arc::new(Mutex::new(Vec::new())),
         about_text: crate::about::about_text(),
         setup_lines: Arc::new(Mutex::new(Vec::new())),
@@ -1771,6 +1772,33 @@ pub fn run() -> Result<(), String> {
             eprintln!(
                 "compme: autocorrect {}",
                 if general_autocorrect {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+        // General-tab Trailing-space watcher: persist + live engine apply
+        // (the flag is baked at build via with_trailing_space, so the c94
+        // runtime-setter pattern applies — set_trailing_space).
+        let general_trailing = settings_flags
+            .general_trailing_space
+            .load(Ordering::Relaxed);
+        if general_trailing != config.trailing_space {
+            config.trailing_space = general_trailing;
+            engine.set_trailing_space(general_trailing);
+            if let Some(path) = config::config_file_path() {
+                if let Err(err) = config::persist_setting(
+                    &path,
+                    "COMPME_TRAILING_SPACE",
+                    switch_value(general_trailing),
+                ) {
+                    eprintln!("compme: failed to persist COMPME_TRAILING_SPACE: {err}");
+                }
+            }
+            eprintln!(
+                "compme: trailing space {}",
+                if general_trailing {
                     "enabled"
                 } else {
                     "disabled"
@@ -2298,6 +2326,18 @@ mod tests {
                 "Accepted \u{2581}\u{2588}\u{2588}  2",
                 "Words    \u{2581}\u{2584}\u{2588}  7",
             ]
+        );
+    }
+
+    #[test]
+    fn trailing_space_persist_value_round_trips_through_the_parser() {
+        assert!(
+            Config::from_lookup(lookup(&[("COMPME_TRAILING_SPACE", switch_value(true))]))
+                .trailing_space
+        );
+        assert!(
+            !Config::from_lookup(lookup(&[("COMPME_TRAILING_SPACE", switch_value(false))]))
+                .trailing_space
         );
     }
 

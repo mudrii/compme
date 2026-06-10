@@ -235,6 +235,12 @@ impl SuggestionMachine {
 
     /// Enable Cotypist's "Include trailing space after single-word completions".
     /// Default off so existing callers are unaffected.
+    /// Runtime flip of the single-word trailing space (General-tab switch,
+    /// c110) — the flag is read per accept, so this applies immediately.
+    pub fn set_trailing_space(&mut self, enabled: bool) {
+        self.trailing_space_single_word = enabled;
+    }
+
     pub fn with_trailing_space(mut self, enabled: bool) -> Self {
         self.trailing_space_single_word = enabled;
         self
@@ -2078,6 +2084,24 @@ mod tests {
         assert_eq!(append_single_word_space("", true), "");
         // Trailing punctuation is still a single word → space appended.
         assert_eq!(append_single_word_space("hi!", true), "hi! ");
+    }
+
+    #[test]
+    fn set_trailing_space_flips_the_append_at_runtime() {
+        // The General-tab switch flips this live (c110), like mid-word: a
+        // machine built without the space starts appending after the setter.
+        let mut machine = showing_solo(false);
+        machine.set_trailing_space(true);
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "solo ".into(),
+                },
+                Command::Hide,
+            ]
+        );
     }
 
     #[test]

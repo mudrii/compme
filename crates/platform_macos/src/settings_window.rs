@@ -36,6 +36,9 @@ pub struct SettingsFlags {
     /// General: global typo autocorrect (`COMPME_AUTOCORRECT`). Same watcher
     /// pattern: the run loop persists and applies on the edge.
     pub general_autocorrect: Arc<AtomicBool>,
+    /// General: trailing space after single-word accepts
+    /// (`COMPME_TRAILING_SPACE`). Same watcher pattern.
+    pub general_trailing_space: Arc<AtomicBool>,
     /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
     /// before each show; the window only renders them (one label per line).
     pub stats_lines: Arc<Mutex<Vec<String>>>,
@@ -89,6 +92,17 @@ define_class!(
                 .flags
                 .setup_reveal_model
                 .store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(toggleTrailingSpace:))]
+        fn toggle_trailing_space(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars()
+                    .flags
+                    .general_trailing_space
+                    .store(on, Ordering::Relaxed);
+            }
         }
 
         #[unsafe(method(toggleAutocorrect:))]
@@ -391,6 +405,36 @@ fn build_window(
             ac_switch.setAction(Some(sel!(toggleAutocorrect:)));
         }
         general.addSubview(&ac_switch);
+
+        // Trailing-space row, third in the stack.
+        let ts_label = NSTextField::labelWithString(
+            &NSString::from_str("Trailing space after single-word completions"),
+            mtm,
+        );
+        ts_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 220.0),
+            NSSize::new(400.0, 20.0),
+        ));
+        general.addSubview(&ts_label);
+        let ts_switch = NSSwitch::new(mtm);
+        ts_switch.setFrame(NSRect::new(
+            NSPoint::new(420.0, 216.0),
+            NSSize::new(60.0, 26.0),
+        ));
+        ts_switch.setState(if flags.general_trailing_space.load(Ordering::Relaxed) {
+            objc2_app_kit::NSControlStateValueOn
+        } else {
+            objc2_app_kit::NSControlStateValueOff
+        });
+        // SAFETY: target outlives the window (held by MacosSettingsWindow).
+        unsafe {
+            ts_switch.setTarget(Some({
+                let any: &AnyObject = target.as_ref();
+                any
+            }));
+            ts_switch.setAction(Some(sel!(toggleTrailingSpace:)));
+        }
+        general.addSubview(&ts_switch);
     }
 
     // Apps tab: per-app recorded-input counts (encrypted memory store).

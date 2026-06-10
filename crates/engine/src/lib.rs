@@ -112,6 +112,12 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self
     }
 
+    /// Runtime flip of the single-word trailing space (General-tab switch).
+    /// Read per accept on the machine; applies immediately.
+    pub fn set_trailing_space(&mut self, enabled: bool) {
+        self.machine.set_trailing_space(enabled);
+    }
+
     /// Forward to [`SuggestionMachine::with_trailing_space`] — enable Cotypist's
     /// "Include trailing space after single-word completions" policy.
     pub fn with_trailing_space(mut self, enabled: bool) -> Self {
