@@ -10,7 +10,11 @@ use sha2::{Digest, Sha256};
 /// Hex SHA-256 of `bytes` (lowercase, 64 chars) — the digest format the
 /// catalog's expected-hash entries will use.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
+    hex(&Sha256::digest(bytes))
+}
+
+/// Lowercase hex of a digest.
+fn hex(digest: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -26,9 +30,50 @@ pub fn resume_range_header(existing_len: u64) -> Option<String> {
     (existing_len > 0).then(|| format!("bytes={existing_len}-"))
 }
 
+/// Hex SHA-256 of everything `reader` yields, streamed in 64KB chunks —
+/// the fetch loop verifies multi-GB model files with this; `sha256_hex`
+/// stays the in-memory primitive for small buffers and tests.
+pub fn read_sha256_hex(mut reader: impl std::io::Read) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex(&hasher.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn read_sha256_hex_streams_and_matches_the_buffer_hash() {
+        // The fetch loop verifies 1.7GB model files — hashing must stream,
+        // never slurp. Same digest as the in-memory primitive, across
+        // multiple read chunks, and IO errors propagate.
+        assert_eq!(
+            read_sha256_hex(Cursor::new(b"abc")).unwrap(),
+            sha256_hex(b"abc")
+        );
+        let big: Vec<u8> = (0..200_000u32).flat_map(|i| i.to_le_bytes()).collect();
+        assert_eq!(
+            read_sha256_hex(Cursor::new(&big)).unwrap(),
+            sha256_hex(&big)
+        );
+
+        struct FailingReader;
+        impl std::io::Read for FailingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk gone"))
+            }
+        }
+        assert!(read_sha256_hex(FailingReader).is_err());
+    }
 
     #[test]
     fn sha256_hex_matches_the_known_empty_and_abc_vectors() {
