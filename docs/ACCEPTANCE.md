@@ -112,8 +112,13 @@ Down fired (`cycle candidate`; visible rotation needs
 rotate; with `COMPME_CANDIDATES=5` the user confirmed visible
 candidate rotation live — that run's log was overwritten by a later
 launch, so the evidence is the observation plus the earlier logged
-`cycle candidate` firings). Not yet exercised: Option+Tab literal passthrough and the
-revoke-Input-Monitoring re-check. Watch-item: one screenshot showed a
+`cycle candidate` firings). Option+Tab passthrough was
+subsequently validated by a scripted run (2026-06-10): with a ghost
+armed, synthetic Option+Tab produced ZERO `carbon hotkey fired` lines
+(a modifier combo never matches the modifiers=0 registration) and
+TextEdit handled the key natively (inserted its list bullet), while a
+plain Tab immediately after fired and accepted normally. Not yet
+exercised: the revoke-Input-Monitoring re-check. Watch-item: one screenshot showed a
 remainder ghost overlapping typed text after a word-accept; not reproduced
 in the logged runs (caret advance was correct) — needs a repro with the log
 preserved.
