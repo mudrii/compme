@@ -280,8 +280,8 @@ fn build_window(
     (window, stats_labels)
 }
 
-/// Fixed Statistics row count (shown / accepted / words).
-const STATS_ROWS: usize = 3;
+/// Fixed Statistics row count (shown / accepted / words / lifetime).
+const STATS_ROWS: usize = 4;
 
 #[cfg(test)]
 mod tests {

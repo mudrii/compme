@@ -808,6 +808,16 @@ fn stats_pane_lines(buckets: &[stats::DayBucket]) -> Vec<String> {
         .collect()
 }
 
+/// The Statistics pane's lifetime row: persisted totals merged with the live
+/// session. Words and accepted only — no per-day series exists across
+/// restarts (stats.env stores grow-only counters), so no sparkline.
+fn lifetime_line(merged: &stats::PersistedStats) -> String {
+    format!(
+        "Lifetime {} words \u{b7} {} accepted",
+        merged.words, merged.accepted
+    )
+}
+
 /// The COMPME_MIDLINE persistence value for a given switch state, paired with
 /// the launch parser (`"1"`/`"true"` are truthy; everything else is off).
 fn midline_value(enabled: bool) -> &'static str {
@@ -1293,6 +1303,13 @@ pub fn run() -> Result<(), String> {
         stats_lines: Arc::new(Mutex::new(Vec::new())),
         about_text: crate::about::about_text(),
     };
+    // Lifetime stats baseline, read once: the file only changes at shutdown,
+    // so startup state + live session is the whole truth while running.
+    let lifetime_base = stats::parse_stats_file(
+        &config::stats_file_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default(),
+    );
     let mut settings_window = platform_macos::MacosSettingsWindow::new(settings_flags.clone());
     let mut settings_was_visible = false;
     // The most recent focused app key, so settings edges can re-apply per-app
@@ -1599,6 +1616,9 @@ pub fn run() -> Result<(), String> {
             // renders strings only; data stays on this side of the seam.
             if let Ok(mut lines) = settings_flags.stats_lines.lock() {
                 *lines = stats_pane_lines(&usage.daily_buckets(wall_ms, 7));
+                lines.push(lifetime_line(
+                    &lifetime_base.merged(usage.counts(wall_ms), usage.words_completed(wall_ms)),
+                ));
             }
             if let Err(err) = settings_window.show() {
                 eprintln!("compme: settings window unavailable: {err}");
@@ -2003,6 +2023,23 @@ mod tests {
         // A successful read resets: the next error is a new episode.
         squelch.reset();
         assert!(squelch.should_log("StaleField"));
+    }
+
+    #[test]
+    fn lifetime_line_formats_persisted_plus_session_totals() {
+        // Statistics pane 4th row: lifetime totals (stats.env base merged
+        // with the live session) — words and accepted only, no sparkline.
+        let merged = stats::PersistedStats {
+            shown: 100,
+            accepted: 42,
+            dismissed: 5,
+            superseded: 3,
+            words: 337,
+        };
+        assert_eq!(
+            lifetime_line(&merged),
+            "Lifetime 337 words \u{b7} 42 accepted"
+        );
     }
 
     #[test]
