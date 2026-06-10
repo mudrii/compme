@@ -188,6 +188,95 @@ fn download_with_agent(
     Ok(dest.to_path_buf())
 }
 
+/// Where a queued download stands. The run loop polls this (no callbacks
+/// into AppKit from the worker thread).
+#[derive(Debug, Default)]
+pub enum DownloadState {
+    #[default]
+    Idle,
+    Running,
+    Done(std::path::PathBuf),
+    Failed(String),
+}
+
+/// Shared progress block: the worker writes, the run loop reads.
+#[derive(Debug, Default)]
+pub struct DownloadStatus {
+    /// Bytes written so far (resume offset included).
+    pub downloaded: std::sync::atomic::AtomicU64,
+    /// Total bytes if the server said (0 = unknown).
+    pub total: std::sync::atomic::AtomicU64,
+    pub state: std::sync::Mutex<DownloadState>,
+}
+
+/// One queued download.
+pub struct DownloadRequest {
+    pub url: String,
+    pub dest: std::path::PathBuf,
+    pub expected_sha256: Option<String>,
+    pub status: std::sync::Arc<DownloadStatus>,
+}
+
+/// Fire-and-forget download worker (the ScreenOcr pattern): a depth-1
+/// channel coalesces bursts, requests run one at a time on a dedicated
+/// thread, and Drop detaches rather than joins — a mid-download shutdown
+/// must not block on a slow server (the part file makes it resumable).
+pub struct ModelDownloader {
+    tx: Option<std::sync::mpsc::SyncSender<DownloadRequest>>,
+    _handle: std::thread::JoinHandle<()>,
+}
+
+impl ModelDownloader {
+    pub fn spawn() -> std::io::Result<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<DownloadRequest>(1);
+        let handle = std::thread::Builder::new()
+            .name("compme-model-fetch".into())
+            .spawn(move || {
+                while let Ok(req) = rx.recv() {
+                    *req.status.state.lock().unwrap_or_else(|e| e.into_inner()) =
+                        DownloadState::Running;
+                    let status = std::sync::Arc::clone(&req.status);
+                    let result = download_url(
+                        &req.url,
+                        &req.dest,
+                        req.expected_sha256.as_deref(),
+                        move |written, total| {
+                            status
+                                .downloaded
+                                .store(written, std::sync::atomic::Ordering::Relaxed);
+                            status
+                                .total
+                                .store(total.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+                        },
+                    );
+                    *req.status.state.lock().unwrap_or_else(|e| e.into_inner()) = match result {
+                        Ok(path) => DownloadState::Done(path),
+                        Err(err) => DownloadState::Failed(err.to_string()),
+                    };
+                }
+            })?;
+        Ok(Self {
+            tx: Some(tx),
+            _handle: handle,
+        })
+    }
+
+    /// Queue a download; never blocks. A full queue drops the request —
+    /// the UI re-requests on the next click (depth-1 coalescing).
+    pub fn request(&self, request: DownloadRequest) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.try_send(request);
+        }
+    }
+}
+
+impl Drop for ModelDownloader {
+    fn drop(&mut self) {
+        // Close the channel; the worker exits after its current item.
+        self.tx.take();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +342,48 @@ mod tests {
 
     fn temp_dest(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("cm-fetch-{tag}-{}.bin", std::process::id()))
+    }
+
+    #[test]
+    fn downloader_worker_runs_a_request_off_thread_and_reports_progress() {
+        // 3b.3: fire-and-forget worker (ScreenOcr pattern). The run loop
+        // polls DownloadStatus; Done carries the final path.
+        let url = serve(b"worker model bytes", RangeMode::Honor);
+        let dest = temp_dest("worker");
+        let _ = std::fs::remove_file(&dest);
+        let worker = ModelDownloader::spawn().unwrap();
+        let status = std::sync::Arc::new(DownloadStatus::default());
+        worker.request(DownloadRequest {
+            url,
+            dest: dest.clone(),
+            expected_sha256: None,
+            status: std::sync::Arc::clone(&status),
+        });
+        // Spin-wait with a hard deadline — never hang the suite.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            // Scope the guard: a match-scrutinee guard would live through
+            // the sleep arm and deadlock the worker (match temporaries drop
+            // at the END of the match).
+            {
+                let state = status.state.lock().unwrap();
+                match &*state {
+                    DownloadState::Done(path) => {
+                        assert_eq!(std::fs::read(path).unwrap(), b"worker model bytes");
+                        break;
+                    }
+                    DownloadState::Failed(err) => panic!("worker failed: {err}"),
+                    _ => {}
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "worker timed out");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            status.downloaded.load(std::sync::atomic::Ordering::Relaxed),
+            b"worker model bytes".len() as u64
+        );
+        let _ = std::fs::remove_file(&dest);
     }
 
     #[test]
