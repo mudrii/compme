@@ -20,6 +20,15 @@ pub struct AppPolicy {
     /// <app>"): `None` → inherit the default (allowed — the global opt-IN is
     /// the memory `StorageMode`); `Some(false)` → never record from this app.
     pub collect_inputs: Option<bool>,
+    /// Per-app mid-line completions override (App Settings pane): `None` →
+    /// inherit the global `COMPME_MIDLINE`. NOTE: the live merge into the
+    /// engine trigger gate is pending an engine API change (the gate is baked
+    /// at build time via `with_trigger_gates`); the model/persistence land
+    /// first so the settings pane has a stable shape.
+    pub mid_line: Option<bool>,
+    /// Per-app autocorrect override (App Settings pane): `None` → inherit the
+    /// global `COMPME_AUTOCORRECT`.
+    pub autocorrect: Option<bool>,
 }
 
 /// Suggestion-gating preferences. `excluded_apps`/`excluded_domains` hard-block
@@ -74,6 +83,23 @@ impl Prefs {
         app.and_then(|app| self.per_app.get(app))
             .and_then(|policy| policy.enabled)
             .unwrap_or(self.default_enabled)
+    }
+
+    /// Effective autocorrect state for `app`: the per-app override, else the
+    /// caller's global default (globals stay in the app config — prefs only
+    /// stores overrides).
+    pub fn autocorrect_enabled(&self, app: Option<&str>, global_default: bool) -> bool {
+        app.and_then(|app| self.per_app.get(app))
+            .and_then(|policy| policy.autocorrect)
+            .unwrap_or(global_default)
+    }
+
+    /// Effective mid-line state for `app` (same inherit pattern; live engine
+    /// merge pending — see `AppPolicy::mid_line`).
+    pub fn mid_line_enabled(&self, app: Option<&str>, global_default: bool) -> bool {
+        app.and_then(|app| self.per_app.get(app))
+            .and_then(|policy| policy.mid_line)
+            .unwrap_or(global_default)
     }
 
     /// Whether typing-history collection (previous-inputs context + encrypted
@@ -167,6 +193,27 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_app_feature_overrides_inherit_the_global_default() {
+        let mut p = Prefs::default();
+        // No override → the caller's global default decides.
+        assert!(p.autocorrect_enabled(Some("com.apple.TextEdit"), true));
+        assert!(!p.autocorrect_enabled(Some("com.apple.TextEdit"), false));
+        assert!(p.mid_line_enabled(None, true));
+        // Per-app off wins over a global on…
+        p.per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .autocorrect = Some(false);
+        assert!(!p.autocorrect_enabled(Some("com.apple.TextEdit"), true));
+        // …and per-app on wins over a global off.
+        p.per_app
+            .entry("com.googlecode.iterm2".into())
+            .or_default()
+            .mid_line = Some(true);
+        assert!(p.mid_line_enabled(Some("com.googlecode.iterm2"), false));
+    }
 
     #[test]
     fn collection_allowed_defaults_on_and_honors_the_per_app_override() {

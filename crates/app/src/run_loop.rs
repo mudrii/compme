@@ -346,13 +346,17 @@ fn trailing_word(left: &str) -> Option<&str> {
 /// the word-based fixes on the trailing word — typo autocorrect, then US→UK
 /// spelling. Returns `(replacement_text, chars_to_replace)`. Pure over its inputs
 /// so the observe-path wiring stays testable.
-fn replacement_offer(left: &str, config: &Config) -> Option<(String, usize)> {
+fn replacement_offer(
+    left: &str,
+    config: &Config,
+    autocorrect_enabled: bool,
+) -> Option<(String, usize)> {
     if let Some(offer) = emoji_offer(left, &config.emoji) {
         return Some(offer);
     }
     let word = trailing_word(left)?;
     let word_len = word.chars().count();
-    if config.autocorrect {
+    if autocorrect_enabled {
         if let Some(fix) = autocorrect::correct(word) {
             return Some((fix, word_len));
         }
@@ -385,7 +389,11 @@ fn replacement_decision(
     if !enabled || !suggestion_gates_pass(app_key, left, prefs, now_ms) {
         return None;
     }
-    replacement_offer(left, config)
+    // Per-app autocorrect override (App Settings): prefs override, else the
+    // global config default. (mid_line's merge is pending an engine API
+    // change — its gate is baked at engine build time.)
+    let autocorrect = prefs.autocorrect_enabled(app_key, config.autocorrect);
+    replacement_offer(left, config, autocorrect)
 }
 
 /// Parse the encrypted-memory config (A2 §6/§16). `COMPME_MEMORY` selects the
@@ -847,6 +855,30 @@ fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
                 .or_default()
                 .collect_inputs = Some(false);
         }
+    }
+    // Per-app feature overrides (App Settings pane): _ON/_OFF comma lists per
+    // feature; ON parses first so a conflicting OFF (parsed second) WINS.
+    let list = |raw: Option<String>| -> Vec<String> {
+        raw.map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+    };
+    for app in list(lookup("COMPME_MIDLINE_ON_APPS")) {
+        prefs.per_app.entry(app).or_default().mid_line = Some(true);
+    }
+    for app in list(lookup("COMPME_MIDLINE_OFF_APPS")) {
+        prefs.per_app.entry(app).or_default().mid_line = Some(false);
+    }
+    for app in list(lookup("COMPME_AUTOCORRECT_ON_APPS")) {
+        prefs.per_app.entry(app).or_default().autocorrect = Some(true);
+    }
+    for app in list(lookup("COMPME_AUTOCORRECT_OFF_APPS")) {
+        prefs.per_app.entry(app).or_default().autocorrect = Some(false);
     }
     prefs
 }
@@ -1900,6 +1932,57 @@ mod tests {
     }
 
     #[test]
+    fn per_app_feature_lists_parse_with_off_winning_conflicts() {
+        let prefs = build_prefs(&lookup(&[
+            ("COMPME_MIDLINE_ON_APPS", "com.a.one, com.a.both"),
+            ("COMPME_MIDLINE_OFF_APPS", "com.a.both"),
+            ("COMPME_AUTOCORRECT_OFF_APPS", "com.a.two"),
+        ]));
+        assert!(prefs.mid_line_enabled(Some("com.a.one"), false), "ON list");
+        assert!(
+            !prefs.mid_line_enabled(Some("com.a.both"), true),
+            "OFF wins the conflict"
+        );
+        assert!(!prefs.autocorrect_enabled(Some("com.a.two"), true));
+        // (Write-back serializers land with the settings-pane watcher — their
+        // first production caller; the c22 no-unused-fns rule.)
+    }
+
+    #[test]
+    fn per_app_autocorrect_override_gates_the_replacement_offer() {
+        // Global autocorrect ON, per-app OFF: the typo fix must not offer in
+        // that app, while emoji (an unrelated feature) still does elsewhere.
+        let config = Config::from_lookup(lookup(&[
+            ("COMPME_AUTOCORRECT", "1"),
+            ("COMPME_AUTOCORRECT_OFF_APPS", "com.quiet.app"),
+        ]));
+        let mut prefs = config.prefs.clone();
+        let _ = &mut prefs;
+        // `teh` is a known typo; in the opted-out app no offer fires…
+        assert_eq!(
+            replacement_decision(
+                "teh",
+                &config,
+                &config.prefs,
+                Some("com.quiet.app"),
+                true,
+                0
+            ),
+            None
+        );
+        // …but the same input in another app offers the fix.
+        assert!(replacement_decision(
+            "teh",
+            &config,
+            &config.prefs,
+            Some("com.other.app"),
+            true,
+            0
+        )
+        .is_some());
+    }
+
+    #[test]
     fn no_collect_apps_env_parses_into_per_app_collect_overrides() {
         let prefs = build_prefs(&lookup(&[(
             "COMPME_NO_COLLECT_APPS",
@@ -2713,20 +2796,26 @@ mod tests {
         assert!(!config.autocorrect);
         assert!(!config.british_english);
         // Off → no word-based offer even on a known typo / americanism.
-        assert!(replacement_offer("teh", &config).is_none());
-        assert!(replacement_offer("color", &config).is_none());
+        assert!(replacement_offer("teh", &config, config.autocorrect).is_none());
+        assert!(replacement_offer("color", &config, config.autocorrect).is_none());
     }
 
     #[test]
     fn replacement_offer_fires_for_enabled_word_features() {
         let ac = Config::from_lookup(lookup(&[("COMPME_AUTOCORRECT", "1")]));
-        assert_eq!(replacement_offer("I teh", &ac), Some(("the".into(), 3)));
+        assert_eq!(
+            replacement_offer("I teh", &ac, ac.autocorrect),
+            Some(("the".into(), 3))
+        );
         // A correctly-spelled word never offers.
-        assert!(replacement_offer("the", &ac).is_none());
+        assert!(replacement_offer("the", &ac, ac.autocorrect).is_none());
 
         let uk = Config::from_lookup(lookup(&[("COMPME_BRITISH_ENGLISH", "on")]));
-        assert_eq!(replacement_offer("color", &uk), Some(("colour".into(), 5)));
-        assert!(replacement_offer("colour", &uk).is_none());
+        assert_eq!(
+            replacement_offer("color", &uk, uk.autocorrect),
+            Some(("colour".into(), 5))
+        );
+        assert!(replacement_offer("colour", &uk, uk.autocorrect).is_none());
     }
 
     #[test]
@@ -2737,7 +2826,8 @@ mod tests {
             ("COMPME_AUTOCORRECT", "1"),
             ("COMPME_BRITISH_ENGLISH", "1"),
         ]));
-        let (glyph, replace_left) = replacement_offer("teh :smile", &all).expect("emoji wins");
+        let (glyph, replace_left) =
+            replacement_offer("teh :smile", &all, all.autocorrect).expect("emoji wins");
         assert!(!glyph.is_empty());
         assert_eq!(replace_left, 6); // ":smile", not the word "teh"
     }
