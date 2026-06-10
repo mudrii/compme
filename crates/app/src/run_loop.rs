@@ -833,6 +833,17 @@ fn apps_pane_lines(counts: &[(String, u64)], collection_on: bool) -> Vec<String>
         .collect()
 }
 
+/// The app ids behind the Apps-tab rows, in render order with the render
+/// cap — index `i` here IS row `i` of `apps_pane_lines`, the contract the
+/// per-row Delete buttons rely on.
+fn apps_row_ids(counts: &[(String, u64)]) -> Vec<String> {
+    counts
+        .iter()
+        .take(platform_macos::APPS_ROWS)
+        .map(|(app, _)| app.clone())
+        .collect()
+}
+
 /// The Setup tab's current rows as display lines: probe permissions and the
 /// model file NOW (cheap queries) and render through `setup_row_line`.
 fn compose_setup_lines(config: &Config) -> Vec<String> {
@@ -872,6 +883,12 @@ fn lifetime_line(merged: &stats::PersistedStats) -> String {
 /// The runtime-mutable switch keys (the Settings switches persist these to
 /// config.env). Env-over-file layering means a set env var silently wins at
 /// relaunch — `env_shadow_warnings` names the shadowed ones at startup.
+///
+/// KEEP IN SYNC with the heartbeat watchers (autocorrect / trailing-space /
+/// labs-midline): a new switch watcher must add its key here or its shadow
+/// goes unwarned (review-c111; the len-pinned test below backstops this).
+/// Deliberately conservative: a key set to "" still warns — it parses falsy
+/// but still occupies the env layer.
 const SWITCH_KEYS: [&str; 3] = [
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
@@ -1394,7 +1411,10 @@ pub fn run() -> Result<(), String> {
         setup_request_screen: Arc::new(AtomicBool::new(false)),
         setup_reveal_model: Arc::new(AtomicBool::new(false)),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
+        apps_delete_row: Arc::new(Mutex::new(None)),
     };
+    // The app ids behind the Apps rows as last rendered (index == row).
+    let mut apps_ids: Vec<String> = Vec::new();
     // Visible-only Setup re-probe cadence (setup_poll_due).
     let mut last_setup_poll_ms: Option<u64> = None;
     // Lifetime stats baseline, read once: the file only changes at shutdown,
@@ -1725,12 +1745,12 @@ pub fn run() -> Result<(), String> {
             // show-time snapshots, same stance as stats_lines (c99): cheap
             // probes refresh live, data aggregations refresh per open.
             if let Ok(mut lines) = settings_flags.apps_lines.lock() {
-                *lines = match &memory {
+                (*lines, apps_ids) = match &memory {
                     Some(store) => match store.count_by_app() {
-                        Ok(counts) => apps_pane_lines(&counts, true),
-                        Err(err) => vec![format!("Store error: {err}")],
+                        Ok(counts) => (apps_pane_lines(&counts, true), apps_row_ids(&counts)),
+                        Err(err) => (vec![format!("Store error: {err}")], Vec::new()),
                     },
-                    None => apps_pane_lines(&[], false),
+                    None => (apps_pane_lines(&[], false), Vec::new()),
                 };
             }
             if let Err(err) = settings_window.show() {
@@ -1774,6 +1794,28 @@ pub fn run() -> Result<(), String> {
             };
             if let Err(err) = platform_macos::reveal_file_in_finder(&model_abs) {
                 eprintln!("compme: reveal model failed: {err:?}");
+            }
+        }
+        // Apps-row Delete: resolve the clicked row index against the ids
+        // rendered with the SAME cap/order, delete, recompose, re-render.
+        let clicked_row = settings_flags
+            .apps_delete_row
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(row) = clicked_row {
+            if let (Some(store), Some(app)) = (&memory, apps_ids.get(row)) {
+                match store.delete_app(app) {
+                    Ok(n) => eprintln!("compme: deleted {n} records for {app}"),
+                    Err(err) => eprintln!("compme: delete for {app} failed: {err}"),
+                }
+                if let Ok(mut lines) = settings_flags.apps_lines.lock() {
+                    (*lines, apps_ids) = match store.count_by_app() {
+                        Ok(counts) => (apps_pane_lines(&counts, true), apps_row_ids(&counts)),
+                        Err(err) => (vec![format!("Store error: {err}")], Vec::new()),
+                    };
+                }
+                settings_window.refresh_apps_labels();
             }
         }
         // Visible-only Setup re-probe: granting a permission while the
@@ -2255,6 +2297,20 @@ mod tests {
             !setup_poll_due(false, Some(10_000), 99_999),
             "hidden again: never, regardless of elapsed"
         );
+    }
+
+    #[test]
+    fn apps_row_ids_align_with_the_rendered_lines() {
+        // Delete buttons carry a row index; resolution back to an app id
+        // must use the SAME cap and order as the rendered lines, or a click
+        // deletes the wrong app's history.
+        let many: Vec<(String, u64)> = (0..20).map(|i| (format!("app{i:02}"), 20 - i)).collect();
+        let ids = apps_row_ids(&many);
+        assert_eq!(ids.len(), platform_macos::APPS_ROWS);
+        assert_eq!(ids[0], "app00");
+        assert_eq!(ids.len(), apps_pane_lines(&many, true).len());
+        // Status lines carry no deletable rows.
+        assert!(apps_row_ids(&[]).is_empty());
     }
 
     #[test]

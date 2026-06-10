@@ -2087,6 +2087,24 @@ mod tests {
     }
 
     #[test]
+    fn set_trailing_space_reverse_flip_stops_the_append() {
+        // review-c110 optional gap: the true→false direction, pinned for
+        // symmetry with the forward flip below.
+        let mut machine = showing_solo(true);
+        machine.set_trailing_space(false);
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "solo".into(),
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
     fn set_trailing_space_flips_the_append_at_runtime() {
         // The General-tab switch flips this live (c110), like mid-word: a
         // machine built without the space starts appending after the setter.

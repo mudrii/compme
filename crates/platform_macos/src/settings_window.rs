@@ -56,6 +56,9 @@ pub struct SettingsFlags {
     /// Apps rows (per-app recorded-input counts), composed by the run loop
     /// right before each show; refreshed like stats.
     pub apps_lines: Arc<Mutex<Vec<String>>>,
+    /// A clicked Apps-row Delete button: the ROW INDEX (the run loop resolves
+    /// it to an app id via apps_row_ids and performs the delete).
+    pub apps_delete_row: Arc<Mutex<Option<usize>>>,
 }
 
 struct SettingsTargetIvars {
@@ -92,6 +95,16 @@ define_class!(
                 .flags
                 .setup_reveal_model
                 .store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(deleteAppRow:))]
+        fn delete_app_row(&self, sender: Option<&NSButton>) {
+            if let Some(button) = sender {
+                let row = button.tag().max(0) as usize;
+                if let Ok(mut slot) = self.ivars().flags.apps_delete_row.lock() {
+                    *slot = Some(row);
+                }
+            }
         }
 
         #[unsafe(method(toggleTrailingSpace:))]
@@ -211,6 +224,16 @@ impl MacosSettingsWindow {
     pub fn refresh_setup_labels(&self) {
         if let Ok(lines) = self.flags.setup_lines.lock() {
             for (label, line) in self.setup_labels.iter().zip(lines.iter()) {
+                label.setStringValue(&NSString::from_str(line));
+            }
+        }
+    }
+
+    /// Re-render the Apps rows from `flags.apps_lines` after a delete (the
+    /// run loop recomposes, then calls this; show() covers the open edge).
+    pub fn refresh_apps_labels(&self) {
+        if let Ok(lines) = self.flags.apps_lines.lock() {
+            for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
         }
@@ -463,6 +486,28 @@ fn build_window(
             ));
             apps.addSubview(&label);
             apps_labels.push(label);
+
+            // Per-row Delete: the tag carries the row index; the run loop
+            // resolves it against apps_row_ids (same cap/order as the
+            // lines) and deletes that app's history.
+            // SAFETY: target outlives the window (held by MacosSettingsWindow).
+            let delete = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str("Delete"),
+                    Some({
+                        let any: &AnyObject = target.as_ref();
+                        any
+                    }),
+                    Some(sel!(deleteAppRow:)),
+                    mtm,
+                )
+            };
+            delete.setTag(row as isize);
+            delete.setFrame(NSRect::new(
+                NSPoint::new(410.0, 266.0 - row as f64 * 26.0),
+                NSSize::new(80.0, 24.0),
+            ));
+            apps.addSubview(&delete);
         }
     }
 
