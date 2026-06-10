@@ -20,6 +20,27 @@ pub const WINDOW_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// One day in milliseconds (the Statistics-pane chart bucket size).
 pub const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 
+/// Render a series as unicode block-bars (▁▂▃▄▅▆▇█), one glyph per value,
+/// ceiling-scaled to the series maximum: the max is always full-height, zero
+/// is always the baseline glyph, and any nonzero value rises above it (a
+/// sparse day must stay visibly different from an idle one). An all-zero
+/// series is a flat baseline; an empty series is an empty string.
+pub fn sparkline(values: &[usize]) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max = values.iter().copied().max().unwrap_or(0);
+    values
+        .iter()
+        .map(|&v| {
+            if max == 0 {
+                BARS[0]
+            } else {
+                // Ceiling division onto 0..=7: v=0 → 0, v=max → 7.
+                BARS[(v * (BARS.len() - 1)).div_ceil(max).min(BARS.len() - 1)]
+            }
+        })
+        .collect()
+}
+
 /// One chart bar for the Statistics pane: outcome counts plus accepted words
 /// over a single 24h slice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -252,6 +273,17 @@ mod tests {
     const T0: u64 = 1_000_000_000_000; // a fixed base timestamp
 
     const DAY_MS_T: u64 = 24 * 60 * 60 * 1000;
+
+    #[test]
+    fn sparkline_scales_bars_to_the_series_maximum() {
+        // Statistics-pane chart row: one glyph per day, ceiling-scaled so the
+        // max value always renders full-height, zero renders the baseline, and
+        // any nonzero value visibly rises above it.
+        assert_eq!(sparkline(&[0, 1, 4, 8]), "▁▂▅█");
+        assert_eq!(sparkline(&[2, 2]), "██"); // every max is full-height
+        assert_eq!(sparkline(&[0, 0]), "▁▁"); // all-zero series stays baseline
+        assert_eq!(sparkline(&[]), "");
+    }
 
     #[test]
     fn daily_buckets_split_the_window_into_trailing_day_slices() {

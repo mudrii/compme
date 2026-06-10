@@ -165,7 +165,9 @@ impl MemoryStore {
 
     /// Per-app record counts, most-used first (the App-Settings pane list).
     /// Counts come straight from the plaintext `app` column — no decryption;
-    /// ties break alphabetically so the order is deterministic.
+    /// ties break alphabetically so the order is deterministic. Like
+    /// [`Self::count`], this counts STORED rows: after a key change it can
+    /// exceed what [`Self::recent`] (which skips undecryptable rows) returns.
     pub fn count_by_app(&self) -> Result<Vec<(String, u64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT app, COUNT(*) AS cnt FROM memories GROUP BY app ORDER BY cnt DESC, app ASC",
