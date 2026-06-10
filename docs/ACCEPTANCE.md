@@ -109,7 +109,10 @@ secondary display): grave full-accept replaced `:smile` with the emoji
 remainder ghost correctly (`accept Word`), Esc dismissed (`dismiss (Esc)`),
 Down fired (`cycle candidate`; visible rotation needs
 `COMPLETE_ME_CANDIDATES>1` — the default single candidate has nothing to
-rotate). Not yet exercised: Option+Tab literal passthrough and the
+rotate; with `COMPLETE_ME_CANDIDATES=5` the user confirmed visible
+candidate rotation live — that run's log was overwritten by a later
+launch, so the evidence is the observation plus the earlier logged
+`cycle candidate` firings). Not yet exercised: Option+Tab literal passthrough and the
 revoke-Input-Monitoring re-check. Watch-item: one screenshot showed a
 remainder ghost overlapping typed text after a word-accept; not reproduced
 in the logged runs (caret advance was correct) — needs a repro with the log
