@@ -1,6 +1,6 @@
 # Architecture
 
-Complete Me is split into a pure completion core, a platform contract, a macOS
+Compme is split into a pure completion core, a platform contract, a macOS
 adapter, and a local model seam. The current implementation focuses on macOS
 because the hard integration points are Accessibility, event taps, AppKit
 overlays, Secure Input, and pasteboard behavior.
@@ -173,7 +173,7 @@ adapter-driven entry points required by the A1b macOS contract:
 
 ### `app`
 
-`app` owns the `complete-me` binary and the runtime wiring that P0/P1 validated.
+`app` owns the `compme` binary and the runtime wiring that P0/P1 validated.
 It is the only root crate that combines config loading, AppKit run-loop pumping,
 the menu-bar status surface, model selection, the inference worker, signal
 handling, and ordered shutdown.

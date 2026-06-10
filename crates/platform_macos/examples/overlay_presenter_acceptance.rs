@@ -13,16 +13,15 @@ fn main() {
         .map(Duration::from_millis)
         .unwrap_or_else(|| Duration::from_secs(4));
     let rect = ScreenRect {
-        x: env_f64("COMPLETE_ME_OVERLAY_X").unwrap_or(520.0),
-        y: env_f64("COMPLETE_ME_OVERLAY_Y").unwrap_or(240.0),
-        w: env_f64("COMPLETE_ME_OVERLAY_W").unwrap_or(1.0),
-        h: env_f64("COMPLETE_ME_OVERLAY_H").unwrap_or(18.0),
+        x: env_f64("COMPME_OVERLAY_X").unwrap_or(520.0),
+        y: env_f64("COMPME_OVERLAY_Y").unwrap_or(240.0),
+        w: env_f64("COMPME_OVERLAY_W").unwrap_or(1.0),
+        h: env_f64("COMPME_OVERLAY_H").unwrap_or(18.0),
     };
-    let text =
-        env::var("COMPLETE_ME_OVERLAY_TEXT").unwrap_or_else(|_| "ghost completion text".into());
-    let update_text = env::var("COMPLETE_ME_OVERLAY_UPDATE_TEXT")
+    let text = env::var("COMPME_OVERLAY_TEXT").unwrap_or_else(|_| "ghost completion text".into());
+    let update_text = env::var("COMPME_OVERLAY_UPDATE_TEXT")
         .unwrap_or_else(|_| "updated ghost completion text".into());
-    let update_after = env::var("COMPLETE_ME_OVERLAY_UPDATE_AFTER_MS")
+    let update_after = env::var("COMPME_OVERLAY_UPDATE_AFTER_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_millis)

@@ -104,8 +104,8 @@ to record `replace_left` for the wiring test.
   gated to AxSet-capable fields first.
 
 ### 5. Flags / config (default off; host-read)
-`COMPLETE_ME_EMOJI` (+ `_SKIN_TONE`, `_GENDER`), `COMPLETE_ME_AUTOCORRECT`,
-`COMPLETE_ME_BRITISH_ENGLISH`, `COMPLETE_ME_THESAURUS` — already reserved in §8 of
+`COMPME_EMOJI` (+ `_SKIN_TONE`, `_GENDER`), `COMPME_AUTOCORRECT`,
+`COMPME_BRITISH_ENGLISH`, `COMPME_THESAURUS` — already reserved in §8 of
 the engine-macos design as the wiring contract. Each gates whether the host calls
 the corresponding crate in the `TextChanged` replacement-detection step.
 
@@ -124,7 +124,7 @@ the corresponding crate in the `TextChanged` replacement-detection step.
    after `on_text_changed`, calls `emoji_offer(&ctx.left, &config.emoji)`; on a hit
    it `latest.clear()`s (preempts the just-queued model request — Cotypist behavior)
    and `engine.offer_replacement(field, glyph, replace_chars)`. Gated by
-   `COMPLETE_ME_EMOJI` (+ `_SKIN_TONE`/`_GENDER`), default off → `config.emoji ==
+   `COMPME_EMOJI` (+ `_SKIN_TONE`/`_GENDER`), default off → `config.emoji ==
    None`. Pure `emoji_offer`/`build_emoji_config`/`parse_skin_tone`/`parse_gender`
    helpers are unit-tested. Preempt is safe: `on_text_changed` advances the snapshot
    (stale prior requests discarded) and the current model request is cleared, so no

@@ -4,7 +4,7 @@
 **Scope:** `docs/superpowers/**` and `tools/spike/**`  
 **Verdict:** GO for contract-first A1a implementation and A1b planning after the 2026-06-05 P6 redo and P2 model comparison. The remaining guardrail is to keep A1a bound to the A1b macOS adapter contract; `tools/spike/FINDINGS.md` is the source of truth for the model decision.
 
-**2026-06-05 P6 overlay update:** P6 is now PASS. Screenshot `/tmp/complete-me-p6-redo-before.png` shows visible ghost text over a Chrome click target; CoreGraphics listed the onscreen layer-101 overlay before and after the click; non-activation and click-through were verified. The click-through proof clicked `{590,1185}`, changing Chrome title from `clicked-0` to `clicked-1`.
+**2026-06-05 P6 overlay update:** P6 is now PASS. Screenshot `/tmp/compme-p6-redo-before.png` shows visible ghost text over a Chrome click target; CoreGraphics listed the onscreen layer-101 overlay before and after the click; non-activation and click-through were verified. The click-through proof clicked `{590,1185}`, changing Chrome title from `clicked-0` to `clicked-1`.
 
 **2026-06-05 A1b status update:** This file is a historical review snapshot. Finding 14 and the corrected-order text that says to draft A1b before A1a are superseded by `2026-06-04-a1b-macos-adapter-contract.md` and the current implementation handoff. A1b now has an active contract plan and the macOS adapter has live acceptance for TextEdit read/caret/AxSet/SyntheticKeys/Clipboard/full-accept/word-accept, accept-tap inactive/full/word/delayed-hide, Safari marker-path caret geometry, repo-local popup fallback, and overlay show/update/hide diagnostics.
 

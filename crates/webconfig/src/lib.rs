@@ -2,13 +2,13 @@
 //!
 //! Cotypist pushes compatibility fixes through `cotypist.app/{setPreference,
 //! launchCotypist/setOverride}` URL-scheme deep links. We re-implement the
-//! **safe, reversible, user-visible** subset: a `complete-me://setOverride` link
+//! **safe, reversible, user-visible** subset: a `compme://setOverride` link
 //! that enables/disables or excludes/includes completions for one app **or** one
 //! domain.
 //!
 //! Security posture: **strict and fail-closed.** A deep link is an untrusted
 //! input that any web page or app can fire, so the parser:
-//! - accepts only the `complete-me` scheme and the `setOverride` command;
+//! - accepts only the `compme` scheme and the `setOverride` command;
 //! - accepts exactly one scope (`app` XOR `domain`) and exactly one action
 //!   (`enabled` XOR `excluded`), both with sane values;
 //! - rejects unknown commands, unknown query parameters, empty/oversized/
@@ -64,7 +64,7 @@ pub enum OverrideAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParseError {
-    /// Not a `complete-me://` URL.
+    /// Not a `compme://` URL.
     NotOurScheme,
     /// Host/command is not a supported one (only `setOverride`).
     UnknownCommand(String),
@@ -100,7 +100,7 @@ pub enum ParseError {
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::NotOurScheme => write!(f, "not a complete-me:// URL"),
+            ParseError::NotOurScheme => write!(f, "not a compme:// URL"),
             ParseError::UnknownCommand(cmd) => write!(f, "unknown command: {cmd}"),
             ParseError::UnknownParam(name) => write!(f, "unknown query parameter: {name}"),
             ParseError::DuplicateParam(name) => write!(f, "duplicate query parameter: {name}"),
@@ -140,11 +140,11 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-const SCHEME: &str = "complete-me://";
+const SCHEME: &str = "compme://";
 /// Bundle ids / domains are short; cap to reject absurd inputs.
 const MAX_SCOPE_LEN: usize = 253;
 
-/// Parse and validate a `complete-me://setOverride?...` deep link. Returns the
+/// Parse and validate a `compme://setOverride?...` deep link. Returns the
 /// reversible command, or a specific [`ParseError`] — never a partial/guessed
 /// result.
 pub fn parse_deep_link(url: &str) -> Result<OverrideCommand, ParseError> {
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn parses_app_enable() {
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?app=com.apple.TextEdit&enabled=true"),
+            parse_deep_link("compme://setOverride?app=com.apple.TextEdit&enabled=true"),
             Ok(OverrideCommand {
                 scope: Scope::App("com.apple.TextEdit".into()),
                 action: OverrideAction::Enable,
@@ -345,7 +345,7 @@ mod tests {
             ("excluded=false", OverrideAction::Include),
         ];
         for (param, expected) in cases {
-            let url = format!("complete-me://setOverride?app=com.foo.bar&{param}");
+            let url = format!("compme://setOverride?app=com.foo.bar&{param}");
             assert_eq!(parse_deep_link(&url).unwrap().action, expected);
         }
     }
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn parses_domain_scope() {
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?domain=docs.google.com&excluded=true"),
+            parse_deep_link("compme://setOverride?domain=docs.google.com&excluded=true"),
             Ok(OverrideCommand {
                 scope: Scope::Domain("docs.google.com".into()),
                 action: OverrideAction::Exclude,
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn param_order_is_irrelevant() {
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?enabled=false&app=com.foo.bar"),
+            parse_deep_link("compme://setOverride?enabled=false&app=com.foo.bar"),
             Ok(OverrideCommand {
                 scope: Scope::App("com.foo.bar".into()),
                 action: OverrideAction::Disable,
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn trailing_slash_on_command_is_tolerated() {
-        assert!(parse_deep_link("complete-me://setOverride/?app=com.foo.bar&enabled=true").is_ok());
+        assert!(parse_deep_link("compme://setOverride/?app=com.foo.bar&enabled=true").is_ok());
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
             Err(ParseError::NotOurScheme)
         );
         assert_eq!(
-            parse_deep_link("https://complete-me/setOverride"),
+            parse_deep_link("https://compme/setOverride"),
             Err(ParseError::NotOurScheme)
         );
     }
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn unknown_command_is_rejected() {
         // setPreference is intentionally NOT in the safe subset yet (needs signing).
-        match parse_deep_link("complete-me://setPreference?app=x&enabled=true") {
+        match parse_deep_link("compme://setPreference?app=x&enabled=true") {
             Err(ParseError::UnknownCommand(c)) => assert_eq!(c, "setPreference"),
             other => panic!("expected UnknownCommand, got {other:?}"),
         }
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn unknown_param_fails_closed() {
         // A smuggled instruction/model param must be rejected, not ignored.
-        match parse_deep_link("complete-me://setOverride?app=x&enabled=true&instructions=be+evil") {
+        match parse_deep_link("compme://setOverride?app=x&enabled=true&instructions=be+evil") {
             Err(ParseError::UnknownParam(p)) => assert_eq!(p, "instructions"),
             other => panic!("expected UnknownParam, got {other:?}"),
         }
@@ -410,11 +410,11 @@ mod tests {
     #[test]
     fn missing_and_ambiguous_scope_are_errors() {
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?enabled=true"),
+            parse_deep_link("compme://setOverride?enabled=true"),
             Err(ParseError::MissingScope)
         );
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?app=x&domain=y&enabled=true"),
+            parse_deep_link("compme://setOverride?app=x&domain=y&enabled=true"),
             Err(ParseError::AmbiguousScope)
         );
     }
@@ -422,18 +422,18 @@ mod tests {
     #[test]
     fn missing_and_ambiguous_action_are_errors() {
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?app=x"),
+            parse_deep_link("compme://setOverride?app=x"),
             Err(ParseError::MissingAction)
         );
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?app=x&enabled=true&excluded=true"),
+            parse_deep_link("compme://setOverride?app=x&enabled=true&excluded=true"),
             Err(ParseError::AmbiguousAction)
         );
     }
 
     #[test]
     fn invalid_action_value_is_rejected() {
-        match parse_deep_link("complete-me://setOverride?app=x&enabled=maybe") {
+        match parse_deep_link("compme://setOverride?app=x&enabled=maybe") {
             Err(ParseError::InvalidValue(v)) => assert_eq!(v, "maybe"),
             other => panic!("expected InvalidValue, got {other:?}"),
         }
@@ -443,18 +443,16 @@ mod tests {
     fn malformed_scope_is_rejected() {
         // Empty, illegal chars, percent-encoding, and oversized all fail closed.
         for bad in [
-            "complete-me://setOverride?app=&enabled=true",
-            "complete-me://setOverride?app=com foo&enabled=true",
-            "complete-me://setOverride?app=a%2Fb&enabled=true",
-            "complete-me://setOverride?app=a/b&enabled=true",
+            "compme://setOverride?app=&enabled=true",
+            "compme://setOverride?app=com foo&enabled=true",
+            "compme://setOverride?app=a%2Fb&enabled=true",
+            "compme://setOverride?app=a/b&enabled=true",
         ] {
             assert_eq!(parse_deep_link(bad), Err(ParseError::InvalidScope), "{bad}");
         }
         let huge = "x".repeat(MAX_SCOPE_LEN + 1);
         assert_eq!(
-            parse_deep_link(&format!(
-                "complete-me://setOverride?app={huge}&enabled=true"
-            )),
+            parse_deep_link(&format!("compme://setOverride?app={huge}&enabled=true")),
             Err(ParseError::InvalidScope)
         );
     }
@@ -462,7 +460,7 @@ mod tests {
     #[test]
     fn duplicate_param_is_rejected_with_its_name() {
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?app=x&app=y&enabled=true"),
+            parse_deep_link("compme://setOverride?app=x&app=y&enabled=true"),
             Err(ParseError::DuplicateParam("app".into()))
         );
     }
@@ -470,7 +468,7 @@ mod tests {
     #[test]
     fn param_without_equals_is_rejected() {
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?app=x&enabled=true&flag"),
+            parse_deep_link("compme://setOverride?app=x&enabled=true&flag"),
             Err(ParseError::MalformedParam("flag".into()))
         );
     }
@@ -479,11 +477,11 @@ mod tests {
     fn command_and_keys_are_case_sensitive() {
         // Lowercase command and capitalized keys fail closed (no aliasing).
         assert_eq!(
-            parse_deep_link("complete-me://setoverride?app=x&enabled=true"),
+            parse_deep_link("compme://setoverride?app=x&enabled=true"),
             Err(ParseError::UnknownCommand("setoverride".into()))
         );
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?App=x&enabled=true"),
+            parse_deep_link("compme://setOverride?App=x&enabled=true"),
             Err(ParseError::UnknownParam("App".into()))
         );
     }
@@ -497,7 +495,7 @@ mod tests {
             "enabled=2",
             "enabled=",
         ] {
-            let url = format!("complete-me://setOverride?app=x&{bad}");
+            let url = format!("compme://setOverride?app=x&{bad}");
             assert!(
                 matches!(parse_deep_link(&url), Err(ParseError::InvalidValue(_))),
                 "{bad} must be rejected"
@@ -509,28 +507,24 @@ mod tests {
     fn empty_query_and_bare_command_and_leading_amp_are_handled() {
         // Empty query after `?`, no `?` at all → MissingScope (no panic).
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?"),
+            parse_deep_link("compme://setOverride?"),
             Err(ParseError::MissingScope)
         );
         assert_eq!(
-            parse_deep_link("complete-me://setOverride"),
+            parse_deep_link("compme://setOverride"),
             Err(ParseError::MissingScope)
         );
         // A leading empty `&`-pair is ignored, not treated as a malformed param.
-        assert!(parse_deep_link("complete-me://setOverride?&app=x&enabled=true").is_ok());
+        assert!(parse_deep_link("compme://setOverride?&app=x&enabled=true").is_ok());
     }
 
     #[test]
     fn scope_charset_and_length_boundary() {
         // Dot, dash, underscore all accepted.
-        assert!(
-            parse_deep_link("complete-me://setOverride?app=com.foo_bar-baz9&enabled=true").is_ok()
-        );
+        assert!(parse_deep_link("compme://setOverride?app=com.foo_bar-baz9&enabled=true").is_ok());
         // Exactly MAX_SCOPE_LEN passes; +1 fails (covered elsewhere).
         let max = "a".repeat(MAX_SCOPE_LEN);
-        assert!(
-            parse_deep_link(&format!("complete-me://setOverride?app={max}&enabled=true")).is_ok()
-        );
+        assert!(parse_deep_link(&format!("compme://setOverride?app={max}&enabled=true")).is_ok());
     }
 
     // ---- signed links ----
@@ -560,7 +554,7 @@ mod tests {
     fn an_unsigned_link_parses_as_unsigned_trust() {
         assert_eq!(
             parse_deep_link_with_trust(
-                "complete-me://setOverride?app=com.apple.TextEdit&enabled=true",
+                "compme://setOverride?app=com.apple.TextEdit&enabled=true",
                 None,
             ),
             Ok((
@@ -575,7 +569,7 @@ mod tests {
 
     #[test]
     fn a_validly_signed_link_parses_as_signed_trust() {
-        let url = signed_url("complete-me://setOverride?app=com.apple.TextEdit&excluded=true");
+        let url = signed_url("compme://setOverride?app=com.apple.TextEdit&excluded=true");
         assert_eq!(
             parse_deep_link_with_trust(&url, Some(&test_trusted_key())),
             Ok((
@@ -590,7 +584,7 @@ mod tests {
 
     #[test]
     fn a_signed_link_without_a_trusted_key_fails_closed() {
-        let url = signed_url("complete-me://setOverride?app=com.apple.TextEdit&enabled=true");
+        let url = signed_url("compme://setOverride?app=com.apple.TextEdit&enabled=true");
         assert_eq!(
             parse_deep_link_with_trust(&url, None),
             Err(ParseError::UntrustedSignature)
@@ -599,7 +593,7 @@ mod tests {
 
     #[test]
     fn a_tampered_payload_fails_verification() {
-        let url = signed_url("complete-me://setOverride?app=com.apple.TextEdit&enabled=true");
+        let url = signed_url("compme://setOverride?app=com.apple.TextEdit&enabled=true");
         // Flip the payload after signing: enable → disable.
         let tampered = url.replace("enabled=true", "enabled=false");
         assert_eq!(
@@ -611,7 +605,7 @@ mod tests {
     #[test]
     fn a_signature_from_an_untrusted_signer_fails_verification() {
         use ed25519_dalek::Signer;
-        let payload = "complete-me://setOverride?app=com.apple.TextEdit&enabled=true";
+        let payload = "compme://setOverride?app=com.apple.TextEdit&enabled=true";
         let rogue = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
         let sig = rogue.sign(payload.as_bytes());
         let url = format!("{payload}&sig={}", encode_hex(&sig.to_bytes()));
@@ -623,7 +617,7 @@ mod tests {
 
     #[test]
     fn a_malformed_signature_value_is_rejected_before_verification() {
-        let payload = "complete-me://setOverride?app=com.apple.TextEdit&enabled=true";
+        let payload = "compme://setOverride?app=com.apple.TextEdit&enabled=true";
         for bad in [
             "",               // empty
             "deadbeef",       // too short
@@ -646,7 +640,7 @@ mod tests {
     fn a_signature_that_is_not_the_final_parameter_is_misplaced() {
         // Anything after the sig value would be unsigned, attacker-appendable
         // bytes — including a second sig.
-        let url = signed_url("complete-me://setOverride?app=com.apple.TextEdit&enabled=true");
+        let url = signed_url("compme://setOverride?app=com.apple.TextEdit&enabled=true");
         for appended in ["&excluded=true", "&sig=00", "&x=1"] {
             assert_eq!(
                 parse_deep_link_with_trust(&format!("{url}{appended}"), Some(&test_trusted_key()),),
@@ -662,10 +656,7 @@ mod tests {
         // payload has no parameters before it, which the safe subset never
         // produces — it falls through to the strict parser and fails closed.
         assert_eq!(
-            parse_deep_link_with_trust(
-                "complete-me://setOverride?sig=00",
-                Some(&test_trusted_key()),
-            ),
+            parse_deep_link_with_trust("compme://setOverride?sig=00", Some(&test_trusted_key()),),
             Err(ParseError::UnknownParam("sig".into()))
         );
     }
@@ -675,7 +666,7 @@ mod tests {
         // Regression pin: the pre-signing API never silently accepts a signed
         // link (it would drop the signature semantics on the floor).
         assert_eq!(
-            parse_deep_link("complete-me://setOverride?app=com.apple.TextEdit&enabled=true&sig=00",),
+            parse_deep_link("compme://setOverride?app=com.apple.TextEdit&enabled=true&sig=00",),
             Err(ParseError::UnknownParam("sig".into()))
         );
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A2 §16 compatibility + context live gates for the `complete-me` binary.
+# A2 §16 compatibility + context live gates for the `compme` binary.
 #
 # Verifies the per-app behaviour the deterministic `compat` policies imply, by
 # driving the *product* binary against real apps and asserting whether a
@@ -11,32 +11,32 @@
 #   unsupported  Ghostty/Pages/Warp ...  → expect NO `request gen=` line.
 #   terminal-cmd Terminal/iTerm, type a shell command  → NO request.
 #   terminal-nlp Terminal/iTerm, type a natural-language prompt → request.
-#   clipboard    works app + COMPLETE_ME_CLIPBOARD_CONTEXT=1; the copied text
+#   clipboard    works app + COMPME_CLIPBOARD_CONTEXT=1; the copied text
 #                is logged by the diagnostic context path before submit.
-#   screen       works app + COMPLETE_ME_SCREEN_CONTEXT=1; Screen Recording must
+#   screen       works app + COMPME_SCREEN_CONTEXT=1; Screen Recording must
 #                be granted and OCR must return context before submit.
 #
 # This is the executable form of the §16 compatibility-matrix gate. It needs a
 # console GUI session, Accessibility granted, the relevant apps installed/focused,
-# and the target pid in COMPLETE_ME_ACCEPTANCE_PID. The `screen` gate also needs
+# and the target pid in COMPME_ACCEPTANCE_PID. The `screen` gate also needs
 # Screen Recording permission.
 # Per-app coverage is recorded in tools/acceptance/logs/ when run.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="${COMPLETE_ME_BIN:-$ROOT_DIR/target/debug/complete-me}"
-PID="${COMPLETE_ME_ACCEPTANCE_PID:-}"
+BIN="${COMPME_BIN:-$ROOT_DIR/target/debug/compme}"
+PID="${COMPME_ACCEPTANCE_PID:-}"
 KIND="${1:-works}"            # works | unsupported | terminal-cmd | terminal-nlp | clipboard | screen
-RUN_MS="${COMPLETE_ME_RUN_MS:-3500}"
-WARMUP_MS="${COMPLETE_ME_WARMUP_MS:-1200}"
-PREFIX="${COMPLETE_ME_PREFIX:-Dear team, I wanted to }"
-STUB="${COMPLETE_ME_STUB:- follow up about the }"
+RUN_MS="${COMPME_RUN_MS:-3500}"
+WARMUP_MS="${COMPME_WARMUP_MS:-1200}"
+PREFIX="${COMPME_PREFIX:-Dear team, I wanted to }"
+STUB="${COMPME_STUB:- follow up about the }"
 LOG_DIR="$ROOT_DIR/tools/acceptance/logs"
 LOG="$LOG_DIR/a2-compat-${KIND}-$(date +%Y%m%d-%H%M%S).log"
 mkdir -p "$LOG_DIR"
 
 if [[ -z "$PID" ]]; then
-  echo "FAIL: set COMPLETE_ME_ACCEPTANCE_PID to the target app's pid" >&2
+  echo "FAIL: set COMPME_ACCEPTANCE_PID to the target app's pid" >&2
   exit 2
 fi
 if [[ ! -x "$BIN" ]]; then
@@ -55,11 +55,11 @@ screen_env=()
 
 if [[ "$KIND" == "clipboard" ]]; then
   /usr/bin/osascript -e 'set the clipboard to "CLIPBOARD-CONTEXT-MARKER"' >/dev/null 2>&1 || true
-  clip_env=(COMPLETE_ME_CLIPBOARD_CONTEXT=1 COMPLETE_ME_DIAG_CONTEXT=1)
+  clip_env=(COMPME_CLIPBOARD_CONTEXT=1 COMPME_DIAG_CONTEXT=1)
 fi
 
 if [[ "$KIND" == "screen" ]]; then
-  screen_env=(COMPLETE_ME_SCREEN_CONTEXT=1 COMPLETE_ME_DIAG_CONTEXT=1)
+  screen_env=(COMPME_SCREEN_CONTEXT=1 COMPME_DIAG_CONTEXT=1)
 fi
 
 # Seed the field, then run the binary against it with a deterministic stub.
@@ -72,9 +72,9 @@ tell application "System Events" to keystroke "$PREFIX"
 OSA
 
 env \
-  COMPLETE_ME_STUB_COMPLETION="$STUB" \
-  COMPLETE_ME_ACCEPTANCE_PID="$PID" \
-  COMPLETE_ME_RUN_MS="$RUN_MS" \
+  COMPME_STUB_COMPLETION="$STUB" \
+  COMPME_ACCEPTANCE_PID="$PID" \
+  COMPME_RUN_MS="$RUN_MS" \
   ${clip_env[@]+"${clip_env[@]}"} \
   ${screen_env[@]+"${screen_env[@]}"} \
   "$BIN" >"$LOG" 2>&1 &

@@ -137,12 +137,12 @@ fn run(
     outcomes: Sender<CompletionOutcome>,
     ready: Arc<AtomicBool>,
 ) {
-    eprintln!("complete-me: state=loading");
+    eprintln!("compme: state=loading");
     if let Err(err) = model.warm_up() {
-        eprintln!("complete-me: warm-up failed: {err}");
+        eprintln!("compme: warm-up failed: {err}");
     }
     ready.store(true, Ordering::SeqCst);
-    eprintln!("complete-me: state=ready");
+    eprintln!("compme: state=ready");
 
     while let Some(request) = recv_latest(&requests) {
         // Personalization steering for the focused app (domain support is a later
@@ -171,7 +171,7 @@ fn run(
                     break;
                 }
             }
-            Err(err) => eprintln!("complete-me: inference error: {err}"),
+            Err(err) => eprintln!("compme: inference error: {err}"),
         }
     }
 
@@ -205,7 +205,7 @@ impl InferenceHandle {
         let ready_for_thread = Arc::clone(&ready);
 
         let handle = thread::Builder::new()
-            .name("complete-me-inference".into())
+            .name("compme-inference".into())
             .spawn(move || {
                 run(
                     model,

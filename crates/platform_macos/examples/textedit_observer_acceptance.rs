@@ -27,17 +27,17 @@ fn main() {
         .unwrap_or_else(|| Duration::from_secs(6));
     let required = env::args().nth(2).unwrap_or_else(|| "both".into());
 
-    let adapter = if let Ok(raw_sequence) = env::var("COMPLETE_ME_ACCEPTANCE_PID_SEQUENCE") {
+    let adapter = if let Ok(raw_sequence) = env::var("COMPME_ACCEPTANCE_PID_SEQUENCE") {
         let sequence = raw_sequence
             .split(',')
             .filter_map(|raw| raw.trim().parse::<i32>().ok())
             .collect::<Vec<_>>();
         if sequence.is_empty() {
-            eprintln!("COMPLETE_ME_ACCEPTANCE_PID_SEQUENCE did not contain any valid pids");
+            eprintln!("COMPME_ACCEPTANCE_PID_SEQUENCE did not contain any valid pids");
             process::exit(2);
         }
 
-        let interval = env::var("COMPLETE_ME_ACCEPTANCE_PID_SEQUENCE_INTERVAL_MS")
+        let interval = env::var("COMPME_ACCEPTANCE_PID_SEQUENCE_INTERVAL_MS")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
             .map(Duration::from_millis)
@@ -55,7 +55,7 @@ fn main() {
             Some(*current.lock().expect("current pid"))
         })
     } else {
-        match env::var("COMPLETE_ME_ACCEPTANCE_PID")
+        match env::var("COMPME_ACCEPTANCE_PID")
             .ok()
             .and_then(|raw| raw.parse::<i32>().ok())
         {
@@ -173,7 +173,7 @@ fn main() {
             Err(err) => println!("CAPS_ERROR {err:?}"),
         }
     }
-    let insert_text = env::var("COMPLETE_ME_ACCEPTANCE_INSERT_TEXT")
+    let insert_text = env::var("COMPME_ACCEPTANCE_INSERT_TEXT")
         .unwrap_or_else(|_| format!(" cm-insert-{}", process::id()));
     let requested_insert_strategy = match required.as_str() {
         "insert" | "popup" => Some(InsertStrategy::AxSet),
@@ -182,7 +182,7 @@ fn main() {
         _ => None,
     };
     if requested_insert_strategy.is_some() && insert_text.is_empty() {
-        eprintln!("insertion acceptance requires non-empty COMPLETE_ME_ACCEPTANCE_INSERT_TEXT");
+        eprintln!("insertion acceptance requires non-empty COMPME_ACCEPTANCE_INSERT_TEXT");
         process::exit(2);
     }
     let pre_insert_read = if requested_insert_strategy.is_some() {

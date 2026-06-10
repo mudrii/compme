@@ -25,7 +25,7 @@ fn main() {
         .unwrap_or_else(|| Duration::from_secs(4));
     let requirement = env::args().nth(2).unwrap_or_else(|| "any".into());
 
-    let adapter = match env::var("COMPLETE_ME_ACCEPTANCE_PID")
+    let adapter = match env::var("COMPME_ACCEPTANCE_PID")
         .ok()
         .and_then(|raw| raw.parse::<i32>().ok())
     {

@@ -1,7 +1,7 @@
 # P0 MVP Integration — Design
 
 **Date:** 2026-06-06 (reconciled with implementation 2026-06-07)
-**Status:** Implemented in `crates/app` and reviewed. The original 2026-06-07 macOS live run validated the P0 loop before the Cotypist accept-key correction. **[CORR 06-08 — D8 reconciled]** The post-flip binding-specific live GUI rerun has since been **completed and is recorded as CLOSED in the design spec §15 (gates G6 + I11, Apple M4 Max, 2026-06-08)**: `e2e-complete-me.sh` ran both full (grave→`accept Full`) and word (Tab→`accept Word`, grave→`accept Full` remainder) modes against TextEdit with a real `LlamaModel`. Design spec §15 is the authoritative live-gate record; the "rerun pending" / "live-validation gap" language elsewhere in this doc predates that run and is retained only as historical context.
+**Status:** Implemented in `crates/app` and reviewed. The original 2026-06-07 macOS live run validated the P0 loop before the Cotypist accept-key correction. **[CORR 06-08 — D8 reconciled]** The post-flip binding-specific live GUI rerun has since been **completed and is recorded as CLOSED in the design spec §15 (gates G6 + I11, Apple M4 Max, 2026-06-08)**: `e2e-compme.sh` ran both full (grave→`accept Full`) and word (Tab→`accept Word`, grave→`accept Full` remainder) modes against TextEdit with a real `LlamaModel`. Design spec §15 is the authoritative live-gate record; the "rerun pending" / "live-validation gap" language elsewhere in this doc predates that run and is retained only as historical context.
 **Scope:** The 5 P0 (blocks-MVP-ship) items: integration run-loop binary, Engine↔inference wiring, end-to-end live acceptance gate, model warm-up on launch, graceful shutdown on exit.
 
 **Cotypist parity note (2026-06-07 audit):** P0 proves the local completion loop and deterministic TextEdit acceptance path. It does not claim parity with Cotypist's full app surface: screen-aware context, encrypted personalization, app/domain overrides, Google Docs setup, browser mirror/text-metrics workarounds, terminal AI-agent prompt activation, full shortcut customization, updater/signing, telemetry policy, emoji, and typo correction are A2/A3+ scope.
@@ -10,9 +10,9 @@
 
 Run on a real GUI session (console user logged in, Accessibility already granted to the terminal). Evidence:
 
-**Non-intrusive smoke** (`COMPLETE_ME_STUB_COMPLETION=… COMPLETE_ME_RUN_MS=2500`, no keystrokes): adapter + overlay init OK, `state=loading → state=ready`, focus event marshalled dispatcher→main, non-text frontmost (`AXGroup`) → `UnsupportedField` logged and loop continued, clean exit 0. Validates items 1, 4, 5 + the threading model.
+**Non-intrusive smoke** (`COMPME_STUB_COMPLETION=… COMPME_RUN_MS=2500`, no keystrokes): adapter + overlay init OK, `state=loading → state=ready`, focus event marshalled dispatcher→main, non-text frontmost (`AXGroup`) → `UnsupportedField` logged and loop continued, clean exit 0. Validates items 1, 4, 5 + the threading model.
 
-**Stub E2E gate** (`tools/acceptance/e2e-complete-me.sh` against TextEdit pid): **historical PASS with stale binding evidence**. Seeded `"The quick brown fox "`, binary logged `focus` (AXTextArea) → `request gen=2 prompt="The quick brown fox"` → `completion " jumps-NNNNNN"` → `accept Full`, and the document became `"The quick brown fox jumps-NNNNNN"`. All four logged stages present; document assertion passed. Validated items 2, 3 for the original Tab=full binding. **[CORR 06-08]** This PASS predates the Cotypist-parity accept-key flip. The fresh post-flip desktop live run **has since been done** — design spec §15 G6/I11 record `e2e-complete-me.sh` passing both grave→full and Tab→word against TextEdit (M4 Max, 2026-06-08), including a real-`LlamaModel` end-to-end run. P0 is revalidated under the current bindings per §15.
+**Stub E2E gate** (`tools/acceptance/e2e-compme.sh` against TextEdit pid): **historical PASS with stale binding evidence**. Seeded `"The quick brown fox "`, binary logged `focus` (AXTextArea) → `request gen=2 prompt="The quick brown fox"` → `completion " jumps-NNNNNN"` → `accept Full`, and the document became `"The quick brown fox jumps-NNNNNN"`. All four logged stages present; document assertion passed. Validated items 2, 3 for the original Tab=full binding. **[CORR 06-08]** This PASS predates the Cotypist-parity accept-key flip. The fresh post-flip desktop live run **has since been done** — design spec §15 G6/I11 record `e2e-compme.sh` passing both grave→full and Tab→word against TextEdit (M4 Max, 2026-06-08), including a real-`LlamaModel` end-to-end run. P0 is revalidated under the current bindings per §15.
 
 **Real `LlamaModel`** (no stub, GGUF on Metal): warm-up `loading→ready` (embedded Metal lib ~7s first load), then `request gen=3 prompt="Dear team, I wanted to"` → real completion `" let you know that I have been working on a new project for the past few weeks…"`. Validates the real model path: load → warm → terse prompt → genuine inference. (Insert not exercised here — no Tab sent; insert proven by the stub E2E.)
 
@@ -26,7 +26,7 @@ All parts of the macOS autocomplete stack are proven in isolation (A0 spike P1�
 - `Engine` only ever runs in unit tests; `LlamaModel` only runs in `model_client/tests/latency.rs`. They are decoupled.
 - `warm_up()` and `shutdown()` overrides exist on `LlamaModel` but nothing calls them from an application.
 
-This design wires those proven parts into a single `complete-me` binary and adds a deterministic end-to-end live gate.
+This design wires those proven parts into a single `compme` binary and adds a deterministic end-to-end live gate.
 
 ## Key constraints (from the seam map)
 
@@ -71,7 +71,7 @@ New binary crate, added to workspace `members`:
 
 ```
 crates/app/
-  Cargo.toml          # [[bin]] name = "complete-me"; deps: engine, platform, platform_macos, model_client, libc, core-foundation
+  Cargo.toml          # [[bin]] name = "compme"; deps: engine, platform, platform_macos, model_client, libc, core-foundation
   src/main.rs         # parse env/config, build stack, run, ordered teardown
   src/run_loop.rs     # main-thread heartbeat: drain queues + on_tick + stop-flag check
   src/wiring.rs       # callback→event marshalling; TextChange/EditKind derivation; latest-wins coalescing
@@ -113,11 +113,11 @@ Note on the accept subscription: it is owned by the `Engine` (via `set_accept_su
 ## Config (P0 = constants + env; full config surface is P1)
 
 - `debounce_ms`, `max_words`, `max_tokens`: constants in `main.rs`.
-- `COMPLETE_ME_MODEL_PATH`: model GGUF path; defaults to the spike base model (`tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf`).
-- `COMPLETE_ME_STUB_COMPLETION="<text>"`: when set, use a deterministic `StubModel` returning `<text>` instead of `LlamaModel`.
-- `COMPLETE_ME_ACCEPTANCE_PID=<pid>`: use `MacosPlatformAdapter::with_frontmost_pid_override_for_acceptance` (mirrors the existing examples); absent → `MacosPlatformAdapter::new()`.
-- `COMPLETE_ME_PROMPT_MODE=terse|raw`: prompt strategy applied to the engine's raw left-context prefix before inference. Default `terse` (wraps with `terse_continuation_prompt`, the A1a development default); `raw` passes the prefix through. Keeping this configurable satisfies the contract requirement that prompt strategy not be hardcoded.
-- `COMPLETE_ME_RUN_MS=<n>`: auto-stop after `n` ms (bounded gate runs); absent → run until signal.
+- `COMPME_MODEL_PATH`: model GGUF path; defaults to the spike base model (`tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf`).
+- `COMPME_STUB_COMPLETION="<text>"`: when set, use a deterministic `StubModel` returning `<text>` instead of `LlamaModel`.
+- `COMPME_ACCEPTANCE_PID=<pid>`: use `MacosPlatformAdapter::with_frontmost_pid_override_for_acceptance` (mirrors the existing examples); absent → `MacosPlatformAdapter::new()`.
+- `COMPME_PROMPT_MODE=terse|raw`: prompt strategy applied to the engine's raw left-context prefix before inference. Default `terse` (wraps with `terse_continuation_prompt`, the A1a development default); `raw` passes the prefix through. Keeping this configurable satisfies the contract requirement that prompt strategy not be hardcoded.
+- `COMPME_RUN_MS=<n>`: auto-stop after `n` ms (bounded gate runs); absent → run until signal.
 
 Prompt shaping lives in the inference thread (`shape_prompt`), not in the engine: the engine emits a raw left-context prefix in `CompletionRequest.prompt`, and the worker wraps it per `PromptMode` immediately before `model.complete()`. The `StubModel` ignores the prompt, so the gate stays deterministic regardless of mode.
 
@@ -126,7 +126,7 @@ Prompt shaping lives in the inference thread (`shape_prompt`), not in the engine
 Driven by `tools/acceptance/run-a1b-live-gates.sh` (extended with one new gate):
 
 1. `osascript`: focus TextEdit and set a known prefix.
-2. Launch `complete-me` with `COMPLETE_ME_STUB_COMPLETION="<known>"`, `COMPLETE_ME_ACCEPTANCE_PID=<textedit pid>`, `COMPLETE_ME_RUN_MS=<n>`.
+2. Launch `compme` with `COMPME_STUB_COMPLETION="<known>"`, `COMPME_ACCEPTANCE_PID=<textedit pid>`, `COMPME_RUN_MS=<n>`.
 3. `osascript` moves the caret to end-of-line (fires a selection-changed read), waits for the ghost, then sends **grave** (key code 50) → accept tap fires → `engine.on_accept(Full)` → insert. **[CORR 06-08]** (Was Tab; after the Cotypist-parity flip Tab accepts the next *word* and grave accepts the *full* completion.)
 4. The gate asserts two things:
    - **Document content** contains `<known>`. This transitively proves the whole chain: `Engine::on_accept(Full)` only emits an `Insert` command when a ghost is currently showing (`SuggestionMachine` holds `self.showing`), so a successful insert of the stub text proves focus → read → infer → **show-ghost** → accept → insert all fired. The overlay-show step is applied *inside* the engine and emits no log line of its own, so it is verified by its observable effect (the insert), not by a log string.
@@ -134,9 +134,9 @@ Driven by `tools/acceptance/run-a1b-live-gates.sh` (extended with one new gate):
 5. Deterministic because the stub completion is fixed.
 6. A separate **manual** invocation uses the real `LlamaModel` and asserts that *an* insert occurred (output text not pinned, since it is nondeterministic).
 
-The gate verifies both accept paths via `COMPLETE_ME_E2E_ACCEPT` (**[CORR 06-08]** keys updated for the Tab=word / grave=full binding):
+The gate verifies both accept paths via `COMPME_E2E_ACCEPT` (**[CORR 06-08]** keys updated for the Tab=word / grave=full binding):
 - **Full** (default): one **grave** (key code 50) → `engine.on_accept(Full)` → whole-suggestion insert; asserts the `accept Full` stage.
-- **Word** (`COMPLETE_ME_E2E_ACCEPT=word`): **Tab** (key code 48 → first word) then **grave** (key code 50 → remaining ghost); asserts both `accept Word` and `accept Full` stages and that the contiguous stub text (e.g. `" jumps over"`) lands in the document. The standalone `accept-insert-word` gate still covers the tap-layer word path in isolation.
+- **Word** (`COMPME_E2E_ACCEPT=word`): **Tab** (key code 48 → first word) then **grave** (key code 50 → remaining ghost); asserts both `accept Word` and `accept Full` stages and that the contiguous stub text (e.g. `" jumps over"`) lands in the document. The standalone `accept-insert-word` gate still covers the tap-layer word path in isolation.
 
 The product binary is the thing under test; the gate drives the real product path with a deterministic model.
 

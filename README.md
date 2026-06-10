@@ -1,6 +1,6 @@
-# Complete Me
+# Compme
 
-Complete Me is an **open-source, multi-platform** inline text-completion engine —
+Compme is an **open-source, multi-platform** inline text-completion engine —
 a from-scratch re-implementation of all [Cotypist](https://cotypist.app) functionality
 **except payment, licensing, subscription tiers, and multi-device seats** (the only
 parts deliberately not cloned). Every feature is available to every user with no
@@ -43,7 +43,7 @@ contract-first implementation and validation harness for:
 │   ├── model_client/                  # Local model trait and llama.cpp backend
 │   ├── engine/                        # Runtime host for engine_core + platform + overlay
 │   ├── platform_macos/                # macOS Accessibility/AppKit adapter
-│   └── app/                           # complete-me binary and run loop
+│   └── app/                           # compme binary and run loop
 ├── tools/
 │   ├── acceptance/                    # A1b macOS live acceptance runner
 │   └── spike/                         # Separate A0 prototype workspace
@@ -68,7 +68,7 @@ from `tools/spike/`.
 | `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2` with Metal. |
 | `engine` | Runtime host that wires the pure state machine to a `PlatformAdapter` and `OverlayPresenter`. |
 | `platform_macos` | macOS implementation of `PlatformAdapter` and `OverlayPresenter` using Accessibility, CoreGraphics, AppKit, and pasteboard APIs. |
-| `app` | `complete-me` binary, config loading, menu-bar status, run loop, inference worker, and shutdown ordering. |
+| `app` | `compme` binary, config loading, menu-bar status, run loop, inference worker, and shutdown ordering. |
 
 ## Requirements
 

@@ -13,7 +13,7 @@
 //! **Wiring status:** this is a pure core; it is NOT yet called from the host
 //! (`crates/app`). Live integration — detecting `:shortcode` in the completion
 //! flow, offering the emoji ghost, accepting it (delete `replace_chars`, insert
-//! the glyph), and the `COMPLETE_ME_EMOJI_*` enable/skin-tone/gender config — is a
+//! the glyph), and the `COMPME_EMOJI_*` enable/skin-tone/gender config — is a
 //! tracked next-task (engine integration). `includeVanillaVariants` (a Cotypist
 //! sub-preference) is intentionally not modeled yet.
 

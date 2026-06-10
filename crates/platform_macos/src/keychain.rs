@@ -15,7 +15,7 @@ use std::sync::Arc;
 use platform::PlatformError;
 
 /// Keychain service name for the memory-store key entry.
-pub const MEMORY_KEY_SERVICE: &str = "com.complete-me.memory";
+pub const MEMORY_KEY_SERVICE: &str = "com.compme.memory";
 /// Keychain account name for the memory-store key entry.
 pub const MEMORY_KEY_ACCOUNT: &str = "aes-256-gcm-key";
 

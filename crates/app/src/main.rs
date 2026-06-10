@@ -1,4 +1,4 @@
-//! `complete-me` — the macOS MVP integration binary.
+//! `compme` — the macOS MVP integration binary.
 //!
 //! Wires the proven-in-isolation parts into one running process:
 //! `MacosPlatformAdapter` (focus/caret/accept + AX reads/inserts),
@@ -18,7 +18,7 @@ mod wiring;
 
 fn main() {
     if let Err(err) = run_loop::run() {
-        eprintln!("complete-me: fatal: {err}");
+        eprintln!("compme: fatal: {err}");
         std::process::exit(1);
     }
 }

@@ -73,7 +73,7 @@ fn main() {
             subscription
                 .set_suggestion_visible(true)
                 .expect("show suggestion");
-            let delay = env::var("COMPLETE_ME_ACCEPTANCE_HIDE_AFTER_MS")
+            let delay = env::var("COMPME_ACCEPTANCE_HIDE_AFTER_MS")
                 .ok()
                 .and_then(|raw| raw.parse::<u64>().ok())
                 .map(Duration::from_millis)
@@ -94,7 +94,7 @@ fn main() {
     // completion, Tab accepts the next word. Posting Tab for "full" would now
     // resolve to a word accept under the keycode-driven binding.
     let (accept_keycode, accept_key_label, option_down) = key_to_post_for_requirement(&requirement);
-    if let Some(delay) = env::var("COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS")
+    if let Some(delay) = env::var("COMPME_ACCEPTANCE_POST_TAB_AFTER_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_millis)

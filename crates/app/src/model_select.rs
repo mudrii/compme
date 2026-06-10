@@ -2,7 +2,7 @@
 //! `LlamaModel` for production.
 //!
 //! The product binary is identical in both cases — only the `Box<dyn LocalModel>`
-//! differs. The E2E live gate sets `COMPLETE_ME_STUB_COMPLETION` so the whole
+//! differs. The E2E live gate sets `COMPME_STUB_COMPLETION` so the whole
 //! focus→read→ghost→accept→insert pipeline is asserted with a fixed completion,
 //! while a real run loads the GGUF.
 
@@ -48,7 +48,7 @@ pub enum PromptMode {
 }
 
 /// Resolve the prompt strategy from config. Default is `Terse` (the A1a default);
-/// `COMPLETE_ME_PROMPT_MODE=raw` opts out. Keeping this configurable satisfies the
+/// `COMPME_PROMPT_MODE=raw` opts out. Keeping this configurable satisfies the
 /// contract requirement that prompt strategy stay configurable, not hardcoded.
 pub fn resolve_prompt_mode(raw: Option<String>) -> PromptMode {
     match raw.as_deref() {

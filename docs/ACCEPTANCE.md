@@ -1,7 +1,7 @@
 # Acceptance
 
 This document describes the current automated and live acceptance checks for
-Complete Me.
+Compme.
 
 ## Automated Gates
 
@@ -58,7 +58,7 @@ Use `--force` only when intentionally collecting blocked harness logs.
 ### Automated Default Gates
 
 By default the runner builds the `platform_macos` examples, builds the
-`complete-me` product binary, and runs the deterministic/scriptable gates:
+`compme` product binary, and runs the deterministic/scriptable gates:
 
 - `textedit-read`
 - `textedit-insert-synthetic`
@@ -71,7 +71,7 @@ By default the runner builds the `platform_macos` examples, builds the
 If TextEdit is not running, TextEdit-dependent gates are skipped instead of
 misreporting app-focus failures as product failures.
 
-The historical `accept-tap-*`, `accept-insert-*`, and `e2e-complete-me-*`
+The historical `accept-tap-*`, `accept-insert-*`, and `e2e-compme-*`
 harnesses are no longer default automated evidence for product accept-key
 consumption after the Carbon migration. **[CORR 2026-06-10]** The long-standing
 claim that synthetic key posts cannot fire `RegisterEventHotKey` was
@@ -89,7 +89,7 @@ classification logic.
 ### Manual Physical Carbon Gates
 
 Run these on an unlocked GUI session with Accessibility granted and no global
-Secure Input process. Launch `complete-me`, focus TextEdit (or the app named by
+Secure Input process. Launch `compme`, focus TextEdit (or the app named by
 the gate), type enough text to show a suggestion, then use a physical keyboard:
 
 - grave/key-above-Tab accepts the full shown completion
@@ -108,8 +108,8 @@ secondary display): grave full-accept replaced `:smile` with the emoji
 (`accept Full`), Tab word-accept advanced the caret and re-placed the
 remainder ghost correctly (`accept Word`), Esc dismissed (`dismiss (Esc)`),
 Down fired (`cycle candidate`; visible rotation needs
-`COMPLETE_ME_CANDIDATES>1` — the default single candidate has nothing to
-rotate; with `COMPLETE_ME_CANDIDATES=5` the user confirmed visible
+`COMPME_CANDIDATES>1` — the default single candidate has nothing to
+rotate; with `COMPME_CANDIDATES=5` the user confirmed visible
 candidate rotation live — that run's log was overwritten by a later
 launch, so the evidence is the observation plus the earlier logged
 `cycle candidate` firings). Not yet exercised: Option+Tab literal passthrough and the
@@ -145,7 +145,7 @@ This prevents a capability-only pass from masking a failed insertion path.
 The P1 "MVP quality" items (`docs/superpowers/specs/2026-06-07-p1-mvp-quality-design.md`)
 are validated outside the A1b gate runner:
 
-- **Tray instantiation** — launch `complete-me`; the `NSStatusItem` appears and the
+- **Tray instantiation** — launch `compme`; the `NSStatusItem` appears and the
   binary exits clean (smoke, no panic / "tray unavailable").
 - **Enable/disable toggle + gating + dismiss** — scripted via `SIGUSR1` (the
   scriptable equivalent of the tray's Enable item): `Ready` → `SIGUSR1` →
@@ -157,7 +157,7 @@ are validated outside the A1b gate runner:
   and no longer require Input Monitoring; historical A0 CGEventTap probes still do.
   Carbon hotkey consumption is a manual physical-key gate because macOS synthetic
   key posts do not fire `RegisterEventHotKey` the way real keyboard input does.
-- **Coordinate diagnostics** — `COMPLETE_ME_DIAG_COORDS=1` prints display scales +
+- **Coordinate diagnostics** — `COMPME_DIAG_COORDS=1` prints display scales +
   caret rect; measured scale 1.0 on the built-in display (no offset). True-2× /
   multi-monitor (scale > 1) caret mapping was later measured on two displays and
   the backing-scale helper is unit-proven (design spec §15 G7). **Live-confirmed
@@ -230,7 +230,7 @@ Supported kinds:
 - `clipboard`
 - `screen`
 
-The `clipboard` and `screen` gates enable `COMPLETE_ME_DIAG_CONTEXT=1`; clipboard
+The `clipboard` and `screen` gates enable `COMPME_DIAG_CONTEXT=1`; clipboard
 requires the marker `CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and
 screen requires non-empty OCR context. The screen gate also requires Screen
 Recording permission and visible text on the focused display.
@@ -242,15 +242,15 @@ range-replace) is unit/build-verified but its physical-key accept is a **manual
 live §16 gate** (synthetic key posts don't fire the Carbon accept the way real
 input does, same boundary as the A1b accept gates).
 
-Run `complete-me` with the feature enabled, focus an **AxSet** field (e.g.
+Run `compme` with the feature enabled, focus an **AxSet** field (e.g.
 TextEdit — the offer is gated to AxSet-capable fields; SyntheticKeys/Clipboard
 apps are a separate backspace-synthesis residual), then with a physical keyboard:
 
-- `COMPLETE_ME_EMOJI=1` — type `:smile`, accept → the `:smile` is deleted and the
+- `COMPME_EMOJI=1` — type `:smile`, accept → the `:smile` is deleted and the
   emoji glyph (skin-tone/gender per `_SKIN_TONE`/`_GENDER`) is inserted.
-- `COMPLETE_ME_AUTOCORRECT=1` — type a known typo (e.g. `teh`), accept → replaced
+- `COMPME_AUTOCORRECT=1` — type a known typo (e.g. `teh`), accept → replaced
   with the correction (`the`).
-- `COMPLETE_ME_BRITISH_ENGLISH=1` — type a US-only spelling (e.g. `color`), accept
+- `COMPME_BRITISH_ENGLISH=1` — type a US-only spelling (e.g. `color`), accept
   → replaced with the UK form (`colour`).
 
 Confirm the typed token is deleted (not left as `:smile😄`), the field value is
@@ -260,7 +260,7 @@ gating). Record the product log line, target app, keyboard action, and resulting
 field contents for each.
 
 **PASSED 2026-06-10** (live run, TextEdit/AxSet, physical keyboard,
-`COMPLETE_ME_DEBUG=1` logs):
+`COMPME_DEBUG=1` logs):
 
 - **emoji** — typed `:smile`, ghost `😄` offered + placed on the caret line,
   physical Tab accepted: log `carbon hotkey fired id=1` → `accept Word`, field
@@ -297,7 +297,7 @@ created on first use and reused across three runs (one login-keychain
 `genp` entry, store reopened over existing records); (2) two Full-accept
 records landed and the db shows no typed plaintext under `strings` —
 ciphertext-only-on-disk holds live; (3) the tray Enable toggle persisted
-`COMPLETE_ME_ENABLED=false` to config.env and a relaunch started
+`COMPME_ENABLED=false` to config.env and a relaunch started
 `status=Disabled` directly from it. A later run validated the
 snooze flow live: the tray click logged `suggestions snoozed for 60
 minutes`, the render state flipped `snoozed=true`, and a fully typed

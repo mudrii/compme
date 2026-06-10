@@ -29,7 +29,7 @@ pub struct ScreenOcr {
 
 impl ScreenOcr {
     /// Spawn the worker. `screen` is the cell the inference worker reads;
-    /// `max_chars` bounds the OCR output; `diag` mirrors `COMPLETE_ME_DIAG_CONTEXT`
+    /// `max_chars` bounds the OCR output; `diag` mirrors `COMPME_DIAG_CONTEXT`
     /// logging so the off-thread path keeps the same diagnostics as the old
     /// inline path.
     ///
@@ -47,7 +47,7 @@ impl ScreenOcr {
         // than blocking the run loop (the queued rect is at most one submit old).
         let (tx, rx) = sync_channel::<Option<ScreenRect>>(1);
         let handle = std::thread::Builder::new()
-            .name("complete-me-screen-ocr".into())
+            .name("compme-screen-ocr".into())
             .spawn(move || run(rx, screen, max_chars, diag))?;
         Ok(Self {
             tx: Some(tx),
@@ -97,7 +97,7 @@ fn run(
         let text = screen_context_text(caret_rect, max_chars).map(|t| redaction::redact(&t));
         if diag {
             eprintln!(
-                "complete-me: screen_context={:?}",
+                "compme: screen_context={:?}",
                 text.as_ref().map(|s| s.chars().count())
             );
         }

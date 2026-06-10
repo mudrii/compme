@@ -38,7 +38,7 @@ Options:
   --skip-build           Do not run cargo build -p platform_macos --examples first.
   --skip-textedit        Do not run TextEdit gates. Useful when a browser or
                          popup target must stay focused.
-  --skip-e2e             Do not run the end-to-end complete-me pipeline gate.
+  --skip-e2e             Do not run the end-to-end compme pipeline gate.
   --self-test            Run runner classification self-tests and exit.
   --textedit-pid PID     Use this TextEdit pid instead of pgrep -x TextEdit.
   --popup-pid PID        Also run popup fallback gate against a focused writable no-rect target.
@@ -142,8 +142,8 @@ ACCEPT_INSERT_BIN="$ROOT_DIR/target/debug/examples/accept_insert_acceptance"
 MARKER_BIN="$ROOT_DIR/target/debug/examples/caret_marker_acceptance"
 OVERLAY_BIN="$ROOT_DIR/target/debug/examples/overlay_presenter_acceptance"
 POPUP_FIXTURE_BIN="$ROOT_DIR/target/debug/examples/popup_fallback_acceptance"
-COMPLETE_ME_BIN="$ROOT_DIR/target/debug/complete-me"
-E2E_SCRIPT="$ROOT_DIR/tools/acceptance/e2e-complete-me.sh"
+COMPME_BIN="$ROOT_DIR/target/debug/compme"
+E2E_SCRIPT="$ROOT_DIR/tools/acceptance/e2e-compme.sh"
 
 print_cmd() {
   printf '  '
@@ -393,7 +393,7 @@ fi
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
   run_gate "build-platform-macos-examples" cargo build -p platform_macos --examples
-  run_gate "build-complete-me" cargo build -p app
+  run_gate "build-compme" cargo build -p app
 fi
 
 if [ "$DRY_RUN" -eq 0 ] && ! require_bins; then
@@ -409,8 +409,8 @@ if [ "$SKIP_TEXTEDIT" -eq 1 ]; then
   skip_gate "caret-marker-textedit-any" "--skip-textedit"
   skip_gate "accept-insert-full" "--skip-textedit"
   skip_gate "accept-insert-word" "--skip-textedit"
-  skip_gate "e2e-complete-me-pipeline" "--skip-textedit"
-  skip_gate "e2e-complete-me-word-remainder" "--skip-textedit"
+  skip_gate "e2e-compme-pipeline" "--skip-textedit"
+  skip_gate "e2e-compme-word-remainder" "--skip-textedit"
 else
   resolve_textedit_pid
   if [ -z "$TEXTEDIT_PID" ]; then
@@ -421,29 +421,29 @@ else
     skip_gate "caret-marker-textedit-any" "TextEdit is not running"
     skip_gate "accept-insert-full" "TextEdit is not running"
     skip_gate "accept-insert-word" "TextEdit is not running"
-    skip_gate "e2e-complete-me-pipeline" "TextEdit is not running"
-    skip_gate "e2e-complete-me-word-remainder" "TextEdit is not running"
+    skip_gate "e2e-compme-pipeline" "TextEdit is not running"
+    skip_gate "e2e-compme-word-remainder" "TextEdit is not running"
   else
-    run_retryable_gate "textedit-read" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$TEXTEDIT_BIN" "$TIMEOUT_MS" read
-    run_retryable_gate "textedit-insert-synthetic" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-synthetic" "$TEXTEDIT_BIN" "$TIMEOUT_MS" synthetic
-    run_retryable_gate "textedit-insert-clipboard" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-clipboard" "$TEXTEDIT_BIN" "$TIMEOUT_MS" clipboard
-    run_retryable_gate "textedit-insert-axset" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPLETE_ME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT" "$TEXTEDIT_BIN" "$TIMEOUT_MS" insert
-    run_retryable_gate "caret-marker-textedit-any" env COMPLETE_ME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$MARKER_BIN" "$SHORT_TIMEOUT_MS" any
+    run_retryable_gate "textedit-read" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$TEXTEDIT_BIN" "$TIMEOUT_MS" read
+    run_retryable_gate "textedit-insert-synthetic" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-synthetic" "$TEXTEDIT_BIN" "$TIMEOUT_MS" synthetic
+    run_retryable_gate "textedit-insert-clipboard" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-clipboard" "$TEXTEDIT_BIN" "$TIMEOUT_MS" clipboard
+    run_retryable_gate "textedit-insert-axset" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT" "$TEXTEDIT_BIN" "$TIMEOUT_MS" insert
+    run_retryable_gate "caret-marker-textedit-any" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$MARKER_BIN" "$SHORT_TIMEOUT_MS" any
     manual_gate "accept-insert-full" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
     manual_gate "accept-insert-word" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-    manual_gate "e2e-complete-me-pipeline" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-    manual_gate "e2e-complete-me-word-remainder" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+    manual_gate "e2e-compme-pipeline" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+    manual_gate "e2e-compme-word-remainder" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
   fi
 fi
 
 if [ -n "$BROWSER_PID" ]; then
-  run_retryable_gate "caret-marker-browser-marker" env COMPLETE_ME_ACCEPTANCE_PID="$BROWSER_PID" "$MARKER_BIN" "$SHORT_TIMEOUT_MS" marker
+  run_retryable_gate "caret-marker-browser-marker" env COMPME_ACCEPTANCE_PID="$BROWSER_PID" "$MARKER_BIN" "$SHORT_TIMEOUT_MS" marker
 else
   skip_gate "caret-marker-browser-marker" "pass --browser-pid after focusing a Chrome/Safari text field"
 fi
 
 if [ -n "$POPUP_PID" ]; then
-  run_retryable_gate "popup-fallback" env COMPLETE_ME_ACCEPTANCE_PID="$POPUP_PID" COMPLETE_ME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-popup" "$TEXTEDIT_BIN" "$SHORT_TIMEOUT_MS" popup
+  run_retryable_gate "popup-fallback" env COMPME_ACCEPTANCE_PID="$POPUP_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-popup" "$TEXTEDIT_BIN" "$SHORT_TIMEOUT_MS" popup
 else
   run_gate "popup-fallback-fixture" "$POPUP_FIXTURE_BIN" "$SHORT_TIMEOUT_MS"
 fi

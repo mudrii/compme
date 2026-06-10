@@ -30,7 +30,7 @@ The remaining implementation guardrail is contract alignment: A1a must follow `d
 P6 was redone on 2026-06-05 and is now accepted:
 
 - Ran `tools/spike/target/release/p6_overlay` from the repo root.
-- Screenshot `/tmp/complete-me-p6-redo-before.png` visually showed grey `ghost completion text` over a Chrome click target.
+- Screenshot `/tmp/compme-p6-redo-before.png` visually showed grey `ghost completion text` over a Chrome click target.
 - CoreGraphics listed owner `p6_overlay`, onscreen, layer `101`, bounds `240x30`, alpha `1`, before and after the click.
 - Frontmost-app checks did not switch focus to the overlay, proving the panel did not activate itself.
 - Click-through was verified by placing a Chrome button under the overlay and clicking screen coordinate `{590,1185}` inside both overlay and button. Chrome title changed from `clicked-0` to `clicked-1`.
@@ -149,21 +149,21 @@ Outcome: PASS. Workspace unit/integration/example tests passed with `--all-targe
 
 Fresh live TextEdit acceptance:
 
-- `COMPLETE_ME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 4000 focus`: PASS with `SUMMARY focus=1 caret=15`; first focus field was TextEdit `First Text View`.
-- `COMPLETE_ME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 caret`: PASS with `SUMMARY focus=1 caret=12`; caret events stayed on generation 1 for TextEdit `First Text View`.
-- `COMPLETE_ME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 read`: PASS with `READ caret=33 selection=None left=" targeted-focus read-context-live" right="" source=Accessibility encoding=Utf16CodeUnits` and `SUMMARY focus=1 caret=11`.
-- `COMPLETE_ME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 rect`: PASS with `RECT Some(ScreenRect { x: 822.083984375, y: 360.0, w: 1.0, h: 14.0 })` and `SUMMARY focus=1 caret=11`.
-- `COMPLETE_ME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 caps`: PASS with `CAPS readable_text=true readable_caret=true writable=true secure=false state=Normal toolkit=AppKit multiline=true insert=AxSet intercept=CgEventTap overlay=NativePanel coords_global=true`.
-- `COMPLETE_ME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 insert`: PASS with `INSERT bytes=16 chars=16 strategy=AxSet text=" cm-insert-41394"` and `POST_INSERT_READ caret=49 selection=None left=" targeted-focus read-context-live cm-insert-41394" right=""`.
-- `COMPLETE_ME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 4000 caret`: PASS after focusing a TextEdit document and inserting ` callback-rect-live`, with repeated callback `rect=Some(ScreenRect { x: 597.689453125, y: 215.0, w: 1.0, h: 14.0 })`, direct `RECT Some(...)`, and `CAPS ... overlay=NativePanel`.
-- `COMPLETE_ME_ACCEPTANCE_PID_SEQUENCE=82733,681,82733 COMPLETE_ME_ACCEPTANCE_PID_SEQUENCE_INTERVAL_MS=900 ./target/debug/examples/textedit_observer_acceptance 4200 switch`: PASS with `SUMMARY focus=3 caret=16 apps={"pid:681", "pid:82733"}`.
+- `COMPME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 4000 focus`: PASS with `SUMMARY focus=1 caret=15`; first focus field was TextEdit `First Text View`.
+- `COMPME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 caret`: PASS with `SUMMARY focus=1 caret=12`; caret events stayed on generation 1 for TextEdit `First Text View`.
+- `COMPME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 read`: PASS with `READ caret=33 selection=None left=" targeted-focus read-context-live" right="" source=Accessibility encoding=Utf16CodeUnits` and `SUMMARY focus=1 caret=11`.
+- `COMPME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 rect`: PASS with `RECT Some(ScreenRect { x: 822.083984375, y: 360.0, w: 1.0, h: 14.0 })` and `SUMMARY focus=1 caret=11`.
+- `COMPME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 caps`: PASS with `CAPS readable_text=true readable_caret=true writable=true secure=false state=Normal toolkit=AppKit multiline=true insert=AxSet intercept=CgEventTap overlay=NativePanel coords_global=true`.
+- `COMPME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 3000 insert`: PASS with `INSERT bytes=16 chars=16 strategy=AxSet text=" cm-insert-41394"` and `POST_INSERT_READ caret=49 selection=None left=" targeted-focus read-context-live cm-insert-41394" right=""`.
+- `COMPME_ACCEPTANCE_PID=82733 ./target/debug/examples/textedit_observer_acceptance 4000 caret`: PASS after focusing a TextEdit document and inserting ` callback-rect-live`, with repeated callback `rect=Some(ScreenRect { x: 597.689453125, y: 215.0, w: 1.0, h: 14.0 })`, direct `RECT Some(...)`, and `CAPS ... overlay=NativePanel`.
+- `COMPME_ACCEPTANCE_PID_SEQUENCE=82733,681,82733 COMPME_ACCEPTANCE_PID_SEQUENCE_INTERVAL_MS=900 ./target/debug/examples/textedit_observer_acceptance 4200 switch`: PASS with `SUMMARY focus=3 caret=16 apps={"pid:681", "pid:82733"}`.
 
 Fresh A1b live runner acceptance:
 
 - `bash -n tools/acceptance/run-a1b-live-gates.sh`: PASS.
 - `tools/acceptance/run-a1b-live-gates.sh --skip-build --textedit-pid 82733 --timeout-ms 4000 --short-timeout-ms 2000`: PASS with `Summary: pass=13 fail=0 skip=1`; log directory `tools/acceptance/logs/a1b-live-20260605-104813`. This covers TextEdit read, SyntheticKeys insertion, Clipboard insertion, AxSet insertion, TextEdit caret fallback, full accept insertion, word accept insertion, popup fallback fixture, accept tap inactive/full/word/delayed-hide, and overlay show/update/hide diagnostics for the pre-flip accept binding. The current grave->full path still needs a fresh live desktop run.
 - `tools/acceptance/run-a1b-live-gates.sh --skip-build --skip-textedit --browser-pid 5956 --timeout-ms 3000 --short-timeout-ms 2000`: PASS with `Summary: pass=7 fail=0 skip=7`; log directory `tools/acceptance/logs/a1b-live-20260605-104257`. This covers Safari textarea marker geometry with `DIAG source=Marker`, popup fallback fixture, plus the same accept-tap and overlay diagnostics in the focused browser profile.
-- `env COMPLETE_ME_ACCEPTANCE_PID=5956 target/debug/examples/caret_marker_acceptance 3000 marker`: direct Safari marker check PASS after focusing the page text entry area; the harness now snapshots a passing marker diagnostic before late browser focus churn can stale the final focused element.
+- `env COMPME_ACCEPTANCE_PID=5956 target/debug/examples/caret_marker_acceptance 3000 marker`: direct Safari marker check PASS after focusing the page text entry area; the harness now snapshots a passing marker diagnostic before late browser focus churn can stale the final focused element.
 - `target/debug/examples/popup_fallback_acceptance 5000`: direct popup fixture check PASS with `RECT Ok(None)`, popup-mode capabilities, `INSERT Ok(Inserted { bytes: 9, chars: 9, strategy: AxSet })`, `READ_AFTER_INSERT Ok(TextContext { left: "popup fixture value inserted", ... caret: 28, ... })`, and `SUMMARY popup=true`. Normal TextEdit and Safari text areas remain inline-mode targets because they correctly expose caret geometry; the repo-local fixture is the popup-mode proof.
 
 Native inline prediction decision:

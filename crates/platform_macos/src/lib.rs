@@ -743,9 +743,9 @@ impl OverlayPresenter for MacosOverlayPresenter {
             // Diagnostic for live overlay-placement bugs (ghost vertical
             // alignment): dump the AX caret rect (top-left/Y-down), the primary
             // screen height used for the Y-flip, and the resulting Cocoa
-            // (bottom-left/Y-up) window frame. Gated by COMPLETE_ME_DEBUG.
+            // (bottom-left/Y-up) window frame. Gated by COMPME_DEBUG.
             eprintln!(
-                "complete-me: ghost text={text:?} caret_rect=(x{:.1} y{:.1} w{:.1} h{:.1}) \
+                "compme: ghost text={text:?} caret_rect=(x{:.1} y{:.1} w{:.1} h{:.1}) \
                  primary_h={:.1} overlay_frame=(x{:.1} y{:.1} w{:.1} h{:.1})",
                 rect.x, rect.y, rect.w, rect.h, primary_height, frame.x, frame.y, frame.w, frame.h
             );
@@ -791,11 +791,11 @@ impl OverlayPresenter for MacosOverlayPresenter {
     }
 }
 
-/// True when `COMPLETE_ME_DEBUG` is set — gates verbose live diagnostics
+/// True when `COMPME_DEBUG` is set — gates verbose live diagnostics
 /// (overlay placement, Carbon hotkey registration/fires). Off by default (no
 /// env var) → zero production output.
 fn debug_enabled() -> bool {
-    std::env::var_os("COMPLETE_ME_DEBUG").is_some()
+    std::env::var_os("COMPME_DEBUG").is_some()
 }
 
 fn overlay_main_thread_marker() -> Result<MainThreadMarker, PlatformError> {
@@ -1159,7 +1159,7 @@ impl MacosPlatformAdapter {
             AxSetApply::SilentlyIgnored => {
                 if debug_enabled() {
                     eprintln!(
-                        "complete-me: AxSet write silently ignored — falling back to synthetic input"
+                        "compme: AxSet write silently ignored — falling back to synthetic input"
                     );
                 }
                 self.ensure_global_insert_target(pid)?;
@@ -2156,7 +2156,7 @@ pub enum AcceptBinding {
 /// honored everywhere from one source of truth.
 ///
 /// Public so the app's config layer can build a rebound map from
-/// `COMPLETE_ME_ACCEPT_WORD_KEY`/`_FULL_KEY`. Threading a *configured* (non-
+/// `COMPME_ACCEPT_WORD_KEY`/`_FULL_KEY`. Threading a *configured* (non-
 /// default) map through the live tap/registration is the remaining wiring step
 /// (the decision/registration currently use [`AcceptKeymap::default`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2497,7 +2497,7 @@ impl WorkerAcceptTapResource {
             // Live diagnostic: proves which accept keys were actually
             // registered (and on which arm cycle) when a physical press
             // appears to do nothing.
-            eprintln!("complete-me: carbon hotkey registered id={id} keycode={keycode}");
+            eprintln!("compme: carbon hotkey registered id={id} keycode={keycode}");
         }
         self.hotkeys.push(hotkey_ref);
         Ok(())
@@ -2529,7 +2529,7 @@ extern "C" fn carbon_accept_hotkey_handler(
         // before the signature/id filters — distinguishes "handler never runs"
         // (registration/dispatch problem) from "handler runs but filters out".
         eprintln!(
-            "complete-me: carbon hotkey fired signature=0x{:x} id={} (ours=0x{:x})",
+            "compme: carbon hotkey fired signature=0x{:x} id={} (ours=0x{:x})",
             hotkey_id.signature, hotkey_id.id, HOTKEY_SIGNATURE
         );
     }
@@ -2611,7 +2611,7 @@ impl AxWorker {
         let (started_tx, started_rx) = mpsc::channel::<Result<ThreadId, PlatformError>>();
 
         let handle = thread::Builder::new()
-            .name("complete-me-ax-worker".into())
+            .name("compme-ax-worker".into())
             .spawn(move || {
                 run_ax_worker_loop(
                     ChannelAxWorkerLoop::new(rx),
@@ -3048,7 +3048,7 @@ fn start_observer_rebind_poller(
 ) -> Result<RebindPoller, PlatformError> {
     let (stop_tx, stop_rx) = mpsc::channel();
     let handle = thread::Builder::new()
-        .name("complete-me-app-rebind".into())
+        .name("compme-app-rebind".into())
         .spawn(move || loop {
             match stop_rx.recv_timeout(interval) {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -3098,7 +3098,7 @@ fn start_focused_element_safety_poll(
 ) -> Result<SafetyPoller, PlatformError> {
     let (stop_tx, stop_rx) = mpsc::channel();
     let handle = thread::Builder::new()
-        .name("complete-me-caret-poll".into())
+        .name("compme-caret-poll".into())
         .spawn(move || loop {
             match stop_rx.recv_timeout(interval) {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -4091,7 +4091,7 @@ impl CallbackDispatcher {
     fn new() -> Result<Self, PlatformError> {
         let (tx, rx) = mpsc::channel();
         let handle = thread::Builder::new()
-            .name("complete-me-callbacks".into())
+            .name("compme-callbacks".into())
             .spawn(move || run_callback_dispatcher(rx))
             .map_err(|_| PlatformError::CannotComplete {
                 reason: "failed to start callback dispatcher thread".into(),
@@ -6911,7 +6911,7 @@ mod tests {
     #[test]
     fn pasteboard_snapshot_restores_multiple_items_and_types() {
         let pasteboard = NSPasteboard::pasteboardWithUniqueName();
-        let custom_type = NSString::from_str("com.complete-me.test.bytes");
+        let custom_type = NSString::from_str("com.compme.test.bytes");
         pasteboard.clearContents();
 
         let first = NSPasteboardItem::new();
@@ -6958,7 +6958,7 @@ mod tests {
     #[test]
     fn pasteboard_snapshot_materializes_provider_items_before_restore() {
         let pasteboard = NSPasteboard::pasteboardWithUniqueName();
-        let provider_type = NSString::from_str("com.complete-me.test.provider");
+        let provider_type = NSString::from_str("com.compme.test.provider");
         let provided_count = Arc::new(AtomicUsize::new(0));
         let provider = TestPasteboardProvider::new("provided", Arc::clone(&provided_count));
         pasteboard.clearContents();

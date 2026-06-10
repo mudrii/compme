@@ -1,6 +1,6 @@
 # Development
 
-This document describes the current development workflow for the Complete Me
+This document describes the current development workflow for the Compme
 Rust workspace and the separate spike package.
 
 ## Repository State
@@ -52,17 +52,17 @@ tools/spike/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 ### Selecting the completion model
 
-`complete-me` resolves the model path with env > `config.env` > built-in default
+`compme` resolves the model path with env > `config.env` > built-in default
 (`run_loop::DEFAULT_MODEL`):
 
 ```sh
 # one-off override
-COMPLETE_ME_MODEL_PATH=/abs/path/to/model.gguf complete-me
+COMPME_MODEL_PATH=/abs/path/to/model.gguf compme
 ```
 
 ```text
-# persistent: $HOME/Library/Application Support/complete-me/config.env
-COMPLETE_ME_MODEL_PATH=/abs/path/to/model.gguf
+# persistent: $HOME/Library/Application Support/compme/config.env
+COMPME_MODEL_PATH=/abs/path/to/model.gguf
 ```
 
 The MVP default is **Qwen2.5-0.5B Q4_K_M** — chosen for the warm sub-150 ms first

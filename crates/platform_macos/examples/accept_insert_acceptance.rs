@@ -32,7 +32,7 @@ fn main() {
         .unwrap_or_else(|| Duration::from_secs(4));
     let requirement = env::args().nth(2).unwrap_or_else(|| "full".into());
 
-    let adapter = match env::var("COMPLETE_ME_ACCEPTANCE_PID")
+    let adapter = match env::var("COMPME_ACCEPTANCE_PID")
         .ok()
         .and_then(|raw| raw.parse::<i32>().ok())
     {
@@ -110,9 +110,8 @@ fn main() {
     state.lock().expect("state").pre_read = Some(pre_read);
 
     let full_text =
-        env::var("COMPLETE_ME_ACCEPTANCE_FULL_TEXT").unwrap_or_else(|_| " accepted-full".into());
-    let word_text =
-        env::var("COMPLETE_ME_ACCEPTANCE_WORD_TEXT").unwrap_or_else(|_| " accepted".into());
+        env::var("COMPME_ACCEPTANCE_FULL_TEXT").unwrap_or_else(|_| " accepted-full".into());
+    let word_text = env::var("COMPME_ACCEPTANCE_WORD_TEXT").unwrap_or_else(|_| " accepted".into());
     let (action, expected_text) =
         match accept_plan_for_requirement(&requirement, full_text, word_text) {
             Some(plan) => plan,
@@ -167,7 +166,7 @@ fn main() {
     // grave accepts the full completion, Tab accepts the next word — post the key
     // that matches the requirement so the gate exercises the real accept path.
     let (accept_keycode, accept_key_label) = key_to_post_for_requirement(&requirement);
-    let post_after = env::var("COMPLETE_ME_ACCEPTANCE_POST_TAB_AFTER_MS")
+    let post_after = env::var("COMPME_ACCEPTANCE_POST_TAB_AFTER_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_millis)

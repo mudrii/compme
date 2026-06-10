@@ -58,17 +58,17 @@ Helpers (pure): `AppStatus::suggestions_allowed() -> bool` (true only for `Ready
 
 A user-editable file layered under environment variables, reusing the existing tested `from_lookup`.
 
-- **Location:** `$HOME/Library/Application Support/complete-me/config.env`, overridable with `COMPLETE_ME_CONFIG=<path>`.
+- **Location:** `$HOME/Library/Application Support/compme/config.env`, overridable with `COMPME_CONFIG=<path>`.
 - **Format:** dotenv-style `KEY=VALUE`, one per line; `#` comments and blank lines ignored; surrounding whitespace trimmed; first `=` splits key/value. Pure parser `parse_env_file(contents: &str) -> Vec<(String, String)>`. **Unit-tested.**
 - **Layering:** the run loop builds a lookup `|key| env::var(key).ok().or_else(|| file_map.get(key).cloned())` and passes it to the existing `Config::from_lookup`. Env wins over file wins over default. No second parse path.
 - **New keys** (previously hardcoded constants, now config with the same defaults + validation):
-  - `COMPLETE_ME_DEBOUNCE_MS` (default 120, clamp 0..=5000)
-  - `COMPLETE_ME_MAX_WORDS` (default 8, clamp 1..=50)
-  - `COMPLETE_ME_MAX_TOKENS` (default 24, clamp 1..=200)
-  - `COMPLETE_ME_HEARTBEAT_MS` (default 12, clamp 1..=100) — run-loop pump interval.
-  - `COMPLETE_ME_MIN_CONTEXT` (default 3, clamp 0..=100) — minimum trimmed left-context chars before a completion is requested (conservative trigger gating; engine-macos design §4 / plan-review F5, added 2026-06-08).
-  - `COMPLETE_ME_MIDLINE` (default off; `1`/`true` to enable) — allow completions when the caret splits a word; off by default to protect first-run trust.
-  - plus existing `COMPLETE_ME_MODEL_PATH`, `COMPLETE_ME_PROMPT_MODE`.
+  - `COMPME_DEBOUNCE_MS` (default 120, clamp 0..=5000)
+  - `COMPME_MAX_WORDS` (default 8, clamp 1..=50)
+  - `COMPME_MAX_TOKENS` (default 24, clamp 1..=200)
+  - `COMPME_HEARTBEAT_MS` (default 12, clamp 1..=100) — run-loop pump interval.
+  - `COMPME_MIN_CONTEXT` (default 3, clamp 0..=100) — minimum trimmed left-context chars before a completion is requested (conservative trigger gating; engine-macos design §4 / plan-review F5, added 2026-06-08).
+  - `COMPME_MIDLINE` (default off; `1`/`true` to enable) — allow completions when the caret splits a word; off by default to protect first-run trust.
+  - plus existing `COMPME_MODEL_PATH`, `COMPME_PROMPT_MODE`.
 - Runtime control: `SIGUSR1` toggles enable/disable (headless equivalent of the tray's Enable item; see the tray section).
 - Test/gate-only knobs (`ACCEPTANCE_PID`, `STUB_COMPLETION`, `RUN_MS`, `DIAG_COORDS`, `CONFIG`) stay env-sourced (reading them from the file is harmless but not advertised).
 - Typed parse/clamp lives in pure helpers (`parse_clamped(raw, default, min, max)`) — **unit-tested**; invalid values fall back to the default rather than failing startup.
@@ -90,7 +90,7 @@ Startup flow in `run()`:
 
 Input Monitoring has no public prompt API; failure to install the accept tap already surfaces as a `PlatformError` at startup and is logged with guidance — no extra UI in P1.
 
-Screen Recording is intentionally not requested in P1. Cotypist uses it optionally for screen-aware context; Complete Me should add that in A2+ with local-only processing, a clear off path, and a field-only fallback when the permission is denied.
+Screen Recording is intentionally not requested in P1. Cotypist uses it optionally for screen-aware context; Compme should add that in A2+ with local-only processing, a clear off path, and a field-only fallback when the permission is denied.
 
 ### 5. Tray / menu-bar UI (item 7 — `crates/platform_macos/src/tray.rs` or in `lib.rs`)
 
@@ -106,7 +106,7 @@ This is the bulk of the AppKit/objc2 glue: **build-verified + live**, not unit-t
 ### 6. Retina diagnostic (item 6)
 
 - Expose `MacosPlatformAdapter::display_scales() -> Vec<(ScreenRect-ish bounds, f64 scale)>` (wrap existing `active_display_scales`).
-- `COMPLETE_ME_DIAG_COORDS=1`: the run loop logs, per caret rect, the resolved `ScreenRect` plus each display's bounds + scale, so a real Retina + external-monitor offset can be measured by inspection.
+- `COMPME_DIAG_COORDS=1`: the run loop logs, per caret rect, the resolved `ScreenRect` plus each display's bounds + scale, so a real Retina + external-monitor offset can be measured by inspection.
 - The spec records the manual measurement procedure (below). No speculative coordinate code — the existing `normalize_ax_screen_rect` stands until a real offset is observed.
 
 ### 7. Engine addition
@@ -122,7 +122,7 @@ This is the bulk of the AppKit/objc2 glue: **build-verified + live**, not unit-t
 
 ## Manual Retina measurement procedure (item 6)
 
-1. `COMPLETE_ME_DIAG_COORDS=1 COMPLETE_ME_ACCEPTANCE_PID=<TextEdit> ./target/release/complete-me`
+1. `COMPME_DIAG_COORDS=1 COMPME_ACCEPTANCE_PID=<TextEdit> ./target/release/compme`
 2. Focus TextEdit on the **built-in Retina** display, type, read the logged `ScreenRect` vs the visible caret; confirm the ghost lands on the caret.
 3. Move the TextEdit window to an **external non-Retina** monitor; repeat. Compare logged display scales and ghost placement.
 4. If any offset is observed, record the delta + display scale here; that becomes the input for real geometry work. If none (expected — AX returns points), mark item 6 closed-by-measurement.
@@ -147,7 +147,7 @@ This is the bulk of the AppKit/objc2 glue: **build-verified + live**, not unit-t
 
 ## Additional config knobs (implemented)
 
-- `COMPLETE_ME_HEARTBEAT_MS` (clamp 1..=100, default 12) — run-loop pump interval.
+- `COMPME_HEARTBEAT_MS` (clamp 1..=100, default 12) — run-loop pump interval.
 - `SIGUSR1` toggles enable/disable at runtime (headless control surface alongside the tray).
 - Caret read-coalescing is handled at the adapter layer (`CARET_COALESCE_INTERVAL_MS = 25`), not duplicated in the run loop.
 

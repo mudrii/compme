@@ -129,7 +129,7 @@ fn host_event_invalidates_pending_request(event: &HostEvent) -> bool {
 
 /// Runtime configuration, all from the environment (full config surface is P1).
 struct Config {
-    /// Global on/off at launch (`COMPLETE_ME_ENABLED`, default on). The tray
+    /// Global on/off at launch (`COMPME_ENABLED`, default on). The tray
     /// toggle flips the runtime flag and persists back to this key.
     enabled: bool,
     acceptance_pid: Option<i32>,
@@ -157,17 +157,17 @@ struct Config {
     /// gender prefs; `None` = off (default). Drives the local `:shortcode`
     /// replacement offer in the observe path.
     emoji: Option<EmojiPrefs>,
-    /// Inline typo autocorrect (A2 §8/§16, `COMPLETE_ME_AUTOCORRECT`, default off):
+    /// Inline typo autocorrect (A2 §8/§16, `COMPME_AUTOCORRECT`, default off):
     /// offer the correction when the trailing word is a known typo.
     autocorrect: bool,
-    /// British-English normalization (A2 §16, `COMPLETE_ME_BRITISH_ENGLISH`, default
+    /// British-English normalization (A2 §16, `COMPME_BRITISH_ENGLISH`, default
     /// off): offer the UK spelling when the trailing word is a known US-only form.
     british_english: bool,
 }
 
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
 /// recorded; `path` is the on-disk SQLite database; `key` is the optional
-/// explicit 32-byte AES key from `COMPLETE_ME_MEMORY_KEY` (64 hex chars) — when
+/// explicit 32-byte AES key from `COMPME_MEMORY_KEY` (64 hex chars) — when
 /// absent, `open_memory_store` falls back to the Keychain-backed key (generated
 /// on first use). Without a path the store stays disabled even if a mode is set.
 struct MemoryConfig {
@@ -192,80 +192,71 @@ impl Config {
     fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
         Self {
             // Global on/off (the tray-toggle state, persisted on toggle).
-            // Distinct from COMPLETE_ME_DEFAULT_ENABLED, the per-app
+            // Distinct from COMPME_DEFAULT_ENABLED, the per-app
             // suggestion-policy default in prefs.
-            enabled: parse_enabled_default(lookup("COMPLETE_ME_ENABLED")),
-            acceptance_pid: lookup("COMPLETE_ME_ACCEPTANCE_PID")
-                .and_then(|raw| raw.parse::<i32>().ok()),
-            stub_completion: lookup("COMPLETE_ME_STUB_COMPLETION").filter(|s| !s.is_empty()),
-            model_path: lookup("COMPLETE_ME_MODEL_PATH")
+            enabled: parse_enabled_default(lookup("COMPME_ENABLED")),
+            acceptance_pid: lookup("COMPME_ACCEPTANCE_PID").and_then(|raw| raw.parse::<i32>().ok()),
+            stub_completion: lookup("COMPME_STUB_COMPLETION").filter(|s| !s.is_empty()),
+            model_path: lookup("COMPME_MODEL_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_MODEL)),
-            prompt_mode: resolve_prompt_mode(lookup("COMPLETE_ME_PROMPT_MODE")),
-            run_ms: lookup("COMPLETE_ME_RUN_MS").and_then(|raw| raw.parse::<u64>().ok()),
-            debounce_ms: parse_clamped(
-                lookup("COMPLETE_ME_DEBOUNCE_MS"),
-                DEFAULT_DEBOUNCE_MS,
-                0,
-                5000,
-            ),
-            max_words: parse_clamped(lookup("COMPLETE_ME_MAX_WORDS"), DEFAULT_MAX_WORDS, 1, 50),
-            max_tokens: parse_clamped(lookup("COMPLETE_ME_MAX_TOKENS"), DEFAULT_MAX_TOKENS, 1, 200),
+            prompt_mode: resolve_prompt_mode(lookup("COMPME_PROMPT_MODE")),
+            run_ms: lookup("COMPME_RUN_MS").and_then(|raw| raw.parse::<u64>().ok()),
+            debounce_ms: parse_clamped(lookup("COMPME_DEBOUNCE_MS"), DEFAULT_DEBOUNCE_MS, 0, 5000),
+            max_words: parse_clamped(lookup("COMPME_MAX_WORDS"), DEFAULT_MAX_WORDS, 1, 50),
+            max_tokens: parse_clamped(lookup("COMPME_MAX_TOKENS"), DEFAULT_MAX_TOKENS, 1, 200),
             heartbeat_ms: parse_clamped(
-                lookup("COMPLETE_ME_HEARTBEAT_MS"),
+                lookup("COMPME_HEARTBEAT_MS"),
                 DEFAULT_HEARTBEAT_MS,
                 1,
                 100,
             ),
             min_context_chars: parse_clamped(
-                lookup("COMPLETE_ME_MIN_CONTEXT"),
+                lookup("COMPME_MIN_CONTEXT"),
                 DEFAULT_MIN_CONTEXT_CHARS,
                 0,
                 100,
             ),
             // Conservative default: suppress mid-word completions (engine-macos
             // design §4 trigger gating + plan-review F5, "protect first-run").
-            // `COMPLETE_ME_MIDLINE=1` opts into them.
-            allow_mid_word: lookup("COMPLETE_ME_MIDLINE").is_some_and(|v| v == "1" || v == "true"),
+            // `COMPME_MIDLINE=1` opts into them.
+            allow_mid_word: lookup("COMPME_MIDLINE").is_some_and(|v| v == "1" || v == "true"),
             // Cotypist "Include trailing space after single-word completions".
             // Off by default → accept text is byte-identical to before the flag.
-            trailing_space: lookup("COMPLETE_ME_TRAILING_SPACE")
+            trailing_space: lookup("COMPME_TRAILING_SPACE")
                 .is_some_and(|v| v == "1" || v == "true"),
-            diag_coords: lookup("COMPLETE_ME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
-            candidates: parse_clamped(lookup("COMPLETE_ME_CANDIDATES"), DEFAULT_CANDIDATES, 1, 5),
-            context_max_chars: parse_context_max_chars(lookup(
-                "COMPLETE_ME_PREVIOUS_INPUT_CONTEXT",
-            )),
-            clipboard_context: lookup("COMPLETE_ME_CLIPBOARD_CONTEXT")
+            diag_coords: lookup("COMPME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
+            candidates: parse_clamped(lookup("COMPME_CANDIDATES"), DEFAULT_CANDIDATES, 1, 5),
+            context_max_chars: parse_context_max_chars(lookup("COMPME_PREVIOUS_INPUT_CONTEXT")),
+            clipboard_context: lookup("COMPME_CLIPBOARD_CONTEXT")
                 .is_some_and(|v| v == "1" || v == "true"),
-            screen_context: lookup("COMPLETE_ME_SCREEN_CONTEXT")
+            screen_context: lookup("COMPME_SCREEN_CONTEXT")
                 .is_some_and(|v| v == "1" || v == "true"),
-            diag_context: lookup("COMPLETE_ME_DIAG_CONTEXT")
-                .is_some_and(|v| v == "1" || v == "true"),
+            diag_context: lookup("COMPME_DIAG_CONTEXT").is_some_and(|v| v == "1" || v == "true"),
             personalization: build_personalization(&lookup),
             prefs: build_prefs(&lookup),
             memory: build_memory_config(&lookup),
             emoji: build_emoji_config(&lookup),
-            autocorrect: lookup("COMPLETE_ME_AUTOCORRECT")
+            autocorrect: lookup("COMPME_AUTOCORRECT")
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
-            british_english: lookup("COMPLETE_ME_BRITISH_ENGLISH")
+            british_english: lookup("COMPME_BRITISH_ENGLISH")
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
         }
     }
 }
 
 /// Parse emoji-completion config (A2 §8/§16). `Some(prefs)` when
-/// `COMPLETE_ME_EMOJI` is on (opt-in, default off → `None` = disabled);
-/// `COMPLETE_ME_EMOJI_SKIN_TONE` (default/light/medium-light/medium/medium-dark/
-/// dark) and `COMPLETE_ME_EMOJI_GENDER` (neutral/female/male) select modifiers.
+/// `COMPME_EMOJI` is on (opt-in, default off → `None` = disabled);
+/// `COMPME_EMOJI_SKIN_TONE` (default/light/medium-light/medium/medium-dark/
+/// dark) and `COMPME_EMOJI_GENDER` (neutral/female/male) select modifiers.
 fn build_emoji_config(lookup: &impl Fn(&str) -> Option<String>) -> Option<EmojiPrefs> {
-    let enabled = lookup("COMPLETE_ME_EMOJI").is_some_and(|v| v == "1" || v == "true" || v == "on");
+    let enabled = lookup("COMPME_EMOJI").is_some_and(|v| v == "1" || v == "true" || v == "on");
     if !enabled {
         return None;
     }
     Some(EmojiPrefs {
-        skin_tone: parse_skin_tone(lookup("COMPLETE_ME_EMOJI_SKIN_TONE")),
-        gender: parse_gender(lookup("COMPLETE_ME_EMOJI_GENDER")),
+        skin_tone: parse_skin_tone(lookup("COMPME_EMOJI_SKIN_TONE")),
+        gender: parse_gender(lookup("COMPME_EMOJI_GENDER")),
     })
 }
 
@@ -301,10 +292,10 @@ fn parse_gender(raw: Option<String>) -> Gender {
 /// A local emoji *replacement* for the typed left-context, when emoji completion
 /// is enabled: `Some((glyph, replace_chars))` to offer, else `None`. Pure wrapper
 /// over `emoji::suggest` behind the enable flag so the run-loop wiring is testable.
-/// True when `COMPLETE_ME_DEBUG` is set — gates verbose run-loop diagnostics
+/// True when `COMPME_DEBUG` is set — gates verbose run-loop diagnostics
 /// (replacement decision, etc.). Off by default → zero production output.
 fn debug_enabled() -> bool {
-    std::env::var_os("COMPLETE_ME_DEBUG").is_some()
+    std::env::var_os("COMPME_DEBUG").is_some()
 }
 
 fn emoji_offer(left: &str, cfg: &Option<EmojiPrefs>) -> Option<(String, usize)> {
@@ -375,18 +366,18 @@ fn replacement_decision(
     replacement_offer(left, config)
 }
 
-/// Parse the encrypted-memory config (A2 §6/§16). `COMPLETE_ME_MEMORY` selects the
-/// storage mode (off/accepted/all, default off); `COMPLETE_ME_MEMORY_PATH` the db
-/// file; `COMPLETE_ME_MEMORY_KEY` a 64-hex-char (32-byte) AES key.
+/// Parse the encrypted-memory config (A2 §6/§16). `COMPME_MEMORY` selects the
+/// storage mode (off/accepted/all, default off); `COMPME_MEMORY_PATH` the db
+/// file; `COMPME_MEMORY_KEY` a 64-hex-char (32-byte) AES key.
 fn build_memory_config(lookup: &impl Fn(&str) -> Option<String>) -> MemoryConfig {
     MemoryConfig {
-        mode: parse_storage_mode(lookup("COMPLETE_ME_MEMORY")),
-        path: lookup("COMPLETE_ME_MEMORY_PATH").map(PathBuf::from),
-        key: lookup("COMPLETE_ME_MEMORY_KEY").and_then(|raw| parse_hex_key(&raw)),
+        mode: parse_storage_mode(lookup("COMPME_MEMORY")),
+        path: lookup("COMPME_MEMORY_PATH").map(PathBuf::from),
+        key: lookup("COMPME_MEMORY_KEY").and_then(|raw| parse_hex_key(&raw)),
     }
 }
 
-/// Map `COMPLETE_ME_MEMORY` to a storage mode. Unset/unrecognized/falsy → `Off`
+/// Map `COMPME_MEMORY` to a storage mode. Unset/unrecognized/falsy → `Off`
 /// (opt-in, §16: default off). `accepted`/`1`/`true`/`on` → `AcceptedOnly`;
 /// `all`/`monitored` → `AllMonitored`.
 fn parse_storage_mode(raw: Option<String>) -> memory::StorageMode {
@@ -421,7 +412,7 @@ fn parse_hex_key(raw: &str) -> Option<[u8; 32]> {
 /// is available, or the open fails — never fatal, mirroring the tray-unavailable
 /// fallback.
 ///
-/// Key precedence: an explicit `COMPLETE_ME_MEMORY_KEY` wins (the operator
+/// Key precedence: an explicit `COMPME_MEMORY_KEY` wins (the operator
 /// override, and the fail-closed path when the keychain is unavailable);
 /// otherwise `keychain_key` supplies the OS-keystore key (§16 "key in OS
 /// keystore"). The keychain is consulted only when the store would actually
@@ -436,28 +427,25 @@ fn open_memory_store(
     }
     let Some(path) = config.path.as_ref() else {
         eprintln!(
-            "complete-me: COMPLETE_ME_MEMORY set but COMPLETE_ME_MEMORY_PATH missing — \
+            "compme: COMPME_MEMORY set but COMPME_MEMORY_PATH missing — \
              memory disabled"
         );
         return None;
     };
     let Some(key) = config.key.or_else(&keychain_key) else {
         eprintln!(
-            "complete-me: COMPLETE_ME_MEMORY set but no key available (no \
-             COMPLETE_ME_MEMORY_KEY and the keychain provided none) — memory disabled"
+            "compme: COMPME_MEMORY set but no key available (no \
+             COMPME_MEMORY_KEY and the keychain provided none) — memory disabled"
         );
         return None;
     };
     match MemoryStore::open(path, &StaticKey(key), config.mode) {
         Ok(store) => {
-            eprintln!(
-                "complete-me: encrypted memory enabled (mode={:?})",
-                config.mode
-            );
+            eprintln!("compme: encrypted memory enabled (mode={:?})", config.mode);
             Some(store)
         }
         Err(err) => {
-            eprintln!("complete-me: memory store unavailable: {err} — memory disabled");
+            eprintln!("compme: memory store unavailable: {err} — memory disabled");
             None
         }
     }
@@ -468,14 +456,14 @@ fn open_memory_store(
 /// strength stop, and sender identity, which are enough to steer completions.
 fn build_personalization(lookup: &impl Fn(&str) -> Option<String>) -> PersonalizationProfile {
     let mut profile = PersonalizationProfile {
-        global_instructions: lookup("COMPLETE_ME_INSTRUCTIONS").unwrap_or_default(),
+        global_instructions: lookup("COMPME_INSTRUCTIONS").unwrap_or_default(),
         sender: SenderIdentity {
-            name: lookup("COMPLETE_ME_SENDER_NAME").unwrap_or_default(),
-            email: lookup("COMPLETE_ME_SENDER_EMAIL").unwrap_or_default(),
+            name: lookup("COMPME_SENDER_NAME").unwrap_or_default(),
+            email: lookup("COMPME_SENDER_EMAIL").unwrap_or_default(),
         },
         ..Default::default()
     };
-    if let Some(stop) = lookup("COMPLETE_ME_STRENGTH").and_then(|raw| raw.parse::<u8>().ok()) {
+    if let Some(stop) = lookup("COMPME_STRENGTH").and_then(|raw| raw.parse::<u8>().ok()) {
         profile.strength = Strength::from_stop(stop);
     }
     profile
@@ -510,18 +498,18 @@ fn log_compat_guidance(app: &str) {
     use compat::CompatTier;
     match compat::compatibility_tier(app) {
         CompatTier::SetupNeeded => eprintln!(
-            "complete-me: {app} needs setup for inline suggestions \
+            "compme: {app} needs setup for inline suggestions \
              (e.g. Google Docs Accessibility / Text Metrics)"
         ),
         CompatTier::MirrorOnly => {
-            eprintln!("complete-me: {app} renders via a mirror window (inline overlay unsupported)")
+            eprintln!("compme: {app} renders via a mirror window (inline overlay unsupported)")
         }
-        CompatTier::Partial => eprintln!("complete-me: {app} has partial support"),
-        CompatTier::SidebarOnly => eprintln!(
-            "complete-me: {app} suggests in AI-chat/sidebar fields only, not the editor pane"
-        ),
+        CompatTier::Partial => eprintln!("compme: {app} has partial support"),
+        CompatTier::SidebarOnly => {
+            eprintln!("compme: {app} suggests in AI-chat/sidebar fields only, not the editor pane")
+        }
         CompatTier::Unsupported => {
-            eprintln!("complete-me: {app} is not supported — suggestions disabled")
+            eprintln!("compme: {app} is not supported — suggestions disabled")
         }
         CompatTier::Works | CompatTier::Unknown => {}
     }
@@ -607,7 +595,7 @@ fn record_full_accept(
         // The store redacts + encrypts before persisting; a no-op when its mode
         // is Off.
         if let Err(err) = store.remember(&field.app, text) {
-            eprintln!("complete-me: memory remember failed: {err}");
+            eprintln!("compme: memory remember failed: {err}");
         }
     }
 }
@@ -710,8 +698,8 @@ fn apply_snooze_request(requested: bool, prefs: &mut Prefs, now_ms: u64) -> bool
 /// (incl. unrecognized strings) keeps the safe default so a typo never silently
 /// turns the whole product off.
 ///
-/// Shared by two distinct keys on purpose — `COMPLETE_ME_ENABLED` (the global
-/// tray-toggle state, persisted on toggle) and `COMPLETE_ME_DEFAULT_ENABLED`
+/// Shared by two distinct keys on purpose — `COMPME_ENABLED` (the global
+/// tray-toggle state, persisted on toggle) and `COMPME_DEFAULT_ENABLED`
 /// (the per-app suggestion-policy default in prefs). Both want the same
 /// fail-safe-on parse; their SEMANTICS stay separate.
 fn parse_enabled_default(raw: Option<String>) -> bool {
@@ -728,7 +716,7 @@ fn parse_enabled_default(raw: Option<String>) -> bool {
 /// app-exclude list and a default-enabled toggle; finer per-app/domain overrides
 /// are an A3 settings concern.
 fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
-    let excluded_apps = lookup("COMPLETE_ME_EXCLUDED_APPS")
+    let excluded_apps = lookup("COMPME_EXCLUDED_APPS")
         .map(|raw| {
             raw.split(',')
                 .map(str::trim)
@@ -738,7 +726,7 @@ fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
         })
         .unwrap_or_default();
     Prefs {
-        default_enabled: parse_enabled_default(lookup("COMPLETE_ME_DEFAULT_ENABLED")),
+        default_enabled: parse_enabled_default(lookup("COMPME_DEFAULT_ENABLED")),
         excluded_apps,
         ..Default::default()
     }
@@ -761,7 +749,7 @@ fn log_err(
     match result {
         Ok(requests) => requests,
         Err(err) => {
-            eprintln!("complete-me: {what} error: {err:?}");
+            eprintln!("compme: {what} error: {err:?}");
             Vec::new()
         }
     }
@@ -837,12 +825,12 @@ pub fn run() -> Result<(), String> {
     // restart.
     let mut trusted = accessibility_trusted();
     if !trusted {
-        eprintln!("complete-me: Accessibility not granted — requesting permission");
+        eprintln!("compme: Accessibility not granted — requesting permission");
         prompt_accessibility_trust();
     }
 
     if config.diag_coords {
-        eprintln!("complete-me: diag display_scales={:?}", display_scales());
+        eprintln!("compme: diag display_scales={:?}", display_scales());
     }
 
     let adapter = match config.acceptance_pid {
@@ -911,17 +899,17 @@ pub fn run() -> Result<(), String> {
     // (the "works without it" requirement); local OCR enrichment rides on this
     // grant.
     if config.screen_context && !screen_recording_permission() {
-        eprintln!("complete-me: requesting Screen Recording permission (screen context)");
+        eprintln!("compme: requesting Screen Recording permission (screen context)");
         request_screen_recording_permission();
         // The grant takes effect on the NEXT launch (macOS shows the prompt async
         // and re-reads TCC at startup), so screen context is inactive this run.
-        eprintln!("complete-me: restart after granting Screen Recording to enable screen context");
+        eprintln!("compme: restart after granting Screen Recording to enable screen context");
     }
 
     let previous_inputs = PreviousInputs::default();
     // Encrypted on-disk memory of accepted completions (A2 §6/§16). Off unless
-    // COMPLETE_ME_MEMORY + path are configured; the key comes from
-    // COMPLETE_ME_MEMORY_KEY or (default) the macOS Keychain, generated on
+    // COMPME_MEMORY + path are configured; the key comes from
+    // COMPME_MEMORY_KEY or (default) the macOS Keychain, generated on
     // first use. Lives on this thread (the rusqlite handle is not Send) and is
     // only touched on Full-accept.
     let memory =
@@ -930,7 +918,7 @@ pub fn run() -> Result<(), String> {
             || match platform_macos::keychain::KeychainKeyStore::new().load_or_create_memory_key() {
                 Ok(key) => Some(key),
                 Err(err) => {
-                    eprintln!("complete-me: keychain memory key unavailable: {err}");
+                    eprintln!("compme: keychain memory key unavailable: {err}");
                     None
                 }
             },
@@ -976,7 +964,7 @@ pub fn run() -> Result<(), String> {
     let tray = match MacosTray::new(flags.clone()) {
         Ok(tray) => Some(tray),
         Err(err) => {
-            eprintln!("complete-me: tray unavailable: {err:?}");
+            eprintln!("compme: tray unavailable: {err:?}");
             None
         }
     };
@@ -989,9 +977,7 @@ pub fn run() -> Result<(), String> {
         match ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context) {
             Ok(ocr) => Some(ocr),
             Err(err) => {
-                eprintln!(
-                    "complete-me: screen OCR worker unavailable: {err}; screen context disabled"
-                );
+                eprintln!("compme: screen OCR worker unavailable: {err}; screen context disabled");
                 None
             }
         }
@@ -1021,7 +1007,7 @@ pub fn run() -> Result<(), String> {
     let start = Instant::now();
 
     eprintln!(
-        "complete-me: running (acceptance_pid={:?} stub={} run_ms={:?})",
+        "compme: running (acceptance_pid={:?} stub={} run_ms={:?})",
         config.acceptance_pid,
         config.stub_completion.is_some(),
         config.run_ms
@@ -1045,7 +1031,7 @@ pub fn run() -> Result<(), String> {
             match event {
                 HostEvent::Focus(field) => {
                     let (field, app_key) = canonicalize_field_app(field, bundle_id_for_pid);
-                    eprintln!("complete-me: focus {}", field.element_id);
+                    eprintln!("compme: focus {}", field.element_id);
                     // Compatibility onboarding (A2 §16): surface tier-specific
                     // guidance once per app (mirror-window apps, setup-needed
                     // browsers like Google Docs/Arc).
@@ -1073,7 +1059,7 @@ pub fn run() -> Result<(), String> {
                             if config.diag_coords {
                                 if let Ok(rect) = adapter.caret_rect(&field) {
                                     eprintln!(
-                                        "complete-me: diag caret rect={rect:?} scales={:?}",
+                                        "compme: diag caret rect={rect:?} scales={:?}",
                                         display_scales()
                                     );
                                 }
@@ -1115,7 +1101,7 @@ pub fn run() -> Result<(), String> {
                                         // request fires for the same text = the local
                                         // offer is not matching/gating as expected.
                                         eprintln!(
-                                            "complete-me: replace left={:?} emoji={} \
+                                            "compme: replace left={:?} emoji={} \
                                              autocorrect={} british={} decision={decision:?}",
                                             ctx.left,
                                             config.emoji.is_some(),
@@ -1151,7 +1137,7 @@ pub fn run() -> Result<(), String> {
                             // rate while focus sits on an unsupported element.
                             let message = format!("{err:?}");
                             if read_err_squelch.should_log(&message) {
-                                eprintln!("complete-me: read_context: {message}");
+                                eprintln!("compme: read_context: {message}");
                             }
                             // Setup-needed onboarding (A2 §16): a browser/Arc/Dia field
                             // that won't read may need Accessibility/Text-Metrics setup
@@ -1161,7 +1147,7 @@ pub fn run() -> Result<(), String> {
                                     && hinted_apps.insert(format!("setup:{app}"))
                                 {
                                     eprintln!(
-                                        "complete-me: {app} field not readable — may need \
+                                        "compme: {app} field not readable — may need \
                                      Accessibility/Text-Metrics setup (e.g. Google Docs)"
                                     );
                                 }
@@ -1170,7 +1156,7 @@ pub fn run() -> Result<(), String> {
                     }
                 }
                 HostEvent::Accept(action) => {
-                    eprintln!("complete-me: accept {action:?}");
+                    eprintln!("compme: accept {action:?}");
                     // Preview the engine's accept payload once and reuse it for
                     // both the Word self-insert and the Full context record, so
                     // the two never read divergent engine snapshots.
@@ -1224,11 +1210,11 @@ pub fn run() -> Result<(), String> {
                             }
                             offer_all(&mut latest, requests);
                         }
-                        Err(err) => eprintln!("complete-me: on_accept error: {err:?}"),
+                        Err(err) => eprintln!("compme: on_accept error: {err:?}"),
                     }
                 }
                 HostEvent::Dismiss => {
-                    eprintln!("complete-me: dismiss (Esc)");
+                    eprintln!("compme: dismiss (Esc)");
                     usage.record(wall_ms, stats::Outcome::Dismissed);
                     offer_all(
                         &mut latest,
@@ -1236,7 +1222,7 @@ pub fn run() -> Result<(), String> {
                     );
                 }
                 HostEvent::Cycle => {
-                    eprintln!("complete-me: cycle candidate");
+                    eprintln!("compme: cycle candidate");
                     offer_all(&mut latest, log_err("on_cycle", engine.on_cycle()));
                 }
             }
@@ -1245,7 +1231,7 @@ pub fn run() -> Result<(), String> {
         // 2. Inference outcomes → engine (stale ones are discarded internally).
         for outcome in inference.drain_outcomes() {
             eprintln!(
-                "complete-me: completion gen={} candidates={:?}",
+                "compme: completion gen={} candidates={:?}",
                 outcome.request.generation, outcome.candidates
             );
             // First-suggestion latency for this completed request (§11).
@@ -1296,7 +1282,7 @@ pub fn run() -> Result<(), String> {
             &mut prefs,
             now_ms,
         ) {
-            eprintln!("complete-me: suggestions snoozed for {SNOOZE_MINUTES} minutes");
+            eprintln!("compme: suggestions snoozed for {SNOOZE_MINUTES} minutes");
             // A snooze must retract an already-visible ghost, exactly like the
             // disable edge below: gating runs at request-submission, so without
             // this a ghost already on screen would survive the snooze — and its
@@ -1347,14 +1333,13 @@ pub fn run() -> Result<(), String> {
             if let Some(path) = config::config_file_path() {
                 match config::persist_setting(
                     &path,
-                    "COMPLETE_ME_ENABLED",
+                    "COMPME_ENABLED",
                     if enabled { "true" } else { "false" },
                 ) {
-                    Ok(()) => eprintln!(
-                        "complete-me: persisted enabled={enabled} to {}",
-                        path.display()
-                    ),
-                    Err(err) => eprintln!("complete-me: could not persist enabled state: {err}"),
+                    Ok(()) => {
+                        eprintln!("compme: persisted enabled={enabled} to {}", path.display())
+                    }
+                    Err(err) => eprintln!("compme: could not persist enabled state: {err}"),
                 }
             }
         }
@@ -1365,7 +1350,7 @@ pub fn run() -> Result<(), String> {
         // when a snooze starts AND when it auto-expires mid-Ready.
         let snoozed = prefs.is_snoozed(now_ms);
         if last_render != Some((status, enabled, snoozed)) {
-            eprintln!("complete-me: status={status:?} enabled={enabled} snoozed={snoozed}");
+            eprintln!("compme: status={status:?} enabled={enabled} snoozed={snoozed}");
             if let Some(tray) = &tray {
                 if let Err(err) = tray.set_status(
                     status.render_title(snoozed),
@@ -1373,7 +1358,7 @@ pub fn run() -> Result<(), String> {
                     enabled,
                     status.needs_accessibility(),
                 ) {
-                    eprintln!("complete-me: tray update failed: {err:?}");
+                    eprintln!("compme: tray update failed: {err:?}");
                 }
             }
             last_render = Some((status, enabled, snoozed));
@@ -1385,7 +1370,7 @@ pub fn run() -> Result<(), String> {
             let stats_line = usage.summary_line(wall_ms);
             if last_stats_line.as_deref() != Some(stats_line.as_str()) {
                 if let Err(err) = tray.set_stats_line(&stats_line) {
-                    eprintln!("complete-me: tray stats update failed: {err:?}");
+                    eprintln!("compme: tray stats update failed: {err:?}");
                 }
                 last_stats_line = Some(stats_line);
             }
@@ -1410,7 +1395,7 @@ pub fn run() -> Result<(), String> {
                     if config.clipboard_context {
                         let clip = read_pasteboard_text().map(|text| redaction::redact(&text));
                         if config.diag_context {
-                            eprintln!("complete-me: clipboard_context={clip:?}");
+                            eprintln!("compme: clipboard_context={clip:?}");
                         }
                         *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = clip;
                     }
@@ -1424,7 +1409,7 @@ pub fn run() -> Result<(), String> {
                         ocr.request(caret_rect);
                     }
                     eprintln!(
-                        "complete-me: request gen={} prompt={:?}",
+                        "compme: request gen={} prompt={:?}",
                         request.generation, request.prompt
                     );
                     submit_times.insert(request.generation, now_ms);
@@ -1440,15 +1425,15 @@ pub fn run() -> Result<(), String> {
                 .arg(ACCESSIBILITY_SETTINGS_URL)
                 .status()
             {
-                eprintln!("complete-me: open settings failed: {err}");
+                eprintln!("compme: open settings failed: {err}");
             }
         }
         if flags.quit.load(Ordering::Relaxed) {
-            eprintln!("complete-me: quit requested");
+            eprintln!("compme: quit requested");
             break;
         }
 
-        // 7. Bounded run (gates pass COMPLETE_ME_RUN_MS).
+        // 7. Bounded run (gates pass COMPME_RUN_MS).
         if let Some(run_ms) = config.run_ms {
             if now_ms >= run_ms {
                 break;
@@ -1466,12 +1451,12 @@ pub fn run() -> Result<(), String> {
         CFRunLoop::run_in_mode(mode, heartbeat, false);
     }
 
-    eprintln!("complete-me: shutting down");
+    eprintln!("compme: shutting down");
     // Session usage summary (§11/§16).
     let final_ms = start.elapsed().as_millis() as u64;
     let counts = usage.counts(final_ms);
     eprintln!(
-        "complete-me: usage shown={} accepted={} dismissed={} superseded={} words={} \
+        "compme: usage shown={} accepted={} dismissed={} superseded={} words={} \
          latency_avg={:?} latency_p95={:?}",
         counts.shown,
         counts.accepted,
@@ -1507,9 +1492,9 @@ mod tests {
     #[test]
     fn personalization_built_from_config_keys() {
         let profile = build_personalization(&lookup(&[
-            ("COMPLETE_ME_INSTRUCTIONS", "Be terse."),
-            ("COMPLETE_ME_STRENGTH", "5"),
-            ("COMPLETE_ME_SENDER_NAME", "Ada"),
+            ("COMPME_INSTRUCTIONS", "Be terse."),
+            ("COMPME_STRENGTH", "5"),
+            ("COMPME_SENDER_NAME", "Ada"),
         ]));
         assert_eq!(profile.strength, Strength::Max);
         let preamble = profile.build_preamble(Some("com.apple.TextEdit"), None);
@@ -1526,7 +1511,7 @@ mod tests {
     #[test]
     fn prefs_built_from_excluded_apps_list() {
         let prefs = build_prefs(&lookup(&[(
-            "COMPLETE_ME_EXCLUDED_APPS",
+            "COMPME_EXCLUDED_APPS",
             "com.apple.Finder, com.tinyspeck.slackmacgap",
         )]));
         assert!(!prefs.should_suggest(Some("com.apple.Finder"), None, 0));
@@ -1577,12 +1562,12 @@ mod tests {
     #[test]
     fn config_enabled_reads_complete_me_enabled_and_defaults_on() {
         // The global tray-toggle state, persisted on toggle and read back at
-        // launch. Distinct from COMPLETE_ME_DEFAULT_ENABLED (the per-app
+        // launch. Distinct from COMPME_DEFAULT_ENABLED (the per-app
         // suggestion-policy default in prefs).
         assert!(Config::from_lookup(lookup(&[])).enabled);
-        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_ENABLED", "true")])).enabled);
-        assert!(!Config::from_lookup(lookup(&[("COMPLETE_ME_ENABLED", "false")])).enabled);
-        assert!(!Config::from_lookup(lookup(&[("COMPLETE_ME_ENABLED", "0")])).enabled);
+        assert!(Config::from_lookup(lookup(&[("COMPME_ENABLED", "true")])).enabled);
+        assert!(!Config::from_lookup(lookup(&[("COMPME_ENABLED", "false")])).enabled);
+        assert!(!Config::from_lookup(lookup(&[("COMPME_ENABLED", "0")])).enabled);
     }
 
     #[test]
@@ -1590,10 +1575,10 @@ mod tests {
         // Absent or unrecognized → enabled (a typo never silently kills the app);
         // only explicit falsy values disable.
         assert!(build_prefs(&lookup(&[])).default_enabled);
-        assert!(build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "yes")])).default_enabled);
-        assert!(build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "True")])).default_enabled);
-        assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "0")])).default_enabled);
-        assert!(!build_prefs(&lookup(&[("COMPLETE_ME_DEFAULT_ENABLED", "off")])).default_enabled);
+        assert!(build_prefs(&lookup(&[("COMPME_DEFAULT_ENABLED", "yes")])).default_enabled);
+        assert!(build_prefs(&lookup(&[("COMPME_DEFAULT_ENABLED", "True")])).default_enabled);
+        assert!(!build_prefs(&lookup(&[("COMPME_DEFAULT_ENABLED", "0")])).default_enabled);
+        assert!(!build_prefs(&lookup(&[("COMPME_DEFAULT_ENABLED", "off")])).default_enabled);
     }
 
     #[test]
@@ -1603,9 +1588,9 @@ mod tests {
         assert!(!off.screen_context);
         assert!(!off.diag_context);
         let on = Config::from_lookup(lookup(&[
-            ("COMPLETE_ME_CLIPBOARD_CONTEXT", "1"),
-            ("COMPLETE_ME_SCREEN_CONTEXT", "true"),
-            ("COMPLETE_ME_DIAG_CONTEXT", "true"),
+            ("COMPME_CLIPBOARD_CONTEXT", "1"),
+            ("COMPME_SCREEN_CONTEXT", "true"),
+            ("COMPME_DIAG_CONTEXT", "true"),
         ]));
         assert!(on.clipboard_context);
         assert!(on.screen_context);
@@ -1690,10 +1675,7 @@ mod tests {
             0
         ));
 
-        let excluded = build_prefs(&lookup(&[(
-            "COMPLETE_ME_EXCLUDED_APPS",
-            "com.apple.TextEdit",
-        )]));
+        let excluded = build_prefs(&lookup(&[("COMPME_EXCLUDED_APPS", "com.apple.TextEdit")]));
         assert!(!request_passes_submit_gates(
             &req_with_prompt("Dear team"),
             Some("com.apple.TextEdit"),
@@ -1743,10 +1725,7 @@ mod tests {
         let textedit_key = resolve_app_key(volatile.field.pid, |pid| {
             (pid == 42).then(|| "com.apple.TextEdit".to_string())
         });
-        let excluded = build_prefs(&lookup(&[(
-            "COMPLETE_ME_EXCLUDED_APPS",
-            "com.apple.TextEdit",
-        )]));
+        let excluded = build_prefs(&lookup(&[("COMPME_EXCLUDED_APPS", "com.apple.TextEdit")]));
         assert!(!request_passes_submit_gates(
             &volatile,
             textedit_key.as_deref(),
@@ -1760,7 +1739,7 @@ mod tests {
         assert!(request_passes_submit_gates(
             &volatile,
             unresolved.as_deref(),
-            &build_prefs(&lookup(&[("COMPLETE_ME_EXCLUDED_APPS", "pid:42")])),
+            &build_prefs(&lookup(&[("COMPME_EXCLUDED_APPS", "pid:42")])),
             0
         ));
     }
@@ -1866,7 +1845,7 @@ mod tests {
     #[test]
     fn memory_opens_with_the_keychain_fallback_key_when_env_key_is_missing() {
         let path = std::env::temp_dir().join(format!(
-            "complete-me-keychain-fallback-{}.db",
+            "compme-keychain-fallback-{}.db",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
@@ -1888,10 +1867,10 @@ mod tests {
     #[test]
     fn an_explicit_env_key_takes_precedence_over_the_keychain() {
         // The keychain must not even be consulted: an explicit
-        // COMPLETE_ME_MEMORY_KEY is the operator's override (and the
+        // COMPME_MEMORY_KEY is the operator's override (and the
         // fail-closed path when the keychain is unavailable).
         let path = std::env::temp_dir().join(format!(
-            "complete-me-env-key-precedence-{}.db",
+            "compme-env-key-precedence-{}.db",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
@@ -2186,37 +2165,33 @@ mod tests {
     #[test]
     fn min_context_parses_and_clamps() {
         assert_eq!(
-            Config::from_lookup(lookup(&[("COMPLETE_ME_MIN_CONTEXT", "5")])).min_context_chars,
+            Config::from_lookup(lookup(&[("COMPME_MIN_CONTEXT", "5")])).min_context_chars,
             5
         );
         // over max → clamps to 100
         assert_eq!(
-            Config::from_lookup(lookup(&[("COMPLETE_ME_MIN_CONTEXT", "999")])).min_context_chars,
+            Config::from_lookup(lookup(&[("COMPME_MIN_CONTEXT", "999")])).min_context_chars,
             100
         );
         // unparseable → default
         assert_eq!(
-            Config::from_lookup(lookup(&[("COMPLETE_ME_MIN_CONTEXT", "lots")])).min_context_chars,
+            Config::from_lookup(lookup(&[("COMPME_MIN_CONTEXT", "lots")])).min_context_chars,
             DEFAULT_MIN_CONTEXT_CHARS
         );
     }
 
     #[test]
     fn midline_opt_in_by_one_or_true() {
-        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_MIDLINE", "1")])).allow_mid_word);
-        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_MIDLINE", "true")])).allow_mid_word);
-        assert!(!Config::from_lookup(lookup(&[("COMPLETE_ME_MIDLINE", "no")])).allow_mid_word);
+        assert!(Config::from_lookup(lookup(&[("COMPME_MIDLINE", "1")])).allow_mid_word);
+        assert!(Config::from_lookup(lookup(&[("COMPME_MIDLINE", "true")])).allow_mid_word);
+        assert!(!Config::from_lookup(lookup(&[("COMPME_MIDLINE", "no")])).allow_mid_word);
     }
 
     #[test]
     fn trailing_space_opt_in_by_one_or_true_and_off_by_default() {
-        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_TRAILING_SPACE", "1")])).trailing_space);
-        assert!(
-            Config::from_lookup(lookup(&[("COMPLETE_ME_TRAILING_SPACE", "true")])).trailing_space
-        );
-        assert!(
-            !Config::from_lookup(lookup(&[("COMPLETE_ME_TRAILING_SPACE", "no")])).trailing_space
-        );
+        assert!(Config::from_lookup(lookup(&[("COMPME_TRAILING_SPACE", "1")])).trailing_space);
+        assert!(Config::from_lookup(lookup(&[("COMPME_TRAILING_SPACE", "true")])).trailing_space);
+        assert!(!Config::from_lookup(lookup(&[("COMPME_TRAILING_SPACE", "no")])).trailing_space);
         // Off by default when the key is absent (byte-identical accept behavior).
         assert!(!Config::from_lookup(lookup(&[])).trailing_space);
     }
@@ -2225,19 +2200,19 @@ mod tests {
     fn emoji_config_off_by_default_and_parses_prefs_when_enabled() {
         // Absent / falsy → disabled (None).
         assert!(Config::from_lookup(lookup(&[])).emoji.is_none());
-        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_EMOJI", "no")]))
+        assert!(Config::from_lookup(lookup(&[("COMPME_EMOJI", "no")]))
             .emoji
             .is_none());
         // Enabled → Some with default prefs.
-        let on = Config::from_lookup(lookup(&[("COMPLETE_ME_EMOJI", "1")]))
+        let on = Config::from_lookup(lookup(&[("COMPME_EMOJI", "1")]))
             .emoji
             .expect("enabled");
         assert_eq!(on, EmojiPrefs::default());
         // Skin tone + gender parsed.
         let custom = Config::from_lookup(lookup(&[
-            ("COMPLETE_ME_EMOJI", "on"),
-            ("COMPLETE_ME_EMOJI_SKIN_TONE", "medium-dark"),
-            ("COMPLETE_ME_EMOJI_GENDER", "female"),
+            ("COMPME_EMOJI", "on"),
+            ("COMPME_EMOJI_SKIN_TONE", "medium-dark"),
+            ("COMPME_EMOJI_GENDER", "female"),
         ]))
         .emoji
         .expect("enabled");
@@ -2281,12 +2256,12 @@ mod tests {
 
     #[test]
     fn replacement_offer_fires_for_enabled_word_features() {
-        let ac = Config::from_lookup(lookup(&[("COMPLETE_ME_AUTOCORRECT", "1")]));
+        let ac = Config::from_lookup(lookup(&[("COMPME_AUTOCORRECT", "1")]));
         assert_eq!(replacement_offer("I teh", &ac), Some(("the".into(), 3)));
         // A correctly-spelled word never offers.
         assert!(replacement_offer("the", &ac).is_none());
 
-        let uk = Config::from_lookup(lookup(&[("COMPLETE_ME_BRITISH_ENGLISH", "on")]));
+        let uk = Config::from_lookup(lookup(&[("COMPME_BRITISH_ENGLISH", "on")]));
         assert_eq!(replacement_offer("color", &uk), Some(("colour".into(), 5)));
         assert!(replacement_offer("colour", &uk).is_none());
     }
@@ -2295,9 +2270,9 @@ mod tests {
     fn replacement_offer_prioritizes_emoji_then_word_features() {
         // Emoji shortcode wins over the word-based features when all are enabled.
         let all = Config::from_lookup(lookup(&[
-            ("COMPLETE_ME_EMOJI", "1"),
-            ("COMPLETE_ME_AUTOCORRECT", "1"),
-            ("COMPLETE_ME_BRITISH_ENGLISH", "1"),
+            ("COMPME_EMOJI", "1"),
+            ("COMPME_AUTOCORRECT", "1"),
+            ("COMPME_BRITISH_ENGLISH", "1"),
         ]));
         let (glyph, replace_left) = replacement_offer("teh :smile", &all).expect("emoji wins");
         assert!(!glyph.is_empty());
@@ -2306,7 +2281,7 @@ mod tests {
 
     #[test]
     fn replacement_decision_combines_gate_and_offer() {
-        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_EMOJI", "1")]));
+        let config = Config::from_lookup(lookup(&[("COMPME_EMOJI", "1")]));
         let allowed = Some("com.apple.TextEdit");
         // Enabled (tray) + allowed app + a shortcode → offers.
         assert!(
@@ -2335,10 +2310,10 @@ mod tests {
     #[test]
     fn numeric_knobs_parse_and_clamp() {
         let config = Config::from_lookup(lookup(&[
-            ("COMPLETE_ME_DEBOUNCE_MS", "60"),
-            ("COMPLETE_ME_MAX_WORDS", "999"), // over max → clamps to 50
-            ("COMPLETE_ME_MAX_TOKENS", "0"),  // under min → clamps to 1
-            ("COMPLETE_ME_HEARTBEAT_MS", "500"), // over max → clamps to 100
+            ("COMPME_DEBOUNCE_MS", "60"),
+            ("COMPME_MAX_WORDS", "999"),    // over max → clamps to 50
+            ("COMPME_MAX_TOKENS", "0"),     // under min → clamps to 1
+            ("COMPME_HEARTBEAT_MS", "500"), // over max → clamps to 100
         ]));
         assert_eq!(config.debounce_ms, 60);
         assert_eq!(config.max_words, 50);
@@ -2349,10 +2324,10 @@ mod tests {
     #[test]
     fn numeric_knobs_fall_back_to_defaults_when_unparseable() {
         let config = Config::from_lookup(lookup(&[
-            ("COMPLETE_ME_DEBOUNCE_MS", "fast"),
-            ("COMPLETE_ME_MAX_WORDS", "many"),
-            ("COMPLETE_ME_MAX_TOKENS", "lots"),
-            ("COMPLETE_ME_HEARTBEAT_MS", "soon"),
+            ("COMPME_DEBOUNCE_MS", "fast"),
+            ("COMPME_MAX_WORDS", "many"),
+            ("COMPME_MAX_TOKENS", "lots"),
+            ("COMPME_HEARTBEAT_MS", "soon"),
         ]));
         assert_eq!(config.debounce_ms, DEFAULT_DEBOUNCE_MS);
         assert_eq!(config.max_words, DEFAULT_MAX_WORDS);
@@ -2363,35 +2338,35 @@ mod tests {
     #[test]
     fn candidate_count_parses_and_clamps() {
         assert_eq!(
-            Config::from_lookup(lookup(&[("COMPLETE_ME_CANDIDATES", "3")])).candidates,
+            Config::from_lookup(lookup(&[("COMPME_CANDIDATES", "3")])).candidates,
             3
         );
         assert_eq!(
-            Config::from_lookup(lookup(&[("COMPLETE_ME_CANDIDATES", "0")])).candidates,
+            Config::from_lookup(lookup(&[("COMPME_CANDIDATES", "0")])).candidates,
             1
         );
         assert_eq!(
-            Config::from_lookup(lookup(&[("COMPLETE_ME_CANDIDATES", "99")])).candidates,
+            Config::from_lookup(lookup(&[("COMPME_CANDIDATES", "99")])).candidates,
             5
         );
         assert_eq!(
-            Config::from_lookup(lookup(&[("COMPLETE_ME_CANDIDATES", "many")])).candidates,
+            Config::from_lookup(lookup(&[("COMPME_CANDIDATES", "many")])).candidates,
             DEFAULT_CANDIDATES
         );
     }
 
     #[test]
     fn diag_coords_enabled_by_one_or_true() {
-        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_DIAG_COORDS", "1")])).diag_coords);
-        assert!(Config::from_lookup(lookup(&[("COMPLETE_ME_DIAG_COORDS", "true")])).diag_coords);
-        assert!(!Config::from_lookup(lookup(&[("COMPLETE_ME_DIAG_COORDS", "no")])).diag_coords);
+        assert!(Config::from_lookup(lookup(&[("COMPME_DIAG_COORDS", "1")])).diag_coords);
+        assert!(Config::from_lookup(lookup(&[("COMPME_DIAG_COORDS", "true")])).diag_coords);
+        assert!(!Config::from_lookup(lookup(&[("COMPME_DIAG_COORDS", "no")])).diag_coords);
     }
 
     #[test]
     fn valid_pid_and_run_ms_parse() {
         let config = Config::from_lookup(lookup(&[
-            ("COMPLETE_ME_ACCEPTANCE_PID", "8273"),
-            ("COMPLETE_ME_RUN_MS", "4000"),
+            ("COMPME_ACCEPTANCE_PID", "8273"),
+            ("COMPME_RUN_MS", "4000"),
         ]));
         assert_eq!(config.acceptance_pid, Some(8273));
         assert_eq!(config.run_ms, Some(4000));
@@ -2400,8 +2375,8 @@ mod tests {
     #[test]
     fn unparseable_pid_and_run_ms_fall_back_to_none() {
         let config = Config::from_lookup(lookup(&[
-            ("COMPLETE_ME_ACCEPTANCE_PID", "not-a-number"),
-            ("COMPLETE_ME_RUN_MS", "later"),
+            ("COMPME_ACCEPTANCE_PID", "not-a-number"),
+            ("COMPME_RUN_MS", "later"),
         ]));
         assert_eq!(config.acceptance_pid, None);
         assert_eq!(config.run_ms, None);
@@ -2409,25 +2384,25 @@ mod tests {
 
     #[test]
     fn empty_stub_completion_is_treated_as_unset() {
-        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_STUB_COMPLETION", "")]));
+        let config = Config::from_lookup(lookup(&[("COMPME_STUB_COMPLETION", "")]));
         assert_eq!(config.stub_completion, None);
     }
 
     #[test]
     fn non_empty_stub_completion_is_kept() {
-        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_STUB_COMPLETION", " jumps")]));
+        let config = Config::from_lookup(lookup(&[("COMPME_STUB_COMPLETION", " jumps")]));
         assert_eq!(config.stub_completion.as_deref(), Some(" jumps"));
     }
 
     #[test]
     fn model_path_override_wins_over_default() {
-        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_MODEL_PATH", "/models/x.gguf")]));
+        let config = Config::from_lookup(lookup(&[("COMPME_MODEL_PATH", "/models/x.gguf")]));
         assert_eq!(config.model_path, PathBuf::from("/models/x.gguf"));
     }
 
     #[test]
     fn prompt_mode_raw_is_parsed() {
-        let config = Config::from_lookup(lookup(&[("COMPLETE_ME_PROMPT_MODE", "raw")]));
+        let config = Config::from_lookup(lookup(&[("COMPME_PROMPT_MODE", "raw")]));
         assert_eq!(config.prompt_mode, PromptMode::Raw);
     }
 

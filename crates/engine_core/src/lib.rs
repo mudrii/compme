@@ -171,7 +171,7 @@ pub struct SuggestionMachine {
     /// until cleared by a refocus or the next edit.
     suppressed: bool,
     /// Cotypist's "Include trailing space after single-word completions"
-    /// (`COMPLETE_ME_TRAILING_SPACE`). When set, accepting a single-word
+    /// (`COMPME_TRAILING_SPACE`). When set, accepting a single-word
     /// completion inserts one trailing space. Default off → accept text is
     /// byte-identical to before this flag existed.
     trailing_space_single_word: bool,

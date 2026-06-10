@@ -13,7 +13,7 @@
 //! excluded: changing them could corrupt correct text.
 //!
 //! It maps whole words only; stripping surrounding punctuation and deciding
-//! *when* to apply (a host toggle, `COMPLETE_ME_BRITISH_ENGLISH`, off by
+//! *when* to apply (a host toggle, `COMPME_BRITISH_ENGLISH`, off by
 //! default) are the host's job, mirroring the `autocorrect`/`thesaurus` split.
 
 use textcase::CasePattern;

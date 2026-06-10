@@ -5,7 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [[bin]]
-name = "complete-me"
+name = "compme"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end live gate for the `complete-me` integration binary.
+# End-to-end live gate for the `compme` integration binary.
 #
 # Drives the *product* binary through the whole pipeline against a real TextEdit
 # document with a deterministic stub completion, so the gate is reproducible:
@@ -8,26 +8,26 @@
 #   Tab (key code 48) = next-word accept.
 #
 # Pass = the stub text ends up in the document AND the binary logged each stage.
-# A separate manual run (omit COMPLETE_ME_E2E_STUB / set a real model) exercises
+# A separate manual run (omit COMPME_E2E_STUB / set a real model) exercises
 # the same path with the real LlamaModel; that asserts an insert occurred but not
 # exact text, since real output is nondeterministic.
 #
 # Requires: macOS, osascript, Accessibility granted to the terminal, an unlocked
-# session, and the TextEdit pid in COMPLETE_ME_ACCEPTANCE_PID. Production accept
+# session, and the TextEdit pid in COMPME_ACCEPTANCE_PID. Production accept
 # keys use Carbon hotkeys and do not require Input Monitoring.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="${COMPLETE_ME_BIN:-$ROOT_DIR/target/debug/complete-me}"
-PID="${COMPLETE_ME_ACCEPTANCE_PID:-}"
-RUN_MS="${COMPLETE_ME_E2E_RUN_MS:-5000}"
-WARMUP_MS="${COMPLETE_ME_E2E_WARMUP_MS:-1200}"
-TAB_AFTER_MS="${COMPLETE_ME_E2E_TAB_AFTER_MS:-1800}"
-SECOND_TAB_AFTER_MS="${COMPLETE_ME_E2E_SECOND_TAB_AFTER_MS:-700}"
-PREFIX="${COMPLETE_ME_E2E_PREFIX:-The quick brown fox }"
-STUB="${COMPLETE_ME_E2E_STUB:- jumps-$(date +%H%M%S)}"
-ACCEPT_MODE="${COMPLETE_ME_E2E_ACCEPT:-full}"
-LOG="${COMPLETE_ME_E2E_LOG:-$ROOT_DIR/tools/acceptance/logs/e2e-complete-me-$(date +%Y%m%d-%H%M%S).log}"
+BIN="${COMPME_BIN:-$ROOT_DIR/target/debug/compme}"
+PID="${COMPME_ACCEPTANCE_PID:-}"
+RUN_MS="${COMPME_E2E_RUN_MS:-5000}"
+WARMUP_MS="${COMPME_E2E_WARMUP_MS:-1200}"
+TAB_AFTER_MS="${COMPME_E2E_TAB_AFTER_MS:-1800}"
+SECOND_TAB_AFTER_MS="${COMPME_E2E_SECOND_TAB_AFTER_MS:-700}"
+PREFIX="${COMPME_E2E_PREFIX:-The quick brown fox }"
+STUB="${COMPME_E2E_STUB:- jumps-$(date +%H%M%S)}"
+ACCEPT_MODE="${COMPME_E2E_ACCEPT:-full}"
+LOG="${COMPME_E2E_LOG:-$ROOT_DIR/tools/acceptance/logs/e2e-compme-$(date +%Y%m%d-%H%M%S).log}"
 
 fail() {
   echo "E2E FAIL: $*" >&2
@@ -35,7 +35,7 @@ fail() {
 }
 
 [ -x "$BIN" ] || fail "binary not built: $BIN (run: cargo build -p app)"
-[ -n "$PID" ] || fail "set COMPLETE_ME_ACCEPTANCE_PID to the TextEdit pid"
+[ -n "$PID" ] || fail "set COMPME_ACCEPTANCE_PID to the TextEdit pid"
 command -v osascript >/dev/null 2>&1 || fail "osascript unavailable (macOS only)"
 
 mkdir -p "$(dirname "$LOG")"
@@ -51,14 +51,14 @@ sleep_ms() {
 
 case "$ACCEPT_MODE" in
   full|word) ;;
-  *) fail "COMPLETE_ME_E2E_ACCEPT must be full or word" ;;
+  *) fail "COMPME_E2E_ACCEPT must be full or word" ;;
 esac
 
-if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPLETE_ME_E2E_STUB+x}" != "x" ]; then
+if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPME_E2E_STUB+x}" != "x" ]; then
   STUB=" jumps over"
 fi
 
-echo "E2E complete-me: prefix=\"$PREFIX\" stub=\"$STUB\" pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE"
+echo "E2E compme: prefix=\"$PREFIX\" stub=\"$STUB\" pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE"
 
 # 1. Seed TextEdit with a known prefix and bring it to the front.
 osascript <<OSA || fail "could not seed TextEdit"
@@ -72,9 +72,9 @@ OSA
 sleep_ms 400
 
 # 2. Launch the product binary against TextEdit with the deterministic stub.
-COMPLETE_ME_ACCEPTANCE_PID="$PID" \
-  COMPLETE_ME_STUB_COMPLETION="$STUB" \
-  COMPLETE_ME_RUN_MS="$RUN_MS" \
+COMPME_ACCEPTANCE_PID="$PID" \
+  COMPME_STUB_COMPLETION="$STUB" \
+  COMPME_RUN_MS="$RUN_MS" \
   "$BIN" >"$LOG" 2>&1 &
 APP_PID=$!
 
@@ -95,7 +95,7 @@ else
   osascript -e 'tell application "System Events" to key code 50' >/dev/null 2>&1 # grave = full
 fi
 
-# 5. Wait for the bounded run to finish on its own (COMPLETE_ME_RUN_MS).
+# 5. Wait for the bounded run to finish on its own (COMPME_RUN_MS).
 wait "$APP_PID" 2>/dev/null
 
 # 6. Read the document back and assert.

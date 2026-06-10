@@ -44,18 +44,18 @@ where
     value.clamp(min, max)
 }
 
-/// Resolve the config file path: `COMPLETE_ME_CONFIG` override, else
-/// `$HOME/Library/Application Support/complete-me/config.env`. `None` if neither
+/// Resolve the config file path: `COMPME_CONFIG` override, else
+/// `$HOME/Library/Application Support/compme/config.env`. `None` if neither
 /// is available.
 pub fn config_file_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("COMPLETE_ME_CONFIG") {
+    if let Ok(path) = std::env::var("COMPME_CONFIG") {
         if !path.is_empty() {
             return Some(PathBuf::from(path));
         }
     }
     std::env::var("HOME").ok().map(|home| {
         PathBuf::from(home)
-            .join("Library/Application Support/complete-me")
+            .join("Library/Application Support/compme")
             .join("config.env")
     })
 }
@@ -138,12 +138,12 @@ mod tests {
 
     #[test]
     fn parses_simple_pairs() {
-        let pairs = parse_env_file("COMPLETE_ME_MAX_WORDS=12\nCOMPLETE_ME_DEBOUNCE_MS=80");
+        let pairs = parse_env_file("COMPME_MAX_WORDS=12\nCOMPME_DEBOUNCE_MS=80");
         assert_eq!(
             pairs,
             vec![
-                ("COMPLETE_ME_MAX_WORDS".to_string(), "12".to_string()),
-                ("COMPLETE_ME_DEBOUNCE_MS".to_string(), "80".to_string()),
+                ("COMPME_MAX_WORDS".to_string(), "12".to_string()),
+                ("COMPME_DEBOUNCE_MS".to_string(), "80".to_string()),
             ]
         );
     }
@@ -180,10 +180,11 @@ mod tests {
 
     #[test]
     fn update_replaces_the_value_in_place_preserving_everything_else() {
-        let existing = "# complete-me config\nCOMPLETE_ME_MAX_WORDS=12\n\nCOMPLETE_ME_ENABLED=true\n# trailing comment\n";
+        let existing =
+            "# compme config\nCOMPME_MAX_WORDS=12\n\nCOMPME_ENABLED=true\n# trailing comment\n";
         assert_eq!(
-            update_env_file_contents(existing, "COMPLETE_ME_ENABLED", "false"),
-            "# complete-me config\nCOMPLETE_ME_MAX_WORDS=12\n\nCOMPLETE_ME_ENABLED=false\n# trailing comment\n"
+            update_env_file_contents(existing, "COMPME_ENABLED", "false"),
+            "# compme config\nCOMPME_MAX_WORDS=12\n\nCOMPME_ENABLED=false\n# trailing comment\n"
         );
     }
 
@@ -225,29 +226,28 @@ mod tests {
 
     #[test]
     fn persist_setting_creates_updates_and_survives_reload() {
-        let dir =
-            std::env::temp_dir().join(format!("complete-me-persist-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("compme-persist-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("nested").join("config.env");
 
         // Missing file + parent dirs → created with just the key.
-        persist_setting(&path, "COMPLETE_ME_ENABLED", "false").expect("create");
+        persist_setting(&path, "COMPME_ENABLED", "false").expect("create");
         assert_eq!(
-            load_file_map(&path).get("COMPLETE_ME_ENABLED"),
+            load_file_map(&path).get("COMPME_ENABLED"),
             Some(&"false".to_string())
         );
 
         // Add unrelated content, then update: both survive, value replaced.
         std::fs::write(
             &path,
-            "# keep me\nCOMPLETE_ME_MAX_WORDS=12\nCOMPLETE_ME_ENABLED=false\n",
+            "# keep me\nCOMPME_MAX_WORDS=12\nCOMPME_ENABLED=false\n",
         )
         .expect("seed");
-        persist_setting(&path, "COMPLETE_ME_ENABLED", "true").expect("update");
+        persist_setting(&path, "COMPME_ENABLED", "true").expect("update");
         let contents = std::fs::read_to_string(&path).expect("read back");
         assert_eq!(
             contents,
-            "# keep me\nCOMPLETE_ME_MAX_WORDS=12\nCOMPLETE_ME_ENABLED=true\n"
+            "# keep me\nCOMPME_MAX_WORDS=12\nCOMPME_ENABLED=true\n"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -271,17 +271,15 @@ mod tests {
         // silently replaced by a one-line file (that would destroy every other
         // setting the user has).
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!(
-            "complete-me-unreadable-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("compme-unreadable-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         let path = dir.join("config.env");
         std::fs::write(&path, "PRECIOUS=keep\n").expect("seed");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
 
-        let result = persist_setting(&path, "COMPLETE_ME_ENABLED", "false");
+        let result = persist_setting(&path, "COMPME_ENABLED", "false");
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("unchmod");
         assert!(
@@ -320,23 +318,17 @@ mod tests {
     #[test]
     fn load_file_map_reads_and_parses_a_file() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "complete-me-test-config-{}.env",
-            std::process::id()
-        ));
+        let path = dir.join(format!("compme-test-config-{}.env", std::process::id()));
         std::fs::write(
             &path,
-            "# comment\nCOMPLETE_ME_MAX_WORDS=15\nCOMPLETE_ME_PROMPT_MODE=raw\n",
+            "# comment\nCOMPME_MAX_WORDS=15\nCOMPME_PROMPT_MODE=raw\n",
         )
         .unwrap();
         let map = load_file_map(&path);
         let _ = std::fs::remove_file(&path);
+        assert_eq!(map.get("COMPME_MAX_WORDS").map(String::as_str), Some("15"));
         assert_eq!(
-            map.get("COMPLETE_ME_MAX_WORDS").map(String::as_str),
-            Some("15")
-        );
-        assert_eq!(
-            map.get("COMPLETE_ME_PROMPT_MODE").map(String::as_str),
+            map.get("COMPME_PROMPT_MODE").map(String::as_str),
             Some("raw")
         );
         assert_eq!(map.len(), 2);
@@ -344,7 +336,7 @@ mod tests {
 
     #[test]
     fn load_file_map_missing_file_is_empty() {
-        let map = load_file_map(Path::new("/no/such/complete-me/config.env"));
+        let map = load_file_map(Path::new("/no/such/compme/config.env"));
         assert!(map.is_empty());
     }
 
@@ -352,19 +344,19 @@ mod tests {
     fn config_file_path_covers_all_branches() {
         // Save originals so the test is hermetic and leaves the process env
         // exactly as it found it.
-        let saved_config = std::env::var("COMPLETE_ME_CONFIG").ok();
+        let saved_config = std::env::var("COMPME_CONFIG").ok();
         let saved_home = std::env::var("HOME").ok();
 
-        // Branch 1: COMPLETE_ME_CONFIG set non-empty -> returned verbatim.
-        std::env::set_var("COMPLETE_ME_CONFIG", "/some/path");
+        // Branch 1: COMPME_CONFIG set non-empty -> returned verbatim.
+        std::env::set_var("COMPME_CONFIG", "/some/path");
         assert_eq!(config_file_path(), Some(PathBuf::from("/some/path")));
 
-        // Branch 2: COMPLETE_ME_CONFIG empty + HOME set -> path under $HOME.
-        std::env::set_var("COMPLETE_ME_CONFIG", "");
+        // Branch 2: COMPME_CONFIG empty + HOME set -> path under $HOME.
+        std::env::set_var("COMPME_CONFIG", "");
         std::env::set_var("HOME", "/h");
         let path = config_file_path().expect("HOME branch should yield a path");
         assert!(
-            path.ends_with("complete-me/config.env"),
+            path.ends_with("compme/config.env"),
             "unexpected path: {path:?}"
         );
         assert!(
@@ -373,14 +365,14 @@ mod tests {
         );
 
         // Branch 3: neither var available -> None.
-        std::env::remove_var("COMPLETE_ME_CONFIG");
+        std::env::remove_var("COMPME_CONFIG");
         std::env::remove_var("HOME");
         assert_eq!(config_file_path(), None);
 
         // Restore originals.
         match saved_config {
-            Some(v) => std::env::set_var("COMPLETE_ME_CONFIG", v),
-            None => std::env::remove_var("COMPLETE_ME_CONFIG"),
+            Some(v) => std::env::set_var("COMPME_CONFIG", v),
+            None => std::env::remove_var("COMPME_CONFIG"),
         }
         match saved_home {
             Some(v) => std::env::set_var("HOME", v),

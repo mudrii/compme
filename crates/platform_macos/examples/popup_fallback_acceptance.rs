@@ -25,7 +25,7 @@ use platform::{
 };
 use platform_macos::MacosPlatformAdapter;
 
-const FIXTURE_IDENTIFIER: &str = "complete-me-a1b-popup-fixture";
+const FIXTURE_IDENTIFIER: &str = "compme-a1b-popup-fixture";
 const FIXTURE_VALUE: &str = "popup fixture value";
 const INSERT_TEXT: &str = " inserted";
 
