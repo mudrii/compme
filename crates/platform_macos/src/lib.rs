@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::ffi::{c_uchar, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::sync::{mpsc, Arc, Mutex, Once};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -2459,11 +2460,29 @@ fn ensure_carbon_handler_installed(target: EventTargetRef) -> Result<(), Platfor
     Ok(())
 }
 
-/// The active accept keymap. Single indirection so that when a *configured*
-/// (rebound) keymap is threaded from the app layer, the decision logic, Carbon
-/// registration, and the handler's id→keycode inverse all switch together.
+/// The process-wide accept keymap (cycle-13 design: ONE source so the
+/// decision logic, Carbon registration, and the handler's id→keycode inverse
+/// can never diverge). Set once at startup from config, before the first
+/// arm; unset (tests, default config) reads as the default bindings.
+static ACCEPT_KEYMAP: OnceLock<AcceptKeymap> = OnceLock::new();
+
+/// Install the configured keymap. Must run BEFORE the platform adapter arms
+/// any accept tap (the run loop does this right after config parse). Returns
+/// the validation error on collision/invalid keycodes — callers fail soft to
+/// the defaults and log.
+pub fn set_accept_keymap_from_config(
+    word: Option<i64>,
+    full: Option<i64>,
+) -> Result<(), KeymapError> {
+    let map = AcceptKeymap::from_accept_keys(word, full)?;
+    let _ = ACCEPT_KEYMAP.set(map);
+    Ok(())
+}
+
+/// The active accept keymap. Single indirection so the three call sites
+/// (decision, registration, inverse) always agree.
 fn accept_keymap() -> AcceptKeymap {
-    AcceptKeymap::default()
+    ACCEPT_KEYMAP.get().copied().unwrap_or_default()
 }
 
 fn carbon_accept_hotkey_bindings() -> [(u32, i64); 4] {
@@ -6613,6 +6632,26 @@ mod tests {
             "synthetic input must never reach an app the user switched away from"
         );
         assert!(touched.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_rebound_keymap_keeps_decision_registration_and_inverse_consistent() {
+        // The cycle-13 one-source contract, checked on a NON-default map so a
+        // future regression in any of the three call sites' shared source
+        // shows up as a divergence here (the global OnceLock stays untouched —
+        // it is process-wide and other tests assume the default).
+        let map = AcceptKeymap::from_accept_keys(Some(122), Some(120)).expect("valid rebind");
+        for (id, keycode) in map.carbon_bindings() {
+            // registration → inverse agrees
+            assert_eq!(map.keycode_for_hotkey_id(id), Some(keycode), "id {id}");
+            // registration → decision agrees (every registered key maps to a
+            // binding; the armed-gate semantics live elsewhere)
+            assert!(map.binding_for(keycode).is_some(), "keycode {keycode}");
+        }
+        // The rebound word/full keys actually moved.
+        assert_eq!(map.binding_for(122), Some(AcceptBinding::Word));
+        assert_eq!(map.binding_for(120), Some(AcceptBinding::Full));
+        assert_eq!(map.binding_for(48), None, "old Tab unbound");
     }
 
     #[test]

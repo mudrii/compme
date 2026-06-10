@@ -172,6 +172,12 @@ struct Config {
     /// 64 hex). `None` (default, incl. malformed) = signed links rejected
     /// fail-closed; unsigned reversible links work either way.
     trusted_key: Option<webconfig::TrustedKey>,
+    /// Rebound accept keys (raw macOS virtual keycodes,
+    /// `COMPME_ACCEPT_WORD_KEY` / `COMPME_ACCEPT_FULL_KEY`). `None` →
+    /// defaults (Tab 48 / grave 50). Collisions fail soft to defaults at
+    /// startup with a logged error.
+    accept_word_key: Option<i64>,
+    accept_full_key: Option<i64>,
 }
 
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
@@ -207,6 +213,10 @@ impl Config {
             launch_at_login: parse_tri_state(lookup("COMPME_LAUNCH_AT_LOGIN")),
             trusted_key: lookup("COMPME_TRUSTED_KEY")
                 .and_then(|raw| webconfig::TrustedKey::from_hex(&raw)),
+            accept_word_key: lookup("COMPME_ACCEPT_WORD_KEY")
+                .and_then(|raw| raw.trim().parse::<i64>().ok()),
+            accept_full_key: lookup("COMPME_ACCEPT_FULL_KEY")
+                .and_then(|raw| raw.trim().parse::<i64>().ok()),
             acceptance_pid: lookup("COMPME_ACCEPTANCE_PID").and_then(|raw| raw.parse::<i32>().ok()),
             stub_completion: lookup("COMPME_STUB_COMPLETION").filter(|s| !s.is_empty()),
             model_path: lookup("COMPME_MODEL_PATH")
@@ -1013,6 +1023,25 @@ pub fn run() -> Result<(), String> {
         // The grant takes effect on the NEXT launch (macOS shows the prompt async
         // and re-reads TCC at startup), so screen context is inactive this run.
         eprintln!("compme: restart after granting Screen Recording to enable screen context");
+    }
+
+    // Rebound accept keys (cycle-13 residual): set the process-wide keymap
+    // BEFORE the platform adapter exists, so the Carbon registration, the
+    // decision logic, and the handler's id→keycode inverse all read one
+    // source from the first arm. Collision/invalid → fail soft to defaults.
+    if config.accept_word_key.is_some() || config.accept_full_key.is_some() {
+        match platform_macos::set_accept_keymap_from_config(
+            config.accept_word_key,
+            config.accept_full_key,
+        ) {
+            Ok(()) => eprintln!(
+                "compme: accept keys rebound (word={:?} full={:?})",
+                config.accept_word_key, config.accept_full_key
+            ),
+            Err(err) => {
+                eprintln!("compme: accept-key rebind invalid ({err:?}); using defaults")
+            }
+        }
     }
 
     // compme:// deep-link reception (web-driven config §8/§16): Launch
@@ -1833,6 +1862,21 @@ mod tests {
         )
         .expect_err("signed link without a key must fail");
         assert!(err.contains("no trusted key"), "{err}");
+    }
+
+    #[test]
+    fn accept_key_config_parses_keycodes_and_rejects_junk() {
+        // Raw macOS virtual keycodes (the future shortcuts-pane recorder
+        // emits keycodes too); junk → None → default bindings.
+        let config = Config::from_lookup(lookup(&[
+            ("COMPME_ACCEPT_WORD_KEY", "122"),
+            ("COMPME_ACCEPT_FULL_KEY", "120"),
+        ]));
+        assert_eq!(config.accept_word_key, Some(122));
+        assert_eq!(config.accept_full_key, Some(120));
+        let junk = Config::from_lookup(lookup(&[("COMPME_ACCEPT_WORD_KEY", "tab")]));
+        assert_eq!(junk.accept_word_key, None);
+        assert_eq!(Config::from_lookup(lookup(&[])).accept_word_key, None);
     }
 
     #[test]
