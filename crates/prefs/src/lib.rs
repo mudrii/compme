@@ -16,6 +16,10 @@ pub struct AppPolicy {
     /// Pass a literal Tab in this app instead of treating it as Word-accept
     /// (Cotypist's per-app Tab disable).
     pub tab_disabled: bool,
+    /// Per-app typing-history collection override (tray "Input Collection in
+    /// <app>"): `None` → inherit the default (allowed — the global opt-IN is
+    /// the memory `StorageMode`); `Some(false)` → never record from this app.
+    pub collect_inputs: Option<bool>,
 }
 
 /// Suggestion-gating preferences. `excluded_apps`/`excluded_domains` hard-block
@@ -70,6 +74,14 @@ impl Prefs {
         app.and_then(|app| self.per_app.get(app))
             .and_then(|policy| policy.enabled)
             .unwrap_or(self.default_enabled)
+    }
+
+    /// Whether typing-history collection (previous-inputs context + encrypted
+    /// memory) may record from this app. Default allowed; per-app opt-out.
+    pub fn collection_allowed(&self, app: Option<&str>) -> bool {
+        app.and_then(|app| self.per_app.get(app))
+            .and_then(|policy| policy.collect_inputs)
+            .unwrap_or(true)
     }
 
     /// Whether Tab should pass through literally (not map to Word-accept) for the
@@ -155,6 +167,29 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collection_allowed_defaults_on_and_honors_the_per_app_override() {
+        let mut p = Prefs::default();
+        // Default: collection allowed everywhere (opt-out model, the global
+        // opt-IN is the memory StorageMode).
+        assert!(p.collection_allowed(Some("com.apple.TextEdit")));
+        assert!(p.collection_allowed(None));
+        // Per-app off.
+        p.per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .collect_inputs = Some(false);
+        assert!(!p.collection_allowed(Some("com.apple.TextEdit")));
+        // Other apps unaffected.
+        assert!(p.collection_allowed(Some("com.apple.Safari")));
+        // Explicit Some(true) re-allows.
+        p.per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .collect_inputs = Some(true);
+        assert!(p.collection_allowed(Some("com.apple.TextEdit")));
+    }
 
     #[test]
     fn app_snooze_until_relaunch_saturates_and_clear_reenables() {

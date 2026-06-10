@@ -585,8 +585,11 @@ fn record_full_accept(
     context_max_chars: usize,
     previous_inputs: &PreviousInputs,
     memory: Option<&memory::MemoryStore>,
+    collection_allowed: bool,
 ) {
-    if action != AcceptAction::Full || field.app.starts_with("pid:") {
+    // Per-app "Input Collection off" (tray submenu / Cotypist parity) gates
+    // BOTH sinks below — previous-inputs context AND encrypted memory.
+    if !collection_allowed || action != AcceptAction::Full || field.app.starts_with("pid:") {
         return;
     }
     if context_max_chars > 0 {
@@ -1198,6 +1201,7 @@ pub fn run() -> Result<(), String> {
                             config.context_max_chars,
                             &previous_inputs,
                             memory.as_ref(),
+                            prefs.collection_allowed(Some(&field.app)),
                         );
                     }
                     match engine.on_accept(action) {
@@ -1602,6 +1606,52 @@ mod tests {
              together with SNOOZE_MINUTES"
         );
         assert!(AppStatus::Ready.render_line(true).contains("1 hour"));
+    }
+
+    #[test]
+    fn collection_disabled_skips_both_recording_sinks() {
+        // Per-app "Input Collection off" must silence BOTH sinks: the
+        // previous-inputs context and the encrypted memory store.
+        let previous = PreviousInputs::default();
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([3u8; 32]),
+            memory::StorageMode::AcceptedOnly,
+        )
+        .expect("store");
+        let field = FieldHandle {
+            app: "com.apple.TextEdit".into(),
+            pid: Some(42),
+            element_id: "ax:1".into(),
+            generation: 1,
+        };
+
+        record_full_accept(
+            AcceptAction::Full,
+            &field,
+            "hello world",
+            100,
+            &previous,
+            Some(&store),
+            false, // collection disabled for this app
+        );
+        assert_eq!(store.count().expect("count"), 0, "memory must not record");
+        assert!(
+            previous.recent("com.apple.TextEdit").is_empty(),
+            "previous-inputs must not record"
+        );
+
+        // Sanity: allowed -> both record.
+        record_full_accept(
+            AcceptAction::Full,
+            &field,
+            "hello world",
+            100,
+            &previous,
+            Some(&store),
+            true,
+        );
+        assert_eq!(store.count().expect("count"), 1);
+        assert!(!previous.recent("com.apple.TextEdit").is_empty());
     }
 
     #[test]
@@ -2095,6 +2145,7 @@ mod tests {
             160,
             &prev,
             Some(&store),
+            true,
         );
         assert_eq!(store.count().unwrap(), 1);
         assert_eq!(prev.recent("com.apple.TextEdit").len(), 1);
@@ -2111,6 +2162,7 @@ mod tests {
             160,
             &prev,
             Some(&store),
+            true,
         );
         assert_eq!(store.count().unwrap(), 0);
         assert!(prev.recent("com.apple.TextEdit").is_empty());
@@ -2127,6 +2179,7 @@ mod tests {
             160,
             &prev,
             Some(&store),
+            true,
         );
         assert_eq!(store.count().unwrap(), 0);
         assert!(prev.recent("pid:42").is_empty());
@@ -2145,6 +2198,7 @@ mod tests {
             0,
             &prev,
             Some(&store),
+            true,
         );
         assert_eq!(store.count().unwrap(), 1);
         assert!(prev.recent("com.apple.TextEdit").is_empty());
