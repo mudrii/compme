@@ -682,6 +682,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "model_fetch"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

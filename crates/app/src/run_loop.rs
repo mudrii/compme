@@ -1805,17 +1805,24 @@ pub fn run() -> Result<(), String> {
             .and_then(|mut slot| slot.take());
         if let Some(row) = clicked_row {
             if let (Some(store), Some(app)) = (&memory, apps_ids.get(row)) {
-                match store.delete_app(app) {
-                    Ok(n) => eprintln!("compme: deleted {n} records for {app}"),
-                    Err(err) => eprintln!("compme: delete for {app} failed: {err}"),
+                // Irreversible (secure_delete zeroes freed pages) — confirm
+                // first, Cancel-default (review-c112; deep-link precedent).
+                let confirmed = platform_macos::confirm_delete_app_prompt(app).unwrap_or(false);
+                if !confirmed {
+                    eprintln!("compme: delete for {app} cancelled");
+                } else {
+                    match store.delete_app(app) {
+                        Ok(n) => eprintln!("compme: deleted {n} records for {app}"),
+                        Err(err) => eprintln!("compme: delete for {app} failed: {err}"),
+                    }
+                    if let Ok(mut lines) = settings_flags.apps_lines.lock() {
+                        (*lines, apps_ids) = match store.count_by_app() {
+                            Ok(counts) => (apps_pane_lines(&counts, true), apps_row_ids(&counts)),
+                            Err(err) => (vec![format!("Store error: {err}")], Vec::new()),
+                        };
+                    }
+                    settings_window.refresh_apps_labels();
                 }
-                if let Ok(mut lines) = settings_flags.apps_lines.lock() {
-                    (*lines, apps_ids) = match store.count_by_app() {
-                        Ok(counts) => (apps_pane_lines(&counts, true), apps_row_ids(&counts)),
-                        Err(err) => (vec![format!("Store error: {err}")], Vec::new()),
-                    };
-                }
-                settings_window.refresh_apps_labels();
             }
         }
         // Visible-only Setup re-probe: granting a permission while the

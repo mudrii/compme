@@ -36,3 +36,21 @@ pub fn confirm_deep_link_prompt(
     // First button returns NSAlertFirstButtonReturn (Cancel); Allow is +1.
     Ok(response == NSAlertFirstButtonReturn + 1)
 }
+
+/// Confirm deleting one app's recorded-input history (Apps tab Delete —
+/// irreversible: secure_delete zeroes the freed pages). Same shape as the
+/// deep-link prompt: Cancel is the first/default button.
+pub fn confirm_delete_app_prompt(app: &str) -> Result<bool, PlatformError> {
+    let mtm = MainThreadMarker::new().ok_or_else(|| PlatformError::CannotComplete {
+        reason: "delete prompt requires the main thread".into(),
+    })?;
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str("Delete recorded inputs?"));
+    alert.setInformativeText(&NSString::from_str(&format!(
+        "All recorded inputs for {app} will be permanently erased."
+    )));
+    let _ = alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+    let _ = alert.addButtonWithTitle(&NSString::from_str("Delete"));
+    let response = alert.runModal();
+    Ok(response == NSAlertFirstButtonReturn + 1)
+}
