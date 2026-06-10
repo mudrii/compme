@@ -47,6 +47,9 @@ pub struct SettingsFlags {
     pub setup_grant_ax: Arc<AtomicBool>,
     pub setup_request_screen: Arc<AtomicBool>,
     pub setup_reveal_model: Arc<AtomicBool>,
+    /// Apps rows (per-app recorded-input counts), composed by the run loop
+    /// right before each show; refreshed like stats.
+    pub apps_lines: Arc<Mutex<Vec<String>>>,
 }
 
 struct SettingsTargetIvars {
@@ -119,6 +122,8 @@ pub struct MacosSettingsWindow {
     stats_labels: Vec<Retained<NSTextField>>,
     // Setup row labels, refreshed from `flags.setup_lines` the same way.
     setup_labels: Vec<Retained<NSTextField>>,
+    // Apps row labels, refreshed from `flags.apps_lines` the same way.
+    apps_labels: Vec<Retained<NSTextField>>,
 }
 
 impl MacosSettingsWindow {
@@ -130,6 +135,7 @@ impl MacosSettingsWindow {
             target: None,
             stats_labels: Vec::new(),
             setup_labels: Vec::new(),
+            apps_labels: Vec::new(),
         }
     }
 
@@ -139,10 +145,11 @@ impl MacosSettingsWindow {
         let mtm = main_thread()?;
         if self.window.is_none() {
             let target = SettingsTarget::new(self.flags.clone(), mtm);
-            let (window, stats_labels, setup_labels) = build_window(mtm, &target, &self.flags);
-            self.window = Some(window);
-            self.stats_labels = stats_labels;
-            self.setup_labels = setup_labels;
+            let built = build_window(mtm, &target, &self.flags);
+            self.window = Some(built.window);
+            self.stats_labels = built.stats_labels;
+            self.setup_labels = built.setup_labels;
+            self.apps_labels = built.apps_labels;
             self.target = Some(target);
         }
         // Refresh data rows on EVERY show — the lazily built window is reused
@@ -154,6 +161,11 @@ impl MacosSettingsWindow {
         }
         if let Ok(lines) = self.flags.setup_lines.lock() {
             for (label, line) in self.setup_labels.iter().zip(lines.iter()) {
+                label.setStringValue(&NSString::from_str(line));
+            }
+        }
+        if let Ok(lines) = self.flags.apps_lines.lock() {
+            for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
         }
@@ -205,11 +217,7 @@ fn build_window(
     mtm: MainThreadMarker,
     target: &Retained<SettingsTarget>,
     flags: &SettingsFlags,
-) -> (
-    Retained<NSWindow>,
-    Vec<Retained<NSTextField>>,
-    Vec<Retained<NSTextField>>,
-) {
+) -> BuiltWindow {
     let frame = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(520.0, 420.0));
     let style =
         NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable;
@@ -228,6 +236,7 @@ fn build_window(
     window.center();
     let mut stats_labels: Vec<Retained<NSTextField>> = Vec::new();
     let mut setup_labels: Vec<Retained<NSTextField>> = Vec::new();
+    let mut apps_labels: Vec<Retained<NSTextField>> = Vec::new();
 
     // Tab layout (c105): one NSTabView as the content view, one tab per
     // pane_titles() entry. Tab content is ~500x350; per-pane coordinates are
@@ -340,11 +349,40 @@ fn build_window(
         general.addSubview(&switch);
     }
 
+    // Apps tab: per-app recorded-input counts (encrypted memory store).
+    // Strings come from the run loop via flags.apps_lines; refreshed on
+    // every show like the other data tabs.
+    {
+        let apps = &pane_views[2];
+        let header =
+            NSTextField::labelWithString(&NSString::from_str("Recorded inputs by app"), mtm);
+        header.setFrame(NSRect::new(
+            NSPoint::new(20.0, 300.0),
+            NSSize::new(300.0, 24.0),
+        ));
+        apps.addSubview(&header);
+        let initial: Vec<String> = flags
+            .apps_lines
+            .lock()
+            .map(|l| l.clone())
+            .unwrap_or_default();
+        for row in 0..APPS_ROWS {
+            let text = initial.get(row).map(String::as_str).unwrap_or("");
+            let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
+            label.setFrame(NSRect::new(
+                NSPoint::new(20.0, 270.0 - row as f64 * 26.0),
+                NSSize::new(440.0, 20.0),
+            ));
+            apps.addSubview(&label);
+            apps_labels.push(label);
+        }
+    }
+
     // Statistics tab: header + STATS_ROWS data rows. Row strings come from
     // the run loop via flags.stats_lines; show() refreshes them on every
     // open. Monospaced font keeps sparkline glyphs column-aligned.
     {
-        let stats = &pane_views[2];
+        let stats = &pane_views[3];
         let stats_header =
             NSTextField::labelWithString(&NSString::from_str("This session + lifetime"), mtm);
         stats_header.setFrame(NSRect::new(
@@ -378,7 +416,7 @@ fn build_window(
     // About tab: static for the process lifetime, so build-once is fine
     // here (unlike the Statistics rows above).
     {
-        let about_view = &pane_views[3];
+        let about_view = &pane_views[4];
         let about =
             NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.about_text), mtm);
         about.setFrame(NSRect::new(
@@ -398,22 +436,39 @@ fn build_window(
                          // window on close, which would dangle our Retained pointer.
                          // SAFETY: documented NSWindow property setter.
     unsafe { window.setReleasedWhenClosed(false) };
-    (window, stats_labels, setup_labels)
+    BuiltWindow {
+        window,
+        stats_labels,
+        setup_labels,
+        apps_labels,
+    }
+}
+
+/// Everything `build_window` hands back: the window plus the data-row label
+/// handles each tab needs refreshed on show.
+struct BuiltWindow {
+    window: Retained<NSWindow>,
+    stats_labels: Vec<Retained<NSTextField>>,
+    setup_labels: Vec<Retained<NSTextField>>,
+    apps_labels: Vec<Retained<NSTextField>>,
 }
 
 /// Max Setup row count (accessibility / screen recording / model file).
 const SETUP_ROWS: usize = 3;
 
+/// Max Apps rows (top apps by recorded-input count, plus status lines).
+const APPS_ROWS: usize = 8;
+
 /// Fixed Statistics row count (shown / accepted / words / lifetime).
 const STATS_ROWS: usize = 4;
 
 /// Number of settings tabs.
-pub const PANE_COUNT: usize = 4;
+pub const PANE_COUNT: usize = 5;
 
 /// Tab titles in display order (Cotypist order) — Setup first, About last;
 /// new panes insert between, never around.
 pub fn pane_titles() -> [&'static str; PANE_COUNT] {
-    ["Setup", "General", "Statistics", "About"]
+    ["Setup", "General", "Apps", "Statistics", "About"]
 }
 
 #[cfg(test)]
@@ -424,7 +479,10 @@ mod tests {
     fn pane_titles_are_fixed_and_ordered() {
         // Tab order is part of the settings UX contract (Cotypist order):
         // Setup first, About last. New panes insert between, never around.
-        assert_eq!(pane_titles(), ["Setup", "General", "Statistics", "About"]);
+        assert_eq!(
+            pane_titles(),
+            ["Setup", "General", "Apps", "Statistics", "About"]
+        );
         assert_eq!(pane_titles().len(), PANE_COUNT);
     }
 

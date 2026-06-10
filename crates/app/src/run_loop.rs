@@ -816,11 +816,30 @@ fn setup_poll_due(visible: bool, last_poll_ms: Option<u64>, now_ms: u64) -> bool
         && last_poll_ms.is_none_or(|last| now_ms.saturating_sub(last) >= SECURE_POLL_INTERVAL_MS)
 }
 
+/// The Apps tab's rows: top apps by recorded-input count (capped at the
+/// window's 8 labels), or an honest status line when collection is off /
+/// nothing is recorded.
+fn apps_pane_lines(counts: &[(String, u64)], collection_on: bool) -> Vec<String> {
+    if !collection_on {
+        return vec!["Input collection is off".to_string()];
+    }
+    if counts.is_empty() {
+        return vec!["No recorded inputs yet".to_string()];
+    }
+    counts
+        .iter()
+        .take(8)
+        .map(|(app, n)| format!("{app} \u{2014} {n}"))
+        .collect()
+}
+
 /// The Setup tab's current rows as display lines: probe permissions and the
 /// model file NOW (cheap queries) and render through `setup_row_line`.
-fn compose_setup_lines(trusted: bool, config: &Config) -> Vec<String> {
+fn compose_setup_lines(config: &Config) -> Vec<String> {
     crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
-        ax_trusted: trusted,
+        // Probed fresh here (cheap), not the loop's 480ms-stale copy —
+        // review-c107: rows must not flip at different cadences.
+        ax_trusted: accessibility_trusted(),
         screen_context_enabled: config.screen_context,
         screen_recording: screen_recording_permission(),
         model_exists: config.stub_completion.is_some() || config.model_path.exists(),
@@ -1338,6 +1357,7 @@ pub fn run() -> Result<(), String> {
         setup_grant_ax: Arc::new(AtomicBool::new(false)),
         setup_request_screen: Arc::new(AtomicBool::new(false)),
         setup_reveal_model: Arc::new(AtomicBool::new(false)),
+        apps_lines: Arc::new(Mutex::new(Vec::new())),
     };
     // Visible-only Setup re-probe cadence (setup_poll_due).
     let mut last_setup_poll_ms: Option<u64> = None;
@@ -1661,9 +1681,22 @@ pub fn run() -> Result<(), String> {
             // Setup tab: re-probe permissions/model at every open (cheap
             // queries; the visible-only poll below covers stays-open).
             if let Ok(mut lines) = settings_flags.setup_lines.lock() {
-                *lines = compose_setup_lines(trusted, &config);
+                *lines = compose_setup_lines(&config);
             }
             last_setup_poll_ms = Some(now_ms);
+            // Apps tab: per-app counts straight from the store (plaintext
+            // GROUP BY, no decryption). Unlike setup_lines these are
+            // show-time snapshots, same stance as stats_lines (c99): cheap
+            // probes refresh live, data aggregations refresh per open.
+            if let Ok(mut lines) = settings_flags.apps_lines.lock() {
+                *lines = match &memory {
+                    Some(store) => match store.count_by_app() {
+                        Ok(counts) => apps_pane_lines(&counts, true),
+                        Err(err) => vec![format!("Store error: {err}")],
+                    },
+                    None => apps_pane_lines(&[], false),
+                };
+            }
             if let Err(err) = settings_window.show() {
                 eprintln!("compme: settings window unavailable: {err}");
             }
@@ -1693,7 +1726,17 @@ pub fn run() -> Result<(), String> {
             .setup_reveal_model
             .swap(false, Ordering::Relaxed)
         {
-            if let Err(err) = platform_macos::reveal_file_in_finder(&config.model_path) {
+            // Absolutize: NSURL fileURLWithPath resolves relative paths
+            // against the CWD, which is / for a bundle launch (review-c107;
+            // same class as the banked D14 default-path item).
+            let model_abs = if config.model_path.is_absolute() {
+                config.model_path.clone()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(&config.model_path))
+                    .unwrap_or_else(|_| config.model_path.clone())
+            };
+            if let Err(err) = platform_macos::reveal_file_in_finder(&model_abs) {
                 eprintln!("compme: reveal model failed: {err:?}");
             }
         }
@@ -1702,7 +1745,7 @@ pub fn run() -> Result<(), String> {
         if setup_poll_due(settings_visible, last_setup_poll_ms, now_ms) {
             last_setup_poll_ms = Some(now_ms);
             if let Ok(mut lines) = settings_flags.setup_lines.lock() {
-                *lines = compose_setup_lines(trusted, &config);
+                *lines = compose_setup_lines(&config);
             }
             settings_window.refresh_setup_labels();
         }
@@ -2125,6 +2168,34 @@ mod tests {
             !setup_poll_due(false, Some(10_000), 99_999),
             "hidden again: never, regardless of elapsed"
         );
+    }
+
+    #[test]
+    fn apps_pane_lines_render_counts_or_status() {
+        // Apps tab: top apps by recorded-input count; honest status lines
+        // when collection is off or nothing is recorded yet.
+        assert_eq!(
+            apps_pane_lines(&[], false),
+            vec!["Input collection is off".to_string()]
+        );
+        assert_eq!(
+            apps_pane_lines(&[], true),
+            vec!["No recorded inputs yet".to_string()]
+        );
+        let counts = vec![
+            ("com.apple.TextEdit".to_string(), 12),
+            ("com.google.Chrome".to_string(), 3),
+        ];
+        assert_eq!(
+            apps_pane_lines(&counts, true),
+            vec![
+                "com.apple.TextEdit \u{2014} 12".to_string(),
+                "com.google.Chrome \u{2014} 3".to_string(),
+            ]
+        );
+        // Capped at the window's row count (8 labels).
+        let many: Vec<(String, u64)> = (0..20).map(|i| (format!("app{i:02}"), 20 - i)).collect();
+        assert_eq!(apps_pane_lines(&many, true).len(), 8);
     }
 
     #[test]
