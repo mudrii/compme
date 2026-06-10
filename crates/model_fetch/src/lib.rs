@@ -37,11 +37,14 @@ pub fn read_sha256_hex(mut reader: impl std::io::Read) -> std::io::Result<String
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            // Retriable per the Read contract (std::io::copy does the same)
+            // — a transient EINTR must not abort a multi-GB verification.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
         }
-        hasher.update(&buf[..n]);
     }
     Ok(hex(&hasher.finalize()))
 }
@@ -64,6 +67,31 @@ mod tests {
         assert_eq!(
             read_sha256_hex(Cursor::new(&big)).unwrap(),
             sha256_hex(&big)
+        );
+
+        struct InterruptedOnce(u8);
+        impl std::io::Read for InterruptedOnce {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.0 {
+                    0 => {
+                        self.0 = 1;
+                        Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+                    }
+                    1 => {
+                        self.0 = 2;
+                        buf[..3].copy_from_slice(b"abc");
+                        Ok(3)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
+        // ErrorKind::Interrupted is retriable per the Read contract
+        // (std::io::copy retries it) — a transient EINTR must not abort a
+        // multi-GB download's verification.
+        assert_eq!(
+            read_sha256_hex(InterruptedOnce(0)).unwrap(),
+            sha256_hex(b"abc")
         );
 
         struct FailingReader;
