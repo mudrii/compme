@@ -38,6 +38,9 @@ pub struct SettingsFlags {
     /// About text (version/license/no-telemetry/repo/credits), composed once
     /// at startup — static for the process lifetime, rendered verbatim.
     pub about_text: String,
+    /// Setup rows (permission/model readiness), composed by the run loop
+    /// right before each show; one label per line, refreshed like stats.
+    pub setup_lines: Arc<Mutex<Vec<String>>>,
 }
 
 struct SettingsTargetIvars {
@@ -87,6 +90,8 @@ pub struct MacosSettingsWindow {
     // Statistics row labels, refreshed from `flags.stats_lines` on every show
     // (the window is built once; data rows must not go stale on reopen).
     stats_labels: Vec<Retained<NSTextField>>,
+    // Setup row labels, refreshed from `flags.setup_lines` the same way.
+    setup_labels: Vec<Retained<NSTextField>>,
 }
 
 impl MacosSettingsWindow {
@@ -97,6 +102,7 @@ impl MacosSettingsWindow {
             flags,
             target: None,
             stats_labels: Vec::new(),
+            setup_labels: Vec::new(),
         }
     }
 
@@ -106,15 +112,21 @@ impl MacosSettingsWindow {
         let mtm = main_thread()?;
         if self.window.is_none() {
             let target = SettingsTarget::new(self.flags.clone(), mtm);
-            let (window, stats_labels) = build_window(mtm, &target, &self.flags);
+            let (window, stats_labels, setup_labels) = build_window(mtm, &target, &self.flags);
             self.window = Some(window);
             self.stats_labels = stats_labels;
+            self.setup_labels = setup_labels;
             self.target = Some(target);
         }
         // Refresh data rows on EVERY show — the lazily built window is reused
         // across opens, so stale strings would otherwise survive a reopen.
         if let Ok(lines) = self.flags.stats_lines.lock() {
             for (label, line) in self.stats_labels.iter().zip(lines.iter()) {
+                label.setStringValue(&NSString::from_str(line));
+            }
+        }
+        if let Ok(lines) = self.flags.setup_lines.lock() {
+            for (label, line) in self.setup_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
         }
@@ -156,7 +168,11 @@ fn build_window(
     mtm: MainThreadMarker,
     target: &Retained<SettingsTarget>,
     flags: &SettingsFlags,
-) -> (Retained<NSWindow>, Vec<Retained<NSTextField>>) {
+) -> (
+    Retained<NSWindow>,
+    Vec<Retained<NSTextField>>,
+    Vec<Retained<NSTextField>>,
+) {
     let frame = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(520.0, 420.0));
     let style =
         NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable;
@@ -174,6 +190,7 @@ fn build_window(
     window.setTitle(&NSString::from_str("Compme Settings"));
     window.center();
     let mut stats_labels: Vec<Retained<NSTextField>> = Vec::new();
+    let mut setup_labels: Vec<Retained<NSTextField>> = Vec::new();
 
     // Tab layout (c105): one NSTabView as the content view, one tab per
     // pane_titles() entry. Tab content is ~500x350; per-pane coordinates are
@@ -192,10 +209,38 @@ fn build_window(
         })
         .collect();
 
+    // Setup tab: readiness rows (permissions, model file). Strings come
+    // from the run loop via flags.setup_lines; show() refreshes them on
+    // every open. Grant/Request/Reveal buttons are the next slice.
+    {
+        let setup = &pane_views[0];
+        let header = NSTextField::labelWithString(&NSString::from_str("Setup checklist"), mtm);
+        header.setFrame(NSRect::new(
+            NSPoint::new(20.0, 300.0),
+            NSSize::new(300.0, 24.0),
+        ));
+        setup.addSubview(&header);
+        let initial: Vec<String> = flags
+            .setup_lines
+            .lock()
+            .map(|l| l.clone())
+            .unwrap_or_default();
+        for row in 0..SETUP_ROWS {
+            let text = initial.get(row).map(String::as_str).unwrap_or("");
+            let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
+            label.setFrame(NSRect::new(
+                NSPoint::new(20.0, 270.0 - row as f64 * 26.0),
+                NSSize::new(440.0, 20.0),
+            ));
+            setup.addSubview(&label);
+            setup_labels.push(label);
+        }
+    }
+
     // General tab: the Labs switch (global mid-line toggle), initialized
     // from the CURRENT config state.
     {
-        let general = &pane_views[0];
+        let general = &pane_views[1];
         let label = NSTextField::labelWithString(
             &NSString::from_str("Mid-line completions (show even with text after the cursor)"),
             mtm,
@@ -231,7 +276,7 @@ fn build_window(
     // the run loop via flags.stats_lines; show() refreshes them on every
     // open. Monospaced font keeps sparkline glyphs column-aligned.
     {
-        let stats = &pane_views[1];
+        let stats = &pane_views[2];
         let stats_header =
             NSTextField::labelWithString(&NSString::from_str("This session + lifetime"), mtm);
         stats_header.setFrame(NSRect::new(
@@ -265,7 +310,7 @@ fn build_window(
     // About tab: static for the process lifetime, so build-once is fine
     // here (unlike the Statistics rows above).
     {
-        let about_view = &pane_views[2];
+        let about_view = &pane_views[3];
         let about =
             NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.about_text), mtm);
         about.setFrame(NSRect::new(
@@ -280,23 +325,27 @@ fn build_window(
         about_view.addSubview(&about);
     }
     window.setContentView(Some(&tabs));
-    // Keep the instance alive across closes: AppKit's default releases a
-    // window on close, which would dangle our Retained pointer.
-    // SAFETY: documented NSWindow property setter.
+    let _ = &pane_views; // pane views are retained by their tab items
+                         // Keep the instance alive across closes: AppKit's default releases a
+                         // window on close, which would dangle our Retained pointer.
+                         // SAFETY: documented NSWindow property setter.
     unsafe { window.setReleasedWhenClosed(false) };
-    (window, stats_labels)
+    (window, stats_labels, setup_labels)
 }
+
+/// Max Setup row count (accessibility / screen recording / model file).
+const SETUP_ROWS: usize = 3;
 
 /// Fixed Statistics row count (shown / accepted / words / lifetime).
 const STATS_ROWS: usize = 4;
 
 /// Number of settings tabs.
-pub const PANE_COUNT: usize = 3;
+pub const PANE_COUNT: usize = 4;
 
-/// Tab titles in display order — General first, About last; new panes
-/// insert between, never around.
+/// Tab titles in display order (Cotypist order) — Setup first, About last;
+/// new panes insert between, never around.
 pub fn pane_titles() -> [&'static str; PANE_COUNT] {
-    ["General", "Statistics", "About"]
+    ["Setup", "General", "Statistics", "About"]
 }
 
 #[cfg(test)]
@@ -305,9 +354,9 @@ mod tests {
 
     #[test]
     fn pane_titles_are_fixed_and_ordered() {
-        // Tab order is part of the settings UX contract: General first,
-        // About last. New panes insert between, never around.
-        assert_eq!(pane_titles(), ["General", "Statistics", "About"]);
+        // Tab order is part of the settings UX contract (Cotypist order):
+        // Setup first, About last. New panes insert between, never around.
+        assert_eq!(pane_titles(), ["Setup", "General", "Statistics", "About"]);
         assert_eq!(pane_titles().len(), PANE_COUNT);
     }
 

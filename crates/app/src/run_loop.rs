@@ -808,6 +808,16 @@ fn stats_pane_lines(buckets: &[stats::DayBucket]) -> Vec<String> {
         .collect()
 }
 
+/// One Setup-tab row: readiness glyph + label (the pane's display form of
+/// `setup_state::SetupRow`).
+fn setup_row_line(row: &crate::setup_state::SetupRow) -> String {
+    format!(
+        "{} {}",
+        if row.ready { '\u{2713}' } else { '\u{2717}' },
+        row.label
+    )
+}
+
 /// The Statistics pane's lifetime row: persisted totals merged with the live
 /// session. Words and accepted only — no per-day series exists across
 /// restarts (stats.env stores grow-only counters), so no sparkline.
@@ -1302,6 +1312,7 @@ pub fn run() -> Result<(), String> {
         labs_midline: Arc::new(AtomicBool::new(global_mid_word)),
         stats_lines: Arc::new(Mutex::new(Vec::new())),
         about_text: crate::about::about_text(),
+        setup_lines: Arc::new(Mutex::new(Vec::new())),
     };
     // Lifetime stats baseline, read once: the file only changes at shutdown,
     // so startup state + live session is the whole truth while running.
@@ -1619,6 +1630,19 @@ pub fn run() -> Result<(), String> {
                 lines.push(lifetime_line(
                     &lifetime_base.merged(usage.counts(wall_ms), usage.words_completed(wall_ms)),
                 ));
+            }
+            // Setup tab: re-probe permissions/model at every open (cheap
+            // queries; a 480ms visible-only poll is the next slice).
+            if let Ok(mut lines) = settings_flags.setup_lines.lock() {
+                *lines = crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
+                    ax_trusted: trusted,
+                    screen_context_enabled: config.screen_context,
+                    screen_recording: screen_recording_permission(),
+                    model_exists: config.stub_completion.is_some() || config.model_path.exists(),
+                })
+                .iter()
+                .map(setup_row_line)
+                .collect();
             }
             if let Err(err) = settings_window.show() {
                 eprintln!("compme: settings window unavailable: {err}");
@@ -2033,6 +2057,23 @@ mod tests {
         let mut lines = stats_pane_lines(&[stats::DayBucket::default()]);
         lines.push(lifetime_line(&stats::PersistedStats::default()));
         assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn setup_row_line_renders_readiness_glyphs() {
+        // Setup tab rows: check mark when ready, cross when not.
+        let ready = crate::setup_state::SetupRow {
+            label: "Accessibility",
+            ready: true,
+            action: None,
+        };
+        let missing = crate::setup_state::SetupRow {
+            label: "Model file",
+            ready: false,
+            action: None,
+        };
+        assert_eq!(setup_row_line(&ready), "\u{2713} Accessibility");
+        assert_eq!(setup_row_line(&missing), "\u{2717} Model file");
     }
 
     #[test]
