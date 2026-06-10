@@ -132,6 +132,43 @@ pub fn persist_setting(path: &Path, key: &str, value: &str) -> std::io::Result<(
     std::fs::rename(&temp, path)
 }
 
+/// Holds the single-instance flock for the process lifetime; the kernel
+/// releases it on ANY exit (crash included) — the reason this is flock and
+/// not a pid file. Dropping releases explicitly.
+pub struct InstanceLock {
+    _file: std::fs::File,
+}
+
+/// Try to become THE compme instance: `flock(LOCK_EX | LOCK_NB)` on `path`
+/// (parent dirs created). `None` = another instance holds it — the caller
+/// logs and exits. Launch-method-agnostic: a LaunchServices-spawned copy and
+/// a direct-exec'd binary contend on the same file (the c92 finding — two
+/// instances would double AX observers and hotkey registrations).
+pub fn try_acquire_instance_lock(path: &Path) -> Option<InstanceLock> {
+    use std::os::unix::io::AsRawFd;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).ok()?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .ok()?;
+    // SAFETY: flock on an owned, open fd; no memory contracts involved.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        Some(InstanceLock { _file: file })
+    } else {
+        None
+    }
+}
+
+/// The conventional lock path next to the config file.
+pub fn instance_lock_path() -> Option<PathBuf> {
+    config_file_path().map(|config| config.with_file_name("instance.lock"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +259,27 @@ mod tests {
             update_env_file_contents("  K  = old\n", "K", "new"),
             "K=new\n"
         );
+    }
+
+    #[test]
+    fn single_instance_lock_excludes_a_second_holder_until_released() {
+        let dir =
+            std::env::temp_dir().join(format!("compme-instance-lock-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("instance.lock");
+
+        let first = try_acquire_instance_lock(&path).expect("first acquire");
+        // flock conflicts apply across separate open file descriptions even
+        // within one process, so a second acquire must fail while held…
+        assert!(
+            try_acquire_instance_lock(&path).is_none(),
+            "second instance must be refused"
+        );
+        // …and succeed after the first holder drops (kernel releases the
+        // lock — crash-safe, unlike pid files).
+        drop(first);
+        assert!(try_acquire_instance_lock(&path).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

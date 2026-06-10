@@ -975,6 +975,25 @@ fn status_drops_pending_requests(status: AppStatus) -> bool {
 /// Build the whole stack, run until a signal (or the run-ms deadline), then tear
 /// down in order.
 pub fn run() -> Result<(), String> {
+    // Single-instance guard FIRST — before any AX observer, hotkey
+    // registration, or Apple Events handler exists. Two instances double all
+    // of those (live c92 finding: open(1) launches a second copy via Launch
+    // Services when the registered handler isn't already running). flock is
+    // launch-method-agnostic and kernel-released on any exit.
+    let _instance_lock = match config::instance_lock_path() {
+        Some(path) => match config::try_acquire_instance_lock(&path) {
+            Some(lock) => Some(lock),
+            None => {
+                eprintln!("compme: another instance is already running — exiting");
+                return Ok(());
+            }
+        },
+        None => {
+            eprintln!("compme: no config dir for the instance lock — continuing unguarded");
+            None
+        }
+    };
+
     let config = Config::from_env();
     install_signal_handlers();
 
