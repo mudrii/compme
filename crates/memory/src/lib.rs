@@ -163,6 +163,24 @@ impl MemoryStore {
         Ok(out)
     }
 
+    /// Per-app record counts, most-used first (the App-Settings pane list).
+    /// Counts come straight from the plaintext `app` column — no decryption;
+    /// ties break alphabetically so the order is deterministic.
+    pub fn count_by_app(&self) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT app, COUNT(*) AS cnt FROM memories GROUP BY app ORDER BY cnt DESC, app ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (app, n) = row?;
+            out.push((app, n.max(0) as u64));
+        }
+        Ok(out)
+    }
+
     /// Delete every record (the "disable and erase" control).
     pub fn delete_all(&self) -> Result<()> {
         self.conn.execute("DELETE FROM memories", [])?;
@@ -245,6 +263,45 @@ mod tests {
         let store = MemoryStore::open_in_memory(&key(1), StorageMode::Off).unwrap();
         store.remember("com.apple.TextEdit", "hello world").unwrap();
         assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn count_by_app_aggregates_sorted_by_count_descending() {
+        // App-Settings pane backing: per-app usage counts straight from the
+        // plaintext app column (no decryption needed for counting).
+        let store = MemoryStore::open_in_memory(&key(9), StorageMode::AcceptedOnly).unwrap();
+        store.remember("com.apple.TextEdit", "a").unwrap();
+        store.remember("com.apple.TextEdit", "b").unwrap();
+        store.remember("com.google.Chrome", "c").unwrap();
+        assert_eq!(
+            store.count_by_app().unwrap(),
+            vec![
+                ("com.apple.TextEdit".to_string(), 2),
+                ("com.google.Chrome".to_string(), 1),
+            ]
+        );
+        assert!(
+            MemoryStore::open_in_memory(&key(9), StorageMode::AcceptedOnly)
+                .unwrap()
+                .count_by_app()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn count_by_app_breaks_count_ties_alphabetically() {
+        // Equal counts must render in a stable order in the pane.
+        let store = MemoryStore::open_in_memory(&key(10), StorageMode::AcceptedOnly).unwrap();
+        store.remember("org.zed.Zed", "a").unwrap();
+        store.remember("com.apple.Notes", "b").unwrap();
+        assert_eq!(
+            store.count_by_app().unwrap(),
+            vec![
+                ("com.apple.Notes".to_string(), 1),
+                ("org.zed.Zed".to_string(), 1),
+            ]
+        );
     }
 
     #[test]

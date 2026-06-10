@@ -204,7 +204,9 @@ impl Stats {
         if days == 0 {
             return buckets;
         }
-        let cutoff = now_ms.saturating_sub(days as u64 * DAY_MS);
+        // saturating_mul: an absurd `days` must clamp the window, not wrap it
+        // (review-c96 — wrap would land at days ≥ ~213k, theoretical only).
+        let cutoff = now_ms.saturating_sub((days as u64).saturating_mul(DAY_MS));
         for e in self
             .entries
             .iter()
