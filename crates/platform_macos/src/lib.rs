@@ -56,9 +56,11 @@ use platform::{
 
 pub mod keychain;
 mod login_item;
+mod settings_window;
 mod tray;
 mod url_events;
 pub use login_item::set_launch_at_login;
+pub use settings_window::{policy_restore_needed, MacosSettingsWindow};
 pub use tray::{DisableArm, MacosTray, TrayFlags};
 pub use url_events::{install_url_event_handler, UrlEventHandler};
 

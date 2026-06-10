@@ -31,6 +31,9 @@ pub struct TrayFlags {
     /// Set when the user picks Snooze; the run loop consumes it (swap false)
     /// and applies the snooze to its prefs.
     pub snooze_requested: Arc<AtomicBool>,
+    /// Set when the user picks "Settings…"; the run loop shows the S2
+    /// settings window (and handles the activation-policy dance).
+    pub open_settings_window: Arc<AtomicBool>,
     /// Set when the user picks "Toggle Input Collection in Current App"; the
     /// run loop consumes it (swap false) and flips the frontmost app's
     /// typing-history collection override.
@@ -91,6 +94,11 @@ define_class!(
         #[unsafe(method(requestSnooze:))]
         fn request_snooze(&self, _sender: Option<&AnyObject>) {
             self.ivars().flags.snooze_requested.store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(openSettingsWindow:))]
+        fn open_settings_window(&self, _sender: Option<&AnyObject>) {
+            self.ivars().flags.open_settings_window.store(true, Ordering::Relaxed);
         }
 
         #[unsafe(method(toggleCollection:))]
@@ -229,6 +237,18 @@ impl MacosTray {
             settings_item.setAction(Some(sel!(openSettings:)));
         }
         menu.addItem(&settings_item);
+
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+
+        // Settings… (the S2 window; ⌘, equivalent once a key-equivalent is set).
+        let settings_window_item = NSMenuItem::new(mtm);
+        settings_window_item.setTitle(&NSString::from_str("Settings…"));
+        // SAFETY: as above.
+        unsafe {
+            settings_window_item.setTarget(Some(target_as_any(&target)));
+            settings_window_item.setAction(Some(sel!(openSettingsWindow:)));
+        }
+        menu.addItem(&settings_window_item);
 
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 

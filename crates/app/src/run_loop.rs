@@ -1097,6 +1097,7 @@ pub fn run() -> Result<(), String> {
         quit: Arc::new(AtomicBool::new(false)),
         open_settings: Arc::new(AtomicBool::new(false)),
         snooze_requested: Arc::new(AtomicBool::new(false)),
+        open_settings_window: Arc::new(AtomicBool::new(false)),
         collection_toggle: Arc::new(AtomicBool::new(false)),
         app_disable: Arc::new(Mutex::new(None)),
     };
@@ -1148,6 +1149,9 @@ pub fn run() -> Result<(), String> {
     let mut last_render: Option<(crate::status::AppStatus, bool, bool)> = None;
     let mut last_stats_line: Option<String> = None;
     let mut read_err_squelch = LogSquelch::default();
+    // S2 settings window (lazy NSWindow) + the activation-policy poll state.
+    let mut settings_window = platform_macos::MacosSettingsWindow::new();
+    let mut settings_was_visible = false;
     let start = Instant::now();
 
     eprintln!(
@@ -1435,6 +1439,23 @@ pub fn run() -> Result<(), String> {
             latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
+        // Tray "Settings…": show the S2 window (promotes activation policy so
+        // a menu-bar app's window can become key).
+        if flags.open_settings_window.swap(false, Ordering::Relaxed) {
+            if let Err(err) = settings_window.show() {
+                eprintln!("compme: settings window unavailable: {err}");
+            }
+        }
+        // Visibility poll: however the window closed (red button included),
+        // demote the activation policy back to Accessory exactly once on the
+        // visible→hidden edge so no Dock icon is left stranded.
+        let settings_visible = settings_window.is_visible();
+        if platform_macos::policy_restore_needed(settings_was_visible, settings_visible) {
+            if let Err(err) = settings_window.restore_accessory_policy() {
+                eprintln!("compme: activation policy restore failed: {err}");
+            }
+        }
+        settings_was_visible = settings_visible;
         // Drain received compme:// deep links (strict fail-closed parse →
         // reversible override). Every outcome is logged (the §16 user-visible
         // requirement; a confirmation prompt is the follow-up). An applied
