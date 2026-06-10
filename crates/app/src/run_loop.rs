@@ -872,6 +872,35 @@ fn apps_row_ids(counts: &[(String, u64)]) -> Vec<String> {
         .collect()
 }
 
+/// The settings window's shared state. `tray_enabled` is TrayFlags.enabled —
+/// the Enabled switch and the tray checkmark are two views of that one
+/// atomic (identity pinned in tests). Must run AFTER
+/// set_accept_keymap_from_config so the Shortcuts text shows the
+/// post-validation truth.
+fn build_settings_flags(
+    config: &Config,
+    tray_enabled: Arc<AtomicBool>,
+) -> platform_macos::SettingsFlags {
+    platform_macos::SettingsFlags {
+        general_enabled: tray_enabled,
+        labs_midline: Arc::new(AtomicBool::new(config.allow_mid_word)),
+        general_autocorrect: Arc::new(AtomicBool::new(config.autocorrect)),
+        general_trailing_space: Arc::new(AtomicBool::new(config.trailing_space)),
+        stats_lines: Arc::new(Mutex::new(Vec::new())),
+        about_text: crate::about::about_text(),
+        setup_lines: Arc::new(Mutex::new(Vec::new())),
+        setup_grant_ax: Arc::new(AtomicBool::new(false)),
+        setup_request_screen: Arc::new(AtomicBool::new(false)),
+        setup_reveal_model: Arc::new(AtomicBool::new(false)),
+        apps_lines: Arc::new(Mutex::new(Vec::new())),
+        apps_delete_row: Arc::new(Mutex::new(None)),
+        shortcuts_text: {
+            let (word, full) = platform_macos::effective_accept_keys();
+            shortcuts_text(word, full)
+        },
+    }
+}
+
 /// The Setup tab's current rows as display lines: probe permissions and the
 /// model file NOW (cheap queries) and render through `setup_row_line`.
 fn compose_setup_lines(config: &Config) -> Vec<String> {
@@ -1428,25 +1457,7 @@ pub fn run() -> Result<(), String> {
     // re-applies it. `global_mid_word` is the live global default (config is
     // only the launch-time snapshot once the pane can change it).
     let mut global_mid_word = config.allow_mid_word;
-    let settings_flags = platform_macos::SettingsFlags {
-        labs_midline: Arc::new(AtomicBool::new(global_mid_word)),
-        general_autocorrect: Arc::new(AtomicBool::new(config.autocorrect)),
-        general_trailing_space: Arc::new(AtomicBool::new(config.trailing_space)),
-        stats_lines: Arc::new(Mutex::new(Vec::new())),
-        about_text: crate::about::about_text(),
-        setup_lines: Arc::new(Mutex::new(Vec::new())),
-        setup_grant_ax: Arc::new(AtomicBool::new(false)),
-        setup_request_screen: Arc::new(AtomicBool::new(false)),
-        setup_reveal_model: Arc::new(AtomicBool::new(false)),
-        apps_lines: Arc::new(Mutex::new(Vec::new())),
-        apps_delete_row: Arc::new(Mutex::new(None)),
-        shortcuts_text: {
-            // Effective keys, not raw config: set_accept_keymap_from_config
-            // ran above, so the platform holds the post-validation truth.
-            let (word, full) = platform_macos::effective_accept_keys();
-            shortcuts_text(word, full)
-        },
-    };
+    let settings_flags = build_settings_flags(&config, Arc::clone(&flags.enabled));
     // The app ids behind the Apps rows as last rendered (index == row).
     let mut apps_ids: Vec<String> = Vec::new();
     // Visible-only Setup re-probe cadence (setup_poll_due).
@@ -2338,6 +2349,18 @@ mod tests {
             !setup_poll_due(false, Some(10_000), 99_999),
             "hidden again: never, regardless of elapsed"
         );
+    }
+
+    #[test]
+    fn settings_flags_share_the_tray_enabled_atomic() {
+        // The Enabled switch and the tray toggle are TWO VIEWS of ONE
+        // atomic — sharing the Arc is what keeps them in sync (banked
+        // c115 design). Pin identity, not just equal values.
+        let config = Config::from_lookup(lookup(&[]));
+        let tray_enabled = Arc::new(AtomicBool::new(true));
+        let flags = build_settings_flags(&config, Arc::clone(&tray_enabled));
+        assert!(Arc::ptr_eq(&flags.general_enabled, &tray_enabled));
+        assert!(flags.general_autocorrect.load(Ordering::Relaxed) == config.autocorrect);
     }
 
     #[test]

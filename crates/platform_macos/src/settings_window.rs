@@ -30,6 +30,11 @@ use platform::PlatformError;
 /// by the run loop (the tray-flags pattern: render-only UI, policy outside).
 #[derive(Clone)]
 pub struct SettingsFlags {
+    /// Master enabled flag — THE SAME Arc as TrayFlags.enabled (one atomic,
+    /// two views: tray checkmark + this switch). The run loop's existing
+    /// enabled-edge handles persist + ghost dismiss; tray and SIGUSR1 also
+    /// write it, which is why switches refresh on every show.
+    pub general_enabled: Arc<AtomicBool>,
     /// Labs: global mid-line completions (`COMPME_MIDLINE`). The run loop
     /// watches edges, persists, and re-applies the engine gate live.
     pub labs_midline: Arc<AtomicBool>,
@@ -111,6 +116,14 @@ define_class!(
             }
         }
 
+        #[unsafe(method(toggleEnabled:))]
+        fn toggle_enabled(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars().flags.general_enabled.store(on, Ordering::Relaxed);
+            }
+        }
+
         #[unsafe(method(toggleTrailingSpace:))]
         fn toggle_trailing_space(&self, sender: Option<&NSSwitch>) {
             if let Some(switch) = sender {
@@ -169,6 +182,11 @@ pub struct MacosSettingsWindow {
     setup_labels: Vec<Retained<NSTextField>>,
     // Apps row labels, refreshed from `flags.apps_lines` the same way.
     apps_labels: Vec<Retained<NSTextField>>,
+    // General-tab switches, refreshed from their atomics on every show:
+    // enabled has EXTERNAL writers (tray, SIGUSR1), so its rendered state
+    // can go stale while the window is closed (c95 staleness class). The
+    // others refresh too — harmless and uniform.
+    switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
 }
 
 impl MacosSettingsWindow {
@@ -181,6 +199,7 @@ impl MacosSettingsWindow {
             stats_labels: Vec::new(),
             setup_labels: Vec::new(),
             apps_labels: Vec::new(),
+            switches: Vec::new(),
         }
     }
 
@@ -195,6 +214,7 @@ impl MacosSettingsWindow {
             self.stats_labels = built.stats_labels;
             self.setup_labels = built.setup_labels;
             self.apps_labels = built.apps_labels;
+            self.switches = built.switches;
             self.target = Some(target);
         }
         // Refresh data rows on EVERY show — the lazily built window is reused
@@ -213,6 +233,15 @@ impl MacosSettingsWindow {
             for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
+        }
+        // Switches re-sync from their atomics — enabled can be flipped by
+        // the tray or SIGUSR1 while this window is closed.
+        for (switch, atomic) in &self.switches {
+            switch.setState(if atomic.load(Ordering::Relaxed) {
+                NSControlStateValueOn
+            } else {
+                objc2_app_kit::NSControlStateValueOff
+            });
         }
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -292,6 +321,7 @@ fn build_window(
     let mut stats_labels: Vec<Retained<NSTextField>> = Vec::new();
     let mut setup_labels: Vec<Retained<NSTextField>> = Vec::new();
     let mut apps_labels: Vec<Retained<NSTextField>> = Vec::new();
+    let mut switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)> = Vec::new();
 
     // Tab layout (c105): one NSTabView as the content view, one tab per
     // pane_titles() entry. Tab content is ~500x350; per-pane coordinates are
@@ -373,6 +403,35 @@ fn build_window(
     // from the CURRENT config state.
     {
         let general = &pane_views[1];
+
+        // Enabled row (top): two views of one atomic — see SettingsFlags.
+        let en_label = NSTextField::labelWithString(&NSString::from_str("Enable completions"), mtm);
+        en_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 340.0),
+            NSSize::new(400.0, 20.0),
+        ));
+        general.addSubview(&en_label);
+        let en_switch = NSSwitch::new(mtm);
+        en_switch.setFrame(NSRect::new(
+            NSPoint::new(420.0, 336.0),
+            NSSize::new(60.0, 26.0),
+        ));
+        en_switch.setState(if flags.general_enabled.load(Ordering::Relaxed) {
+            objc2_app_kit::NSControlStateValueOn
+        } else {
+            objc2_app_kit::NSControlStateValueOff
+        });
+        // SAFETY: target outlives the window (held by MacosSettingsWindow).
+        unsafe {
+            en_switch.setTarget(Some({
+                let any: &AnyObject = target.as_ref();
+                any
+            }));
+            en_switch.setAction(Some(sel!(toggleEnabled:)));
+        }
+        general.addSubview(&en_switch);
+        switches.push((en_switch, Arc::clone(&flags.general_enabled)));
+
         let label = NSTextField::labelWithString(
             &NSString::from_str("Mid-line completions (show even with text after the cursor)"),
             mtm,
@@ -402,6 +461,7 @@ fn build_window(
             switch.setAction(Some(sel!(toggleMidline:)));
         }
         general.addSubview(&switch);
+        switches.push((switch, Arc::clone(&flags.labs_midline)));
 
         // Autocorrect row, same switch pattern one row below.
         let ac_label = NSTextField::labelWithString(
@@ -432,6 +492,7 @@ fn build_window(
             ac_switch.setAction(Some(sel!(toggleAutocorrect:)));
         }
         general.addSubview(&ac_switch);
+        switches.push((ac_switch, Arc::clone(&flags.general_autocorrect)));
 
         // Trailing-space row, third in the stack.
         let ts_label = NSTextField::labelWithString(
@@ -462,6 +523,7 @@ fn build_window(
             ts_switch.setAction(Some(sel!(toggleTrailingSpace:)));
         }
         general.addSubview(&ts_switch);
+        switches.push((ts_switch, Arc::clone(&flags.general_trailing_space)));
     }
 
     // Apps tab: per-app recorded-input counts (encrypted memory store).
@@ -593,6 +655,7 @@ fn build_window(
         stats_labels,
         setup_labels,
         apps_labels,
+        switches,
     }
 }
 
@@ -603,6 +666,7 @@ struct BuiltWindow {
     stats_labels: Vec<Retained<NSTextField>>,
     setup_labels: Vec<Retained<NSTextField>>,
     apps_labels: Vec<Retained<NSTextField>>,
+    switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
 }
 
 /// Max Setup row count (accessibility / screen recording / model file).

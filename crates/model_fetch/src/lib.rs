@@ -79,8 +79,11 @@ mod tests {
                     }
                     1 => {
                         self.0 = 2;
-                        buf[..3].copy_from_slice(b"abc");
-                        Ok(3)
+                        // Defensive per the Read contract: honor tiny buffers
+                        // (review-c116) — this double is copy-paste bait.
+                        let n = 3.min(buf.len());
+                        buf[..n].copy_from_slice(&b"abc"[..n]);
+                        Ok(n)
                     }
                     _ => Ok(0),
                 }
