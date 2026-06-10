@@ -93,7 +93,7 @@ pub fn catalog() -> &'static [ModelEntry] {
 pub fn ram_verdict(entry: &ModelEntry, available_gb: u32) -> RamVerdict {
     if available_gb < entry.min_ram_gb {
         RamVerdict::Exceeds
-    } else if available_gb < entry.min_ram_gb + 2 {
+    } else if available_gb < entry.min_ram_gb.saturating_add(2) {
         RamVerdict::Tight
     } else {
         RamVerdict::Fits

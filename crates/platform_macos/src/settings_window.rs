@@ -20,7 +20,7 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSControlStateValueOn,
-    NSFont, NSSwitch, NSTextField, NSWindow, NSWindowStyleMask,
+    NSFont, NSSwitch, NSTabView, NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
@@ -175,29 +175,40 @@ fn build_window(
     window.center();
     let mut stats_labels: Vec<Retained<NSTextField>> = Vec::new();
 
-    // Labs pane (the first functional pane): one labeled NSSwitch for the
-    // global mid-line toggle, initialized from the CURRENT config state.
-    if let Some(content) = window.contentView() {
-        let header = NSTextField::labelWithString(&NSString::from_str("Labs"), mtm);
-        header.setFrame(NSRect::new(
-            NSPoint::new(20.0, 370.0),
-            NSSize::new(200.0, 24.0),
-        ));
-        content.addSubview(&header);
+    // Tab layout (c105): one NSTabView as the content view, one tab per
+    // pane_titles() entry. Tab content is ~500x350; per-pane coordinates are
+    // local to their tab view, so panes never collide with each other again
+    // (the c103/c104 overlap class is structurally gone).
+    let tabs = NSTabView::new(mtm);
+    let pane_views: Vec<Retained<NSView>> = pane_titles()
+        .iter()
+        .map(|title| {
+            let view = NSView::new(mtm);
+            let item = NSTabViewItem::new();
+            item.setLabel(&NSString::from_str(title));
+            item.setView(Some(&view));
+            tabs.addTabViewItem(&item);
+            view
+        })
+        .collect();
 
+    // General tab: the Labs switch (global mid-line toggle), initialized
+    // from the CURRENT config state.
+    {
+        let general = &pane_views[0];
         let label = NSTextField::labelWithString(
             &NSString::from_str("Mid-line completions (show even with text after the cursor)"),
             mtm,
         );
         label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 340.0),
+            NSPoint::new(20.0, 300.0),
             NSSize::new(400.0, 20.0),
         ));
-        content.addSubview(&label);
+        general.addSubview(&label);
 
         let switch = NSSwitch::new(mtm);
         switch.setFrame(NSRect::new(
-            NSPoint::new(430.0, 336.0),
+            NSPoint::new(420.0, 296.0),
             NSSize::new(60.0, 26.0),
         ));
         switch.setState(if flags.labs_midline.load(Ordering::Relaxed) {
@@ -213,21 +224,21 @@ fn build_window(
             }));
             switch.setAction(Some(sel!(toggleMidline:)));
         }
-        content.addSubview(&switch);
+        general.addSubview(&switch);
+    }
 
-        // Statistics section: header + three data rows (shown/accepted/words).
-        // Row strings come from the run loop via flags.stats_lines; show()
-        // refreshes them on every open. Monospaced font keeps the fixed-width
-        // labels and sparkline glyphs column-aligned.
-        let stats_header = NSTextField::labelWithString(
-            &NSString::from_str("Statistics \u{2014} this session"),
-            mtm,
-        );
+    // Statistics tab: header + STATS_ROWS data rows. Row strings come from
+    // the run loop via flags.stats_lines; show() refreshes them on every
+    // open. Monospaced font keeps sparkline glyphs column-aligned.
+    {
+        let stats = &pane_views[1];
+        let stats_header =
+            NSTextField::labelWithString(&NSString::from_str("This session + lifetime"), mtm);
         stats_header.setFrame(NSRect::new(
-            NSPoint::new(20.0, 290.0),
-            NSSize::new(200.0, 24.0),
+            NSPoint::new(20.0, 300.0),
+            NSSize::new(300.0, 24.0),
         ));
-        content.addSubview(&stats_header);
+        stats.addSubview(&stats_header);
 
         let initial: Vec<String> = flags
             .stats_lines
@@ -243,39 +254,32 @@ fn build_window(
             let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
             label.setFont(Some(&mono));
             label.setFrame(NSRect::new(
-                NSPoint::new(20.0, 262.0 - row as f64 * 24.0),
-                NSSize::new(420.0, 20.0),
+                NSPoint::new(20.0, 270.0 - row as f64 * 26.0),
+                NSSize::new(440.0, 20.0),
             ));
-            content.addSubview(&label);
+            stats.addSubview(&label);
             stats_labels.push(label);
         }
+    }
 
-        // About section: static for the process lifetime, so build-once is
-        // fine here (unlike the Statistics rows above).
-        let about_header = NSTextField::labelWithString(&NSString::from_str("About"), mtm);
-        // Below the 4th Statistics row ([190,210]) with clear margin — the
-        // header sat at [168,192] when there were 3 rows, which the Lifetime
-        // row would now clip by 2px.
-        about_header.setFrame(NSRect::new(
-            NSPoint::new(20.0, 162.0),
-            NSSize::new(200.0, 20.0),
-        ));
-        content.addSubview(&about_header);
+    // About tab: static for the process lifetime, so build-once is fine
+    // here (unlike the Statistics rows above).
+    {
+        let about_view = &pane_views[2];
         let about =
             NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.about_text), mtm);
         about.setFrame(NSRect::new(
-            NSPoint::new(20.0, 24.0),
-            NSSize::new(480.0, 134.0),
+            NSPoint::new(20.0, 160.0),
+            NSSize::new(460.0, 170.0),
         ));
-        // Display-only: wrappingLabelWithString is selectable by default,
-        // which is fine (lets the user copy the repo URL), but it must not
-        // be editable. Small font: the credits line wraps to ~3 lines; at
-        // the default size the block runs flush against its 136px box
-        // (review-c101), at 11pt it fits with headroom.
+        // Display-only: selectable (lets the user copy the repo URL), not
+        // editable. 11pt so the wrapped credits block keeps headroom
+        // (review-c101).
         about.setFont(Some(&NSFont::systemFontOfSize(11.0)));
         about.setEditable(false);
-        content.addSubview(&about);
+        about_view.addSubview(&about);
     }
+    window.setContentView(Some(&tabs));
     // Keep the instance alive across closes: AppKit's default releases a
     // window on close, which would dangle our Retained pointer.
     // SAFETY: documented NSWindow property setter.
@@ -286,9 +290,26 @@ fn build_window(
 /// Fixed Statistics row count (shown / accepted / words / lifetime).
 const STATS_ROWS: usize = 4;
 
+/// Number of settings tabs.
+pub const PANE_COUNT: usize = 3;
+
+/// Tab titles in display order — General first, About last; new panes
+/// insert between, never around.
+pub fn pane_titles() -> [&'static str; PANE_COUNT] {
+    ["General", "Statistics", "About"]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_titles_are_fixed_and_ordered() {
+        // Tab order is part of the settings UX contract: General first,
+        // About last. New panes insert between, never around.
+        assert_eq!(pane_titles(), ["General", "Statistics", "About"]);
+        assert_eq!(pane_titles().len(), PANE_COUNT);
+    }
 
     #[test]
     fn policy_restores_only_on_the_visible_to_hidden_edge() {
