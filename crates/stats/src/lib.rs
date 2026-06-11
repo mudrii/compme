@@ -369,6 +369,34 @@ mod tests {
     }
 
     #[test]
+    fn persisted_stats_merge_saturates_huge_lifetime_counters() {
+        let lifetime = PersistedStats {
+            shown: u64::MAX,
+            accepted: u64::MAX,
+            dismissed: u64::MAX,
+            superseded: u64::MAX,
+            words: u64::MAX,
+        };
+        let session = Counts {
+            shown: 1,
+            accepted: 1,
+            dismissed: 1,
+            superseded: 1,
+        };
+
+        assert_eq!(
+            lifetime.merged(session, 1),
+            PersistedStats {
+                shown: u64::MAX,
+                accepted: u64::MAX,
+                dismissed: u64::MAX,
+                superseded: u64::MAX,
+                words: u64::MAX,
+            }
+        );
+    }
+
+    #[test]
     fn sparkline_scales_bars_to_the_series_maximum() {
         // Statistics-pane chart row: one glyph per day, ceiling-scaled so the
         // max value always renders full-height, zero renders the baseline, and

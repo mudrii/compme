@@ -35,6 +35,73 @@ LOG_DIR="$ROOT_DIR/tools/acceptance/logs"
 LOG="$LOG_DIR/a2-compat-${KIND}-$(date +%Y%m%d-%H%M%S).log"
 mkdir -p "$LOG_DIR"
 
+has_request() {
+  grep -q "request gen=" "$1"
+}
+
+has_clipboard_prompt_context() {
+  grep -q 'prompt_context=Some("Clipboard: CLIPBOARD-CONTEXT-MARKER' "$1"
+}
+
+has_screen_prompt_context() {
+  grep -q 'prompt_context=Some(".*On screen: ' "$1"
+}
+
+self_test_assert() {
+  name="$1"
+  expected="$2"
+  shift 2
+  if "$@"; then
+    actual=1
+  else
+    actual=0
+  fi
+  if [[ "$actual" == "$expected" ]]; then
+    echo "PASS self-test-$name"
+  else
+    echo "FAIL self-test-$name: expected $expected got $actual" >&2
+    return 1
+  fi
+}
+
+run_self_tests() {
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/a2-compat-tests.XXXXXX")"
+  failures=0
+  good="$tmp_dir/good.log"
+  producer_only="$tmp_dir/producer-only.log"
+  empty="$tmp_dir/empty.log"
+
+  cat >"$good" <<'LOG'
+compme: request gen=7 prompt="hello"
+compme: screen_context=Some(12)
+compme: prompt_context=Some("Clipboard: CLIPBOARD-CONTEXT-MARKER | On screen: visible text")
+LOG
+  cat >"$producer_only" <<'LOG'
+compme: request gen=7 prompt="hello"
+compme: screen_context=Some(12)
+LOG
+  : >"$empty"
+
+  self_test_assert "request-present" 1 has_request "$good" || failures=$((failures + 1))
+  self_test_assert "request-absent" 0 has_request "$empty" || failures=$((failures + 1))
+  self_test_assert "clipboard-prompt-context" 1 has_clipboard_prompt_context "$good" || failures=$((failures + 1))
+  self_test_assert "screen-prompt-context" 1 has_screen_prompt_context "$good" || failures=$((failures + 1))
+  self_test_assert "screen-producer-alone-is-not-submit-context" 0 has_screen_prompt_context "$producer_only" || failures=$((failures + 1))
+
+  rm -rf "$tmp_dir"
+  if [[ "$failures" -gt 0 ]]; then
+    echo "Self-test failures: $failures" >&2
+    return 1
+  fi
+  echo "Self-tests passed"
+  return 0
+}
+
+if [[ "$KIND" == "--self-test" ]]; then
+  run_self_tests
+  exit $?
+fi
+
 if [[ -z "$PID" ]]; then
   echo "FAIL: set COMPME_ACCEPTANCE_PID to the target app's pid" >&2
   exit 2
@@ -83,7 +150,7 @@ sleep "$(awk "BEGIN{print ($WARMUP_MS+$RUN_MS)/1000}")"
 wait "$BIN_PID" 2>/dev/null || true
 
 requested=0
-grep -q "request gen=" "$LOG" && requested=1
+has_request "$LOG" && requested=1
 
 pass() { echo "PASS: $KIND — $1 (log: $LOG)"; exit 0; }
 fail() { echo "FAIL: $KIND — $1 (log: $LOG)"; exit 1; }
@@ -94,14 +161,16 @@ case "$KIND" in
       || fail "expected a completion request, none logged" ;;
   clipboard)
     [[ "$requested" == 1 ]] || fail "expected a completion request, none logged"
-    grep -q 'clipboard_context=Some("CLIPBOARD-CONTEXT-MARKER")' "$LOG" \
+    has_clipboard_prompt_context "$LOG" \
       && pass "clipboard context marker reached the submit path" \
-      || fail "expected CLIPBOARD-CONTEXT-MARKER in diagnostic clipboard context" ;;
+      || fail "expected CLIPBOARD-CONTEXT-MARKER in diagnostic prompt_context" ;;
   screen)
     [[ "$requested" == 1 ]] || fail "expected a completion request, none logged"
-    grep -Eq 'screen_context=Some\([1-9][0-9]*\)' "$LOG" \
-      && pass "screen OCR context reached the submit path" \
-      || fail "expected non-empty screen_context diagnostic; check Screen Recording grant and visible text" ;;
+    has_screen_prompt_context "$LOG" \
+      && pass "screen OCR text was included in a submitted prompt" \
+      || { grep -Eq 'screen_context=Some\([1-9][0-9]*\)' "$LOG" \
+        && fail "OCR ran but no submitted prompt included it (timing) — retry with steadier typing" \
+        || fail "expected non-empty screen context; check Screen Recording grant and visible text"; } ;;
   unsupported|terminal-cmd)
     [[ "$requested" == 0 ]] && pass "completion correctly gated out" \
       || fail "expected NO completion request, but one was logged" ;;

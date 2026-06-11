@@ -57,10 +57,13 @@ only when you intentionally want to validate a separate focused writable target
 with no usable caret geometry.
 For browser marker validation, focus a Chrome/Safari text field and pass --browser-pid.
 
-Production accept keys use transient Carbon hotkeys. macOS synthetic key posts
-(`System Events` / `CGEventPost`) do not exercise `RegisterEventHotKey` the way
-physical keypresses do, so Carbon accept/consume gates are recorded as manual
-physical-key gates rather than automated pass/fail checks.
+Production accept keys use transient Carbon hotkeys. [CORR 2026-06-11] With
+the NSApp event pump in place, synthetic key posts CAN fire RegisterEventHotKey
+(see docs/ACCEPTANCE.md [CORR 2026-06-10] — a System Events Tab accepted live).
+The Carbon accept/consume gates below remain MANUAL because this harness has
+not been rebuilt for the Carbon path (the old e2e harness drove the removed
+event-tap), not because scripted Carbon input is impossible. Rebuilding the
+scripted gates is acceptance backlog.
 USAGE
 }
 
@@ -143,7 +146,7 @@ MARKER_BIN="$ROOT_DIR/target/debug/examples/caret_marker_acceptance"
 OVERLAY_BIN="$ROOT_DIR/target/debug/examples/overlay_presenter_acceptance"
 POPUP_FIXTURE_BIN="$ROOT_DIR/target/debug/examples/popup_fallback_acceptance"
 COMPME_BIN="$ROOT_DIR/target/debug/compme"
-E2E_SCRIPT="$ROOT_DIR/tools/acceptance/e2e-compme.sh"
+E2E_SCRIPT="$ROOT_DIR/tools/acceptance/e2e-complete-me.sh" # historical harness kept under its original name
 
 print_cmd() {
   printf '  '
@@ -429,10 +432,10 @@ else
     run_retryable_gate "textedit-insert-clipboard" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-clipboard" "$TEXTEDIT_BIN" "$TIMEOUT_MS" clipboard
     run_retryable_gate "textedit-insert-axset" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT" "$TEXTEDIT_BIN" "$TIMEOUT_MS" insert
     run_retryable_gate "caret-marker-textedit-any" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$MARKER_BIN" "$SHORT_TIMEOUT_MS" any
-    manual_gate "accept-insert-full" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-    manual_gate "accept-insert-word" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-    manual_gate "e2e-compme-pipeline" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-    manual_gate "e2e-compme-word-remainder" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+    manual_gate "accept-insert-full" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+    manual_gate "accept-insert-word" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+    manual_gate "e2e-compme-pipeline" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+    manual_gate "e2e-compme-word-remainder" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
   fi
 fi
 
@@ -448,13 +451,13 @@ else
   run_gate "popup-fallback-fixture" "$POPUP_FIXTURE_BIN" "$SHORT_TIMEOUT_MS"
 fi
 
-manual_gate "accept-tap-inactive" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-manual_gate "accept-tap-full" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-manual_gate "accept-tap-word" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-manual_gate "accept-tap-escape" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-manual_gate "accept-tap-option-tab" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-manual_gate "accept-tap-cycle" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
-manual_gate "accept-tap-delayed-hide" "physical Carbon hotkey gate; synthetic key posts do not fire RegisterEventHotKey"
+manual_gate "accept-tap-inactive" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+manual_gate "accept-tap-full" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+manual_gate "accept-tap-word" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+manual_gate "accept-tap-escape" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+manual_gate "accept-tap-option-tab" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+manual_gate "accept-tap-cycle" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+manual_gate "accept-tap-delayed-hide" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
 
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
 

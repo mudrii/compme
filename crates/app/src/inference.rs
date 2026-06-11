@@ -73,6 +73,7 @@ pub struct WorkerContext {
     pub clipboard: Arc<Mutex<Option<String>>>,
     pub screen: Arc<Mutex<Option<String>>>,
     pub max_chars: usize,
+    pub diag_context: bool,
 }
 
 impl WorkerContext {
@@ -99,6 +100,16 @@ impl WorkerContext {
             self.max_chars,
         )
     }
+}
+
+fn context_diagnostic_line(block: &str) -> Option<String> {
+    let line = block
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    (!line.is_empty()).then_some(line)
 }
 
 /// A completed inference, paired with the request that produced it so the engine
@@ -152,6 +163,12 @@ fn run(
         // Opt-in context augmentation (clipboard + previous inputs): prepend a
         // bounded, already-redacted block ahead of the steering preamble.
         let block = worker_context.block_for(&request.field.app);
+        if worker_context.diag_context {
+            eprintln!(
+                "compme: prompt_context={:?}",
+                context_diagnostic_line(&block)
+            );
+        }
         let full_preamble = if block.is_empty() {
             preamble
         } else {
@@ -437,6 +454,19 @@ mod tests {
             outcome.candidates[0]
         );
         inference.shutdown();
+    }
+
+    #[test]
+    fn diagnostic_context_line_reports_the_model_prompt_context() {
+        let block = "Clipboard: copied snippet\nOn screen: visible window text\nRecent: accepted\n";
+        assert_eq!(
+            context_diagnostic_line(block),
+            Some(
+                "Clipboard: copied snippet | On screen: visible window text | Recent: accepted"
+                    .to_string()
+            )
+        );
+        assert_eq!(context_diagnostic_line(" \n\t\n"), None);
     }
 
     #[test]

@@ -1517,6 +1517,7 @@ pub fn run() -> Result<(), String> {
         clipboard: Arc::clone(&clipboard_cell),
         screen: Arc::clone(&screen_cell),
         max_chars: context_bound,
+        diag_context: config.diag_context,
     };
     let inference = InferenceHandle::spawn(
         model,

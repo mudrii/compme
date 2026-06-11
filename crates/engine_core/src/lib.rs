@@ -694,6 +694,7 @@ impl SuggestionMachine {
         if !self.enabled()
             || self.suppressed
             || text.is_empty()
+            || replace_left == 0
             || self.caps.insert_strategy != InsertStrategy::AxSet
         {
             return out;
@@ -2338,6 +2339,18 @@ mod tests {
         // Empty text never offers (no spurious ghost).
         let mut machine = focused_machine();
         assert_eq!(machine.offer_replacement(&f, String::new(), 3), vec![]);
+    }
+
+    #[test]
+    fn offer_replacement_rejects_zero_delete_count() {
+        let f = field("field-a");
+        let mut machine = focused_machine();
+
+        assert_eq!(machine.offer_replacement(&f, "the".into(), 0), vec![]);
+        assert!(machine.showing.is_none());
+        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
+        assert!(!machine.take_stat_events().contains(&StatEvent::Shown));
+        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
     }
 
     #[test]

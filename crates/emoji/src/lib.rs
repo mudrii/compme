@@ -10,10 +10,11 @@
 //! ZWJ-sequence assembly and is deferred — a gendered match keeps the default
 //! skin tone.)
 //!
-//! **Wiring status:** this is a pure core; it is NOT yet called from the host
-//! (`crates/app`). Live integration — detecting `:shortcode` in the completion
-//! flow, offering the emoji ghost, accepting it (delete `replace_chars`, insert
-//! the glyph), and the `COMPME_EMOJI_*` enable/skin-tone/gender config — is a
+//! **Wiring status [updated 2026-06-11]:** WIRED — the host reads
+//! `COMPME_EMOJI`/`_SKIN_TONE`/`_GENDER`, offers the emoji ghost through the
+//! replacement path, and the §16 live gate passed 2026-06-10
+//! (docs/ACCEPTANCE.md). The paragraph below is the original pre-wiring
+//! plan, kept for the description of the accept mechanics — it was a
 //! tracked next-task (engine integration). `includeVanillaVariants` (a Cotypist
 //! sub-preference) is intentionally not modeled yet.
 

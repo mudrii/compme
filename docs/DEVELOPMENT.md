@@ -20,16 +20,19 @@ The current checkout has no git tags. Treat the code as unreleased workspace
 behavior unless a future release process adds tags, release notes, or packaged
 artifacts.
 
-The root `Cargo.toml` is a Rust workspace with these members:
+The root `Cargo.toml` is a Rust workspace with these members
+([updated 2026-06-11] — keep in sync with `Cargo.toml`):
 
-- `crates/platform`
-- `crates/context`
-- `crates/ranker`
-- `crates/engine_core`
-- `crates/model_client`
-- `crates/platform_macos`
-- `crates/engine`
-- `crates/app`
+- `crates/platform` — cross-platform adapter contract
+- `crates/context`, `crates/ranker`, `crates/engine_core`, `crates/engine` — suggestion pipeline
+- `crates/personalization`, `crates/redaction`, `crates/prefs`, `crates/memory` — steering, privacy, prefs, encrypted history
+- `crates/stats` — usage statistics + lifetime persistence
+- `crates/webconfig` — signed `compme://` deep links
+- `crates/emoji`, `crates/textcase`, `crates/thesaurus`, `crates/autocorrect`, `crates/localize` — local replacement features
+- `crates/compat` — per-app compatibility tiers
+- `crates/model_catalog`, `crates/model_fetch`, `crates/model_client` — model catalog, downloads, llama.cpp client
+- `crates/platform_macos` — the macOS adapter (AX, overlay, tray, settings window)
+- `crates/app` — the `compme` binary
 
 `tools/spike` is excluded from the root workspace and must be checked
 separately.

@@ -2525,6 +2525,14 @@ pub fn set_tab_hotkey_suppressed(suppressed: bool) {
 /// Swap the active keymap (live rebind). Write FIRST, re-register hotkeys
 /// SECOND — an old hotkey firing between the two reads the new map, which
 /// is consistent (banked c115 recorder design).
+///
+/// WARNING (external finding 2026-06-11, valid-as-latent): no re-register
+/// path exists yet. Swapping while hotkeys are ARMED leaves the old
+/// physical keys registered (they still fire their original ROLE — the
+/// id→keycode→binding round-trip stays within one map, so no mis-action)
+/// while the newly chosen keys do nothing until the next arm cycle, and
+/// the Shortcuts pane shows the new map meanwhile. Until recorder 5b ships
+/// the re-arm, the only supported call site is startup BEFORE first arm.
 pub fn set_accept_keymap(map: AcceptKeymap) {
     *ACCEPT_KEYMAP
         .write()
