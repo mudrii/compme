@@ -422,6 +422,26 @@ mod tests {
     }
 
     #[test]
+    fn global_snooze_saturates_instead_of_wrapping() {
+        // The parallel arm of the pinned snooze_app saturation: u64::MAX
+        // minutes must clamp to "forever", never wrap past now (a wrap
+        // would UN-snooze — the failure direction that matters).
+        let mut p = Prefs::default();
+        p.snooze(5_000, u64::MAX);
+        assert!(p.is_snoozed(u64::MAX - 1));
+    }
+
+    #[test]
+    fn excluded_domain_blocks_suggestions_without_an_app_key() {
+        // Browser context can yield a domain with no resolvable app key;
+        // the domain exclusion must hold on its own.
+        let mut p = Prefs::default();
+        p.excluded_domains.insert("bank.example".into());
+        assert!(!p.should_suggest(None, Some("bank.example"), 0));
+        assert!(p.should_suggest(None, Some("other.example"), 0));
+    }
+
+    #[test]
     fn clear_snooze_resumes_immediately() {
         let mut p = Prefs::default();
         p.snooze(0, 10);

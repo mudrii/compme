@@ -1161,6 +1161,101 @@ mod tests {
     }
 
     #[test]
+    fn dismiss_stales_an_in_flight_request_at_the_engine_layer() {
+        // Engine::on_dismiss wraps DismissDiscard, NOT plain Dismiss: a
+        // completion already submitted to the inference worker must not pop
+        // a ghost back up after the user disabled the app via the tray. A
+        // regression to Event::Dismiss would pass every other dismiss test.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+
+        engine.on_dismiss().unwrap();
+        engine
+            .on_completion(&requests[0], "late ghost".into())
+            .unwrap();
+
+        assert!(
+            !overlay
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, OverlayCall::Show(_, _))),
+            "a staled in-flight completion must never show after dismiss"
+        );
+    }
+
+    #[test]
+    fn runtime_mid_word_setter_reaches_the_machine() {
+        // The run loop calls Engine::set_allow_mid_word on every focus change
+        // and Labs-switch edge; only the builder path was pinned. A broken
+        // forwarder would surface live only.
+        let adapter = FakeAdapter::new();
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay, 200, 4, 32).with_trigger_gates(0, false);
+        engine.on_focus(field()).unwrap();
+
+        engine.on_text_changed(typed("ab", 1, 0)).unwrap(); // mid-word caret
+        assert!(
+            engine.on_tick(500).unwrap().is_empty(),
+            "gated baseline: mid-word must not arm a request"
+        );
+
+        engine.set_allow_mid_word(true);
+        engine.on_text_changed(typed("abc", 1, 1000)).unwrap();
+        assert_eq!(
+            engine.on_tick(1500).unwrap().len(),
+            1,
+            "runtime flip must reach the machine"
+        );
+    }
+
+    #[test]
+    fn runtime_trailing_space_setter_reaches_the_machine() {
+        let (mut engine, adapter, _overlay) = engine();
+        engine.set_trailing_space(true);
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "solo".into()).unwrap();
+
+        engine.on_accept(AcceptAction::Full).unwrap();
+
+        let inserts = adapter.inserts.lock().unwrap();
+        assert_eq!(inserts.len(), 1);
+        assert_eq!(inserts[0].1, "solo ", "runtime flip applies per accept");
+    }
+
+    #[test]
+    fn mirror_mode_falls_back_to_the_caret_rect_without_a_popup_anchor() {
+        // MirrorOnly apps without a resolvable popup anchor must still render
+        // (at the caret rect) — only the popup-wins direction was pinned.
+        let adapter = FakeAdapter::new(); // popup: None, caret rect (10,20,1,14)
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        engine.set_mirror_mode(true);
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "hi".into()).unwrap();
+
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Show(
+                ScreenRect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 1.0,
+                    h: 14.0,
+                },
+                "hi".into()
+            )]
+        );
+    }
+
+    #[test]
     fn dismiss_with_nothing_showing_is_noop() {
         let (mut engine, _adapter, overlay) = engine();
         engine.on_focus(field()).unwrap();

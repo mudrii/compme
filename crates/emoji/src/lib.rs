@@ -470,8 +470,16 @@ mod tests {
     #[test]
     fn colon_after_emoji_or_punctuation_does_not_trigger() {
         assert_eq!(suggest_default("😀:smile"), None);
-        assert_eq!(suggest_default(")smile"), None);
+        assert_eq!(suggest_default("):smile"), None);
         assert_eq!(suggest_default("done):tada"), None);
+    }
+
+    #[test]
+    fn prefix_tie_break_prefers_the_shortest_shortcode() {
+        // ":thumbs" prefixes both thumbsup (8) and thumbsdown (10);
+        // min_by_key is documented first-minimum, so the shorter shortcode
+        // wins deterministically.
+        assert_eq!(suggest_default(":thumbs").unwrap().shortcode, "thumbsup");
     }
 
     #[test]

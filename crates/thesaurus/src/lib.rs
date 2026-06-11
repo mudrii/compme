@@ -153,7 +153,10 @@ mod tests {
     }
 
     #[test]
-    fn multi_group_word_returns_exact_ordered_deduped_list() {
+    fn member_query_returns_the_whole_group_in_table_order() {
+        // ("happy" lives in exactly ONE group — the no-word-in-two-groups
+        // invariant below pins that — so this is the single-group order
+        // contract, not a multi-group dedup exercise.)
         assert_eq!(
             synonyms("happy"),
             vec![

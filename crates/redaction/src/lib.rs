@@ -183,6 +183,38 @@ mod tests {
     }
 
     #[test]
+    fn card_redaction_covers_the_length_band_and_spares_short_luhn_runs() {
+        // The card regex matches 13–19 digit runs; both band edges and the
+        // below-floor direction need pins (all values are Luhn-valid, so the
+        // ONLY thing separating them is length).
+        assert!(
+            redact("amex 378282246310005 ok").contains("[redacted-card]"),
+            "15-digit Amex PAN inside the band"
+        );
+        assert!(
+            redact("visa 4222222222222 ok").contains("[redacted-card]"),
+            "13-digit PAN at the regex floor"
+        );
+        assert!(
+            redact("pan 6212345678901232 ok").contains("[redacted-card]"),
+            "16-digit non-Visa scheme"
+        );
+        let short = redact("order id 124000001 here");
+        assert!(
+            short.contains("124000001"),
+            "a Luhn-valid 9-digit run is below the floor and must survive: {short}"
+        );
+    }
+
+    #[test]
+    fn long_uppercase_letter_runs_survive_redaction() {
+        // The documented entropy contract says an all-ONE-case all-letter
+        // 32+ run is left alone; only the lowercase direction was pinned.
+        let text = "HEADING ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEF END";
+        assert_eq!(redact(text), text);
+    }
+
+    #[test]
     fn redaction_is_idempotent() {
         let once = redact("mail ada@example.com");
         assert_eq!(redact(&once), once);

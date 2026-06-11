@@ -150,6 +150,16 @@ fn download_with_agent(
         && response
             .header("Content-Range")
             .is_some_and(|cr| cr.starts_with(&format!("bytes {existing}-")));
+    // A 206 we could NOT validate after a ranged request is doubly suspect:
+    // its body may genuinely be the tail slice we asked for (a server that
+    // honors Range but omits Content-Range), so consuming it down the
+    // truncate path would silently write a head-truncated dest. Mirror the
+    // 416 arm: drop the part and re-request unranged — bounded the same way
+    // (the retry sends no Range, so this arm cannot recurse).
+    if status == 206 && !resumed && existing > 0 {
+        let _ = std::fs::remove_file(&part);
+        return download_with_agent(agent, url, dest, expected_sha256, progress);
+    }
     let total = response
         .header("Content-Length")
         .and_then(|h| h.parse::<u64>().ok())
@@ -368,6 +378,10 @@ mod tests {
     enum RangeMode {
         /// Honor Range with a correct 206 + Content-Range.
         Honor,
+        /// Honor Range (slice the body) but send NO Content-Range header —
+        /// a 206 the client cannot validate (corruption trap: the body is
+        /// partial, so consuming it as the full file truncates the head).
+        HonorNoHeader,
         /// Always 200 with the full body (server ignores Range).
         Ignore,
         /// LIE: reply 206 but serve the FULL body from offset 0 with a
@@ -406,6 +420,9 @@ mod tests {
                         &body[s..],
                         Some(format!("bytes {s}-{}/{}", body.len() - 1, body.len())),
                     ),
+                    (RangeMode::HonorNoHeader, Some(s)) => {
+                        ("206 Partial Content", &body[s..], None)
+                    }
                     (RangeMode::Lie, Some(_)) => (
                         "206 Partial Content",
                         body,
@@ -560,10 +577,29 @@ mod tests {
     }
 
     #[test]
+    fn unvalidated_206_with_partial_body_restarts_instead_of_corrupting() {
+        // A 206 with NO Content-Range cannot be validated as a resume — and
+        // its body may genuinely be the requested TAIL slice. Consuming that
+        // suspect body as the full file truncates the head silently (dest =
+        // b"456789"). The safe move mirrors the 416 arm: drop the part and
+        // re-request unranged.
+        let url = serve(b"0123456789", RangeMode::HonorNoHeader);
+        let dest = temp_dest("nohdr206");
+        let part = dest.with_extension("part");
+        std::fs::write(&part, b"0123").unwrap();
+        let got = download_url(&url, &dest, None, |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
     fn lying_206_with_wrong_content_range_restarts_instead_of_corrupting() {
         // review-c118 CRITICAL: a 206 whose Content-Range start does not
         // match our offset must NOT be appended — blind stitching corrupts
-        // the file silently. The safe move is a from-zero restart.
+        // the file silently. The safe move is a from-zero restart. (Scope:
+        // this server lies with the FULL body; the partial-body variant of
+        // an unvalidatable 206 is pinned by
+        // `unvalidated_206_with_partial_body_restarts_instead_of_corrupting`.)
         let url = serve(b"0123456789", RangeMode::Lie);
         let dest = temp_dest("lie206");
         let part = dest.with_extension("part");
@@ -586,6 +622,89 @@ mod tests {
         assert_eq!(std::fs::read(&got).unwrap(), b"shrunk");
         assert!(!part.exists());
         let _ = std::fs::remove_file(&dest);
+    }
+
+    /// 416 to EVERY request, ranged or not (a permanently broken server).
+    fn serve_always_416() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut req = [0u8; 1024];
+                let _ = stream.read(&mut req);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            }
+        });
+        format!("http://{addr}/model.bin")
+    }
+
+    #[test]
+    fn http_416_on_an_unranged_request_surfaces_after_exactly_one_retry() {
+        // The 416 arm's recursion bound (`existing > 0`): the retry is
+        // unranged, so a server that 416s EVERYTHING terminates with a typed
+        // Http(416) instead of looping — the comment's claim, pinned.
+        let url = serve_always_416();
+        let dest = temp_dest("always416");
+        let part = dest.with_extension("part");
+        std::fs::write(&part, b"stale").unwrap();
+        let err = download_url(&url, &dest, None, |_, _| {}).unwrap_err();
+        assert!(matches!(err, FetchError::Http(416)), "got: {err}");
+        assert!(!part.exists(), "the stale part was dropped by the retry");
+    }
+
+    #[test]
+    fn worker_queue_overflow_drops_the_request_and_leaves_it_idle() {
+        // The depth-1 sync_channel contract: with one download in flight and
+        // one queued, a third request is DROPPED (try_send), its status
+        // stays Idle, and nothing blocks. A regression to an unbounded
+        // channel would silently queue stale downloads.
+        let stall_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stall_addr = stall_listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in stall_listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n"
+                );
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        });
+        let worker = ModelDownloader::spawn().unwrap();
+        let statuses: Vec<_> = (0..3)
+            .map(|_| std::sync::Arc::new(DownloadStatus::default()))
+            .collect();
+        for status in &statuses {
+            worker.request(DownloadRequest {
+                url: format!("http://{stall_addr}/model.bin"),
+                dest: temp_dest("overflow"),
+                expected_sha256: None,
+                status: std::sync::Arc::clone(status),
+            });
+        }
+        // Request 0 reaches Running (the stalled body holds it there);
+        // request 2 must have been dropped: still Idle after the worker has
+        // demonstrably started consuming.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let state = statuses[0].state.lock().unwrap();
+                if matches!(&*state, DownloadState::Running) {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "worker never started");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let third = statuses[2].state.lock().unwrap();
+        assert!(
+            matches!(&*third, DownloadState::Idle),
+            "overflow request must be dropped, not queued"
+        );
     }
 
     #[test]

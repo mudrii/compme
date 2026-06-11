@@ -337,6 +337,34 @@ mod tests {
     }
 
     #[test]
+    fn delete_all_erases_ciphertext_from_disk_not_just_rows() {
+        // The secure_delete pragma is the load-bearing half of "disable and
+        // erase": without it, DELETE only unlinks rows and the ciphertext
+        // lives on in freelist pages. Scan the raw file for the blob bytes
+        // after delete_all to pin that the pragma stays effective.
+        let path = temp_db_path();
+        let blob: Vec<u8> = {
+            let store = MemoryStore::open(&path, &key(21), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "erase me entirely").unwrap();
+            let conn = Connection::open(&path).unwrap();
+            conn.query_row("SELECT blob FROM memories LIMIT 1", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert!(blob.len() >= 16, "sanity: a real ciphertext blob");
+        {
+            let store = MemoryStore::open(&path, &key(21), StorageMode::AcceptedOnly).unwrap();
+            store.delete_all().unwrap();
+        }
+        let raw = std::fs::read(&path).unwrap();
+        let found = raw.windows(16).any(|w| w == &blob[..16]);
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            !found,
+            "deleted ciphertext must be zeroed on disk (secure_delete)"
+        );
+    }
+
+    #[test]
     fn delete_all_clears_every_record() {
         let store = MemoryStore::open_in_memory(&key(5), StorageMode::AllMonitored).unwrap();
         store.remember("a", "one").unwrap();

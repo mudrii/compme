@@ -374,12 +374,11 @@ impl SuggestionMachine {
                 self.value = value;
                 self.caret = caret;
                 self.advance_snapshot();
-                // An edit clears Esc-suppression, but the clearing edit is itself
-                // still gated — triggering resumes on the edit after it.
-                let was_suppressed = self.suppressed;
+                // An edit clears Esc-suppression and resumes triggering for that
+                // edit; the suppression is only for the dismissed suggestion in
+                // the current field until the user changes/refocuses it.
                 self.suppressed = false;
-                self.pending_since = if !was_suppressed
-                    && edit != EditKind::Delete
+                self.pending_since = if edit != EditKind::Delete
                     && self.enabled()
                     && trigger == TriggerPolicy::Automatic
                     && self.passes_trigger_gates()
@@ -1579,6 +1578,99 @@ mod tests {
     }
 
     #[test]
+    fn trailing_space_applies_to_the_exhausting_word_accept_of_a_multi_word() {
+        // The trailing-space policy fires "when this accept completes the
+        // suggestion (no rest)": mid-completion word accepts carry their
+        // native separator space, and the FINAL word accept of a multi-word
+        // completion gets the policy space appended — not bare "beta".
+        let mut machine = SuggestionMachine::new(inline_caps(), 200, 4).with_trailing_space(true);
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "alpha beta".into(),
+        });
+
+        // Mid-completion accept: native separator space, no policy double.
+        assert_eq!(
+            machine.on_event(Event::AcceptWord),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "alpha ".into(),
+                },
+                Command::UpdateGhost {
+                    field: field("field-a"),
+                    snapshot: 1,
+                    text: "beta".into(),
+                },
+            ]
+        );
+        // Exhausting accept: the policy space lands on the final word.
+        assert_eq!(
+            machine.on_event(Event::AcceptWord),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "beta ".into(),
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_candidate_promotes_a_survivor_when_the_first_is_filtered() {
+        // The per-candidate shaping loop must filter each candidate
+        // independently: a degenerate first candidate ("ha ha ha" trips
+        // is_degenerate_repetition) drops out and the surviving second
+        // candidate becomes the primary ghost — a regression to
+        // "validate only the first" would show garbage or nothing.
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        assert_eq!(
+            machine.on_event(Event::CompletionReadyMulti {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                candidates: vec!["ha ha ha".into(), "fresh text".into()],
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "fresh text".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn duplicate_completion_ready_delivery_is_a_noop() {
+        // The Event docs promise late completions are idempotent to deliver:
+        // a successful show clears `requested`, so re-delivering the same
+        // (generation, field, snapshot, text) must produce no commands and
+        // no second Shown stat event.
+        let mut machine = machine_showing();
+        let _ = machine.take_stat_events(); // drain the first Shown
+
+        let dup = machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "world".into(),
+        });
+
+        assert_eq!(dup, vec![]);
+        assert_eq!(
+            machine.take_stat_events(),
+            vec![],
+            "no second Shown for a duplicate delivery"
+        );
+    }
+
+    #[test]
     fn cycle_rotates_to_the_next_candidate_and_wraps() {
         let mut machine = showing_candidates(&["alpha", "beta", "gamma"]);
         assert_eq!(
@@ -1725,21 +1817,17 @@ mod tests {
     }
 
     #[test]
-    fn dismiss_suppress_blocks_the_next_edit_then_resumes() {
-        // Esc (DismissSuppress) suppresses completions in the current field. The
-        // next user edit clears the flag but is itself still gated (no request);
-        // the edit after that resumes normal triggering.
+    fn dismiss_suppress_resumes_on_the_next_edit() {
+        // Esc (DismissSuppress) suppresses the current suggestion in the current
+        // field until the user edits or refocuses it; the clearing edit itself
+        // should be eligible to arm the next request.
         let mut machine = showing_machine();
         machine.on_event(Event::DismissSuppress);
 
-        // First edit after Esc: clears suppression, but does not arm.
+        // First edit after Esc: clears suppression and arms normally.
         machine.on_event(text_changed("xy", 2, 1000));
-        assert_eq!(machine.on_event(Event::Tick { now_ms: 1200 }), vec![]);
-
-        // Second edit: suppression already cleared → arms and fires normally.
-        machine.on_event(text_changed("xyz", 3, 2000));
         assert!(matches!(
-            machine.on_event(Event::Tick { now_ms: 2200 }).as_slice(),
+            machine.on_event(Event::Tick { now_ms: 1200 }).as_slice(),
             [Command::RequestCompletion { .. }]
         ));
     }

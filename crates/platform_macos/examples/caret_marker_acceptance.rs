@@ -200,3 +200,43 @@ fn should_keep_diagnostic_field(current: &Option<FieldHandle>, candidate: &Field
 fn looks_like_text_field(field: &FieldHandle) -> bool {
     field.element_id.contains("role=AXTextArea") || field.element_id.contains("role=AXTextField")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // This helper is duplicated in accept_insert_acceptance.rs (tested there
+    // too); each copy carries its own pin so they cannot silently drift.
+    #[test]
+    fn looks_like_text_field_uses_role_metadata() {
+        let handle = |element_id: &str| FieldHandle {
+            app: "pid:1".into(),
+            pid: Some(1),
+            element_id: element_id.into(),
+            generation: 1,
+        };
+        assert!(looks_like_text_field(&handle("ax:ptr=1|role=AXTextArea")));
+        assert!(looks_like_text_field(&handle("ax:ptr=1|role=AXTextField")));
+        assert!(!looks_like_text_field(&handle("ax:ptr=1|role=AXButton")));
+    }
+
+    #[test]
+    fn diagnostic_field_prefers_text_fields_but_keeps_any_over_none() {
+        let text = FieldHandle {
+            app: "pid:1".into(),
+            pid: Some(1),
+            element_id: "ax:ptr=1|role=AXTextArea".into(),
+            generation: 1,
+        };
+        let button = FieldHandle {
+            app: "pid:1".into(),
+            pid: Some(1),
+            element_id: "ax:ptr=2|role=AXButton".into(),
+            generation: 1,
+        };
+        assert!(should_keep_diagnostic_field(&None, &button));
+        assert!(should_keep_diagnostic_field(&Some(button.clone()), &text));
+        assert!(!should_keep_diagnostic_field(&Some(text.clone()), &button));
+        assert!(should_keep_diagnostic_field(&Some(text.clone()), &text));
+    }
+}

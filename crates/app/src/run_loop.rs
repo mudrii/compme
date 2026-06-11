@@ -396,6 +396,51 @@ fn replacement_decision(
     replacement_offer(left, config, autocorrect)
 }
 
+/// Whether completion inference has a usable model source: a stub completion
+/// (acceptance harness) counts as ready — a stub-driven run must not show
+/// "✗ Model file" in Setup. Single source for the startup diagnostic AND the
+/// Setup pane (duplicated inline before, which invited divergence).
+fn model_ready(config: &Config) -> bool {
+    config.stub_completion.is_some() || config.model_path.exists()
+}
+
+/// The completion worker's context char bound. Clipboard/screen context need
+/// a positive bound even when previous-input context is off — with
+/// `context_max_chars == 0` the worker's block builder returns `""` and the
+/// enabled auxiliary sources would be a silent no-op. An explicit positive
+/// bound always wins.
+fn context_bound_chars(clipboard: bool, screen_active: bool, max_chars: usize) -> usize {
+    if (clipboard || screen_active) && max_chars == 0 {
+        DEFAULT_CONTEXT_MAX_CHARS
+    } else {
+        max_chars
+    }
+}
+
+/// One step of the model-download log state machine (`logged`: 0=idle,
+/// 1=running-logged, 2=terminal-logged): the next state plus the line to
+/// emit, if any. Done/Failed log exactly once — they are the only
+/// user-visible signal of where the model landed — and an instant Done that
+/// skipped the Running transition still logs.
+fn download_log_transition(state: &model_fetch::DownloadState, logged: u8) -> (u8, Option<String>) {
+    match state {
+        model_fetch::DownloadState::Running if logged == 0 => {
+            (1, Some("compme: model download running".into()))
+        }
+        model_fetch::DownloadState::Done(path) if logged < 2 => (
+            2,
+            Some(format!(
+                "compme: model downloaded \u{2014} set COMPME_MODEL_PATH={} to use it",
+                path.display()
+            )),
+        ),
+        model_fetch::DownloadState::Failed(err) if logged < 2 => {
+            (2, Some(format!("compme: model download failed: {err}")))
+        }
+        _ => (logged, None),
+    }
+}
+
 /// Parse the encrypted-memory config (A2 §6/§16). `COMPME_MEMORY` selects the
 /// storage mode (off/accepted/all, default off); `COMPME_MEMORY_PATH` the db
 /// file; `COMPME_MEMORY_KEY` a 64-hex-char (32-byte) AES key.
@@ -970,7 +1015,7 @@ fn compose_setup_lines(config: &Config) -> Vec<String> {
         ax_trusted: accessibility_trusted(),
         screen_context_enabled: config.screen_context,
         screen_recording: screen_recording_permission(),
-        model_exists: config.stub_completion.is_some() || config.model_path.exists(),
+        model_exists: model_ready(config),
     })
     .iter()
     .map(setup_row_line)
@@ -995,6 +1040,23 @@ fn lifetime_line(merged: &stats::PersistedStats) -> String {
         "Lifetime {} words \u{b7} {} accepted",
         merged.words, merged.accepted
     )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SessionUsageSnapshot {
+    counts: stats::Counts,
+    words: usize,
+    latency_avg: Option<u32>,
+    latency_p95: Option<u32>,
+}
+
+fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSnapshot {
+    SessionUsageSnapshot {
+        counts: usage.counts(wall_ms),
+        words: usage.words_completed(wall_ms),
+        latency_avg: usage.latency_avg_ms(wall_ms),
+        latency_p95: usage.latency_p95_ms(wall_ms),
+    }
 }
 
 /// The runtime-mutable switch keys (the Settings switches persist these to
@@ -1347,7 +1409,7 @@ pub fn run() -> Result<(), String> {
         ax_trusted: trusted,
         screen_context_enabled: config.screen_context,
         screen_recording: screen_recording_permission(),
-        model_exists: config.stub_completion.is_some() || config.model_path.exists(),
+        model_exists: model_ready(&config),
     }) {
         if !row.ready {
             eprintln!("compme: setup: {} not ready", row.label);
@@ -1506,12 +1568,11 @@ pub fn run() -> Result<(), String> {
     let screen_active = config.screen_context && screen_recording_permission();
     // Clipboard/screen context work independently of previous-input context, so
     // the worker needs a positive char bound when any of them is enabled.
-    let context_bound =
-        if (config.clipboard_context || screen_active) && config.context_max_chars == 0 {
-            DEFAULT_CONTEXT_MAX_CHARS
-        } else {
-            config.context_max_chars
-        };
+    let context_bound = context_bound_chars(
+        config.clipboard_context,
+        screen_active,
+        config.context_max_chars,
+    );
     let worker_context = WorkerContext {
         previous_inputs: previous_inputs.clone(),
         clipboard: Arc::clone(&clipboard_cell),
@@ -2062,23 +2123,10 @@ pub fn run() -> Result<(), String> {
         // Download progress/terminal-state logging (one line per transition).
         if let Some(status) = &model_download_status {
             let state = status.state.lock().unwrap_or_else(|e| e.into_inner());
-            match &*state {
-                model_fetch::DownloadState::Running if model_download_logged == 0 => {
-                    model_download_logged = 1;
-                    eprintln!("compme: model download running");
-                }
-                model_fetch::DownloadState::Done(path) if model_download_logged < 2 => {
-                    model_download_logged = 2;
-                    eprintln!(
-                        "compme: model downloaded \u{2014} set COMPME_MODEL_PATH={} to use it",
-                        path.display()
-                    );
-                }
-                model_fetch::DownloadState::Failed(err) if model_download_logged < 2 => {
-                    model_download_logged = 2;
-                    eprintln!("compme: model download failed: {err}");
-                }
-                _ => {}
+            let (next_logged, line) = download_log_transition(&state, model_download_logged);
+            model_download_logged = next_logged;
+            if let Some(line) = line {
+                eprintln!("{line}");
             }
         }
         // Visible-only Setup re-probe: granting a permission while the
@@ -2386,24 +2434,24 @@ pub fn run() -> Result<(), String> {
 
     eprintln!("compme: shutting down");
     // Session usage summary (§11/§16).
-    let final_ms = start.elapsed().as_millis() as u64;
-    let counts = usage.counts(final_ms);
+    let final_wall_ms = wall_now_ms();
+    let session_usage = session_usage_snapshot(&usage, final_wall_ms);
     eprintln!(
         "compme: usage shown={} accepted={} dismissed={} superseded={} words={} \
          latency_avg={:?} latency_p95={:?}",
-        counts.shown,
-        counts.accepted,
-        counts.dismissed,
-        counts.superseded,
-        usage.words_completed(final_ms),
-        usage.latency_avg_ms(final_ms),
-        usage.latency_p95_ms(final_ms),
+        session_usage.counts.shown,
+        session_usage.counts.accepted,
+        session_usage.counts.dismissed,
+        session_usage.counts.superseded,
+        session_usage.words,
+        session_usage.latency_avg,
+        session_usage.latency_p95,
     );
     // Lifetime stats: load existing totals, add this session, write back
     // (T3). Fail-soft end to end — a stats hiccup must not block shutdown.
     if let Some(path) = config::stats_file_path() {
         let lifetime = stats::parse_stats_file(&std::fs::read_to_string(&path).unwrap_or_default());
-        let merged = lifetime.merged(counts, usage.words_completed(final_ms));
+        let merged = lifetime.merged(session_usage.counts, session_usage.words);
         let tmp = path.with_extension("env.tmp");
         let write = std::fs::create_dir_all(path.parent().unwrap_or(&path))
             .and_then(|()| std::fs::write(&tmp, stats::render_stats_file(&merged)))
@@ -2482,12 +2530,13 @@ mod tests {
 
     #[test]
     fn statistics_pane_composition_is_exactly_stats_rows_deep() {
-        // The window builds STATS_ROWS(=4) labels and zips them with these
-        // lines; a composition that stopped producing 4 would silently leave
-        // a stale label (review-c103). Pin the contract here.
+        // The window builds STATS_ROWS labels and zips them with these
+        // lines; a composition that stopped matching would silently leave a
+        // stale label (review-c103). Pin against the REAL const — a literal
+        // here goes stale silently when the pane grows a row.
         let mut lines = stats_pane_lines(&[stats::DayBucket::default()]);
         lines.push(lifetime_line(&stats::PersistedStats::default()));
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), platform_macos::STATS_ROWS);
     }
 
     #[test]
@@ -2716,16 +2765,16 @@ mod tests {
 
     #[test]
     fn setup_pane_composition_respects_the_row_limit() {
-        // The window builds 3 setup labels (SETUP_ROWS in platform_macos);
-        // zip-truncation would silently hide overflow rows (review-c106,
-        // c103 precedent).
+        // The window builds SETUP_ROWS labels; zip-truncation would
+        // silently hide overflow rows (review-c106, c103 precedent). Pin
+        // against the REAL const, not a drifting literal.
         let rows = crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
             ax_trusted: true,
             screen_context_enabled: true,
             screen_recording: true,
             model_exists: true,
         });
-        assert!(rows.len() <= 3);
+        assert!(rows.len() <= platform_macos::SETUP_ROWS);
     }
 
     #[test]
@@ -2760,6 +2809,29 @@ mod tests {
             lifetime_line(&merged),
             "Lifetime 337 words \u{b7} 42 accepted"
         );
+    }
+
+    #[test]
+    fn session_usage_snapshot_uses_the_stats_wall_clock_window() {
+        // Usage events are recorded with epoch milliseconds. Shutdown must query
+        // the same wall-clock domain; using process-elapsed milliseconds would
+        // drop every current-session event from the 30-day stats window.
+        let wall_ms = 1_800_000_000_000;
+        let mut usage = stats::Stats::default();
+        usage.record(wall_ms, stats::Outcome::Shown);
+        usage.record(wall_ms, stats::Outcome::Accepted { words: 3 });
+        usage.record_latency(wall_ms, 42);
+
+        let snapshot = session_usage_snapshot(&usage, wall_ms + 1);
+        assert_eq!(snapshot.counts.shown, 1);
+        assert_eq!(snapshot.counts.accepted, 1);
+        assert_eq!(snapshot.words, 3);
+        assert_eq!(snapshot.latency_avg, Some(42));
+        assert_eq!(snapshot.latency_p95, Some(42));
+
+        let later_wall_ms = wall_ms + 1_000;
+        let later_snapshot = session_usage_snapshot(&usage, later_wall_ms);
+        assert_eq!(later_snapshot, snapshot);
     }
 
     #[test]
@@ -2958,8 +3030,6 @@ mod tests {
             ("COMPME_AUTOCORRECT", "1"),
             ("COMPME_AUTOCORRECT_OFF_APPS", "com.quiet.app"),
         ]));
-        let mut prefs = config.prefs.clone();
-        let _ = &mut prefs;
         // `teh` is a known typo; in the opted-out app no offer fires…
         assert_eq!(
             replacement_decision(
@@ -3104,7 +3174,7 @@ mod tests {
     }
 
     #[test]
-    fn config_enabled_reads_complete_me_enabled_and_defaults_on() {
+    fn config_enabled_reads_compme_enabled_and_defaults_on() {
         // The global tray-toggle state, persisted on toggle and read back at
         // launch. Distinct from COMPME_DEFAULT_ENABLED (the per-app
         // suggestion-policy default in prefs).
@@ -3476,6 +3546,10 @@ mod tests {
         assert_eq!(latency_sample(&mut submit, 9, 200), None);
         // The unrelated entry is untouched.
         assert!(submit.contains_key(&5));
+        // Degenerate form of the same path: a fully empty map.
+        let mut empty: HashMap<u64, u64> = HashMap::new();
+        assert_eq!(latency_sample(&mut empty, 1, 100), None);
+        assert!(empty.is_empty());
     }
 
     #[test]
@@ -3504,13 +3578,6 @@ mod tests {
         let mut submit = HashMap::new();
         submit.insert(1u64, 100u64);
         assert_eq!(latency_sample(&mut submit, 1, 100), Some(0));
-    }
-
-    #[test]
-    fn latency_sample_empty_map_is_none() {
-        let mut submit: HashMap<u64, u64> = HashMap::new();
-        assert_eq!(latency_sample(&mut submit, 1, 100), None);
-        assert!(submit.is_empty());
     }
 
     #[test]
@@ -3835,6 +3902,133 @@ mod tests {
             replacement_offer("teh :smile", &all, all.autocorrect).expect("emoji wins");
         assert!(!glyph.is_empty());
         assert_eq!(replace_left, 6); // ":smile", not the word "teh"
+    }
+
+    #[test]
+    fn replacement_offer_falls_through_autocorrect_to_localize() {
+        // With BOTH word features on: a US spelling is not a typo, so it
+        // must fall THROUGH autocorrect (None) to the UK fix; a typo takes
+        // the autocorrect branch first.
+        let both = Config::from_lookup(lookup(&[
+            ("COMPME_AUTOCORRECT", "1"),
+            ("COMPME_BRITISH_ENGLISH", "1"),
+        ]));
+        assert_eq!(
+            replacement_offer("color", &both, both.autocorrect),
+            Some(("colour".into(), 5))
+        );
+        assert_eq!(
+            replacement_offer("teh", &both, both.autocorrect),
+            Some(("the".into(), 3))
+        );
+    }
+
+    #[test]
+    fn replacement_decision_honors_snooze_and_auto_resumes() {
+        // The fn's own contract: a local offer must not show while the model
+        // is snoozed. Snooze lives in runtime-mutated prefs, passed
+        // separately from config — this is the local path's own gate test.
+        let config = Config::from_lookup(lookup(&[("COMPME_EMOJI", "1")]));
+        let mut prefs = Prefs::default();
+        prefs.snooze(1_000, 60);
+        let app = Some("com.apple.TextEdit");
+        assert!(replacement_decision("hi :smile", &config, &prefs, app, true, 2_000).is_none());
+        // 60 minutes later the snooze expired → offers again.
+        let after = 1_000 + 60 * 60_000;
+        assert!(replacement_decision("hi :smile", &config, &prefs, app, true, after).is_some());
+    }
+
+    #[test]
+    fn per_app_autocorrect_on_list_overrides_a_global_off() {
+        // COMPME_AUTOCORRECT_ON_APPS: the positive override loop — a typo'd
+        // key string in that parse would silently kill the feature.
+        let prefs = build_prefs(&lookup(&[("COMPME_AUTOCORRECT_ON_APPS", "com.a.one")]));
+        assert!(prefs.autocorrect_enabled(Some("com.a.one"), false));
+        assert!(!prefs.autocorrect_enabled(Some("com.other"), false));
+    }
+
+    #[test]
+    fn trusted_key_parses_valid_hex_and_fails_closed_otherwise() {
+        // COMPME_TRUSTED_KEY gates whether signed deep links can EVER apply;
+        // the lookup→from_hex wiring is the app's security posture switch.
+        // (from_hex validates a real Ed25519 point — this is the basepoint.)
+        let valid = "5866666666666666666666666666666666666666666666666666666666666666";
+        let with_key = Config::from_lookup(lookup(&[("COMPME_TRUSTED_KEY", valid)]));
+        assert!(with_key.trusted_key.is_some());
+        let junk = Config::from_lookup(lookup(&[("COMPME_TRUSTED_KEY", "not-hex")]));
+        assert!(junk.trusted_key.is_none(), "malformed key fails closed");
+        let absent = Config::from_lookup(lookup(&[]));
+        assert!(
+            absent.trusted_key.is_none(),
+            "default: signed links rejected"
+        );
+    }
+
+    #[test]
+    fn model_ready_counts_a_stub_as_a_model_source() {
+        let stub = Config::from_lookup(lookup(&[
+            ("COMPME_STUB_COMPLETION", "x"),
+            ("COMPME_MODEL_PATH", "/no/such/file.gguf"),
+        ]));
+        assert!(model_ready(&stub), "stub-driven runs must not flag Setup");
+        let missing = Config::from_lookup(lookup(&[("COMPME_MODEL_PATH", "/no/such/file.gguf")]));
+        assert!(!model_ready(&missing));
+    }
+
+    #[test]
+    fn context_bound_lifts_zero_only_when_an_auxiliary_source_is_active() {
+        // clipboard/screen context with max_chars == 0 would be a silent
+        // no-op (the worker's block builder returns "" at bound 0).
+        assert_eq!(
+            context_bound_chars(true, false, 0),
+            DEFAULT_CONTEXT_MAX_CHARS
+        );
+        assert_eq!(
+            context_bound_chars(false, true, 0),
+            DEFAULT_CONTEXT_MAX_CHARS
+        );
+        assert_eq!(
+            context_bound_chars(false, false, 0),
+            0,
+            "nothing enabled stays off"
+        );
+        assert_eq!(
+            context_bound_chars(true, true, 50),
+            50,
+            "explicit bound wins"
+        );
+    }
+
+    #[test]
+    fn download_log_transitions_log_each_stage_exactly_once() {
+        use model_fetch::DownloadState;
+        // Running logs once, never repeats.
+        let (logged, line) = download_log_transition(&DownloadState::Running, 0);
+        assert_eq!(logged, 1);
+        assert!(line.unwrap().contains("running"));
+        assert_eq!(
+            download_log_transition(&DownloadState::Running, 1),
+            (1, None)
+        );
+        // Done logs the COMPME_MODEL_PATH hint — the only user-visible
+        // signal of where the model landed — even when it skipped Running.
+        let done = DownloadState::Done("/tmp/m.gguf".into());
+        let (logged, line) = download_log_transition(&done, 0);
+        assert_eq!(logged, 2);
+        assert!(line.unwrap().contains("COMPME_MODEL_PATH=/tmp/m.gguf"));
+        assert_eq!(
+            download_log_transition(&done, 2),
+            (2, None),
+            "terminal logs once"
+        );
+        // Failed is terminal too.
+        let failed = DownloadState::Failed("boom".into());
+        let (logged, line) = download_log_transition(&failed, 1);
+        assert_eq!(logged, 2);
+        assert!(line.unwrap().contains("boom"));
+        assert_eq!(download_log_transition(&failed, 2), (2, None));
+        // Idle never logs.
+        assert_eq!(download_log_transition(&DownloadState::Idle, 0), (0, None));
     }
 
     #[test]

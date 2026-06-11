@@ -61,7 +61,9 @@ mod tray;
 mod ui_prompt;
 mod url_events;
 pub use login_item::set_launch_at_login;
-pub use settings_window::{policy_restore_needed, MacosSettingsWindow, SettingsFlags, APPS_ROWS};
+pub use settings_window::{
+    policy_restore_needed, MacosSettingsWindow, SettingsFlags, APPS_ROWS, SETUP_ROWS, STATS_ROWS,
+};
 pub use tray::{DisableArm, MacosTray, TrayFlags};
 pub use ui_prompt::{confirm_deep_link_prompt, confirm_delete_app_prompt};
 pub use url_events::{install_url_event_handler, UrlEventHandler};
@@ -2136,7 +2138,7 @@ fn accept_observer_tap_handler(active: Arc<AtomicBool>) -> Arc<AcceptTapHandler>
         if !active.load(Ordering::Acquire) {
             return AcceptTapDecision::Keep;
         }
-        accept_tap_decision(AcceptTapKind::Observer, event, None)
+        accept_tap_decision(&accept_keymap(), AcceptTapKind::Observer, event, None)
     })
 }
 
@@ -2154,7 +2156,8 @@ fn accept_consumer_tap_handler(
         let action = *accept_action
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let decision = accept_tap_decision(AcceptTapKind::Consumer, event, action);
+        let decision =
+            accept_tap_decision(&accept_keymap(), AcceptTapKind::Consumer, event, action);
         let control = match decision {
             AcceptTapDecision::Drop(action) => Some(TapControl::Accept(action)),
             AcceptTapDecision::DropDismiss => Some(TapControl::Dismiss),
@@ -2188,9 +2191,11 @@ pub enum AcceptBinding {
 /// honored everywhere from one source of truth.
 ///
 /// Public so the app's config layer can build a rebound map from
-/// `COMPME_ACCEPT_WORD_KEY`/`_FULL_KEY`. Threading a *configured* (non-
-/// default) map through the live tap/registration is the remaining wiring step
-/// (the decision/registration currently use [`AcceptKeymap::default`]).
+/// `COMPME_ACCEPT_WORD_KEY`/`_FULL_KEY` and thread it in at startup via
+/// [`set_accept_keymap_from_config`]. The decision and Carbon registration
+/// both read the swappable `ACCEPT_KEYMAP` global (recorder tick 5a); the
+/// remaining live-rebind gap is re-ARMING already-registered hotkeys after a
+/// swap (see the warning on [`set_accept_keymap`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AcceptKeymap {
     word: i64,
@@ -2308,6 +2313,7 @@ impl AcceptKeymap {
 }
 
 fn accept_tap_decision(
+    keymap: &AcceptKeymap,
     kind: AcceptTapKind,
     event: AcceptTapEvent,
     action: Option<AcceptAction>,
@@ -2330,7 +2336,7 @@ fn accept_tap_decision(
         // grave/backtick above Tab) accepts the whole completion; Esc dismisses +
         // suppresses the field. `action.is_some()` is only the armed/visible gate.
         // Driven by `AcceptKeymap` so a rebind is honored from one source.
-        match accept_keymap().binding_for(event.keycode) {
+        match keymap.binding_for(event.keycode) {
             // Option+<word key> is the per-app Tab bypass: pass it through
             // literally (no Word accept, no swallow).
             Some(AcceptBinding::Word) if event.option_down => return AcceptTapDecision::Keep,
@@ -3559,18 +3565,41 @@ fn field_matches_identity(field: &FieldHandle, identity: &AxElementIdentity) -> 
         let stable_key = stable_key.strip_prefix("ax:").unwrap_or(&stable_key);
         // Segment equality, NOT substring containment: "id=name" must not
         // match a field carrying "id=name2", and "pid=4" must not match
-        // "pid=42". Both sides split the same way, so components with
-        // escaped pipes fragment identically and still compare equal.
-        let field_parts: Vec<&str> = field
+        // "pid=42". The split honors the component escaping ("\|" stays
+        // inside its segment) — a naive split('|') would let an identifier
+        // containing a literal '|' forge segments (e.g. a Chromium
+        // web-content id of "x|role=AXTextArea") and resurrect the
+        // wrong-field-guard bypass this match exists to prevent.
+        let field_id = field
             .element_id
             .strip_prefix("ax:")
-            .unwrap_or(&field.element_id)
-            .split('|')
-            .collect();
-        stable_key
-            .split('|')
-            .all(|part| field_parts.contains(&part))
+            .unwrap_or(&field.element_id);
+        let field_parts = split_identity_segments(field_id);
+        split_identity_segments(stable_key)
+            .iter()
+            .all(|part| field_parts.contains(part))
     })
+}
+
+/// Split an identity key into its `|`-separated segments, honoring the
+/// [`escape_identity_component`] scheme: `\|` is a literal pipe inside a
+/// segment, `\\` a literal backslash, so neither terminates a segment.
+fn split_identity_segments(value: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+    for (i, c) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '|' {
+            segments.push(&value[start..i]);
+            start = i + 1;
+        }
+    }
+    segments.push(&value[start..]);
+    segments
 }
 
 unsafe fn read_required_ax_string_attribute(
@@ -6059,6 +6088,61 @@ mod tests {
     }
 
     #[test]
+    fn field_matches_identity_rejects_segment_injection_via_escaped_pipe_identifier() {
+        let identity =
+            AxElementIdentity::new("ax:0x999", Some(42), None, Some("AXTextArea".into()), None);
+        // A field whose AXIdentifier contains a literal '|' (Chromium derives
+        // identifiers from web-content ids) escapes it as "\|" — a naive
+        // split('|') would fragment that component into "id=x\" plus a forged
+        // "role=AXTextArea" segment, matching an identity whose role the
+        // field does NOT have (its real role is AXButton).
+        let other = AxElementIdentity::new(
+            "ax:0xAAA",
+            Some(42),
+            Some("x|role=AXTextArea".into()),
+            Some("AXButton".into()),
+            None,
+        );
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: other.field_element_id(),
+            generation: 1,
+        };
+
+        assert!(!field_matches_identity(&field, &identity));
+    }
+
+    #[test]
+    fn field_matches_identity_accepts_pipe_bearing_identifier_via_stable_key() {
+        // The positive direction of the same escaping: an identity whose
+        // identifier legitimately contains '|' must still match its own
+        // re-resolved handle (different pointer forces the stable-key path).
+        let identity = AxElementIdentity::new(
+            "ax:0x999",
+            Some(42),
+            Some("editor|main".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        let re_resolved = AxElementIdentity::new(
+            "ax:0xDIFFERENT",
+            Some(42),
+            Some("editor|main".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: re_resolved.field_element_id(),
+            generation: 1,
+        };
+
+        assert!(field_matches_identity(&field, &identity));
+    }
+
+    #[test]
     fn field_matches_identity_rejects_when_identity_has_no_stable_key() {
         // Pointer-only identity has no owner_pid, so stable_field_key() is None
         // and only an exact field_element_id match could succeed.
@@ -6772,8 +6856,9 @@ mod tests {
     fn a_rebound_keymap_keeps_decision_registration_and_inverse_consistent() {
         // The cycle-13 one-source contract, checked on a NON-default map so a
         // future regression in any of the three call sites' shared source
-        // shows up as a divergence here (the global OnceLock stays untouched —
-        // it is process-wide and other tests assume the default).
+        // shows up as a divergence here (the swappable ACCEPT_KEYMAP global
+        // stays untouched — the swap test owns it; this test works on a
+        // local map only).
         let map = AcceptKeymap::from_accept_keys(Some(122), Some(120)).expect("valid rebind");
         for (id, keycode) in map.carbon_bindings() {
             // registration → inverse agrees
@@ -7490,7 +7575,12 @@ mod tests {
         let opt_tab = accept_tap_event_with_option(CGEventType::KeyDown, KEYCODE_TAB);
 
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, opt_tab, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                opt_tab,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }
@@ -7501,17 +7591,27 @@ mod tests {
 
         // Armed consumer tap: Esc is consumed and routed as a dismiss+suppress.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, esc, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                esc,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::DropDismiss
         );
         // Unarmed (no suggestion visible): Esc passes through to the app.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, esc, None),
+            accept_tap_decision(&AcceptKeymap::default(), AcceptTapKind::Consumer, esc, None),
             AcceptTapDecision::Keep
         );
         // Observer (listen-only) tap never consumes Esc.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Observer, esc, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Observer,
+                esc,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }
@@ -7522,21 +7622,36 @@ mod tests {
 
         // Observer (listen-only) tap never consumes.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Observer, tab, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Observer,
+                tab,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
         // Consumer tap only consumes while armed.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, tab, None),
+            accept_tap_decision(&AcceptKeymap::default(), AcceptTapKind::Consumer, tab, None),
             AcceptTapDecision::Keep
         );
         // Tab always accepts the next word once armed, regardless of armed value.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, tab, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                tab,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Drop(AcceptAction::Word)
         );
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, tab, Some(AcceptAction::Word)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                tab,
+                Some(AcceptAction::Word)
+            ),
             AcceptTapDecision::Drop(AcceptAction::Word)
         );
     }
@@ -7550,23 +7665,43 @@ mod tests {
         let grave = accept_tap_event(CGEventType::KeyDown, KEYCODE_GRAVE, 0);
 
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, tab, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                tab,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Drop(AcceptAction::Word),
             "Tab must accept the next word regardless of armed value"
         );
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, grave, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                grave,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Drop(AcceptAction::Full),
             "grave must accept the full completion"
         );
         // Grave is only consumed while armed.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, grave, None),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                grave,
+                None
+            ),
             AcceptTapDecision::Keep
         );
         // Grave on the observer (listen-only) tap is never consumed.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Observer, grave, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Observer,
+                grave,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }
@@ -7575,17 +7710,32 @@ mod tests {
     fn down_arrow_while_armed_cycles_candidates() {
         let down = accept_tap_event(CGEventType::KeyDown, KEYCODE_DOWN, 0);
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, down, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                down,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::DropCycle
         );
         // Unarmed (no suggestion): Down passes through for normal navigation.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, down, None),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                down,
+                None
+            ),
             AcceptTapDecision::Keep
         );
         // Observer tap never consumes.
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Observer, down, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Observer,
+                down,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }
@@ -7689,11 +7839,55 @@ mod tests {
         // ONE test owns the global keymap (parallel tests would race it):
         // unset → defaults; set_accept_keymap → effective follows at runtime
         // (the live-rebind core, recorder tick 5a); restored afterward.
+        // (accept_tap_decision takes the keymap as a parameter, so the
+        // decision tests no longer read this global during the swap window.)
         assert_eq!(effective_accept_keys(), (48, 50));
         set_accept_keymap(AcceptKeymap::from_accept_keys(Some(35), Some(38)).unwrap());
         assert_eq!(effective_accept_keys(), (35, 38));
         set_accept_keymap(AcceptKeymap::default());
         assert_eq!(effective_accept_keys(), (48, 50));
+
+        // Fail-soft contract: a rejected config (collision with a fixed key)
+        // must error WITHOUT touching the live map — validation runs before
+        // the swap, so the runtime never registers a colliding keymap.
+        assert_eq!(
+            set_accept_keymap_from_config(Some(KEYCODE_ESCAPE), None),
+            Err(KeymapError::Collision(KEYCODE_ESCAPE))
+        );
+        assert_eq!(
+            effective_accept_keys(),
+            (48, 50),
+            "global unchanged after a rejected config"
+        );
+    }
+
+    #[test]
+    fn accept_tap_decision_honors_a_rebound_keymap() {
+        // The rebind→decision contract through the decision fn itself: the
+        // rebound word key drops to Word, and the OLD default Tab is unbound
+        // (passes through) — previously only pinned at the binding_for level.
+        let map = AcceptKeymap::from_accept_keys(Some(122), None).unwrap();
+        let rebound = accept_tap_event(CGEventType::KeyDown, 122, 0);
+        let old_tab = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
+
+        assert_eq!(
+            accept_tap_decision(
+                &map,
+                AcceptTapKind::Consumer,
+                rebound,
+                Some(AcceptAction::Full)
+            ),
+            AcceptTapDecision::Drop(AcceptAction::Word)
+        );
+        assert_eq!(
+            accept_tap_decision(
+                &map,
+                AcceptTapKind::Consumer,
+                old_tab,
+                Some(AcceptAction::Full)
+            ),
+            AcceptTapDecision::Keep
+        );
     }
 
     #[test]
@@ -7790,7 +7984,12 @@ mod tests {
         let event = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, SYNTHETIC_EVENT_TAG);
 
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                event,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }
@@ -7884,7 +8083,12 @@ mod tests {
         let event = accept_tap_event(CGEventType::TapDisabledByTimeout, KEYCODE_TAB, 0);
 
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, event, None),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                event,
+                None
+            ),
             AcceptTapDecision::ReenableAndKeep
         );
     }
@@ -8142,6 +8346,22 @@ mod tests {
 
         assert_eq!(value, "Hi 😀! there");
         assert_eq!(caret, 6);
+    }
+
+    #[test]
+    fn extend_range_left_clamps_a_negative_ax_location() {
+        // AX apps do return junk ranges; a negative location clamps to the
+        // start (nothing left of it to extend over). A regression to a direct
+        // `as usize` cast would wrap to a huge offset.
+        let range = extend_range_left(
+            "hello",
+            CFRange {
+                location: -3,
+                length: 0,
+            },
+            2,
+        );
+        assert_eq!((range.location, range.length), (0, 0));
     }
 
     #[test]
@@ -8701,7 +8921,12 @@ mod tests {
         // A key that is neither Tab nor grave must not be consumed.
         let event = accept_tap_event(CGEventType::KeyDown, 11, 0);
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                event,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }
@@ -8711,7 +8936,12 @@ mod tests {
         // Only KeyDown is consumed; the matching KeyUp passes through.
         let event = accept_tap_event(CGEventType::KeyUp, KEYCODE_TAB, 0);
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                event,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }
@@ -8720,7 +8950,12 @@ mod tests {
     fn accept_tap_decision_keeps_keyup_grave() {
         let event = accept_tap_event(CGEventType::KeyUp, KEYCODE_GRAVE, 0);
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                event,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }
@@ -8729,7 +8964,12 @@ mod tests {
     fn observer_tap_keeps_tab() {
         let event = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Observer, event, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Observer,
+                event,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }
@@ -8739,7 +8979,12 @@ mod tests {
         // Our own synthetic grave insertion must never re-enter as an accept.
         let event = accept_tap_event(CGEventType::KeyDown, KEYCODE_GRAVE, SYNTHETIC_EVENT_TAG);
         assert_eq!(
-            accept_tap_decision(AcceptTapKind::Consumer, event, Some(AcceptAction::Full)),
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                event,
+                Some(AcceptAction::Full)
+            ),
             AcceptTapDecision::Keep
         );
     }

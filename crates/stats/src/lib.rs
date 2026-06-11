@@ -647,12 +647,19 @@ mod tests {
 
     #[test]
     fn latency_avg_floor_divides() {
-        // [10,20,21] mean = 51/3 = 17 exactly; [10,20,20]=50/3 floors to 16.
+        // [10,20,20] = 50/3 floors to 16; [10,20,21] = 51/3 = 17 divides
+        // exactly — both directions of the floor-division contract.
         let mut s = Stats::new();
         for ms in [10u32, 20, 20] {
             s.record_latency(T0, ms);
         }
         assert_eq!(s.latency_avg_ms(T0), Some(16));
+
+        let mut exact = Stats::new();
+        for ms in [10u32, 20, 21] {
+            exact.record_latency(T0, ms);
+        }
+        assert_eq!(exact.latency_avg_ms(T0), Some(17));
     }
 
     #[test]

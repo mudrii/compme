@@ -55,12 +55,19 @@ pub fn stats_file_path() -> Option<PathBuf> {
 /// `$HOME/Library/Application Support/compme/config.env`. `None` if neither
 /// is available.
 pub fn config_file_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("COMPME_CONFIG") {
+    config_file_path_from(&|key| std::env::var(key).ok())
+}
+
+/// Lookup-injected core of [`config_file_path`] (the `Config::from_lookup`
+/// pattern): testable without mutating the process environment — `set_var`
+/// races parallel tests and is `unsafe` under edition 2024.
+fn config_file_path_from(lookup: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    if let Some(path) = lookup("COMPME_CONFIG") {
         if !path.is_empty() {
             return Some(PathBuf::from(path));
         }
     }
-    std::env::var("HOME").ok().map(|home| {
+    lookup("HOME").map(|home| {
         PathBuf::from(home)
             .join("Library/Application Support/compme")
             .join("config.env")
@@ -431,19 +438,27 @@ mod tests {
 
     #[test]
     fn config_file_path_covers_all_branches() {
-        // Save originals so the test is hermetic and leaves the process env
-        // exactly as it found it.
-        let saved_config = std::env::var("COMPME_CONFIG").ok();
-        let saved_home = std::env::var("HOME").ok();
+        // Drives the lookup-injected core — mutating the process env here
+        // (`set_var`/`remove_var`) raced parallel tests and is `unsafe`
+        // under edition 2024.
+        let env = |pairs: &'static [(&str, &str)]| {
+            move |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
 
         // Branch 1: COMPME_CONFIG set non-empty -> returned verbatim.
-        std::env::set_var("COMPME_CONFIG", "/some/path");
-        assert_eq!(config_file_path(), Some(PathBuf::from("/some/path")));
+        assert_eq!(
+            config_file_path_from(&env(&[("COMPME_CONFIG", "/some/path"), ("HOME", "/h")])),
+            Some(PathBuf::from("/some/path"))
+        );
 
         // Branch 2: COMPME_CONFIG empty + HOME set -> path under $HOME.
-        std::env::set_var("COMPME_CONFIG", "");
-        std::env::set_var("HOME", "/h");
-        let path = config_file_path().expect("HOME branch should yield a path");
+        let path = config_file_path_from(&env(&[("COMPME_CONFIG", ""), ("HOME", "/h")]))
+            .expect("HOME branch should yield a path");
         assert!(
             path.ends_with("compme/config.env"),
             "unexpected path: {path:?}"
@@ -454,18 +469,6 @@ mod tests {
         );
 
         // Branch 3: neither var available -> None.
-        std::env::remove_var("COMPME_CONFIG");
-        std::env::remove_var("HOME");
-        assert_eq!(config_file_path(), None);
-
-        // Restore originals.
-        match saved_config {
-            Some(v) => std::env::set_var("COMPME_CONFIG", v),
-            None => std::env::remove_var("COMPME_CONFIG"),
-        }
-        match saved_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        assert_eq!(config_file_path_from(&env(&[])), None);
     }
 }

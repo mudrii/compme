@@ -682,7 +682,9 @@ struct BuiltWindow {
 }
 
 /// Max Setup row count (accessibility / screen recording / model file).
-const SETUP_ROWS: usize = 3;
+/// Public for the same reason as [`APPS_ROWS`]: the run loop's composer
+/// pins against this count instead of a drifting literal.
+pub const SETUP_ROWS: usize = 3;
 
 /// Max Apps rows (top apps by recorded-input count, plus status lines).
 /// Public: the run loop's line composer caps to this same number
@@ -690,7 +692,9 @@ const SETUP_ROWS: usize = 3;
 pub const APPS_ROWS: usize = 8;
 
 /// Fixed Statistics row count (shown / accepted / words / lifetime).
-const STATS_ROWS: usize = 4;
+/// Public for the same reason as [`APPS_ROWS`]: the run loop's composer
+/// pins against this count instead of a drifting literal.
+pub const STATS_ROWS: usize = 4;
 
 /// Number of settings tabs.
 pub const PANE_COUNT: usize = 6;
