@@ -36,11 +36,11 @@ impl PersistedStats {
     /// These totals plus one session's counts and accepted words.
     pub fn merged(self, session: Counts, session_words: usize) -> Self {
         Self {
-            shown: self.shown + session.shown as u64,
-            accepted: self.accepted + session.accepted as u64,
-            dismissed: self.dismissed + session.dismissed as u64,
-            superseded: self.superseded + session.superseded as u64,
-            words: self.words + session_words as u64,
+            shown: self.shown.saturating_add(session.shown as u64),
+            accepted: self.accepted.saturating_add(session.accepted as u64),
+            dismissed: self.dismissed.saturating_add(session.dismissed as u64),
+            superseded: self.superseded.saturating_add(session.superseded as u64),
+            words: self.words.saturating_add(session_words as u64),
         }
     }
 }

@@ -3557,9 +3557,19 @@ fn field_matches_identity(field: &FieldHandle, identity: &AxElementIdentity) -> 
 
     identity.stable_field_key().is_some_and(|stable_key| {
         let stable_key = stable_key.strip_prefix("ax:").unwrap_or(&stable_key);
+        // Segment equality, NOT substring containment: "id=name" must not
+        // match a field carrying "id=name2", and "pid=4" must not match
+        // "pid=42". Both sides split the same way, so components with
+        // escaped pipes fragment identically and still compare equal.
+        let field_parts: Vec<&str> = field
+            .element_id
+            .strip_prefix("ax:")
+            .unwrap_or(&field.element_id)
+            .split('|')
+            .collect();
         stable_key
             .split('|')
-            .all(|part| field.element_id.contains(part))
+            .all(|part| field_parts.contains(&part))
     })
 }
 
@@ -5999,6 +6009,49 @@ mod tests {
             app: "pid:42".into(),
             pid: Some(42),
             element_id: "ax:ptr=ax:0xDIFFERENT|pid=42|id=editor".into(),
+            generation: 1,
+        };
+
+        assert!(!field_matches_identity(&field, &identity));
+    }
+
+    #[test]
+    fn field_matches_identity_rejects_substring_prefix_parts() {
+        let identity = AxElementIdentity::new(
+            "ax:0x999",
+            Some(42),
+            Some("name".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        // A DIFFERENT field in the same app whose identifier merely starts
+        // with the stable key's identifier ("name" vs "name2") must NOT pass
+        // the wrong-field guard — segment equality, not substring containment.
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: "ax:ptr=ax:0xDIFFERENT|pid=42|id=name2|role=AXTextArea".into(),
+            generation: 1,
+        };
+
+        assert!(!field_matches_identity(&field, &identity));
+    }
+
+    #[test]
+    fn field_matches_identity_rejects_pid_prefix_overlap() {
+        let identity = AxElementIdentity::new(
+            "ax:0x999",
+            Some(4),
+            Some("editor".into()),
+            Some("AXTextArea".into()),
+            None,
+        );
+        // "pid=4" is a substring of "pid=42" — a cross-process identity must
+        // never match another pid's field.
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: "ax:ptr=ax:0xDIFFERENT|pid=42|id=editor|role=AXTextArea".into(),
             generation: 1,
         };
 

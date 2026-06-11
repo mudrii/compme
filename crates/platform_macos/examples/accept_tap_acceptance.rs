@@ -108,8 +108,13 @@ fn main() {
         });
     }
 
+    // Carbon dispatches RegisterEventHotKey presses during application event
+    // DEQUEUE, not via CFRunLoop sources — without this pump the hotkeys
+    // register but never fire (the c41 root cause; the product binary pumps
+    // each heartbeat for the same reason).
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
+        platform_macos::pump_app_events();
         thread::sleep(Duration::from_millis(50));
     }
 
@@ -135,10 +140,10 @@ fn key_to_post_for_requirement(requirement: &str) -> (u16, &'static str, bool) {
 fn controls_satisfy_requirement(requirement: &str, controls: &[TapControl]) -> bool {
     match requirement {
         "inactive" | "delayed-hide" | "option-tab" => controls.is_empty(),
-        "full" => controls.contains(&TapControl::Accept(AcceptAction::Full)),
-        "word" => controls.contains(&TapControl::Accept(AcceptAction::Word)),
-        "escape" => controls.contains(&TapControl::Dismiss),
-        "cycle" => controls.contains(&TapControl::Cycle),
+        "full" => controls == [TapControl::Accept(AcceptAction::Full)],
+        "word" => controls == [TapControl::Accept(AcceptAction::Word)],
+        "escape" => controls == [TapControl::Dismiss],
+        "cycle" => controls == [TapControl::Cycle],
         _ => false,
     }
 }
@@ -199,17 +204,52 @@ mod tests {
         ));
         assert!(!controls_satisfy_requirement(
             "full",
+            &[
+                TapControl::Accept(AcceptAction::Word),
+                TapControl::Accept(AcceptAction::Full),
+            ]
+        ));
+        assert!(!controls_satisfy_requirement(
+            "full",
+            &[
+                TapControl::Accept(AcceptAction::Full),
+                TapControl::Accept(AcceptAction::Word),
+            ]
+        ));
+        assert!(!controls_satisfy_requirement(
+            "full",
             &[TapControl::Accept(AcceptAction::Word)]
+        ));
+        // Duplicate identical fires (double registration / a future key-up
+        // handler) must fail too — exact length, not just membership.
+        assert!(!controls_satisfy_requirement(
+            "full",
+            &[
+                TapControl::Accept(AcceptAction::Full),
+                TapControl::Accept(AcceptAction::Full),
+            ]
         ));
         assert!(controls_satisfy_requirement(
             "word",
             &[TapControl::Accept(AcceptAction::Word)]
         ));
+        assert!(!controls_satisfy_requirement(
+            "word",
+            &[TapControl::Accept(AcceptAction::Word), TapControl::Dismiss]
+        ));
         assert!(controls_satisfy_requirement(
             "escape",
             &[TapControl::Dismiss]
         ));
+        assert!(!controls_satisfy_requirement(
+            "escape",
+            &[TapControl::Dismiss, TapControl::Cycle]
+        ));
         assert!(controls_satisfy_requirement("cycle", &[TapControl::Cycle]));
+        assert!(!controls_satisfy_requirement(
+            "cycle",
+            &[TapControl::Cycle, TapControl::Dismiss]
+        ));
         assert!(controls_satisfy_requirement("option-tab", &[]));
         assert!(!controls_satisfy_requirement(
             "option-tab",

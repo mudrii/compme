@@ -57,13 +57,14 @@ only when you intentionally want to validate a separate focused writable target
 with no usable caret geometry.
 For browser marker validation, focus a Chrome/Safari text field and pass --browser-pid.
 
-Production accept keys use transient Carbon hotkeys. [CORR 2026-06-11] With
-the NSApp event pump in place, synthetic key posts CAN fire RegisterEventHotKey
-(see docs/ACCEPTANCE.md [CORR 2026-06-10] — a System Events Tab accepted live).
-The Carbon accept/consume gates below remain MANUAL because this harness has
-not been rebuilt for the Carbon path (the old e2e harness drove the removed
-event-tap), not because scripted Carbon input is impossible. Rebuilding the
-scripted gates is acceptance backlog.
+Production accept keys use transient Carbon hotkeys. [CORR 2026-06-11] The
+accept-tap, accept-insert, and e2e gates are SCRIPTED again: the example
+harnesses now pump NSApp events each poll, so synthetic key posts fire
+RegisterEventHotKey (see docs/ACCEPTANCE.md [CORR 2026-06-10]; validated
+live 2026-06-11 — synthetic Tab/grave/Esc/Down all fired through the
+rebuilt harness). The hotkeys are system-wide: keep hands off the keyboard
+during the run — ambient Tab/grave/Esc/Down presses contaminate the
+exact-match control checks (mismatched runs retry up to --retries).
 USAGE
 }
 
@@ -281,6 +282,60 @@ manual_gate() {
   manuals=$((manuals + 1))
 }
 
+run_accept_tap_gate() {
+  name="$1"
+  shift
+  attempts="$RETRIES"
+  case "$attempts" in
+    ''|*[!0-9]*) attempts=1 ;;
+  esac
+  [ "$attempts" -ge 1 ] || attempts=1
+
+  echo
+  echo "== $name =="
+  print_cmd "$@"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    return 0
+  fi
+
+  attempt=1
+  while [ "$attempt" -le "$attempts" ]; do
+    sleep_ms "$GATE_PAUSE_MS"
+    if [ "$attempts" -gt 1 ]; then
+      log_file="$LOG_DIR/$name.attempt-$attempt.log"
+      echo "-- attempt $attempt/$attempts --"
+    else
+      log_file="$LOG_DIR/$name.log"
+    fi
+
+    "$@" >"$log_file" 2>&1
+    status=$?
+    cat "$log_file"
+
+    if [ "$status" -eq 0 ]; then
+      echo "PASS $name"
+      passes=$((passes + 1))
+      return 0
+    fi
+
+    # The accept gates assert an EXACT control set, and the Carbon hotkeys
+    # are system-wide — any Tab/grave/Esc/Down pressed on the machine during
+    # the gate window lands in the captured controls. A run that completed
+    # (SUMMARY printed) but mismatched is retried; a genuine wrong-control
+    # bug fails every attempt the same way.
+    if [ "$attempt" -lt "$attempts" ] && grep -q '^SUMMARY controls=' "$log_file"; then
+      echo "RETRY $name ($status): control set mismatched — ambient key presses contaminate the system-wide hotkeys; keep hands off the keyboard"
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    echo "FAIL $name ($status): $(classify_blocker "$log_file")"
+    failures=$((failures + 1))
+    return "$status"
+  done
+}
+
 check_preflight() {
   preflight_log="$LOG_DIR/preflight.log"
   : >"$preflight_log"
@@ -432,10 +487,18 @@ else
     run_retryable_gate "textedit-insert-clipboard" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-clipboard" "$TEXTEDIT_BIN" "$TIMEOUT_MS" clipboard
     run_retryable_gate "textedit-insert-axset" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT" "$TEXTEDIT_BIN" "$TIMEOUT_MS" insert
     run_retryable_gate "caret-marker-textedit-any" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$MARKER_BIN" "$SHORT_TIMEOUT_MS" any
-    manual_gate "accept-insert-full" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
-    manual_gate "accept-insert-word" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
-    manual_gate "e2e-compme-pipeline" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
-    manual_gate "e2e-compme-word-remainder" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+    run_retryable_gate "accept-insert-full" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_INSERT_BIN" "$SHORT_TIMEOUT_MS" full
+    run_retryable_gate "accept-insert-word" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_INSERT_BIN" "$SHORT_TIMEOUT_MS" word
+    if [ "$SKIP_E2E" -eq 1 ]; then
+      skip_gate "e2e-compme-pipeline" "--skip-e2e"
+      skip_gate "e2e-compme-word-remainder" "--skip-e2e"
+    elif [ ! -x "$COMPME_BIN" ]; then
+      skip_gate "e2e-compme-pipeline" "compme binary not built (run: cargo build -p app)"
+      skip_gate "e2e-compme-word-remainder" "compme binary not built (run: cargo build -p app)"
+    else
+      run_gate "e2e-compme-pipeline" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_E2E_ACCEPT=full "$E2E_SCRIPT"
+      run_gate "e2e-compme-word-remainder" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_E2E_ACCEPT=word "$E2E_SCRIPT"
+    fi
   fi
 fi
 
@@ -451,13 +514,17 @@ else
   run_gate "popup-fallback-fixture" "$POPUP_FIXTURE_BIN" "$SHORT_TIMEOUT_MS"
 fi
 
-manual_gate "accept-tap-inactive" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
-manual_gate "accept-tap-full" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
-manual_gate "accept-tap-word" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
-manual_gate "accept-tap-escape" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
-manual_gate "accept-tap-option-tab" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
-manual_gate "accept-tap-cycle" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
-manual_gate "accept-tap-delayed-hide" "physical Carbon hotkey gate; scripted Carbon harness not yet rebuilt (synthetic CAN fire — see ACCEPTANCE CORR 2026-06-10)"
+# Scripted Carbon accept gates [2026-06-11]: the harness pumps NSApp events so
+# synthetic posts dispatch to the installed hotkey handler. inactive/option-tab/
+# delayed-hide post an unconsumed key that lands in the frontmost app — keep an
+# editable scratch target (TextEdit) frontmost so the stray Tab is harmless.
+run_accept_tap_gate "accept-tap-inactive" env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" inactive
+run_accept_tap_gate "accept-tap-full" env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" full
+run_accept_tap_gate "accept-tap-word" env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" word
+run_accept_tap_gate "accept-tap-escape" env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" escape
+run_accept_tap_gate "accept-tap-option-tab" env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" option-tab
+run_accept_tap_gate "accept-tap-cycle" env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" cycle
+run_accept_tap_gate "accept-tap-delayed-hide" env COMPME_ACCEPTANCE_HIDE_AFTER_MS="$HIDE_AFTER_MS" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" delayed-hide
 
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
 

@@ -86,6 +86,22 @@ The runner reports these as `MANUAL`, not `SKIP`, when they are the remaining
 Carbon evidence requirement. `--self-test` pins the runner's blocker
 classification logic.
 
+**[2026-06-11] Scripted Carbon gates REBUILT.** The `accept_tap_acceptance`
+and `accept_insert_acceptance` harnesses now pump NSApp events in their wait
+loops (the same cycle-41 fix the product binary carries), so synthetic key
+posts dispatch to the installed hotkey handler. Validated live: synthetic
+Tab/grave/Esc/Down each fired through the rebuilt tap harness
+(`SUMMARY controls=[Accept(Word)]` / `[Accept(Full)]` / `[Dismiss]` /
+`[Cycle]`, exit 0). The runner's `accept-tap-*`, `accept-insert-*`, and
+`e2e-compme-*` gates are scripted again (`manual=0`); the previous paragraph
+stands as the historical record of why they were manual. Two operator notes:
+(1) the gates assert an EXACT control set and the Carbon hotkeys are
+system-wide, so keep hands off the keyboard during a run — ambient
+Tab/grave/Esc/Down presses contaminate the captured controls (the runner
+retries mismatches up to `--retries`); (2) for manual physical runs of these
+gates, press the key exactly once — a double-tap now fails the exact-match
+check that the old `contains()` check tolerated.
+
 ### Manual Physical Carbon Gates
 
 Run these on an unlocked GUI session with Accessibility granted and no global

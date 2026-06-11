@@ -179,8 +179,13 @@ fn main() {
         }
     });
 
+    // Carbon dispatches RegisterEventHotKey presses during application event
+    // DEQUEUE, not via CFRunLoop sources — without this pump the hotkeys
+    // register but never fire (the c41 root cause; the product binary pumps
+    // each heartbeat for the same reason).
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
+        platform_macos::pump_app_events();
         thread::sleep(Duration::from_millis(50));
     }
 
