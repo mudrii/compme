@@ -7,12 +7,21 @@ use ranker::{
     trim_to_stop_boundary, truncate_at_sentence_end,
 };
 
+/// Monotonic id for one (value, caret) state of the focused field. Completion
+/// requests are stamped with the snapshot they were issued for; a completion
+/// whose stamp no longer matches the machine's current snapshot is stale and
+/// silently dropped — hosts must echo the stamp back unchanged, never invent
+/// or reuse one.
 pub type SnapshotId = u64;
 
 /// Completions whose repetition penalty falls below this floor (i.e. they echo
 /// text already to the left of the caret) are dropped rather than shown.
 const REPETITION_PENALTY_FLOOR: f64 = 0.5;
 
+/// What kind of edit produced a `TextChanged`. Only the Delete/non-Delete
+/// split is load-bearing: `Delete` never arms a completion request, everything
+/// else (including `Unknown`) does — so hosts unsure of the edit kind must
+/// report `Unknown`, not `Delete`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditKind {
     Insert,
@@ -21,12 +30,25 @@ pub enum EditKind {
     Unknown,
 }
 
+/// Whether an edit may auto-arm the completion debounce. `Manual` edits update
+/// state (value/caret/snapshot) but never schedule a request — the host owns
+/// any explicit-trigger path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriggerPolicy {
     Automatic,
     Manual,
 }
 
+/// Inputs to [`SuggestionMachine::on_event`]. Ordering is the host's
+/// obligation: events must arrive in the order they happened on one serialized
+/// loop (caret offsets are Unicode scalars, per the `context` crate contract).
+/// Staleness is the machine's: `CompletionReady`/`CompletionReadyMulti` carry
+/// the `generation`/`snapshot` they were requested with, and any mismatch with
+/// the current boundary makes them no-ops — so late completions are idempotent
+/// to deliver, never reorder around the event that staled them. The dismiss
+/// variants differ deliberately: `Dismiss` is snapshot-neutral and idempotent;
+/// `DismissDiscard`/`DismissSuppress` advance the snapshot (staling in-flight
+/// requests) and must not be substituted for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Focus {
@@ -86,6 +108,13 @@ pub enum Event {
     DismissSuppress,
 }
 
+/// Side effects the host must perform, in the order returned from
+/// [`SuggestionMachine::on_event`]. The machine assumes every command is
+/// executed: skipping one silently desyncs its model of the screen. The one
+/// sanctioned failure path is a `ShowGhost` whose placement fails — the host
+/// must reconcile via `Event::Dismiss` + [`SuggestionMachine::cancel_last_shown`].
+/// `RequestCompletion` must be answered (if at all) with a completion event
+/// carrying the same `generation`/`snapshot`/`field` it was issued with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     RequestCompletion {
@@ -153,6 +182,15 @@ pub enum StatEvent {
     Superseded,
 }
 
+/// The deterministic suggestion core: consumes [`Event`]s, returns
+/// [`Command`]s, performs no I/O and reads no clock — time only enters as the
+/// `now_ms` fields on events, which the host must source from one monotonic,
+/// non-decreasing clock (debounce math depends on it). Not internally
+/// synchronized (`&mut self`): the host serializes all events onto a single
+/// loop. Core invariant: every state-invalidating event (focus, edit, caret
+/// move, secure change, discard/suppress dismiss) advances the
+/// generation/snapshot boundary, so an in-flight completion can never render
+/// against newer text.
 pub struct SuggestionMachine {
     caps: Capabilities,
     debounce_ms: u64,

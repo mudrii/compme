@@ -170,6 +170,19 @@ mod tests {
     }
 
     #[test]
+    fn long_lowercase_prose_tokens_survive_redaction() {
+        // The entropy-NEGATIVE branch (audit c121): a 32+ char all-lowercase
+        // word matches the generic secret regex's charset but must be judged
+        // low-entropy and survive — a privacy filter that eats ordinary
+        // prose is broken in the other direction.
+        let text = "the pneumonoultramicroscopicsilicovolcanoconiosis diagnosis stands";
+        assert_eq!(redact(text), text);
+        // Hyphenated lowercase runs too (also inside the regex charset).
+        let slug = "a very-long-kebab-case-identifier-name-for-something here";
+        assert_eq!(redact(slug), slug);
+    }
+
+    #[test]
     fn redaction_is_idempotent() {
         let once = redact("mail ada@example.com");
         assert_eq!(redact(&once), once);

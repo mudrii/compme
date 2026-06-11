@@ -16,8 +16,15 @@ use llama_cpp_2::model::{AddBos, LlamaModel as LlamaCppModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
+/// Result alias for model-backend operations; the error is always
+/// [`LocalModelError`].
 pub type LocalModelResult<T> = Result<T, LocalModelError>;
 
+/// A failed model operation, tagged with the pipeline `stage` that failed
+/// ("tokenize prompt", "decode prompt", …) plus the backend's message. Stage
+/// strings are matched by tests and telemetry — treat them as stable API, not
+/// free-form text. The error never contains prompt content (privacy: prompts
+/// hold the user's typed text).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalModelError {
     stage: &'static str,
@@ -49,7 +56,15 @@ impl fmt::Display for LocalModelError {
 
 impl std::error::Error for LocalModelError {}
 
+/// The inference seam. Implementors must be callable from any thread
+/// (`Send + Sync`) and must serialize their own backend access — callers may
+/// invoke `complete` concurrently. Calls are synchronous and blocking, so
+/// hosts run them off the UI/event thread. An `Err` must leave the backend
+/// reusable for the next call (no poisoned state).
 pub trait LocalModel: Send + Sync {
+    /// Generate a continuation of `prompt`, decoding at most `max_tokens`
+    /// tokens. Blocks until done; returns only the continuation text, never a
+    /// restatement of the prompt.
     fn complete(&self, prompt: &str, max_tokens: usize) -> LocalModelResult<String>;
 
     /// Generate up to `n` candidate continuations (multi-candidate / cycle, A2
@@ -501,6 +516,11 @@ impl Drop for LlamaModel {
     }
 }
 
+/// Wrap the caret-left `prefix` in the fixed inline-completion instruction.
+/// Callers must pass already-trimmed text (`context::trim_trailing`) — no
+/// trimming happens here — and `prefix` is user text: it must already be
+/// redaction/secure-field gated before reaching this function. Downstream
+/// shaping assumes the model returns only the continuation.
 pub fn terse_continuation_prompt(prefix: &str) -> String {
     format!("Complete this text inline. Return only the continuation.\nText: {prefix}")
 }

@@ -1,13 +1,25 @@
 //! Pure text-context helpers around a caret.
 
+/// The text strictly before the caret. `caret` is a **Unicode-scalar** offset
+/// — not bytes, UTF-16 units, or graphemes. Callers holding a
+/// `platform::TextContext` offset must convert from its `OffsetEncoding` to
+/// scalars first; feeding an unconverted offset silently splits at the wrong
+/// place on non-ASCII text. A past-end caret is clamped (returns the whole
+/// string); never panics.
 pub fn left_context(value: &str, caret: usize) -> String {
     value.chars().take(caret).collect()
 }
 
+/// The text from the caret onward. Same contract as [`left_context`]: `caret`
+/// is a Unicode-scalar offset (convert from `platform::OffsetEncoding` first);
+/// a past-end caret yields the empty string; never panics.
 pub fn right_context(value: &str, caret: usize) -> String {
     value.chars().skip(caret).collect()
 }
 
+/// The last `n` scalars of the text before the caret. `caret` is a
+/// Unicode-scalar offset (see [`left_context`] for the conversion obligation);
+/// both `caret` and `n` are clamped to what exists — never panics.
 pub fn left_tail(value: &str, caret: usize, n: usize) -> String {
     if n == 0 {
         return String::new();

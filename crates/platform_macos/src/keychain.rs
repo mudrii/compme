@@ -105,6 +105,8 @@ fn keychain_write_secret(service: &str, account: &str, secret: &[u8]) -> Result<
 
 fn generate_random_key() -> Result<[u8; 32], PlatformError> {
     let mut key = [0u8; 32];
+    // SAFETY: getentropy fills exactly `buflen` bytes of the provided
+    // buffer; `key` is a live 32-byte array and 32 <= GETENTROPY_MAX (256).
     if unsafe { getentropy(key.as_mut_ptr(), key.len()) } != 0 {
         return Err(PlatformError::CannotComplete {
             reason: "getentropy failed to generate a memory key".into(),

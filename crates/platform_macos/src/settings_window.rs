@@ -58,6 +58,9 @@ pub struct SettingsFlags {
     pub setup_grant_ax: Arc<AtomicBool>,
     pub setup_request_screen: Arc<AtomicBool>,
     pub setup_reveal_model: Arc<AtomicBool>,
+    /// Setup "Download Recommended Model" — the run loop spawns the worker
+    /// and logs progress (picker UI is a later slice).
+    pub setup_download_model: Arc<AtomicBool>,
     /// Apps rows (per-app recorded-input counts), composed by the run loop
     /// right before each show; refreshed like stats.
     pub apps_lines: Arc<Mutex<Vec<String>>>,
@@ -103,6 +106,14 @@ define_class!(
             self.ivars()
                 .flags
                 .setup_reveal_model
+                .store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(downloadModel:))]
+        fn download_model(&self, _sender: Option<&NSButton>) {
+            self.ivars()
+                .flags
+                .setup_download_model
                 .store(true, Ordering::Relaxed);
         }
 
@@ -370,13 +381,14 @@ fn build_window(
         // Action buttons (always present; each is a harmless no-op when its
         // item is already ready). The privileged calls happen in the run
         // loop — buttons only set flags.
-        let buttons: [(&str, objc2::runtime::Sel); 3] = [
+        let buttons: [(&str, objc2::runtime::Sel); 4] = [
             ("Grant Accessibility\u{2026}", sel!(grantAccessibility:)),
             (
                 "Request Screen Recording\u{2026}",
                 sel!(requestScreenRecording:),
             ),
             ("Reveal Model in Finder", sel!(revealModel:)),
+            ("Download Recommended Model", sel!(downloadModel:)),
         ];
         for (i, (title, action)) in buttons.into_iter().enumerate() {
             // SAFETY: target outlives the window (held by MacosSettingsWindow).

@@ -14,6 +14,10 @@ pub fn trim_to_stop_boundary(text: &str) -> &str {
     }
 }
 
+/// Keep at most `max_words` whitespace-separated words, re-joined with single
+/// spaces. Whitespace runs are normalized as a side effect, so the output is
+/// not a substring of the input — callers must not use it for offset math
+/// against the original text. `max_words == 0` yields the empty string.
 pub fn cap_words(text: &str, max_words: usize) -> String {
     text.split_whitespace()
         .take(max_words)
@@ -21,6 +25,11 @@ pub fn cap_words(text: &str, max_words: usize) -> String {
         .join(" ")
 }
 
+/// Split a completion into the next word to insert and the remainder. The word
+/// carries one trailing space iff a remainder follows, so word-by-word accepts
+/// concatenate back to the (whitespace-normalized) whole — the engine's caret
+/// advance counts on that exact spacing. Empty/whitespace-only input yields
+/// two empty strings.
 pub fn next_word(text: &str) -> (String, String) {
     let words: Vec<&str> = text.split_whitespace().collect();
     match words.as_slice() {
@@ -105,6 +114,12 @@ pub fn is_degenerate_repetition(text: &str) -> bool {
     false
 }
 
+/// Score multiplier for a candidate against recently typed text: 0.25 when the
+/// candidate appears as a contiguous, case-insensitive whole-word run inside
+/// `recent`, else 1.0. Word-level only — substring hits ("cat" in "category")
+/// never count — and an empty candidate is never penalized. Callers drop
+/// candidates whose multiplier falls below their floor; the two return values
+/// are the entire contract (this is a gate, not a smooth score).
 pub fn repetition_penalty(candidate: &str, recent: &str) -> f64 {
     let candidate: Vec<String> = candidate
         .to_lowercase()

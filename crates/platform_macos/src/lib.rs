@@ -503,6 +503,11 @@ impl AcceptTapController {
                     })?;
             *accept_action = action;
         }
+        // INVARIANT (audit c121+): this guard is held across the installer
+        // call below, which blocks into the AX worker and performs Carbon
+        // FFI. Safe because nothing on the worker (or in any callback) ever
+        // touches `consumer_tap` — the lock only serializes arm/disarm from
+        // the engine side. Do not add worker-side consumer_tap access.
         let mut consumer_tap =
             self.consumer_tap
                 .lock()
@@ -1843,6 +1848,9 @@ fn process_exists(pid: i32) -> bool {
         return true;
     }
 
+    // SAFETY: __error() returns the thread-local errno pointer (always
+    // valid for the calling thread); reading it immediately after kill(2)
+    // observes that call's errno.
     unsafe { *__error() != ESRCH }
 }
 
@@ -2143,7 +2151,9 @@ fn accept_consumer_tap_handler(
             return AcceptTapDecision::Keep;
         }
 
-        let action = accept_action.lock().ok().and_then(|action| *action);
+        let action = *accept_action
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let decision = accept_tap_decision(AcceptTapKind::Consumer, event, action);
         let control = match decision {
             AcceptTapDecision::Drop(action) => Some(TapControl::Accept(action)),
@@ -2243,6 +2253,17 @@ impl AcceptKeymap {
     }
 
     /// The Carbon `(hotkey-id, keycode)` pairs to register for this keymap.
+    /// The bindings to REGISTER for one arm cycle: all four, minus any
+    /// binding on the literal Tab keycode when the focused app has per-app
+    /// Tab disable (§16) — an unregistered hotkey lets Tab reach the app
+    /// untouched, which is the entire point. Pure (no global reads).
+    pub fn arm_bindings(&self, suppress_tab: bool) -> Vec<(u32, i64)> {
+        self.carbon_bindings()
+            .into_iter()
+            .filter(|&(_, code)| !(suppress_tab && code == KEYCODE_TAB))
+            .collect()
+    }
+
     pub fn carbon_bindings(&self) -> [(u32, i64); 4] {
         [
             (CARBON_HOTKEY_TAB, self.word),
@@ -2431,7 +2452,8 @@ fn install_carbon_accept_hotkeys(
         hotkeys: Vec::new(),
         arm_id,
     };
-    for (id, keycode) in carbon_accept_hotkey_bindings() {
+    for (id, keycode) in accept_keymap().arm_bindings(TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed))
+    {
         resource.register_hotkey(target, id, keycode)?;
     }
 
@@ -2447,7 +2469,9 @@ fn ensure_carbon_handler_installed(target: EventTargetRef) -> Result<(), Platfor
     // Held across the InstallEventHandler FFI call below — safe because the
     // Carbon callback never touches THIS lock (it reads CARBON_HANDLER_SLOT).
     // Do not add CARBON_HANDLER_SLOT operations inside this critical section.
-    let mut installed = CARBON_HANDLER_INSTALLED.lock().unwrap();
+    let mut installed = CARBON_HANDLER_INSTALLED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if *installed {
         return Ok(());
     }
@@ -2488,6 +2512,16 @@ static ACCEPT_KEYMAP: std::sync::RwLock<AcceptKeymap> = std::sync::RwLock::new(A
     cycle: KEYCODE_DOWN,
 });
 
+/// Per-app Tab suppression (§16 tab_disabled): the run loop sets this on
+/// every focus change from prefs; the NEXT arm cycle (hotkeys are transient,
+/// armed per visible suggestion) registers without the literal-Tab binding.
+static TAB_HOTKEY_SUPPRESSED: AtomicBool = AtomicBool::new(false);
+
+/// Set by the run loop on focus changes; read at hotkey arm time.
+pub fn set_tab_hotkey_suppressed(suppressed: bool) {
+    TAB_HOTKEY_SUPPRESSED.store(suppressed, Ordering::Relaxed);
+}
+
 /// Swap the active keymap (live rebind). Write FIRST, re-register hotkeys
 /// SECOND — an old hotkey firing between the two reads the new map, which
 /// is consistent (banked c115 recorder design).
@@ -2526,10 +2560,6 @@ fn accept_keymap() -> AcceptKeymap {
 pub fn effective_accept_keys() -> (i64, i64) {
     let map = accept_keymap();
     (map.word, map.full)
-}
-
-fn carbon_accept_hotkey_bindings() -> [(u32, i64); 4] {
-    accept_keymap().carbon_bindings()
 }
 
 impl WorkerAcceptTapResource {
@@ -7519,7 +7549,9 @@ mod tests {
 
     #[test]
     fn carbon_hotkey_installer_registers_every_accept_binding() {
-        let bindings = carbon_accept_hotkey_bindings();
+        // Default keymap passed explicitly — the global belongs to the
+        // swap-owning test; arm_bindings(false) is what the installer arms.
+        let bindings = AcceptKeymap::default().arm_bindings(false);
 
         assert_eq!(
             bindings,
@@ -7601,6 +7633,25 @@ mod tests {
         assert_eq!(effective_accept_keys(), (35, 38));
         set_accept_keymap(AcceptKeymap::default());
         assert_eq!(effective_accept_keys(), (48, 50));
+    }
+
+    #[test]
+    fn arm_bindings_skip_literal_tab_when_suppressed() {
+        // Per-app Tab disable (§16): in apps where the user disabled Tab
+        // (terminals etc.), the Word hotkey must not be registered AT ALL —
+        // a consumed-but-ignored Tab would be worse than either behavior.
+        // Pure: takes the map, no global reads (the keymap-global test owns
+        // the static).
+        let map = AcceptKeymap::default();
+        assert_eq!(map.arm_bindings(false).len(), 4);
+        let armed = map.arm_bindings(true);
+        assert_eq!(armed.len(), 3);
+        assert!(armed.iter().all(|&(_, code)| code != KEYCODE_TAB));
+
+        // Suppression targets the LITERAL Tab keycode, not the word role:
+        // a word key rebound elsewhere keeps all four bindings.
+        let rebound = AcceptKeymap::from_accept_keys(Some(35), None).unwrap();
+        assert_eq!(rebound.arm_bindings(true).len(), 4);
     }
 
     #[test]

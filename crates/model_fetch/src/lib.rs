@@ -1,9 +1,11 @@
-//! Model download support (engine-macos §15 D14 tick 2, designed c95).
+//! Model download support (engine-macos §15 D14).
 //!
-//! This slice is the pure core: integrity verification (SHA-256) and
-//! resume planning (HTTP Range headers). The blocking network loop (ureq,
-//! dedicated thread) is the next slice — keeping it out means everything
-//! here is unit-testable without sockets.
+//! Two halves, one crate: a PURE core (SHA-256 integrity, resume planning —
+//! unit-testable with no IO) and the blocking network half (`download_url`
+//! over ureq with resume/restart/verify semantics, plus the
+//! `ModelDownloader` worker thread). The seam stays inside this crate so
+//! the protocol tests can drive the real network code against a loopback
+//! mini-server; nothing here touches AppKit or the engine.
 
 use sha2::{Digest, Sha256};
 use std::io::Read as _;
@@ -305,6 +307,64 @@ mod tests {
     /// parses an optional `Range: bytes=N-` header; honors it with 206 when
     /// `support_range`, else always replies 200 with the full body (the
     /// server-ignores-Range case the download loop must restart on).
+    /// One-shot 404 server (no Range logic).
+    fn serve_404() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut req = [0u8; 1024];
+                let _ = stream.read(&mut req);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            }
+        });
+        format!("http://{addr}/missing.bin")
+    }
+
+    #[test]
+    fn http_404_surfaces_as_a_typed_http_error() {
+        let url = serve_404();
+        let dest = temp_dest("nf404");
+        let err = download_url(&url, &dest, None, |_, _| {}).unwrap_err();
+        assert!(matches!(err, FetchError::Http(404)), "got: {err}");
+    }
+
+    #[test]
+    fn worker_surfaces_a_failed_download_as_failed_state() {
+        // The Err→Failed(msg) mapping is what the picker UI renders — pin
+        // that a dead download lands in Failed with the status in the text.
+        let url = serve_404();
+        let dest = temp_dest("wfail");
+        let worker = ModelDownloader::spawn().unwrap();
+        let status = std::sync::Arc::new(DownloadStatus::default());
+        worker.request(DownloadRequest {
+            url,
+            dest,
+            expected_sha256: None,
+            status: std::sync::Arc::clone(&status),
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let state = status.state.lock().unwrap();
+                match &*state {
+                    DownloadState::Failed(msg) => {
+                        assert!(msg.contains("404"), "got: {msg}");
+                        break;
+                    }
+                    DownloadState::Done(path) => panic!("unexpected success: {path:?}"),
+                    _ => {}
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "worker timed out");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     enum RangeMode {
         /// Honor Range with a correct 206 + Content-Range.
         Honor,

@@ -12,6 +12,10 @@ use platform::PlatformError;
 
 /// Register (`true`) or unregister (`false`) this app as a login item.
 pub fn set_launch_at_login(enabled: bool) -> Result<(), PlatformError> {
+    // SAFETY: SMAppService class methods are plain ObjC calls with no
+    // pointer arguments; mainAppService returns a retained service object
+    // and register/unregister only read it. Bundle-context requirements are
+    // a runtime error (returned via *AndReturnError), not UB.
     let service = unsafe { SMAppService::mainAppService() };
     let result = if enabled {
         unsafe { service.registerAndReturnError() }

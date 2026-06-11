@@ -9,6 +9,8 @@ name = "compme"
 path = "src/main.rs"
 
 [dependencies]
+model_catalog = { path = "../model_catalog" }
+model_fetch = { path = "../model_fetch" }
 platform = { path = "../platform" }
 platform_macos = { path = "../platform_macos" }
 engine = { path = "../engine" }

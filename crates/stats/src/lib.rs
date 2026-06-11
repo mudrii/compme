@@ -331,8 +331,6 @@ mod tests {
 
     const T0: u64 = 1_000_000_000_000; // a fixed base timestamp
 
-    const DAY_MS_T: u64 = 24 * 60 * 60 * 1000;
-
     #[test]
     fn persisted_stats_round_trip_and_merge_session_counts() {
         // Shutdown persistence (T3): lifetime totals survive render→parse
@@ -386,10 +384,10 @@ mod tests {
         // Statistics-pane chart data: `days` trailing 24h slices ending at
         // `now_ms`, oldest first, each with outcome counts + accepted words.
         let mut s = Stats::new();
-        let now = T0 + 10 * DAY_MS_T;
+        let now = T0 + 10 * DAY_MS;
         s.record(now, Outcome::Accepted { words: 3 }); // most recent slice
-        s.record(now - DAY_MS_T - 1, Outcome::Shown); // middle slice
-        s.record(now - 3 * DAY_MS_T + 1, Outcome::Dismissed); // oldest slice
+        s.record(now - DAY_MS - 1, Outcome::Shown); // middle slice
+        s.record(now - 3 * DAY_MS + 1, Outcome::Dismissed); // oldest slice
         let buckets = s.daily_buckets(now, 3);
         assert_eq!(buckets.len(), 3);
         assert_eq!(buckets[2].counts.accepted, 1);
@@ -405,9 +403,9 @@ mod tests {
         // Retained 30-day entries older than the asked-for span must not
         // leak into the oldest bucket; an entry exactly at the cutoff is in.
         let mut s = Stats::new();
-        let now = T0 + 10 * DAY_MS_T;
-        s.record(now - 2 * DAY_MS_T - 1, Outcome::Accepted { words: 9 }); // outside 2-day span
-        s.record(now - 2 * DAY_MS_T, Outcome::Shown); // exactly at the cutoff
+        let now = T0 + 10 * DAY_MS;
+        s.record(now - 2 * DAY_MS - 1, Outcome::Accepted { words: 9 }); // outside 2-day span
+        s.record(now - 2 * DAY_MS, Outcome::Shown); // exactly at the cutoff
         let buckets = s.daily_buckets(now, 2);
         assert_eq!(buckets.len(), 2);
         assert_eq!(buckets[0].counts.shown, 1);
@@ -669,6 +667,4 @@ mod tests {
         // Advancing past T0+30d drops the oldest from the window.
         assert_eq!(s.counts(T0 + WINDOW_MS + 1).shown, 2);
     }
-
-    const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 }

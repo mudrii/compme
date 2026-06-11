@@ -56,7 +56,11 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 
 1. **S1 tray submenus** — per-app timed disable + global submenu + per-app
    input-collection (pure prefs additions + tray plumbing; pattern = c54
-   snooze). **[2026-06-10] DONE.**
+   snooze). **[2026-06-11 CORRECTED — the 06-10 "DONE" overclaimed] Per-app
+   timed disable ▸ DONE; input-collection = single toggle (works, persists;
+   stateful submenu is polish); the GLOBAL disable submenu (1h / until
+   relaunch / always) was NOT built — only flat Snooze-1h + the Enabled
+   item exist. Global until-relaunch arm has no surface.**
 2. ~~Emoji `includeVanillaVariants`~~ **DEFERRED (corrected 2026-06-10)**:
    not a small crate change — an alternate vanilla glyph has no display path
    in the single-ghost replacement pipeline. Revisit when a multi-candidate

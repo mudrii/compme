@@ -5,6 +5,10 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+# Required by llama-cpp-2's `token_to_piece` signature (it takes an
+# encoding_rs UTF-8 decoder) — not an independent choice.
 encoding_rs = "0.8"
+# ABI-sensitive FFI bindings to llama.cpp — pinned exact because even patch
+# bumps can change the vendored C ABI/behavior.
 llama-cpp-2 = { version = "=0.1.146", features = ["metal"] }
 

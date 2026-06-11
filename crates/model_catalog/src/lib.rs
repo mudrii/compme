@@ -88,6 +88,14 @@ pub fn catalog() -> &'static [ModelEntry] {
     ]
 }
 
+/// The one-click download target: the smallest catalog entry whose license
+/// needs no click-through acceptance (the gate UI is a separate slice).
+pub fn recommended() -> Option<&'static ModelEntry> {
+    catalog()
+        .iter()
+        .find(|entry| !entry.license.needs_acceptance())
+}
+
 /// Advisory RAM fit: `Exceeds` below the minimum, `Tight` with less than
 /// 2 GB of headroom over it, `Fits` otherwise.
 pub fn ram_verdict(entry: &ModelEntry, available_gb: u32) -> RamVerdict {
@@ -103,6 +111,15 @@ pub fn ram_verdict(entry: &ModelEntry, available_gb: u32) -> RamVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recommended_is_the_smallest_unencumbered_entry() {
+        // The one-click download target (D14 wiring): smallest model whose
+        // license needs no click-through — today the shipping default.
+        let entry = recommended().expect("catalog has an unencumbered entry");
+        assert_eq!(entry.name, "qwen2.5-0.5b-q4_k_m");
+        assert!(!entry.license.needs_acceptance());
+    }
 
     #[test]
     fn catalog_entries_are_well_formed_and_ordered() {

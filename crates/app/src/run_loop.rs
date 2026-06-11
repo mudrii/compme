@@ -386,7 +386,7 @@ fn replacement_decision(
     // `prefs` is passed separately from `config` because the run loop mutates
     // its prefs at runtime (snooze); reading `config.prefs` here would split
     // the policy source and let a local offer show while the model is snoozed.
-    if !enabled || !suggestion_gates_pass(app_key, left, prefs, now_ms) {
+    if !enabled || !suggestion_gates_pass(app_key, left, None, prefs, now_ms) {
         return None;
     }
     // Per-app autocorrect override (App Settings): prefs override, else the
@@ -563,9 +563,49 @@ fn app_allows_suggestions(app_key: Option<&str>) -> bool {
 /// and per-app exclude / snooze (`should_suggest`) pass. Shared by the model
 /// submit gate and the local replacement-offer gate so both honor the same
 /// per-app/snooze/terminal policy.
-fn suggestion_gates_pass(app_key: Option<&str>, text: &str, prefs: &Prefs, now_ms: u64) -> bool {
+/// `domain` is the focused browser domain when known (extractor pending —
+/// see `domain_rules_inert_warning`); the per-domain exclude gate consumes
+/// it the moment a source exists.
+fn suggestion_gates_pass(
+    app_key: Option<&str>,
+    text: &str,
+    domain: Option<&str>,
+    prefs: &Prefs,
+    now_ms: u64,
+) -> bool {
     let terminal_ok = app_key.is_none_or(|app| compat::terminal_prompt_activates(app, text));
-    app_allows_suggestions(app_key) && terminal_ok && prefs.should_suggest(app_key, None, now_ms)
+    app_allows_suggestions(app_key) && terminal_ok && prefs.should_suggest(app_key, domain, now_ms)
+}
+
+/// Lowercased host of an http(s) URL, port stripped — the pure half of the
+/// per-domain extractor (the AX/browser URL source is the pending half).
+fn domain_from_url(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .split('@')
+        .next_back()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+/// Startup transparency (audit c121: per-domain rules were silently dead):
+/// configured domain rules with no domain source must say so.
+fn domain_rules_inert_warning(prefs: &Prefs) -> Option<String> {
+    (!prefs.excluded_domains.is_empty()).then(|| {
+        format!(
+            "{} domain rule(s) configured but browser-domain detection is not \
+             implemented yet \u{2014} per-domain rules are inert",
+            prefs.excluded_domains.len()
+        )
+    })
 }
 
 fn request_passes_submit_gates(
@@ -574,7 +614,8 @@ fn request_passes_submit_gates(
     prefs: &Prefs,
     now_ms: u64,
 ) -> bool {
-    suggestion_gates_pass(app_key, &request.prompt, prefs, now_ms)
+    // Domain source pending (extractor); None until it lands.
+    suggestion_gates_pass(app_key, &request.prompt, None, prefs, now_ms)
 }
 
 /// First-suggestion latency (ms) for a completed request's `generation`: the
@@ -716,6 +757,24 @@ impl LogSquelch {
 /// Map a tray per-app disable arm onto the prefs store. `Always` is a hard
 /// exclude — the caller persists it (COMPME_EXCLUDED_APPS); the timed arms are
 /// session-only by design.
+/// Apply a tray "Disable Completions Globally ▸" arm. Hour/UntilRelaunch
+/// ride the global snooze (UntilRelaunch = u64::MAX minutes, the per-app
+/// precedent); Always returns true so the caller flips the persistent
+/// enabled flag — its existing edge handles persist + ghost dismiss.
+fn apply_global_disable(arm: DisableArm, prefs: &mut Prefs, now_ms: u64) -> bool {
+    match arm {
+        DisableArm::Hour => {
+            prefs.snooze(now_ms, SNOOZE_MINUTES);
+            false
+        }
+        DisableArm::UntilRelaunch => {
+            prefs.snooze(now_ms, u64::MAX);
+            false
+        }
+        DisableArm::Always => true,
+    }
+}
+
 fn apply_app_disable(arm: DisableArm, app: &str, prefs: &mut Prefs, now_ms: u64) {
     match arm {
         DisableArm::Hour => prefs.snooze_app(app, now_ms, 60),
@@ -892,6 +951,7 @@ fn build_settings_flags(
         setup_grant_ax: Arc::new(AtomicBool::new(false)),
         setup_request_screen: Arc::new(AtomicBool::new(false)),
         setup_reveal_model: Arc::new(AtomicBool::new(false)),
+        setup_download_model: Arc::new(AtomicBool::new(false)),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
         shortcuts_text: {
@@ -966,6 +1026,64 @@ fn env_shadow_warnings(is_env_set: impl Fn(&str) -> bool) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// Edge-detect a settings switch: if the UI atomic differs from the loop's
+/// current value, update the current value and return the new state — the
+/// caller applies + persists exactly once per edge (audit c121: three
+/// watchers shared this shape verbatim).
+fn switch_edge(flag: &AtomicBool, current: &mut bool) -> Option<bool> {
+    let now = flag.load(Ordering::Relaxed);
+    (now != *current).then(|| {
+        *current = now;
+        now
+    })
+}
+
+/// Persist one switch edge and log it. A persist failure is logged, not
+/// retried — the runtime value wins until relaunch (deliberate graceful
+/// degradation: an IO hiccup must not stall the app, at the cost of
+/// config.env staying stale until the next successful write).
+fn persist_and_log_switch(key: &str, label: &str, enabled: bool) {
+    if let Some(path) = config::config_file_path() {
+        if let Err(err) = config::persist_setting(&path, key, switch_value(enabled)) {
+            eprintln!("compme: failed to persist {key}: {err}");
+        }
+    }
+    eprintln!(
+        "compme: {label} {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+}
+
+/// Compose the Apps tab's rows + the parallel app-id list from the store.
+/// ONE source for the show edge and the post-delete recompose (audit c121:
+/// the match was duplicated verbatim).
+fn compose_apps_rows(store: Option<&memory::MemoryStore>) -> (Vec<String>, Vec<String>) {
+    match store {
+        Some(store) => match store.count_by_app() {
+            Ok(counts) => (apps_pane_lines(&counts, true), apps_row_ids(&counts)),
+            Err(err) => (vec![format!("Store error: {err}")], Vec::new()),
+        },
+        None => (apps_pane_lines(&[], false), Vec::new()),
+    }
+}
+
+/// Resolve a clicked Apps-row index against the ids rendered with the SAME
+/// cap/order, delete that app's history, and return the recomposed rows.
+/// `None` = out-of-range row (stale click) — nothing deleted. The confirm
+/// prompt stays at the caller (FFI lives at the consume edge).
+fn delete_app_row_and_recompose(
+    store: &memory::MemoryStore,
+    ids: &[String],
+    row: usize,
+) -> Option<(Vec<String>, Vec<String>)> {
+    let app = ids.get(row)?;
+    match store.delete_app(app) {
+        Ok(n) => eprintln!("compme: deleted {n} records for {app}"),
+        Err(err) => eprintln!("compme: delete for {app} failed: {err}"),
+    }
+    Some(compose_apps_rows(Some(store)))
 }
 
 /// The persistence value for a boolean settings switch (COMPME_MIDLINE,
@@ -1202,6 +1320,20 @@ pub fn run() -> Result<(), String> {
         prompt_accessibility_trust();
     }
 
+    // Domain-rule transparency (audit c121): configured but undetectable
+    // rules must not be silently inert, and a rule pasted as a full URL
+    // would never match a bare-host domain — lint it.
+    if let Some(warning) = domain_rules_inert_warning(&config.prefs) {
+        eprintln!("compme: {warning}");
+    }
+    for rule in &config.prefs.excluded_domains {
+        if let Some(host) = domain_from_url(rule) {
+            eprintln!(
+                "compme: domain rule '{rule}' looks like a URL \u{2014} did you mean '{host}'?"
+            );
+        }
+    }
+
     // Env-shadow notice (review-c109): switches whose env var will override
     // the persisted file at relaunch.
     for warning in env_shadow_warnings(|key| env::var(key).is_ok()) {
@@ -1400,6 +1532,7 @@ pub fn run() -> Result<(), String> {
         quit: Arc::new(AtomicBool::new(false)),
         open_settings: Arc::new(AtomicBool::new(false)),
         snooze_requested: Arc::new(AtomicBool::new(false)),
+        global_disable: Arc::new(Mutex::new(None)),
         open_settings_window: Arc::new(AtomicBool::new(false)),
         collection_toggle: Arc::new(AtomicBool::new(false)),
         app_disable: Arc::new(Mutex::new(None)),
@@ -1460,7 +1593,12 @@ pub fn run() -> Result<(), String> {
     let settings_flags = build_settings_flags(&config, Arc::clone(&flags.enabled));
     // The app ids behind the Apps rows as last rendered (index == row).
     let mut apps_ids: Vec<String> = Vec::new();
-    // Visible-only Setup re-probe cadence (setup_poll_due).
+    // One downloader per process (model_fetch contract); lazy — spawned on
+    // the first Download click. Status polled per heartbeat for logging.
+    let mut model_downloader: Option<model_fetch::ModelDownloader> = None;
+    let mut model_download_status: Option<std::sync::Arc<model_fetch::DownloadStatus>> = None;
+    let mut model_download_logged: u8 = 0; // 0=idle 1=running 2=terminal
+                                           // Visible-only Setup re-probe cadence (setup_poll_due).
     let mut last_setup_poll_ms: Option<u64> = None;
     // Lifetime stats baseline, read once: the file only changes at shutdown,
     // so startup state + live session is the whole truth while running.
@@ -1513,6 +1651,12 @@ pub fn run() -> Result<(), String> {
                     // f8ebf33 model's deferred merge, now live.
                     engine.set_allow_mid_word(
                         prefs.mid_line_enabled(app_key.as_deref(), global_mid_word),
+                    );
+                    // Per-app Tab disable (§16): suppress the literal-Tab
+                    // hotkey for this app's NEXT arm cycle (hotkeys are
+                    // transient — armed per visible suggestion).
+                    platform_macos::set_tab_hotkey_suppressed(
+                        prefs.tab_disabled(app_key.as_deref()),
                     );
                     last_app_key = app_key.clone();
                     if let Some(app) = app_key {
@@ -1752,6 +1896,24 @@ pub fn run() -> Result<(), String> {
             let now = flags.enabled.load(Ordering::Relaxed);
             flags.enabled.store(!now, Ordering::Relaxed);
         }
+        // Tray "Disable Completions Globally ▸": Hour/UntilRelaunch snooze
+        // globally (UntilRelaunch holds for the process life); Always flips
+        // the shared enabled atomic — its edge persists + dismisses.
+        let global_arm = flags
+            .global_disable
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(arm) = global_arm {
+            if apply_global_disable(arm, &mut prefs, now_ms) {
+                flags.enabled.store(false, Ordering::Relaxed);
+                eprintln!("compme: completions disabled (persistent)");
+            } else {
+                eprintln!("compme: completions snoozed globally ({arm:?})");
+                latest.clear();
+                let _ = log_err("on_dismiss", engine.on_dismiss());
+            }
+        }
         // Tray "Snooze for 1 hour": pause suggestions on the monotonic clock
         // (a relaunch deliberately clears it). Consumed with swap so one click
         // is one snooze.
@@ -1790,13 +1952,7 @@ pub fn run() -> Result<(), String> {
             // show-time snapshots, same stance as stats_lines (c99): cheap
             // probes refresh live, data aggregations refresh per open.
             if let Ok(mut lines) = settings_flags.apps_lines.lock() {
-                (*lines, apps_ids) = match &memory {
-                    Some(store) => match store.count_by_app() {
-                        Ok(counts) => (apps_pane_lines(&counts, true), apps_row_ids(&counts)),
-                        Err(err) => (vec![format!("Store error: {err}")], Vec::new()),
-                    },
-                    None => (apps_pane_lines(&[], false), Vec::new()),
-                };
+                (*lines, apps_ids) = compose_apps_rows(memory.as_ref());
             }
             if let Err(err) = settings_window.show() {
                 eprintln!("compme: settings window unavailable: {err}");
@@ -1855,19 +2011,73 @@ pub fn run() -> Result<(), String> {
                 let confirmed = platform_macos::confirm_delete_app_prompt(app).unwrap_or(false);
                 if !confirmed {
                     eprintln!("compme: delete for {app} cancelled");
-                } else {
-                    match store.delete_app(app) {
-                        Ok(n) => eprintln!("compme: deleted {n} records for {app}"),
-                        Err(err) => eprintln!("compme: delete for {app} failed: {err}"),
+                } else if let Some((lines, ids)) =
+                    delete_app_row_and_recompose(store, &apps_ids, row)
+                {
+                    if let Ok(mut shared) = settings_flags.apps_lines.lock() {
+                        *shared = lines;
                     }
-                    if let Ok(mut lines) = settings_flags.apps_lines.lock() {
-                        (*lines, apps_ids) = match store.count_by_app() {
-                            Ok(counts) => (apps_pane_lines(&counts, true), apps_row_ids(&counts)),
-                            Err(err) => (vec![format!("Store error: {err}")], Vec::new()),
-                        };
-                    }
+                    apps_ids = ids;
                     settings_window.refresh_apps_labels();
                 }
+            }
+        }
+        // Setup "Download Recommended Model": one-click fetch of the
+        // smallest unencumbered catalog entry into the app-support models
+        // dir (D14 wiring; picker UI is a later slice). Progress is logged;
+        // on Done the log says how to point COMPME_MODEL_PATH at it.
+        if settings_flags
+            .setup_download_model
+            .swap(false, Ordering::Relaxed)
+            && model_download_status.is_none()
+        {
+            if let (Some(entry), Some(home)) =
+                (model_catalog::recommended(), std::env::var_os("HOME"))
+            {
+                let dest = std::path::PathBuf::from(home)
+                    .join("Library/Application Support/compme/models")
+                    .join(format!("{}.gguf", entry.name));
+                let _ = std::fs::create_dir_all(dest.parent().unwrap_or(&dest));
+                if model_downloader.is_none() {
+                    model_downloader = model_fetch::ModelDownloader::spawn().ok();
+                }
+                if let Some(downloader) = &model_downloader {
+                    let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
+                    downloader.request(model_fetch::DownloadRequest {
+                        url: entry.url.to_string(),
+                        dest,
+                        expected_sha256: None,
+                        status: std::sync::Arc::clone(&status),
+                    });
+                    eprintln!(
+                        "compme: downloading {} ({} MB) \u{2014} progress in this log",
+                        entry.name, entry.size_mb
+                    );
+                    model_download_status = Some(status);
+                    model_download_logged = 0;
+                }
+            }
+        }
+        // Download progress/terminal-state logging (one line per transition).
+        if let Some(status) = &model_download_status {
+            let state = status.state.lock().unwrap_or_else(|e| e.into_inner());
+            match &*state {
+                model_fetch::DownloadState::Running if model_download_logged == 0 => {
+                    model_download_logged = 1;
+                    eprintln!("compme: model download running");
+                }
+                model_fetch::DownloadState::Done(path) if model_download_logged < 2 => {
+                    model_download_logged = 2;
+                    eprintln!(
+                        "compme: model downloaded \u{2014} set COMPME_MODEL_PATH={} to use it",
+                        path.display()
+                    );
+                }
+                model_fetch::DownloadState::Failed(err) if model_download_logged < 2 => {
+                    model_download_logged = 2;
+                    eprintln!("compme: model download failed: {err}");
+                }
+                _ => {}
             }
         }
         // Visible-only Setup re-probe: granting a permission while the
@@ -1882,53 +2092,20 @@ pub fn run() -> Result<(), String> {
         // General-tab Autocorrect watcher: persist + apply on the edge. The
         // decision path reads config.autocorrect per offer, so a field write
         // IS the live apply (per-app overrides still win).
-        let general_autocorrect = settings_flags.general_autocorrect.load(Ordering::Relaxed);
-        if general_autocorrect != config.autocorrect {
-            config.autocorrect = general_autocorrect;
-            if let Some(path) = config::config_file_path() {
-                if let Err(err) = config::persist_setting(
-                    &path,
-                    "COMPME_AUTOCORRECT",
-                    switch_value(general_autocorrect),
-                ) {
-                    eprintln!("compme: failed to persist COMPME_AUTOCORRECT: {err}");
-                }
-            }
-            eprintln!(
-                "compme: autocorrect {}",
-                if general_autocorrect {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            );
+        if let Some(on) = switch_edge(&settings_flags.general_autocorrect, &mut config.autocorrect)
+        {
+            // Live apply = the field write itself (read per offer).
+            persist_and_log_switch("COMPME_AUTOCORRECT", "autocorrect", on);
         }
         // General-tab Trailing-space watcher: persist + live engine apply
         // (the flag is baked at build via with_trailing_space, so the c94
         // runtime-setter pattern applies — set_trailing_space).
-        let general_trailing = settings_flags
-            .general_trailing_space
-            .load(Ordering::Relaxed);
-        if general_trailing != config.trailing_space {
-            config.trailing_space = general_trailing;
-            engine.set_trailing_space(general_trailing);
-            if let Some(path) = config::config_file_path() {
-                if let Err(err) = config::persist_setting(
-                    &path,
-                    "COMPME_TRAILING_SPACE",
-                    switch_value(general_trailing),
-                ) {
-                    eprintln!("compme: failed to persist COMPME_TRAILING_SPACE: {err}");
-                }
-            }
-            eprintln!(
-                "compme: trailing space {}",
-                if general_trailing {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            );
+        if let Some(on) = switch_edge(
+            &settings_flags.general_trailing_space,
+            &mut config.trailing_space,
+        ) {
+            engine.set_trailing_space(on);
+            persist_and_log_switch("COMPME_TRAILING_SPACE", "trailing space", on);
         }
         // Labs-pane watcher: on a switch edge, persist COMPME_MIDLINE and
         // re-apply the engine gate for the current app immediately (per-app
@@ -1937,27 +2114,9 @@ pub fn run() -> Result<(), String> {
         // wins until relaunch (deliberate graceful degradation, same stance
         // as the instance lock: an IO hiccup must not stall the app, at the
         // cost of config.env staying stale until the next successful write).
-        let labs_mid_word = settings_flags.labs_midline.load(Ordering::Relaxed);
-        if labs_mid_word != global_mid_word {
-            global_mid_word = labs_mid_word;
-            engine.set_allow_mid_word(
-                prefs.mid_line_enabled(last_app_key.as_deref(), global_mid_word),
-            );
-            if let Some(path) = config::config_file_path() {
-                if let Err(err) =
-                    config::persist_setting(&path, "COMPME_MIDLINE", switch_value(global_mid_word))
-                {
-                    eprintln!("compme: failed to persist COMPME_MIDLINE: {err}");
-                }
-            }
-            eprintln!(
-                "compme: labs mid-line completions {}",
-                if global_mid_word {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            );
+        if let Some(on) = switch_edge(&settings_flags.labs_midline, &mut global_mid_word) {
+            engine.set_allow_mid_word(prefs.mid_line_enabled(last_app_key.as_deref(), on));
+            persist_and_log_switch("COMPME_MIDLINE", "mid-line completions", on);
         }
         // Drain received compme:// deep links (strict fail-closed parse →
         // reversible override). Every outcome is logged (the §16 user-visible
@@ -2195,10 +2354,9 @@ pub fn run() -> Result<(), String> {
         // 6. Tray actions (menu callbacks fire on this same main thread via the
         // run-loop pump, so Relaxed is sufficient for these flags).
         if flags.open_settings.swap(false, Ordering::Relaxed) {
-            if let Err(err) = Command::new("open")
-                .arg(ACCESSIBILITY_SETTINGS_URL)
-                .status()
-            {
+            // spawn, not status(): waiting on open(1) would block the
+            // heartbeat, and nothing reads the exit status anyway.
+            if let Err(err) = Command::new("open").arg(ACCESSIBILITY_SETTINGS_URL).spawn() {
                 eprintln!("compme: open settings failed: {err}");
             }
         }
@@ -2379,6 +2537,135 @@ mod tests {
         let custom = shortcuts_text(125, 7);
         assert!(custom.contains("Accept word: Down arrow"));
         assert!(custom.contains("Accept full: keycode 7"));
+    }
+
+    #[test]
+    fn domain_from_url_extracts_lowercased_host_without_port() {
+        // The per-domain extractor's pure half (audit c121: domain gating
+        // was promised but dead — the gates now consume a domain and this
+        // is the URL→domain step the AX extractor will feed).
+        assert_eq!(
+            domain_from_url("https://Sub.Example.COM:8443/path?q=1"),
+            Some("sub.example.com".to_string())
+        );
+        assert_eq!(
+            domain_from_url("http://docs.google.com/document/d/x"),
+            Some("docs.google.com".to_string())
+        );
+        assert_eq!(domain_from_url("not a url"), None);
+        assert_eq!(domain_from_url("file:///etc/hosts"), None);
+        assert_eq!(domain_from_url("https://"), None);
+    }
+
+    #[test]
+    fn suggestion_gates_honor_an_excluded_domain_when_present() {
+        // End-to-end through the shared gate (audit top-5 missing test):
+        // the domain parameter must actually block — and None must not.
+        let mut prefs = Prefs::default();
+        prefs.excluded_domains.insert("blocked.example".to_string());
+        assert!(suggestion_gates_pass(
+            Some("com.apple.Safari"),
+            "hello",
+            Some("ok.example"),
+            &prefs,
+            0
+        ));
+        assert!(!suggestion_gates_pass(
+            Some("com.apple.Safari"),
+            "hello",
+            Some("blocked.example"),
+            &prefs,
+            0
+        ));
+        assert!(suggestion_gates_pass(
+            Some("com.apple.Safari"),
+            "hello",
+            None,
+            &prefs,
+            0
+        ));
+    }
+
+    #[test]
+    fn domain_rules_warn_when_configured_but_undetectable() {
+        // Transparency over silence (audit: 'silently dead'): configured
+        // domain rules with no extractor must say so at startup.
+        let mut prefs = Prefs::default();
+        assert!(domain_rules_inert_warning(&prefs).is_none());
+        prefs.excluded_domains.insert("x.example".to_string());
+        let warning = domain_rules_inert_warning(&prefs).unwrap();
+        assert!(warning.contains("domain"));
+        assert!(warning.contains("inert"));
+    }
+
+    #[test]
+    fn apply_global_disable_maps_arms_to_snooze_or_persistent_off() {
+        // Global submenu (a3 build item 1, the half the 06-10 annotation
+        // overclaimed): Hour/UntilRelaunch ride the snooze machinery like
+        // the per-app arms; Always asks the caller to flip the persistent
+        // enabled flag (true return) — the existing edge persists it.
+        let mut prefs = Prefs::default();
+        assert!(!apply_global_disable(DisableArm::Hour, &mut prefs, 1_000));
+        assert!(prefs.is_snoozed(1_000 + 59 * 60 * 1000));
+        assert!(!prefs.is_snoozed(1_000 + 61 * 60 * 1000));
+
+        let mut prefs = Prefs::default();
+        assert!(!apply_global_disable(
+            DisableArm::UntilRelaunch,
+            &mut prefs,
+            1_000
+        ));
+        assert!(prefs.is_snoozed(u64::MAX - 1), "holds for the process life");
+
+        let mut prefs = Prefs::default();
+        assert!(apply_global_disable(DisableArm::Always, &mut prefs, 1_000));
+        assert!(!prefs.is_snoozed(2_000), "Always is not a snooze");
+    }
+
+    #[test]
+    fn switch_edge_fires_once_per_change_and_tracks_current() {
+        // The watcher contract (audit c121): apply+persist exactly once per
+        // edge, never per heartbeat.
+        let flag = AtomicBool::new(false);
+        let mut current = false;
+        assert_eq!(switch_edge(&flag, &mut current), None, "no change: quiet");
+        flag.store(true, Ordering::Relaxed);
+        assert_eq!(switch_edge(&flag, &mut current), Some(true), "edge fires");
+        assert!(current, "current tracks the new state");
+        assert_eq!(switch_edge(&flag, &mut current), None, "same state: quiet");
+        flag.store(false, Ordering::Relaxed);
+        assert_eq!(switch_edge(&flag, &mut current), Some(false));
+    }
+
+    #[test]
+    fn delete_app_row_resolves_against_ids_and_recomposes_together() {
+        // The irreversible path (audit c121, top missing test): row index →
+        // app id resolution uses the SAME cap/order as the rendered lines,
+        // out-of-range clicks no-op, and lines+ids recompose as one unit so
+        // a follow-up click can't hit the wrong app.
+        use memory::{MemoryStore, StaticKey, StorageMode};
+        let store =
+            MemoryStore::open_in_memory(&StaticKey([7u8; 32]), StorageMode::AcceptedOnly).unwrap();
+        store.remember("com.a.alpha", "x").unwrap();
+        store.remember("com.a.alpha", "y").unwrap();
+        store.remember("com.b.beta", "z").unwrap();
+        let (lines, ids) = compose_apps_rows(Some(&store));
+        assert_eq!(
+            ids,
+            vec!["com.a.alpha".to_string(), "com.b.beta".to_string()]
+        );
+        assert_eq!(lines.len(), 2);
+
+        // Out-of-range (stale) click: nothing deleted.
+        assert!(delete_app_row_and_recompose(&store, &ids, 5).is_none());
+        assert_eq!(store.count().unwrap(), 3);
+
+        // Row 0 deletes alpha; recomposed pair stays aligned.
+        let (lines2, ids2) = delete_app_row_and_recompose(&store, &ids, 0).unwrap();
+        assert_eq!(ids2, vec!["com.b.beta".to_string()]);
+        assert_eq!(lines2.len(), 1);
+        assert!(lines2[0].contains("com.b.beta"));
+        assert_eq!(store.count().unwrap(), 1);
     }
 
     #[test]
@@ -2878,6 +3165,7 @@ mod tests {
         assert!(suggestion_gates_pass(
             Some("com.apple.TextEdit"),
             "color",
+            None,
             &prefs,
             0
         ));
@@ -2885,6 +3173,7 @@ mod tests {
         assert!(!suggestion_gates_pass(
             Some("com.microsoft.VSCode"),
             "color",
+            None,
             &prefs,
             0
         ));
@@ -2892,6 +3181,7 @@ mod tests {
         assert!(!suggestion_gates_pass(
             Some("com.googlecode.iterm2"),
             "git status && ls -la",
+            None,
             &prefs,
             0
         ));

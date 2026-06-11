@@ -3,11 +3,27 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Application identifier (e.g. a macOS bundle id). Stable for the lifetime of
+/// a running app; not guaranteed unique across simultaneous instances — pair
+/// with `pid` where instance identity matters.
 pub type AppId = String;
+/// Focus-change callback. Adapters may invoke it from an internal event thread:
+/// it must be cheap, must not block, and must not call back into the adapter
+/// (re-entrancy is not part of the contract).
 pub type FocusCallback = Arc<dyn Fn(FieldHandle) + Send + Sync + 'static>;
+/// Caret-geometry callback (`None` rect = geometry unavailable). Same threading
+/// constraints as [`FocusCallback`].
 pub type CaretCallback = Arc<dyn Fn(FieldHandle, Option<ScreenRect>) + Send + Sync + 'static>;
+/// Accept-tap callback delivering [`TapControl`] signals. Same threading
+/// constraints as [`FocusCallback`]; it runs on the key-event path, so any
+/// delay here is visible typing latency.
 pub type AcceptCallback = Arc<dyn Fn(TapControl) + Send + Sync + 'static>;
 
+/// Identity of one editable field. Two handles refer to the same live field
+/// only when *all* fields compare equal — adapters must bump `generation` when
+/// the underlying element is replaced, so operations against an old handle fail
+/// with [`PlatformError::StaleField`] instead of writing into the wrong element.
+/// Holders must treat a stale handle as dead and wait for the next focus event.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FieldHandle {
     pub app: AppId,
@@ -16,6 +32,11 @@ pub struct FieldHandle {
     pub generation: u64,
 }
 
+/// Point-in-time snapshot of a field's text around the caret. `caret` and
+/// `selection` are offsets in the units named by `offset_encoding` — consumers
+/// must convert (the `context` crate's helpers take Unicode-scalar offsets)
+/// before any indexing; mixing units silently corrupts caret math on non-ASCII
+/// text. The snapshot is not live: it may be stale by the time it is read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextContext {
     pub left: String,
@@ -27,12 +48,18 @@ pub struct TextContext {
     pub offset_encoding: OffsetEncoding,
 }
 
+/// Half-open `[start, end)` selection range, in the same `offset_encoding`
+/// units as the [`TextContext`] that carries it. Producers must keep
+/// `start <= end` (a caret-only selection is `start == end`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextRange {
     pub start: usize,
     pub end: usize,
 }
 
+/// How a [`TextContext`] was obtained — a fidelity hint, not a behavior switch.
+/// Only `Accessibility` reads are authoritative; `Clipboard`/`Synthetic`
+/// snapshots may diverge from the field and `Unknown` carries no guarantee.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextSource {
     Accessibility,
@@ -41,14 +68,31 @@ pub enum ContextSource {
     Unknown,
 }
 
+/// The unit in which [`TextContext`] offsets (`caret`, `selection`) count.
+/// Consumers must convert to their own unit before indexing — the variants
+/// disagree on any non-ASCII text, so an unconverted offset is a latent
+/// corruption bug, not an error the type system catches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OffsetEncoding {
+    /// Offsets count UTF-8 bytes. Valid offsets always lie on `char`
+    /// boundaries; a multibyte scalar advances the offset by its byte length.
     Utf8Bytes,
+    /// Offsets count UTF-16 code units (AppKit/Chromium native). Astral-plane
+    /// scalars (emoji) count as **two** units — the usual off-by-one source.
     Utf16CodeUnits,
+    /// Offsets count Unicode scalar values (Rust `char`s). This is the unit
+    /// the `context` crate's caret helpers require.
     UnicodeScalars,
+    /// Offsets count user-perceived characters (grapheme clusters). One
+    /// cluster may span many scalars (combining marks, ZWJ emoji), so this is
+    /// the coarsest unit — never index a Rust string with it directly.
     GraphemeClusters,
 }
 
+/// Rectangle in screen points. Whether the origin is the global screen (vs a
+/// window/display-local space) is reported per field via
+/// `Capabilities::coords_global_screen`; callers must check before placing
+/// overlays on multi-display topologies.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScreenRect {
     pub x: f64,
@@ -57,6 +101,10 @@ pub struct ScreenRect {
     pub h: f64,
 }
 
+/// What an adapter can do with one specific field, probed at focus time. This
+/// is the sole input to [`ux_mode`]; callers must re-probe on every focus and
+/// secure-state change rather than cache across fields — `secure`/
+/// `security_state` gate a privacy invariant, not an optimization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     pub readable_text: bool,
@@ -72,6 +120,9 @@ pub struct Capabilities {
     pub coords_global_screen: bool,
 }
 
+/// Secure-input status. `SecureField` (the focused field is a password field)
+/// and `SecureInputEnabled` (system-wide secure input) both force
+/// `UxMode::Blocked`: no text from such a field may ever reach a prompt or log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecurityState {
     Normal,
@@ -80,6 +131,8 @@ pub enum SecurityState {
     Unknown,
 }
 
+/// UI toolkit detected behind the focused field — a strategy hint (which
+/// insert/overlay paths tend to work), never a correctness gate on its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Toolkit {
     AppKit,
@@ -91,6 +144,9 @@ pub enum Toolkit {
     Unknown(String),
 }
 
+/// How accepted text enters the field. Only `AxSet` can range-replace (delete
+/// left of the caret atomically) — replacement suggestions are gated on it.
+/// `None` means the field cannot be written at all (`UxMode::Unsupported`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InsertStrategy {
     AxSet,
@@ -100,6 +156,9 @@ pub enum InsertStrategy {
     None,
 }
 
+/// How the accept/dismiss keys are intercepted for a field. `HotkeyOnly`
+/// demotes the UX to `UxMode::Hotkey` (no transparent Tab interception);
+/// `None` leaves accept keys entirely to the app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyInterceptMode {
     CgEventTap,
@@ -112,6 +171,8 @@ pub enum KeyInterceptMode {
     None,
 }
 
+/// What one accept keystroke commits: the whole suggestion (`Full`) or only
+/// its next word (`Word`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AcceptAction {
     Full,
@@ -128,6 +189,9 @@ pub enum TapControl {
     Cycle,
 }
 
+/// How a ghost overlay can be anchored for a field. `None` means no
+/// caret-anchored placement exists, which (with a readable caret or not)
+/// pushes [`ux_mode`] to `Popup` rather than `Inline`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayPlacement {
     NativePanel,
@@ -138,6 +202,10 @@ pub enum OverlayPlacement {
     None,
 }
 
+/// The suggestion UX a field supports, derived by [`ux_mode`]. `Blocked` is a
+/// hard privacy gate (secure field/input) that callers must honor before any
+/// other consideration — never request, read, or show anything in a `Blocked`
+/// field. `Unsupported` means the field cannot be read or written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UxMode {
     Inline,
@@ -147,6 +215,8 @@ pub enum UxMode {
     Blocked,
 }
 
+/// Static description of the host (OS, version, display layout) — diagnostics
+/// and strategy selection only; per-field decisions belong in [`Capabilities`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Environment {
     pub os: OperatingSystem,
@@ -154,6 +224,8 @@ pub struct Environment {
     pub display_topology: Option<String>,
 }
 
+/// Host operating system; `Unknown` carries the raw name so adapters never
+/// have to lie about an unrecognized platform.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OperatingSystem {
     Macos,
@@ -162,6 +234,11 @@ pub enum OperatingSystem {
     Unknown(String),
 }
 
+/// Per-call adapter failure. All variants are non-fatal and per-operation: the
+/// engine treats any error as "no suggestion this turn", so adapters must leave
+/// the field unmodified when returning one. `StaleField` means the
+/// [`FieldHandle`] is dead — retrying with the same handle will keep failing;
+/// callers must wait for a fresh focus event instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlatformError {
     PermissionMissing { permission: String },
@@ -197,11 +274,20 @@ impl std::fmt::Display for PlatformError {
 
 impl std::error::Error for PlatformError {}
 
+/// RAII handle for an adapter event subscription: dropping it runs the
+/// registered cancel exactly once. Adapters must supply a cancel that is safe
+/// to run from any thread and that stops further callback delivery (callbacks
+/// already in flight may still complete).
 pub struct Subscription {
     id: u64,
     cancel: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
+/// [`Subscription`] for the accept-key tap, bundling the control hooks the
+/// engine must call to keep the tap honest: the tap may swallow accept/dismiss
+/// keys only while a suggestion is visible, so callers must keep
+/// `set_suggestion_visible` strictly in sync with the overlay — a stale `true`
+/// eats the user's Tab keystrokes.
 pub struct AcceptSubscription {
     subscription: Subscription,
     set_suggestion_visible: Arc<dyn Fn(bool) -> Result<(), PlatformError> + Send + Sync + 'static>,
@@ -250,14 +336,20 @@ impl AcceptSubscription {
         self.subscription.id()
     }
 
+    /// Tell the tap whether a suggestion is on screen. Must be called on every
+    /// show/hide transition; the tap passes keys through while `false`.
     pub fn set_suggestion_visible(&self, visible: bool) -> Result<(), PlatformError> {
         (self.set_suggestion_visible)(visible)
     }
 
+    /// Schedule the tap to treat the suggestion as hidden after `delay` — a
+    /// failsafe so a missed hide cannot swallow keys indefinitely.
     pub fn hide_suggestion_after(&self, delay: Duration) -> Result<(), PlatformError> {
         (self.hide_suggestion_after)(delay)
     }
 
+    /// Set which [`AcceptAction`] the accept key reports (`None` clears the
+    /// override). Takes effect for subsequent keystrokes, not ones in flight.
     pub fn set_accept_action(&self, action: Option<AcceptAction>) -> Result<(), PlatformError> {
         (self.set_accept_action)(action)
     }
@@ -288,6 +380,10 @@ impl Drop for Subscription {
     }
 }
 
+/// Receipt for a successful insert: the byte/char counts actually written and
+/// the strategy that succeeded (which may differ from the requested one if the
+/// adapter fell back). `chars` counts Unicode scalars — hosts use it to advance
+/// caret math, so it must match the inserted text exactly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Inserted {
     pub bytes: usize,
@@ -295,14 +391,41 @@ pub struct Inserted {
     pub strategy: InsertStrategy,
 }
 
+/// The platform seam the pure engine drives. Obligations on implementors:
+///
+/// - **Threading.** `Send + Sync` is load-bearing: methods are called from the
+///   engine's run loop while subscription callbacks fire from adapter-internal
+///   threads, so all internal state needs its own synchronization.
+/// - **Blocking.** Methods are synchronous but must not block unboundedly —
+///   return [`PlatformError::Timeout`] instead of hanging the run loop.
+/// - **Error semantics.** Every error is per-call and recoverable (the engine
+///   skips the suggestion and moves on); a failed mutation must leave the
+///   field unmodified — no partial inserts.
 pub trait PlatformAdapter: Send + Sync {
+    /// Static host description. Must be cheap and infallible.
     fn environment(&self) -> Environment;
+    /// Register for focus changes. The callback may fire from an internal
+    /// thread (see [`FocusCallback`]); dropping the returned [`Subscription`]
+    /// must stop delivery.
     fn subscribe_focus(&self, cb: FocusCallback) -> Result<Subscription, PlatformError>;
+    /// Register for caret geometry updates. Same threading/cancel contract as
+    /// [`subscribe_focus`](Self::subscribe_focus).
     fn subscribe_caret(&self, cb: CaretCallback) -> Result<Subscription, PlatformError>;
+    /// Install the accept/dismiss key tap. Implementors must swallow keys only
+    /// while the engine has reported a visible suggestion through the returned
+    /// handle's `set_suggestion_visible` — anything else eats normal typing.
     fn subscribe_accept(&self, cb: AcceptCallback) -> Result<AcceptSubscription, PlatformError>;
+    /// The frontmost app, if determinable. Must not block.
     fn front_app(&self) -> Option<AppId>;
+    /// Probe what is possible for `field`. Callers must re-probe per focus and
+    /// on secure-state changes — capabilities are per-field, not per-app.
     fn capabilities(&self, field: &FieldHandle) -> Result<Capabilities, PlatformError>;
+    /// Snapshot the field's text around the caret. Offsets in the result are
+    /// in its `offset_encoding` units — callers convert before scalar-based
+    /// use. An `Err` means "no context this turn", never a fatal condition.
     fn read_context(&self, field: &FieldHandle) -> Result<TextContext, PlatformError>;
+    /// Caret bounds in screen coordinates. `Ok(None)` means the field is valid
+    /// but exposes no caret geometry (popup-mode placement applies).
     fn caret_rect(&self, field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError>;
     /// A fallback anchor rect for popup-mode placement when no caret geometry is
     /// available (e.g. the focused field exposes no caret bounds). Typically the
@@ -311,6 +434,9 @@ pub trait PlatformAdapter: Send + Sync {
     fn popup_anchor(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
         Ok(None)
     }
+    /// Insert `text` at the caret using `strategy`. All-or-nothing: on `Err`
+    /// the field must be unchanged. The caller guarantees the field was
+    /// validated via [`capabilities`](Self::capabilities) and is writable.
     fn insert(
         &self,
         field: &FieldHandle,
@@ -337,12 +463,27 @@ pub trait PlatformAdapter: Send + Sync {
     ) -> Result<Inserted, PlatformError>;
 }
 
+/// Renders the ghost-text overlay. Deliberately not `Send`/`Sync`:
+/// implementations wrap platform UI objects and must be driven from the UI
+/// thread only. A failed `show_ghost` must be reconciled by the host (hide +
+/// retract the shown stat) — the engine assumes an emitted ghost is on screen.
 pub trait OverlayPresenter {
+    /// Show (or re-anchor) the ghost at `rect` with `text`, replacing any
+    /// previous ghost. `rect` is in the adapter's screen coordinate space.
     fn show_ghost(&mut self, rect: ScreenRect, text: &str) -> Result<(), PlatformError>;
+    /// Change the text of the currently shown ghost without re-anchoring.
+    /// Callers must have a ghost showing (a successful `show_ghost` first).
     fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError>;
+    /// Remove the ghost. Must be idempotent — safe when nothing is showing.
     fn hide(&mut self) -> Result<(), PlatformError>;
 }
 
+/// Derive the suggestion UX for a field from its probed capabilities. The
+/// precedence is a contract callers rely on: secure ⇒ `Blocked` always wins
+/// (no completion may ever be requested), then unreadable/unwritable/no insert
+/// strategy ⇒ `Unsupported`, then `HotkeyOnly` interception ⇒ `Hotkey`, then
+/// caret + overlay placement pick `Inline` vs `Popup`. Pure — cheap enough to
+/// re-derive on every event rather than cache.
 pub fn ux_mode(capabilities: &Capabilities) -> UxMode {
     if capabilities.secure
         || matches!(

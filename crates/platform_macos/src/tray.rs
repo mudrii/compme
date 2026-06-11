@@ -31,6 +31,9 @@ pub struct TrayFlags {
     /// Set when the user picks Snooze; the run loop consumes it (swap false)
     /// and applies the snooze to its prefs.
     pub snooze_requested: Arc<AtomicBool>,
+    /// "Disable Completions Globally ▸" arm (run loop consumes; Always is
+    /// routed to the persistent enabled flag there).
+    pub global_disable: Arc<Mutex<Option<DisableArm>>>,
     /// Set when the user picks "Settings…"; the run loop shows the S2
     /// settings window (and handles the activation-policy dance).
     pub open_settings_window: Arc<AtomicBool>,
@@ -89,6 +92,21 @@ define_class!(
         #[unsafe(method(requestQuit:))]
         fn request_quit(&self, _sender: Option<&AnyObject>) {
             self.ivars().flags.quit.store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(disableGlobalHour:))]
+        fn disable_global_hour(&self, _sender: Option<&AnyObject>) {
+            *self.ivars().flags.global_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::Hour);
+        }
+
+        #[unsafe(method(disableGlobalRelaunch:))]
+        fn disable_global_relaunch(&self, _sender: Option<&AnyObject>) {
+            *self.ivars().flags.global_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::UntilRelaunch);
+        }
+
+        #[unsafe(method(disableGlobalAlways:))]
+        fn disable_global_always(&self, _sender: Option<&AnyObject>) {
+            *self.ivars().flags.global_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::Always);
         }
 
         #[unsafe(method(requestSnooze:))]
@@ -216,6 +234,28 @@ impl MacosTray {
             collection_item.setAction(Some(sel!(toggleCollection:)));
         }
         menu.addItem(&collection_item);
+
+        // Disable Completions Globally ▸ (the global mirror of the per-app
+        // submenu; a3 build item 1's missing half, built 2026-06-11).
+        let disable_global_item = NSMenuItem::new(mtm);
+        disable_global_item.setTitle(&NSString::from_str("Disable Completions Globally"));
+        let global_menu = NSMenu::new(mtm);
+        for (title, sel) in [
+            ("For 1 Hour", sel!(disableGlobalHour:)),
+            ("Until Relaunch", sel!(disableGlobalRelaunch:)),
+            ("Always", sel!(disableGlobalAlways:)),
+        ] {
+            let item = NSMenuItem::new(mtm);
+            item.setTitle(&NSString::from_str(title));
+            // SAFETY: as above — target outlives the menu via `_target`.
+            unsafe {
+                item.setTarget(Some(target_as_any(&target)));
+                item.setAction(Some(sel));
+            }
+            global_menu.addItem(&item);
+        }
+        disable_global_item.setSubmenu(Some(&global_menu));
+        menu.addItem(&disable_global_item);
 
         // Snooze (pause suggestions for a fixed hour; run loop applies it).
         let snooze_item = NSMenuItem::new(mtm);
