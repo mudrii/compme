@@ -739,6 +739,52 @@ fn domain_from_url(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
+/// Consecutive browser-focus detection misses before the one-shot inert
+/// notice fires. 5 absorbs the EXPECTED warm-up misses (Chromium builds its
+/// a11y tree lazily — the first focus into each Chromium-family browser
+/// predictably misses; threshold margin absorbs warm-up rather than extra
+/// per-app state) while still firing within minutes of a genuinely broken
+/// session (every focus misses, nothing resets).
+const DOMAIN_MISS_NOTICE_THRESHOLD: u32 = 5;
+
+/// One-shot transparency notice (c121 "transparency over silence", made
+/// runtime-contingent after c131 shipped the AX domain source): per-domain
+/// rules are configured but browser-focus detection has missed N times in a
+/// row — the rules are likely inert and only debug logging would otherwise
+/// show it. Counts ONLY browser focuses (call placement: the Focus arm's
+/// is_browser branch); any successful detection resets the streak; fires at
+/// most once per process. The streak counts even while no rules exist —
+/// only the FIRE is gated on rules — so rules added mid-session inherit the
+/// accumulated evidence and fire on the next miss.
+#[derive(Default)]
+struct DomainMissNotice {
+    misses: u32,
+    fired: bool,
+}
+
+impl DomainMissNotice {
+    /// Record one browser-focus detection outcome; returns the notice line
+    /// when it should fire. `rules_configured` is read live at each call
+    /// (prefs mutate via deep links/settings — never snapshot it).
+    fn observe(&mut self, rules_configured: bool, detected: bool) -> Option<String> {
+        if detected {
+            self.misses = 0;
+            return None;
+        }
+        self.misses = self.misses.saturating_add(1);
+        if self.fired || !rules_configured || self.misses < DOMAIN_MISS_NOTICE_THRESHOLD {
+            return None;
+        }
+        self.fired = true;
+        Some(format!(
+            "domain rules are configured but no page URL was detected in the \
+             last {DOMAIN_MISS_NOTICE_THRESHOLD} browser focuses \u{2014} domain \
+             rules may not be applying; set COMPME_DEBUG=1 to log each focus's \
+             domain read"
+        ))
+    }
+}
+
 /// The Focus-arm domain-cache decision: a browser app + a resolvable page
 /// URL caches `(app key, HOST)`. The full URL is dropped here — only the
 /// host crosses the privacy boundary (path/query/fragment never leave this
@@ -1842,6 +1888,9 @@ pub fn run() -> Result<(), String> {
     // the full URL (privacy boundary). `cached_domain` guards consumption on
     // the app key so a request resolved to a different app never inherits it.
     let mut last_domain: Option<(String, String)> = None;
+    // One-shot inert-rules notice: counts browser-focus detection misses
+    // (c121 transparency, runtime-contingent since c131).
+    let mut domain_miss_notice = DomainMissNotice::default();
     let start = Instant::now();
 
     eprintln!(
@@ -1903,6 +1952,13 @@ pub fn run() -> Result<(), String> {
                                 Some((app, host)) => eprintln!("compme: domain={host} ({app})"),
                                 None => eprintln!("compme: domain=none (browser, no URL)"),
                             }
+                        }
+                        // Rules read LIVE (deep links/settings mutate prefs);
+                        // observe before the move into last_domain.
+                        if let Some(msg) = domain_miss_notice
+                            .observe(!prefs.excluded_domains.is_empty(), entry.is_some())
+                        {
+                            eprintln!("compme: {msg}");
                         }
                         entry
                     } else {
@@ -3063,6 +3119,77 @@ mod tests {
             &prefs,
             0
         ));
+    }
+
+    #[test]
+    fn domain_miss_notice_fires_at_threshold_not_before() {
+        let mut notice = DomainMissNotice::default();
+        for _ in 0..DOMAIN_MISS_NOTICE_THRESHOLD - 1 {
+            assert_eq!(notice.observe(true, false), None);
+        }
+        let msg = notice.observe(true, false).expect("fires at the threshold");
+        assert!(msg.contains(&DOMAIN_MISS_NOTICE_THRESHOLD.to_string()));
+        assert!(msg.contains("COMPME_DEBUG"));
+    }
+
+    #[test]
+    fn domain_miss_notice_success_resets_the_streak() {
+        let mut notice = DomainMissNotice::default();
+        for _ in 0..DOMAIN_MISS_NOTICE_THRESHOLD - 1 {
+            assert_eq!(notice.observe(true, false), None);
+        }
+        assert_eq!(notice.observe(true, true), None, "success resets");
+        for _ in 0..DOMAIN_MISS_NOTICE_THRESHOLD - 1 {
+            assert_eq!(notice.observe(true, false), None, "fresh streak");
+        }
+        assert!(notice.observe(true, false).is_some());
+    }
+
+    #[test]
+    fn domain_miss_notice_is_one_shot_per_process() {
+        let mut notice = DomainMissNotice::default();
+        for _ in 0..DOMAIN_MISS_NOTICE_THRESHOLD {
+            let _ = notice.observe(true, false);
+        }
+        // Keep missing, even across a reset + fresh streak: never re-fires.
+        assert_eq!(notice.observe(true, true), None);
+        for _ in 0..3 * DOMAIN_MISS_NOTICE_THRESHOLD {
+            assert_eq!(notice.observe(true, false), None);
+        }
+    }
+
+    #[test]
+    fn domain_miss_notice_never_fires_without_rules() {
+        let mut notice = DomainMissNotice::default();
+        for _ in 0..3 * DOMAIN_MISS_NOTICE_THRESHOLD {
+            assert_eq!(notice.observe(false, false), None);
+        }
+    }
+
+    #[test]
+    fn domain_miss_notice_rules_removed_mid_streak_suppress_then_restore_fires() {
+        // The mirror of the mid-streak test (reachable via deep-link Domain
+        // Enable removing the last rule): crossing the threshold while rules
+        // are ABSENT stays silent; restoring rules fires on the next miss.
+        let mut notice = DomainMissNotice::default();
+        for _ in 0..DOMAIN_MISS_NOTICE_THRESHOLD - 1 {
+            assert_eq!(notice.observe(true, false), None);
+        }
+        // Rules removed exactly at the would-fire miss: suppressed.
+        assert_eq!(notice.observe(false, false), None);
+        // Rules restored: the accumulated streak fires immediately.
+        assert!(notice.observe(true, false).is_some());
+    }
+
+    #[test]
+    fn domain_miss_notice_rules_added_mid_streak_fire_immediately() {
+        // The streak counts even while rules are empty (detection genuinely
+        // HAS been failing); the first miss after rules appear fires.
+        let mut notice = DomainMissNotice::default();
+        for _ in 0..DOMAIN_MISS_NOTICE_THRESHOLD + 5 {
+            assert_eq!(notice.observe(false, false), None);
+        }
+        assert!(notice.observe(true, false).is_some());
     }
 
     #[test]
