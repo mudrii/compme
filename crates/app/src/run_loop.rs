@@ -2589,8 +2589,8 @@ pub fn run() -> Result<(), String> {
                 // Per-app/domain gating + pause/snooze (A2 §8). The exclude list
                 // is keyed on bundle ids, so resolve the focused pid to a bundle
                 // id (the field's own `app` is a volatile `pid:N`); fail-open if
-                // it can't be resolved. Domain is None until browser-domain
-                // extraction lands.
+                // it can't be resolved. The domain comes from the Focus arm's
+                // cache, guarded on the same app key (c131).
                 let app_key = resolve_app_key(request.field.pid, bundle_id_for_pid);
                 if request_passes_submit_gates(
                     &request,

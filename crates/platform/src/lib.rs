@@ -295,6 +295,11 @@ pub struct AcceptSubscription {
         Arc<dyn Fn(Duration) -> Result<(), PlatformError> + Send + Sync + 'static>,
     set_accept_action:
         Arc<dyn Fn(Option<AcceptAction>) -> Result<(), PlatformError> + Send + Sync + 'static>,
+    /// Recorder 5b: drop + re-register the platform's accept tap against the
+    /// current keymap. Builder-attached (`with_rearm`) so the constructor's
+    /// signature — load-bearing for 7 test sites — stays unchanged; the
+    /// default is a successful no-op (platforms without live rebind).
+    rearm: Arc<dyn Fn() -> Result<(), PlatformError> + Send + Sync + 'static>,
 }
 
 impl Subscription {
@@ -329,7 +334,30 @@ impl AcceptSubscription {
             set_suggestion_visible: Arc::new(set_suggestion_visible),
             hide_suggestion_after: Arc::new(hide_suggestion_after),
             set_accept_action: Arc::new(set_accept_action),
+            rearm: Arc::new(|| Ok(())),
         }
+    }
+
+    /// Attach the platform's live re-arm hook (recorder 5b). The hook must
+    /// drop the armed accept tap and re-register it against the CURRENT
+    /// keymap; it is called from the host loop only (never the platform's
+    /// own worker thread — the macOS impl would deadlock on its own queue).
+    pub fn with_rearm(
+        mut self,
+        rearm: impl Fn() -> Result<(), PlatformError> + Send + Sync + 'static,
+    ) -> Self {
+        self.rearm = Arc::new(rearm);
+        self
+    }
+
+    /// Drop + re-register the accept tap against the current keymap (live
+    /// rebind). No-op `Ok(())` on platforms without the hook. Call from the
+    /// host loop only — never from the platform's own worker thread (the
+    /// macOS impl blocks on its own queue and would deadlock). Callers must
+    /// NOT persist a rebind whose re-arm returned `Err` — the registered
+    /// keys and the persisted config would desync.
+    pub fn rearm_accept_tap(&self) -> Result<(), PlatformError> {
+        (self.rearm)()
     }
 
     pub fn id(&self) -> u64 {
@@ -712,5 +740,28 @@ mod tests {
         assert_eq!(visible.load(Ordering::Relaxed), 1);
         assert_eq!(hide.load(Ordering::Relaxed), 1);
         assert_eq!(action.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn rearm_defaults_to_noop_and_with_rearm_forwards_including_err() {
+        // Recorder 5b: the rearm hook is builder-attached so the 7 existing
+        // AcceptSubscription::new construction sites stay untouched — a
+        // subscription without the hook must rearm as a successful no-op.
+        let plain =
+            AcceptSubscription::new(Subscription::new(1), |_| Ok(()), |_| Ok(()), |_| Ok(()));
+        assert!(plain.rearm_accept_tap().is_ok());
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&calls);
+        let hooked =
+            AcceptSubscription::new(Subscription::new(2), |_| Ok(()), |_| Ok(()), |_| Ok(()))
+                .with_rearm(move || {
+                    c.fetch_add(1, Ordering::Relaxed);
+                    Err(PlatformError::Timeout)
+                });
+        // Forwarding surfaces the platform's error (the caller must NOT
+        // persist a keymap the re-arm failed to register).
+        assert!(hooked.rearm_accept_tap().is_err());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }

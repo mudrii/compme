@@ -295,6 +295,9 @@ impl ModelDownloader {
     /// returns `false` — callers must NOT track a dropped request's status
     /// (its state stays Idle forever, which would wedge an idle-gated
     /// consume edge). `true` = queued.
+    // must_use because the bool is load-bearing for that invariant (the
+    // repo's first — ignoring it silently reintroduces the c130 wedge).
+    #[must_use]
     pub fn request(&self, request: DownloadRequest) -> bool {
         match &self.tx {
             Some(tx) => tx.try_send(request).is_ok(),
@@ -354,12 +357,12 @@ mod tests {
         let dest = temp_dest("wfail");
         let worker = ModelDownloader::spawn().unwrap();
         let status = std::sync::Arc::new(DownloadStatus::default());
-        worker.request(DownloadRequest {
+        assert!(worker.request(DownloadRequest {
             url,
             dest,
             expected_sha256: None,
             status: std::sync::Arc::clone(&status),
-        });
+        }));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             {
@@ -461,12 +464,12 @@ mod tests {
         let _ = std::fs::remove_file(&dest);
         let worker = ModelDownloader::spawn().unwrap();
         let status = std::sync::Arc::new(DownloadStatus::default());
-        worker.request(DownloadRequest {
+        assert!(worker.request(DownloadRequest {
             url,
             dest: dest.clone(),
             expected_sha256: None,
             status: std::sync::Arc::clone(&status),
-        });
+        }));
         // Spin-wait with a hard deadline — never hang the suite.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {

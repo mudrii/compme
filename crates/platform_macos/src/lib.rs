@@ -537,6 +537,50 @@ impl AcceptTapController {
         Ok(())
     }
 
+    /// Recorder 5b: live accept-key re-arm. Drops the armed consumer tap
+    /// (the proven WorkerAcceptTapResource teardown — UnregisterEventHotKey
+    /// per ref + slot disarm, on the AX worker thread) and re-installs it,
+    /// so the Carbon registrations re-read the swapped ACCEPT_KEYMAP.
+    /// No-op while unarmed: the next arm cycle reads the new map anyway.
+    ///
+    /// DROP-BEFORE-INSTALL is load-bearing: Esc/Down exist in every keymap,
+    /// so installing first would double-register them. The worker queue is
+    /// FIFO (RemoveResource lands before InstallResource) and the install
+    /// blocks for its reply, so old and new registrations never overlap and
+    /// the new keys are live when this returns. The unarmed window between
+    /// the two is fail-open: an accept key pressed inside it passes through
+    /// to the app as a literal keystroke (single miss, never key-eating).
+    ///
+    /// Engine-side threads ONLY (the same rule as set_accept_action):
+    /// calling from the AX worker would deadlock on its own queue. Does NOT
+    /// touch teardown_generation — rearm is not a visibility transition,
+    /// and a pending delayed-hide failsafe must stay able to fire.
+    fn rearm_consumer_tap(&self) -> Result<(), PlatformError> {
+        // Same guard-across-installer invariant as set_accept_action above:
+        // nothing on the worker ever touches consumer_tap.
+        let mut consumer_tap =
+            self.consumer_tap
+                .lock()
+                .map_err(|_| PlatformError::CannotComplete {
+                    reason: "accept tap controller lock poisoned".into(),
+                })?;
+        if consumer_tap.is_none() {
+            return Ok(());
+        }
+        *consumer_tap = None; // FIFO #1: old hotkeys unregister on the worker
+        let handler = accept_consumer_tap_handler(
+            Arc::clone(&self.active),
+            self.callback_tx.clone(),
+            Arc::clone(&self.callback),
+            Arc::clone(&self.accept_action),
+        );
+        // FIFO #2, blocks until live. On Err the tap stays disarmed —
+        // fail-open to the user's typing — and self-heals on the next
+        // visibility transition (set_accept_action sees (Some, None)).
+        *consumer_tap = Some((self.installer)(AcceptTapKind::Consumer, handler)?);
+        Ok(())
+    }
+
     fn clear_accept_action_if_generation(&self, generation: u64) -> Result<(), PlatformError> {
         let mut accept_action =
             self.accept_action
@@ -1461,6 +1505,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
         let controller_for_visible = Arc::clone(&controller);
         let controller_for_hide = Arc::clone(&controller);
         let controller_for_action = Arc::clone(&controller);
+        let controller_for_rearm = Arc::clone(&controller);
         Ok(AcceptSubscription::new(
             subscription,
             move |visible| controller_for_visible.set_suggestion_visible(visible),
@@ -1468,7 +1513,8 @@ impl PlatformAdapter for MacosPlatformAdapter {
                 AcceptTapController::hide_suggestion_after(Arc::clone(&controller_for_hide), delay)
             },
             move |action| controller_for_action.set_accept_action(action),
-        ))
+        )
+        .with_rearm(move || controller_for_rearm.rearm_consumer_tap()))
     }
 
     fn front_app(&self) -> Option<AppId> {
@@ -2548,15 +2594,16 @@ pub fn set_tab_hotkey_suppressed(suppressed: bool) {
 
 /// Swap the active keymap (live rebind). Write FIRST, re-register hotkeys
 /// SECOND — an old hotkey firing between the two reads the new map, which
-/// is consistent (banked c115 recorder design).
+/// is consistent (the id→keycode→binding round-trip stays within one map,
+/// so the fired id resolves to its original ROLE — no mis-action).
 ///
-/// WARNING (external finding 2026-06-11, valid-as-latent): no re-register
-/// path exists yet. Swapping while hotkeys are ARMED leaves the old
-/// physical keys registered (they still fire their original ROLE — the
-/// id→keycode→binding round-trip stays within one map, so no mis-action)
-/// while the newly chosen keys do nothing until the next arm cycle, and
-/// the Shortcuts pane shows the new map meanwhile. Until recorder 5b ships
-/// the re-arm, the only supported call site is startup BEFORE first arm.
+/// Live swaps (recorder 5b slice 1, 2026-06-12) must pair this with
+/// `AcceptSubscription::rearm_accept_tap()` — keymap write first, rearm
+/// second — or, while hotkeys are ARMED, the old physical keys stay
+/// registered and the new ones do nothing until the next arm cycle (the
+/// 2026-06-11 external finding). Startup-before-arm callers need no rearm.
+/// Persist a rebind ONLY after the rearm succeeded (config/runtime desync
+/// otherwise).
 pub fn set_accept_keymap(map: AcceptKeymap) {
     *ACCEPT_KEYMAP
         .write()
@@ -5485,6 +5532,10 @@ mod tests {
         pasteboard_poster: Arc<PasteboardPoster>,
         backspace_poster: Arc<BackspacePoster>,
         accept_tap_installs: Arc<Mutex<Vec<FakeAcceptTapInstall>>>,
+        /// Flat install/drop event log for ORDER assertions (the rearm
+        /// drop-before-install pin): "install:<Kind>" per installer call,
+        /// "drop" per fake tap-resource drop.
+        accept_tap_events: Arc<Mutex<Vec<String>>>,
     }
 
     impl TestAdapterConfig {
@@ -5504,6 +5555,7 @@ mod tests {
                 pasteboard_poster: Arc::new(|_, _| Ok(())),
                 backspace_poster: Arc::new(|_, _| Ok(())),
                 accept_tap_installs: Arc::new(Mutex::new(Vec::new())),
+                accept_tap_events: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -5538,6 +5590,7 @@ mod tests {
             pasteboard_poster,
             backspace_poster,
             accept_tap_installs,
+            accept_tap_events,
         } = config;
         let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
         let frontmost_pid = Arc::new(move || frontmost_pid);
@@ -5554,12 +5607,28 @@ mod tests {
             });
             Ok(ObserverResource::new("observer"))
         });
+        struct TapDropLogger {
+            events: Arc<Mutex<Vec<String>>>,
+        }
+        impl Drop for TapDropLogger {
+            fn drop(&mut self) {
+                if let Ok(mut events) = self.events.lock() {
+                    events.push("drop".into());
+                }
+            }
+        }
         let accept_tap_installer = Arc::new(move |kind, handler: Arc<AcceptTapHandler>| {
+            accept_tap_events
+                .lock()
+                .unwrap()
+                .push(format!("install:{kind:?}"));
             accept_tap_installs
                 .lock()
                 .unwrap()
                 .push(FakeAcceptTapInstall { kind, handler });
-            Ok(AcceptTapResource::new("accept-tap"))
+            Ok(AcceptTapResource::new(TapDropLogger {
+                events: Arc::clone(&accept_tap_events),
+            }))
         });
 
         MacosPlatformAdapter::with_worker_test_hooks(
@@ -8311,6 +8380,84 @@ mod tests {
             accept_tap_installs.lock().unwrap()[2].kind,
             AcceptTapKind::Consumer
         );
+    }
+
+    #[test]
+    fn rearm_while_armed_reinstalls_the_consumer_and_keeps_the_armed_value() {
+        // Recorder 5b slice 1: rearm drops the armed consumer tap and
+        // re-installs it. The armed accept value must SURVIVE the rearm:
+        // it is visibility state, not registration state.
+        let accept_tap_installs = Arc::new(Mutex::new(Vec::new()));
+        let accept_tap_events = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.accept_tap_installs = Arc::clone(&accept_tap_installs);
+        config.accept_tap_events = Arc::clone(&accept_tap_events);
+        let adapter = test_adapter_with_hooks(config);
+        let (action_tx, action_rx) = mpsc::channel();
+
+        let subscription = adapter
+            .subscribe_accept(Arc::new(move |action| {
+                action_tx.send(action).expect("action send");
+            }))
+            .expect("subscribe accept");
+        subscription
+            .set_suggestion_visible(true)
+            .expect("activate consumer");
+        wait_for_accept_tap_count(&accept_tap_installs, 2);
+
+        subscription.rearm_accept_tap().expect("rearm");
+        wait_for_accept_tap_count(&accept_tap_installs, 3);
+        assert_eq!(
+            accept_tap_installs.lock().unwrap()[2].kind,
+            AcceptTapKind::Consumer
+        );
+        // DROP-BEFORE-INSTALL is load-bearing (Esc/Down exist in every
+        // keymap — install-first would double-register them): the old tap's
+        // drop must land strictly before the rearm's install. A refactor to
+        // "build new, assign over old" would pass the count asserts above
+        // but flip this sequence (review-c132).
+        assert_eq!(
+            *accept_tap_events.lock().unwrap(),
+            vec![
+                "install:Observer".to_string(),
+                "install:Consumer".to_string(),
+                "drop".to_string(),
+                "install:Consumer".to_string(),
+            ]
+        );
+        // The NEW handler still consumes with the armed value intact.
+        let handler = Arc::clone(&accept_tap_installs.lock().unwrap()[2].handler);
+        assert_eq!(
+            handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
+            AcceptTapDecision::Drop(AcceptAction::Word)
+        );
+        assert_eq!(
+            action_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("accept action after rearm"),
+            TapControl::Accept(AcceptAction::Word)
+        );
+    }
+
+    #[test]
+    fn rearm_while_unarmed_is_a_successful_noop() {
+        // No ghost visible = no consumer tap registered = nothing to
+        // re-register; the next arm cycle reads the (new) keymap anyway.
+        let accept_tap_installs = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.accept_tap_installs = Arc::clone(&accept_tap_installs);
+        let adapter = test_adapter_with_hooks(config);
+
+        let subscription = adapter
+            .subscribe_accept(Arc::new(|_| {}))
+            .expect("subscribe accept");
+        wait_for_accept_tap_count(&accept_tap_installs, 1); // observer only
+
+        subscription
+            .rearm_accept_tap()
+            .expect("unarmed rearm is Ok");
+        // Still just the observer install — no phantom consumer.
+        assert_eq!(accept_tap_installs.lock().unwrap().len(), 1);
     }
 
     #[test]
