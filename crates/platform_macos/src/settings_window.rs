@@ -28,6 +28,10 @@ use platform::PlatformError;
 
 /// Settings-pane toggles, flipped by controls on the main thread and observed
 /// by the run loop (the tray-flags pattern: render-only UI, policy outside).
+/// A requested accept-key rebind: `(word, full)` raw macOS keycodes,
+/// `None` = keep the default for that role.
+pub type RebindRequest = (Option<i64>, Option<i64>);
+
 #[derive(Clone)]
 pub struct SettingsFlags {
     /// Master enabled flag — THE SAME Arc as TrayFlags.enabled (one atomic,
@@ -67,10 +71,15 @@ pub struct SettingsFlags {
     /// A clicked Apps-row Delete button: the ROW INDEX (the run loop resolves
     /// it to an app id via apps_row_ids and performs the delete).
     pub apps_delete_row: Arc<Mutex<Option<usize>>>,
-    /// Shortcuts text (current bindings + how to change them), composed once
-    /// at startup — static for the process lifetime like `about_text`
-    /// (rebinding applies at relaunch until the live-rebind refactor).
-    pub shortcuts_text: String,
+    /// Shortcuts text (current bindings + how to change them). Behind a
+    /// Mutex since recorder 5b: a live rebind recomposes it and the window
+    /// refreshes the label on every show (stats_lines pattern).
+    pub shortcuts_text: Arc<Mutex<String>>,
+    /// A requested live rebind: (word, full) raw keycodes, `None` = default.
+    /// The recorder UI (or a debug trigger) writes it; the run loop consumes
+    /// the edge and runs the keymap-first/rearm-second/persist-last sequence
+    /// (apps_delete_row pattern).
+    pub shortcuts_rebind_request: Arc<Mutex<Option<RebindRequest>>>,
 }
 
 struct SettingsTargetIvars {
@@ -198,6 +207,7 @@ pub struct MacosSettingsWindow {
     // can go stale while the window is closed (c95 staleness class). The
     // others refresh too — harmless and uniform.
     switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
+    shortcuts_label: Option<Retained<NSTextField>>,
 }
 
 impl MacosSettingsWindow {
@@ -211,6 +221,7 @@ impl MacosSettingsWindow {
             setup_labels: Vec::new(),
             apps_labels: Vec::new(),
             switches: Vec::new(),
+            shortcuts_label: None,
         }
     }
 
@@ -226,6 +237,7 @@ impl MacosSettingsWindow {
             self.setup_labels = built.setup_labels;
             self.apps_labels = built.apps_labels;
             self.switches = built.switches;
+            self.shortcuts_label = Some(built.shortcuts_label);
             self.target = Some(target);
         }
         // Refresh data rows on EVERY show — the lazily built window is reused
@@ -244,6 +256,11 @@ impl MacosSettingsWindow {
             for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
+        }
+        // Shortcuts text re-reads its mutex — a live rebind (recorder 5b)
+        // recomposes it while the window is closed.
+        if let (Some(label), Ok(text)) = (&self.shortcuts_label, self.flags.shortcuts_text.lock()) {
+            label.setStringValue(&NSString::from_str(&text));
         }
         // Switches re-sync from their atomics — enabled can be flipped by
         // the tray or SIGUSR1 while this window is closed.
@@ -270,6 +287,16 @@ impl MacosSettingsWindow {
             for (label, line) in self.setup_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
+        }
+    }
+
+    /// Re-render the Shortcuts text from `flags.shortcuts_text` after a
+    /// live rebind (the run loop recomposes, then calls this — the slice-4
+    /// recorder lives INSIDE this window, so the window is open at exactly
+    /// the moment the text changes; show() covers the reopen edge).
+    pub fn refresh_shortcuts_label(&self) {
+        if let (Some(label), Ok(text)) = (&self.shortcuts_label, self.flags.shortcuts_text.lock()) {
+            label.setStringValue(&NSString::from_str(&text));
         }
     }
 
@@ -589,12 +616,17 @@ fn build_window(
         }
     }
 
-    // Shortcuts tab: static for the process lifetime (bindings are read at
-    // launch; the live-rebind refactor is banked), so build-once like About.
-    {
+    // Shortcuts tab: composed by the run loop; refreshed on every show
+    // since recorder 5b (a live rebind recomposes the text — build-once
+    // would lie about the registered keys).
+    let shortcuts_label = {
         let shortcuts_view = &pane_views[3];
-        let text =
-            NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.shortcuts_text), mtm);
+        let initial = flags
+            .shortcuts_text
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default();
+        let text = NSTextField::wrappingLabelWithString(&NSString::from_str(&initial), mtm);
         text.setFrame(NSRect::new(
             NSPoint::new(20.0, 160.0),
             NSSize::new(460.0, 170.0),
@@ -602,7 +634,8 @@ fn build_window(
         text.setFont(Some(&NSFont::systemFontOfSize(12.0)));
         text.setEditable(false);
         shortcuts_view.addSubview(&text);
-    }
+        text
+    };
 
     // Statistics tab: header + STATS_ROWS data rows. Row strings come from
     // the run loop via flags.stats_lines; show() refreshes them on every
@@ -668,6 +701,7 @@ fn build_window(
         setup_labels,
         apps_labels,
         switches,
+        shortcuts_label,
     }
 }
 
@@ -679,6 +713,7 @@ struct BuiltWindow {
     setup_labels: Vec<Retained<NSTextField>>,
     apps_labels: Vec<Retained<NSTextField>>,
     switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
+    shortcuts_label: Retained<NSTextField>,
 }
 
 /// Max Setup row count (accessibility / screen recording / model file).

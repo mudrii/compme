@@ -133,6 +133,17 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.accept = Some(accept);
     }
 
+    /// Drop + re-register the platform's accept tap against the current
+    /// keymap (recorder 5b live rebind). `Ok` with no subscription. Callers
+    /// must NOT persist a rebind when this returns `Err` — the registered
+    /// keys and the persisted config would desync.
+    pub fn rearm_accept_keys(&self) -> Result<(), platform::PlatformError> {
+        match &self.accept {
+            Some(accept) => accept.rearm_accept_tap(),
+            None => Ok(()),
+        }
+    }
+
     fn set_tap_visible(
         &self,
         visible: bool,
@@ -654,6 +665,29 @@ mod tests {
         );
         // It went through insert_replacing, NOT the append-only insert path.
         assert!(adapter.inserts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rearm_accept_keys_forwards_when_subscribed_and_noops_without() {
+        // Recorder 5b slice 2: the run loop's live-rebind path reaches the
+        // platform's rearm hook through the engine (the subscription's sole
+        // owner). No subscription = Ok (headless/test engines).
+        let (bare_engine, _adapter, _overlay) = engine();
+        assert!(bare_engine.rearm_accept_keys().is_ok());
+
+        let (mut engine, _adapter, _overlay) = engine();
+        let calls = Arc::new(Mutex::new(0usize));
+        let c = Arc::clone(&calls);
+        let sub = AcceptSubscription::new(Subscription::new(0), |_| Ok(()), |_| Ok(()), |_| Ok(()))
+            .with_rearm(move || {
+                *c.lock().unwrap() += 1;
+                Err(platform::PlatformError::Timeout)
+            });
+        engine.set_accept_subscription(sub);
+        // Forwards AND surfaces the platform's Err (persist gating depends
+        // on it).
+        assert!(engine.rearm_accept_keys().is_err());
+        assert_eq!(*calls.lock().unwrap(), 1);
     }
 
     #[test]

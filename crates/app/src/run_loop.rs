@@ -484,6 +484,37 @@ fn download_idle(status: Option<&model_fetch::DownloadStatus>) -> bool {
     )
 }
 
+/// Live accept-key rebind (recorder 5b): the PINNED sequencing contract.
+/// Keymap write FIRST (an old hotkey firing mid-swap reads the new map —
+/// role-safe: the id→keycode→binding round-trip stays within one map),
+/// re-arm SECOND, persist ONLY after the re-arm succeeded. On re-arm
+/// failure the map REVERTS to the previously registered pair so
+/// `effective_accept_keys()` and the Shortcuts pane keep telling the
+/// registered truth (the c123 desync class). Injected seams so the
+/// ordering is unit-testable without touching the process-global keymap.
+fn apply_live_accept_keymap(
+    word: Option<i64>,
+    full: Option<i64>,
+    set_map: impl Fn(Option<i64>, Option<i64>) -> Result<(), platform_macos::KeymapError>,
+    rearm: impl Fn() -> Result<(), PlatformError>,
+    persist: impl Fn(i64, i64),
+    effective: impl Fn() -> (i64, i64),
+) -> Result<(), String> {
+    let previous = effective();
+    set_map(word, full).map_err(|err| format!("rejected keymap: {err:?}"))?;
+    if let Err(err) = rearm() {
+        // Best-effort revert. The previous pair was validated when it
+        // registered, so this set_map cannot fail in practice; if it ever
+        // did, the map would claim the NEW keys while the OLD stay armed —
+        // the c123 desync — hence revert-then-error, never error-then-leave.
+        let _ = set_map(Some(previous.0), Some(previous.1));
+        return Err(format!("re-arm failed: {err:?}"));
+    }
+    let registered = effective();
+    persist(registered.0, registered.1);
+    Ok(())
+}
+
 /// One step of the model-download log state machine (`logged`: 0=idle,
 /// 1=running-logged, 2=terminal-logged): the next state plus the line to
 /// emit, if any. Done/Failed log exactly once — they are the only
@@ -1073,7 +1104,8 @@ fn shortcuts_text(word_key: i64, full_key: i64) -> String {
     format!(
         "Accept word: {}\nAccept full: {}\nDismiss: Esc\nCycle candidates: Down arrow\n\n\
          To change: set COMPME_ACCEPT_WORD_KEY / COMPME_ACCEPT_FULL_KEY (macOS \
-         keycodes) in config.env \u{2014} applies at relaunch.",
+         keycodes) in config.env \u{2014} applies at relaunch (the in-app \
+         recorder applies live).",
         keycode_label(word_key),
         keycode_label(full_key),
     )
@@ -1115,8 +1147,9 @@ fn build_settings_flags(
         apps_delete_row: Arc::new(Mutex::new(None)),
         shortcuts_text: {
             let (word, full) = platform_macos::effective_accept_keys();
-            shortcuts_text(word, full)
+            Arc::new(Mutex::new(shortcuts_text(word, full)))
         },
+        shortcuts_rebind_request: Arc::new(Mutex::new(None)),
     }
 }
 
@@ -1183,7 +1216,7 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
 /// must be added here or its shadow goes unwarned (review-c111/c127; the
 /// len-pinned test below backstops this). Deliberately conservative: a key
 /// set to "" still warns — it parses falsy but still occupies the env layer.
-const SWITCH_KEYS: [&str; 4] = [
+const SWITCH_KEYS: [&str; 6] = [
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
     "COMPME_TRAILING_SPACE",
@@ -1191,6 +1224,11 @@ const SWITCH_KEYS: [&str; 4] = [
     // resurrects the un-accepted state at relaunch → surprise re-prompt
     // (fail-closed, but confusing without the warning) (review-c127).
     "COMPME_LICENSE_ACCEPTED",
+    // Accept-key rebinds persist after a successful live re-arm (recorder
+    // 5b); an env shadow resurrects the OLD keys at relaunch while the
+    // Shortcuts pane read the file — the exact desync the warning names.
+    "COMPME_ACCEPT_WORD_KEY",
+    "COMPME_ACCEPT_FULL_KEY",
 ];
 
 /// One warning line per switch key currently set in the environment
@@ -2213,6 +2251,60 @@ pub fn run() -> Result<(), String> {
                 eprintln!("compme: reveal model failed: {err:?}");
             }
         }
+        // Live accept-key rebind (recorder 5b slice 3): the recorder UI (or
+        // a debug trigger — slice 4 supplies the producer) parks the request;
+        // consume the edge here. Sequencing inside apply_live_accept_keymap:
+        // keymap write FIRST, re-arm SECOND, persist ONLY after success.
+        let rebind_request = settings_flags
+            .shortcuts_rebind_request
+            .lock()
+            .map(|mut slot| slot.take())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().take());
+        if let Some((word, full)) = rebind_request {
+            let outcome = apply_live_accept_keymap(
+                word,
+                full,
+                platform_macos::set_accept_keymap_from_config,
+                || engine.rearm_accept_keys(),
+                |w, f| {
+                    if let Some(path) = config::config_file_path() {
+                        for (key, value) in
+                            [("COMPME_ACCEPT_WORD_KEY", w), ("COMPME_ACCEPT_FULL_KEY", f)]
+                        {
+                            if let Err(err) =
+                                config::persist_setting(&path, key, &value.to_string())
+                            {
+                                eprintln!("compme: failed to persist {key}: {err}");
+                            }
+                        }
+                    } else {
+                        // The rebind is LIVE but evaporates at relaunch — say
+                        // so instead of letting the success log imply it
+                        // persisted (review-c133).
+                        eprintln!(
+                            "compme: no config dir \u{2014} rebound keys apply this session only"
+                        );
+                    }
+                },
+                platform_macos::effective_accept_keys,
+            );
+            match outcome {
+                Ok(()) => {
+                    let (word_key, full_key) = platform_macos::effective_accept_keys();
+                    // Recompose the Shortcuts text; show() re-reads it on the
+                    // next open (refresh-on-show — the c121 forward trap).
+                    if let Ok(mut text) = settings_flags.shortcuts_text.lock() {
+                        *text = shortcuts_text(word_key, full_key);
+                    }
+                    // The slice-4 recorder lives INSIDE the window, so it is
+                    // open at exactly this moment — refresh the live label
+                    // (show() only covers the reopen edge) (review-c133).
+                    settings_window.refresh_shortcuts_label();
+                    eprintln!("compme: accept keys rebound (word={word_key} full={full_key})");
+                }
+                Err(err) => eprintln!("compme: accept-key rebind failed: {err}"),
+            }
+        }
         // Apps-row Delete: resolve the clicked row index against the ids
         // rendered with the SAME cap/order, delete, recompose, re-render.
         let clicked_row = settings_flags
@@ -3230,8 +3322,8 @@ mod tests {
         );
         assert!(env_shadow_warnings(|_| false).is_empty());
         // Every runtime-persisted key is covered (3 switches + license
-        // acceptances).
-        assert_eq!(env_shadow_warnings(|_| true).len(), 4);
+        // acceptances + the two accept-key rebinds).
+        assert_eq!(env_shadow_warnings(|_| true).len(), 6);
     }
 
     #[test]
@@ -3616,6 +3708,122 @@ mod tests {
             &prefs,
             0
         ));
+    }
+
+    #[test]
+    fn live_keymap_apply_orders_set_rearm_persist_and_reverts_on_failure() {
+        // Recorder 5b sequencing contract (banked c131 design): keymap
+        // write FIRST (an old hotkey firing mid-swap reads the new map —
+        // role-safe), re-arm SECOND, persist ONLY after the re-arm
+        // succeeded. On re-arm failure the map REVERTS so
+        // effective_accept_keys()/the Shortcuts pane keep telling the
+        // registered truth (the c123 desync class).
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let l1 = std::rc::Rc::clone(&log);
+        let l2 = std::rc::Rc::clone(&log);
+        let l3 = std::rc::Rc::clone(&log);
+        let ok = apply_live_accept_keymap(
+            Some(35),
+            Some(38),
+            |w, f| {
+                l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
+                Ok(())
+            },
+            || {
+                l2.borrow_mut().push("rearm".into());
+                Ok(())
+            },
+            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
+            || (35, 38),
+        );
+        assert!(ok.is_ok());
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "set:Some(35),Some(38)".to_string(),
+                "rearm".to_string(),
+                "persist:35,38".to_string(),
+            ]
+        );
+
+        // Failure path: set → rearm Err → REVERT set, no persist.
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let l1 = std::rc::Rc::clone(&log);
+        let l2 = std::rc::Rc::clone(&log);
+        let l3 = std::rc::Rc::clone(&log);
+        let err = apply_live_accept_keymap(
+            Some(35),
+            Some(38),
+            |w, f| {
+                l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
+                Ok(())
+            },
+            || {
+                l2.borrow_mut().push("rearm".into());
+                Err(PlatformError::Timeout)
+            },
+            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
+            || (48, 50), // the pre-swap registered truth
+        );
+        assert!(err.is_err());
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "set:Some(35),Some(38)".to_string(),
+                "rearm".to_string(),
+                "set:Some(48),Some(50)".to_string(), // revert
+            ],
+            "no persist after a failed re-arm"
+        );
+
+        // Partial rebind (word=None keeps the default): persist receives the
+        // DEFAULTS-RESOLVED registered pair from effective(), not the raw
+        // request args — pins the explicit-beats-absent persist choice.
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let l1 = std::rc::Rc::clone(&log);
+        let l2 = std::rc::Rc::clone(&log);
+        let l3 = std::rc::Rc::clone(&log);
+        let partial = apply_live_accept_keymap(
+            None,
+            Some(38),
+            |w, f| {
+                l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
+                Ok(())
+            },
+            || {
+                l2.borrow_mut().push("rearm".into());
+                Ok(())
+            },
+            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
+            || (48, 38), // post-resolution: default word stays 48
+        );
+        assert!(partial.is_ok());
+        assert_eq!(
+            log.borrow().last().unwrap(),
+            "persist:48,38",
+            "persist writes the RESOLVED pair, not the raw request"
+        );
+
+        // Invalid map (collision) fails BEFORE any rearm/persist.
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let l2 = std::rc::Rc::clone(&log);
+        let l3 = std::rc::Rc::clone(&log);
+        let invalid = apply_live_accept_keymap(
+            Some(53),
+            None,
+            |_, _| Err(platform_macos::KeymapError::Collision(53)),
+            || {
+                l2.borrow_mut().push("rearm".into());
+                Ok(())
+            },
+            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
+            || (48, 50),
+        );
+        assert!(invalid.is_err());
+        assert!(
+            log.borrow().is_empty(),
+            "rejected map never rearms/persists"
+        );
     }
 
     #[test]
