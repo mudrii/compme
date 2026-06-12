@@ -72,7 +72,7 @@ pub fn parse_stats_file(contents: &str) -> PersistedStats {
 /// Render totals in the dotenv-style format `parse_stats_file` reads.
 pub fn render_stats_file(stats: &PersistedStats) -> String {
     format!(
-        "# compme lifetime stats (written on shutdown)\n\
+        "# compme lifetime stats (written periodically and on shutdown)\n\
          STATS_SHOWN={}\nSTATS_ACCEPTED={}\nSTATS_DISMISSED={}\n\
          STATS_SUPERSEDED={}\nSTATS_WORDS={}\n",
         stats.shown, stats.accepted, stats.dismissed, stats.superseded, stats.words,
@@ -138,12 +138,25 @@ struct Entry {
     outcome: Outcome,
 }
 
+/// Grow-only outcome totals for the current process session. Unlike the
+/// 30-day window these are never pruned, so a >30-day session still
+/// persists every outcome (review-c102 undercount fix) — the lifetime
+/// persistence path writes baseline + THESE, never window-derived counts
+/// (which regress once pruning starts).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionTotals {
+    pub counts: Counts,
+    /// Total words across all `Accepted` outcomes this session.
+    pub words: usize,
+}
+
 /// Rolling 30-day usage accumulator. Cheap to clone-free `record`; queries are
 /// `O(n)` over the retained window, which stays small at human interaction rates.
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     entries: VecDeque<Entry>,
     latencies: VecDeque<(u64, u32)>,
+    session: SessionTotals,
 }
 
 impl Stats {
@@ -152,12 +165,28 @@ impl Stats {
     }
 
     /// Record an outcome at `now_ms`, then prune anything older than the window.
+    /// The grow-only session totals update here too (never pruned).
     pub fn record(&mut self, now_ms: u64, outcome: Outcome) {
+        match outcome {
+            Outcome::Shown => self.session.counts.shown += 1,
+            Outcome::Accepted { words } => {
+                self.session.counts.accepted += 1;
+                self.session.words += words;
+            }
+            Outcome::Dismissed => self.session.counts.dismissed += 1,
+            Outcome::Superseded => self.session.counts.superseded += 1,
+        }
         self.entries.push_back(Entry {
             at_ms: now_ms,
             outcome,
         });
         self.prune(now_ms);
+    }
+
+    /// Grow-only totals for this process session (persistence input; the
+    /// windowed queries stay on `counts`/`words_completed`).
+    pub fn session_totals(&self) -> SessionTotals {
+        self.session
     }
 
     /// Record a first-suggestion latency sample (milliseconds) at `now_ms`.
@@ -330,6 +359,51 @@ mod tests {
     use super::*;
 
     const T0: u64 = 1_000_000_000_000; // a fixed base timestamp
+
+    #[test]
+    fn session_totals_survive_window_pruning() {
+        // The review-c102 undercount: window-derived counts REGRESS once a
+        // >30-day session starts pruning, so a periodic persist fed from
+        // counts(now) would write SMALLER totals than an earlier flush.
+        // Session totals are grow-only — every outcome of the process
+        // lifetime persists.
+        let mut s = Stats::new();
+        s.record(T0, Outcome::Shown);
+        s.record(T0, Outcome::Accepted { words: 3 });
+        let late = T0 + WINDOW_MS + 10_000;
+        s.record(late, Outcome::Dismissed);
+
+        // The window dropped the early entries...
+        let windowed = s.counts(late);
+        assert_eq!(windowed.shown, 0);
+        assert_eq!(windowed.accepted, 0);
+        assert_eq!(windowed.dismissed, 1);
+        // ...but the session totals kept them.
+        let totals = s.session_totals();
+        assert_eq!(totals.counts.shown, 1);
+        assert_eq!(totals.counts.accepted, 1);
+        assert_eq!(totals.counts.dismissed, 1);
+        assert_eq!(totals.words, 3);
+    }
+
+    #[test]
+    fn session_totals_accumulate_counts_and_words_only_from_outcomes() {
+        let mut s = Stats::new();
+        assert_eq!(s.session_totals(), SessionTotals::default());
+        s.record(T0, Outcome::Shown);
+        s.record(T0, Outcome::Accepted { words: 2 });
+        s.record(T0, Outcome::Accepted { words: 5 });
+        s.record(T0, Outcome::Superseded);
+        // Latencies are not persisted — they must not touch the totals.
+        s.record_latency(T0, 42);
+
+        let totals = s.session_totals();
+        assert_eq!(totals.counts.shown, 1);
+        assert_eq!(totals.counts.accepted, 2);
+        assert_eq!(totals.counts.superseded, 1);
+        assert_eq!(totals.counts.dismissed, 0);
+        assert_eq!(totals.words, 7);
+    }
 
     #[test]
     fn persisted_stats_round_trip_and_merge_session_counts() {

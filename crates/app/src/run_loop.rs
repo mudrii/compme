@@ -56,6 +56,9 @@ const DEFAULT_CONTEXT_MAX_CHARS: usize = 160;
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
 /// Re-poll secure input + Accessibility trust at most this often (wall-clock ms).
 const SECURE_POLL_INTERVAL_MS: u64 = 480;
+/// Periodic lifetime-stats flush cadence (c102 follow-up): bounds crash loss
+/// to ≤5 minutes of events; the file is ~120 bytes so the write is free.
+const STATS_FLUSH_INTERVAL_MS: u64 = 5 * 60 * 1000;
 const ACCESSIBILITY_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
@@ -969,6 +972,42 @@ fn setup_poll_due(visible: bool, last_poll_ms: Option<u64>, now_ms: u64) -> bool
         && last_poll_ms.is_none_or(|last| now_ms.saturating_sub(last) >= SECURE_POLL_INTERVAL_MS)
 }
 
+/// True when the periodic lifetime-stats flush interval has elapsed (the
+/// MONOTONIC clock — wall NTP jumps must not skew the cadence). `None`
+/// (never flushed) is due immediately; the dirty check at the call site
+/// keeps that from writing an untouched file at startup.
+fn stats_flush_due(last_flush_ms: Option<u64>, now_ms: u64) -> bool {
+    last_flush_ms.is_none_or(|last| now_ms.saturating_sub(last) >= STATS_FLUSH_INTERVAL_MS)
+}
+
+/// Write `base` + the session's grow-only totals to `path` (temp+rename).
+/// Idempotent: the same state produces identical bytes, so the periodic
+/// flush and the shutdown flush share this one writer. stats.env is
+/// SINGLE-WRITER (this run loop) — every write overwrites from the
+/// immutable startup baseline; re-reading the file here would re-add the
+/// session each flush (double count). `None` path = no stats home, no-op.
+fn persist_lifetime_stats(
+    path: Option<&std::path::Path>,
+    base: &stats::PersistedStats,
+    session: stats::SessionTotals,
+) -> std::io::Result<()> {
+    let Some(path) = path else { return Ok(()) };
+    let merged = base.merged(session.counts, session.words);
+    let tmp = path.with_extension("env.tmp");
+    std::fs::create_dir_all(path.parent().unwrap_or(path))?;
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(stats::render_stats_file(&merged).as_bytes())?;
+        // fsync before the rename: the periodic flush writes every ≤5 dirty
+        // minutes (vs once per run pre-c128), so the power-loss window where
+        // an unsynced rename persists a truncated file is no longer
+        // negligible (review-c128).
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
 /// The Apps tab's rows: top apps by recorded-input count (capped at the
 /// window's label count), or an honest status line when collection is off /
 /// nothing is recorded.
@@ -1716,13 +1755,20 @@ pub fn run() -> Result<(), String> {
     let mut model_download_logged: u8 = 0; // 0=idle 1=running 2=terminal
                                            // Visible-only Setup re-probe cadence (setup_poll_due).
     let mut last_setup_poll_ms: Option<u64> = None;
-    // Lifetime stats baseline, read once: the file only changes at shutdown,
-    // so startup state + live session is the whole truth while running.
+    // Lifetime stats baseline, read once.
+    // stats.env is SINGLE-WRITER (this loop): every write is the immutable
+    // startup baseline + grow-only session totals, so this read stays the
+    // baseline for the whole run (the periodic flush and the shutdown flush
+    // share it — re-reading the file would double-count the session).
+    let stats_path = config::stats_file_path();
     let lifetime_base = stats::parse_stats_file(
-        &config::stats_file_path()
+        &stats_path
+            .as_deref()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_default(),
     );
+    let mut last_stats_flush_ms: Option<u64> = None;
+    let mut last_flushed_session = stats::SessionTotals::default();
     let mut settings_window = platform_macos::MacosSettingsWindow::new(settings_flags.clone());
     let mut settings_was_visible = false;
     // The most recent focused app key, so settings edges can re-apply per-app
@@ -2053,8 +2099,12 @@ pub fn run() -> Result<(), String> {
             // renders strings only; data stays on this side of the seam.
             if let Ok(mut lines) = settings_flags.stats_lines.lock() {
                 *lines = stats_pane_lines(&usage.daily_buckets(wall_ms, 7));
+                // Grow-only session totals, NOT window-derived counts: past
+                // 30 days the window prunes and the row would regress — and
+                // it must agree with what the periodic flush writes to disk.
+                let totals = usage.session_totals();
                 lines.push(lifetime_line(
-                    &lifetime_base.merged(usage.counts(wall_ms), usage.words_completed(wall_ms)),
+                    &lifetime_base.merged(totals.counts, totals.words),
                 ));
             }
             // Setup tab: re-probe permissions/model at every open (cheap
@@ -2227,6 +2277,19 @@ pub fn run() -> Result<(), String> {
             model_download_logged = next_logged;
             if let Some(line) = line {
                 eprintln!("{line}");
+            }
+        }
+        // Periodic lifetime-stats flush (c102): baseline + grow-only session
+        // totals, idempotent overwrite. The dirty check keeps idle ticks off
+        // the disk; on a failed write the timestamp still advances (no
+        // per-heartbeat hammering of a broken disk) but the dirty marker
+        // does not, so the next interval retries.
+        let session_totals = usage.session_totals();
+        if stats_flush_due(last_stats_flush_ms, now_ms) && session_totals != last_flushed_session {
+            last_stats_flush_ms = Some(now_ms);
+            match persist_lifetime_stats(stats_path.as_deref(), &lifetime_base, session_totals) {
+                Ok(()) => last_flushed_session = session_totals,
+                Err(err) => eprintln!("compme: stats persist failed: {err}"),
             }
         }
         // Visible-only Setup re-probe: granting a permission while the
@@ -2533,7 +2596,10 @@ pub fn run() -> Result<(), String> {
     }
 
     eprintln!("compme: shutting down");
-    // Session usage summary (§11/§16).
+    // Session usage summary (§11/§16). Window-derived (30d) — past 30 days
+    // of uptime it reports LESS than the persisted lifetime totals.
+    // Intentional: this is a diagnostic line and latency avg/p95 are
+    // inherently windowed; the persist path uses grow-only session totals.
     let final_wall_ms = wall_now_ms();
     let session_usage = session_usage_snapshot(&usage, final_wall_ms);
     eprintln!(
@@ -2547,18 +2613,17 @@ pub fn run() -> Result<(), String> {
         session_usage.latency_avg,
         session_usage.latency_p95,
     );
-    // Lifetime stats: load existing totals, add this session, write back
-    // (T3). Fail-soft end to end — a stats hiccup must not block shutdown.
-    if let Some(path) = config::stats_file_path() {
-        let lifetime = stats::parse_stats_file(&std::fs::read_to_string(&path).unwrap_or_default());
-        let merged = lifetime.merged(session_usage.counts, session_usage.words);
-        let tmp = path.with_extension("env.tmp");
-        let write = std::fs::create_dir_all(path.parent().unwrap_or(&path))
-            .and_then(|()| std::fs::write(&tmp, stats::render_stats_file(&merged)))
-            .and_then(|()| std::fs::rename(&tmp, &path));
-        if let Err(err) = write {
-            eprintln!("compme: stats persist failed: {err}");
-        }
+    // Lifetime stats: final flush — the SAME idempotent baseline+session
+    // write as the periodic flush. Re-reading the file here (the pre-c128
+    // shape) would double-count the session: the file already holds
+    // baseline + session from the last periodic flush. Fail-soft — a stats
+    // hiccup must not block shutdown.
+    if let Err(err) = persist_lifetime_stats(
+        stats_path.as_deref(),
+        &lifetime_base,
+        usage.session_totals(),
+    ) {
+        eprintln!("compme: stats persist failed: {err}");
     }
     drop(tray); // remove the status item before AppKit teardown
     drop(caret_sub);
@@ -2637,6 +2702,111 @@ mod tests {
         let mut lines = stats_pane_lines(&[stats::DayBucket::default()]);
         lines.push(lifetime_line(&stats::PersistedStats::default()));
         assert_eq!(lines.len(), platform_macos::STATS_ROWS);
+    }
+
+    #[test]
+    fn stats_flush_due_boundaries() {
+        assert!(stats_flush_due(None, 10_000), "never flushed: due now");
+        let last = Some(100_000);
+        assert!(
+            !stats_flush_due(last, 100_000 + STATS_FLUSH_INTERVAL_MS - 1),
+            "inside the interval"
+        );
+        assert!(
+            stats_flush_due(last, 100_000 + STATS_FLUSH_INTERVAL_MS),
+            "interval elapsed"
+        );
+        assert!(
+            !stats_flush_due(last, 99_999),
+            "clock-skew saturates, not due"
+        );
+    }
+
+    fn flush_temp_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("cm-flush-{tag}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn lifetime_flush_is_idempotent() {
+        // baseline + grow-only session totals, overwritten in place: the
+        // SAME state must produce byte-identical files no matter how many
+        // times it flushes (periodic + shutdown share this writer).
+        let dir = flush_temp_path("idem");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("stats.env");
+        let base = stats::PersistedStats {
+            shown: 10,
+            accepted: 4,
+            dismissed: 2,
+            superseded: 1,
+            words: 9,
+        };
+        let mut usage = stats::Stats::new();
+        usage.record(1_000, stats::Outcome::Shown);
+        usage.record(1_000, stats::Outcome::Accepted { words: 2 });
+        let session = usage.session_totals();
+
+        persist_lifetime_stats(Some(&path), &base, session).expect("first flush");
+        let first = std::fs::read(&path).expect("file written");
+        persist_lifetime_stats(Some(&path), &base, session).expect("second flush");
+        let second = std::fs::read(&path).expect("file rewritten");
+        assert_eq!(first, second, "same state → identical bytes");
+        assert_eq!(
+            String::from_utf8(first).unwrap(),
+            stats::render_stats_file(&base.merged(session.counts, session.words))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lifetime_flush_then_final_flush_never_double_counts() {
+        // The shutdown flush after N periodic flushes must yield EXACTLY
+        // base + final-session-totals — a re-read of the file (the old
+        // shutdown shape) would re-add the session every time.
+        let dir = flush_temp_path("nodouble");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("stats.env");
+        let base = stats::PersistedStats {
+            shown: 100,
+            accepted: 50,
+            dismissed: 10,
+            superseded: 5,
+            words: 200,
+        };
+        let mut usage = stats::Stats::new();
+        usage.record(1_000, stats::Outcome::Accepted { words: 3 });
+        persist_lifetime_stats(Some(&path), &base, usage.session_totals()).expect("periodic");
+        // Session grows, then the final (shutdown) flush.
+        usage.record(2_000, stats::Outcome::Accepted { words: 4 });
+        persist_lifetime_stats(Some(&path), &base, usage.session_totals()).expect("final");
+
+        let on_disk = stats::parse_stats_file(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(on_disk.accepted, 52, "base 50 + 2 accepts, counted once");
+        assert_eq!(on_disk.words, 207, "base 200 + 7 words, counted once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lifetime_flush_fails_soft_and_skips_without_a_path() {
+        // No stats path (no HOME/COMPME_CONFIG) → quiet no-op success.
+        assert!(persist_lifetime_stats(
+            None,
+            &stats::PersistedStats::default(),
+            Default::default()
+        )
+        .is_ok());
+        // Unwritable destination (parent is a regular FILE) → Err, no panic,
+        // nothing created.
+        let blocker = flush_temp_path("blocked");
+        std::fs::write(&blocker, b"i am a file").unwrap();
+        let path = blocker.join("stats.env");
+        assert!(persist_lifetime_stats(
+            Some(&path),
+            &stats::PersistedStats::default(),
+            Default::default()
+        )
+        .is_err());
+        let _ = std::fs::remove_file(&blocker);
     }
 
     #[test]
