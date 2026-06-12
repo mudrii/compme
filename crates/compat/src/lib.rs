@@ -45,15 +45,43 @@ impl CompatTier {
 /// Accessibility / Text-Metrics setup. (MirrorOnly browsers render via the
 /// engine's existing popup-anchor fallback when inline caret geometry is absent.)
 pub fn is_browser(bundle_id: &str) -> bool {
-    matches!(
+    // Exact ids first (the curated set)...
+    if matches!(
         bundle_id,
         "com.apple.Safari"
             | "com.google.Chrome"
+            | "com.microsoft.edgemac"
+            | "com.brave.Browser"
+            | "com.vivaldi.Vivaldi"
             | "company.thebrowser.Browser"
             | "company.thebrowser.dia"
             | "org.mozilla.firefox"
+            | "org.mozilla.firefoxdeveloperedition"
+            | "org.mozilla.nightly"
             | "app.zen-browser.zen"
-    )
+    ) {
+        return true;
+    }
+    // ...then dot-bounded families for variant builds (canary/beta/dev/
+    // nightly, Chromium forks). The trailing '.' keeps lookalike prefixes
+    // out: com.google.Chromecast must never trigger an AX URL read. Helper
+    // bundles (com.google.Chrome.helper) DO match by design — harmless,
+    // since helpers never own the focused AX field on macOS (the browser
+    // process hosts the AX tree), and excluding them would need a deny-list
+    // that drifts.
+    [
+        "com.google.Chrome.",
+        "org.chromium.",
+        "com.vivaldi.",
+        "com.microsoft.edgemac.",
+        "com.brave.Browser.",
+    ]
+    .iter()
+    .any(|family| {
+        bundle_id
+            .strip_prefix(family)
+            .is_some_and(|rest| !rest.is_empty())
+    })
 }
 
 /// Whether the focused field needs Accessibility/Text-Metrics setup before inline
@@ -178,6 +206,46 @@ mod tests {
             compatibility_tier("com.mitchellh.ghostty"),
             CompatTier::Unsupported
         );
+    }
+
+    #[test]
+    fn browser_families_match_variants_but_not_lookalikes() {
+        // The domain-detection pre-gate: Chromium-family variants and
+        // siblings count as browsers...
+        for browser in [
+            "com.apple.Safari",
+            "com.google.Chrome",
+            "com.google.Chrome.canary",
+            "com.google.Chrome.beta",
+            "org.chromium.Chromium",
+            "com.microsoft.edgemac",
+            "com.microsoft.edgemac.Beta",
+            "com.brave.Browser",
+            "com.brave.Browser.nightly",
+            "com.vivaldi.Vivaldi",
+            "company.thebrowser.Browser",
+            "company.thebrowser.dia",
+            "org.mozilla.firefox",
+            "org.mozilla.firefoxdeveloperedition",
+            "org.mozilla.nightly",
+            "app.zen-browser.zen",
+            // In-family helper bundles match BY DESIGN (see is_browser):
+            // helpers never own the focused AX field, and a deny-list of
+            // helper suffixes would drift.
+            "com.google.Chrome.helper",
+        ] {
+            assert!(is_browser(browser), "{browser} should be a browser");
+        }
+        // ...but the prefix match is dot-bounded: a lookalike bundle id
+        // sharing the prefix string must NOT trigger AX URL reads.
+        for not_browser in [
+            "com.google.Chromecast",
+            "com.apple.TextEdit",
+            "com.brave.BrowserHelper.weird", // outside the dotted family
+            "org.chromium",                  // bare prefix without a segment
+        ] {
+            assert!(!is_browser(not_browser), "{not_browser} is not a browser");
+        }
     }
 
     #[test]

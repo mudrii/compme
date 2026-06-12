@@ -388,13 +388,14 @@ fn replacement_decision(
     config: &Config,
     prefs: &Prefs,
     app_key: Option<&str>,
+    domain: Option<&str>,
     enabled: bool,
     now_ms: u64,
 ) -> Option<(String, usize)> {
     // `prefs` is passed separately from `config` because the run loop mutates
     // its prefs at runtime (snooze); reading `config.prefs` here would split
     // the policy source and let a local offer show while the model is snoozed.
-    if !enabled || !suggestion_gates_pass(app_key, left, None, prefs, now_ms) {
+    if !enabled || !suggestion_gates_pass(app_key, left, domain, prefs, now_ms) {
         return None;
     }
     // Per-app autocorrect override (App Settings): prefs override, else the
@@ -708,11 +709,23 @@ fn domain_rules_inert_warning(prefs: &Prefs) -> Option<String> {
 fn request_passes_submit_gates(
     request: &CompletionRequest,
     app_key: Option<&str>,
+    domain: Option<&str>,
     prefs: &Prefs,
     now_ms: u64,
 ) -> bool {
-    // Domain source pending (extractor); None until it lands.
-    suggestion_gates_pass(app_key, &request.prompt, None, prefs, now_ms)
+    suggestion_gates_pass(app_key, &request.prompt, domain, prefs, now_ms)
+}
+
+/// The cached browser host for `app_key`, but ONLY when it is the app the
+/// read was taken under — the request's app may differ from the focus that
+/// populated the cache, and a domain must never cross-attribute. `None` =
+/// fail-open (identical to no detection at all).
+fn cached_domain<'a>(
+    cache: &'a Option<(String, String)>,
+    app_key: Option<&str>,
+) -> Option<&'a str> {
+    let (read_app, host) = cache.as_ref()?;
+    (app_key == Some(read_app.as_str())).then_some(host.as_str())
 }
 
 /// First-suggestion latency (ms) for a completed request's `generation`: the
@@ -1774,6 +1787,12 @@ pub fn run() -> Result<(), String> {
     // The most recent focused app key, so settings edges can re-apply per-app
     // gates without waiting for the next Focus event.
     let mut last_app_key: Option<String> = None;
+    // Browser host for the focused page, cached per Focus: (app key the read
+    // was taken under, extracted host). Slice 1 plumbing — the AX source
+    // (slice 2/3, banked c128 design) populates it; until then it stays None
+    // and both gate call sites behave exactly as before. Host only, never
+    // the full URL (privacy boundary).
+    let last_domain: Option<(String, String)> = None;
     let start = Instant::now();
 
     eprintln!(
@@ -1873,6 +1892,7 @@ pub fn run() -> Result<(), String> {
                                         &config,
                                         &prefs,
                                         replace_app_key.as_deref(),
+                                        cached_domain(&last_domain, replace_app_key.as_deref()),
                                         flags.enabled.load(Ordering::Relaxed),
                                         now_ms,
                                     );
@@ -2531,7 +2551,13 @@ pub fn run() -> Result<(), String> {
                 // it can't be resolved. Domain is None until browser-domain
                 // extraction lands.
                 let app_key = resolve_app_key(request.field.pid, bundle_id_for_pid);
-                if request_passes_submit_gates(&request, app_key.as_deref(), &prefs, now_ms) {
+                if request_passes_submit_gates(
+                    &request,
+                    app_key.as_deref(),
+                    cached_domain(&last_domain, app_key.as_deref()),
+                    &prefs,
+                    now_ms,
+                ) {
                     // Refresh the clipboard context cell (redacted) just before a
                     // submit that will use it (A2 §16 clipboard context). Invariant:
                     // the cell is rewritten before *every* gated submit, so the
@@ -3308,6 +3334,7 @@ mod tests {
                 &config,
                 &config.prefs,
                 Some("com.quiet.app"),
+                None,
                 true,
                 0
             ),
@@ -3319,6 +3346,7 @@ mod tests {
             &config,
             &config.prefs,
             Some("com.other.app"),
+            None,
             true,
             0
         )
@@ -3530,35 +3558,114 @@ mod tests {
     }
 
     #[test]
+    fn cached_domain_guards_on_the_app_it_was_read_under() {
+        let cache = Some(("com.apple.Safari".to_string(), "docs.example".to_string()));
+        // Same app → the cached host applies.
+        assert_eq!(
+            cached_domain(&cache, Some("com.apple.Safari")),
+            Some("docs.example")
+        );
+        // The request resolved to a DIFFERENT app than the focus that
+        // populated the cache → never cross-attribute a domain.
+        assert_eq!(cached_domain(&cache, Some("com.google.Chrome")), None);
+        assert_eq!(cached_domain(&cache, None), None);
+        assert_eq!(cached_domain(&None, Some("com.apple.Safari")), None);
+    }
+
+    #[test]
+    fn submit_gate_blocks_an_excluded_domain() {
+        // The per-domain rules' submit-side consumer: with a domain present,
+        // an excluded host blocks the request in an otherwise-allowed app.
+        let mut prefs = Prefs::default();
+        prefs.excluded_domains.insert("bank.example".into());
+        assert!(!request_passes_submit_gates(
+            &req_with_prompt("Dear team"),
+            Some("com.apple.Safari"),
+            Some("bank.example"),
+            &prefs,
+            0
+        ));
+        assert!(request_passes_submit_gates(
+            &req_with_prompt("Dear team"),
+            Some("com.apple.Safari"),
+            Some("other.example"),
+            &prefs,
+            0
+        ));
+        // No domain resolved → fail-open, exactly today's behavior.
+        assert!(request_passes_submit_gates(
+            &req_with_prompt("Dear team"),
+            Some("com.apple.Safari"),
+            None,
+            &prefs,
+            0
+        ));
+    }
+
+    #[test]
+    fn replacement_decision_blocks_an_excluded_domain() {
+        // The local-replacement path consumes the same domain gate.
+        let config = Config::from_lookup(lookup(&[("COMPME_EMOJI", "1")]));
+        let mut prefs = Prefs::default();
+        prefs.excluded_domains.insert("bank.example".into());
+        let app = Some("com.apple.Safari");
+        assert!(replacement_decision(
+            "hi :smile",
+            &config,
+            &prefs,
+            app,
+            Some("bank.example"),
+            true,
+            0
+        )
+        .is_none());
+        assert!(replacement_decision(
+            "hi :smile",
+            &config,
+            &prefs,
+            app,
+            Some("other.example"),
+            true,
+            0
+        )
+        .is_some());
+    }
+
+    #[test]
     fn submit_gate_combines_app_terminal_and_preference_policy() {
         let prefs = Prefs::default();
         assert!(request_passes_submit_gates(
             &req_with_prompt("Dear team"),
             Some("com.apple.TextEdit"),
+            None,
             &prefs,
             0
         ));
         assert!(!request_passes_submit_gates(
             &req_with_prompt("Dear team"),
             Some("com.mitchellh.ghostty"),
+            None,
             &prefs,
             0
         ));
         assert!(!request_passes_submit_gates(
             &req_with_prompt("Dear team"),
             Some("com.microsoft.VSCode"),
+            None,
             &prefs,
             0
         ));
         assert!(!request_passes_submit_gates(
             &req_with_prompt("git status && ls -la"),
             Some("com.googlecode.iterm2"),
+            None,
             &prefs,
             0
         ));
         assert!(request_passes_submit_gates(
             &req_with_prompt("please summarize the recent changes"),
             Some("com.googlecode.iterm2"),
+            None,
             &prefs,
             0
         ));
@@ -3567,6 +3674,7 @@ mod tests {
         assert!(!request_passes_submit_gates(
             &req_with_prompt("Dear team"),
             Some("com.apple.TextEdit"),
+            None,
             &excluded,
             0
         ));
@@ -3582,10 +3690,14 @@ mod tests {
         let req = req_with_prompt("Dear team");
         let app = Some("com.apple.TextEdit");
         // Blocked at the start of and midway through the window.
-        assert!(!request_passes_submit_gates(&req, app, &prefs, 1_000));
-        assert!(!request_passes_submit_gates(&req, app, &prefs, 61_000));
+        assert!(!request_passes_submit_gates(&req, app, None, &prefs, 1_000));
+        assert!(!request_passes_submit_gates(
+            &req, app, None, &prefs, 61_000
+        ));
         // Auto-resumes once the window elapses.
-        assert!(request_passes_submit_gates(&req, app, &prefs, 301_001));
+        assert!(request_passes_submit_gates(
+            &req, app, None, &prefs, 301_001
+        ));
     }
 
     #[test]
@@ -3606,6 +3718,7 @@ mod tests {
         assert!(!request_passes_submit_gates(
             &volatile,
             sidebar_key.as_deref(),
+            None,
             &Prefs::default(),
             0
         ));
@@ -3617,6 +3730,7 @@ mod tests {
         assert!(!request_passes_submit_gates(
             &volatile,
             textedit_key.as_deref(),
+            None,
             &excluded,
             0
         ));
@@ -3627,6 +3741,7 @@ mod tests {
         assert!(request_passes_submit_gates(
             &volatile,
             unresolved.as_deref(),
+            None,
             &build_prefs(&lookup(&[("COMPME_EXCLUDED_APPS", "pid:42")])),
             0
         ));
@@ -4203,10 +4318,14 @@ mod tests {
         let mut prefs = Prefs::default();
         prefs.snooze(1_000, 60);
         let app = Some("com.apple.TextEdit");
-        assert!(replacement_decision("hi :smile", &config, &prefs, app, true, 2_000).is_none());
+        assert!(
+            replacement_decision("hi :smile", &config, &prefs, app, None, true, 2_000).is_none()
+        );
         // 60 minutes later the snooze expired → offers again.
         let after = 1_000 + 60 * 60_000;
-        assert!(replacement_decision("hi :smile", &config, &prefs, app, true, after).is_some());
+        assert!(
+            replacement_decision("hi :smile", &config, &prefs, app, None, true, after).is_some()
+        );
     }
 
     #[test]
@@ -4389,11 +4508,13 @@ mod tests {
         let allowed = Some("com.apple.TextEdit");
         // Enabled (tray) + allowed app + a shortcode → offers.
         assert!(
-            replacement_decision("hi :smile", &config, &config.prefs, allowed, true, 0).is_some()
+            replacement_decision("hi :smile", &config, &config.prefs, allowed, None, true, 0)
+                .is_some()
         );
         // Tray-disabled → no offer even with a match.
         assert!(
-            replacement_decision("hi :smile", &config, &config.prefs, allowed, false, 0).is_none()
+            replacement_decision("hi :smile", &config, &config.prefs, allowed, None, false, 0)
+                .is_none()
         );
         // Sidebar-only / blocked app → no offer even when enabled.
         assert!(replacement_decision(
@@ -4401,14 +4522,22 @@ mod tests {
             &config,
             &config.prefs,
             Some("com.microsoft.VSCode"),
+            None,
             true,
             0
         )
         .is_none());
         // No matching token → no offer.
-        assert!(
-            replacement_decision("hello world", &config, &config.prefs, allowed, true, 0).is_none()
-        );
+        assert!(replacement_decision(
+            "hello world",
+            &config,
+            &config.prefs,
+            allowed,
+            None,
+            true,
+            0
+        )
+        .is_none());
     }
 
     #[test]
