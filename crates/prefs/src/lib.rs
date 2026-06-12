@@ -181,10 +181,15 @@ impl Prefs {
                 self.excluded_apps.remove(app);
             }
             (Scope::Domain(domain), Disable | Exclude) => {
-                self.excluded_domains.insert(domain.clone());
+                // Lowercase at the write seam: the detection side lowercases
+                // extracted hosts (domain_from_url), so a mixed-case rule
+                // would NEVER match — permanently inert, and invisible to
+                // the miss notice since detection itself succeeds
+                // (audit-tests-c135).
+                self.excluded_domains.insert(domain.to_ascii_lowercase());
             }
             (Scope::Domain(domain), Enable | Include) => {
-                self.excluded_domains.remove(domain);
+                self.excluded_domains.remove(&domain.to_ascii_lowercase());
             }
         }
     }
@@ -351,6 +356,29 @@ mod tests {
             "compme://setOverride?domain=evil.example&excluded=false",
         );
         assert!(!p.excluded_domains.contains("evil.example"));
+    }
+
+    #[test]
+    fn web_override_domain_rules_normalize_case_to_match_detected_hosts() {
+        // The detection side lowercases (domain_from_url); a rule stored
+        // with mixed case would NEVER match a detected host — permanently
+        // inert, and invisible to the miss notice (detection itself works,
+        // so the streak resets). Normalize at the single write seam.
+        let mut p = Prefs::default();
+        apply(
+            &mut p,
+            "compme://setOverride?domain=Docs.Google.com&enabled=false",
+        );
+        assert!(
+            !p.should_suggest(None, Some("docs.google.com"), 0),
+            "mixed-case rule must block the lowercased detected host"
+        );
+        // Removal normalizes the same way (different case than the insert).
+        apply(
+            &mut p,
+            "compme://setOverride?domain=DOCS.google.COM&excluded=false",
+        );
+        assert!(p.should_suggest(None, Some("docs.google.com"), 0));
     }
 
     #[test]
