@@ -675,9 +675,9 @@ fn app_allows_suggestions(app_key: Option<&str>) -> bool {
 /// and per-app exclude / snooze (`should_suggest`) pass. Shared by the model
 /// submit gate and the local replacement-offer gate so both honor the same
 /// per-app/snooze/terminal policy.
-/// `domain` is the focused browser domain when known (extractor pending —
-/// see `domain_rules_inert_warning`); the per-domain exclude gate consumes
-/// it the moment a source exists.
+/// `domain` is the focused browser page's HOST when known (the Focus arm's
+/// AX read via `domain_cache_entry`); `None` = no browser frontmost or no
+/// URL resolved — fail-open.
 fn suggestion_gates_pass(
     app_key: Option<&str>,
     text: &str,
@@ -708,16 +708,15 @@ fn domain_from_url(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
-/// Startup transparency (audit c121: per-domain rules were silently dead):
-/// configured domain rules with no domain source must say so.
-fn domain_rules_inert_warning(prefs: &Prefs) -> Option<String> {
-    (!prefs.excluded_domains.is_empty()).then(|| {
-        format!(
-            "{} domain rule(s) configured but browser-domain detection is not \
-             implemented yet \u{2014} per-domain rules are inert",
-            prefs.excluded_domains.len()
-        )
-    })
+/// The Focus-arm domain-cache decision: a browser app + a resolvable page
+/// URL caches `(app key, HOST)`. The full URL is dropped here — only the
+/// host crosses the privacy boundary (path/query/fragment never leave this
+/// expression, never logged, never persisted). Non-browsers and
+/// non-URL-shaped values (omnibox search text) yield `None` = fail-open.
+fn domain_cache_entry(app_key: Option<&str>, url: Option<&str>) -> Option<(String, String)> {
+    let app = app_key.filter(|a| compat::is_browser(a))?;
+    let host = url.and_then(domain_from_url)?;
+    Some((app.to_string(), host))
 }
 
 fn request_passes_submit_gates(
@@ -1502,12 +1501,10 @@ pub fn run() -> Result<(), String> {
         prompt_accessibility_trust();
     }
 
-    // Domain-rule transparency (audit c121): configured but undetectable
-    // rules must not be silently inert, and a rule pasted as a full URL
-    // would never match a bare-host domain — lint it.
-    if let Some(warning) = domain_rules_inert_warning(&config.prefs) {
-        eprintln!("compme: {warning}");
-    }
+    // Domain-rule transparency (audit c121): a rule pasted as a full URL
+    // would never match a bare-host domain — lint it. (The "rules are
+    // inert" startup warning retired with c131: the AX detection source
+    // ships; live validation is the remaining LOOK item.)
     for rule in &config.prefs.excluded_domains {
         if let Some(host) = domain_from_url(rule) {
             eprintln!(
@@ -1802,11 +1799,11 @@ pub fn run() -> Result<(), String> {
     // gates without waiting for the next Focus event.
     let mut last_app_key: Option<String> = None;
     // Browser host for the focused page, cached per Focus: (app key the read
-    // was taken under, extracted host). Slice 1 plumbing — the AX source
-    // (slice 2/3, banked c128 design) populates it; until then it stays None
-    // and both gate call sites behave exactly as before. Host only, never
-    // the full URL (privacy boundary).
-    let last_domain: Option<(String, String)> = None;
+    // was taken under, extracted host). Populated by the Focus arm's AX read
+    // (is_browser-gated, one round-trip per browser focus); host only, never
+    // the full URL (privacy boundary). `cached_domain` guards consumption on
+    // the app key so a request resolved to a different app never inherits it.
+    let mut last_domain: Option<(String, String)> = None;
     let start = Instant::now();
 
     eprintln!(
@@ -1854,6 +1851,25 @@ pub fn run() -> Result<(), String> {
                         prefs.tab_disabled(app_key.as_deref()),
                     );
                     last_app_key = app_key.clone();
+                    // Browser-domain detection (c131, slices 2-3 of the c128
+                    // design): ONE AX round-trip per browser focus; the
+                    // is_browser pre-gate keeps non-browsers at zero AX
+                    // traffic. Any miss/failure → None = fail-open. The full
+                    // URL dies inside domain_cache_entry; only the host is
+                    // kept, and only the host is ever logged (debug only).
+                    last_domain = if app_key.as_deref().is_some_and(compat::is_browser) {
+                        let url = adapter.focused_page_url(&field).ok().flatten();
+                        let entry = domain_cache_entry(app_key.as_deref(), url.as_deref());
+                        if debug_enabled() {
+                            match &entry {
+                                Some((app, host)) => eprintln!("compme: domain={host} ({app})"),
+                                None => eprintln!("compme: domain=none (browser, no URL)"),
+                            }
+                        }
+                        entry
+                    } else {
+                        None
+                    };
                     if let Some(app) = app_key {
                         if hinted_apps.insert(app.clone()) {
                             log_compat_guidance(&app);
@@ -2958,15 +2974,35 @@ mod tests {
     }
 
     #[test]
-    fn domain_rules_warn_when_configured_but_undetectable() {
-        // Transparency over silence (audit: 'silently dead'): configured
-        // domain rules with no extractor must say so at startup.
-        let mut prefs = Prefs::default();
-        assert!(domain_rules_inert_warning(&prefs).is_none());
-        prefs.excluded_domains.insert("x.example".to_string());
-        let warning = domain_rules_inert_warning(&prefs).unwrap();
-        assert!(warning.contains("domain"));
-        assert!(warning.contains("inert"));
+    fn domain_cache_entry_pairs_browser_app_with_extracted_host() {
+        // The Focus-arm decision: a browser app + a real page URL caches
+        // (app key, HOST) — the full URL is dropped at extraction (privacy
+        // boundary; path/query never leave the expression).
+        assert_eq!(
+            domain_cache_entry(
+                Some("com.apple.Safari"),
+                Some("https://docs.google.com/document/d/abc?tab=1")
+            ),
+            Some((
+                "com.apple.Safari".to_string(),
+                "docs.google.com".to_string()
+            ))
+        );
+        // Non-browser app: never caches, even with a URL-shaped value.
+        assert_eq!(
+            domain_cache_entry(Some("com.apple.TextEdit"), Some("https://x.example/")),
+            None
+        );
+        // Browser but no URL resolved (AX miss): fail-open.
+        assert_eq!(domain_cache_entry(Some("com.google.Chrome"), None), None);
+        // Browser but a non-URL value (omnibox search text shape): the
+        // extractor rejects it — no bogus host.
+        assert_eq!(
+            domain_cache_entry(Some("com.google.Chrome"), Some("how to cook rice")),
+            None
+        );
+        // No app key: nothing to attribute the host to.
+        assert_eq!(domain_cache_entry(None, Some("https://x.example/")), None);
     }
 
     #[test]

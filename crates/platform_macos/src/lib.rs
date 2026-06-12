@@ -24,6 +24,7 @@ use accessibility_sys::{
     AXUIElementIsAttributeSettable, AXUIElementRef, AXUIElementSetAttributeValue,
     AXUIElementSetMessagingTimeout, AXValueCreate, AXValueGetValue, AXValueRef,
 };
+use core_foundation::array::CFArray;
 use core_foundation::base::{CFRange, CFRelease, CFRetain, CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
@@ -1549,6 +1550,23 @@ impl PlatformAdapter for MacosPlatformAdapter {
             })?;
 
         let result = self.worker.run(move || caret_rect_for_field(pid, field))?;
+        self.map_app_exited(pid, app, result)
+    }
+
+    fn focused_page_url(&self, field: &FieldHandle) -> Result<Option<String>, PlatformError> {
+        // No secure-input refusal here (unlike read_context): this reads
+        // window/web-area METADATA, never field text — and under secure
+        // input suggestions are blocked upstream anyway, so the result is
+        // moot rather than sensitive.
+        let app = field.app.clone();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for focused_page_url".into(),
+            })?;
+        let result = self.worker.run(move || page_url_for_pid(pid))?;
         self.map_app_exited(pid, app, result)
     }
 
@@ -4835,6 +4853,134 @@ unsafe fn read_ax_element_pid(element: AXUIElementRef) -> Result<Option<u32>, Pl
     }
 
     Ok(u32::try_from(pid).ok())
+}
+
+/// Read a URL-valued AX attribute (`AXURL` is CFURL-typed; some
+/// implementations return a CFString instead — accept both). Absent
+/// attribute or unexpected type → `Ok(None)`, never an error: the domain
+/// gate is fail-open by design.
+unsafe fn read_optional_ax_url_attribute(
+    element: AXUIElementRef,
+    attribute: &str,
+) -> Result<Option<String>, PlatformError> {
+    let attribute = CFString::new(attribute);
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
+    if ax_attribute_absent(err) {
+        return Ok(None);
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = CFType::wrap_under_create_rule(value);
+    if let Some(url) = value.downcast::<core_foundation::url::CFURL>() {
+        // absolute() first: CFURLGetString returns the ORIGINAL string,
+        // which for a base-relative CFURL is the relative half — a host can
+        // only be extracted from the absolute form (review-c131).
+        return Ok(Some(url.absolute().get_string().to_string()));
+    }
+    Ok(value.downcast::<CFString>().map(|s| s.to_string()))
+}
+
+/// The element's AX children, capped at `cap` (hang insurance on
+/// pathological trees). Each child rides with a retained owner so the refs
+/// stay valid while the caller holds the pair.
+unsafe fn copy_ax_children(
+    element: AXUIElementRef,
+    cap: usize,
+) -> Result<Vec<(AXUIElementRef, CFType)>, PlatformError> {
+    let attribute = CFString::new("AXChildren");
+    let mut value: CFTypeRef = ptr::null_mut();
+    let err = AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value);
+    if ax_attribute_absent(err) {
+        return Ok(Vec::new());
+    }
+    if err != kAXErrorSuccess {
+        return Err(map_ax_error(err));
+    }
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let array_owner = CFType::wrap_under_create_rule(value);
+    // Untyped CFArray (generic CFArray<CFType> has no runtime type check);
+    // each item gets its own retain so the refs outlive the array owner.
+    let Some(array) = array_owner.downcast::<CFArray>() else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for item in array.iter().take(cap) {
+        let item_ref = *item as CFTypeRef;
+        if item_ref.is_null() {
+            continue;
+        }
+        let owner = CFType::wrap_under_get_rule(item_ref);
+        out.push((item_ref as AXUIElementRef, owner));
+    }
+    Ok(out)
+}
+
+/// Worker-side page-URL probe for the focused window of `pid` (browser-only
+/// callers — the host pre-gates on `compat::is_browser`). Strategy per the
+/// c128 design: the window's `AXDocument` string first (one cheap read),
+/// else a bounded BFS for an `AXWebArea` exposing `AXURL` (WebKit, Chromium,
+/// and Gecko all implement it on the web area). Per-node read errors skip
+/// the node rather than aborting — a weird subtree must not kill the walk.
+/// Runs ONLY on the AX worker thread (messaging timeout bounds hangs).
+fn page_url_for_pid(pid: i32) -> Result<Option<String>, PlatformError> {
+    /// BFS caps: hang insurance, not a search budget — the web area sits
+    /// shallow under the window in all three engines. The node/child caps
+    /// alone bound the walk at ~768 AX calls, which against a slow-but-alive
+    /// renderer (each call near the 50ms messaging timeout) could stall the
+    /// Focus arm for tens of seconds — the WALL-CLOCK budget below is the
+    /// real bound (review-c131 Important).
+    const MAX_DEPTH: usize = 8;
+    const MAX_CHILDREN: usize = 64;
+    const MAX_NODES: usize = 256;
+    const MAX_WALK: std::time::Duration = std::time::Duration::from_millis(250);
+
+    let started = std::time::Instant::now();
+    let (app_element, _app_owner) = create_app_ax_element(pid)?;
+    unsafe {
+        let Some((window, window_owner)) =
+            copy_ax_element_attribute(app_element, "AXFocusedWindow")?
+        else {
+            return Ok(None);
+        };
+        if let Ok(Some(doc)) = read_optional_ax_url_attribute(window, "AXDocument") {
+            return Ok(Some(doc));
+        }
+
+        let mut queue: std::collections::VecDeque<(AXUIElementRef, CFType, usize)> =
+            std::collections::VecDeque::new();
+        queue.push_back((window, window_owner, 0));
+        let mut visited = 0usize;
+        while let Some((element, _owner, depth)) = queue.pop_front() {
+            visited += 1;
+            if visited > MAX_NODES || started.elapsed() > MAX_WALK {
+                break;
+            }
+            if let Ok(Some(role)) = read_optional_ax_string_attribute(element, "AXRole") {
+                if role == "AXWebArea" {
+                    if let Ok(Some(url)) = read_optional_ax_url_attribute(element, "AXURL") {
+                        return Ok(Some(url));
+                    }
+                    // A web area without AXURL: keep walking (frames nest).
+                }
+            }
+            if depth >= MAX_DEPTH {
+                continue;
+            }
+            if let Ok(children) = copy_ax_children(element, MAX_CHILDREN) {
+                for (child, child_owner) in children {
+                    queue.push_back((child, child_owner, depth + 1));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 unsafe fn read_optional_ax_string_attribute(

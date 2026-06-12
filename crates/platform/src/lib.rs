@@ -434,6 +434,15 @@ pub trait PlatformAdapter: Send + Sync {
     fn popup_anchor(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
         Ok(None)
     }
+    /// Best-effort URL of the focused window's web page, for per-domain
+    /// gating. `Ok(None)` when the platform/app exposes none — the common
+    /// case, and fail-OPEN by design (no domain = no domain gating), which
+    /// is why a default here is safe where `insert_replacing`'s was not
+    /// (a missing insert override silently corrupted output; a missing URL
+    /// source merely skips an optional gate).
+    fn focused_page_url(&self, _field: &FieldHandle) -> Result<Option<String>, PlatformError> {
+        Ok(None)
+    }
     /// Insert `text` at the caret using `strategy`. All-or-nothing: on `Err`
     /// the field must be unchanged. The caller guarantees the field was
     /// validated via [`capabilities`](Self::capabilities) and is writable.

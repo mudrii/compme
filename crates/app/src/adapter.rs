@@ -55,6 +55,12 @@ impl PlatformAdapter for SharedAdapter {
     fn popup_anchor(&self, field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
         self.0.popup_anchor(field)
     }
+    fn focused_page_url(&self, field: &FieldHandle) -> Result<Option<String>, PlatformError> {
+        // Explicit forward — inheriting the trait's Ok(None) default here
+        // would silently disable domain detection through the wrapper (the
+        // same forwarding-wrapper trap as insert_replacing below, c42).
+        self.0.focused_page_url(field)
+    }
     fn insert(
         &self,
         field: &FieldHandle,
