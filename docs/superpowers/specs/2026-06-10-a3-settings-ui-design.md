@@ -76,7 +76,9 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 6. **App Settings pane** (largest; needs the new per-app prefs fields).
 7. Statistics charts; Setup/onboarding pane; About. **[2026-06-10] DONE**
    (Statistics DONE-MVP as sparklines; Setup and About panes shipped).
-8. Out of scope here: model catalog/download manager (§15 D14), accessory
+8. Out of scope here: model catalog/download manager (§15 D14; since shipped
+   into the Setup tab — download button c122, sha verify c126, license gate
+   c127 **[2026-06-12]**), accessory
    floating button, updater — separate items.
 
 GUI panes are live-LOOK validated (human or scripted screenshot reads);

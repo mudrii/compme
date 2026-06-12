@@ -83,9 +83,12 @@ The MVP default is **Qwen2.5-0.5B Q4_K_M** — chosen for the warm sub-150 ms fi
 token the latency gate requires, not for output quality. The reference app
 (Cotypist) ships a far larger default (~3 GB Gemma 4) behind a downloaded,
 tiered catalog. Any GGUF that `llama-cpp-2` can load works via the override
-above, so tiering up is a config change, not a code change. A selectable
-download manager and per-tier catalog remain A2/A3 scope (see
-`docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` §5, §8).
+above, so tiering up is a config change, not a code change. A model catalog +
+download manager have shipped (the Setup tab downloads the recommended model
+with resume, hash verify-before-rename once catalog hashes are pinned, and a
+license click-through gate — see
+`docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` §15 D14); the
+model-selection picker UI is the remaining A3 item.
 
 ## Root Workspace Commands
 

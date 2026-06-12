@@ -105,6 +105,7 @@ switches persist to the file, and an env var overrides the file at relaunch.
 | `COMPME_MEMORY_PATH` | Override path for the encrypted memory store. |
 | `COMPME_MEMORY_KEY` | 64-hex memory encryption key (default: Keychain-managed). |
 | `COMPME_TRUSTED_KEY` | 64-hex Ed25519 public key for signed `compme://` links. |
+| `COMPME_LICENSE_ACCEPTED` | Comma-separated model names whose license terms were accepted (written by the app after the license click-through prompt). |
 
 ## Quick Start
 

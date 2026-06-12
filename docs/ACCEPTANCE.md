@@ -176,8 +176,10 @@ are validated outside the A1b gate runner:
 - **Permissions** — `accessibility_trusted()` true when granted; status derivation
   + ~500 ms re-poll exercised live. Production accept keys use Carbon hotkeys
   and no longer require Input Monitoring; historical A0 CGEventTap probes still do.
-  Carbon hotkey consumption is a manual physical-key gate because macOS synthetic
-  key posts do not fire `RegisterEventHotKey` the way real keyboard input does.
+  Carbon hotkey consumption was a manual physical-key gate; **[CORR 2026-06-12]**
+  synthetic posts DO fire `RegisterEventHotKey` with the NSApp pump in place
+  (see the [CORR 2026-06-10] note above) and the scripted gates were rebuilt
+  2026-06-11 — physical runs remain the final UX confirmation.
 - **Coordinate diagnostics** — `COMPME_DIAG_COORDS=1` prints display scales +
   caret rect; measured scale 1.0 on the built-in display (no offset). True-2× /
   multi-monitor (scale > 1) caret mapping was later measured on two displays and
@@ -373,5 +375,7 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
   prompts with Cancel default.
 - **Encrypted memory live gate (pending):** `COMPME_MEMORY=accepted` run,
   Keychain key created, Apps tab counts appear, ciphertext-only on disk.
-- **Lifetime stats gate (pending):** quit creates `stats.env`; relaunch shows
-  Lifetime row including prior session.
+- **Lifetime stats gate (pending) [updated 2026-06-12, c128]:** `stats.env` is
+  written by a 5-minute periodic flush during the run (quit = final flush);
+  gate: accept ≥1 suggestion, quit, relaunch shows Lifetime row including the
+  prior session.
