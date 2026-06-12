@@ -417,6 +417,23 @@ fn context_bound_chars(clipboard: bool, screen_active: bool, max_chars: usize) -
     }
 }
 
+/// Build the worker request for a catalog entry, threading its pinned
+/// SHA-256 (when present) into model_fetch's verify-before-rename. The
+/// consume edge previously hardcoded `expected_sha256: None`, which would
+/// have silently ignored a pinned catalog hash.
+fn catalog_download_request(
+    entry: &model_catalog::ModelEntry,
+    dest: PathBuf,
+    status: std::sync::Arc<model_fetch::DownloadStatus>,
+) -> model_fetch::DownloadRequest {
+    model_fetch::DownloadRequest {
+        url: entry.url.to_string(),
+        dest,
+        expected_sha256: entry.expected_sha256.map(String::from),
+        status,
+    }
+}
+
 /// One step of the model-download log state machine (`logged`: 0=idle,
 /// 1=running-logged, 2=terminal-logged): the next state plus the line to
 /// emit, if any. Done/Failed log exactly once — they are the only
@@ -2105,12 +2122,11 @@ pub fn run() -> Result<(), String> {
                 }
                 if let Some(downloader) = &model_downloader {
                     let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
-                    downloader.request(model_fetch::DownloadRequest {
-                        url: entry.url.to_string(),
+                    downloader.request(catalog_download_request(
+                        entry,
                         dest,
-                        expected_sha256: None,
-                        status: std::sync::Arc::clone(&status),
-                    });
+                        std::sync::Arc::clone(&status),
+                    ));
                     eprintln!(
                         "compme: downloading {} ({} MB) \u{2014} progress in this log",
                         entry.name, entry.size_mb
@@ -3997,6 +4013,48 @@ mod tests {
             50,
             "explicit bound wins"
         );
+    }
+
+    #[test]
+    fn catalog_download_request_threads_the_entry_hash_to_the_verifier() {
+        // The consume edge previously hardcoded expected_sha256: None — a
+        // pinned catalog hash would have been silently ignored. The request
+        // builder must carry the entry's hash so verify-before-rename
+        // engages the moment a hash lands in the catalog.
+        let entry = model_catalog::ModelEntry {
+            name: "test-model",
+            url: "https://example.invalid/m.gguf",
+            size_mb: 1,
+            min_ram_gb: 1,
+            license: model_catalog::License::Apache2,
+            expected_sha256: Some(
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+        };
+        let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
+        let request = catalog_download_request(
+            &entry,
+            PathBuf::from("/tmp/m.gguf"),
+            std::sync::Arc::clone(&status),
+        );
+        assert_eq!(
+            request.expected_sha256.as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        assert_eq!(request.url, entry.url);
+        assert_eq!(request.dest, PathBuf::from("/tmp/m.gguf"));
+        // The SAME status block must ride along — a helper constructing a
+        // fresh one would silently break progress polling.
+        assert!(std::sync::Arc::ptr_eq(&request.status, &status));
+
+        // Unpinned entry → no verification requested (downloader skips).
+        let unpinned = model_catalog::ModelEntry {
+            expected_sha256: None,
+            ..entry
+        };
+        let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
+        let request = catalog_download_request(&unpinned, PathBuf::from("/tmp/m.gguf"), status);
+        assert_eq!(request.expected_sha256, None);
     }
 
     #[test]

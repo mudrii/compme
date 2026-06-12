@@ -40,6 +40,14 @@ pub struct ModelEntry {
     /// Advisory minimum unified memory for comfortable inference.
     pub min_ram_gb: u32,
     pub license: License,
+    /// Pinned SHA-256 of the model file (64 hex chars; the runtime
+    /// comparison is case-insensitive — model_fetch lowercases the expected
+    /// side — lowercase here is authoring convention, test-enforced), fed
+    /// to model_fetch's verify-before-rename. `None` = not yet pinned: the
+    /// downloader skips verification rather than failing — pinning real
+    /// values is data-gated (each requires hashing the published file from
+    /// a trusted source).
+    pub expected_sha256: Option<&'static str>,
 }
 
 /// How an entry relates to the machine's available memory. ADVISORY only
@@ -63,6 +71,7 @@ pub fn catalog() -> &'static [ModelEntry] {
             size_mb: 398,
             min_ram_gb: 2,
             license: License::Apache2,
+            expected_sha256: None,
         },
         ModelEntry {
             name: "llama-3.2-1b-q4_k_m",
@@ -70,6 +79,7 @@ pub fn catalog() -> &'static [ModelEntry] {
             size_mb: 808,
             min_ram_gb: 4,
             license: License::LlamaCommunity,
+            expected_sha256: None,
         },
         ModelEntry {
             name: "qwen2.5-1.5b-q4_k_m",
@@ -77,6 +87,7 @@ pub fn catalog() -> &'static [ModelEntry] {
             size_mb: 986,
             min_ram_gb: 4,
             license: License::Apache2,
+            expected_sha256: None,
         },
         ModelEntry {
             name: "gemma-2-2b-q4_k_m",
@@ -84,6 +95,7 @@ pub fn catalog() -> &'static [ModelEntry] {
             size_mb: 1708,
             min_ram_gb: 6,
             license: License::GemmaTerms,
+            expected_sha256: None,
         },
     ]
 }
@@ -144,11 +156,33 @@ mod tests {
             size_mb: 1000,
             min_ram_gb: 8,
             license: License::Apache2,
+            expected_sha256: None,
         };
         assert_eq!(ram_verdict(&entry, 7), RamVerdict::Exceeds);
         assert_eq!(ram_verdict(&entry, 8), RamVerdict::Tight);
         assert_eq!(ram_verdict(&entry, 9), RamVerdict::Tight);
         assert_eq!(ram_verdict(&entry, 10), RamVerdict::Fits);
+    }
+
+    #[test]
+    fn present_catalog_hashes_are_lowercase_sha256_hex() {
+        // expected_sha256 feeds model_fetch's verify-before-rename. The
+        // LENGTH check is load-bearing: a truncated hash can never equal a
+        // 64-char digest → permanent HashMismatch on every download. The
+        // lowercase check is authoring convention only (runtime comparison
+        // is case-insensitive). None = not yet pinned — the downloader
+        // skips verification rather than failing.
+        for e in catalog() {
+            if let Some(hash) = e.expected_sha256 {
+                assert_eq!(hash.len(), 64, "{}: wrong hash length", e.name);
+                assert!(
+                    hash.chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                    "{}: hash must be lowercase hex",
+                    e.name
+                );
+            }
+        }
     }
 
     #[test]
