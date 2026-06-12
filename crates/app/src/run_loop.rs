@@ -1128,17 +1128,7 @@ fn apps_pane_lines(counts: &[(String, u64)], collection_on: bool) -> Vec<String>
         .collect()
 }
 
-/// Human name for a rebindable accept keycode; numeric fallback so an
-/// exotic rebind still renders something true.
-fn keycode_label(code: i64) -> String {
-    match code {
-        48 => "Tab".to_string(),
-        50 => "` (backtick)".to_string(),
-        53 => "Esc".to_string(),
-        125 => "Down arrow".to_string(),
-        other => format!("keycode {other}"),
-    }
-}
+use platform_macos::keycode_label;
 
 /// The Shortcuts tab's text (persist-only slice): the EFFECTIVE bindings
 /// (post-validation, from the platform's registered keymap — review-c114:

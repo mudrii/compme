@@ -26,12 +26,73 @@ use objc2_app_kit::{
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
 
-/// Settings-pane toggles, flipped by controls on the main thread and observed
-/// by the run loop (the tray-flags pattern: render-only UI, policy outside).
 /// A requested accept-key rebind: `(word, full)` raw macOS keycodes,
 /// `None` = keep the default for that role.
 pub type RebindRequest = (Option<i64>, Option<i64>);
 
+/// Which accept role a recorder field rebinds (recorder 5b slice 4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecorderRole {
+    Word,
+    Full,
+}
+
+/// What one captured keyDown does to a recording field. Pure half of the
+/// KeyRecorderField; the AppKit subclass is the LOOK-verified consumer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecordDecision {
+    /// Esc: leave recording, revert to the idle label. Esc is a fixed key
+    /// AND the cancel gesture — cancel wins (match-arm ordering is the
+    /// contract, pinned by test).
+    Cancel,
+    /// Down (the fixed cycle key): consumed silently, stay recording.
+    RejectFixed,
+    /// Captured key == the OTHER role's current key: would collide at
+    /// `from_accept_keys` — stay recording, show "In use".
+    RejectCollision,
+    /// Park the request, exit recording.
+    Accept,
+}
+
+/// Decide what a recording field does with `keycode`, given the OTHER
+/// role's currently registered key.
+pub fn record_decision(keycode: i64, other_role_key: i64) -> RecordDecision {
+    match keycode {
+        // The crate consts, not literals: if the FIXED key set ever changed,
+        // literals here would silently stop rejecting it (review-c135).
+        crate::KEYCODE_ESCAPE => RecordDecision::Cancel, // fixed + cancel
+        crate::KEYCODE_DOWN => RecordDecision::RejectFixed, // fixed cycle key
+        k if k == other_role_key => RecordDecision::RejectCollision,
+        _ => RecordDecision::Accept,
+    }
+}
+
+/// Build the BOTH-slots request for one captured key. `RebindRequest`'s
+/// `None` means "reset to DEFAULT" (`from_accept_keys` default-fills), NOT
+/// "keep current" — a bare-`None` partial request would silently clobber
+/// the other role's prior rebind back to Tab/backtick, so the recorder
+/// always carries the other role's CURRENT registered key explicitly.
+pub fn rebind_request_for(role: RecorderRole, captured: i64, current: (i64, i64)) -> RebindRequest {
+    match role {
+        RecorderRole::Word => (Some(captured), Some(current.1)),
+        RecorderRole::Full => (Some(current.0), Some(captured)),
+    }
+}
+
+/// Human label for an accept keycode (Shortcuts pane + recorder idle text).
+/// Single source — the run loop's `shortcuts_text` composes through this.
+pub fn keycode_label(code: i64) -> String {
+    match code {
+        crate::KEYCODE_TAB => "Tab".to_string(),
+        crate::KEYCODE_GRAVE => "` (backtick)".to_string(),
+        crate::KEYCODE_ESCAPE => "Esc".to_string(),
+        crate::KEYCODE_DOWN => "Down arrow".to_string(),
+        other => format!("keycode {other}"),
+    }
+}
+
+/// Settings-pane toggles, flipped by controls on the main thread and observed
+/// by the run loop (the tray-flags pattern: render-only UI, policy outside).
 #[derive(Clone)]
 pub struct SettingsFlags {
     /// Master enabled flag — THE SAME Arc as TrayFlags.enabled (one atomic,
@@ -767,6 +828,60 @@ mod tests {
             ]
         );
         assert_eq!(pane_titles().len(), PANE_COUNT);
+    }
+
+    #[test]
+    fn record_decision_esc_cancels_even_over_collision() {
+        // Esc is BOTH a fixed key and the cancel gesture — cancel wins, even
+        // when Esc would also collide with the other role (impossible today,
+        // pinned anyway: the match arm ordering is the contract).
+        assert_eq!(record_decision(53, 53), RecordDecision::Cancel);
+        assert_eq!(record_decision(53, 48), RecordDecision::Cancel);
+    }
+
+    #[test]
+    fn record_decision_rejects_fixed_down_silently() {
+        assert_eq!(record_decision(125, 48), RecordDecision::RejectFixed);
+    }
+
+    #[test]
+    fn record_decision_rejects_the_other_roles_key() {
+        // Capturing the OTHER role's current key would collide at
+        // from_accept_keys — reject in the field, stay recording.
+        assert_eq!(record_decision(48, 48), RecordDecision::RejectCollision);
+        assert_eq!(record_decision(50, 50), RecordDecision::RejectCollision);
+    }
+
+    #[test]
+    fn record_decision_accepts_normal_keys_including_own_current() {
+        assert_eq!(record_decision(122, 50), RecordDecision::Accept); // F1
+                                                                      // Re-recording the role's OWN current key is a harmless no-op rebind.
+        assert_eq!(record_decision(48, 50), RecordDecision::Accept);
+    }
+
+    #[test]
+    fn rebind_request_carries_the_other_roles_current_key() {
+        // THE clobber trap: RebindRequest None = DEFAULT (from_accept_keys
+        // default-fills), NOT "keep current" — a bare-None partial request
+        // would reset the other role's prior rebind back to Tab/backtick.
+        // The recorder therefore always sends BOTH slots.
+        assert_eq!(
+            rebind_request_for(RecorderRole::Word, 122, (48, 99)),
+            (Some(122), Some(99))
+        );
+        assert_eq!(
+            rebind_request_for(RecorderRole::Full, 122, (99, 50)),
+            (Some(99), Some(122))
+        );
+    }
+
+    #[test]
+    fn keycode_label_names_known_keys_and_falls_back() {
+        assert_eq!(keycode_label(48), "Tab");
+        assert_eq!(keycode_label(50), "` (backtick)");
+        assert_eq!(keycode_label(53), "Esc");
+        assert_eq!(keycode_label(125), "Down arrow");
+        assert_eq!(keycode_label(7), "keycode 7");
     }
 
     #[test]
