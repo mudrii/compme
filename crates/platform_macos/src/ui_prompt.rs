@@ -37,6 +37,29 @@ pub fn confirm_deep_link_prompt(
     Ok(response == NSAlertFirstButtonReturn + 1)
 }
 
+/// Click-through license gate before a model download (D14, c95 "once per
+/// model"). Same shape as the other prompts: main-thread only, Cancel is
+/// the FIRST/default button (Return declines), nested run loop while modal.
+pub fn confirm_license_prompt(
+    model: &str,
+    license_name: &str,
+    terms_url: &str,
+) -> Result<bool, PlatformError> {
+    let mtm = MainThreadMarker::new().ok_or_else(|| PlatformError::CannotComplete {
+        reason: "license prompt requires the main thread".into(),
+    })?;
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str("Accept model license?"));
+    alert.setInformativeText(&NSString::from_str(&format!(
+        "{model} is distributed under the {license_name}.\n\
+         Downloading requires accepting its terms:\n{terms_url}"
+    )));
+    let _ = alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+    let _ = alert.addButtonWithTitle(&NSString::from_str("Accept"));
+    let response = alert.runModal();
+    Ok(response == NSAlertFirstButtonReturn + 1)
+}
+
 /// Confirm deleting one app's recorded-input history (Apps tab Delete —
 /// irreversible: secure_delete zeroes the freed pages). Same shape as the
 /// deep-link prompt: Cancel is the first/default button.

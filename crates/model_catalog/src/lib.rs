@@ -9,8 +9,9 @@
 //! Everything here is pure. Download/IO and the RAM probe (`sysctl`) are
 //! later slices in other crates.
 
-/// Per-model license class. `GemmaTerms` requires a click-through gate
-/// before download (the catalog only labels it; the gate is UI work).
+/// Per-model license class. `GemmaTerms`/`LlamaCommunity` require a
+/// click-through gate before download — [`download_gate`] is the pure
+/// decision; the prompt UI is the host's half.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum License {
     Apache2,
@@ -25,6 +26,59 @@ impl License {
     /// Whether the user must accept terms before the first download.
     pub fn needs_acceptance(self) -> bool {
         matches!(self, License::GemmaTerms | License::LlamaCommunity)
+    }
+
+    /// Human-readable license name for the click-through prompt.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            License::Apache2 => "Apache License 2.0",
+            License::Mit => "MIT License",
+            License::GemmaTerms => "Gemma Terms of Use",
+            License::LlamaCommunity => "Llama Community License",
+        }
+    }
+
+    /// Canonical terms URL. Total (every variant has one) — unencumbered
+    /// licenses never reach the prompt, but a total fn needs no Option
+    /// handling at the call site.
+    pub fn terms_url(self) -> &'static str {
+        match self {
+            License::Apache2 => "https://www.apache.org/licenses/LICENSE-2.0",
+            License::Mit => "https://opensource.org/license/mit",
+            License::GemmaTerms => "https://ai.google.dev/gemma/terms",
+            License::LlamaCommunity => "https://www.llama.com/llama3_2/license/",
+        }
+    }
+}
+
+/// Outcome of the pre-download license gate (D14; c95 "once per model").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadGate {
+    /// Unencumbered license, or terms already accepted for this model.
+    Proceed,
+    /// Click-through required before the first download of THIS model.
+    NeedsLicense {
+        model: &'static str,
+        license_name: &'static str,
+        terms_url: &'static str,
+    },
+}
+
+/// Pure gate decision: prompt only when the entry's license needs
+/// acceptance AND this model's name is not in the caller's accepted set
+/// (per-MODEL, not per-license-class — a new Gemma-family model re-prompts).
+/// The host owns the accepted set (`COMPME_LICENSE_ACCEPTED`) and the
+/// prompt; every download path MUST route through this gate or it silently
+/// bypasses the license terms.
+pub fn download_gate(entry: &ModelEntry, is_accepted: impl Fn(&str) -> bool) -> DownloadGate {
+    if entry.license.needs_acceptance() && !is_accepted(entry.name) {
+        DownloadGate::NeedsLicense {
+            model: entry.name,
+            license_name: entry.license.display_name(),
+            terms_url: entry.license.terms_url(),
+        }
+    } else {
+        DownloadGate::Proceed
     }
 }
 
@@ -141,6 +195,16 @@ mod tests {
             assert!(e.url.starts_with("https://"), "{}: non-https url", e.name);
             assert!(e.size_mb > 0, "{}: zero size", e.name);
             assert!(e.min_ram_gb > 0, "{}: zero min ram", e.name);
+            // Names serialize comma-joined into COMPME_LICENSE_ACCEPTED and
+            // double as on-disk file stems — keep them strict slugs. A comma
+            // would re-parse as two bogus names and re-prompt forever.
+            assert!(
+                e.name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
+                "{}: name must be a [-_.a-z0-9] slug",
+                e.name
+            );
         }
         // Smallest first: the picker's default suggestion is the top entry.
         assert!(entries.windows(2).all(|w| w[0].size_mb <= w[1].size_mb));
@@ -191,5 +255,79 @@ mod tests {
         assert!(License::LlamaCommunity.needs_acceptance());
         assert!(!License::Apache2.needs_acceptance());
         assert!(!License::Mit.needs_acceptance());
+    }
+
+    #[test]
+    fn download_gate_passes_unencumbered_licenses() {
+        // Apache2/Mit never prompt, even with nothing accepted — and the
+        // one-click recommended() target is unencumbered by construction,
+        // so the gate is provably INERT on today's only download path.
+        for entry in catalog().iter().filter(|e| !e.license.needs_acceptance()) {
+            assert_eq!(download_gate(entry, |_| false), DownloadGate::Proceed);
+        }
+        assert_eq!(
+            download_gate(recommended().expect("unencumbered entry"), |_| false),
+            DownloadGate::Proceed
+        );
+    }
+
+    #[test]
+    fn download_gate_blocks_unaccepted_gated_licenses() {
+        let llama = catalog()
+            .iter()
+            .find(|e| e.license == License::LlamaCommunity)
+            .expect("llama entry");
+        assert_eq!(
+            download_gate(llama, |_| false),
+            DownloadGate::NeedsLicense {
+                model: "llama-3.2-1b-q4_k_m",
+                license_name: "Llama Community License",
+                terms_url: "https://www.llama.com/llama3_2/license/",
+            }
+        );
+        let gemma = catalog()
+            .iter()
+            .find(|e| e.license == License::GemmaTerms)
+            .expect("gemma entry");
+        assert_eq!(
+            download_gate(gemma, |_| false),
+            DownloadGate::NeedsLicense {
+                model: "gemma-2-2b-q4_k_m",
+                license_name: "Gemma Terms of Use",
+                terms_url: "https://ai.google.dev/gemma/terms",
+            }
+        );
+    }
+
+    #[test]
+    fn download_gate_passes_once_accepted_per_model_not_per_license() {
+        let gemma = catalog()
+            .iter()
+            .find(|e| e.license == License::GemmaTerms)
+            .expect("gemma entry");
+        // Accepted THIS model → proceed.
+        assert_eq!(
+            download_gate(gemma, |name| name == "gemma-2-2b-q4_k_m"),
+            DownloadGate::Proceed
+        );
+        // Accepted a DIFFERENT model → still prompts (per-model, not
+        // per-license-class: c95 "once per model").
+        assert!(matches!(
+            download_gate(gemma, |name| name == "some-other-model"),
+            DownloadGate::NeedsLicense { .. }
+        ));
+    }
+
+    #[test]
+    fn license_terms_urls_are_https_and_names_nonempty() {
+        for license in [
+            License::Apache2,
+            License::Mit,
+            License::GemmaTerms,
+            License::LlamaCommunity,
+        ] {
+            assert!(license.terms_url().starts_with("https://"));
+            assert!(!license.display_name().is_empty());
+        }
     }
 }

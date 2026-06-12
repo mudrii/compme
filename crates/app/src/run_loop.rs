@@ -172,6 +172,10 @@ struct Config {
     /// 64 hex). `None` (default, incl. malformed) = signed links rejected
     /// fail-closed; unsigned reversible links work either way.
     trusted_key: Option<webconfig::TrustedKey>,
+    /// Model names whose click-through license terms the user has accepted
+    /// (`COMPME_LICENSE_ACCEPTED`, comma-joined; persisted on Accept).
+    /// BTreeSet so the serialized form is deterministic (sorted, deduped).
+    license_accepted: std::collections::BTreeSet<String>,
     /// Rebound accept keys (raw macOS virtual keycodes,
     /// `COMPME_ACCEPT_WORD_KEY` / `COMPME_ACCEPT_FULL_KEY`). `None` →
     /// defaults (Tab 48 / grave 50). Collisions fail soft to defaults at
@@ -213,6 +217,7 @@ impl Config {
             launch_at_login: parse_tri_state(lookup("COMPME_LAUNCH_AT_LOGIN")),
             trusted_key: lookup("COMPME_TRUSTED_KEY")
                 .and_then(|raw| webconfig::TrustedKey::from_hex(&raw)),
+            license_accepted: parse_license_accepted(lookup("COMPME_LICENSE_ACCEPTED")),
             accept_word_key: lookup("COMPME_ACCEPT_WORD_KEY")
                 .and_then(|raw| raw.trim().parse::<i64>().ok()),
             accept_full_key: lookup("COMPME_ACCEPT_FULL_KEY")
@@ -415,6 +420,33 @@ fn context_bound_chars(clipboard: bool, screen_active: bool, max_chars: usize) -
     } else {
         max_chars
     }
+}
+
+/// Parse `COMPME_LICENSE_ACCEPTED` (comma-joined model names) into a set.
+/// Trims and drops empties so hand-edited values normalize on the next
+/// persist; BTreeSet keeps the serialized form deterministic.
+fn parse_license_accepted(raw: Option<String>) -> std::collections::BTreeSet<String> {
+    raw.map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Record one license acceptance in the in-memory set (so the same session
+/// never re-prompts) and return the comma-joined value to persist under
+/// `COMPME_LICENSE_ACCEPTED`. Sorted + deduped by the set; re-accepting is
+/// a no-op.
+fn record_license_acceptance(
+    accepted: &mut std::collections::BTreeSet<String>,
+    model: &str,
+) -> String {
+    accepted.insert(model.to_string());
+    accepted.iter().cloned().collect::<Vec<_>>().join(",")
 }
 
 /// Build the worker request for a catalog entry, threading its pinned
@@ -1076,19 +1108,24 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
     }
 }
 
-/// The runtime-mutable switch keys (the Settings switches persist these to
-/// config.env). Env-over-file layering means a set env var silently wins at
-/// relaunch — `env_shadow_warnings` names the shadowed ones at startup.
+/// The runtime-persisted keys: anything the running app writes back to
+/// config.env (Settings switches AND one-shot acceptances). Env-over-file
+/// layering means a set env var silently wins at relaunch —
+/// `env_shadow_warnings` names the shadowed ones at startup.
 ///
-/// KEEP IN SYNC with the heartbeat watchers (autocorrect / trailing-space /
-/// labs-midline): a new switch watcher must add its key here or its shadow
-/// goes unwarned (review-c111; the len-pinned test below backstops this).
-/// Deliberately conservative: a key set to "" still warns — it parses falsy
-/// but still occupies the env layer.
-const SWITCH_KEYS: [&str; 3] = [
+/// KEEP IN SYNC with every `persist_setting` writer (the three switch
+/// watchers + the license-acceptance edge): a new runtime-persisted key
+/// must be added here or its shadow goes unwarned (review-c111/c127; the
+/// len-pinned test below backstops this). Deliberately conservative: a key
+/// set to "" still warns — it parses falsy but still occupies the env layer.
+const SWITCH_KEYS: [&str; 4] = [
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
     "COMPME_TRAILING_SPACE",
+    // License acceptances persist on the prompt's Accept; an env shadow
+    // resurrects the un-accepted state at relaunch → surprise re-prompt
+    // (fail-closed, but confusing without the warning) (review-c127).
+    "COMPME_LICENSE_ACCEPTED",
 ];
 
 /// One warning line per switch key currently set in the environment
@@ -2113,26 +2150,73 @@ pub fn run() -> Result<(), String> {
             if let (Some(entry), Some(home)) =
                 (model_catalog::recommended(), std::env::var_os("HOME"))
             {
-                let dest = std::path::PathBuf::from(home)
-                    .join("Library/Application Support/compme/models")
-                    .join(format!("{}.gguf", entry.name));
-                let _ = std::fs::create_dir_all(dest.parent().unwrap_or(&dest));
-                if model_downloader.is_none() {
-                    model_downloader = model_fetch::ModelDownloader::spawn().ok();
-                }
-                if let Some(downloader) = &model_downloader {
-                    let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
-                    downloader.request(catalog_download_request(
-                        entry,
-                        dest,
-                        std::sync::Arc::clone(&status),
-                    ));
-                    eprintln!(
-                        "compme: downloading {} ({} MB) \u{2014} progress in this log",
-                        entry.name, entry.size_mb
-                    );
-                    model_download_status = Some(status);
-                    model_download_logged = 0;
+                // License click-through gate (D14, c95 "once per model"):
+                // inert for today's unencumbered recommended() target; bites
+                // when a future picker selects a GemmaTerms/LlamaCommunity
+                // entry. EVERY download path must route through this gate —
+                // a second path that skips it silently bypasses the terms.
+                let allowed = match model_catalog::download_gate(entry, |name| {
+                    config.license_accepted.contains(name)
+                }) {
+                    model_catalog::DownloadGate::Proceed => true,
+                    model_catalog::DownloadGate::NeedsLicense {
+                        model,
+                        license_name,
+                        terms_url,
+                    } => {
+                        // Prompt failure (typed but unreachable off-main) =
+                        // decline: the gate fails closed.
+                        let accepted =
+                            platform_macos::confirm_license_prompt(model, license_name, terms_url)
+                                .unwrap_or(false);
+                        if accepted {
+                            // In-memory FIRST (same-session re-prompt guard),
+                            // then persist; a failed write only logs — the
+                            // user DID accept, so the download proceeds.
+                            let value =
+                                record_license_acceptance(&mut config.license_accepted, model);
+                            if let Some(path) = config::config_file_path() {
+                                if let Err(err) = config::persist_setting(
+                                    &path,
+                                    "COMPME_LICENSE_ACCEPTED",
+                                    &value,
+                                ) {
+                                    eprintln!(
+                                        "compme: failed to persist COMPME_LICENSE_ACCEPTED: {err}"
+                                    );
+                                }
+                            }
+                            eprintln!("compme: {license_name} accepted for {model}");
+                        } else {
+                            eprintln!(
+                                "compme: download of {model} cancelled (license not accepted)"
+                            );
+                        }
+                        accepted
+                    }
+                };
+                if allowed {
+                    let dest = std::path::PathBuf::from(home)
+                        .join("Library/Application Support/compme/models")
+                        .join(format!("{}.gguf", entry.name));
+                    let _ = std::fs::create_dir_all(dest.parent().unwrap_or(&dest));
+                    if model_downloader.is_none() {
+                        model_downloader = model_fetch::ModelDownloader::spawn().ok();
+                    }
+                    if let Some(downloader) = &model_downloader {
+                        let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
+                        downloader.request(catalog_download_request(
+                            entry,
+                            dest,
+                            std::sync::Arc::clone(&status),
+                        ));
+                        eprintln!(
+                            "compme: downloading {} ({} MB) \u{2014} progress in this log",
+                            entry.name, entry.size_mb
+                        );
+                        model_download_status = Some(status);
+                        model_download_logged = 0;
+                    }
                 }
             }
         }
@@ -2888,8 +2972,9 @@ mod tests {
             ]
         );
         assert!(env_shadow_warnings(|_| false).is_empty());
-        // Every runtime-mutable switch key is covered.
-        assert_eq!(env_shadow_warnings(|_| true).len(), 3);
+        // Every runtime-persisted key is covered (3 switches + license
+        // acceptances).
+        assert_eq!(env_shadow_warnings(|_| true).len(), 4);
     }
 
     #[test]
@@ -4013,6 +4098,45 @@ mod tests {
             50,
             "explicit bound wins"
         );
+    }
+
+    #[test]
+    fn parse_license_accepted_round_trips_and_normalizes() {
+        // None → empty set; messy hand-edited values trim and drop empties;
+        // serialize (via record_license_acceptance) is sorted + deduped, so
+        // parse(serialize(parse(x))) == parse(x).
+        assert!(parse_license_accepted(None).is_empty());
+        let parsed = parse_license_accepted(Some(" b , ,a ".into()));
+        assert_eq!(
+            parsed.iter().cloned().collect::<Vec<_>>(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        let mut set = parsed.clone();
+        let serialized = record_license_acceptance(&mut set, "a"); // duplicate
+        assert_eq!(serialized, "a,b", "sorted, deduped, unchanged by re-accept");
+        assert_eq!(parse_license_accepted(Some(serialized)), parsed);
+    }
+
+    #[test]
+    fn record_license_acceptance_inserts_new_models() {
+        let mut set = std::collections::BTreeSet::new();
+        assert_eq!(
+            record_license_acceptance(&mut set, "gemma-2-2b-q4_k_m"),
+            "gemma-2-2b-q4_k_m"
+        );
+        assert_eq!(
+            record_license_acceptance(&mut set, "llama-3.2-1b-q4_k_m"),
+            "gemma-2-2b-q4_k_m,llama-3.2-1b-q4_k_m"
+        );
+        assert!(set.contains("gemma-2-2b-q4_k_m"));
+    }
+
+    #[test]
+    fn config_parses_license_accepted_from_lookup() {
+        let config = Config::from_lookup(lookup(&[("COMPME_LICENSE_ACCEPTED", "x-model,y-model")]));
+        assert!(config.license_accepted.contains("x-model"));
+        assert!(config.license_accepted.contains("y-model"));
+        assert!(Config::from_lookup(lookup(&[])).license_accepted.is_empty());
     }
 
     #[test]
