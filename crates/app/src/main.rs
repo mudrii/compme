@@ -11,6 +11,7 @@ mod about;
 mod adapter;
 mod config;
 mod inference;
+mod model_picker;
 mod model_select;
 mod run_loop;
 mod screen_ocr;

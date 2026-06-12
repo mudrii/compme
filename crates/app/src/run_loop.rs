@@ -470,6 +470,20 @@ fn catalog_download_request(
     }
 }
 
+/// Whether a new download may start: none ran yet, or the last one reached
+/// a terminal state (Done/Failed — retry and re-download both work).
+/// Idle/Running block (a request is queued or in flight). Replaces the
+/// one-shot `is_none()` guard that silently swallowed every request after
+/// the first download for the process lifetime.
+fn download_idle(status: Option<&model_fetch::DownloadStatus>) -> bool {
+    let Some(status) = status else { return true };
+    let state = status.state.lock().unwrap_or_else(|e| e.into_inner());
+    matches!(
+        *state,
+        model_fetch::DownloadState::Done(_) | model_fetch::DownloadState::Failed(_)
+    )
+}
+
 /// One step of the model-download log state machine (`logged`: 0=idle,
 /// 1=running-logged, 2=terminal-logged): the next state plus the line to
 /// emit, if any. Done/Failed log exactly once — they are the only
@@ -2215,11 +2229,16 @@ pub fn run() -> Result<(), String> {
         if settings_flags
             .setup_download_model
             .swap(false, Ordering::Relaxed)
-            && model_download_status.is_none()
+            && download_idle(model_download_status.as_deref())
         {
-            if let (Some(entry), Some(home)) =
-                (model_catalog::recommended(), std::env::var_os("HOME"))
-            {
+            // Selected-or-recommended: identical to recommended() until the
+            // picker popup (D14 3b.4 slice b) writes a different index.
+            if let (Some(entry), Some(home)) = (
+                crate::model_picker::selected_catalog_entry(
+                    crate::model_picker::recommended_index(),
+                ),
+                std::env::var_os("HOME"),
+            ) {
                 // License click-through gate (D14, c95 "once per model"):
                 // inert for today's unencumbered recommended() target; bites
                 // when a future picker selects a GemmaTerms/LlamaCommunity
@@ -2275,17 +2294,23 @@ pub fn run() -> Result<(), String> {
                     }
                     if let Some(downloader) = &model_downloader {
                         let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
-                        downloader.request(catalog_download_request(
+                        // Track the status ONLY when the request was queued:
+                        // a dropped request's status stays Idle forever and
+                        // would wedge the download_idle gate (review-c130).
+                        if downloader.request(catalog_download_request(
                             entry,
                             dest,
                             std::sync::Arc::clone(&status),
-                        ));
-                        eprintln!(
-                            "compme: downloading {} ({} MB) \u{2014} progress in this log",
-                            entry.name, entry.size_mb
-                        );
-                        model_download_status = Some(status);
-                        model_download_logged = 0;
+                        )) {
+                            eprintln!(
+                                "compme: downloading {} ({} MB) \u{2014} progress in this log",
+                                entry.name, entry.size_mb
+                            );
+                            model_download_status = Some(status);
+                            model_download_logged = 0;
+                        } else {
+                            eprintln!("compme: model download queue busy \u{2014} try again");
+                        }
                     }
                 }
             }
@@ -4468,6 +4493,25 @@ mod tests {
         let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
         let request = catalog_download_request(&unpinned, PathBuf::from("/tmp/m.gguf"), status);
         assert_eq!(request.expected_sha256, None);
+    }
+
+    #[test]
+    fn download_idle_blocks_only_an_in_flight_download() {
+        use model_fetch::{DownloadState, DownloadStatus};
+        // The latent one-shot bug (found by the picker design audit): the
+        // old `model_download_status.is_none()` guard never reset, so after
+        // ONE download — even a Failed one — every later request was
+        // silently swallowed for the process lifetime. Idle/Running block
+        // (in flight); Done/Failed re-allow (retry and re-download work).
+        assert!(download_idle(None), "no download yet");
+        let status = DownloadStatus::default(); // state: Idle (queued)
+        assert!(!download_idle(Some(&status)), "queued blocks");
+        *status.state.lock().unwrap() = DownloadState::Running;
+        assert!(!download_idle(Some(&status)), "running blocks");
+        *status.state.lock().unwrap() = DownloadState::Done("/tmp/m.gguf".into());
+        assert!(download_idle(Some(&status)), "done re-allows");
+        *status.state.lock().unwrap() = DownloadState::Failed("boom".into());
+        assert!(download_idle(Some(&status)), "failed re-allows retry");
     }
 
     #[test]

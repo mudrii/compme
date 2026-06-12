@@ -291,11 +291,14 @@ impl ModelDownloader {
         })
     }
 
-    /// Queue a download; never blocks. A full queue drops the request —
-    /// the UI re-requests on the next click (depth-1 coalescing).
-    pub fn request(&self, request: DownloadRequest) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.try_send(request);
+    /// Queue a download; never blocks. A full queue drops the request and
+    /// returns `false` — callers must NOT track a dropped request's status
+    /// (its state stays Idle forever, which would wedge an idle-gated
+    /// consume edge). `true` = queued.
+    pub fn request(&self, request: DownloadRequest) -> bool {
+        match &self.tx {
+            Some(tx) => tx.try_send(request).is_ok(),
+            None => false,
         }
     }
 }
@@ -678,14 +681,25 @@ mod tests {
         let statuses: Vec<_> = (0..3)
             .map(|_| std::sync::Arc::new(DownloadStatus::default()))
             .collect();
-        for status in &statuses {
-            worker.request(DownloadRequest {
-                url: format!("http://{stall_addr}/model.bin"),
-                dest: temp_dest("overflow"),
-                expected_sha256: None,
-                status: std::sync::Arc::clone(status),
-            });
-        }
+        let queued: Vec<bool> = statuses
+            .iter()
+            .map(|status| {
+                worker.request(DownloadRequest {
+                    url: format!("http://{stall_addr}/model.bin"),
+                    dest: temp_dest("overflow"),
+                    expected_sha256: None,
+                    status: std::sync::Arc::clone(status),
+                })
+            })
+            .collect();
+        // The first request always queues; the return value tells callers
+        // whether to track the status (a dropped request stays Idle forever).
+        assert!(queued[0], "first request queues");
+        assert!(
+            !queued.iter().all(|&q| q),
+            "with one in flight and depth-1 buffering, at least one of three \
+             burst requests must be dropped and report false"
+        );
         // Request 0 reaches Running (the stalled body holds it there);
         // request 2 must have been dropped: still Idle after the worker has
         // demonstrably started consuming.
