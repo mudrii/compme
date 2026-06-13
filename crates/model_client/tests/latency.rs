@@ -8,19 +8,56 @@ fn model_path() -> PathBuf {
         .join("../../tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf")
 }
 
+fn model_tests_required(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+fn require_model_tests() -> bool {
+    model_tests_required(std::env::var("COMPME_REQUIRE_MODEL_TESTS").ok().as_deref())
+}
+
+fn ensure_model_exists(path: &std::path::Path) -> bool {
+    if path.exists() {
+        return true;
+    }
+    let msg = format!("model not at {}", path.display());
+    if require_model_tests() {
+        panic!("{msg}");
+    }
+    eprintln!("SKIP: {msg}");
+    false
+}
+
+#[test]
+fn strict_model_test_env_parses_truthy_values() {
+    for raw in [
+        Some("1"),
+        Some("true"),
+        Some("TRUE"),
+        Some(" yes "),
+        Some("on"),
+    ] {
+        assert!(model_tests_required(raw), "{raw:?}");
+    }
+    for raw in [None, Some(""), Some("0"), Some("false"), Some("off")] {
+        assert!(!model_tests_required(raw), "{raw:?}");
+    }
+}
+
 // Ignored by default: needs the qwen2.5-0.5b GGUF on disk and a Metal GPU. Run
-// with `cargo test -p model_client -- --ignored`. NOTE: even under `--ignored`
-// this SKIPs (and passes) when the GGUF is absent, so it is NOT a CI guard. The
+// with `cargo test -p model_client -- --ignored`. By default this skips when the
+// GGUF is absent; set `COMPME_REQUIRE_MODEL_TESTS=1` to make absence fail. The
 // position/skip/reuse arithmetic it would otherwise protect is covered in CI by
-// the pure `plan_decode`/`reusable_prefix_len`/`prompt_tokens_to_skip` unit tests
-// in `src/lib.rs`; this test adds an end-to-end real-model check when a GGUF and
-// GPU are available.
+// pure unit tests in `src/lib.rs`; this adds an end-to-end real-model check when
+// a GGUF and GPU are available.
 #[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn warm_completion_under_500ms() {
     let path = model_path();
-    if !path.exists() {
-        eprintln!("SKIP: model not at {}", path.display());
+    if !ensure_model_exists(&path) {
         return;
     }
 
@@ -52,8 +89,7 @@ fn warm_completion_under_500ms() {
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn prefix_reuse_matches_fresh_context_output() {
     let path = model_path();
-    if !path.exists() {
-        eprintln!("SKIP: model not at {}", path.display());
+    if !ensure_model_exists(&path) {
         return;
     }
 
@@ -89,4 +125,34 @@ fn prefix_reuse_matches_fresh_context_output() {
 
     Box::new(reused).shutdown();
     Box::new(fresh).shutdown();
+}
+
+#[test]
+#[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
+fn complete_n_returns_real_model_candidates() {
+    let path = model_path();
+    if !ensure_model_exists(&path) {
+        return;
+    }
+
+    let model = LlamaModel::load(&path).expect("load model");
+    model.warm_up().expect("warm up");
+    let prompt = terse_continuation_prompt("The quick brown fox");
+    let candidates = model.complete_n(&prompt, 12, 3).expect("complete_n");
+
+    assert_eq!(candidates.len(), 3);
+    for candidate in &candidates {
+        assert!(
+            !candidate.trim().is_empty(),
+            "empty candidate: {candidates:?}"
+        );
+        assert!(
+            !candidate.contains("Complete this text inline")
+                && !candidate.contains("Return only the continuation")
+                && !candidate.contains("Text:"),
+            "candidate leaked prompt instructions: {candidate:?}"
+        );
+    }
+
+    Box::new(model).shutdown();
 }

@@ -185,27 +185,34 @@ mod tests {
 
     #[test]
     fn known_apps_map_to_their_tiers() {
-        assert_eq!(compatibility_tier("com.apple.TextEdit"), CompatTier::Works);
-        assert_eq!(
-            compatibility_tier("company.thebrowser.Browser"),
-            CompatTier::SetupNeeded
-        );
-        assert_eq!(
-            compatibility_tier("org.mozilla.firefox"),
-            CompatTier::MirrorOnly
-        );
-        assert_eq!(
-            compatibility_tier("com.tinyspeck.slackmacgap"),
-            CompatTier::Partial
-        );
-        assert_eq!(
-            compatibility_tier("com.microsoft.VSCode"),
-            CompatTier::SidebarOnly
-        );
-        assert_eq!(
-            compatibility_tier("com.mitchellh.ghostty"),
-            CompatTier::Unsupported
-        );
+        for (bundle, tier) in [
+            ("com.apple.Safari", CompatTier::Works),
+            ("com.google.Chrome", CompatTier::Works),
+            ("com.apple.mail", CompatTier::Works),
+            ("com.microsoft.Word", CompatTier::Works),
+            ("com.apple.TextEdit", CompatTier::Works),
+            ("com.apple.Notes", CompatTier::Works),
+            ("notion.id", CompatTier::Works),
+            ("md.obsidian", CompatTier::Works),
+            ("com.apple.MobileSMS", CompatTier::Works),
+            ("com.apple.Terminal", CompatTier::Works),
+            ("com.googlecode.iterm2", CompatTier::Works),
+            ("company.thebrowser.Browser", CompatTier::SetupNeeded),
+            ("company.thebrowser.dia", CompatTier::SetupNeeded),
+            ("org.mozilla.firefox", CompatTier::MirrorOnly),
+            ("app.zen-browser.zen", CompatTier::MirrorOnly),
+            ("com.tinyspeck.slackmacgap", CompatTier::Partial),
+            ("com.microsoft.VSCode", CompatTier::SidebarOnly),
+            ("com.todesktop.230313mzl4w4u92", CompatTier::SidebarOnly),
+            ("com.exafunction.windsurf", CompatTier::SidebarOnly),
+            ("org.mozilla.thunderbird", CompatTier::Unsupported),
+            ("com.apple.iWork.Pages", CompatTier::Unsupported),
+            ("com.literatureandlatte.scrivener3", CompatTier::Unsupported),
+            ("com.mitchellh.ghostty", CompatTier::Unsupported),
+            ("dev.warp.Warp-Stable", CompatTier::Unsupported),
+        ] {
+            assert_eq!(compatibility_tier(bundle), tier, "{bundle}");
+        }
     }
 
     #[test]

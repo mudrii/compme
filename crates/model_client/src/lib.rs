@@ -692,12 +692,34 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_consumes_the_boxed_model() {
-        // shutdown takes `self: Box<Self>`, so a graceful teardown both runs the
-        // override and guarantees the resources are released exactly once.
-        let model: Box<dyn LocalModel> = Box::new(Fixed("ok"));
+    fn shutdown_consumes_the_boxed_model_dropping_it_exactly_once() {
+        // shutdown takes `self: Box<Self>`, so a graceful teardown must drop the
+        // model EXACTLY once — resources released once, no double-free, no leak.
+        // A Drop counter makes the "exactly once" claim in the name verifiable
+        // (the old test only proved the call didn't panic).
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
 
+        struct Counted(Arc<AtomicUsize>);
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        impl LocalModel for Counted {
+            fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+                Ok(String::new())
+            }
+        }
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let model: Box<dyn LocalModel> = Box::new(Counted(Arc::clone(&drops)));
         model.shutdown();
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "shutdown must drop the model exactly once"
+        );
     }
 
     #[test]

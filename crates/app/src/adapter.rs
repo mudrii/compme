@@ -17,17 +17,21 @@ use platform::{
 };
 use platform_macos::MacosPlatformAdapter;
 
-/// A cheaply-cloneable handle to a single shared `MacosPlatformAdapter`.
+/// A cheaply-cloneable handle to a single shared adapter. Generic over the inner
+/// adapter (defaulting to `MacosPlatformAdapter`, the only production inner) so
+/// the forwarding impl can be exercised against a fake in unit tests — the bare
+/// `SharedAdapter` name and `SharedAdapter::new(arc)` call site are unaffected by
+/// the default type parameter.
 #[derive(Clone)]
-pub struct SharedAdapter(Arc<MacosPlatformAdapter>);
+pub struct SharedAdapter<A: PlatformAdapter = MacosPlatformAdapter>(Arc<A>);
 
-impl SharedAdapter {
-    pub fn new(inner: Arc<MacosPlatformAdapter>) -> Self {
+impl<A: PlatformAdapter> SharedAdapter<A> {
+    pub fn new(inner: Arc<A>) -> Self {
         Self(inner)
     }
 }
 
-impl PlatformAdapter for SharedAdapter {
+impl<A: PlatformAdapter> PlatformAdapter for SharedAdapter<A> {
     fn environment(&self) -> Environment {
         self.0.environment()
     }
@@ -82,5 +86,119 @@ impl PlatformAdapter for SharedAdapter {
         // trait method is now required precisely so this wrapper can never
         // silently downgrade a replacement again.
         self.0.insert_replacing(field, text, replace_left, strategy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use platform::OperatingSystem;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Minimal inner adapter whose two trap-prone overrides are observable:
+    /// `focused_page_url` returns a real URL (NOT the trait's `Ok(None)`
+    /// default) and `insert_replacing` records the `replace_left` it received.
+    /// Every other method is irrelevant to the forwarding contract under test.
+    #[derive(Default)]
+    struct RecordingInner {
+        last_replace_left: AtomicUsize,
+    }
+
+    impl PlatformAdapter for RecordingInner {
+        fn environment(&self) -> Environment {
+            Environment {
+                os: OperatingSystem::Macos,
+                version: String::new(),
+                display_topology: None,
+            }
+        }
+        fn subscribe_focus(&self, _cb: FocusCallback) -> Result<Subscription, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn subscribe_caret(&self, _cb: CaretCallback) -> Result<Subscription, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn subscribe_accept(
+            &self,
+            _cb: AcceptCallback,
+        ) -> Result<AcceptSubscription, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn front_app(&self) -> Option<AppId> {
+            None
+        }
+        fn capabilities(&self, _field: &FieldHandle) -> Result<Capabilities, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn read_context(&self, _field: &FieldHandle) -> Result<TextContext, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn focused_page_url(&self, _field: &FieldHandle) -> Result<Option<String>, PlatformError> {
+            Ok(Some("https://bank.example/login".into()))
+        }
+        fn insert(
+            &self,
+            _field: &FieldHandle,
+            _text: &str,
+            _strategy: InsertStrategy,
+        ) -> Result<Inserted, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn insert_replacing(
+            &self,
+            _field: &FieldHandle,
+            text: &str,
+            replace_left: usize,
+            strategy: InsertStrategy,
+        ) -> Result<Inserted, PlatformError> {
+            self.last_replace_left.store(replace_left, Ordering::SeqCst);
+            Ok(Inserted {
+                bytes: text.len(),
+                chars: text.chars().count(),
+                strategy,
+            })
+        }
+    }
+
+    fn field() -> FieldHandle {
+        FieldHandle {
+            app: "com.apple.Safari".into(),
+            pid: Some(7),
+            element_id: "f".into(),
+            generation: 1,
+        }
+    }
+
+    #[test]
+    fn shared_adapter_forwards_focused_page_url_instead_of_inheriting_default() {
+        // The c42 trap: if this override is deleted, the wrapper inherits the
+        // trait's Ok(None) and domain detection silently dies. Pin that the
+        // wrapper returns the INNER url, never None.
+        let shared = SharedAdapter::new(Arc::new(RecordingInner::default()));
+        assert_eq!(
+            shared.focused_page_url(&field()).unwrap(),
+            Some("https://bank.example/login".into()),
+            "SharedAdapter must forward focused_page_url, not return the default None"
+        );
+    }
+
+    #[test]
+    fn shared_adapter_forwards_replace_left_through_insert_replacing() {
+        // The original c42 symptom (`:smile😄`): a wrapper that downgraded
+        // insert_replacing to an append-only insert dropped replace_left. Pin
+        // that the inner adapter receives the exact replace_left.
+        let inner = Arc::new(RecordingInner::default());
+        let shared = SharedAdapter::new(Arc::clone(&inner));
+        shared
+            .insert_replacing(&field(), "😄", 5, InsertStrategy::AxSet)
+            .expect("forwarded insert_replacing");
+        assert_eq!(
+            inner.last_replace_left.load(Ordering::SeqCst),
+            5,
+            "the inner adapter must receive the exact replace_left, not a dropped 0"
+        );
     }
 }

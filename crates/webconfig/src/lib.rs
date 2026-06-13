@@ -409,7 +409,15 @@ mod tests {
 
     #[test]
     fn trailing_slash_on_command_is_tolerated() {
-        assert!(parse_deep_link("compme://setOverride/?app=com.foo.bar&enabled=true").is_ok());
+        // Tolerating the slash must still parse the CORRECT scope+action — not
+        // merely "no error" (a bug mapping Enable→Disable would pass `.is_ok()`).
+        assert_eq!(
+            parse_deep_link("compme://setOverride/?app=com.foo.bar&enabled=true"),
+            Ok(OverrideCommand {
+                scope: Scope::App("com.foo.bar".into()),
+                action: OverrideAction::Enable,
+            })
+        );
     }
 
     #[test]
@@ -549,17 +557,43 @@ mod tests {
             parse_deep_link("compme://setOverride"),
             Err(ParseError::MissingScope)
         );
-        // A leading empty `&`-pair is ignored, not treated as a malformed param.
-        assert!(parse_deep_link("compme://setOverride?&app=x&enabled=true").is_ok());
+        // A leading empty `&`-pair is ignored, not treated as a malformed param
+        // — and the surviving params still parse to the correct command.
+        assert_eq!(
+            parse_deep_link("compme://setOverride?&app=x&enabled=true"),
+            Ok(OverrideCommand {
+                scope: Scope::App("x".into()),
+                action: OverrideAction::Enable,
+            })
+        );
     }
 
     #[test]
     fn scope_charset_and_length_boundary() {
-        // Dot, dash, underscore all accepted.
-        assert!(parse_deep_link("compme://setOverride?app=com.foo_bar-baz9&enabled=true").is_ok());
-        // Exactly MAX_SCOPE_LEN passes; +1 fails (covered elsewhere).
+        // Dot, dash, underscore, digit all accepted AND preserved verbatim in
+        // the scope (not silently stripped).
+        assert_eq!(
+            parse_deep_link("compme://setOverride?app=com.foo_bar-baz9&enabled=true"),
+            Ok(OverrideCommand {
+                scope: Scope::App("com.foo_bar-baz9".into()),
+                action: OverrideAction::Enable,
+            })
+        );
+        // Exactly MAX_SCOPE_LEN passes AND the scope survives at full length —
+        // an off-by-one truncation at the boundary would shorten it and still
+        // be `.is_ok()`.
         let max = "a".repeat(MAX_SCOPE_LEN);
-        assert!(parse_deep_link(&format!("compme://setOverride?app={max}&enabled=true")).is_ok());
+        match parse_deep_link(&format!("compme://setOverride?app={max}&enabled=true")) {
+            Ok(OverrideCommand {
+                scope: Scope::App(s),
+                ..
+            }) => assert_eq!(
+                s.len(),
+                MAX_SCOPE_LEN,
+                "max-length scope must survive intact"
+            ),
+            other => panic!("expected Ok App scope at MAX_SCOPE_LEN, got {other:?}"),
+        }
     }
 
     #[test]

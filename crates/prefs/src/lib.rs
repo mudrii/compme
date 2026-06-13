@@ -29,6 +29,9 @@ pub struct AppPolicy {
     /// Per-app autocorrect override (App Settings pane): `None` → inherit the
     /// global `COMPME_AUTOCORRECT`.
     pub autocorrect: Option<bool>,
+    /// Per-app thesaurus override (App Settings pane): `None` → inherit the
+    /// global `COMPME_THESAURUS`.
+    pub thesaurus: Option<bool>,
 }
 
 /// Suggestion-gating preferences. `excluded_apps`/`excluded_domains` hard-block
@@ -76,7 +79,10 @@ impl Prefs {
             }
         }
         if let Some(domain) = domain {
-            if self.excluded_domains.contains(domain) {
+            // Fold case at the lookup to match the lowercase-normalized inserts
+            // (apply_override / build_prefs). Symmetric with the write seam so a
+            // mixed-case host from any source still matches a stored rule (c136).
+            if self.excluded_domains.contains(&domain.to_ascii_lowercase()) {
                 return false;
             }
         }
@@ -91,6 +97,14 @@ impl Prefs {
     pub fn autocorrect_enabled(&self, app: Option<&str>, global_default: bool) -> bool {
         app.and_then(|app| self.per_app.get(app))
             .and_then(|policy| policy.autocorrect)
+            .unwrap_or(global_default)
+    }
+
+    /// Effective thesaurus state for `app`: the per-app override, else the
+    /// caller's global default.
+    pub fn thesaurus_enabled(&self, app: Option<&str>, global_default: bool) -> bool {
+        app.and_then(|app| self.per_app.get(app))
+            .and_then(|policy| policy.thesaurus)
             .unwrap_or(global_default)
     }
 
@@ -467,6 +481,20 @@ mod tests {
         p.excluded_domains.insert("bank.example".into());
         assert!(!p.should_suggest(None, Some("bank.example"), 0));
         assert!(p.should_suggest(None, Some("other.example"), 0));
+    }
+
+    #[test]
+    fn excluded_domain_lookup_is_case_insensitive() {
+        // Inserts already lowercase (apply_override + build_prefs normalize),
+        // but the LOOKUP must also fold case so a mixed-case host from any
+        // future domain source still matches a stored rule. Same bug class as
+        // c136, one seam upstream: insert normalized, lookup must too.
+        let mut p = Prefs::default();
+        p.excluded_domains.insert("bank.example.com".into());
+        assert!(
+            !p.should_suggest(Some("com.apple.Safari"), Some("Bank.Example.COM"), 1000),
+            "a mixed-case host must still match a lowercase exclusion rule"
+        );
     }
 
     #[test]

@@ -133,7 +133,13 @@ pub fn persist_setting(path: &Path, key: &str, value: &str) -> std::io::Result<(
         Err(err) => return Err(err),
     };
     let updated = update_env_file_contents(&existing, key, value);
+    atomic_write(path, &updated)
+}
 
+/// Atomically replace `path` with `contents`: a temp file in the same directory
+/// is renamed over the target, so a crash mid-write can never leave a truncated
+/// config. Parent directories are created on first use.
+fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     let dir = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -142,8 +148,54 @@ pub fn persist_setting(path: &Path, key: &str, value: &str) -> std::io::Result<(
     })?;
     std::fs::create_dir_all(dir)?;
     let temp = dir.join(format!(".config.env.tmp.{}", std::process::id()));
-    std::fs::write(&temp, &updated)?;
+    std::fs::write(&temp, contents)?;
     std::fs::rename(&temp, path)
+}
+
+/// Whether any non-comment line in `contents` assigns `key`.
+fn config_has_key(contents: &str, key: &str) -> bool {
+    contents.lines().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.starts_with('#')
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(k, _)| k.trim() == key)
+    })
+}
+
+/// Drop every line assigning `key` from `contents`, preserving comments, blank
+/// lines, unknown keys, and order — the inverse of `update_env_file_contents`.
+pub fn remove_env_file_key(contents: &str, key: &str) -> String {
+    let kept: Vec<&str> = contents
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with('#') || trimmed.split_once('=').is_none_or(|(k, _)| k.trim() != key)
+        })
+        .collect();
+    if kept.is_empty() {
+        return String::new();
+    }
+    let mut out = kept.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Remove `key` from the config at `path` entirely (no blank `key=` left behind),
+/// preserving all other content. A MISSING file or ABSENT key is a no-op — never
+/// a rewrite, so clearing an already-clear setting does not churn the file. Other
+/// read errors abort (the fail-closed read contract `persist_setting` documents).
+pub fn remove_setting(path: &Path, key: &str) -> std::io::Result<()> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if !config_has_key(&existing, key) {
+        return Ok(());
+    }
+    let updated = remove_env_file_key(&existing, key);
+    atomic_write(path, &updated)
 }
 
 /// Holds the single-instance flock for the process lifetime; the kernel
@@ -344,6 +396,56 @@ mod tests {
         assert_eq!(
             contents,
             "# keep me\nCOMPME_MAX_WORDS=12\nCOMPME_ENABLED=true\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_env_file_key_drops_only_the_target_line() {
+        // Comments, blank lines, unknown keys, and order all survive; every line
+        // bearing the key is dropped (read side is last-wins, so a leftover
+        // duplicate would resurrect the value).
+        let contents = "# head\nA=1\nB=2\nA=3\n\nC=4\n";
+        assert_eq!(remove_env_file_key(contents, "A"), "# head\nB=2\n\nC=4\n");
+        // Removing the only key yields an empty file (no lone trailing newline).
+        assert_eq!(remove_env_file_key("ONLY=x\n", "ONLY"), "");
+        // Absent key leaves content byte-identical (modulo final-newline norm).
+        assert_eq!(remove_env_file_key("B=2\n", "A"), "B=2\n");
+    }
+
+    #[test]
+    fn remove_setting_clears_key_and_no_ops_when_absent_or_missing() {
+        let dir = std::env::temp_dir().join(format!("compme-remove-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.env");
+
+        // Missing file → no-op, no file created.
+        remove_setting(&path, "COMPME_EXCLUDED_DOMAINS").expect("missing is no-op");
+        assert!(
+            !path.exists(),
+            "removing from a missing file must not create one"
+        );
+
+        // Seed two keys; removing one leaves the other untouched and drops the line.
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            &path,
+            "COMPME_EXCLUDED_DOMAINS=bank.example\nCOMPME_ENABLED=true\n",
+        )
+        .expect("seed");
+        remove_setting(&path, "COMPME_EXCLUDED_DOMAINS").expect("remove");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "COMPME_ENABLED=true\n",
+            "the emptied key must be removed, not blanked, and siblings preserved"
+        );
+
+        // Removing an absent key is a no-op that does not rewrite (content stable).
+        remove_setting(&path, "COMPME_EXCLUDED_DOMAINS").expect("absent is no-op");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "COMPME_ENABLED=true\n"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

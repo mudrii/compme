@@ -82,6 +82,19 @@ pub fn download_gate(entry: &ModelEntry, is_accepted: impl Fn(&str) -> bool) -> 
     }
 }
 
+/// Whether `hash` is a well-formed pinned SHA-256: exactly 64 lowercase hex
+/// chars. The LENGTH is load-bearing — a truncated digest can never equal a
+/// real 64-char hash, so it would mean a permanent `HashMismatch` on every
+/// download attempt. Lowercase is an authoring convention (runtime comparison
+/// is case-insensitive). The authoring-time catalog invariant for any
+/// `expected_sha256` that is `Some`.
+pub fn is_wellformed_sha256(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
 /// One downloadable model the General pane can offer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelEntry {
@@ -238,15 +251,73 @@ mod tests {
         // skips verification rather than failing.
         for e in catalog() {
             if let Some(hash) = e.expected_sha256 {
-                assert_eq!(hash.len(), 64, "{}: wrong hash length", e.name);
                 assert!(
-                    hash.chars()
-                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-                    "{}: hash must be lowercase hex",
+                    is_wellformed_sha256(hash),
+                    "{}: malformed pinned hash",
                     e.name
                 );
             }
         }
+    }
+
+    #[test]
+    fn wellformed_sha256_enforces_length_and_lowercase_hex() {
+        // The invariant the catalog lint relies on, tested independent of
+        // catalog data (every shipping entry is None today, so the lint loop
+        // would otherwise assert nothing). 64 lowercase hex = valid; a
+        // truncated, over-long, uppercase, or non-hex string is rejected.
+        let valid = "a".repeat(64);
+        assert!(is_wellformed_sha256(&valid));
+        assert!(is_wellformed_sha256(&"0123456789abcdef".repeat(4))); // 64 hex
+        assert!(
+            !is_wellformed_sha256(&"a".repeat(63)),
+            "truncated must fail"
+        );
+        assert!(
+            !is_wellformed_sha256(&"a".repeat(65)),
+            "over-long must fail"
+        );
+        assert!(
+            !is_wellformed_sha256(&"A".repeat(64)),
+            "uppercase must fail"
+        );
+        assert!(!is_wellformed_sha256(&"g".repeat(64)), "non-hex must fail");
+        assert!(!is_wellformed_sha256(""), "empty must fail");
+    }
+
+    #[test]
+    fn catalog_names_are_unique() {
+        // Names double as on-disk file stems and COMPME_LICENSE_ACCEPTED keys;
+        // a duplicate would collide silently (one model's accept unlocks the
+        // other, or two downloads clobber one file).
+        let names: Vec<&str> = catalog().iter().map(|e| e.name).collect();
+        let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(names.len(), unique.len(), "catalog names must be unique");
+    }
+
+    #[test]
+    fn download_gate_requires_exact_name_acceptance_not_a_prefix() {
+        // download_gate passes the FULL entry.name to is_accepted; a
+        // prefix/substring "accept" must NOT unlock a gated model (the
+        // accepted-set is matched by exact name — a loose match would wrongly
+        // unlock a sibling, defeating the license click-through).
+        let llama = catalog()
+            .iter()
+            .find(|e| e.license == License::LlamaCommunity)
+            .expect("llama entry");
+        let prefix = &llama.name[..llama.name.len() - 1];
+        assert!(
+            matches!(
+                download_gate(llama, |n| n == prefix),
+                DownloadGate::NeedsLicense { .. }
+            ),
+            "a prefix-only acceptance must not unlock a gated model"
+        );
+        assert_eq!(
+            download_gate(llama, |n| n == llama.name),
+            DownloadGate::Proceed,
+            "the exact name must unlock it"
+        );
     }
 
     #[test]

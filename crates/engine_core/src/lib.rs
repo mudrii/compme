@@ -733,14 +733,53 @@ impl SuggestionMachine {
         self.stat_events.push(StatEvent::Shown);
         out
     }
+
+    /// Offer a local replacement (emoji/thesaurus/typo) with multiple candidates.
+    /// Works exactly like `offer_replacement`, but populates a candidate list
+    /// for cycling (Down arrow).
+    pub fn offer_replacement_multi(
+        &mut self,
+        field: &FieldHandle,
+        candidates: Vec<String>,
+        replace_left: usize,
+    ) -> Vec<Command> {
+        let mut out = Vec::new();
+        if !self.enabled()
+            || self.suppressed
+            || candidates.is_empty()
+            || candidates.iter().all(|c| c.is_empty())
+            || replace_left == 0
+            || self.caps.insert_strategy != InsertStrategy::AxSet
+        {
+            return out;
+        }
+        if self.field.as_ref() != Some(field) {
+            return out;
+        }
+        if self.showing.is_some() {
+            self.stat_events.push(StatEvent::Superseded);
+        }
+        let text = candidates[0].clone();
+        self.showing = Some(Showing {
+            field: field.clone(),
+            snapshot: self.snapshot,
+            candidates,
+            index: 0,
+            caret: self.caret,
+            replace_left,
+        });
+        self.pending_since = None;
+        self.requested = None;
+        out.push(Command::ShowGhost {
+            field: field.clone(),
+            snapshot: self.snapshot,
+            text,
+        });
+        self.stat_events.push(StatEvent::Shown);
+        out
+    }
 }
 
-/// Cotypist's "Include trailing space after single-word completions": when
-/// `enabled`, append one trailing space to a completion that is a single word
-/// (no interior whitespace) and does not already end in whitespace. With
-/// `enabled == false` the text is returned unchanged, so default accept
-/// behavior is byte-identical to before this flag existed. Multi-word text and
-/// text already ending in whitespace pass through regardless of `enabled`.
 /// Build the accept-time insertion command: a plain `Insert` for an append-only
 /// completion (`replace_left == 0`), or a `Replace` that first deletes
 /// `replace_left` chars for a replacement suggestion (emoji/typo/spelling).
@@ -756,6 +795,12 @@ fn accept_insert_command(field: FieldHandle, text: String, replace_left: usize) 
     }
 }
 
+/// Cotypist's "Include trailing space after single-word completions": when
+/// `enabled`, append one trailing space to a completion that is a single word
+/// (no interior whitespace) and does not already end in whitespace. With
+/// `enabled == false` the text is returned unchanged, so default accept
+/// behavior is byte-identical to before this flag existed. Multi-word text and
+/// text already ending in whitespace pass through regardless of `enabled`.
 fn append_single_word_space(text: &str, enabled: bool) -> String {
     let is_single_word = !text.is_empty()
         && !text.chars().next_back().is_some_and(char::is_whitespace)

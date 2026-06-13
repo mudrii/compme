@@ -11,7 +11,30 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::Instant;
 
-const MODEL: &str = "models/qwen2.5-0.5b-instruct-q4_k_m.gguf";
+const MODEL: &str = "models/qwen2.5-0.5b-q4_k_m.gguf";
+
+fn model_tests_required(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+fn require_model_tests() -> bool {
+    model_tests_required(std::env::var("COMPME_REQUIRE_MODEL_TESTS").ok().as_deref())
+}
+
+fn ensure_model_exists() -> bool {
+    if Path::new(MODEL).exists() {
+        return true;
+    }
+    let msg = format!("model not downloaded at {MODEL}");
+    if require_model_tests() {
+        panic!("{msg}");
+    }
+    eprintln!("SKIP: {msg}");
+    false
+}
 
 fn warm_complete_ms(prompt: &str, n: usize) -> Option<u128> {
     if !Path::new(MODEL).exists() {
@@ -58,11 +81,26 @@ fn warm_complete_ms(prompt: &str, n: usize) -> Option<u128> {
 #[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn model_loads_and_warm_completion_is_under_500ms() {
-    match warm_complete_ms("The quick brown fox", 12) {
-        None => eprintln!("SKIP: model not downloaded at {MODEL}"),
-        Some(ms) => {
-            println!("warm 12-token completion: {ms}ms");
-            assert!(ms < 500, "warm completion {ms}ms exceeded 500ms floor");
-        }
+    if !ensure_model_exists() {
+        return;
+    }
+    let ms = warm_complete_ms("The quick brown fox", 12).expect("warm completion");
+    println!("warm 12-token completion: {ms}ms");
+    assert!(ms < 500, "warm completion {ms}ms exceeded 500ms floor");
+}
+
+#[test]
+fn strict_model_test_env_parses_truthy_values() {
+    for raw in [
+        Some("1"),
+        Some("true"),
+        Some("TRUE"),
+        Some(" yes "),
+        Some("on"),
+    ] {
+        assert!(model_tests_required(raw), "{raw:?}");
+    }
+    for raw in [None, Some(""), Some("0"), Some("false"), Some("off")] {
+        assert!(!model_tests_required(raw), "{raw:?}");
     }
 }

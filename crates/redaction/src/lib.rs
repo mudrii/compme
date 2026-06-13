@@ -6,6 +6,12 @@
 //! high-risk PII classes so accepted-completion memory and diagnostics never
 //! store raw secrets. Passes run email → secret → card so a long email local
 //! part is redacted whole rather than fragmented by the secret pass.
+//!
+//! When in doubt it OVER-redacts (privacy over fidelity): a Luhn-valid 13–19
+//! digit run is scrubbed even if it is not actually a card, and a 32+ char
+//! mixed-entropy token is scrubbed even if benign. False positives lose a bit
+//! of stored context; false negatives would leak a secret — so the bias is
+//! deliberate and one-directional.
 
 use std::sync::OnceLock;
 
@@ -248,15 +254,44 @@ mod tests {
     #[test]
     fn redacts_vendor_key_prefixes() {
         for token in [
+            "AKIAIOSFODNN7EXAMPLE",
             "ASIAIOSFODNN7EXAMPLE",
             "AIzaSyA1234567890abcdEFGHijkl",
             "xoxb-123456789012-abcdefghijkl",
+            "xoxp-123456789012-abcdefghijkl",
+            "xoxa-123456789012-abcdefghijkl",
+            "xoxr-123456789012-abcdefghijkl",
+            "xoxs-123456789012-abcdefghijkl",
+            "whsec_abcdefghijklmnop123456",
             "glpat-abcdefghij1234567890",
+            "SG.abcdefghijklmnop1234567890abcdef",
+            "sk-abcdefghijklmnop123456",
+            "sk_abcdefghijklmnop123456",
+            "ghp_abcdefghijklmnop123456",
+            "gho_abcdefghijklmnop123456",
+            "ghu_abcdefghijklmnop123456",
+            "ghs_abcdefghijklmnop123456",
+            "ghr_abcdefghijklmnop123456",
+            "pk-abcdefghijklmnop123456",
+            "pk_abcdefghijklmnop123456",
+            "rk-abcdefghijklmnop123456",
+            "rk_abcdefghijklmnop123456",
         ] {
             let out = redact(&format!("k {token} done"));
             assert!(out.contains("[redacted-secret]"), "{token} -> {out:?}");
             assert!(!out.contains(token), "{token} leaked -> {out:?}");
         }
+    }
+
+    #[test]
+    fn redacts_dash_separated_and_nineteen_digit_cards() {
+        let dashed = redact("pan 4242-4242-4242-4242 end");
+        assert!(dashed.contains("[redacted-card]"), "got {dashed:?}");
+        assert!(!dashed.contains("4242"), "got {dashed:?}");
+
+        let long = redact("pan 4000000000000000006 end");
+        assert!(long.contains("[redacted-card]"), "got {long:?}");
+        assert!(!long.contains("400000"), "got {long:?}");
     }
 
     #[test]

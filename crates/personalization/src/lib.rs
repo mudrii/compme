@@ -196,6 +196,18 @@ impl PersonalizationProfile {
 mod tests {
     use super::*;
 
+    #[test]
+    fn truncate_chars_keeps_exactly_max_and_cuts_on_a_char_boundary() {
+        // Boundary cases the over-cap tests skip: len == max (nth(max) is None →
+        // unchanged) and len == max+1 (nth(max) is Some → cut to exactly max).
+        // Multibyte input proves the cut lands on a char boundary, never
+        // mid-scalar (which would panic on the slice).
+        assert_eq!(truncate_chars("abc", 3), "abc"); // len == max → unchanged
+        assert_eq!(truncate_chars("abcd", 3), "abc"); // len == max+1 → cut to max
+        assert_eq!(truncate_chars("aé", 2), "aé"); // 2 chars == max → unchanged
+        assert_eq!(truncate_chars("aéx", 2), "aé"); // cut after é, on a boundary
+    }
+
     fn profile() -> PersonalizationProfile {
         PersonalizationProfile {
             global_instructions: "Write concisely.".into(),

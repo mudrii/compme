@@ -319,6 +319,17 @@ mod tests {
     }
 
     #[test]
+    fn multibyte_char_after_colon_is_rejected_not_byte_sliced() {
+        // `lookup` compares `token.len()` (BYTES) against MIN_PREFIX_LEN and
+        // relies on the token being all-ASCII (is_shortcode_char enforces it).
+        // A multibyte char after the colon must be rejected by the charset
+        // gate, never reach the byte-length math, and never panic on a
+        // non-boundary slice.
+        assert_eq!(suggest_default(":é"), None);
+        assert_eq!(suggest_default(":😄smile"), None);
+    }
+
+    #[test]
     fn aliases_resolve_to_the_same_glyph() {
         assert_eq!(suggest_default(":+1").unwrap().glyph, "👍");
         assert_eq!(suggest_default(":thumbsup").unwrap().glyph, "👍");

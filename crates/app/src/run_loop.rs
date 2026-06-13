@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
@@ -167,6 +167,9 @@ struct Config {
     /// British-English normalization (A2 §16, `COMPME_BRITISH_ENGLISH`, default
     /// off): offer the UK spelling when the trailing word is a known US-only form.
     british_english: bool,
+    /// Inline thesaurus / synonym suggestions (A2 §16, `COMPME_THESAURUS`,
+    /// default off): offer synonyms for the trailing word as the user types.
+    thesaurus: bool,
     /// Launch-at-login (A3 D13, `COMPME_LAUNCH_AT_LOGIN`): `Some(true/false)`
     /// registers/unregisters the SMAppService login item at startup; `None`
     /// (absent or unrecognized) leaves the user's Login Items setting alone.
@@ -271,6 +274,8 @@ impl Config {
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
             british_english: lookup("COMPME_BRITISH_ENGLISH")
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
+            thesaurus: lookup("COMPME_THESAURUS")
+                .is_some_and(|v| v == "1" || v == "true" || v == "on"),
         }
     }
 }
@@ -358,20 +363,27 @@ fn replacement_offer(
     left: &str,
     config: &Config,
     autocorrect_enabled: bool,
-) -> Option<(String, usize)> {
-    if let Some(offer) = emoji_offer(left, &config.emoji) {
-        return Some(offer);
+    thesaurus_enabled: bool,
+) -> Option<(Vec<String>, usize)> {
+    if let Some((glyph, len)) = emoji_offer(left, &config.emoji) {
+        return Some((vec![glyph], len));
     }
     let word = trailing_word(left)?;
     let word_len = word.chars().count();
     if autocorrect_enabled {
         if let Some(fix) = autocorrect::correct(word) {
-            return Some((fix, word_len));
+            return Some((vec![fix], word_len));
         }
     }
     if config.british_english {
         if let Some(uk) = localize::to_british(word) {
-            return Some((uk, word_len));
+            return Some((vec![uk], word_len));
+        }
+    }
+    if thesaurus_enabled {
+        let syns = thesaurus::synonyms(word);
+        if !syns.is_empty() {
+            return Some((syns, word_len));
         }
     }
     None
@@ -391,18 +403,18 @@ fn replacement_decision(
     domain: Option<&str>,
     enabled: bool,
     now_ms: u64,
-) -> Option<(String, usize)> {
+) -> Option<(Vec<String>, usize)> {
     // `prefs` is passed separately from `config` because the run loop mutates
     // its prefs at runtime (snooze); reading `config.prefs` here would split
     // the policy source and let a local offer show while the model is snoozed.
     if !enabled || !suggestion_gates_pass(app_key, left, domain, prefs, now_ms) {
         return None;
     }
-    // Per-app autocorrect override (App Settings): prefs override, else the
-    // global config default. (mid_line's merge is pending an engine API
-    // change — its gate is baked at engine build time.)
+    // Per-app autocorrect/thesaurus overrides (App Settings): prefs override,
+    // else the global config default.
     let autocorrect = prefs.autocorrect_enabled(app_key, config.autocorrect);
-    replacement_offer(left, config, autocorrect)
+    let thesaurus = prefs.thesaurus_enabled(app_key, config.thesaurus);
+    replacement_offer(left, config, autocorrect, thesaurus)
 }
 
 /// Whether completion inference has a usable model source: a stub completion
@@ -1030,25 +1042,105 @@ fn toggle_app_collection(prefs: &mut Prefs, app: &str) -> bool {
     }
 }
 
+fn comma_list(raw: Option<String>) -> Vec<String> {
+    raw.map(|raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn sorted_join<'a>(values: impl Iterator<Item = &'a str>) -> String {
+    let mut values: Vec<&str> = values.collect();
+    values.sort_unstable();
+    values.join(",")
+}
+
 /// The COMPME_NO_COLLECT_APPS persistence value: sorted comma-joined apps with
 /// collection explicitly off, round-trippable through build_prefs.
 fn no_collect_apps_value(prefs: &Prefs) -> String {
-    let mut apps: Vec<&str> = prefs
-        .per_app
-        .iter()
-        .filter(|(_, policy)| policy.collect_inputs == Some(false))
-        .map(|(app, _)| app.as_str())
-        .collect();
-    apps.sort_unstable();
-    apps.join(",")
+    sorted_join(
+        prefs
+            .per_app
+            .iter()
+            .filter(|(_, policy)| policy.collect_inputs == Some(false))
+            .map(|(app, _)| app.as_str()),
+    )
 }
 
 /// The COMPME_EXCLUDED_APPS persistence value: comma-joined, sorted for a
 /// stable file diff, round-trippable through the build_prefs parser.
 fn excluded_apps_value(prefs: &Prefs) -> String {
-    let mut apps: Vec<&str> = prefs.excluded_apps.iter().map(String::as_str).collect();
-    apps.sort_unstable();
-    apps.join(",")
+    sorted_join(prefs.excluded_apps.iter().map(String::as_str))
+}
+
+/// The COMPME_EXCLUDED_DOMAINS persistence value: normalized lowercase hosts,
+/// sorted for stable diffs, round-trippable through the build_prefs parser.
+fn excluded_domains_value(prefs: &Prefs) -> String {
+    sorted_join(prefs.excluded_domains.iter().map(String::as_str))
+}
+
+/// The COMPME_ENABLED_APPS / COMPME_DISABLED_APPS persistence value: apps with
+/// explicit web-config suggestion-policy overrides. Absent entries inherit.
+fn app_enabled_value(prefs: &Prefs, enabled: bool) -> String {
+    sorted_join(
+        prefs
+            .per_app
+            .iter()
+            .filter(|(_, policy)| policy.enabled == Some(enabled))
+            .map(|(app, _)| app.as_str()),
+    )
+}
+
+fn persist_setting_or_log(path: &Path, key: &str, value: &str, label: &str) {
+    if let Err(err) = config::persist_setting(path, key, value) {
+        eprintln!("compme: could not persist {label}: {err}");
+    }
+}
+
+fn remove_setting_or_log(path: &Path, key: &str, label: &str) {
+    if let Err(err) = config::remove_setting(path, key) {
+        eprintln!("compme: could not clear {label}: {err}");
+    }
+}
+
+fn persist_web_override_prefs(path: &Path, prefs: &Prefs) {
+    for (key, value, label) in [
+        (
+            "COMPME_EXCLUDED_APPS",
+            excluded_apps_value(prefs),
+            "excluded apps",
+        ),
+        (
+            "COMPME_EXCLUDED_DOMAINS",
+            excluded_domains_value(prefs),
+            "excluded domains",
+        ),
+        (
+            "COMPME_ENABLED_APPS",
+            app_enabled_value(prefs, true),
+            "enabled apps",
+        ),
+        (
+            "COMPME_DISABLED_APPS",
+            app_enabled_value(prefs, false),
+            "disabled apps",
+        ),
+    ] {
+        // An emptied category is REMOVED, not written as a blank `KEY=` line:
+        // a blank still occupies the env-over-file layer (and clutters the
+        // config), while skipping the write entirely would leave a stale value
+        // when the user clears the last entry. Removal is the only correct
+        // option — no stale value, no blank-key shadow (review-2026-06-13).
+        if value.is_empty() {
+            remove_setting_or_log(path, key, label);
+        } else {
+            persist_setting_or_log(path, key, &value, label);
+        }
+    }
 }
 
 /// Statistics-pane rows (T2): one fixed line per metric (shown/accepted/
@@ -1243,19 +1335,24 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
 }
 
 /// The runtime-persisted keys: anything the running app writes back to
-/// config.env (Settings switches AND one-shot acceptances). Env-over-file
-/// layering means a set env var silently wins at relaunch —
+/// config.env (Settings switches, policy overrides, and one-shot acceptances).
+/// Env-over-file layering means a set env var silently wins at relaunch —
 /// `env_shadow_warnings` names the shadowed ones at startup.
 ///
-/// KEEP IN SYNC with every `persist_setting` writer (the three switch
-/// watchers + the license-acceptance edge): a new runtime-persisted key
+/// KEEP IN SYNC with every `persist_setting` writer: a new runtime-persisted key
 /// must be added here or its shadow goes unwarned (review-c111/c127; the
 /// len-pinned test below backstops this). Deliberately conservative: a key
 /// set to "" still warns — it parses falsy but still occupies the env layer.
-const SWITCH_KEYS: [&str; 6] = [
+const SWITCH_KEYS: [&str; 12] = [
+    "COMPME_ENABLED",
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
     "COMPME_TRAILING_SPACE",
+    "COMPME_NO_COLLECT_APPS",
+    "COMPME_EXCLUDED_APPS",
+    "COMPME_EXCLUDED_DOMAINS",
+    "COMPME_ENABLED_APPS",
+    "COMPME_DISABLED_APPS",
     // License acceptances persist on the prompt's Accept; an env shadow
     // resurrects the un-accepted state at relaunch → surprise re-prompt
     // (fail-closed, but confusing without the warning) (review-c127).
@@ -1395,24 +1492,27 @@ fn parse_enabled_default(raw: Option<String>) -> bool {
     }
 }
 
-/// Build suggestion-gating preferences from config (A2 §8). A comma-separated
-/// app-exclude list and a default-enabled toggle; finer per-app/domain overrides
-/// are an A3 settings concern.
+/// Build suggestion-gating preferences from config (A2 §8). Comma-separated
+/// lists carry app/domain hard excludes, explicit per-app enable/disable policy,
+/// and per-app feature overrides.
 fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
-    let excluded_apps = lookup("COMPME_EXCLUDED_APPS")
-        .map(|raw| {
-            raw.split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+    let excluded_apps = comma_list(lookup("COMPME_EXCLUDED_APPS"))
+        .into_iter()
+        .collect();
     let mut prefs = Prefs {
         default_enabled: parse_enabled_default(lookup("COMPME_DEFAULT_ENABLED")),
         excluded_apps,
         ..Default::default()
     };
+    for domain in comma_list(lookup("COMPME_EXCLUDED_DOMAINS")) {
+        prefs.excluded_domains.insert(domain.to_ascii_lowercase());
+    }
+    for app in comma_list(lookup("COMPME_ENABLED_APPS")) {
+        prefs.per_app.entry(app).or_default().enabled = Some(true);
+    }
+    for app in comma_list(lookup("COMPME_DISABLED_APPS")) {
+        prefs.per_app.entry(app).or_default().enabled = Some(false);
+    }
     // Per-app typing-history opt-outs (tray "Input Collection in <app>"),
     // mirroring the COMPME_EXCLUDED_APPS comma-list format.
     if let Some(raw) = lookup("COMPME_NO_COLLECT_APPS") {
@@ -1426,27 +1526,23 @@ fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
     }
     // Per-app feature overrides (App Settings pane): _ON/_OFF comma lists per
     // feature; ON parses first so a conflicting OFF (parsed second) WINS.
-    let list = |raw: Option<String>| -> Vec<String> {
-        raw.map(|raw| {
-            raw.split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-    };
-    for app in list(lookup("COMPME_MIDLINE_ON_APPS")) {
+    for app in comma_list(lookup("COMPME_MIDLINE_ON_APPS")) {
         prefs.per_app.entry(app).or_default().mid_line = Some(true);
     }
-    for app in list(lookup("COMPME_MIDLINE_OFF_APPS")) {
+    for app in comma_list(lookup("COMPME_MIDLINE_OFF_APPS")) {
         prefs.per_app.entry(app).or_default().mid_line = Some(false);
     }
-    for app in list(lookup("COMPME_AUTOCORRECT_ON_APPS")) {
+    for app in comma_list(lookup("COMPME_AUTOCORRECT_ON_APPS")) {
         prefs.per_app.entry(app).or_default().autocorrect = Some(true);
     }
-    for app in list(lookup("COMPME_AUTOCORRECT_OFF_APPS")) {
+    for app in comma_list(lookup("COMPME_AUTOCORRECT_OFF_APPS")) {
         prefs.per_app.entry(app).or_default().autocorrect = Some(false);
+    }
+    for app in comma_list(lookup("COMPME_THESAURUS_ON_APPS")) {
+        prefs.per_app.entry(app).or_default().thesaurus = Some(true);
+    }
+    for app in comma_list(lookup("COMPME_THESAURUS_OFF_APPS")) {
+        prefs.per_app.entry(app).or_default().thesaurus = Some(false);
     }
     prefs
 }
@@ -2019,24 +2115,25 @@ pub fn run() -> Result<(), String> {
                                         // offer is not matching/gating as expected.
                                         eprintln!(
                                             "compme: replace left={:?} emoji={} \
-                                             autocorrect={} british={} decision={decision:?}",
+                                             autocorrect={} british={} thesaurus={} decision={decision:?}",
                                             ctx.left,
                                             config.emoji.is_some(),
                                             config.autocorrect,
                                             config.british_english,
+                                            config.thesaurus,
                                         );
                                     }
-                                    if let Some((glyph, replace_left)) = decision {
+                                    if let Some((candidates, replace_left)) = decision {
                                         // Drop the just-queued model request so it
                                         // can't supersede the emoji ghost.
                                         latest.clear();
                                         offer_all(
                                             &mut latest,
                                             log_err(
-                                                "offer_replacement",
-                                                engine.offer_replacement(
+                                                "on_replacement",
+                                                engine.on_replacement(
                                                     &field,
-                                                    glyph,
+                                                    candidates,
                                                     replace_left,
                                                 ),
                                             ),
@@ -2533,7 +2630,8 @@ pub fn run() -> Result<(), String> {
         // reversible override). Every outcome is logged (the §16 user-visible
         // requirement; a confirmation prompt is the follow-up). An applied
         // override changes suggestion policy, so fire the dismiss edge
-        // (a2-parity review #2) and persist the exclude list.
+        // (a2-parity review #2) and persist every round-trippable web-config
+        // policy field.
         let pending_links: Vec<String> = {
             let mut lock = deep_links
                 .lock()
@@ -2556,13 +2654,7 @@ pub fn run() -> Result<(), String> {
                 Ok(summary) => {
                     eprintln!("compme: deep link {summary}");
                     if let Some(path) = config::config_file_path() {
-                        if let Err(err) = config::persist_setting(
-                            &path,
-                            "COMPME_EXCLUDED_APPS",
-                            &excluded_apps_value(&prefs),
-                        ) {
-                            eprintln!("compme: could not persist excluded apps: {err}");
-                        }
+                        persist_web_override_prefs(&path, &prefs);
                     }
                     latest.clear();
                     let _ = log_err("on_dismiss", engine.on_dismiss());
@@ -2884,6 +2976,80 @@ mod tests {
     }
 
     #[test]
+    fn prefs_builds_web_override_policy_from_config_lists() {
+        let prefs = build_prefs(&lookup(&[
+            ("COMPME_EXCLUDED_DOMAINS", "Docs.Google.com, bank.example"),
+            (
+                "COMPME_ENABLED_APPS",
+                "com.example.enabled, com.example.conflict",
+            ),
+            (
+                "COMPME_DISABLED_APPS",
+                "com.example.disabled, com.example.conflict",
+            ),
+        ]));
+
+        assert!(prefs.excluded_domains.contains("docs.google.com"));
+        assert!(prefs.excluded_domains.contains("bank.example"));
+        assert_eq!(prefs.per_app["com.example.enabled"].enabled, Some(true));
+        assert_eq!(prefs.per_app["com.example.disabled"].enabled, Some(false));
+        assert_eq!(
+            prefs.per_app["com.example.conflict"].enabled,
+            Some(false),
+            "disabled list is parsed after enabled list so off wins conflicts"
+        );
+    }
+
+    #[test]
+    fn web_override_persisted_keys_round_trip_through_build_prefs() {
+        let mut prefs = Prefs::default();
+        for url in [
+            "compme://setOverride?domain=Docs.Google.com&excluded=true",
+            "compme://setOverride?app=com.foo.disabled&enabled=false",
+            "compme://setOverride?app=com.foo.enabled&enabled=true",
+            "compme://setOverride?app=com.foo.excluded&excluded=true",
+        ] {
+            handle_deep_link(url, None, &mut prefs, |_| true).expect("valid deep link applies");
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "compme-web-override-persist-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.env");
+        persist_web_override_prefs(&path, &prefs);
+
+        let map = config::load_file_map(&path);
+        assert_eq!(
+            map.get("COMPME_EXCLUDED_DOMAINS"),
+            Some(&"docs.google.com".to_string())
+        );
+        assert_eq!(
+            map.get("COMPME_DISABLED_APPS"),
+            Some(&"com.foo.disabled".to_string())
+        );
+        assert_eq!(
+            map.get("COMPME_ENABLED_APPS"),
+            Some(&"com.foo.enabled".to_string())
+        );
+        assert_eq!(
+            map.get("COMPME_EXCLUDED_APPS"),
+            Some(&"com.foo.excluded".to_string())
+        );
+
+        let reloaded = build_prefs(&|key| map.get(key).cloned());
+        assert_eq!(reloaded.per_app["com.foo.disabled"].enabled, Some(false));
+        assert_eq!(reloaded.per_app["com.foo.enabled"].enabled, Some(true));
+        assert!(!reloaded.should_suggest(None, Some("docs.google.com"), 0));
+        assert!(!reloaded.should_suggest(Some("com.foo.disabled"), None, 0));
+        assert!(reloaded.should_suggest(Some("com.foo.enabled"), None, 0));
+        assert!(!reloaded.should_suggest(Some("com.foo.excluded"), None, 0));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn log_squelch_logs_changes_and_resumes_after_reset() {
         let mut squelch = LogSquelch::default();
         // First occurrence logs; identical repeats are squelched.
@@ -3080,6 +3246,39 @@ mod tests {
         assert_eq!(domain_from_url("not a url"), None);
         assert_eq!(domain_from_url("file:///etc/hosts"), None);
         assert_eq!(domain_from_url("https://"), None);
+        // Userinfo stripping is SECURITY-relevant: `user:pw@host` must resolve
+        // to the real host (after the last `@`), never the userinfo. For
+        // `evil.com@bank.example` the host that per-domain rules must gate is
+        // bank.example — taking the userinfo (or .next() instead of
+        // .next_back()) would defeat the exclusion.
+        assert_eq!(
+            domain_from_url("https://user:pw@Bank.Example/account"),
+            Some("bank.example".to_string())
+        );
+        assert_eq!(
+            domain_from_url("https://evil.com@bank.example/"),
+            Some("bank.example".to_string())
+        );
+        // Host with no path still resolves.
+        assert_eq!(
+            domain_from_url("https://example.com"),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn comma_list_trims_and_drops_empties_and_sorted_join_orders() {
+        // Pinned in isolation (previously only exercised via build_prefs
+        // round-trips, which would not localize a "keep empties" regression):
+        // surrounding whitespace is trimmed, empty/whitespace-only entries are
+        // dropped (including a doubled `,,`), and None yields an empty list.
+        assert_eq!(comma_list(Some(" a , ,b ,".into())), vec!["a", "b"]);
+        assert_eq!(comma_list(Some("x,,y".into())), vec!["x", "y"]);
+        assert_eq!(comma_list(Some("   ".into())), Vec::<String>::new());
+        assert_eq!(comma_list(None), Vec::<String>::new());
+        // sorted_join is stable-sorted for a deterministic file diff.
+        assert_eq!(sorted_join(["c", "a", "b"].into_iter()), "a,b,c");
+        assert_eq!(sorted_join(std::iter::empty()), "");
     }
 
     #[test]
@@ -3438,9 +3637,27 @@ mod tests {
             ]
         );
         assert!(env_shadow_warnings(|_| false).is_empty());
-        // Every runtime-persisted key is covered (3 switches + license
-        // acceptances + the two accept-key rebinds).
-        assert_eq!(env_shadow_warnings(|_| true).len(), 6);
+        let every_warning = env_shadow_warnings(|_| true);
+        for key in [
+            "COMPME_ENABLED",
+            "COMPME_MIDLINE",
+            "COMPME_AUTOCORRECT",
+            "COMPME_TRAILING_SPACE",
+            "COMPME_NO_COLLECT_APPS",
+            "COMPME_EXCLUDED_APPS",
+            "COMPME_EXCLUDED_DOMAINS",
+            "COMPME_ENABLED_APPS",
+            "COMPME_DISABLED_APPS",
+            "COMPME_LICENSE_ACCEPTED",
+            "COMPME_ACCEPT_WORD_KEY",
+            "COMPME_ACCEPT_FULL_KEY",
+        ] {
+            assert!(
+                every_warning.iter().any(|warning| warning.starts_with(key)),
+                "{key} must warn when env shadows persisted config"
+            );
+        }
+        assert_eq!(every_warning.len(), 12);
     }
 
     #[test]
@@ -3986,6 +4203,41 @@ mod tests {
             &prefs,
             0
         ));
+    }
+
+    #[test]
+    fn web_override_persist_removes_emptied_keys_instead_of_blanking() {
+        // Clearing the last entry in a category must REMOVE the key from
+        // config.env — not leave the prior value stale (a naive skip) and not
+        // write a blank `KEY=` (which occupies the env-over-file layer and
+        // clutters the file). review-2026-06-13.
+        let dir =
+            std::env::temp_dir().join(format!("compme-weboverride-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.env");
+
+        let mut prefs = Prefs::default();
+        prefs.excluded_domains.insert("old.example.com".into());
+        persist_web_override_prefs(&path, &prefs);
+        let after_set = std::fs::read_to_string(&path).expect("read after set");
+        assert!(
+            after_set.contains("COMPME_EXCLUDED_DOMAINS=old.example.com"),
+            "a populated category must persist its value: {after_set:?}"
+        );
+
+        // Clear every category and re-persist.
+        persist_web_override_prefs(&path, &Prefs::default());
+        let after_clear = std::fs::read_to_string(&path).expect("read after clear");
+        assert!(
+            !after_clear.contains("COMPME_EXCLUDED_DOMAINS"),
+            "emptied key must be removed, not left stale or blanked: {after_clear:?}"
+        );
+        assert!(
+            !after_clear.contains("COMPME_ENABLED_APPS="),
+            "an empty category must never be written as a blank key: {after_clear:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

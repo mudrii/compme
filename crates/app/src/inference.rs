@@ -550,6 +550,39 @@ mod tests {
     }
 
     #[test]
+    fn zero_configured_candidates_is_clamped_before_calling_the_model() {
+        struct CountingModel {
+            seen: Arc<Mutex<Vec<usize>>>,
+        }
+        impl LocalModel for CountingModel {
+            fn complete(&self, _p: &str, _n: usize) -> LocalModelResult<String> {
+                Ok("fallback".into())
+            }
+            fn complete_n(&self, _p: &str, _max: usize, n: usize) -> LocalModelResult<Vec<String>> {
+                self.seen.lock().unwrap().push(n);
+                Ok(vec![format!("cand{n}")])
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let inference = InferenceHandle::spawn(
+            Box::new(CountingModel {
+                seen: Arc::clone(&seen),
+            }),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            0,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        inference.submit(request("x", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert_eq!(outcome.candidates, vec!["cand1"]);
+        assert_eq!(*seen.lock().unwrap(), vec![1]);
+        inference.shutdown();
+    }
+
+    #[test]
     fn raw_mode_passes_the_prompt_through_unchanged() {
         let inference = InferenceHandle::spawn(
             Box::new(EchoModel),

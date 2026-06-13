@@ -216,7 +216,11 @@ impl Stats {
     pub fn counts(&self, now_ms: u64) -> Counts {
         let cutoff = Self::cutoff(now_ms);
         let mut c = Counts::default();
-        for e in self.entries.iter().filter(|e| e.at_ms >= cutoff) {
+        for e in self
+            .entries
+            .iter()
+            .filter(|e| e.at_ms >= cutoff && e.at_ms <= now_ms)
+        {
             match e.outcome {
                 Outcome::Shown => c.shown += 1,
                 Outcome::Accepted { .. } => c.accepted += 1,
@@ -233,7 +237,7 @@ impl Stats {
         let cutoff = Self::cutoff(now_ms);
         self.entries
             .iter()
-            .filter(|e| e.at_ms >= cutoff)
+            .filter(|e| e.at_ms >= cutoff && e.at_ms <= now_ms)
             .filter_map(|e| match e.outcome {
                 Outcome::Accepted { words } => Some(words),
                 _ => None,
@@ -254,7 +258,7 @@ impl Stats {
         let samples: Vec<u32> = self
             .latencies
             .iter()
-            .filter(|&&(at, _)| at >= cutoff)
+            .filter(|&&(at, _)| at >= cutoff && at <= now_ms)
             .map(|&(_, ms)| ms)
             .collect();
         if samples.is_empty() {
@@ -281,7 +285,7 @@ impl Stats {
         let mut samples: Vec<u32> = self
             .latencies
             .iter()
-            .filter(|&&(at, _)| at >= cutoff)
+            .filter(|&&(at, _)| at >= cutoff && at <= now_ms)
             .map(|&(_, ms)| ms)
             .collect();
         if samples.is_empty() {
@@ -610,6 +614,30 @@ mod tests {
         let later = T0 + WINDOW_MS + 1;
         assert_eq!(s.counts(later), Counts::default());
         assert_eq!(s.words_completed(later), 0);
+    }
+
+    #[test]
+    fn future_entries_are_excluded_from_window_queries() {
+        let mut s = Stats::new();
+        s.record(T0, Outcome::Shown);
+        s.record(T0, Outcome::Accepted { words: 2 });
+        s.record(T0 + 1, Outcome::Accepted { words: 99 });
+        s.record_latency(T0, 20);
+        s.record_latency(T0 + 1, 200);
+
+        assert_eq!(
+            s.counts(T0),
+            Counts {
+                shown: 1,
+                accepted: 1,
+                dismissed: 0,
+                superseded: 0,
+            }
+        );
+        assert_eq!(s.words_completed(T0), 2);
+        assert_eq!(s.acceptance_rate(T0), Some(1.0));
+        assert_eq!(s.latency_avg_ms(T0), Some(20));
+        assert_eq!(s.latency_p95_ms(T0), Some(20));
     }
 
     #[test]

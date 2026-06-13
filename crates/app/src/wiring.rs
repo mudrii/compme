@@ -244,7 +244,7 @@ impl LatestRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use platform::{ContextSource, OffsetEncoding};
+    use platform::{ContextSource, OffsetEncoding, TextRange};
 
     fn field(id: &str) -> FieldHandle {
         FieldHandle {
@@ -573,6 +573,20 @@ mod tests {
             typed(tracker.observe(&field("f"), &ctx("a😀", "b"), TriggerPolicy::Automatic, 0));
         assert_eq!(change.caret, 2);
         assert_eq!(change.value, "a😀b");
+    }
+
+    #[test]
+    fn selection_and_adapter_offset_metadata_do_not_change_reconstructed_text() {
+        let mut ctx = ctx("a😀", "b");
+        ctx.selection = Some(TextRange { start: 1, end: 3 });
+        ctx.caret = 3;
+        ctx.offset_encoding = OffsetEncoding::Utf16CodeUnits;
+
+        let mut tracker = FieldTracker::new();
+        let change = typed(tracker.observe(&field("f"), &ctx, TriggerPolicy::Automatic, 0));
+
+        assert_eq!(change.value, "a😀b");
+        assert_eq!(change.caret, 2);
     }
 
     #[test]

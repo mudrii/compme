@@ -254,6 +254,20 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    /// Offer a local replacement (emoji/thesaurus/typo) with one or more
+    /// candidates (design spec §8/§16).
+    pub fn on_replacement(
+        &mut self,
+        field: &FieldHandle,
+        candidates: Vec<String>,
+        replace_left: usize,
+    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands =
+            self.machine
+                .offer_replacement_multi(field, candidates, replace_left);
+        self.dispatch(commands)
+    }
+
     pub fn on_accept(
         &mut self,
         action: AcceptAction,
@@ -665,6 +679,24 @@ mod tests {
         );
         // It went through insert_replacing, NOT the append-only insert path.
         assert!(adapter.inserts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn insert_replacing_error_propagates_on_replacement_accept() {
+        // The Replace dispatch branch uses `?` exactly like Insert; a regression
+        // that swallowed the replacement adapter's error (or dropped the `?`)
+        // would pass every other test, since fail_insert is otherwise only
+        // exercised against the plain insert path.
+        let mut adapter = FakeAdapter::new();
+        adapter.fail_insert = true;
+        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        engine.offer_replacement(&field(), "😄".into(), 5).unwrap();
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Err(PlatformError::StaleField),
+            "a failing insert_replacing must surface, not be swallowed"
+        );
     }
 
     #[test]
@@ -1122,6 +1154,45 @@ mod tests {
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
             Err(PlatformError::StaleField)
+        );
+    }
+
+    #[test]
+    fn insert_failure_skips_trailing_hide_but_engine_stays_usable() {
+        // Mid-batch partial application (documented dispatch contract): a Full
+        // accept emits [Insert, Hide] in one batch. When Insert fails, dispatch
+        // bails via `?` BEFORE the Hide, so the overlay is left showing. This
+        // pins three things: the error surfaces, the trailing Hide is genuinely
+        // skipped (not swallowed into a clean hide), and the engine is not
+        // wedged — a fresh focus cycle still arms a completion request.
+        let mut adapter = FakeAdapter::new();
+        adapter.fail_insert = true;
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "hello".into()).unwrap();
+        overlay.calls.lock().unwrap().clear();
+
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Err(PlatformError::StaleField),
+            "the Insert error must surface to the caller"
+        );
+        assert!(
+            !overlay.calls.lock().unwrap().contains(&OverlayCall::Hide),
+            "Insert failure must bail before the batch's Hide (partial application)"
+        );
+
+        // Not wedged: a fresh focus cycle still produces a request.
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("y", 1, 1000)).unwrap();
+        assert_eq!(
+            engine.on_tick(1500).unwrap().len(),
+            1,
+            "engine must remain usable after a mid-batch insert failure"
         );
     }
 

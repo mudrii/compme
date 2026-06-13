@@ -27,6 +27,18 @@ cargo build --bins
 The root test gate must use `--all-targets` because `platform_macos` keeps
 acceptance regression tests in example targets.
 
+Model-backed local gates:
+
+```sh
+COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored
+cd tools/spike
+COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored
+```
+
+These ignored suites need the GGUF files and Metal GPU. Without
+`COMPME_REQUIRE_MODEL_TESTS=1` they skip absent models for developer convenience;
+with it, a missing model is a failed acceptance gate.
+
 ## Live macOS Acceptance Runner
 
 The live runner is:
@@ -261,13 +273,15 @@ Recording permission and visible text on the focused display.
 ## A2 Local-Replacement Live Gate (emoji / autocorrect / British English)
 
 The local-replacement pipeline (`offer_replacement` → `Command::Replace` → AxSet
-range-replace) is unit/build-verified but its physical-key accept is a **manual
-live §16 gate** (synthetic key posts don't fire the Carbon accept the way real
-input does, same boundary as the A1b accept gates).
+range-replace) is unit/build-verified and covered by the rebuilt scripted Carbon
+live gates. Synthetic key posts do fire the Carbon accept path when the NSApp
+event pump is active (same correction as A1b above), so scripted runs are valid
+coverage for the accept edge.
 
-Run `compme` with the feature enabled, focus an **AxSet** field (e.g.
-TextEdit — the offer is gated to AxSet-capable fields; SyntheticKeys/Clipboard
-apps are a separate backspace-synthesis residual), then with a physical keyboard:
+For optional physical confirmation, run `compme` with the feature enabled, focus
+an **AxSet** field (e.g. TextEdit — the offer is gated to AxSet-capable fields;
+SyntheticKeys/Clipboard apps are a separate backspace-synthesis residual), then
+with a physical keyboard:
 
 - `COMPME_EMOJI=1` — type `:smile`, accept → the `:smile` is deleted and the
   emoji glyph (skin-tone/gender per `_SKIN_TONE`/`_GENDER`) is inserted.
