@@ -129,6 +129,19 @@ pub enum RamVerdict {
     Exceeds,
 }
 
+impl RamVerdict {
+    /// Short user-facing advisory word for the picker label (the suffix on a
+    /// catalog row, e.g. "… · tight — may swap under load"). Advisory only —
+    /// never blocks a download (D14).
+    pub fn advice(self) -> &'static str {
+        match self {
+            RamVerdict::Fits => "fits",
+            RamVerdict::Tight => "tight \u{2014} may swap under load",
+            RamVerdict::Exceeds => "exceeds available memory",
+        }
+    }
+}
+
 /// The built-in catalog, smallest first.
 pub fn catalog() -> &'static [ModelEntry] {
     &[
@@ -187,6 +200,15 @@ pub fn ram_verdict(entry: &ModelEntry, available_gb: u32) -> RamVerdict {
     }
 }
 
+/// Whole gibibytes of physical memory, floored, from a raw byte count (what the
+/// RAM probe — `NSProcessInfo.physicalMemory` / `hw.memsize` — reports). Floors
+/// rather than rounds so a machine just under a threshold is never flattered
+/// into a better `ram_verdict`; saturates at `u32::MAX` rather than wrapping.
+pub fn bytes_to_whole_gb(bytes: u64) -> u32 {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    u32::try_from(bytes / GIB).unwrap_or(u32::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +261,51 @@ mod tests {
         assert_eq!(ram_verdict(&entry, 8), RamVerdict::Tight);
         assert_eq!(ram_verdict(&entry, 9), RamVerdict::Tight);
         assert_eq!(ram_verdict(&entry, 10), RamVerdict::Fits);
+    }
+
+    #[test]
+    fn bytes_to_whole_gb_floors_and_saturates() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // The RAM probe (NSProcessInfo.physicalMemory) hands over raw bytes;
+        // ram_verdict wants whole GB. Floor, never round up (so a machine just
+        // under a threshold is not flattered into a better verdict).
+        assert_eq!(bytes_to_whole_gb(0), 0);
+        assert_eq!(
+            bytes_to_whole_gb(GIB - 1),
+            0,
+            "just under 1 GiB floors to 0"
+        );
+        assert_eq!(bytes_to_whole_gb(GIB), 1);
+        assert_eq!(bytes_to_whole_gb(8 * GIB), 8, "an 8 GB machine reports 8");
+        assert_eq!(
+            bytes_to_whole_gb(16 * GIB + GIB / 2),
+            16,
+            "the partial GiB is floored off"
+        );
+        assert_eq!(
+            bytes_to_whole_gb(u64::MAX),
+            u32::MAX,
+            "an absurd byte count saturates, never wraps"
+        );
+    }
+
+    #[test]
+    fn ram_verdict_advice_gives_a_distinct_word_per_state() {
+        assert_eq!(RamVerdict::Fits.advice(), "fits");
+        assert_eq!(
+            RamVerdict::Tight.advice(),
+            "tight \u{2014} may swap under load"
+        );
+        assert_eq!(RamVerdict::Exceeds.advice(), "exceeds available memory");
+        // The three advisories must be distinct (a label collision would make
+        // Tight and Exceeds indistinguishable in the picker).
+        let all = [
+            RamVerdict::Fits.advice(),
+            RamVerdict::Tight.advice(),
+            RamVerdict::Exceeds.advice(),
+        ];
+        let unique: std::collections::HashSet<_> = all.iter().collect();
+        assert_eq!(unique.len(), 3, "each verdict needs a distinct advisory");
     }
 
     #[test]
