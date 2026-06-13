@@ -2592,6 +2592,42 @@ mod tests {
     }
 
     #[test]
+    fn offer_replacement_multi_shows_ghost_and_supports_cycling() {
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        let candidates = vec!["large".into(), "huge".into()];
+        assert_eq!(
+            machine.offer_replacement_multi(&f, candidates, 3),
+            vec![Command::ShowGhost {
+                field: f.clone(),
+                snapshot: 1,
+                text: "large".into(),
+            }]
+        );
+        // Cycle to the second candidate.
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: f.clone(),
+                snapshot: 1,
+                text: "huge".into(),
+            }]
+        );
+        // Accept the second candidate.
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Replace {
+                    field: f,
+                    text: "huge".into(),
+                    replace_left: 3,
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
     fn offer_replacement_only_on_axset_fields() {
         // A non-range-replace field (SyntheticKeys/Clipboard) can't honor the
         // deletion, so no replacement is offered there (avoids `:smile😄` + a

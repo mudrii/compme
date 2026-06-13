@@ -519,7 +519,14 @@ fn apply_live_accept_keymap(
         // registered, so this set_map cannot fail in practice; if it ever
         // did, the map would claim the NEW keys while the OLD stay armed —
         // the c123 desync — hence revert-then-error, never error-then-leave.
-        let _ = set_map(Some(previous.0), Some(previous.1));
+        // The revert is the LAST line of defense against that desync, so a
+        // failure here must not be SILENT: nothing else would surface that
+        // the keymap and the registered hotkeys now disagree.
+        if let Err(revert_err) = set_map(Some(previous.0), Some(previous.1)) {
+            eprintln!(
+                "compme: accept-keymap re-arm failed and revert to {previous:?} also failed: {revert_err:?}"
+            );
+        }
         return Err(format!("re-arm failed: {err:?}"));
     }
     let registered = effective();
@@ -3158,16 +3165,17 @@ mod tests {
     }
 
     #[test]
-    fn lifetime_flush_fails_soft_and_skips_without_a_path() {
-        // No stats path (no HOME/COMPME_CONFIG) → quiet no-op success.
+    fn lifetime_flush_skips_without_path_and_errors_cleanly_on_unwritable_dest() {
+        // No stats path (no HOME/COMPME_CONFIG) → quiet no-op success. This is
+        // the only TRUE fail-soft case: there is nowhere to write, so success.
         assert!(persist_lifetime_stats(
             None,
             &stats::PersistedStats::default(),
             Default::default()
         )
         .is_ok());
-        // Unwritable destination (parent is a regular FILE) → Err, no panic,
-        // nothing created.
+        // Unwritable destination (parent is a regular FILE) → Err (NOT
+        // soft-swallowed), no panic, and nothing is written at the target.
         let blocker = flush_temp_path("blocked");
         std::fs::write(&blocker, b"i am a file").unwrap();
         let path = blocker.join("stats.env");
@@ -3177,6 +3185,10 @@ mod tests {
             Default::default()
         )
         .is_err());
+        assert!(
+            !path.exists(),
+            "a failed flush must leave nothing at the destination"
+        );
         let _ = std::fs::remove_file(&blocker);
     }
 
@@ -4110,6 +4122,43 @@ mod tests {
             "no persist after a failed re-arm"
         );
 
+        // Failure path where the REVERT set_map ALSO fails: the function still
+        // returns the re-arm error (never the revert error) and never persists.
+        // The revert failure is logged rather than swallowed silently — the
+        // keymap/registration desync would otherwise be invisible.
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let calls = std::cell::Cell::new(0u32);
+        let l2 = std::rc::Rc::clone(&log);
+        let l3 = std::rc::Rc::clone(&log);
+        let revert_fails = apply_live_accept_keymap(
+            Some(35),
+            Some(38),
+            |w, f| {
+                // First call (the forward set) succeeds; the second (the
+                // revert) fails.
+                if calls.get() == 0 {
+                    calls.set(1);
+                    Ok(())
+                } else {
+                    Err(platform_macos::KeymapError::Collision(w.or(f).unwrap_or(0)))
+                }
+            },
+            || {
+                l2.borrow_mut().push("rearm".into());
+                Err(PlatformError::Timeout)
+            },
+            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
+            || (48, 50),
+        );
+        assert!(
+            matches!(&revert_fails, Err(e) if e.starts_with("re-arm failed")),
+            "the re-arm error is returned even when the revert also fails"
+        );
+        assert!(
+            !log.borrow().iter().any(|l| l.starts_with("persist:")),
+            "a failed re-arm never persists, even if the revert fails too"
+        );
+
         // Partial rebind (word=None keeps the default): persist receives the
         // DEFAULTS-RESOLVED registered pair from effective(), not the raw
         // request args — pins the explicit-beats-absent persist choice.
@@ -4891,27 +4940,30 @@ mod tests {
         let config = Config::from_lookup(lookup(&[]));
         assert!(!config.autocorrect);
         assert!(!config.british_english);
+        assert!(!config.thesaurus);
         // Off → no word-based offer even on a known typo / americanism.
-        assert!(replacement_offer("teh", &config, config.autocorrect).is_none());
-        assert!(replacement_offer("color", &config, config.autocorrect).is_none());
+        assert!(replacement_offer("teh", &config, config.autocorrect, config.thesaurus).is_none());
+        assert!(
+            replacement_offer("color", &config, config.autocorrect, config.thesaurus).is_none()
+        );
     }
 
     #[test]
     fn replacement_offer_fires_for_enabled_word_features() {
         let ac = Config::from_lookup(lookup(&[("COMPME_AUTOCORRECT", "1")]));
         assert_eq!(
-            replacement_offer("I teh", &ac, ac.autocorrect),
-            Some(("the".into(), 3))
+            replacement_offer("I teh", &ac, ac.autocorrect, ac.thesaurus),
+            Some((vec!["the".into()], 3))
         );
         // A correctly-spelled word never offers.
-        assert!(replacement_offer("the", &ac, ac.autocorrect).is_none());
+        assert!(replacement_offer("the", &ac, ac.autocorrect, ac.thesaurus).is_none());
 
         let uk = Config::from_lookup(lookup(&[("COMPME_BRITISH_ENGLISH", "on")]));
         assert_eq!(
-            replacement_offer("color", &uk, uk.autocorrect),
-            Some(("colour".into(), 5))
+            replacement_offer("color", &uk, uk.autocorrect, uk.thesaurus),
+            Some((vec!["colour".into()], 5))
         );
-        assert!(replacement_offer("colour", &uk, uk.autocorrect).is_none());
+        assert!(replacement_offer("colour", &uk, uk.autocorrect, uk.thesaurus).is_none());
     }
 
     #[test]
@@ -4921,10 +4973,12 @@ mod tests {
             ("COMPME_EMOJI", "1"),
             ("COMPME_AUTOCORRECT", "1"),
             ("COMPME_BRITISH_ENGLISH", "1"),
+            ("COMPME_THESAURUS", "1"),
         ]));
-        let (glyph, replace_left) =
-            replacement_offer("teh :smile", &all, all.autocorrect).expect("emoji wins");
-        assert!(!glyph.is_empty());
+        let (candidates, replace_left) =
+            replacement_offer("teh :smile", &all, all.autocorrect, all.thesaurus)
+                .expect("emoji wins");
+        assert_eq!(candidates[0], "😄"); // emoji wins
         assert_eq!(replace_left, 6); // ":smile", not the word "teh"
     }
 
@@ -4938,13 +4992,23 @@ mod tests {
             ("COMPME_BRITISH_ENGLISH", "1"),
         ]));
         assert_eq!(
-            replacement_offer("color", &both, both.autocorrect),
-            Some(("colour".into(), 5))
+            replacement_offer("color", &both, both.autocorrect, both.thesaurus),
+            Some((vec!["colour".into()], 5))
         );
         assert_eq!(
-            replacement_offer("teh", &both, both.autocorrect),
-            Some(("the".into(), 3))
+            replacement_offer("teh", &both, both.autocorrect, both.thesaurus),
+            Some((vec!["the".into()], 3))
         );
+    }
+
+    #[test]
+    fn thesaurus_offer_fires_for_enabled_feature() {
+        let th = Config::from_lookup(lookup(&[("COMPME_THESAURUS", "1")]));
+        let (syns, word_len) =
+            replacement_offer("I am happy", &th, th.autocorrect, th.thesaurus).expect("offer");
+        assert!(syns.contains(&"glad".to_string()));
+        assert!(!syns.contains(&"happy".to_string()));
+        assert_eq!(word_len, 5); // "happy"
     }
 
     #[test]

@@ -262,9 +262,9 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         candidates: Vec<String>,
         replace_left: usize,
     ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
-        let commands =
-            self.machine
-                .offer_replacement_multi(field, candidates, replace_left);
+        let commands = self
+            .machine
+            .offer_replacement_multi(field, candidates, replace_left);
         self.dispatch(commands)
     }
 
@@ -285,21 +285,6 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         action: AcceptAction,
     ) -> Option<(FieldHandle, String, usize)> {
         self.machine.preview_accept_insert(action)
-    }
-
-    /// Offer a local *replacement* suggestion (emoji/typo/spelling): show `text`
-    /// as the ghost; accepting it deletes `replace_left` chars left of the caret
-    /// before inserting. The host detects the opportunity (e.g. `emoji::suggest`)
-    /// and supplies the rendered `text` + count. See the integration-phase design
-    /// note; honoring the deletion is the adapter's `insert_replacing`.
-    pub fn offer_replacement(
-        &mut self,
-        field: &FieldHandle,
-        text: String,
-        replace_left: usize,
-    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
-        let commands = self.machine.offer_replacement(field, text, replace_left);
-        self.dispatch(commands)
     }
 
     /// Drain machine-internal Shown/Superseded stat events for the host to record
@@ -671,7 +656,9 @@ mod tests {
         // `insert_replacing` carrying `replace_left` (not the plain insert path).
         let (mut engine, adapter, _overlay) = engine();
         engine.on_focus(field()).unwrap();
-        engine.offer_replacement(&field(), "😄".into(), 5).unwrap();
+        engine
+            .on_replacement(&field(), vec!["😄".into()], 5)
+            .unwrap();
         engine.on_accept(AcceptAction::Full).unwrap();
         assert_eq!(
             *adapter.replacing_inserts.lock().unwrap(),
@@ -691,7 +678,9 @@ mod tests {
         adapter.fail_insert = true;
         let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
         engine.on_focus(field()).unwrap();
-        engine.offer_replacement(&field(), "😄".into(), 5).unwrap();
+        engine
+            .on_replacement(&field(), vec!["😄".into()], 5)
+            .unwrap();
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
             Err(PlatformError::StaleField),

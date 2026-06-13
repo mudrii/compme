@@ -8417,14 +8417,17 @@ mod tests {
         // drop must land strictly before the rearm's install. A refactor to
         // "build new, assign over old" would pass the count asserts above
         // but flip this sequence (review-c132).
+        //
+        // Assert the rearm's own SUFFIX (drop→install), not the whole log
+        // from adapter birth: pinning the full [Observer, Consumer, …]
+        // construction prefix is brittle — an unrelated change to the initial
+        // install order would break this test without touching rearm. The
+        // discriminating invariant is purely the trailing pair.
+        let events = accept_tap_events.lock().unwrap().clone();
         assert_eq!(
-            *accept_tap_events.lock().unwrap(),
-            vec![
-                "install:Observer".to_string(),
-                "install:Consumer".to_string(),
-                "drop".to_string(),
-                "install:Consumer".to_string(),
-            ]
+            &events[events.len().saturating_sub(2)..],
+            &["drop".to_string(), "install:Consumer".to_string()],
+            "rearm must drop the old consumer tap strictly before installing the new one"
         );
         // The NEW handler still consumes with the armed value intact.
         let handler = Arc::clone(&accept_tap_installs.lock().unwrap()[2].handler);

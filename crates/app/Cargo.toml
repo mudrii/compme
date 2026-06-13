@@ -26,5 +26,6 @@ compat = { path = "../compat" }
 emoji = { path = "../emoji" }
 autocorrect = { path = "../autocorrect" }
 localize = { path = "../localize" }
+thesaurus = { path = "../thesaurus" }
 core-foundation = "=0.10.1"
 libc = "0.2"

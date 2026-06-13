@@ -95,6 +95,7 @@ dependencies = [
  "prefs",
  "redaction",
  "stats",
+ "thesaurus",
  "webconfig",
 ]
 

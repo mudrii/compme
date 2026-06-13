@@ -344,30 +344,27 @@ mod tests {
 
     #[test]
     fn download_gate_blocks_unaccepted_gated_licenses() {
-        let llama = catalog()
-            .iter()
-            .find(|e| e.license == License::LlamaCommunity)
-            .expect("llama entry");
-        assert_eq!(
-            download_gate(llama, |_| false),
-            DownloadGate::NeedsLicense {
-                model: "llama-3.2-1b-q4_k_m",
-                license_name: "Llama Community License",
-                terms_url: "https://www.llama.com/llama3_2/license/",
-            }
-        );
-        let gemma = catalog()
-            .iter()
-            .find(|e| e.license == License::GemmaTerms)
-            .expect("gemma entry");
-        assert_eq!(
-            download_gate(gemma, |_| false),
-            DownloadGate::NeedsLicense {
-                model: "gemma-2-2b-q4_k_m",
-                license_name: "Gemma Terms of Use",
-                terms_url: "https://ai.google.dev/gemma/terms",
-            }
-        );
+        // Assert the gate FORWARDS the entry's own fields, not hardcoded
+        // catalog literals: this pins download_gate's behavior (it surfaces
+        // model/license-name/terms-url from the entry) without duplicating
+        // catalog data that would drift. The literal values are guarded
+        // separately by catalog_entries_are_well_formed_and_ordered.
+        for license in [License::LlamaCommunity, License::GemmaTerms] {
+            let entry = catalog()
+                .iter()
+                .find(|e| e.license == license)
+                .unwrap_or_else(|| panic!("catalog has a {license:?} entry"));
+            assert_eq!(
+                download_gate(entry, |_| false),
+                DownloadGate::NeedsLicense {
+                    model: entry.name,
+                    license_name: entry.license.display_name(),
+                    terms_url: entry.license.terms_url(),
+                },
+                "{}: gate must forward the entry's own license fields",
+                entry.name
+            );
+        }
     }
 
     #[test]
