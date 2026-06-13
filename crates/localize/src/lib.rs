@@ -171,6 +171,17 @@ mod tests {
     }
 
     #[test]
+    fn mixed_case_query_classifies_by_first_letter_then_drops_internal_caps() {
+        // The lookup lowercases the key, then re-applies the query's CasePattern
+        // (which reads only the FIRST letter). So a camelCase query resolves to
+        // the all-lowercase British spelling — the internal capital is not
+        // preserved. Acceptable, now pinned so a CasePattern change can't
+        // silently alter it; a Title-cased query keeps its leading capital.
+        assert_eq!(to_british("coLor").as_deref(), Some("colour"));
+        assert_eq!(to_british("Color").as_deref(), Some("Colour"));
+    }
+
+    #[test]
     fn preserves_query_capitalization() {
         assert_eq!(to_british("Color").as_deref(), Some("Colour"));
         assert_eq!(to_british("COLOR").as_deref(), Some("COLOUR"));

@@ -78,6 +78,17 @@ mod tests {
     }
 
     #[test]
+    fn classifies_camelcase_by_first_letter_only() {
+        // An internal capital never makes a word Title/Upper — only the FIRST
+        // cased letter decides (all-upper is the multi-letter exception). A
+        // camelCase token (first-lower) is Lower; a Mc/Mac proper noun
+        // (first-upper, mixed rest) is Title.
+        assert_eq!(CasePattern::of("iPhone"), CasePattern::Lower);
+        assert_eq!(CasePattern::of("eBay"), CasePattern::Lower);
+        assert_eq!(CasePattern::of("McDonald"), CasePattern::Title);
+    }
+
+    #[test]
     fn ignores_non_alphabetic_chars() {
         assert_eq!(CasePattern::of("don't"), CasePattern::Lower);
         assert_eq!(CasePattern::of("Well-Being"), CasePattern::Title);

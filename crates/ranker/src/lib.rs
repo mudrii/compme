@@ -432,6 +432,15 @@ mod tests {
     }
 
     #[test]
+    fn is_degenerate_repetition_flags_through_irregular_whitespace() {
+        // split_whitespace normalizes runs of spaces/tabs/newlines, so a loop
+        // with irregular spacing is still detected — pins the normalize-then-
+        // detect contract a future tokenizer change must preserve.
+        assert!(is_degenerate_repetition("the\t the  the"));
+        assert!(is_degenerate_repetition("go go\n go"));
+    }
+
+    #[test]
     fn is_degenerate_repetition_flags_repeated_phrase() {
         assert!(is_degenerate_repetition("go home go home go home"));
     }
