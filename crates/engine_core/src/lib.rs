@@ -747,13 +747,25 @@ impl SuggestionMachine {
         if !self.enabled()
             || self.suppressed
             || candidates.is_empty()
-            || candidates.iter().all(|c| c.is_empty())
             || replace_left == 0
             || self.caps.insert_strategy != InsertStrategy::AxSet
         {
             return out;
         }
         if self.field.as_ref() != Some(field) {
+            return out;
+        }
+        // Filter empties and dedup in order before seeding: the single-candidate
+        // path rejects empty text and the model/single paths dedup, so the multi
+        // seed must hold the same contract — Cycle must never show a blank
+        // candidate or revisit a duplicate. (Defense-in-depth: today's producers
+        // emit non-empty, unique candidates.)
+        let mut seen = std::collections::HashSet::new();
+        let candidates: Vec<String> = candidates
+            .into_iter()
+            .filter(|c| !c.is_empty() && seen.insert(c.clone()))
+            .collect();
+        if candidates.is_empty() {
             return out;
         }
         if self.showing.is_some() {
@@ -2624,6 +2636,62 @@ mod tests {
                 },
                 Command::Hide,
             ]
+        );
+    }
+
+    #[test]
+    fn offer_replacement_multi_skips_empty_candidates_and_shows_the_first_nonempty() {
+        // The single-candidate path rejects empty text outright; the multi seed
+        // must hold the same contract so a malformed vec like ["", "huge"] never
+        // shows or accepts a blank ghost. The empty entry is dropped and the
+        // first NON-empty candidate ("huge") is shown.
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        assert_eq!(
+            machine.offer_replacement_multi(&f, vec!["".into(), "huge".into()], 3),
+            vec![Command::ShowGhost {
+                field: f.clone(),
+                snapshot: 1,
+                text: "huge".into(),
+            }]
+        );
+        // An all-empty vec yields no offer at all (post-filter empty).
+        let mut machine = focused_machine();
+        assert!(
+            machine
+                .offer_replacement_multi(&field("field-a"), vec!["".into(), "".into()], 3)
+                .is_empty(),
+            "all-empty candidates must produce no offer"
+        );
+    }
+
+    #[test]
+    fn offer_replacement_multi_dedups_candidates_so_cycle_never_repeats() {
+        // The model/single paths dedup; the multi seed must too, or Cycle lands
+        // on the same word twice. ["huge","huge","big"] → after dedup the second
+        // Cycle target is "big", not a repeated "huge".
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        assert_eq!(
+            machine.offer_replacement_multi(
+                &f,
+                vec!["huge".into(), "huge".into(), "big".into()],
+                3
+            ),
+            vec![Command::ShowGhost {
+                field: f.clone(),
+                snapshot: 1,
+                text: "huge".into(),
+            }]
+        );
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: f,
+                snapshot: 1,
+                text: "big".into(),
+            }],
+            "Cycle must skip the duplicate and advance to the next distinct candidate"
         );
     }
 
