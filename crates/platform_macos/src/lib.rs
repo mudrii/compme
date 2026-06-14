@@ -666,6 +666,12 @@ struct AcceptTapEvent {
     /// Whether the Option (Alternate) modifier is held — Option+Tab is a
     /// literal-Tab bypass.
     option_down: bool,
+    /// The accept role resolved from the fired Carbon hotkey *id*, when the
+    /// producer knows it. The id identifies the role unambiguously even when two
+    /// roles share a keycode (Tab vs Shift+Tab), so the decision prefers this
+    /// over re-deriving the role by keycode. `None` → fall back to the keycode
+    /// map (the keycode-based decision tests, and any non-id producer).
+    binding: Option<AcceptBinding>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2533,7 +2539,9 @@ fn accept_tap_decision(
         // grave/backtick above Tab) accepts the whole completion; Esc dismisses +
         // suppresses the field. `action.is_some()` is only the armed/visible gate.
         // Driven by `AcceptKeymap` so a rebind is honored from one source.
-        match keymap.binding_for(event.keycode) {
+        // Prefer the role resolved from the fired hotkey id (mask-correct when
+        // two roles share a keycode); fall back to the keycode map otherwise.
+        match event.binding.or_else(|| keymap.binding_for(event.keycode)) {
             // Option+<word key> is the per-app Tab bypass: pass it through
             // literally (no Word accept, no swallow).
             Some(AcceptBinding::Word) if event.option_down => return AcceptTapDecision::Keep,
@@ -2894,6 +2902,10 @@ extern "C" fn carbon_accept_hotkey_handler(
         keycode,
         source_user_data: 0,
         option_down: false,
+        // The id is the authoritative role source — pass it through so a
+        // masked role (e.g. Shift+Tab as Full) resolves to its own action
+        // instead of collapsing onto the keycode's first match.
+        binding: binding_for_hotkey_id(hotkey_id.id),
     });
     0
 }
@@ -2902,6 +2914,21 @@ fn carbon_hotkey_keycode(id: u32) -> Option<i64> {
     // Derive from the same keymap that drives registration, so the handler's
     // id→keycode translation can never diverge from what was registered.
     accept_keymap().keycode_for_hotkey_id(id)
+}
+
+/// The accept role a fired Carbon hotkey *id* maps to — the authoritative,
+/// keymap-independent inverse of the registration slots in
+/// [`AcceptKeymap::carbon_bindings`]. The id identifies the role directly, so
+/// two roles sharing a keycode (Tab vs Shift+Tab) stay distinct at decision
+/// time, where a keycode-only lookup would collapse them onto the first match.
+fn binding_for_hotkey_id(id: u32) -> Option<AcceptBinding> {
+    match id {
+        CARBON_HOTKEY_TAB => Some(AcceptBinding::Word),
+        CARBON_HOTKEY_GRAVE => Some(AcceptBinding::Full),
+        CARBON_HOTKEY_ESCAPE => Some(AcceptBinding::Dismiss),
+        CARBON_HOTKEY_DOWN => Some(AcceptBinding::Cycle),
+        _ => None,
+    }
 }
 
 fn field_has_secure_text_subrole(field: &FieldHandle) -> bool {
@@ -7137,6 +7164,7 @@ mod tests {
             keycode,
             source_user_data: 0,
             option_down: false,
+            binding: None,
         }
     }
 
@@ -8009,6 +8037,7 @@ mod tests {
             keycode,
             source_user_data,
             option_down: false,
+            binding: None,
         }
     }
 
@@ -8018,6 +8047,7 @@ mod tests {
             keycode,
             source_user_data: 0,
             option_down: true,
+            binding: None,
         }
     }
 
@@ -8425,6 +8455,87 @@ mod tests {
         );
         set_accept_keymap(AcceptKeymap::default());
         assert_eq!(effective_accept_keys(), (48, 50));
+    }
+
+    #[test]
+    fn binding_for_hotkey_id_maps_each_carbon_slot_to_its_role() {
+        // The Carbon hotkey id is the authoritative role source: each registered
+        // slot maps to one accept binding regardless of the keycode/mask bound to
+        // it. This is what lets two roles share a keycode (Tab vs Shift+Tab).
+        assert_eq!(
+            binding_for_hotkey_id(CARBON_HOTKEY_TAB),
+            Some(AcceptBinding::Word)
+        );
+        assert_eq!(
+            binding_for_hotkey_id(CARBON_HOTKEY_GRAVE),
+            Some(AcceptBinding::Full)
+        );
+        assert_eq!(
+            binding_for_hotkey_id(CARBON_HOTKEY_ESCAPE),
+            Some(AcceptBinding::Dismiss)
+        );
+        assert_eq!(
+            binding_for_hotkey_id(CARBON_HOTKEY_DOWN),
+            Some(AcceptBinding::Cycle)
+        );
+        assert_eq!(binding_for_hotkey_id(9999), None);
+    }
+
+    #[test]
+    fn accept_tap_decision_uses_resolved_binding_over_keycode_for_masked_roles() {
+        // Regression: word=Tab(48,0) and full=Shift+Tab(48,SHIFT) share a keycode
+        // (the modifier feature permits this). The fired hotkey's id resolves the
+        // ROLE; the decision must honor that binding, not re-derive by keycode —
+        // which is keycode-ordered (word first) and would make Shift+Tab wrongly
+        // perform a Word accept, leaving Full unreachable.
+        let map = AcceptKeymap::from_accept_keys_with_mods(Some(48), Some(48), 0, CARBON_SHIFT_KEY)
+            .expect("Tab + Shift+Tab coexist");
+        let full_fire = AcceptTapEvent {
+            event_type: CGEventType::KeyDown,
+            keycode: 48,
+            source_user_data: 0,
+            option_down: false,
+            binding: Some(AcceptBinding::Full),
+        };
+        assert_eq!(
+            accept_tap_decision(
+                &map,
+                AcceptTapKind::Consumer,
+                full_fire,
+                Some(AcceptAction::Word)
+            ),
+            AcceptTapDecision::Drop(AcceptAction::Full),
+            "Shift+Tab (Full hotkey id) must accept the FULL completion, not Word"
+        );
+        let word_fire = AcceptTapEvent {
+            binding: Some(AcceptBinding::Word),
+            ..full_fire
+        };
+        assert_eq!(
+            accept_tap_decision(
+                &map,
+                AcceptTapKind::Consumer,
+                word_fire,
+                Some(AcceptAction::Word)
+            ),
+            AcceptTapDecision::Drop(AcceptAction::Word)
+        );
+        // No binding supplied (legacy keycode path) → falls back to the keycode
+        // map: unchanged behavior for the common distinct-keycode bindings.
+        let no_binding = AcceptTapEvent {
+            binding: None,
+            ..full_fire
+        };
+        assert_eq!(
+            accept_tap_decision(
+                &map,
+                AcceptTapKind::Consumer,
+                no_binding,
+                Some(AcceptAction::Word)
+            ),
+            AcceptTapDecision::Drop(AcceptAction::Word),
+            "fallback resolves keycode 48 to Word (the first match)"
+        );
     }
 
     #[test]
