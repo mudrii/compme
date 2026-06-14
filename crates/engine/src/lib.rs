@@ -669,6 +669,28 @@ mod tests {
     }
 
     #[test]
+    fn on_replacement_multi_cycles_then_accepts_the_cycled_candidate_via_insert_replacing() {
+        // A MULTI-candidate replacement must cycle at the engine layer and the
+        // ACCEPTED cycled candidate ("huge") must reach the adapter via
+        // insert_replacing carrying replace_left — not the first candidate, and
+        // not the append-only insert path. Existing replacement coverage only
+        // passes a single candidate and never cycles.
+        let (mut engine, adapter, _overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine
+            .on_replacement(&field(), vec!["large".into(), "huge".into()], 3)
+            .unwrap();
+        engine.on_cycle().unwrap();
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert_eq!(
+            *adapter.replacing_inserts.lock().unwrap(),
+            vec![(field(), "huge".to_string(), 3, InsertStrategy::AxSet)],
+            "the cycled candidate replaces via insert_replacing with replace_left"
+        );
+        assert!(adapter.inserts.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn insert_replacing_error_propagates_on_replacement_accept() {
         // The Replace dispatch branch uses `?` exactly like Insert; a regression
         // that swallowed the replacement adapter's error (or dropped the `?`)

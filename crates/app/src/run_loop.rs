@@ -3808,6 +3808,46 @@ mod tests {
     }
 
     #[test]
+    fn emoji_and_memory_config_synonyms_map_to_the_right_variant() {
+        // The enum/synonym parse arms each fall to a SAFE default on no-match, so
+        // a dropped/typo'd arm is silent — pin every documented synonym + the
+        // trim/case handling + the default fallback.
+        assert_eq!(parse_gender(Some("male".into())), Gender::Male);
+        assert_eq!(parse_gender(Some(" Female ".into())), Gender::Female);
+        assert_eq!(parse_gender(Some("nonbinary".into())), Gender::Neutral);
+
+        assert_eq!(parse_skin_tone(Some("light".into())), SkinTone::Light);
+        assert_eq!(parse_skin_tone(Some("medium".into())), SkinTone::Medium);
+        assert_eq!(
+            parse_skin_tone(Some("medium_light".into())),
+            SkinTone::MediumLight
+        );
+        assert_eq!(
+            parse_skin_tone(Some("medium_dark".into())),
+            SkinTone::MediumDark
+        );
+        assert_eq!(parse_skin_tone(Some("dark".into())), SkinTone::Dark);
+        assert_eq!(parse_skin_tone(Some("bogus".into())), SkinTone::Default);
+
+        // The third storage-mode alias `all_monitored` (siblings `all`/`monitored`
+        // are already pinned elsewhere).
+        assert_eq!(
+            parse_storage_mode(Some("all_monitored".into())),
+            memory::StorageMode::AllMonitored
+        );
+
+        // Tri-state truthy/falsy synonyms + trim/case + unrecognized → None.
+        for v in ["1", "true", "on", "yes", " YES "] {
+            assert_eq!(parse_tri_state(Some(v.into())), Some(true), "{v}");
+        }
+        for v in ["0", "false", "off", "no", " No "] {
+            assert_eq!(parse_tri_state(Some(v.into())), Some(false), "{v}");
+        }
+        assert_eq!(parse_tri_state(Some("maybe".into())), None);
+        assert_eq!(parse_tri_state(None), None);
+    }
+
+    #[test]
     fn a_declined_prompt_rejects_the_link_and_leaves_prefs_untouched() {
         let mut prefs = Prefs::default();
         let err = handle_deep_link(

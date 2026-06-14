@@ -322,6 +322,18 @@ mod tests {
     }
 
     #[test]
+    fn terminal_empty_or_whitespace_line_does_not_activate() {
+        // A freshly-cleared agent line (caret on an empty prompt) yields zero
+        // tokens → the `< 3` branch returns false, so nothing fires on a blank
+        // line. Existing tests only cover the 2-token `< 3` case ("hello there").
+        let term = "com.googlecode.iterm2";
+        assert!(!terminal_prompt_activates(term, ""));
+        assert!(!terminal_prompt_activates(term, "   "));
+        // The current (last) line is blank even though a prior line had tokens.
+        assert!(!terminal_prompt_activates(term, "git status\n   "));
+    }
+
+    #[test]
     fn terminal_skips_uppercase_or_pathy_lines_with_no_prose() {
         let term = "com.googlecode.iterm2";
         // >=3 tokens, leader not a known shell command, and no lowercase prose at

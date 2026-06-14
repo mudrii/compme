@@ -1704,6 +1704,29 @@ mod tests {
     }
 
     #[test]
+    fn multi_candidate_all_filtered_shows_nothing() {
+        // When EVERY candidate fails shaping (both degenerate repetition), the
+        // multi path shows nothing and leaves no stale Showing behind — the
+        // "all garbage from a small model" outcome. The survivor test covers
+        // first-dropped-second-survives; this covers none-survive.
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        assert_eq!(
+            machine.on_event(Event::CompletionReadyMulti {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                candidates: vec!["ha ha ha".into(), "the the the".into()],
+            }),
+            vec![],
+            "no candidate survives shaping → nothing shown"
+        );
+        // Nothing is showing, so a Cycle is a no-op (no stale Showing to rotate).
+        assert_eq!(machine.on_event(Event::Cycle), vec![]);
+    }
+
+    #[test]
     fn duplicate_completion_ready_delivery_is_a_noop() {
         // The Event docs promise late completions are idempotent to deliver:
         // a successful show clears `requested`, so re-delivering the same
@@ -2909,6 +2932,34 @@ mod tests {
             machine.on_event(Event::CaretMoved {
                 field: field("field-a"),
                 caret: 7,
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn accept_word_advances_caret_by_scalar_count_not_bytes() {
+        // accept_word advances the tracked caret by the accepted word's SCALAR
+        // count, matching the context crate's scalar-offset contract. With a
+        // multibyte first word, a bytes-based regression (word.len()) would
+        // desync the caret and spuriously hide the remainder on CJK completions.
+        let mut machine = machine();
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            // First word "日本 " = 3 scalars / 7 bytes (each CJK char is 3 bytes).
+            text: "日本 語".into(),
+        });
+        machine.on_event(Event::AcceptWord);
+        // Caret advanced 1 + 3 scalars = 4; a byte-based advance would be 1+7=8,
+        // so a report at the SCALAR position keeps the remainder showing.
+        assert_eq!(
+            machine.on_event(Event::CaretMoved {
+                field: field("field-a"),
+                caret: 4,
             }),
             vec![]
         );

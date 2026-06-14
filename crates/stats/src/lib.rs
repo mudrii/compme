@@ -558,6 +558,21 @@ mod tests {
     }
 
     #[test]
+    fn summary_line_rounds_the_rate_to_a_whole_percent() {
+        // The rate is formatted with {:.0} (rounds), not truncated: 3 of 8 shown
+        // = 37.5% must render "38%" — truncation would wrongly show "37%". Pins
+        // the menu-bar text against a switch to {:.1}/{:.2} or integer truncation.
+        let mut s = Stats::new();
+        for _ in 0..8 {
+            s.record(T0, Outcome::Shown);
+        }
+        for _ in 0..3 {
+            s.record(T0, Outcome::Accepted { words: 1 });
+        }
+        assert_eq!(s.summary_line(T0), "3 words · 3 accepted (38%)");
+    }
+
+    #[test]
     fn empty_stats_are_all_zero_and_none() {
         let s = Stats::new();
         assert_eq!(s.counts(T0), Counts::default());

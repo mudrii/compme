@@ -304,6 +304,40 @@ mod tests {
     }
 
     #[test]
+    fn resolve_merges_global_then_domain_when_no_app_context() {
+        // The browser-focus path (§6/§13 setOverride): a per-domain override with
+        // NO per-app context. Pins that the per_domain branch fires under
+        // app=None and supplements global in global→domain order — every other
+        // domain-merge test also passes a Some(app), so this path was unpinned.
+        let mut p = profile();
+        p.per_domain
+            .insert("docs.google.com".into(), "Match the doc tone.".into());
+        assert_eq!(
+            p.resolve_instructions(None, Some("docs.google.com")),
+            "Write concisely.\nMatch the doc tone."
+        );
+    }
+
+    #[test]
+    fn resolve_uses_domain_alone_when_global_is_empty() {
+        // Domain section as the sole/leading section: empty global, no app — the
+        // `sections.join` path with per_domain at index 0 (today's tests always
+        // have a non-empty global leading).
+        let mut p = PersonalizationProfile {
+            strength: Strength::Stop3,
+            ..Default::default()
+        };
+        p.per_domain
+            .insert("example.com".into(), "Be terse.".into());
+        assert_eq!(
+            p.resolve_instructions(None, Some("example.com")),
+            "Be terse."
+        );
+        // An unmatched domain with empty global yields nothing.
+        assert_eq!(p.resolve_instructions(None, Some("other.com")), "");
+    }
+
+    #[test]
     fn per_app_supplements_rather_than_replaces_global() {
         let mut p = profile();
         p.per_app

@@ -8345,6 +8345,19 @@ mod tests {
             Err(KeymapError::Collision(KEYCODE_TAB))
         );
 
+        // Same keycode AND the same NON-ZERO mask still collides — guards the
+        // (keycode, mask) tuple identity in the non-zero branch (a regression to
+        // a keycode-only or mask-dropping compare would register a duplicate).
+        assert_eq!(
+            AcceptKeymap::from_accept_keys_with_mods(
+                Some(KEYCODE_TAB),
+                Some(KEYCODE_TAB),
+                CARBON_SHIFT_KEY,
+                CARBON_SHIFT_KEY
+            ),
+            Err(KeymapError::Collision(KEYCODE_TAB))
+        );
+
         // A modified word key does NOT collide with a fixed bare key of the same
         // keycode: Shift+Esc as word is distinct from bare Esc (dismiss).
         assert!(
@@ -8384,6 +8397,13 @@ mod tests {
             parse_accept_key("control+option+command+12"),
             Some((12, CARBON_CONTROL_KEY | CARBON_OPTION_KEY | CARBON_CMD_KEY))
         );
+        // Every documented modifier alias maps to its Carbon bit (a dropped
+        // alias arm would silently break a documented config form).
+        assert_eq!(parse_accept_key("super+18"), Some((18, CARBON_CMD_KEY)));
+        assert_eq!(parse_accept_key("meta+18"), Some((18, CARBON_CMD_KEY)));
+        assert_eq!(parse_accept_key("win+18"), Some((18, CARBON_CMD_KEY)));
+        assert_eq!(parse_accept_key("command+18"), Some((18, CARBON_CMD_KEY)));
+        assert_eq!(parse_accept_key("alt+18"), Some((18, CARBON_OPTION_KEY)));
         // Junk → None (the caller falls soft to defaults).
         assert_eq!(parse_accept_key(""), None);
         assert_eq!(parse_accept_key("tab"), None); // non-numeric keycode
@@ -8411,6 +8431,18 @@ mod tests {
         }
         // A bare key formats with no prefix (back-compat output).
         assert_eq!(format_accept_key(96, 0), "96");
+        // Each single modifier emits its canonical word (pins the word↔bit
+        // pairing in ACCEPT_KEY_MODIFIERS; round-trip alone wouldn't catch a
+        // mispairing since parse is order/word-tolerant), and a combo emits in
+        // ascending-bit order regardless of how the mask was composed.
+        assert_eq!(format_accept_key(96, CARBON_CMD_KEY), "cmd+96");
+        assert_eq!(format_accept_key(96, CARBON_SHIFT_KEY), "shift+96");
+        assert_eq!(format_accept_key(96, CARBON_OPTION_KEY), "option+96");
+        assert_eq!(format_accept_key(96, CARBON_CONTROL_KEY), "control+96");
+        assert_eq!(
+            format_accept_key(96, CARBON_OPTION_KEY | CARBON_CMD_KEY),
+            "cmd+option+96"
+        );
     }
 
     #[test]

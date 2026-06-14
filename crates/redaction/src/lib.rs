@@ -189,6 +189,25 @@ mod tests {
     }
 
     #[test]
+    fn redacts_long_lowercase_token_with_digits() {
+        // The `has_digit`-ALONE entropy arm (all-lowercase letters + digits, no
+        // uppercase, no base64 punct) — the most common real secret shape
+        // (lowercase hex / id tokens). A regression dropping `has_digit` from the
+        // OR would leak exactly this class while every other entropy test passes.
+        let out = redact("tok abc123def456abc123def456abc123def456 done");
+        assert!(out.contains("[redacted-secret]"), "got {out:?}");
+        assert!(!out.contains("abc123def456"), "got {out:?}");
+        // Control: the SAME run with the digits removed (all-lowercase letters)
+        // is low-entropy and must survive — proving it was the digits that
+        // tripped the gate, not the length.
+        let prose = redact("tok abcdefabcdefabcdefabcdefabcdefabcdef done");
+        assert!(
+            prose.contains("abcdefabcdefabcdef"),
+            "all-letter run survives: {prose:?}"
+        );
+    }
+
+    #[test]
     fn card_redaction_covers_the_length_band_and_spares_short_luhn_runs() {
         // The card regex matches 13–19 digit runs; both band edges and the
         // below-floor direction need pins (all values are Luhn-valid, so the
