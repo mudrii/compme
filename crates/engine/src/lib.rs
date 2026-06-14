@@ -18,9 +18,10 @@ use std::time::Duration;
 
 const SYNTHETIC_INSERT_HIDE_DELAY: Duration = Duration::from_millis(50);
 
-/// A text edit reported by the host, carrying the metadata the contract
-/// requires (`edit` kind, previous caret/value hash, trigger policy) so the
-/// machine can gate automatic versus manual requests faithfully.
+/// A text edit reported by the host, carrying the contract's metadata: the
+/// `edit` kind and `trigger` policy (which the machine gates on) plus the
+/// previous caret / value hash (part of the host-reported change surface;
+/// the current `SuggestionMachine` does not consume them).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextChange {
     pub field: FieldHandle,
