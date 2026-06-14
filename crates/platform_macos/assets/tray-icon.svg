@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+  <!-- compme menu-bar mark: a text caret + double chevron = "auto-complete
+       forward from the cursor". Monochrome template (alpha-tinted by macOS). -->
+  <rect x="6" y="8" width="4.4" height="20" rx="2.2" fill="#000"/>
+  <g fill="none" stroke="#000" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="16,11 23,18 16,25"/>
+    <polyline points="24,11 31,18 24,25"/>
+  </g>
+</svg>

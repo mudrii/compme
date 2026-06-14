@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
-use objc2::{define_class, sel, DefinedClass, MainThreadOnly};
+use objc2::{define_class, sel, AnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSControlStateValueOff, NSControlStateValueOn, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength,
+    NSControlStateValueOff, NSControlStateValueOn, NSImage, NSMenu, NSMenuItem, NSStatusBar,
+    NSStatusItem, NSVariableStatusItemLength,
 };
-use objc2_foundation::{NSObjectProtocol, NSString};
+use objc2_foundation::{NSData, NSObjectProtocol, NSSize, NSString};
 use platform::PlatformError;
 
 /// Shared toggles flipped by tray menu actions and observed by the run loop.
@@ -307,7 +307,20 @@ impl MacosTray {
 
         status_item.setMenu(Some(&menu));
         if let Some(button) = status_item.button(mtm) {
-            button.setTitle(&NSString::from_str("CM…"));
+            // Menu-bar mark: a caret + double chevron ("auto-complete forward").
+            // Embedded so it ships with the unbundled binary; a template image
+            // so macOS tints it for light/dark menu bars. Falls back to the
+            // text title if the PNG ever fails to decode.
+            let data = NSData::with_bytes(include_bytes!("../assets/tray-icon.png"));
+            match NSImage::initWithData(NSImage::alloc(), &data) {
+                Some(image) => {
+                    image.setTemplate(true);
+                    // 36px bitmap shown at 18pt → crisp 2x on Retina menu bars.
+                    image.setSize(NSSize::new(18.0, 18.0));
+                    button.setImage(Some(&image));
+                }
+                None => button.setTitle(&NSString::from_str("CM\u{2026}")),
+            }
         }
 
         Ok(Self {
