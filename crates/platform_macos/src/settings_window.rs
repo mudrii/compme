@@ -20,8 +20,8 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
-    NSControlStateValueOn, NSEvent, NSFont, NSSwitch, NSTabView, NSTabViewItem, NSTextField,
-    NSView, NSWindow, NSWindowStyleMask,
+    NSControlStateValueOn, NSEvent, NSFont, NSResponder, NSSwitch, NSTabView, NSTabViewItem,
+    NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
@@ -293,17 +293,25 @@ struct KeyRecorderFieldIvars {
     /// keyDown parks the captured (both-slots, clobber-safe) request here; the
     /// run loop consumes the edge (`apply_live_accept_keymap`).
     rebind_slot: Arc<Mutex<Option<RebindRequest>>>,
+    /// Child label that renders the key text — a bare NSView has no
+    /// `setStringValue`, so the visible string lives on this passive subview.
+    label: Retained<NSTextField>,
 }
 
 define_class!(
-    // SAFETY: an NSTextField subclass used as an inline key recorder (recorder
-    // 5b slice 4b). keyDown consumes the event (NO super call) so the keystroke
-    // is CAPTURED, never typed; the field is non-editable/non-selectable so
-    // AppKit installs no field editor to swallow it, and acceptsFirstResponder
-    // + mouseDown make it the first responder on click. The DECISION logic is
-    // the unit-tested `recorder_outcome`; the AppKit shell is LIVE-verified
-    // (this file's convention).
-    #[unsafe(super = NSTextField)]
+    // SAFETY: a plain NSVIEW subclass used as an inline key recorder (recorder
+    // 5b slice 4b). NSView, NOT NSTextField: a non-editable NSTextField that
+    // takes first responder installs an NSTextView field editor whose
+    // input-context setup spins the run loop and DEADLOCKS under our custom
+    // CFRunLoop heartbeat — 2026-06-14 live finding: clicking the field HUNG the
+    // app (force-quit only). A bare NSView has no text-input machinery. It sits
+    // transparently OVER a sibling display label (same frame, added on top), so
+    // the overlay is the hit-test winner and captures the click/keys while the
+    // label renders the text. keyDown does NOT call super (the key is CAPTURED,
+    // never typed); acceptsFirstResponder + mouseDown make it first responder on
+    // click. The decision logic is the unit-tested `recorder_outcome`; the
+    // AppKit shell is LIVE-verified (this file's convention).
+    #[unsafe(super = NSView)]
     #[thread_kind = MainThreadOnly]
     #[ivars = KeyRecorderFieldIvars]
     struct KeyRecorderField;
@@ -316,64 +324,60 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, _event: &NSEvent) {
-            // Non-editable fields don't auto-focus on click; grab first
-            // responder so the next keyDown lands here. Coerce through
-            // NSTextField (which impls AsRef<NSResponder>; the subclass does not
-            // transitively).
+            // Grab first responder so the next keyDown lands here. NSView IS-A
+            // NSResponder, so the upcast is a direct as_ref().
             if let Some(window) = self.window() {
-                let field: &NSTextField = self;
-                window.makeFirstResponder(Some(field.as_ref()));
+                let view: &NSView = self;
+                let responder: &NSResponder = view.as_ref();
+                window.makeFirstResponder(Some(responder));
             }
         }
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             // u16 keyCode -> i64 (the crate's keycode currency). NO super call:
-            // swallow the key so it is captured, never typed into the field.
+            // swallow the key so it is captured, never typed. The child label
+            // renders the result.
             let keycode = event.keyCode() as i64;
+            let label = &self.ivars().label;
             match recorder_outcome(self.ivars().role, keycode, crate::effective_accept_keys()) {
-                RecorderOutcome::Accept { request, label } => {
+                RecorderOutcome::Accept { request, label: text } => {
                     if let Ok(mut slot) = self.ivars().rebind_slot.lock() {
                         *slot = Some(request);
                     }
-                    self.setStringValue(&NSString::from_str(&label));
+                    label.setStringValue(&NSString::from_str(&text));
                 }
                 RecorderOutcome::Cancel { idle_label } => {
-                    self.setStringValue(&NSString::from_str(&idle_label));
+                    label.setStringValue(&NSString::from_str(&idle_label));
                 }
                 RecorderOutcome::RejectSilent => {}
                 RecorderOutcome::RejectCollision { hint } => {
-                    self.setStringValue(&NSString::from_str(hint));
+                    label.setStringValue(&NSString::from_str(hint));
                 }
             }
         }
+
     }
 );
 
 impl KeyRecorderField {
+    /// `label` is the sibling display field this overlay updates; the caller
+    /// adds the label first, then this overlay on top of it (same frame).
     fn new(
         role: RecorderRole,
         rebind_slot: Arc<Mutex<Option<RebindRequest>>>,
+        label: Retained<NSTextField>,
         mtm: MainThreadMarker,
     ) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(KeyRecorderFieldIvars { role, rebind_slot });
-        // set_ivars BEFORE init (the SettingsTarget pattern).
-        let this: Retained<Self> = unsafe { objc2::msg_send![super(this), init] };
-        // Non-editable + non-selectable: a selectable field engages the field
-        // editor (an NSTextView) that would steal keyDown. Bezel + background so
-        // it reads as a clickable field.
-        this.setEditable(false);
-        this.setSelectable(false);
-        this.setBezeled(true);
-        this.setDrawsBackground(true);
-        // Idle label = the role's CURRENT registered key.
-        let (word, full) = crate::effective_accept_keys();
-        let current = match role {
-            RecorderRole::Word => word,
-            RecorderRole::Full => full,
-        };
-        this.setStringValue(&NSString::from_str(&keycode_label(current)));
-        this
+        let this = Self::alloc(mtm).set_ivars(KeyRecorderFieldIvars {
+            role,
+            rebind_slot,
+            label,
+        });
+        // set_ivars BEFORE init (the SettingsTarget pattern); NSView's
+        // designated initializer is initWithFrame:.
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(160.0, 24.0));
+        unsafe { objc2::msg_send![super(this), initWithFrame: frame] }
     }
 }
 
@@ -867,6 +871,7 @@ fn build_window(
     // below the effective-bindings text (y=160..330). LOOK-verified.
     {
         let shortcuts_view = &pane_views[3];
+        let (word, full) = crate::effective_accept_keys();
         for (role, label_text, y) in [
             (RecorderRole::Word, "Accept word:", 116.0),
             (RecorderRole::Full, "Accept full:", 80.0),
@@ -874,12 +879,30 @@ fn build_window(
             let row_label = NSTextField::labelWithString(&NSString::from_str(label_text), mtm);
             row_label.setFrame(NSRect::new(NSPoint::new(20.0, y), NSSize::new(110.0, 22.0)));
             shortcuts_view.addSubview(&row_label);
-            let recorder =
-                KeyRecorderField::new(role, Arc::clone(&flags.shortcuts_rebind_request), mtm);
-            recorder.setFrame(NSRect::new(
-                NSPoint::new(140.0, y - 4.0),
-                NSSize::new(160.0, 24.0),
-            ));
+
+            // Display field showing the role's current key (bezeled box).
+            let current = match role {
+                RecorderRole::Word => word,
+                RecorderRole::Full => full,
+            };
+            let key_label =
+                NSTextField::labelWithString(&NSString::from_str(&keycode_label(current)), mtm);
+            key_label.setBezeled(true);
+            key_label.setDrawsBackground(true);
+            key_label.setEditable(false);
+            key_label.setSelectable(false); // selectable => field editor => hang
+            let box_frame = NSRect::new(NSPoint::new(140.0, y - 4.0), NSSize::new(160.0, 24.0));
+            key_label.setFrame(box_frame);
+            shortcuts_view.addSubview(&key_label);
+
+            // Transparent recorder overlay ON TOP of the display field.
+            let recorder = KeyRecorderField::new(
+                role,
+                Arc::clone(&flags.shortcuts_rebind_request),
+                key_label.clone(),
+                mtm,
+            );
+            recorder.setFrame(box_frame);
             shortcuts_view.addSubview(&recorder);
         }
     }
