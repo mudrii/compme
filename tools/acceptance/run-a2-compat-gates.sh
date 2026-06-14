@@ -55,6 +55,17 @@ has_terminal_cmd_block_evidence() {
   grep -Eq 'compme: request blocked .*prompt_chars=[1-9][0-9]* .*terminal_ok=false' "$1"
 }
 
+wait_for_product_status() {
+  product_pid="$1"
+  status=0
+  wait "$product_pid" 2>/dev/null || status=$?
+  WAIT_STATUS="$status"
+}
+
+product_status_ok() {
+  [[ "$1" -eq 0 ]]
+}
+
 self_test_assert() {
   name="$1"
   expected="$2"
@@ -139,6 +150,22 @@ OSA
   else
     echo "PASS self-test-applescript-prefix-argv"
   fi
+  ( exit 7 ) &
+  fake_pid=$!
+  wait_for_product_status "$fake_pid"
+  fake_status="$WAIT_STATUS"
+  if [[ "$fake_status" -eq 7 ]] && ! product_status_ok "$fake_status"; then
+    echo "PASS self-test-product-exit-status-a2"
+  else
+    echo "FAIL self-test-product-exit-status-a2: nonzero compme exit was not observed as failure" >&2
+    failures=$((failures + 1))
+  fi
+  if "$ROOT_DIR/tools/acceptance/e2e-complete-me.sh" --self-test >/dev/null; then
+    echo "PASS self-test-product-exit-status-e2e"
+  else
+    echo "FAIL self-test-product-exit-status-e2e: e2e harness did not fail on nonzero compme exit" >&2
+    failures=$((failures + 1))
+  fi
 
   rm -rf "$tmp_dir"
   if [[ "$failures" -gt 0 ]]; then
@@ -203,13 +230,18 @@ env \
   "$BIN" >"$LOG" 2>&1 &
 BIN_PID=$!
 sleep "$(awk "BEGIN{print ($WARMUP_MS+$RUN_MS)/1000}")"
-wait "$BIN_PID" 2>/dev/null || true
+wait_for_product_status "$BIN_PID"
+app_status="$WAIT_STATUS"
 
 requested=0
 has_request "$LOG" && requested=1
 
 pass() { echo "PASS: $KIND — $1 (log: $LOG)"; exit 0; }
 fail() { echo "FAIL: $KIND — $1 (log: $LOG)"; exit 1; }
+
+if ! product_status_ok "$app_status"; then
+  fail "compme exited with status $app_status"
+fi
 
 case "$KIND" in
   works|terminal-nlp)

@@ -78,6 +78,7 @@
   - `cargo test --workspace --all-targets -- --test-threads=1` passed.
   - `cargo build --workspace --all-targets` passed.
   - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
   - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
   - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
   - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
@@ -308,4 +309,60 @@
   - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
   - Settings window timed/behavioral LOOK spot-checks remain blocked/manual: General switches live-flip + persist across relaunch, Setup rows re-probe timing, and Apps Delete confirmation default button.
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
-- Commit hash and push confirmation, or DRY/blocked status: This state-only entry is committed in the commit reported by the final response; a Git commit cannot contain its own final hash without changing that hash.
+- Commit hash and push confirmation, or DRY/blocked status: Committed and pushed as `ca02acdac24d96d45796cb7351abfc23211d4d12`; verified local HEAD equaled `origin/spike/a0` on 2026-06-15.
+
+## 2026-06-15 04:43:30 +08 - Screen OCR context and harness validation
+
+- Task selected: Fix the current full-review Important findings around screen OCR context scoping, acceptance harness product-exit handling, and stale source-of-truth docs/state.
+- Why it was selected: The parallel review passes found no Critical findings, but these Important findings were loop-doable in one tick and affected privacy, validation reliability, and plan alignment.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/app/src/inference.rs`
+  - `crates/app/src/run_loop.rs`
+  - `crates/app/src/screen_ocr.rs`
+  - `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md`
+  - `docs/superpowers/specs/2026-06-09-a2-parity-design.md`
+  - `docs/superpowers/specs/2026-06-09-integration-phase-design.md`
+  - `docs/superpowers/specs/2026-06-10-a3-settings-ui-design.md`
+  - `tools/acceptance/e2e-complete-me.sh`
+  - `tools/acceptance/run-a2-compat-gates.sh`
+- Tests added/updated:
+  - Added `screen_context_is_scoped_to_the_request_field` coverage so stale OCR text from one field is not injected into another field's prompt.
+  - Updated screen OCR worker queue tests for field-tagged newest-request behavior, bounded latest-slot coalescing, and nonblocking request submission.
+  - Added A2/E2E behavior self-test guards that use fake nonzero child processes to prove product exit status is captured and treated as a failure.
+- Verification commands and result:
+  - RED: `tools/acceptance/run-a2-compat-gates.sh --self-test` failed before implementation with `FAIL self-test-product-exit-status-a2: compme exit status is ignored` and `FAIL self-test-product-exit-status-e2e: compme exit status is ignored`.
+  - TDD note: `screen_context_is_scoped_to_the_request_field` and the OCR latest-slot tests were added/updated after the initial OCR implementation, so that part of this tick was covered by regression tests but was not run red before production code.
+  - Focused: `cargo test -p app screen_context -- --nocapture` passed.
+  - Focused: `tools/acceptance/run-a2-compat-gates.sh --self-test` passed after the exit-status fix.
+  - Focused: `cargo test -p app screen_ocr -- --nocapture && cargo test -p app screen_context -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed after `cargo fmt --all`.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1075`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed.
+  - `git diff --check` passed.
+- Test count if available: root `1075` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important correctness/privacy finding: screen OCR context is now tagged with the observed field and only included when the completion request targets the same field.
+  - Fixed Important correctness/quality finding from focused diff review: the OCR worker now uses a bounded latest-slot queue instead of an unbounded channel, preventing slow OCR from accumulating unlimited stale field/caret metadata.
+  - Fixed Important quality/validation finding: A2 and E2E acceptance harnesses now fail when the product process exits nonzero instead of ignoring `wait`.
+  - Fixed Important tests/coverage finding from focused diff review: exit-status self-tests now exercise fake nonzero child processes instead of only grepping harness source text.
+  - Fixed Important plan-alignment findings: docs now reflect wired thesaurus settings, A3 per-app timed/input-collection settings, A2 Tab suppression behavior, and field-scoped/latest-slot OCR context semantics.
+  - Fixed Important state-hygiene finding: replaced the previous cycle's self-hash placeholder with its actual pushed commit hash.
+- Blocked or skipped work remaining:
+  - AllMonitored live GUI/privacy validation remains blocked/manual because it requires an unlocked macOS GUI session, real focused text targets, Accessibility/Secure Input state control, and encrypted-store inspection.
+  - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
+  - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
+  - Settings window timed/behavioral LOOK spot-checks remain blocked/manual: General switches live-flip + persist across relaunch, Setup rows re-probe timing, and Apps Delete confirmation default button.
+  - A2 GUI/session-dependent compatibility, OCR quality/performance, and mirror validation remain blocked/manual pending a real macOS GUI session.
+  - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
+- Commit hash and push confirmation, or DRY/blocked status: This entry is included in the final commit for the cycle; the exact self-referential commit hash and upstream equality check are reported in the final response.

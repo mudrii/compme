@@ -34,12 +34,6 @@ fail() {
   exit 1
 }
 
-[ -x "$BIN" ] || fail "binary not built: $BIN (run: cargo build -p app)"
-[ -n "$PID" ] || fail "set COMPME_ACCEPTANCE_PID to the TextEdit pid"
-command -v osascript >/dev/null 2>&1 || fail "osascript unavailable (macOS only)"
-
-mkdir -p "$(dirname "$LOG")"
-
 sleep_ms() {
   ms="$1"
   case "$ms" in
@@ -48,6 +42,57 @@ sleep_ms() {
   [ "$ms" -gt 0 ] || return 0
   sleep "$(awk "BEGIN { printf \"%.3f\", $ms / 1000 }")"
 }
+
+wait_for_app_status() {
+  app_pid="$1"
+  status=0
+  wait "$app_pid" 2>/dev/null || status=$?
+  WAIT_STATUS="$status"
+}
+
+record_app_status() {
+  status="$1"
+  if [ "$status" -eq 0 ]; then
+    echo "E2E: compme exited successfully [PASS]"
+    return 0
+  fi
+  echo "E2E: compme exited with status $status [FAIL]"
+  return 1
+}
+
+run_self_tests() {
+  failures=0
+  ( exit 7 ) &
+  fake_pid=$!
+  wait_for_app_status "$fake_pid"
+  fake_status="$WAIT_STATUS"
+  if [ "$fake_status" -eq 7 ] && ! record_app_status "$fake_status" >/dev/null; then
+    echo "PASS self-test-e2e-product-exit-status"
+  else
+    echo "FAIL self-test-e2e-product-exit-status: nonzero app exit was not observed as failure" >&2
+    failures=$((failures + 1))
+  fi
+  if record_app_status 0 >/dev/null; then
+    echo "PASS self-test-e2e-product-exit-status-success"
+  else
+    echo "FAIL self-test-e2e-product-exit-status-success: zero app exit was not observed as success" >&2
+    failures=$((failures + 1))
+  fi
+  [ "$failures" -eq 0 ] || return 1
+  echo "E2E self-tests passed"
+  return 0
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  run_self_tests
+  exit $?
+fi
+
+[ -x "$BIN" ] || fail "binary not built: $BIN (run: cargo build -p app)"
+[ -n "$PID" ] || fail "set COMPME_ACCEPTANCE_PID to the TextEdit pid"
+command -v osascript >/dev/null 2>&1 || fail "osascript unavailable (macOS only)"
+
+mkdir -p "$(dirname "$LOG")"
 
 case "$ACCEPT_MODE" in
   full|word) ;;
@@ -99,7 +144,8 @@ else
 fi
 
 # 5. Wait for the bounded run to finish on its own (COMPME_RUN_MS).
-wait "$APP_PID" 2>/dev/null
+wait_for_app_status "$APP_PID"
+app_status="$WAIT_STATUS"
 
 # 6. Read the document back and assert.
 RESULT="$(osascript -e 'tell application "TextEdit" to get text of front document' 2>/dev/null)"
@@ -110,6 +156,10 @@ echo "$RESULT"
 echo "--------------------"
 
 ok=1
+if ! record_app_status "$app_status"; then
+  ok=0
+fi
+
 case "$RESULT" in
   *"$STUB"*) echo "E2E: stub text inserted into document [PASS]" ;;
   *) echo "E2E: stub text NOT found in document [FAIL]"; ok=0 ;;

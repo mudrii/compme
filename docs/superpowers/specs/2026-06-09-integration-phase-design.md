@@ -17,10 +17,12 @@ typing; the prompt held the emoji alone afterwards). No open residuals.
 
 ## Why this exists
 
-Pure §16 parity features are exhausted (cycles 11–18): `emoji`, `thesaurus`,
-`autocorrect`, `localize`, `webconfig` are complete, unit-tested pure crates that
-are **not wired into the live completion flow**. The repeated loop finding is that
-the only substantive work left is integration, and its #1 blocker is a
+Pure §16 parity features were exhausted as pure crates in cycles 11–18:
+`emoji`, `thesaurus`, `autocorrect`, `localize`, `webconfig`. The later
+integration pass wired the local-replacement consumers into the live run loop
+behind default-off flags; the remaining thesaurus work is live LOOK/selection
+UX validation, not core host wiring. The repeated loop finding at the time was
+the #1 blocker: a
 **delete-before-insert (replacement) primitive**: these features all *replace*
 already-typed characters (`:smile`→😀, `teh`→`the`, `color`→`colour`,
 word→synonym) rather than append a continuation.
@@ -138,7 +140,8 @@ the corresponding crate in the `TextChanged` replacement-detection step.
 
 Steps 1–6 are done; step 6 passed live (mirrors the existing Carbon-accept manual
 gates). Emoji was the first consumer wired; autocorrect/localize reuse the same
-path (thesaurus deferred — selection-trigger design).
+path, and thesaurus now uses that path behind `COMPME_THESAURUS`. Remaining
+thesaurus work is live LOOK/UX validation and any future selection-trigger design.
 
 ## Pre-wiring checklist (from the step 1–3 code review)
 

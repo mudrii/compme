@@ -8,23 +8,70 @@
 //!
 //! This worker performs the capture + OCR on its own thread and publishes the
 //! redacted result into the shared `screen` cell the inference worker reads.
-//! Callers fire-and-forget a caret rect per gated submit; bursts coalesce to the
-//! latest rect, and the inference worker reads whatever the cell currently
-//! holds. One-submit staleness is acceptable here — the same tradeoff the
-//! clipboard path already makes — and is vastly cheaper than freezing the UI.
+//! Callers fire-and-forget the focused field plus caret rect per gated submit;
+//! bursts coalesce to the latest request. The inference worker only consumes a
+//! result when its field still matches, so async OCR cannot leak a prior field's
+//! visible text into a later prompt.
 
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
+use crate::inference::ScreenContext;
+use platform::FieldHandle;
 use platform::ScreenRect;
 use platform_macos::screen_context_text;
 
 /// Handle to the background screen-OCR worker. Dropping it closes the channel,
-/// which makes the worker exit its loop; the thread is then joined.
+/// which lets the worker exit its loop after any in-flight OCR pass.
 pub struct ScreenOcr {
-    tx: Option<SyncSender<Option<ScreenRect>>>,
+    queue: Option<Arc<LatestRequestQueue>>,
     handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ScreenOcrRequest {
+    field: FieldHandle,
+    caret_rect: Option<ScreenRect>,
+}
+
+#[derive(Debug, Default)]
+struct LatestRequestQueue {
+    state: Mutex<LatestRequestState>,
+    ready: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct LatestRequestState {
+    pending: Option<ScreenOcrRequest>,
+    closed: bool,
+}
+
+impl LatestRequestQueue {
+    fn submit(&self, request: ScreenOcrRequest) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.pending = Some(request);
+        self.ready.notify_one();
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.pending = None;
+        state.closed = true;
+        self.ready.notify_one();
+    }
+
+    fn recv(&self) -> Option<ScreenOcrRequest> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(request) = state.pending.take() {
+                return Some(request);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
 }
 
 impl ScreenOcr {
@@ -38,46 +85,45 @@ impl ScreenOcr {
     /// failure as non-fatal (screen context disabled for the session), matching
     /// the tray-unavailable fallback.
     pub fn spawn(
-        screen: Arc<Mutex<Option<String>>>,
+        screen: Arc<Mutex<Option<ScreenContext>>>,
         max_chars: usize,
         diag: bool,
     ) -> std::io::Result<Self> {
-        // Depth-1 channel: one request can be in flight while at most one waits.
-        // A `try_send` that finds the queue full drops the newest rect rather
-        // than blocking the run loop (the queued rect is at most one submit old).
-        let (tx, rx) = sync_channel::<Option<ScreenRect>>(1);
+        // Latest-slot queue: request submission only takes a short mutex and
+        // overwrites stale pending work, so a slow OCR pass cannot build an
+        // unbounded backlog of field/caret metadata.
+        let queue = Arc::new(LatestRequestQueue::default());
+        let worker_queue = Arc::clone(&queue);
         let handle = std::thread::Builder::new()
             .name("compme-screen-ocr".into())
-            .spawn(move || run(rx, screen, max_chars, diag))?;
+            .spawn(move || run(worker_queue, screen, max_chars, diag))?;
         Ok(Self {
-            tx: Some(tx),
+            queue: Some(queue),
             handle: Some(handle),
         })
     }
 
     /// Fire-and-forget an OCR request for the display under `caret_rect`. Never
-    /// blocks: if the worker is busy and a request is already queued, the new
-    /// rect is dropped (coalescing keeps the newest that fits).
-    pub fn request(&self, caret_rect: Option<ScreenRect>) {
-        if let Some(tx) = &self.tx {
-            // Full ⇒ a request is already queued; Disconnected ⇒ worker gone.
-            // Both are non-fatal here, so the result is intentionally ignored.
-            match tx.try_send(caret_rect) {
-                Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
-            }
+    /// waits for OCR; if the worker is behind, stale pending work is replaced by
+    /// the newest request.
+    pub fn request(&self, field: FieldHandle, caret_rect: Option<ScreenRect>) {
+        if let Some(queue) = &self.queue {
+            queue.submit(ScreenOcrRequest { field, caret_rect });
         }
     }
 }
 
 impl Drop for ScreenOcr {
     fn drop(&mut self) {
-        // Drop the sender so the worker's `recv` returns `Err` and the loop
-        // exits after its current pass. We **detach** rather than join: a Vision
-        // OCR call can be mid-flight (and, on a sleeping/reconfiguring display,
-        // could block for a long time), and joining here would hang process
-        // teardown on the main thread. The worker holds only the `screen` Arc,
-        // which it releases when it returns, so detaching is safe.
-        self.tx.take();
+        // Close the latest-slot queue so the worker exits after its current
+        // pass. We **detach** rather than join: a Vision OCR call can be
+        // mid-flight (and, on a sleeping/reconfiguring display, could block for
+        // a long time), and joining here would hang process teardown on the main
+        // thread. The worker holds only the `screen` Arc, which it releases when
+        // it returns, so detaching is safe.
+        if let Some(queue) = self.queue.take() {
+            queue.close();
+        }
         drop(self.handle.take());
     }
 }
@@ -85,35 +131,28 @@ impl Drop for ScreenOcr {
 /// Worker body: block for the next rect, OCR the display under it, redact, and
 /// publish into the shared cell. Exits when the channel closes.
 fn run(
-    rx: Receiver<Option<ScreenRect>>,
-    screen: Arc<Mutex<Option<String>>>,
+    queue: Arc<LatestRequestQueue>,
+    screen: Arc<Mutex<Option<ScreenContext>>>,
     max_chars: usize,
     diag: bool,
 ) {
     if max_chars == 0 {
         return;
     }
-    while let Some(caret_rect) = recv_latest(&rx) {
-        let text = screen_context_text(caret_rect, max_chars).map(|t| redaction::redact(&t));
+    while let Some(request) = queue.recv() {
+        let text =
+            screen_context_text(request.caret_rect, max_chars).map(|t| redaction::redact(&t));
         if diag {
             eprintln!(
                 "compme: screen_context={:?}",
                 text.as_ref().map(|s| s.chars().count())
             );
         }
-        *screen.lock().unwrap_or_else(|e| e.into_inner()) = text;
+        *screen.lock().unwrap_or_else(|e| e.into_inner()) = text.map(|text| ScreenContext {
+            field: request.field,
+            text,
+        });
     }
-}
-
-/// Block for the next rect, then drain any that piled up behind it and keep only
-/// the newest. Returns `None` when the sender is gone (shutdown). Mirrors the
-/// inference worker's `recv_latest` coalescing.
-fn recv_latest(rx: &Receiver<Option<ScreenRect>>) -> Option<Option<ScreenRect>> {
-    let mut rect = rx.recv().ok()?;
-    while let Ok(newer) = rx.try_recv() {
-        rect = newer;
-    }
-    Some(rect)
 }
 
 #[cfg(test)]
@@ -129,38 +168,61 @@ mod tests {
         })
     }
 
-    #[test]
-    fn recv_latest_coalesces_a_burst_to_the_newest_rect() {
-        let (tx, rx) = sync_channel::<Option<ScreenRect>>(8);
-        tx.send(rect(1.0)).unwrap();
-        tx.send(rect(2.0)).unwrap();
-        tx.send(rect(3.0)).unwrap();
-        let latest = recv_latest(&rx).unwrap();
-        assert_eq!(latest.unwrap().x, 3.0);
+    fn field(generation: u64) -> FieldHandle {
+        FieldHandle {
+            app: "TextEdit".into(),
+            pid: Some(1),
+            element_id: "field".into(),
+            generation,
+        }
     }
 
     #[test]
-    fn recv_latest_returns_none_when_sender_dropped() {
-        let (tx, rx) = sync_channel::<Option<ScreenRect>>(1);
-        drop(tx);
-        assert!(recv_latest(&rx).is_none());
+    fn latest_queue_coalesces_a_burst_to_the_newest_rect() {
+        let queue = LatestRequestQueue::default();
+        queue.submit(ScreenOcrRequest {
+            field: field(1),
+            caret_rect: rect(1.0),
+        });
+        queue.submit(ScreenOcrRequest {
+            field: field(2),
+            caret_rect: rect(2.0),
+        });
+        queue.submit(ScreenOcrRequest {
+            field: field(3),
+            caret_rect: rect(3.0),
+        });
+        let latest = queue.recv().unwrap();
+        assert_eq!(latest.field.generation, 3);
+        assert_eq!(latest.caret_rect.unwrap().x, 3.0);
+        queue.close();
+        assert!(queue.recv().is_none());
     }
 
     #[test]
-    fn request_never_blocks_when_queue_is_full() {
-        // A depth-1 channel with no worker draining it: the first request fills
-        // the queue, the rest must be dropped rather than block the caller.
-        let (tx, _rx) = sync_channel::<Option<ScreenRect>>(1);
+    fn latest_queue_returns_none_when_closed() {
+        let queue = LatestRequestQueue::default();
+        queue.close();
+        assert!(queue.recv().is_none());
+    }
+
+    #[test]
+    fn request_never_waits_for_worker_drain_and_keeps_only_latest() {
+        // No worker is draining this queue: requests should only replace the
+        // pending slot, and the eventual worker read should get the latest
+        // field/rect rather than a backlog.
+        let queue = Arc::new(LatestRequestQueue::default());
         let ocr = ScreenOcr {
-            tx: Some(tx),
+            queue: Some(Arc::clone(&queue)),
             handle: None,
         };
-        // First fills depth-1 queue; subsequent calls hit `Full` and drop.
         for x in 0..100 {
-            ocr.request(rect(x as f64));
+            ocr.request(field(x), rect(x as f64));
         }
-        // Reaching here without blocking is the assertion; keep `_rx` alive so
-        // the sends hit `Full` (queue not drained) rather than `Disconnected`.
-        drop(_rx);
+        let latest = queue.recv().unwrap();
+        assert_eq!(latest.field.generation, 99);
+        assert_eq!(latest.caret_rect.unwrap().x, 99.0);
+        queue.close();
+        assert!(queue.recv().is_none());
     }
 }

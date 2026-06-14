@@ -38,7 +38,7 @@ use prefs::Prefs;
 
 use crate::adapter::SharedAdapter;
 use crate::config::{self, parse_clamped};
-use crate::inference::{InferenceHandle, PreviousInputs, WorkerContext};
+use crate::inference::{InferenceHandle, PreviousInputs, ScreenContext, WorkerContext};
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
 use crate::screen_ocr::ScreenOcr;
 use crate::status::{derive_status, AppStatus, BlockReason};
@@ -2156,7 +2156,7 @@ pub fn run() -> Result<(), String> {
     let monitored_memory_active =
         config.memory.mode == memory::StorageMode::AllMonitored && memory.is_some();
     let clipboard_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let screen_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let screen_cell: Arc<Mutex<Option<ScreenContext>>> = Arc::new(Mutex::new(None));
     // Screen OCR only contributes when the grant is actually present this session.
     let screen_active = config.screen_context && screen_recording_permission();
     // Clipboard/screen context work independently of previous-input context, so
@@ -3282,14 +3282,15 @@ pub fn run() -> Result<(), String> {
                         }
                         *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = clip;
                     }
-                    // Screen-aware context (A2 §16): hand the caret's display to
-                    // the off-thread OCR worker (it captures, OCRs, redacts, and
-                    // publishes into `screen_cell`). Fire-and-forget so the run
-                    // loop never blocks on Vision. caret_rect read is the only
-                    // on-loop AX touch and is cheap.
+                    // Screen-aware context (A2 §16): hand the request field and
+                    // caret display to the off-thread OCR worker (it captures,
+                    // OCRs, redacts, and publishes a field-scoped value into
+                    // `screen_cell`). Fire-and-forget so the run loop never
+                    // blocks on Vision. caret_rect read is the only on-loop AX
+                    // touch and is cheap.
                     if let Some(ocr) = &screen_ocr {
                         let caret_rect = adapter.caret_rect(&request.field).ok().flatten();
-                        ocr.request(caret_rect);
+                        ocr.request(request.field.clone(), caret_rect);
                     }
                     eprintln!("{}", request_log_line(request.generation, &request.prompt));
                     submit_times.insert(request.generation, now_ms);
@@ -6275,12 +6276,31 @@ mod tests {
             max_chars: 200,
             ..WorkerContext::default()
         };
+        let matching_request = engine::CompletionRequest {
+            generation: 7,
+            field: canonical.clone(),
+            snapshot: 7,
+            prompt: "now".into(),
+            max_tokens: 8,
+        };
+        let volatile_request = engine::CompletionRequest {
+            generation: 7,
+            field: FieldHandle {
+                app: "pid:42".into(),
+                pid: Some(42),
+                element_id: "ax:field".into(),
+                generation: 7,
+            },
+            snapshot: 7,
+            prompt: "now".into(),
+            max_tokens: 8,
+        };
 
         assert!(worker_context
-            .block_for("com.apple.TextEdit")
+            .block_for(&matching_request)
             .contains("accepted completion"));
         assert!(!worker_context
-            .block_for("pid:42")
+            .block_for(&volatile_request)
             .contains("accepted completion"));
     }
 

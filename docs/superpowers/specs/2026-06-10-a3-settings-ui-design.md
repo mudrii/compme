@@ -26,9 +26,9 @@ input-collection submenu, Settings (⌘,), support links, updates, Quit.
 
 | Item | Backing | Status |
 |---|---|---|
-| Disable Completions in <frontmost app> ▸ (1h / until relaunch / always) | `prefs` per-app exclude + snooze-style timer keyed by app | exclude exists; per-app TIMED disable is new pure prefs work |
+| Disable Completions in <frontmost app> ▸ (1h / until relaunch / always) | `prefs` per-app exclude + snooze-style timer keyed by app | shipped for current-frontmost app arms (1h / until relaunch / always); remaining polish is stateful submenu text/dynamic app-name LOOK validation |
 | Disable Completions Globally ▸ (1h / until relaunch / always) | snooze (c54) = the 1h arm; "always" = enable toggle (c50) | submenu wiring only |
-| Input Collection in <app> ▸ | `memory` per-app — needs per-app collection override in prefs | new pure prefs field + gate |
+| Input Collection in <app> ▸ | `memory` per-app collection override in `prefs` | shipped as a current-app toggle with persistence and run-loop gates; remaining polish is submenu state/dynamic app-name LOOK validation |
 | Settings… ⌘, | opens the S2 window | done |
 | Visit Website / Contact Support | repo URLs, `NSWorkspace.open` | trivial |
 | Quit | exists | done |
@@ -47,7 +47,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 | Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS` | backing shipped for memory modes/instructions/strength; Apps tab count/delete UI shipped; Personalization controls for mode, instructions, and strength remain deferred |
 | Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | `includeVanillaVariants` is the one unmodeled item (§8 note) — small emoji-crate addition — **[2026-06-10] NOT SHIPPED** (deferred) |
 | Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; `KeyRecorderField` rows persist live rebinds through `COMPME_ACCEPT_*` config | recorder UI + live rebind shipped; force-activate + the two toggle shortcuts remain new hotkeys — **[2026-06-15] PARTIAL** |
-| App Settings | per-app list (usage counts) with enable/mid-line/autocorrect/Tab-disable, compat mode, per-app instructions, per-app history | `prefs` overrides + `tab_disabled` (unwired); `memory` per-app counts; personalization per-app maps (unwired, c1 #5) | per-app mid-line/autocorrect overrides are new prefs fields; pane is the largest — **[2026-06-10] PARTIAL** (Apps tab: per-app counts + confirmed per-row Delete; per-app override FIELDS live since c91 but per-app UI rows deferred) |
+| App Settings | per-app list (usage counts) with enable/mid-line/autocorrect/Tab-disable, compat mode, per-app instructions, per-app history | `prefs` overrides + `tab_disabled` tap suppression; `memory` per-app counts; personalization per-app maps (unwired, c1 #5) | per-app mid-line/autocorrect overrides are new prefs fields; pane is the largest — **[2026-06-15] PARTIAL** (Apps tab: per-app counts + confirmed per-row Delete; Tab-disable consumption and per-app override fields are live, but per-app UI rows and personalization maps are deferred) |
 | Labs | mid-line toggle | `COMPME_MIDLINE` | pane only — **[2026-06-10] DONE** (shipped as a switch in the General tab — the Labs pane content moved to General) |
 | Statistics | today + 30-day charts (range/group/metric) | `stats` crate (counts/words/latency) — menu line shipped c51 | chart view; longer retention than 30d if ranges grow — **[2026-06-10] DONE-MVP** (sparkline rows + lifetime row + stats.env persistence; chart view = sparklines, range/group/metric controls deferred) |
 | About | version, acks, links | LICENSE, deps | pane only; states the no-telemetry guarantee — **[2026-06-10] DONE** |

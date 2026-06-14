@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 use engine::CompletionRequest;
 use model_client::LocalModel;
 use personalization::PersonalizationProfile;
+use platform::FieldHandle;
 
 use crate::model_select::{shape_prompt, PromptMode};
 
@@ -71,17 +72,26 @@ impl PreviousInputs {
 pub struct WorkerContext {
     pub previous_inputs: PreviousInputs,
     pub clipboard: Arc<Mutex<Option<String>>>,
-    pub screen: Arc<Mutex<Option<String>>>,
+    pub screen: Arc<Mutex<Option<ScreenContext>>>,
     pub max_chars: usize,
     pub diag_context: bool,
 }
 
+/// Redacted OCR text scoped to the field that produced it. The screen worker is
+/// asynchronous, so the inference worker must not attach a prior field's screen
+/// text to the next request that happens to arrive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScreenContext {
+    pub field: FieldHandle,
+    pub text: String,
+}
+
 impl WorkerContext {
-    pub(crate) fn block_for(&self, app: &str) -> String {
+    pub(crate) fn block_for(&self, request: &CompletionRequest) -> String {
         if self.max_chars == 0 {
             return String::new();
         }
-        let recent = self.previous_inputs.recent(app);
+        let recent = self.previous_inputs.recent(&request.field.app);
         let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
         let clip = self
             .clipboard
@@ -93,12 +103,11 @@ impl WorkerContext {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        context::build_context_block(
-            clip.as_deref(),
-            screen.as_deref(),
-            &recent_refs,
-            self.max_chars,
-        )
+        let screen_text = screen
+            .as_ref()
+            .filter(|ctx| ctx.field == request.field)
+            .map(|ctx| ctx.text.as_str());
+        context::build_context_block(clip.as_deref(), screen_text, &recent_refs, self.max_chars)
     }
 }
 
@@ -162,7 +171,7 @@ fn run(
         let preamble = profile.build_preamble(Some(&request.field.app), None);
         // Opt-in context augmentation (clipboard + previous inputs): prepend a
         // bounded, already-redacted block ahead of the steering preamble.
-        let block = worker_context.block_for(&request.field.app);
+        let block = worker_context.block_for(&request);
         if worker_context.diag_context {
             eprintln!(
                 "compme: prompt_context={:?}",
@@ -433,7 +442,11 @@ mod tests {
     fn screen_context_is_prepended_when_set() {
         // The screen-OCR cell (set by the run loop, A2 §16) surfaces as an
         // "On screen:" line in the prompt the model sees.
-        let screen = Arc::new(Mutex::new(Some("visible window text".to_string())));
+        let req = request("typing", 1);
+        let screen = Arc::new(Mutex::new(Some(ScreenContext {
+            field: req.field.clone(),
+            text: "visible window text".to_string(),
+        })));
         let inference = InferenceHandle::spawn(
             Box::new(EchoModel),
             PromptMode::Raw,
@@ -446,13 +459,55 @@ mod tests {
             },
         )
         .unwrap();
-        inference.submit(request("typing", 1));
+        inference.submit(req);
         let outcome = inference.recv_outcome().expect("outcome");
         assert!(
             outcome.candidates[0].contains("On screen: visible window text"),
             "screen context present: {:?}",
             outcome.candidates[0]
         );
+        inference.shutdown();
+    }
+
+    #[test]
+    fn screen_context_is_scoped_to_the_request_field() {
+        let source = request("source field", 1);
+        let target = CompletionRequest {
+            generation: 2,
+            field: FieldHandle {
+                app: "TextEdit".into(),
+                pid: Some(1),
+                element_id: "other-field".into(),
+                generation: 2,
+            },
+            snapshot: 2,
+            prompt: "target field".into(),
+            max_tokens: 8,
+        };
+        let screen = Arc::new(Mutex::new(Some(ScreenContext {
+            field: source.field,
+            text: "visible source text".to_string(),
+        })));
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext {
+                screen,
+                max_chars: 160,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        inference.submit(target);
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            !outcome.candidates[0].contains("visible source text"),
+            "screen context leaked across fields: {:?}",
+            outcome.candidates[0]
+        );
+        assert!(outcome.candidates[0].contains("target field"));
         inference.shutdown();
     }
 
