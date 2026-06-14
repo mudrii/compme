@@ -398,7 +398,11 @@ fn complete_on_worker(
 
     let to_decode = &tokens[reuse..];
     let mut batch = LlamaBatch::new(to_decode.len().max(1), 1);
-    let last = to_decode.len() - 1;
+    // saturating_sub mirrors the .max(1) above: to_decode is non-empty in
+    // practice (plan_decode reserves >=1 prompt token), but never underflow to
+    // usize::MAX if that invariant ever changes — the loop just won't flag a
+    // "last" token when empty.
+    let last = to_decode.len().saturating_sub(1);
     for (index, token) in to_decode.iter().enumerate() {
         let position = (reuse + index) as i32;
         if let Err(err) = batch.add(*token, position, &[0], index == last) {

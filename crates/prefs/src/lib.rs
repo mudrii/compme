@@ -256,6 +256,16 @@ mod tests {
             .or_default()
             .mid_line = Some(true);
         assert!(p.mid_line_enabled(Some("com.googlecode.iterm2"), false));
+        // thesaurus mirrors the same inherit + per-app override contract
+        // (round-2 audit: it lacked a direct test, unlike its two siblings).
+        assert!(p.thesaurus_enabled(Some("com.apple.Safari"), true)); // inherit global on
+        assert!(!p.thesaurus_enabled(Some("com.apple.Safari"), false)); // inherit global off
+        p.per_app
+            .entry("com.apple.Safari".into())
+            .or_default()
+            .thesaurus = Some(false);
+        assert!(!p.thesaurus_enabled(Some("com.apple.Safari"), true)); // per-app off wins
+        assert!(p.thesaurus_enabled(Some("unconfigured.app"), true)); // no override → global
     }
 
     #[test]

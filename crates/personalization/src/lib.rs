@@ -27,6 +27,10 @@ fn truncate_chars(s: &str, max: usize) -> &str {
     }
 }
 
+/// Cap to `MAX_INSTRUCTION_CHARS` then neutralize any `"""` fence inside. The
+/// cap is applied BEFORE fence-escaping, so the returned block can run a few
+/// chars longer than the cap (each escaped fence adds 2) — fine, since the cap
+/// is a runaway-abuse guard, not an exact output-length contract.
 fn instruction_block_text(s: &str) -> String {
     truncate_chars(s, MAX_INSTRUCTION_CHARS).replace(INSTRUCTION_FENCE, "\" \" \"")
 }
