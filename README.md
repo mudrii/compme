@@ -9,26 +9,51 @@ capability. macOS ships first; **Windows and Linux are committed deliverables** 
 behind a shared cross-platform `PlatformAdapter` contract. All inference is local
 (llama.cpp), with no proprietary telemetry.
 
-The repository currently contains a Rust workspace for the core completion contract, a
-macOS platform adapter, a llama.cpp-backed local model seam, and a separate spike
-prototype used to validate low-level macOS behavior before it is promoted into the
-workspace.
+The repository is a Rust workspace of 22 crates: a pure completion core, a set of
+OS-agnostic text features (autocorrect, British-English, emoji, thesaurus, redaction,
+stats, personalization, ranking, compatibility tiers, model catalog), a macOS platform
+adapter with a ghost-text overlay and a six-tab settings window, a llama.cpp-backed
+local model seam with an async downloader, and the `compme` binary that wires them
+together. A separate spike prototype under `tools/spike` validates low-level macOS
+behavior before it is promoted into the workspace.
 
-The project is not packaged as an end-user app yet. The current codebase is a
-contract-first implementation and validation harness for:
+The project is not packaged as an end-user app yet, but the macOS run loop is
+functional: it reads caret/text context through Accessibility, generates short local
+completions, classifies field UX (inline / popup / blocked / hotkey-only /
+unsupported), shows a non-activating AppKit ghost-text overlay, intercepts accept keys
+through transient Carbon hotkeys, and inserts accepted text through Accessibility,
+synthetic keys, or a clipboard-paste fallback.
 
-- reading text context and caret state from focused macOS text fields through
-  Accessibility
-- generating short local completions with a GGUF model through `llama-cpp-2`
-- deciding whether a field can support inline, popup, blocked, hotkey-only, or
-  unsupported UX
-- showing a non-activating AppKit ghost-text overlay
-- intercepting accept keys (Tab = next word, grave/`` ` `` = full) through
-  transient Carbon hotkeys (`RegisterEventHotKey`), registered only while a
-  suggestion is armed and unregistered on hide — no Input Monitoring, matching
-  Cotypist's Accessibility-only accept mechanism
-- inserting accepted text through Accessibility, synthetic keys, or clipboard
-  paste fallback
+## Features
+
+- **Inline model completions** — short local GGUF continuations through `llama-cpp-2`
+  (Metal), debounced and gated per field.
+- **Modifier-combo accept keys** — Tab = next word, grave/`` ` `` = full accept by
+  default, now rebindable to any key plus Shift/Ctrl/Option/Command modifiers. An
+  in-app key recorder and a Shortcuts settings pane edit them; the persisted form is a
+  `modifier+keycode` string such as `shift+48` or `ctrl+shift+50`.
+- **Inline autocorrect** — high-precision trailing-word typo→correction replacement,
+  with no false-correct on real words.
+- **British-English normalization** — opt-in US→UK spelling for unambiguous American-only forms.
+- **Emoji completion** — `:shortcode`→emoji with skin-tone and gender preferences.
+- **Thesaurus / synonyms** — curated synonym suggestions for the trailing word.
+- **Per-app and per-domain control** — enable/exclude, Tab-key disable, input-collection
+  opt-out, mid-line, autocorrect, and thesaurus, resolved per app and per browser domain.
+- **Browser-domain detection** — the focused browser page's host is read from the
+  Accessibility URL and matched against domain exclusions (fail-open when no URL resolves).
+- **Model picker with RAM-fit advisory** — the Setup tab lets you choose which built-in
+  catalog model to download, each row carrying a `fits` / `tight` / `exceeds` verdict
+  for this machine, with a dest-exists guard that skips a model already on disk.
+- **Encrypted typing memory** — opt-in AES-256-GCM store of accepted completions,
+  redacted before encryption, keyed by a Keychain-managed key.
+- **Usage statistics** — a rolling 30-day accumulator (shown / accepted / dismissed /
+  superseded, words completed, latency) surfaced in the Statistics pane.
+- **Six-tab settings window** — Setup, General, Apps, Shortcuts, Statistics, About.
+- **Menu-bar icon** — a caret + double-chevron template image (it recently replaced the
+  old "CM…" text title; that title remains only as a fallback if the image fails to load).
+- **Signed deep-link config** — a fail-closed `compme://setOverride` URL scheme for
+  reversible per-app/per-domain overrides; non-reversible settings require an Ed25519
+  signature.
 
 ## Repository Layout
 
@@ -36,16 +61,31 @@ contract-first implementation and validation harness for:
 .
 ├── Cargo.toml                         # Root Rust workspace
 ├── crates/
-│   ├── platform/                      # Cross-platform adapter and UX contract
+│   ├── platform/                      # Cross-platform adapter + UX contract
+│   ├── platform_macos/                # macOS Accessibility/AppKit/Carbon adapter
 │   ├── context/                       # Pure caret/text-context helpers
-│   ├── ranker/                        # Candidate shaping helpers
 │   ├── engine_core/                   # Deterministic suggestion state machine
-│   ├── model_client/                  # Local model trait and llama.cpp backend
-│   ├── engine/                        # Runtime host for engine_core + platform + overlay
-│   ├── platform_macos/                # macOS Accessibility/AppKit adapter
+│   ├── engine/                        # Runtime host: engine_core ↔ platform ↔ overlay
+│   ├── model_client/                  # LocalModel trait + llama.cpp backend
+│   ├── model_catalog/                 # Built-in GGUF catalog + RAM-fit verdict
+│   ├── model_fetch/                   # Async model downloader (verify → atomic rename)
+│   ├── ranker/                        # Candidate shaping helpers
+│   ├── prefs/                         # Suggestion-gating preferences
+│   ├── compat/                        # Per-app compatibility tiers/quirks
+│   ├── personalization/              # Instructions / strength / sender identity
+│   ├── autocorrect/                   # Trailing-word typo correction
+│   ├── localize/                      # US↔British English normalization
+│   ├── emoji/                         # :shortcode → emoji completion
+│   ├── thesaurus/                     # Synonym suggestions
+│   ├── textcase/                      # Case-pattern detection/application
+│   ├── redaction/                     # Secret/high-entropy redaction
+│   ├── memory/                        # Encrypted typing-history store
+│   ├── stats/                         # Acceptance statistics + sparkline
+│   ├── webconfig/                     # Signed compme:// deep-link config
 │   └── app/                           # compme binary and run loop
 ├── tools/
 │   ├── acceptance/                    # A1b macOS live acceptance runner
+│   ├── bundle/                        # macOS bundle assets (URL scheme, icon)
 │   └── spike/                         # Separate A0 prototype workspace
 └── docs/
     ├── ARCHITECTURE.md
@@ -61,14 +101,28 @@ from `tools/spike/`.
 
 | Crate | Purpose |
 |-------|---------|
-| `platform` | Public platform abstraction: field handles, capabilities, insertion strategies, subscriptions, overlay presenter, and UX mode classification. |
-| `context` | Pure helpers for left/right context, left tail extraction, and prompt-prefix trimming. |
-| `ranker` | Candidate shaping helpers such as word capping, first-word extraction, and repetition penalty. |
+| `platform` | Cross-platform contract shared by the pure engine and platform adapters: field handles, capabilities, insertion strategies, subscriptions, overlay presenter, and UX-mode classification. |
+| `platform_macos` | macOS implementation of the adapter and overlay presenter using Accessibility, CoreGraphics, AppKit/Carbon, and pasteboard APIs; ghost overlay, tray, key recorder, and settings window. |
+| `context` | Pure text-context helpers around a caret (left/right context, left-tail extraction, prompt-prefix trimming). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
+| `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
 | `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2` with Metal. |
-| `engine` | Runtime host that wires the pure state machine to a `PlatformAdapter` and `OverlayPresenter`. |
-| `platform_macos` | macOS implementation of `PlatformAdapter` and `OverlayPresenter` using Accessibility, CoreGraphics, AppKit, and pasteboard APIs. |
-| `app` | `compme` binary, config loading, menu-bar status, run loop, inference worker, and shutdown ordering. |
+| `model_catalog` | Pure, static catalog of which local models the General/Setup pane offers, their download sources, and a `fits` / `tight` / `exceeds` RAM-fit verdict for the host. |
+| `model_fetch` | Pure SHA-256 integrity + resume planning, plus the blocking network downloader (`.part` → verify → atomic rename) and a `ModelDownloader` worker thread. |
+| `ranker` | Candidate shaping helpers: word capping, first-word extraction, and repetition penalty. |
+| `prefs` | Suggestion-gating preferences: per-app and per-domain enable/exclude, per-app Tab-key disable, and a global pause/snooze, resolved against an injected clock. |
+| `compat` | Pure classifier from a macOS bundle id to a compatibility tier, plus the gating policy each tier implies (mirrors the Cotypist compatibility table). |
+| `personalization` | Prompt-based personalization: global + per-app + per-domain instructions, a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
+| `autocorrect` | Pure, high-precision trailing-word typo→correction table with the query's capitalization reapplied; never "corrects" a real word. |
+| `localize` | Pure, high-precision US→British spelling normalization for American-only forms; deliberately skips ambiguous words. |
+| `emoji` | Pure `:shortcode`→emoji completion honoring skin-tone (Fitzpatrick) and gender preferences. |
+| `thesaurus` | Pure synonym lookup with the queried word's case pattern applied; supports selection and auto modes. |
+| `textcase` | Pure capitalization-pattern detection and application, shared by the text-suggestion crates. |
+| `redaction` | Pure best-effort scrubbing of emails, Luhn-valid card numbers, and high-entropy tokens before any persistence or diagnostics; biased to over-redact. |
+| `memory` | Encrypted local memory of accepted completions: redacted then AES-256-GCM encrypted to SQLite, opt-in storage modes, Keychain-managed key. |
+| `stats` | Pure rolling 30-day accumulator for shown/accepted/dismissed/superseded counts, words completed, and latency, with injected time. |
+| `webconfig` | Strict, fail-closed parser for `compme://setOverride` deep links; reversible per-app/per-domain overrides only, signed (Ed25519) links required for anything non-reversible. |
+| `app` | `compme` binary: config loading, run loop, tray menu + icon, settings window wiring, inference worker, and shutdown ordering. |
 
 ## Requirements
 
@@ -92,20 +146,47 @@ tools/spike/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 Settings layer as `env > config.env file > default`; keys with Settings
 switches persist to the file, and an env var overrides the file at relaunch.
+Many keys with a per-app split also accept `_ON_APPS` / `_OFF_APPS` lists of
+comma-separated bundle ids.
 
 | Key | Meaning |
 |-----|---------|
-| `COMPME_ENABLED` | Master suggestion on/off (also a tray toggle). |
-| `COMPME_MIDLINE` | Allow mid-line completions (also a Settings switch). |
-| `COMPME_AUTOCORRECT` | Local autocorrect replacements (also a Settings switch). |
-| `COMPME_TRAILING_SPACE` | Append a trailing space on word accept (also a Settings switch). |
-| `COMPME_ACCEPT_WORD_KEY` | macOS keycode for word accept (default Tab). |
-| `COMPME_ACCEPT_FULL_KEY` | macOS keycode for full accept (default backtick). |
-| `COMPME_MEMORY` | Typing-memory collection mode: `off` / `accepted` / `all`. |
-| `COMPME_MEMORY_PATH` | Override path for the encrypted memory store. |
-| `COMPME_MEMORY_KEY` | 64-hex memory encryption key (default: Keychain-managed). |
-| `COMPME_TRUSTED_KEY` | 64-hex Ed25519 public key for signed `compme://` links. |
-| `COMPME_LICENSE_ACCEPTED` | Comma-separated model names whose license terms were accepted (written by the app after the license click-through prompt). |
+| `COMPME_ENABLED` | Master suggestion on/off (also the tray toggle; persisted on toggle). |
+| `COMPME_DEFAULT_ENABLED` | Per-app suggestion-policy default in `prefs` (distinct from the master `COMPME_ENABLED`). |
+| `COMPME_MIDLINE` | Allow mid-line completions (also a Settings switch). `_ON_APPS` / `_OFF_APPS` override per app. |
+| `COMPME_AUTOCORRECT` | Inline typo autocorrect (default off; also a Settings switch). `_ON_APPS` / `_OFF_APPS` override per app. |
+| `COMPME_BRITISH_ENGLISH` | British-English normalization (default off). |
+| `COMPME_THESAURUS` | Inline thesaurus / synonym suggestions (default off). `_ON_APPS` / `_OFF_APPS` override per app. |
+| `COMPME_TRAILING_SPACE` | Append a trailing space on single-word accept (default off; also a Settings switch). |
+| `COMPME_EMOJI` | Emoji completion on/off. |
+| `COMPME_EMOJI_SKIN_TONE` | Preferred skin tone (Fitzpatrick) for emoji completion. |
+| `COMPME_EMOJI_GENDER` | Preferred gender (neutral / female / male) for emoji completion. |
+| `COMPME_ACCEPT_WORD_KEY` | Word-accept key as a `modifier+keycode` string (e.g. `48` or `shift+48`); default Tab (48). Applies at relaunch. |
+| `COMPME_ACCEPT_FULL_KEY` | Full-accept key as a `modifier+keycode` string (e.g. `50` or `ctrl+shift+50`); default grave/backtick (50). |
+| `COMPME_EXCLUDED_APPS` | Comma-separated bundle ids excluded from completion (persisted from the Apps pane). |
+| `COMPME_EXCLUDED_DOMAINS` | Comma-separated browser hosts excluded from completion. |
+| `COMPME_ENABLED_APPS` / `COMPME_DISABLED_APPS` | Per-app enable / Tab-disable overrides. |
+| `COMPME_NO_COLLECT_APPS` | Apps for which input is never collected into typing memory. |
+| `COMPME_CLIPBOARD_CONTEXT` | Opt-in: include clipboard text in the context block. |
+| `COMPME_SCREEN_CONTEXT` | Opt-in: include screen text in the context block. |
+| `COMPME_PREVIOUS_INPUT_CONTEXT` | Cap (characters) of previous-input context to include; off when unset. |
+| `COMPME_INSTRUCTIONS` | Custom steering instructions prepended to the prompt. |
+| `COMPME_STRENGTH` | Personalization strength (6 stops). |
+| `COMPME_SENDER_NAME` / `COMPME_SENDER_EMAIL` | Sender identity templated into the steering preamble. |
+| `COMPME_MEMORY` | Typing-memory collection mode: `off` / `accepted` / `all` (default `off`). |
+| `COMPME_MEMORY_PATH` | Override path for the encrypted memory store (store stays off without a path). |
+| `COMPME_MEMORY_KEY` | 64-hex AES key for memory (default: Keychain-managed). |
+| `COMPME_LAUNCH_AT_LOGIN` | `true`/`false` registers/unregisters the login item; absent leaves Login Items alone. |
+| `COMPME_MODEL_PATH` | Path to the GGUF model file to load (defaults to the checked-in spike model). |
+| `COMPME_TRUSTED_KEY` | 64-hex Ed25519 public key for SIGNED `compme://` links (fail-closed when unset). |
+| `COMPME_LICENSE_ACCEPTED` | Comma-separated model names whose license terms were accepted (written by the app after the click-through prompt). |
+
+Advanced tuning knobs (clamped, sensible defaults) also exist for prompt and
+debounce behavior — `COMPME_PROMPT_MODE`, `COMPME_DEBOUNCE_MS`,
+`COMPME_MAX_WORDS`, `COMPME_MAX_TOKENS`, `COMPME_HEARTBEAT_MS`,
+`COMPME_MIN_CONTEXT`, `COMPME_CANDIDATES`. Harness/diagnostic keys
+(`COMPME_ACCEPTANCE_*`, `COMPME_DIAG_*`, `COMPME_DEBUG`, `COMPME_RUN_MS`,
+`COMPME_STUB_COMPLETION`, `COMPME_CONFIG`) are for tests and debugging only.
 
 ## Quick Start
 
@@ -149,7 +230,8 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 
 ## Current Validation Gates
 
-Use these gates before treating the workspace as development-ready:
+Use these gates before treating the workspace as development-ready. The root
+suite is roughly 1,025 tests:
 
 ```sh
 cargo fmt --all -- --check
@@ -171,18 +253,24 @@ and [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for live macOS validation.
 
 At a high level:
 
-1. `platform_macos` observes focus and caret changes from the frontmost app.
+1. `platform_macos` observes focus and caret changes from the frontmost app and,
+   for browsers, reads the focused page's host from the Accessibility URL.
 2. The platform adapter emits stable `FieldHandle` values and reads
    `TextContext` from Accessibility.
 3. `engine_core::SuggestionMachine` debounces text changes and emits a
-   `RequestCompletion` command for the current field snapshot.
-4. `model_client::LocalModel` generates a short continuation from the prompt.
+   `RequestCompletion` command for the current field snapshot; the host fulfils it
+   off the machine thread so inference never blocks.
+4. `model_client::LocalModel` generates a short continuation, or a local feature
+   (autocorrect / British / emoji / thesaurus) proposes a replacement, gated by
+   per-app and per-domain preferences.
 5. `engine_core` validates the returned generation/snapshot and emits `ShowGhost`,
    `UpdateGhost`, `Insert`, or `Hide`.
 6. `platform_macos` presents ghost text through an AppKit `NSPanel`, intercepts
-   accept actions through transient Carbon hotkeys (`RegisterEventHotKey`,
-   armed only while a suggestion is shown), and inserts accepted text through
-   the safest available strategy.
+   accept actions through transient Carbon hotkeys (`RegisterEventHotKey`, armed
+   only while a suggestion is shown, supporting modifier+key combos rebound from
+   the Shortcuts pane), and inserts accepted text through the safest available
+   strategy. A menu-bar tray icon and a six-tab settings window (Setup / General /
+   Apps / Shortcuts / Statistics / About) drive configuration and the model picker.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 

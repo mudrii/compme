@@ -351,6 +351,98 @@ session contents back showed the prompt holding `😄` alone — the typed
 token was backspaced away and the emoji synthetically typed. The
 cycle-47 machinery's live residual is closed.
 
+## Live UI LOOK Gates (Settings window / tray)
+
+These are macOS-only manual gates. They are driven by launching the product
+binary with debug logging and exercising the AppKit UI by hand (the AppKit glue
+is render-only, so LOOK + log evidence is the contract — the pure halves are
+unit-tested). Launch once and watch the log:
+
+```sh
+cd ~/src/compme
+COMPME_EMOJI=1 COMPME_DEBUG=1 cargo run -p app 2>&1 | tee /tmp/cm.log
+```
+
+Open Settings from the tray menu (or the tray's Settings item). The window has
+six tabs in display order (Cotypist order, `pane_titles`):
+**Setup, General, Apps, Shortcuts, Statistics, About**. Setup, Apps,
+Statistics, and Shortcuts rows are recomposed by the run loop right before each
+show; General switches re-read their atomics on every show.
+
+### Menu-bar icon LOOK gate
+
+- The tray status item shows a **caret + double-chevron template image**
+  (`assets/tray-icon.png`, "auto-complete forward"), not the old `CM…` text.
+- Because it is set as a template image (`setTemplate(true)`), macOS tints it to
+  match the menu bar: confirm it renders correctly in both light and dark menu
+  bars. The `CM…` title is now only a decode-failure fallback.
+
+### Shortcuts tab + modifier-combo recorder LOOK gate
+
+The Shortcuts pane lists the current accept bindings with macOS modifier-glyph
+labels (⌃⌥⇧⌘ via `accept_key_modifier_glyphs` / `keycode_label_with_mods`) and
+carries a recorder box per role (Word / Full).
+
+1. Settings → **Shortcuts** → click a recorder box → press a modifier combo,
+   e.g. **Shift+F5**. The box label updates to **`⇧F5`**.
+2. The log shows the recorder capture then the live re-registration:
+   - `compme: recorder keyDown role=Word keycode=96 mask=512`
+     (F5 = keycode 96; Carbon Shift mask = 512)
+   - `compme: carbon hotkey registered id=1 keycode=96 modifiers=512`
+     (id=1 is the Word/Tab slot)
+3. The new combo **accepts live** in TextEdit (type to a suggestion, press
+   Shift+F5 → `accept Word`).
+4. Fixed-key behavior holds inside the recorder: **Esc cancels** the recording
+   (reverts to the role's current key), and **Down is rejected silently**
+   (reserved cycle key) — neither can be rebound. A capture that collides with
+   the other role's `(keycode, mask)` shows "In use — press another".
+5. Reopen Settings: the Shortcuts pane **re-syncs to the effective keymap**
+   (`effective_accept_keys_with_mods()`), so the glyph labels reflect the live
+   binding, not a stale default.
+
+Record the box label, the two log lines, and the live accept for each rebind.
+
+### Setup tab model picker LOOK gate
+
+The Setup tab carries a **"Model to download:"** popup whose items are the
+catalog rows in order (`model_menu_titles`), each suffixed with a RAM-fit
+advisory for this machine's available memory (`ram_verdict`):
+
+- `· fits`
+- `· tight — may swap under load`
+- `· exceeds available memory`
+
+The advisory is **advisory only** — it never blocks a download. To exercise:
+
+1. Open the popup and confirm one row per catalog entry
+   (`qwen2.5-0.5b-q4_k_m`, `llama-3.2-1b-q4_k_m`, `qwen2.5-1.5b-q4_k_m`,
+   `gemma-2-2b-q4_k_m`), each carrying a fit suffix.
+2. Pick a **non-recommended** model and click Download → that model downloads
+   (log: `downloading <model> (<MB> MB) — progress in this log`), proving the
+   picker index drives the target, not just `recommended()`.
+3. Re-click Download on a model already on disk → the dest-exists guard logs
+   `<model> already downloaded at <path> — delete it to re-download` (no
+   re-fetch / clobber).
+4. Pick an **encumbered** model (`llama-3.2-1b-q4_k_m` /
+   `gemma-2-2b-q4_k_m`) with no prior acceptance → the **license click-through
+   prompt** appears (the `download_gate` `NeedsLicense` path) before any fetch.
+   Today's recommended default is unencumbered, so a plain run never prompts.
+
+### Six-tab Settings walkthrough
+
+A quick LOOK pass over all six panes:
+
+- **Setup** — readiness checklist (Accessibility / Screen Recording / model
+  file) plus the model picker + Download button; rows re-probe on each show.
+- **General** — the master Enabled switch (the same atomic as the tray
+  checkmark) plus autocorrect / trailing-space / Labs mid-line switches; flips
+  live-apply and persist.
+- **Apps** — per-app recorded-input counts from the encrypted memory store;
+  count rows (`app — N`) carry a Delete button, status/empty rows do not.
+- **Shortcuts** — current bindings (glyph-labelled) + the recorder boxes above.
+- **Statistics** — shown / accepted / words / lifetime rows.
+- **About** — static version / license / no-telemetry / repo / credits text.
+
 ## Example Acceptance Binaries
 
 The live runner uses `platform_macos` examples:
@@ -384,9 +476,13 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
 
 ## Pending Manual Gates [added 2026-06-10]
 
-- **Settings window LOOK gate (pending):** 6 tabs render; General switches
-  live-flip + persist; Setup rows re-probe ≤480ms while open; Apps Delete
-  prompts with Cancel default.
+- **Settings window LOOK gate [updated 2026-06-14]:** the structural pieces are
+  now covered by the "Live UI LOOK Gates" section above (6 tabs render in
+  Cotypist order; the modifier-combo recorder, Shortcuts glyph re-sync, model
+  picker, and tray template icon each have a procedure). Still pending as a
+  timed/behavioral spot-check: General switches live-flip + persist across a
+  relaunch; Setup rows re-probe ≤480 ms while open; the Apps **Delete** button
+  prompts with **Cancel** as the default button.
 - **Encrypted memory live gate (pending):** `COMPME_MEMORY=accepted` run,
   Keychain key created, Apps tab counts appear, ciphertext-only on disk.
 - **Lifetime stats gate (pending) [updated 2026-06-12, c128]:** `stats.env` is

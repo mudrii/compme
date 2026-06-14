@@ -1,9 +1,17 @@
 # Architecture
 
 Compme is split into a pure completion core, a platform contract, a macOS
-adapter, and a local model seam. The current implementation focuses on macOS
-because the hard integration points are Accessibility, event taps, AppKit
-overlays, Secure Input, and pasteboard behavior.
+adapter, a local model seam, and a ring of small pure feature crates (text
+features, gating, personalization, privacy, catalog/download). The current
+implementation focuses on macOS because the hard integration points are
+Accessibility, event taps, AppKit overlays, Secure Input, and pasteboard
+behavior.
+
+The workspace now holds 22 crates. The shape is deliberate: almost everything
+is pure (text in → decision out, time and keys injected, no I/O), so it is
+unit-testable without a clock, a network, or AppKit. The impurity is fenced
+into three crates — `model_client` (llama.cpp), `model_fetch` (network), and
+`platform_macos` (AppKit/AX/Carbon) — and orchestrated by `app`.
 
 ## System Overview
 
@@ -12,27 +20,53 @@ Focused app text field
         │
         ▼
 platform_macos::MacosPlatformAdapter
-        │  focus/caret subscriptions, text reads, capabilities, inserts
+        │  AX worker: focus/caret subscriptions, text reads, capabilities,
+        │  inserts, accept interception (Carbon), overlay, tray, settings window
         ▼
 platform contract types
         │  FieldHandle, TextContext, Capabilities, InsertStrategy
         ▼
-engine_core::SuggestionMachine
-        │  deterministic event -> command state machine
-        ▼
-model_client::LocalModel
-        │  llama.cpp-backed completion
-        ▼
-engine_core::SuggestionMachine
-        │  validates generation + field snapshot
-        ▼
+app run loop ──────────────────────────────────────────────┐
+        │  marshals platform callbacks onto the AppKit main  │ local-replacement
+        │  thread; owns policy (prefs, compat, personalize)  │ fast path:
+        ▼                                                    │ emoji / autocorrect
+engine::Engine ── engine_core::SuggestionMachine             │ / localize /
+        │  deterministic event -> command state machine      │ thesaurus
+        │  (shapes candidates through `ranker`)              │ (no model)
+        ▼                                                    │
+model_client::LocalModel                                     │
+        │  llama.cpp-backed completion (worker thread)        │
+        ▼                                                    │
+engine_core::SuggestionMachine                               │
+        │  validates generation + field snapshot              │
+        ▼                                                    ▼
 platform_macos
-        │  overlay, accept tap, insertion
+        │  overlay, accept interception, insertion
         ▼
 Focused app text field
+
+side stores (all opt-in / off by default):
+  memory  — encrypted accepted-completion log (redaction → AES-256-GCM)
+  stats   — rolling 30-day acceptance counters + sparkline (menu bar)
+  prefs / compat / webconfig — per-app + per-domain gating and overrides
 ```
 
+Two suggestion paths share the gate. The **model path** runs left-context
+through the engine/state-machine and llama.cpp. The **local-replacement path**
+short-circuits in the observe path for the four deterministic text features
+(emoji shortcode, typo fix, US→UK, thesaurus) — no model, no latency. Both
+honor the same per-app/per-domain prefs gate.
+
 ## Workspace Crates
+
+The 22 crates fall into five groups: the **contract + core** (`platform`,
+`engine_core`, `engine`, `context`, `ranker`), the **model seam**
+(`model_client`, `model_catalog`, `model_fetch`), **pure text features**
+(`autocorrect`, `localize`, `thesaurus`, `emoji`, `textcase`), **policy &
+privacy** (`prefs`, `compat`, `personalization`, `redaction`, `memory`,
+`stats`, `webconfig`), and the **macOS host** (`platform_macos`, `app`). Every
+crate outside the model seam and `platform_macos` is pure and OS-agnostic, with
+time and keys injected, so the host owns all I/O, clocks, and toggles.
 
 ### `platform`
 
@@ -89,6 +123,127 @@ cases.
 
 The implementation stays small; per-app scoring and learned ranking remain
 future work.
+
+### `autocorrect`
+
+`autocorrect` is the **typo-fix / suggested-fix** half of the §16 gate: a
+curated, high-precision/low-recall table that maps an unambiguous misspelling
+to its correction, reapplying the query's capitalization (via `textcase`). A
+real word is never "corrected", so there are no false positives on valid input;
+ambiguous strings that are also real words (`cant`, `wont`, `weve`) are
+deliberately excluded. Full statistical autocorrect is a separate host concern.
+The host wires it into the local-replacement path (`replacement_offer`) and
+gates it on `COMPME_AUTOCORRECT`; it must not run in code editors.
+
+### `localize`
+
+`localize` is British-English normalization (§16): a curated US→UK spelling
+table that maps an American-only form to its British equivalent, reapplying the
+typed capitalization. Like `autocorrect` it is high-precision/low-recall —
+every key is American-only, so an already-British or shared spelling is never
+altered, and genuinely ambiguous forms (`meter`, `tire`, `check`, `license`,
+`practice`, `program`, `draft`) are excluded. Whole-word only; the host decides
+*when* via the `COMPME_BRITISH_ENGLISH` toggle (off by default) and feeds it
+through the local-replacement path.
+
+### `thesaurus`
+
+`thesaurus` looks a word up in a curated synonym table and returns the
+alternatives, applying the queried word's case pattern (`textcase`) so a host
+can drop a replacement straight in. The host gates it on the "thesaurus" toggle
+and chooses between *selection* mode (highlight a word → offer synonyms) and
+*auto* mode (offer as you type); the lookup is identical. Mirrors Cotypist's
+`featureThesaurus{AutoMode,SelectionMode}`.
+
+### `emoji`
+
+`emoji` suggests an emoji when the user types a `:shortcode`, honoring
+skin-tone (Fitzpatrick U+1F3FB..U+1F3FF) and gender preferences. Pure:
+detection + table lookup + modifier application. The host reads
+`COMPME_EMOJI` / `_SKIN_TONE` / `_GENDER`, offers the emoji ghost through the
+local-replacement path, and performs the actual replacement. Combining skin
+tone *and* gender (full ZWJ assembly) is deferred — a gendered match keeps the
+default skin tone.
+
+### `textcase`
+
+`textcase` detects a capitalization pattern and re-applies it to a replacement
+word or phrase, shared by `autocorrect`, `localize`, and `thesaurus` so a
+substituted word carries the same case the user typed. Pure and OS-agnostic.
+
+### `prefs`
+
+`prefs` is the suggestion-gating policy core (§8 / §16): per-app and per-domain
+enable/exclude, per-app Tab-key disable, and a global pause/snooze. Pure — a
+policy struct plus deterministic resolution against a caller-supplied clock
+(`now_ms`), so every transition is unit-testable. The run loop resolves
+`suggestion_gates_pass(app_key, left, domain, now_ms)` before either suggestion
+path produces output. Persistence and the settings UI live in the host.
+
+### `compat`
+
+`compat` classifies a macOS bundle id into a compatibility tier and the policy
+that tier implies — the deterministic core behind the §16 compatibility-parity
+table (mirroring `cotypist.app/compatibility`). It encodes per-app UX quirks
+(e.g. apps whose caret rect collapses to a line, omnibox/address-bar detection,
+mirror-window and setup-needed apps) so the host can pick the right insertion
+and overlay behavior. Live per-app verification is environment-bound; this
+crate is the pure classifier that drives gating.
+
+### `personalization`
+
+`personalization` templates prompt-based steering (§6) into a preamble that the
+host prepends to the completion prompt: custom instructions (global + per-app +
+per-domain), a 6-stop strength slider, and sender identity. Pure and
+dependency-free — no ML, no I/O. The 6 strength stops have full reach for every
+user; Cotypist's Free/Plus/Pro caps are paywall artifacts deliberately not
+cloned.
+
+### `redaction`
+
+`redaction` scrubs sensitive text before any persistence or diagnostics (§6/§7)
+— emails, Luhn-valid 13–19 digit card-like runs, and high-entropy tokens/
+secrets. Pure: text in, redacted text out, run email → secret → card so a long
+email local-part is redacted whole. It is best-effort and deliberately
+over-redacts (privacy over fidelity): a false positive loses a little stored
+context, a false negative would leak a secret. `memory` runs every record
+through it before encryption.
+
+### `memory`
+
+`memory` is the encrypted local log of accepted completions (§6 / §16). Text is
+**redacted** (`redaction`) then **encrypted** (AES-256-GCM, a random nonce per
+record); only ciphertext reaches the SQLite database — plaintext never touches
+disk. The 32-byte key comes from a `KeyProvider`: production reads it from the
+macOS Keychain (A3 live integration), tests use a fixed key. Storage is
+opt-in — `StorageMode::Off` is the default and records nothing; `AcceptedOnly`
+stores accepted completions, `AllMonitored` is the broader opt-in. Records are
+inspectable (`count` / `recent`) and deletable (`delete_all` / `delete_app`).
+
+### `stats`
+
+`stats` is a pure accumulator over a rolling 30-day window (§11 / §16): shown /
+accepted / dismissed / superseded counts, a words-completed count for the menu
+bar, and latency. Time is injected — callers pass `now_ms` on every record and
+query — so the window logic is deterministic; counts are filtered to the last
+30 days on read and pruned on write. The host renders the Statistics pane and
+menu-bar surface; `stats::sparkline` produces the per-day bar series shown in
+the settings window.
+
+### `webconfig`
+
+`webconfig` parses `compme://setOverride` deep links — the
+safe, reversible, user-visible subset of Cotypist's URL-scheme config pushes.
+The parser is strict and fail-closed: it accepts only the `compme` scheme and
+`setOverride` command, exactly one scope (`app` XOR `domain`) and one action
+(`enabled` XOR `excluded`), and rejects unknown commands/params, malformed
+scopes, and any percent-encoding. Anything non-reversible (custom instructions,
+model paths, security settings) requires `LinkTrust::Signed`:
+`parse_deep_link_with_trust` verifies a trailing `&sig=<128 hex>` **Ed25519**
+signature over the exact URL byte-prefix against a host-pinned `TrustedKey`,
+with no canonicalization and fail-closed when no key is configured. The §16
+web-config gate stays partial until URL-scheme reception (FFI) and the host
+confirmation prompt land.
 
 ### `engine_core`
 
@@ -156,6 +311,28 @@ across the round-trip; the backend is a `'static` singleton. (Earlier drafts of
 this doc said a fresh context is created per completion — that is no longer true;
 see design spec §15 G3.)
 
+### `model_catalog`
+
+`model_catalog` is the pure catalog (§15 D14) of which local GGUF models the
+host offers: display name, download URL, byte size, license, and a
+`RamVerdict`. `bytes_to_whole_gb` and `ram_verdict` turn a model size plus the
+machine's RAM (probed via `sysctl` in the host, not here) into a fit advisory —
+fits / tight / won't-fit — and a `download_gate` answers whether a download
+should be offered. The catalog is static Rust data, not a TOML file: the same
+in-repo content, no parser dependency, and invalid entries become compile
+errors. Everything here is pure; the RAM probe and IO are later slices.
+
+### `model_fetch`
+
+`model_fetch` is the model downloader (§15 D14), two halves in one crate: a
+pure core (SHA-256 integrity, resume planning — unit-testable with no IO) and a
+blocking network half (`download_url` over `ureq` with resume/restart/verify,
+plus a `ModelDownloader` worker thread). The download protocol is
+`.part` → verify SHA-256 → atomic rename, so a partial download never
+masquerades as complete. The seam stays inside the crate so protocol tests can
+drive the real network code against a loopback mini-server; nothing here
+touches AppKit or the engine.
+
 ### `engine`
 
 `engine` is the runtime host that wires `SuggestionMachine` with a
@@ -173,20 +350,33 @@ adapter-driven entry points required by the A1b macOS contract:
 
 ### `app`
 
-`app` owns the `compme` binary and the runtime wiring that P0/P1 validated.
-It is the only root crate that combines config loading, AppKit run-loop pumping,
-the menu-bar status surface, model selection, the inference worker, signal
-handling, and ordered shutdown.
+`app` owns the `compme` binary and the runtime wiring. Its `run_loop` is the
+single place where the pure crates meet AppKit: it loads config, owns all
+policy (prefs, compat, personalization), marshals platform callbacks onto the
+main thread, and dispatches both suggestion paths. It is the only root crate
+that combines config loading, AppKit run-loop pumping, the menu-bar status
+surface, the settings window, model selection/download, the inference worker,
+signal handling, and ordered shutdown.
 
 Major responsibilities:
 
 - load dotenv-style config plus environment overrides
-- choose `StubModel` or `LlamaModel`
-- warm the model before serving suggestions
+- choose `StubModel` or `LlamaModel`; warm the model before serving
+- resolve the prefs/compat gate, then drive either the model path (engine →
+  llama.cpp) or the local-replacement path (`replacement_offer`: emoji,
+  autocorrect, localize, thesaurus) in the observe path
+- compute the browser page domain from the focused element's AX URL and feed it
+  into the per-domain gate
+- apply per-app mid-line override live on focus via `Engine::set_allow_mid_word`
 - marshal platform callbacks onto the AppKit main-thread engine host
 - keep only the latest pending completion request
+- compose the settings window panes (Setup checklist, Statistics sparklines,
+  Apps recorded-input counts, About) and apply tray/window flags each heartbeat
+- pick the download target from `model_catalog` with a RAM-fit advisory,
+  enforce the click-through license gate, and spawn the `model_fetch` worker
+- apply parked accept-key rebinds in the PINNED order (set keymap → re-arm →
+  persist only on success), reverting on failure
 - derive loading/ready/disabled/blocked status for tray gating
-- dismiss suggestions when the app is disabled
 - shut down inference before dropping engine/overlay/platform resources
 
 ### `platform_macos`
@@ -209,10 +399,13 @@ Major responsibilities:
 - Insert planning across `AxSet`, `SyntheticKeys`, and `Clipboard`.
 - Stale-focus rejection before global synthetic or paste insertion.
 - Pasteboard snapshot/restore with `changeCount` guard.
-- Split accept interception using a permanent observer tap and transient
-  consumer tap.
+- Transient Carbon `RegisterEventHotKey` accept interception, armed only while
+  a suggestion is shown, with rebindable keys + modifier masks (`AcceptKeymap`).
 - AppKit `NSPanel` overlay presenter that is transparent, click-through, and
   non-activating.
+- `NSStatusItem` tray with a template menu-bar icon and status menu.
+- A 6-tab settings `NSWindow` shell (render-only; the run loop owns policy),
+  including the `KeyRecorderField` accept-key recorder.
 
 ## macOS Runtime Model
 
@@ -277,24 +470,84 @@ field's PID before insertion.
 
 ### Accept Interception
 
-Accept interception uses two event-tap roles:
+Accept keys are intercepted with a **transient Carbon `RegisterEventHotKey`**,
+registered only while a suggestion is shown and torn down when it hides — the
+key reaches the focused app normally whenever no ghost is visible. The default
+binding mirrors Cotypist: **Tab accepts the next word**, **grave/backtick (the
+key above Tab) accepts the whole completion**, with fixed bare keys for
+dismiss/cycle.
 
-- Observer tap: permanent, listen-only, used to keep tap infrastructure active.
-- Consumer tap: installed only while a suggestion is visible and armed with an
-  `AcceptAction`.
+The binding is swappable at runtime through `AcceptKeymap`, which now carries
+**Carbon modifier masks** alongside the keycodes (`word_mods` / `full_mods`).
+The collision identity is therefore `(keycode, mask)`, and `register_hotkey`
+forwards the mask, so the two accept keys can share a keycode with different
+modifiers, or carry combos like ⌃⌥⇧⌘. A mask of `0` reproduces the bare-key
+behavior exactly, so the pre-modifier config format still reads.
 
-The consumer tap is keycode-driven while armed (a completion is visible):
-**Tab (keycode 48) accepts the next word**, **grave/backtick (keycode 50, the
-key above Tab) accepts the whole completion** — matching Cotypist's default
-binding. The armed `AcceptAction` is only a visibility gate; the keycode picks
-the action. Tagged self-generated events are ignored to avoid swallowing the
-app's own synthetic insertion events.
+Bindings can be rebound live from an in-app **`KeyRecorderField`** — an `NSView`
+overlay (not an `NSTextField`) that captures `keycode + modifierFlags` from a
+live keystroke, maps the NSEvent flags onto the same Carbon mask bits, and
+**parks a rebind request** for the run loop to apply. The run loop applies it in
+a PINNED order — set keymap first, re-arm the registered hotkeys second, and
+persist only after the re-arm succeeds, reverting on failure. The Shortcuts
+settings pane renders the current binding with ⌃⌥⇧⌘ glyph labels. Self-
+generated synthetic insertion events are tagged and ignored so the app never
+swallows its own inserts.
 
 ### Overlay Presenter
 
 `MacosOverlayPresenter` is AppKit-main-thread-only. It renders ghost text in a
 borderless non-activating `NSPanel`, with click-through enabled. The panel is
 shown at global screen coordinates derived from AX caret geometry.
+
+### Tray
+
+The menu-bar surface is an `NSStatusItem` carrying a **template menu-bar icon**
+— a caret + double-chevron PNG embedded via `include_bytes!` and marked
+`setTemplate(true)` so macOS tints it for light/dark menu bars. (This replaced
+the earlier "CM…" text title.) The status menu exposes enable/disable and the
+settings window; the run loop drives loading/ready/disabled/blocked state into
+it on each heartbeat.
+
+### Settings Window
+
+The settings window is a 6-tab AppKit `NSWindow` — **Setup, General, Apps,
+Shortcuts, Statistics, About** (an `NSTabView`). It is render-only: the run loop
+owns all policy and pushes pane contents and reads back UI intents through a
+flags struct each heartbeat (the tray-flags pattern). Because the app is an
+`LSUIElement` accessory, showing the window promotes the activation policy to
+`Regular`; a visibility *poll* (not a window delegate) detects any close —
+including the red button — and demotes back to `Accessory`, so no Dock icon is
+stranded.
+
+The Setup tab carries a **model picker** (`NSPopUpButton`) that selects the
+download target from `model_catalog`, shown with a RAM-fit advisory; a
+click-through **license gate** must be accepted before a download starts, and a
+dest-exists guard avoids redundant downloads. The Statistics tab renders the
+`stats` sparkline rows; the Apps tab lists per-app recorded-input counts with
+per-row delete; General carries feature toggles (autocorrect, trailing-space,
+etc.); the Shortcuts tab shows the current accept binding and hosts the
+recorder.
+
+### Model Catalog, Fetch, and Picker
+
+`model_catalog` supplies the offered models and the pure RAM-fit verdict; the
+host probes machine RAM via `sysctl` and renders the advisory. When the user
+picks a model and accepts its license, the run loop spawns the `model_fetch`
+`ModelDownloader` worker, which downloads to a `.part` file, verifies the
+SHA-256, and atomically renames it into place. The chosen model then feeds
+`LlamaModel` on the inference worker thread.
+
+### Local-Replacement Path
+
+Independent of the model path, the run loop offers **local replacements** in the
+observe path: `replacement_offer` tries, in order, an emoji `:shortcode`, a
+typo fix (`autocorrect`), a US→UK normalization (`localize`), and a thesaurus
+synonym, each gated by its toggle and reapplying the typed case via `textcase`.
+These need no model and add no latency. They pass through the same
+`suggestion_gates_pass` per-app + per-domain gate as model completions; the
+domain is the focused browser page's host, read from the AX URL attribute when
+a browser is frontmost (`None` otherwise).
 
 ## Spike Workspace
 
@@ -312,6 +565,7 @@ Spike binaries:
 - `p5_twotap`: observer/consumer tap split proof.
 - `p6_overlay`: AppKit overlay proof.
 - `p7_smoke`: read -> infer -> overlay smoke path.
+- `p8_carbon_hotkey`: transient Carbon `RegisterEventHotKey` accept proof.
 
 The spike should not be treated as production architecture. It is retained as
 evidence and a reproducible harness for low-level behavior.

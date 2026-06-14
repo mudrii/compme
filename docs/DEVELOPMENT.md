@@ -16,12 +16,12 @@ Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
 
 ## Repository State
 
-The current checkout has no git tags. Treat the code as unreleased workspace
-behavior unless a future release process adds tags, release notes, or packaged
-artifacts.
+The current checkout is on branch `spike/a0` and has no git tags. Treat the
+code as unreleased workspace behavior unless a future release process adds tags,
+release notes, or packaged artifacts.
 
-The root `Cargo.toml` is a Rust workspace with these members
-([updated 2026-06-11] — keep in sync with `Cargo.toml`):
+The root `Cargo.toml` is a Rust workspace with 22 members
+([updated 2026-06-14] — keep in sync with `Cargo.toml`):
 
 - `crates/platform` — cross-platform adapter contract
 - `crates/context`, `crates/ranker`, `crates/engine_core`, `crates/engine` — suggestion pipeline
@@ -67,7 +67,7 @@ tools/spike/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 ### Selecting the completion model
 
 `compme` resolves the model path with env > `config.env` > built-in default
-(`run_loop::DEFAULT_MODEL`):
+(`run_loop::DEFAULT_MODEL`, which is `tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf`):
 
 ```sh
 # one-off override
@@ -76,6 +76,7 @@ COMPME_MODEL_PATH=/abs/path/to/model.gguf compme
 
 ```text
 # persistent: $HOME/Library/Application Support/compme/config.env
+# (or wherever COMPME_CONFIG points)
 COMPME_MODEL_PATH=/abs/path/to/model.gguf
 ```
 
@@ -83,12 +84,34 @@ The MVP default is **Qwen2.5-0.5B Q4_K_M** — chosen for the warm sub-150 ms fi
 token the latency gate requires, not for output quality. The reference app
 (Cotypist) ships a far larger default (~3 GB Gemma 4) behind a downloaded,
 tiered catalog. Any GGUF that `llama-cpp-2` can load works via the override
-above, so tiering up is a config change, not a code change. A model catalog +
-download manager have shipped (the Setup tab downloads the recommended model
-with resume, hash verify-before-rename once catalog hashes are pinned, and a
-license click-through gate — see
-`docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` §15 D14); the
-model-selection picker UI is the remaining A3 item.
+above, so tiering up is a config change, not a code change.
+
+**In-app model picker (Setup tab).** The Setup tab now exposes a
+"Model to download:" popup over the built-in `model_catalog` (four entries,
+smallest first: `qwen2.5-0.5b-q4_k_m`, `llama-3.2-1b-q4_k_m`,
+`qwen2.5-1.5b-q4_k_m`, `gemma-2-2b-q4_k_m`). The picker defaults to the
+recommended entry (the smallest unencumbered model) and downloads the selected
+catalog model on click into
+`$HOME/Library/Application Support/compme/models/<name>.gguf`. Three behaviors
+are wired (D14):
+
+- **RAM-fit advisory** — each popup row is suffixed with its `ram_verdict` for
+  the machine's available memory (`fits` / `tight — may swap under load` /
+  `exceeds available memory`). Advisory only; it never blocks a download.
+- **License click-through** — every download path routes through
+  `model_catalog::download_gate`. Unencumbered (Apache-2.0) entries proceed
+  silently; gated entries (Llama Community, Gemma Terms) prompt a terms
+  click-through that fails closed and is remembered once-per-model in
+  `COMPME_LICENSE_ACCEPTED`.
+- **Dest-exists guard** — a present, non-empty `.gguf` at the destination is not
+  re-downloaded (`model_present`), so a repeat "Download" click never clobbers a
+  good file; an interrupted 0-byte stub is treated as absent and re-fetched.
+
+On a completed download the log prints the `COMPME_MODEL_PATH=…` line to point a
+relaunch at the new file. Downloads use `model_fetch` with hash
+verify-before-rename once catalog hashes are pinned (today every
+`expected_sha256` is `None`). See
+`docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` §15 D14.
 
 ## Root Workspace Commands
 
@@ -108,7 +131,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 Test:
 
 ```sh
-cargo test --workspace --all-targets
+cargo test --workspace
 ```
 
 Build:
@@ -117,9 +140,11 @@ Build:
 cargo build --workspace --all-targets
 ```
 
-Use `--all-targets` for tests and clippy. The macOS acceptance regression
-coverage includes example targets, and plain `cargo test --workspace` will not
-run those tests.
+The suite is ~1025 tests. Use `--all-targets` for clippy and build so the macOS
+example regression targets are compiled; add `--all-targets` to the test command
+(`cargo test --workspace --all-targets`) when you also want to *run* the
+`platform_macos` example regression tests, which plain `cargo test --workspace`
+does not execute.
 
 ## Spike Commands
 
@@ -143,7 +168,7 @@ Run this before considering a change ready for review:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
+cargo test --workspace
 cargo build --workspace --all-targets
 
 cd tools/spike
@@ -152,6 +177,11 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --bins
 ```
+
+The root suite is ~1025 tests. The `tools/spike` workspace is separate from the
+root workspace — root commands do not validate it, so it carries its own gate.
+Use `cargo test --workspace --all-targets` instead of `cargo test --workspace`
+when you also need the `platform_macos` example regression tests to run.
 
 For macOS adapter work, also run the live acceptance harness when the GUI state
 is available:
@@ -162,7 +192,20 @@ tools/acceptance/run-a1b-live-gates.sh
 
 ## Test Strategy
 
-The repository uses focused Rust unit tests and example-target tests.
+The repository follows test-first discipline: the pure cores are written and
+unit-tested before the glue that calls them, so config parsing, model selection,
+catalog/picker resolution, and pipeline shaping are all provable without
+touching the environment, the filesystem, or a real model. The
+lookup-injection pattern (`Config::from_lookup`, `config_file_path_from`) exists
+precisely so these rules stay unit-testable without mutating the process
+environment.
+
+The AppKit/FFI glue in `platform_macos` (and the AppKit slice of the model
+picker) is build-and-LOOK-verified rather than unit-tested: it is compiled by
+the `--all-targets` gate and exercised live through the acceptance harness, not
+asserted in pure unit tests. The pure helpers it consumes (e.g. the picker's
+`model_menu_titles` / `selected_catalog_entry`, the catalog's `ram_verdict` and
+`download_gate`) are unit-tested in their owning crates.
 
 Root workspace coverage includes:
 
@@ -171,10 +214,18 @@ Root workspace coverage includes:
 - UX classification and subscription behavior in `platform`
 - deterministic event/command behavior in `engine_core`
 - local model trait and latency coverage in `model_client`
+- pure model selection / picker / catalog logic in `app` and `model_catalog`
 - macOS adapter unit tests and example regression tests in `platform_macos`
 
 The macOS example tests are important because they verify behavior used by live
-acceptance binaries. Keep them in the `--all-targets` gate.
+acceptance binaries. Compile them via the `--all-targets` gate; run them with
+`cargo test --workspace --all-targets`.
+
+**Known flake.** A small number of `platform_macos` tests share the process-wide
+general `NSPasteboard`, so running them in parallel can intermittently fail when
+two tests touch the clipboard at once. They pass when run isolated (single test
+thread / a focused `cargo test`). This is a test-harness artifact, not a product
+bug.
 
 Spike coverage includes:
 
