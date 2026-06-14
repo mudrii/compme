@@ -100,6 +100,38 @@
   - Acceptance scripts still contain a Minor AppleScript quoting hardening opportunity in env-provided text paths.
 - Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
 
+## 2026-06-15 03:56:03 +08 - Completed
+
+- Task selected: Fix the remaining Minor doc drift around accepted-only keychain validation wording in the older MVP spec.
+- Why it was selected: The previous review cycle left one loop-doable Minor finding after the third audit pass; the persistent objective asks to fix review findings before declaring completion.
+- Files changed:
+  - `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md`
+  - `.codex/loop-state.md`
+- Tests added/updated: None; docs-only clarification.
+- Verification commands and result:
+  - `rg -n "live keychain validation|Accepted-only keychain|AllMonitored live GUI/privacy|§16 acceptance stays partial" docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md docs/superpowers/specs/2026-06-09-a2-parity-design.md docs/ACCEPTANCE.md` passed and confirmed the stale phrase was gone from the edited paragraph.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `graphify update .` passed.
+  - `git diff --check` passed before the state-file update.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1074`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+- Test count if available: root `1074` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed: None; the tick addressed a Minor docs finding. Four read-only review passes over the docs change reported no Critical, Important, or Minor findings.
+- Blocked or skipped work remaining:
+  - AllMonitored live GUI/privacy validation remains blocked/manual because it requires an unlocked macOS GUI session, real focused text targets, Accessibility/Secure Input state control, and encrypted-store inspection.
+  - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
+  - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
+- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
+
 ## 2026-06-15 03:51:03 +08 - Completed
 
 - Task selected: Re-validate the current P2 review finding that `COMPME_MEMORY=all` is parsed but not honored by the app loop.

@@ -473,10 +473,9 @@ A feature is not "Cotypist parity" until its gate below passes (automated where 
 
 **2026-06-09 test-audit status:** current code has deterministic coverage for
 prompt construction, per-request app-scoped personalization, redaction, and
-memory core behavior. §16 acceptance stays partial until settings persistence,
-live keychain validation (the Keychain-backed `KeyProvider` is code-complete:
-`platform_macos::keychain`, generate-on-first-use, env key as operator
-override), and live before/after completion diffs are recorded.
+memory core behavior. Accepted-only keychain + on-disk validation is complete;
+§16 acceptance stays partial until settings persistence, AllMonitored live
+GUI/privacy validation, and live before/after completion diffs are recorded.
 
 ### Context-source parity (A2)
 | Feature | Acceptance gate |
