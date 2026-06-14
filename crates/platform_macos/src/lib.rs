@@ -2267,6 +2267,11 @@ pub struct AcceptKeymap {
     full: i64,
     dismiss: i64,
     cycle: i64,
+    /// Carbon modifier masks for the two rebindable accept keys (modifier-combo
+    /// support, slice 1). 0 = bare key (today's behavior). Dismiss/cycle are
+    /// fixed bare keys, so they carry no mask.
+    word_mods: u32,
+    full_mods: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2302,6 +2307,8 @@ impl Default for AcceptKeymap {
             full: KEYCODE_GRAVE,
             dismiss: KEYCODE_ESCAPE,
             cycle: KEYCODE_DOWN,
+            word_mods: 0,
+            full_mods: 0,
         }
     }
 }
@@ -2327,19 +2334,22 @@ impl AcceptKeymap {
     /// binding on the literal Tab keycode when the focused app has per-app
     /// Tab disable (§16) — an unregistered hotkey lets Tab reach the app
     /// untouched, which is the entire point. Pure (no global reads).
-    pub fn arm_bindings(&self, suppress_tab: bool) -> Vec<(u32, i64)> {
+    pub fn arm_bindings(&self, suppress_tab: bool) -> Vec<(u32, i64, u32)> {
         self.carbon_bindings()
             .into_iter()
-            .filter(|&(_, code)| !(suppress_tab && code == KEYCODE_TAB))
+            .filter(|&(_, code, _)| !(suppress_tab && code == KEYCODE_TAB))
             .collect()
     }
 
-    pub fn carbon_bindings(&self) -> [(u32, i64); 4] {
+    /// The Carbon `(hotkey-id, keycode, modifier-mask)` triples for this keymap.
+    /// The mask is 0 for a bare key (the default for all four bindings); the two
+    /// rebindable keys can carry a non-zero Carbon modifier mask (slice 1).
+    pub fn carbon_bindings(&self) -> [(u32, i64, u32); 4] {
         [
-            (CARBON_HOTKEY_TAB, self.word),
-            (CARBON_HOTKEY_GRAVE, self.full),
-            (CARBON_HOTKEY_ESCAPE, self.dismiss),
-            (CARBON_HOTKEY_DOWN, self.cycle),
+            (CARBON_HOTKEY_TAB, self.word, self.word_mods),
+            (CARBON_HOTKEY_GRAVE, self.full, self.full_mods),
+            (CARBON_HOTKEY_ESCAPE, self.dismiss, 0),
+            (CARBON_HOTKEY_DOWN, self.cycle, 0),
         ]
     }
 
@@ -2349,27 +2359,52 @@ impl AcceptKeymap {
     pub fn keycode_for_hotkey_id(&self, id: u32) -> Option<i64> {
         self.carbon_bindings()
             .iter()
-            .find(|(hid, _)| *hid == id)
-            .map(|&(_, keycode)| keycode)
+            .find(|(hid, _, _)| *hid == id)
+            .map(|&(_, keycode, _)| keycode)
     }
 
     /// Rebind the two accept keys (word/full) by keycode; `None` keeps the
     /// default for that key. Dismiss (Esc) and cycle (Down) are fixed. Fails if a
     /// keycode is negative, or if any two of the four bindings would collide.
     pub fn from_accept_keys(word: Option<i64>, full: Option<i64>) -> Result<Self, KeymapError> {
+        Self::from_accept_keys_with_mods(word, full, 0, 0)
+    }
+
+    /// Like [`AcceptKeymap::from_accept_keys`] but the two rebindable keys carry a
+    /// Carbon modifier mask (modifier-combo support, slice 1). A binding is
+    /// identified by `(keycode, mask)`, so two keys collide only when BOTH match —
+    /// Tab (word) and Shift+Tab (full) are distinct and may coexist. `word_mods`/
+    /// `full_mods` of 0 reproduce the bare-key behavior exactly. Fails if a keycode
+    /// is negative, or if any two of the four bindings share a keycode AND mask.
+    pub fn from_accept_keys_with_mods(
+        word: Option<i64>,
+        full: Option<i64>,
+        word_mods: u32,
+        full_mods: u32,
+    ) -> Result<Self, KeymapError> {
         let map = Self {
             word: word.unwrap_or(KEYCODE_TAB),
             full: full.unwrap_or(KEYCODE_GRAVE),
+            word_mods,
+            full_mods,
             ..Self::default()
         };
         let keys = [map.word, map.full, map.dismiss, map.cycle];
         if let Some(&bad) = keys.iter().find(|&&k| k < 0) {
             return Err(KeymapError::InvalidKeycode(bad));
         }
-        for i in 0..keys.len() {
-            for j in (i + 1)..keys.len() {
-                if keys[i] == keys[j] {
-                    return Err(KeymapError::Collision(keys[i]));
+        // Collision is on the full binding identity (keycode, mask), not keycode
+        // alone — dismiss/cycle are fixed bare keys so their mask is 0.
+        let bindings = [
+            (map.word, map.word_mods),
+            (map.full, map.full_mods),
+            (map.dismiss, 0u32),
+            (map.cycle, 0u32),
+        ];
+        for i in 0..bindings.len() {
+            for j in (i + 1)..bindings.len() {
+                if bindings[i] == bindings[j] {
+                    return Err(KeymapError::Collision(bindings[i].0));
                 }
             }
         }
@@ -2523,9 +2558,10 @@ fn install_carbon_accept_hotkeys(
         hotkeys: Vec::new(),
         arm_id,
     };
-    for (id, keycode) in accept_keymap().arm_bindings(TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed))
+    for (id, keycode, mask) in
+        accept_keymap().arm_bindings(TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed))
     {
-        resource.register_hotkey(target, id, keycode)?;
+        resource.register_hotkey(target, id, keycode, mask)?;
     }
 
     Ok(Box::new(resource) as WorkerResource)
@@ -2581,6 +2617,8 @@ static ACCEPT_KEYMAP: std::sync::RwLock<AcceptKeymap> = std::sync::RwLock::new(A
     full: KEYCODE_GRAVE,
     dismiss: KEYCODE_ESCAPE,
     cycle: KEYCODE_DOWN,
+    word_mods: 0,
+    full_mods: 0,
 });
 
 /// Per-app Tab suppression (§16 tab_disabled): the run loop sets this on
@@ -2648,6 +2686,7 @@ impl WorkerAcceptTapResource {
         target: EventTargetRef,
         id: u32,
         keycode: i64,
+        modifiers: u32,
     ) -> Result<(), PlatformError> {
         let keycode = u32::try_from(keycode).map_err(|_| PlatformError::CannotComplete {
             reason: format!("invalid Carbon accept-key keycode: {keycode}"),
@@ -2656,7 +2695,7 @@ impl WorkerAcceptTapResource {
         let status = unsafe {
             RegisterEventHotKey(
                 keycode,
-                0,
+                modifiers,
                 EventHotKeyID {
                     signature: HOTKEY_SIGNATURE,
                     id,
@@ -2675,7 +2714,9 @@ impl WorkerAcceptTapResource {
             // Live diagnostic: proves which accept keys were actually
             // registered (and on which arm cycle) when a physical press
             // appears to do nothing.
-            eprintln!("compme: carbon hotkey registered id={id} keycode={keycode}");
+            eprintln!(
+                "compme: carbon hotkey registered id={id} keycode={keycode} modifiers={modifiers}"
+            );
         }
         self.hotkeys.push(hotkey_ref);
         Ok(())
@@ -7103,7 +7144,7 @@ mod tests {
         // stays untouched — the swap test owns it; this test works on a
         // local map only).
         let map = AcceptKeymap::from_accept_keys(Some(122), Some(120)).expect("valid rebind");
-        for (id, keycode) in map.carbon_bindings() {
+        for (id, keycode, _mask) in map.carbon_bindings() {
             // registration → inverse agrees
             assert_eq!(map.keycode_for_hotkey_id(id), Some(keycode), "id {id}");
             // registration → decision agrees (every registered key maps to a
@@ -8054,13 +8095,13 @@ mod tests {
         assert_eq!(
             bindings,
             [
-                (CARBON_HOTKEY_TAB, KEYCODE_TAB),
-                (CARBON_HOTKEY_GRAVE, KEYCODE_GRAVE),
-                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE),
-                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN),
+                (CARBON_HOTKEY_TAB, KEYCODE_TAB, 0),
+                (CARBON_HOTKEY_GRAVE, KEYCODE_GRAVE, 0),
+                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE, 0),
+                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN, 0),
             ]
         );
-        for (id, keycode) in bindings {
+        for (id, keycode, _mask) in bindings {
             assert_eq!(carbon_hotkey_keycode(id), Some(keycode));
         }
     }
@@ -8080,10 +8121,10 @@ mod tests {
         assert_eq!(
             map.carbon_bindings(),
             [
-                (CARBON_HOTKEY_TAB, KEYCODE_TAB),
-                (CARBON_HOTKEY_GRAVE, KEYCODE_GRAVE),
-                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE),
-                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN),
+                (CARBON_HOTKEY_TAB, KEYCODE_TAB, 0),
+                (CARBON_HOTKEY_GRAVE, KEYCODE_GRAVE, 0),
+                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE, 0),
+                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN, 0),
             ]
         );
         // The id→keycode inverse used by the Carbon handler agrees with it.
@@ -8113,11 +8154,56 @@ mod tests {
         assert_eq!(
             map.carbon_bindings(),
             [
-                (CARBON_HOTKEY_TAB, 122),
-                (CARBON_HOTKEY_GRAVE, 120),
-                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE),
-                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN),
+                (CARBON_HOTKEY_TAB, 122, 0),
+                (CARBON_HOTKEY_GRAVE, 120, 0),
+                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE, 0),
+                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN, 0),
             ]
+        );
+    }
+
+    #[test]
+    fn modifier_combo_collision_compares_keycode_and_modifiers() {
+        // The Carbon shiftKey modifier bit (slice 2 introduces the named
+        // constant alongside the NSEvent-flags map that consumes it).
+        const SHIFT: u32 = 512;
+        // Slice 1 headline: a binding is identified by (keycode, modifier mask),
+        // not keycode alone. So the SAME keycode under DIFFERENT modifiers is two
+        // distinct accept keys — Tab for word, Shift+Tab for full must coexist.
+        let map = AcceptKeymap::from_accept_keys_with_mods(
+            Some(KEYCODE_TAB),
+            Some(KEYCODE_TAB),
+            0,
+            SHIFT,
+        )
+        .expect("Tab and Shift+Tab are different bindings — no collision");
+        assert_eq!(
+            map.carbon_bindings(),
+            [
+                (CARBON_HOTKEY_TAB, KEYCODE_TAB, 0),
+                (CARBON_HOTKEY_GRAVE, KEYCODE_TAB, SHIFT),
+                (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE, 0),
+                (CARBON_HOTKEY_DOWN, KEYCODE_DOWN, 0),
+            ]
+        );
+
+        // Same keycode AND same mask collides exactly as before.
+        assert_eq!(
+            AcceptKeymap::from_accept_keys_with_mods(Some(KEYCODE_TAB), Some(KEYCODE_TAB), 0, 0),
+            Err(KeymapError::Collision(KEYCODE_TAB))
+        );
+
+        // A modified word key does NOT collide with a fixed bare key of the same
+        // keycode: Shift+Esc as word is distinct from bare Esc (dismiss).
+        assert!(
+            AcceptKeymap::from_accept_keys_with_mods(Some(KEYCODE_ESCAPE), None, SHIFT, 0).is_ok(),
+            "Shift+Esc (word) is distinct from bare Esc (dismiss)"
+        );
+
+        // The plain constructor is exactly the zero-modifier case.
+        assert_eq!(
+            AcceptKeymap::from_accept_keys(Some(122), Some(120)),
+            AcceptKeymap::from_accept_keys_with_mods(Some(122), Some(120), 0, 0),
         );
     }
 
@@ -8188,7 +8274,7 @@ mod tests {
         assert_eq!(map.arm_bindings(false).len(), 4);
         let armed = map.arm_bindings(true);
         assert_eq!(armed.len(), 3);
-        assert!(armed.iter().all(|&(_, code)| code != KEYCODE_TAB));
+        assert!(armed.iter().all(|&(_, code, _)| code != KEYCODE_TAB));
 
         // Suppression targets the LITERAL Tab keycode, not the word role:
         // a word key rebound elsewhere keeps all four bindings.
