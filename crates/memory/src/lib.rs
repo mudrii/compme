@@ -1,10 +1,13 @@
-//! Encrypted local memory of accepted completions (design spec §6 / §16).
+//! Encrypted local memory for accepted completions or monitored typing (design spec §6 / §16).
 //!
 //! Privacy model: text is **redacted** (`redaction`) before it is **encrypted**
-//! (AES-256-GCM, random nonce per record) and only the ciphertext is written to
-//! the SQLite database — plaintext never touches disk. The 32-byte key comes
-//! from a [`KeyProvider`]; production supplies it from the OS keystore (Keychain
-//! on macOS — A3 live integration), tests supply a fixed key.
+//! (AES-256-GCM, random nonce per record) and only text ciphertext is written to
+//! the SQLite database — text plaintext never touches disk. The app identifier is
+//! kept as plaintext metadata for per-app counts and deletion, and is also bound
+//! into the AEAD as AAD so rows cannot be relabeled and decrypted under another
+//! app. The 32-byte key comes from a [`KeyProvider`]; production supplies it from
+//! the OS keystore (Keychain on macOS — A3 live integration), tests supply a
+//! fixed key.
 //!
 //! Storage is **opt-in**: with [`StorageMode::Off`] (the default) nothing is
 //! recorded. `AcceptedOnly` stores accepted completions; `AllMonitored` is the
@@ -69,7 +72,8 @@ impl From<rusqlite::Error> for MemoryError {
 
 type Result<T> = std::result::Result<T, MemoryError>;
 
-/// Encrypted store of accepted completions.
+/// Encrypted store for accepted completions and, in `AllMonitored`, monitored
+/// typing.
 pub struct MemoryStore {
     conn: Connection,
     cipher: Aes256Gcm,

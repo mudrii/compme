@@ -5944,8 +5944,8 @@ mod tests {
     }
 
     /// Upper bound for the test polling waits below. Generous on purpose: the
-    /// full `cargo test --workspace` run launches many test binaries in
-    /// parallel, oversubscribing the cores, so the 250 ms
+    /// full `cargo test --workspace --all-targets` run launches many test
+    /// binaries in parallel, oversubscribing the cores, so the 250 ms
     /// (`APP_REBIND_POLL_INTERVAL`) rebind-poll thread can be scheduled slowly.
     /// Each waiter returns the instant the count is reached, so a large ceiling
     /// costs nothing on green and only bounds genuine hangs. (The historical

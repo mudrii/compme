@@ -39,5 +39,63 @@
   - `git diff --check` passed.
 - Test count if available: app crate `276` tests passed; `platform_macos` crate `224` tests passed; spike crate `28` unit tests plus `1` nonignored model integration test passed, with the GPU/model-backed spike test still ignored by design.
 - Critical/Important review findings fixed: wired AllMonitored monitored typing into memory; avoided storing pre-existing field snapshots by using inserted deltas; buffered monitored text to redaction boundaries; applied same-tick policy before persistence; honored trust, secure input, enabled state, snooze, app/domain excludes, collection-off, volatile `pid:N`, terminal compatibility, browser-domain freshness, and configured-store behavior; refreshed secure state before monitored flush; refreshed browser domain when domain rules exist; gated insertion-delta work and focus baseline reads behind an active AllMonitored store; prevented oversized insertions from replaying stale partial buffers.
-- Blocked or skipped work remaining: AllMonitored live GUI/product privacy gate remains pending because it requires an unlocked macOS GUI session, real TextEdit/browser focus/caret driving, Accessibility/secure-input state, and manual product validation. General README/architecture wording still describes memory primarily as accepted completions and can be aligned in a separate docs tick.
-- Commit hash and push confirmation, or DRY/blocked status: Pending commit/push.
+- Blocked or skipped work remaining: AllMonitored live GUI/product privacy gate remains pending because it requires an unlocked macOS GUI session, real TextEdit/browser focus/caret driving, Accessibility/secure-input state, and manual product validation.
+- Commit hash and push confirmation, or DRY/blocked status: Committed and pushed as `2ba9a65303ea2077897fd2ea94564f0959111468`; verified local HEAD equaled `origin/spike/a0` on 2026-06-15.
+
+## 2026-06-15 Cycle
+
+- Task selected: Fix the current review findings around all-monitored follow-up coverage, model download integrity, prompt-log privacy, and plan/gate documentation alignment.
+- Why it was selected: The active review reported no Critical findings but multiple Important issues that were loop-doable in one tick and directly affected privacy, supply-chain verification, CI coverage, and acceptance-source-of-truth consistency.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/release.yml`
+  - `README.md`
+  - `crates/app/src/run_loop.rs`
+  - `crates/memory/src/lib.rs`
+  - `crates/model_catalog/src/lib.rs`
+  - `crates/platform_macos/src/lib.rs`
+  - `docs/ACCEPTANCE.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/DEVELOPMENT.md`
+  - `docs/RELEASING.md`
+  - `docs/superpowers/plans/2026-06-04-a1b-macos-adapter-contract.md`
+  - `docs/superpowers/specs/2026-06-03-cross-platform-review.md`
+  - `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md`
+  - `docs/superpowers/specs/2026-06-09-a2-parity-design.md`
+  - `docs/superpowers/specs/2026-06-10-a3-settings-ui-design.md`
+- Tests added/updated:
+  - Added `model_catalog::tests::all_catalog_hashes_are_pinned_lowercase_sha256_hex`.
+  - Added `model_catalog::tests::catalog_hashes_match_recorded_upstream_provenance`.
+  - Added `run_loop::tests::request_log_does_not_emit_prompt_text`.
+- Verification commands and result:
+  - `cargo test -p model_catalog all_catalog_hashes_are_pinned_lowercase_sha256_hex` failed RED before hashes were pinned, then passed after implementation.
+  - `cargo test -p app request_log_does_not_emit_prompt_text` failed RED before raw prompt logging was removed, then passed after implementation.
+  - `graphify update .` passed after code changes.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets` initially hit the known NSPasteboard parallelism flake in `pasteboard_restore_falls_back_to_string_when_items_are_empty`; isolated rerun passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `git diff --check` passed.
+  - Stale-text/overclaim scan passed with no matches for the reviewed contradiction patterns.
+- Test count if available: root serialized gate included app crate `277` tests and `platform_macos` crate `224` tests plus workspace unit/example/doc tests; spike gate passed `28` unit tests and `1` nonignored integration test with the Metal/GGUF test still ignored by design.
+- Critical/Important review findings fixed:
+  - Pinned every built-in model catalog entry with SHA-256 values and committed Hugging Face provenance (`x-linked-etag` + repo commit) validated by tests.
+  - Replaced always-on raw prompt stderr logging with prompt length only and covered it through a formatter-level privacy test.
+  - Documented memory's plaintext app metadata as deliberate per-app count/delete metadata while keeping text plaintext off disk.
+  - Updated CI and full local gates to use `cargo test --workspace --all-targets`.
+  - Removed unsafe manual release dispatch from the release workflow and guarded releases to `v*` tags.
+  - Reconciled acceptance docs/specs around rebuilt scripted Carbon gates versus supplemental physical-key UX confirmation.
+  - Reconciled A2/A3 plan rows so env/config backing is not overstated as settings UI.
+  - Updated stale loop-state commit/push status from the prior cycle.
+- Blocked or skipped work remaining:
+  - Input Monitoring revoked spot-check remains pending as a manual permission-state confirmation.
+  - AllMonitored live GUI/product privacy gate remains pending because it requires an unlocked macOS GUI session, real TextEdit/browser focus/caret driving, Accessibility/secure-input state, and manual product validation.
+  - Context and Personalization settings controls remain deferred where only env/config backing exists.
+  - Acceptance scripts still contain a Minor AppleScript quoting hardening opportunity in env-provided text paths.
+- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.

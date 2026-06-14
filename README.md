@@ -81,8 +81,9 @@ For development, run unbundled with `cargo run -p app`.
 - **Model picker with RAM-fit advisory** — the Setup tab lets you choose which built-in
   catalog model to download, each row carrying a `fits` / `tight` / `exceeds` verdict
   for this machine, with a dest-exists guard that skips a model already on disk.
-- **Encrypted typing memory** — opt-in AES-256-GCM store of accepted completions,
-  redacted before encryption, keyed by a Keychain-managed key.
+- **Encrypted typing memory** — opt-in AES-256-GCM store for accepted completions
+  or all monitored typing, redacted before encryption, keyed by a
+  Keychain-managed key.
 - **Usage statistics** — a rolling 30-day accumulator (shown / accepted / dismissed /
   superseded, words completed, latency) surfaced in the Statistics pane.
 - **Six-tab settings window** — Setup, General, Apps, Shortcuts, Statistics, About.
@@ -156,7 +157,7 @@ from `tools/spike/`.
 | `thesaurus` | Pure synonym lookup with the queried word's case pattern applied; supports selection and auto modes. |
 | `textcase` | Pure capitalization-pattern detection and application, shared by the text-suggestion crates. |
 | `redaction` | Pure best-effort scrubbing of emails, Luhn-valid card numbers, and high-entropy tokens before any persistence or diagnostics; biased to over-redact. |
-| `memory` | Encrypted local memory of accepted completions: redacted then AES-256-GCM encrypted to SQLite, opt-in storage modes, Keychain-managed key. |
+| `memory` | Encrypted local memory for accepted completions or all monitored typing: text is redacted then AES-256-GCM encrypted to SQLite, opt-in storage modes, Keychain-managed key, plaintext app metadata for per-app counts/delete. |
 | `stats` | Pure rolling 30-day accumulator for shown/accepted/dismissed/superseded counts, words completed, and latency, with injected time. |
 | `webconfig` | Strict, fail-closed parser for `compme://setOverride` deep links; reversible per-app/per-domain overrides only, signed (Ed25519) links required for anything non-reversible. |
 | `app` | `compme` binary: config loading, run loop, tray menu + icon, settings window wiring, inference worker, and shutdown ordering. |

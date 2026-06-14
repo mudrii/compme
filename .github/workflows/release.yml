@@ -3,7 +3,6 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,6 +13,7 @@ env:
 jobs:
   release:
     name: Build · bundle · publish (macOS)
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4

@@ -155,7 +155,7 @@ Tier = best achievable interaction. "Accept" = how the user commits a suggestion
 
 | Platform / env | Tier | Accept mechanism | Overlay | Notes |
 |---|---|---|---|---|
-| **macOS 14+** | **Full inline** | CGEventTap (Input Monitoring) — *our current impl* | NSPanel | Reference platform (Sub-project A). **[CORR 06-09 — F1/D1]** This is *Compme's* mechanism, **not Cotypist parity**: Cotypist ships **no CGEventTap** (AX + CGEvent synthesis + **Carbon `RegisterEventHotKey`**, Accessibility-only). Dropping the tap for a Carbon hotkey is the open A1b Task 5c go/no-go (design spec §15 F1). |
+| **macOS 14+** | **Full inline** | transient Carbon `RegisterEventHotKey` while a suggestion is armed | NSPanel | Reference platform (Sub-project A). **[CORR 06-12 — F1/D1 closed]** Production accept no longer uses a consuming CGEventTap or requires Input Monitoring; Accessibility remains required for AX read/write and CGEvent insertion. |
 | **Windows — WPF/WinForms/Win32/native Qt** | **Full inline** | WH_KEYBOARD_LL | layered window (PMv2) | The strong Windows tier |
 | **Windows — Electron/Chromium (forced a11y)** | **Popup** | WH_KEYBOARD_LL | layered window | Caret often whole-line; VS Code/Slack/Teams/browsers |
 | **Windows — Electron default / Terminal / elevated** | **Hotkey / Unsupported** | dedicated hotkey | popup panel | a11y off or UIPI-blocked |

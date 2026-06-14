@@ -110,11 +110,21 @@ pub struct ModelEntry {
     /// Pinned SHA-256 of the model file (64 hex chars; the runtime
     /// comparison is case-insensitive — model_fetch lowercases the expected
     /// side — lowercase here is authoring convention, test-enforced), fed
-    /// to model_fetch's verify-before-rename. `None` = not yet pinned: the
-    /// downloader skips verification rather than failing — pinning real
-    /// values is data-gated (each requires hashing the published file from
-    /// a trusted source).
+    /// to model_fetch's verify-before-rename. Catalog entries are all
+    /// user-downloadable, so release builds keep every entry pinned.
     pub expected_sha256: Option<&'static str>,
+}
+
+/// Provenance for a pinned catalog model artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelProvenance {
+    pub name: &'static str,
+    pub url: &'static str,
+    /// Hugging Face repository commit observed on the resolve redirect.
+    pub hf_repo_commit: &'static str,
+    /// Hugging Face LFS linked ETag. For these GGUF artifacts this is the file
+    /// SHA-256 and must match [`ModelEntry::expected_sha256`].
+    pub hf_x_linked_etag: &'static str,
 }
 
 /// How an entry relates to the machine's available memory. ADVISORY only
@@ -151,7 +161,9 @@ pub fn catalog() -> &'static [ModelEntry] {
             size_mb: 398,
             min_ram_gb: 2,
             license: License::Apache2,
-            expected_sha256: None,
+            expected_sha256: Some(
+                "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+            ),
         },
         ModelEntry {
             name: "llama-3.2-1b-q4_k_m",
@@ -159,7 +171,9 @@ pub fn catalog() -> &'static [ModelEntry] {
             size_mb: 808,
             min_ram_gb: 4,
             license: License::LlamaCommunity,
-            expected_sha256: None,
+            expected_sha256: Some(
+                "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+            ),
         },
         ModelEntry {
             name: "qwen2.5-1.5b-q4_k_m",
@@ -167,7 +181,9 @@ pub fn catalog() -> &'static [ModelEntry] {
             size_mb: 986,
             min_ram_gb: 4,
             license: License::Apache2,
-            expected_sha256: None,
+            expected_sha256: Some(
+                "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+            ),
         },
         ModelEntry {
             name: "gemma-2-2b-q4_k_m",
@@ -175,7 +191,43 @@ pub fn catalog() -> &'static [ModelEntry] {
             size_mb: 1708,
             min_ram_gb: 6,
             license: License::GemmaTerms,
-            expected_sha256: None,
+            expected_sha256: Some(
+                "e0aee85060f168f0f2d8473d7ea41ce2f3230c1bc1374847505ea599288a7787",
+            ),
+        },
+    ]
+}
+
+/// Committed provenance for the built-in catalog hashes.
+pub fn catalog_provenance() -> &'static [ModelProvenance] {
+    &[
+        ModelProvenance {
+            name: "qwen2.5-0.5b-q4_k_m",
+            url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            hf_repo_commit: "9217f5db79a29953eb74d5343926648285ec7e67",
+            hf_x_linked_etag:
+                "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+        },
+        ModelProvenance {
+            name: "llama-3.2-1b-q4_k_m",
+            url: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            hf_repo_commit: "067b946cf014b7c697f3654f621d577a3e3afd1c",
+            hf_x_linked_etag:
+                "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+        },
+        ModelProvenance {
+            name: "qwen2.5-1.5b-q4_k_m",
+            url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            hf_repo_commit: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+            hf_x_linked_etag:
+                "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+        },
+        ModelProvenance {
+            name: "gemma-2-2b-q4_k_m",
+            url: "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf",
+            hf_repo_commit: "855f67caed130e1befc571b52bd181be2e858883",
+            hf_x_linked_etag:
+                "e0aee85060f168f0f2d8473d7ea41ce2f3230c1bc1374847505ea599288a7787",
         },
     ]
 }
@@ -309,30 +361,63 @@ mod tests {
     }
 
     #[test]
-    fn present_catalog_hashes_are_lowercase_sha256_hex() {
+    fn all_catalog_hashes_are_pinned_lowercase_sha256_hex() {
         // expected_sha256 feeds model_fetch's verify-before-rename. The
         // LENGTH check is load-bearing: a truncated hash can never equal a
         // 64-char digest → permanent HashMismatch on every download. The
         // lowercase check is authoring convention only (runtime comparison
-        // is case-insensitive). None = not yet pinned — the downloader
-        // skips verification rather than failing.
+        // is case-insensitive). Every catalog entry is user-downloadable, so
+        // a missing hash would silently opt that entry out of verification.
         for e in catalog() {
-            if let Some(hash) = e.expected_sha256 {
-                assert!(
-                    is_wellformed_sha256(hash),
-                    "{}: malformed pinned hash",
-                    e.name
-                );
-            }
+            let hash = e
+                .expected_sha256
+                .unwrap_or_else(|| panic!("{}: missing pinned hash", e.name));
+            assert!(
+                is_wellformed_sha256(hash),
+                "{}: malformed pinned hash",
+                e.name
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_hashes_match_recorded_upstream_provenance() {
+        let provenance_by_name: std::collections::HashMap<_, _> =
+            catalog_provenance().iter().map(|p| (p.name, p)).collect();
+        assert_eq!(
+            provenance_by_name.len(),
+            catalog().len(),
+            "provenance should cover every catalog entry"
+        );
+
+        for entry in catalog() {
+            let provenance = provenance_by_name
+                .get(entry.name)
+                .unwrap_or_else(|| panic!("{}: missing provenance", entry.name));
+            assert_eq!(
+                provenance.url, entry.url,
+                "{}: provenance URL drift",
+                entry.name
+            );
+            assert!(
+                is_wellformed_sha256(provenance.hf_x_linked_etag),
+                "{}: malformed provenance etag",
+                entry.name
+            );
+            assert_eq!(
+                entry.expected_sha256,
+                Some(provenance.hf_x_linked_etag),
+                "{}: pinned hash must match recorded upstream LFS etag",
+                entry.name
+            );
         }
     }
 
     #[test]
     fn wellformed_sha256_enforces_length_and_lowercase_hex() {
         // The invariant the catalog lint relies on, tested independent of
-        // catalog data (every shipping entry is None today, so the lint loop
-        // would otherwise assert nothing). 64 lowercase hex = valid; a
-        // truncated, over-long, uppercase, or non-hex string is rejected.
+        // catalog data. 64 lowercase hex = valid; a truncated, over-long,
+        // uppercase, or non-hex string is rejected.
         let valid = "a".repeat(64);
         assert!(is_wellformed_sha256(&valid));
         assert!(is_wellformed_sha256(&"0123456789abcdef".repeat(4))); // 64 hex

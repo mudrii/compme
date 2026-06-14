@@ -605,6 +605,14 @@ fn download_log_transition(state: &model_fetch::DownloadState, logged: u8) -> (u
     }
 }
 
+fn request_log_line(generation: u64, prompt: &str) -> String {
+    format!(
+        "compme: request gen={} prompt_chars={}",
+        generation,
+        prompt.chars().count()
+    )
+}
+
 /// Parse the encrypted-memory config (A2 §6/§16). `COMPME_MEMORY` selects the
 /// storage mode (off/accepted/all, default off); `COMPME_MEMORY_PATH` the db
 /// file; `COMPME_MEMORY_KEY` a 64-hex-char (32-byte) AES key.
@@ -2026,9 +2034,9 @@ pub fn run() -> Result<(), String> {
     }
 
     // Rebound accept keys (cycle-13 residual): set the process-wide keymap
-    // BEFORE the platform adapter exists, so the Carbon registration, the
-    // decision logic, and the handler's id→keycode inverse all read one
-    // source from the first arm. Collision/invalid → fail soft to defaults.
+    // before suggestions can arm accept handling, so the Carbon registration,
+    // the decision logic, and the handler's id→keycode inverse all read one
+    // source. Collision/invalid → fail soft to defaults.
     if config.accept_word_key.is_some() || config.accept_full_key.is_some() {
         match platform_macos::set_accept_keymap_from_config_with_mods(
             config.accept_word_key,
@@ -3234,10 +3242,7 @@ pub fn run() -> Result<(), String> {
                         let caret_rect = adapter.caret_rect(&request.field).ok().flatten();
                         ocr.request(caret_rect);
                     }
-                    eprintln!(
-                        "compme: request gen={} prompt={:?}",
-                        request.generation, request.prompt
-                    );
+                    eprintln!("{}", request_log_line(request.generation, &request.prompt));
                     submit_times.insert(request.generation, now_ms);
                     inference.submit(request);
                 }
@@ -3346,6 +3351,18 @@ mod tests {
     fn personalization_defaults_to_no_steer_when_keys_absent() {
         let profile = build_personalization(&lookup(&[]));
         assert_eq!(profile.build_preamble(Some("com.apple.TextEdit"), None), "");
+    }
+
+    #[test]
+    fn request_log_does_not_emit_prompt_text() {
+        let line = request_log_line(42, "secret prompt with ada@example.com");
+        assert!(
+            line.contains("request gen=42 prompt_chars=34"),
+            "request logs should expose only prompt length: {line}"
+        );
+        assert!(!line.contains("secret"));
+        assert!(!line.contains("ada@example.com"));
+        assert!(!line.contains("prompt with"));
     }
 
     #[test]

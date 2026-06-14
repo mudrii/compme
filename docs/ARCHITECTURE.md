@@ -213,13 +213,16 @@ through it before encryption.
 
 ### `memory`
 
-`memory` is the encrypted local log of accepted completions (§6 / §16). Text is
-**redacted** (`redaction`) then **encrypted** (AES-256-GCM, a random nonce per
-record); only ciphertext reaches the SQLite database — plaintext never touches
-disk. The 32-byte key comes from a `KeyProvider`: production reads it from the
-macOS Keychain (A3 live integration), tests use a fixed key. Storage is
-opt-in — `StorageMode::Off` is the default and records nothing; `AcceptedOnly`
-stores accepted completions, `AllMonitored` is the broader opt-in. Records are
+`memory` is the encrypted local log for accepted completions or all monitored
+typing (§6 / §16). Text is **redacted** (`redaction`) then **encrypted**
+(AES-256-GCM, a random nonce per record); only text ciphertext reaches the
+SQLite database — text plaintext never touches disk. The app identifier remains
+plaintext metadata for per-app counts/delete and is also bound into the AEAD as
+AAD, so rows cannot be relabeled and decrypted under another app. The 32-byte
+key comes from a `KeyProvider`: production reads it from the macOS Keychain (A3
+live integration), tests use a fixed key. Storage is opt-in —
+`StorageMode::Off` is the default and records nothing; `AcceptedOnly` stores
+accepted completions, `AllMonitored` is the broader opt-in. Records are
 inspectable (`count` / `recent`) and deletable (`delete_all` / `delete_app`).
 
 ### `stats`

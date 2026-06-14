@@ -108,9 +108,8 @@ are wired (D14):
   good file; an interrupted 0-byte stub is treated as absent and re-fetched.
 
 On a completed download the log prints the `COMPME_MODEL_PATH=…` line to point a
-relaunch at the new file. Downloads use `model_fetch` with hash
-verify-before-rename once catalog hashes are pinned (today every
-`expected_sha256` is `None`). See
+relaunch at the new file. Downloads use `model_fetch` with catalog-pinned
+SHA-256 hashes and verify-before-rename semantics. See
 `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` §15 D14.
 
 ## Root Workspace Commands
@@ -131,7 +130,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 Test:
 
 ```sh
-cargo test --workspace
+cargo test --workspace --all-targets
 ```
 
 Build:
@@ -140,11 +139,9 @@ Build:
 cargo build --workspace --all-targets
 ```
 
-The suite is ~1025 tests. Use `--all-targets` for clippy and build so the macOS
-example regression targets are compiled; add `--all-targets` to the test command
-(`cargo test --workspace --all-targets`) when you also want to *run* the
-`platform_macos` example regression tests, which plain `cargo test --workspace`
-does not execute.
+The suite is ~1025 tests. Use `--all-targets` for clippy, test, and build so
+the macOS example regression targets are compiled and the `platform_macos`
+example regression tests run.
 
 ## Spike Commands
 
@@ -168,7 +165,7 @@ Run this before considering a change ready for review:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace --all-targets
 cargo build --workspace --all-targets
 
 cd tools/spike
@@ -180,8 +177,8 @@ cargo build --bins
 
 The root suite is ~1025 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
-Use `cargo test --workspace --all-targets` instead of `cargo test --workspace`
-when you also need the `platform_macos` example regression tests to run.
+The full gate uses `cargo test --workspace --all-targets` because the
+`platform_macos` example regression tests are part of the acceptance surface.
 
 For macOS adapter work, also run the live acceptance harness when the GUI state
 is available:

@@ -44,4 +44,4 @@ jobs:
       # Note: a few platform_macos tests share the process-wide NSPasteboard and
       # can flake under parallelism; rerun the job if that single test fails.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --all-targets

@@ -77,36 +77,34 @@ By default the runner builds the `platform_macos` examples, builds the
 - `textedit-insert-clipboard`
 - `textedit-insert-axset`
 - `caret-marker-textedit-any`
+- `accept-insert-full`
+- `accept-insert-word`
+- `e2e-compme-pipeline`
+- `e2e-compme-word-remainder`
+- `accept-tap-inactive`
+- `accept-tap-full`
+- `accept-tap-word`
+- `accept-tap-escape`
+- `accept-tap-option-tab`
+- `accept-tap-cycle`
+- `accept-tap-delayed-hide`
 - `popup-fallback-fixture`
 - `overlay-presenter`
 
 If TextEdit is not running, TextEdit-dependent gates are skipped instead of
 misreporting app-focus failures as product failures.
 
-The historical `accept-tap-*`, `accept-insert-*`, and `e2e-compme-*`
-harnesses are no longer default automated evidence for product accept-key
-consumption after the Carbon migration. **[CORR 2026-06-10]** The long-standing
-claim that synthetic key posts cannot fire `RegisterEventHotKey` was
-re-tested and is STALE: with the NSApp event pump in place (the cycle-41
-fix), a System Events synthetic Tab DID fire the Carbon hotkey and accepted
-live (`carbon hotkey fired id=1` → `accept Word`, scripted run, Chrome
-textarea). The historical "registered but never fired" evidence was the
-missing event pump, misattributed to synthetic-event filtering. Scripted
-accept-key tests are therefore possible again; keep physical-key runs as the
-final UX confirmation for gate records.
-The runner reports these as `MANUAL`, not `SKIP`, when they are the remaining
-Carbon evidence requirement. `--self-test` pins the runner's blocker
-classification logic.
-
-**[2026-06-11] Scripted Carbon gates REBUILT.** The `accept_tap_acceptance`
-and `accept_insert_acceptance` harnesses now pump NSApp events in their wait
-loops (the same cycle-41 fix the product binary carries), so synthetic key
-posts dispatch to the installed hotkey handler. Validated live: synthetic
-Tab/grave/Esc/Down each fired through the rebuilt tap harness
-(`SUMMARY controls=[Accept(Word)]` / `[Accept(Full)]` / `[Dismiss]` /
-`[Cycle]`, exit 0). The runner's `accept-tap-*`, `accept-insert-*`, and
-`e2e-compme-*` gates are scripted again (`manual=0`); the previous paragraph
-stands as the historical record of why they were manual. Two operator notes:
+**[2026-06-11] Scripted Carbon gates REBUILT.** The long-standing claim that
+synthetic key posts cannot fire `RegisterEventHotKey` was re-tested and is
+STALE: the earlier failure was the missing NSApp event pump, not a
+synthetic-event filter. The `accept_tap_acceptance` and
+`accept_insert_acceptance` harnesses now pump NSApp events in their wait loops
+(the same cycle-41 fix the product binary carries), so synthetic key posts
+dispatch to the installed hotkey handler. Validated live: synthetic
+Tab/grave/Esc/Down each fired through the rebuilt tap harness (`SUMMARY
+controls=[Accept(Word)]` / `[Accept(Full)]` / `[Dismiss]` / `[Cycle]`, exit
+0). The runner's `accept-tap-*`, `accept-insert-*`, and `e2e-compme-*` gates
+are scripted default gates (`manual=0`). Two operator notes:
 (1) the gates assert an EXACT control set and the Carbon hotkeys are
 system-wide, so keep hands off the keyboard during a run — ambient
 Tab/grave/Esc/Down presses contaminate the captured controls (the runner
@@ -128,8 +126,9 @@ the gate), type enough text to show a suggestion, then use a physical keyboard:
 - revoke Input Monitoring and confirm accept behavior is unchanged
 
 Record the product log line, target app, keyboard action, and resulting field
-contents for each run. These manual runs are the authoritative evidence for
-current Carbon hotkey consumption.
+contents for each run. These manual runs are supplemental UX confirmation; the
+scripted default gates are the repeatable evidence for current Carbon hotkey
+dispatch.
 
 **PASSED 2026-06-10** (TextEdit, physical keyboard, two runs — one on a
 secondary display): grave full-accept replaced `:smile` with the emoji
@@ -204,13 +203,10 @@ are validated outside the A1b gate runner:
   `SIGUSR1` toggle, debounce/max-words/max-tokens/heartbeat keys (unit-tested in
   `crates/app`).
 
-> **[CORR 06-09] Accept-key evidence boundary:** the 2026-06-08 synthetic
-> harnesses closed the old consuming-CGEventTap path only. Production accept
-> keys now use transient Carbon hotkeys; deterministic tests cover key mapping,
-> engine accept/dismiss/cycle behavior, and insertion strategies, but physical
-> keyboard runs are required to close Carbon product consumption. Design spec
-> §15 G6/I11 is the authoritative record and must distinguish old tap evidence
-> from current Carbon evidence.
+> **[CORR 06-12] Accept-key evidence boundary:** the current default runner
+> exercises transient Carbon hotkeys through the rebuilt scripted harnesses.
+> Physical keyboard runs remain UX confirmation, and the Input Monitoring
+> revoked check remains a manual permission-state spot-check.
 
 ### Useful Options
 
@@ -248,7 +244,7 @@ Failure classification looks for common blockers:
 - wrong focused target
 - transient AX observer setup failures
 
-## A2 Compatibility And Context Gates
+## A2 Compatibility And Context Smoke Gates
 
 Run:
 
@@ -265,10 +261,12 @@ Supported kinds:
 - `clipboard`
 - `screen`
 
-The `clipboard` and `screen` gates enable `COMPME_DIAG_CONTEXT=1`; clipboard
-requires the marker `CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and
-screen requires non-empty OCR context. The screen gate also requires Screen
-Recording permission and visible text on the focused display.
+These are request-path smoke probes for a supplied PID and kind, not a full
+per-app compatibility matrix runner. The `clipboard` and `screen` gates enable
+`COMPME_DIAG_CONTEXT=1`; clipboard requires the marker
+`CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and screen requires
+non-empty OCR context. The screen gate also requires Screen Recording
+permission and visible text on the focused display.
 
 ## A2 Local-Replacement Live Gate (emoji / autocorrect / British English)
 
@@ -493,6 +491,10 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
   assembled from inserted deltas without storing pre-existing field text, plus
   secure input, disabled/snoozed, app/domain excluded, volatile `pid:N`, and
   per-app collection-off blocks.
+- **Input Monitoring revoked spot-check (pending):** with Accessibility still
+  granted, revoke Input Monitoring and confirm the transient Carbon accept path
+  keeps working. This is a manual permission-state confirmation, not a
+  requirement for the production accept path.
 - **Lifetime stats gate (pending) [updated 2026-06-12, c128]:** `stats.env` is
   written by a 5-minute periodic flush during the run (quit = final flush);
   gate: accept ≥1 suggestion, quit, relaunch shows Lifetime row including the
