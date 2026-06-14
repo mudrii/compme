@@ -505,16 +505,35 @@ fn download_idle(status: Option<&model_fetch::DownloadStatus>) -> bool {
 /// `effective_accept_keys()` and the Shortcuts pane keep telling the
 /// registered truth (the c123 desync class). Injected seams so the
 /// ordering is unit-testable without touching the process-global keymap.
+type KeyWithMods = (i64, u32);
+
 fn apply_live_accept_keymap(
     word: Option<i64>,
     full: Option<i64>,
-    set_map: impl Fn(Option<i64>, Option<i64>) -> Result<(), platform_macos::KeymapError>,
+    set_map: impl Fn(
+        Option<KeyWithMods>,
+        Option<KeyWithMods>,
+    ) -> Result<(), platform_macos::KeymapError>,
     rearm: impl Fn() -> Result<(), PlatformError>,
-    persist: impl Fn(i64, i64),
-    effective: impl Fn() -> (i64, i64),
+    persist: impl Fn(KeyWithMods, KeyWithMods),
+    effective: impl Fn() -> (KeyWithMods, KeyWithMods),
 ) -> Result<(), String> {
     let previous = effective();
-    set_map(word, full).map_err(|err| format!("rejected keymap: {err:?}"))?;
+    // The recorder captures a BARE keycode (it cannot read modifier flags until
+    // slice 2) and carries the OTHER role's CURRENT keycode through verbatim
+    // (the c134 both-slots clobber-avoidance). So preserve an existing modifier
+    // mask for any role whose keycode is unchanged from the registered map, and
+    // treat a genuinely new keycode as bare — otherwise a recorder rebind of one
+    // role would silently strip a config-set mask (e.g. Shift+Full) off the
+    // OTHER role and persist the loss (audit r2). (Re-capturing the SAME keycode
+    // for a masked role keeps its mask — the bare-recorder ambiguity slice 2's
+    // modifierFlags capture resolves; harmless for the common bare bindings.)
+    let with_mask = |key: Option<i64>, current: KeyWithMods| {
+        key.map(|k| (k, if k == current.0 { current.1 } else { 0 }))
+    };
+    let word_b = with_mask(word, previous.0);
+    let full_b = with_mask(full, previous.1);
+    set_map(word_b, full_b).map_err(|err| format!("rejected keymap: {err:?}"))?;
     if let Err(err) = rearm() {
         // Best-effort revert. The previous pair was validated when it
         // registered, so this set_map cannot fail in practice; if it ever
@@ -522,7 +541,8 @@ fn apply_live_accept_keymap(
         // the c123 desync — hence revert-then-error, never error-then-leave.
         // The revert is the LAST line of defense against that desync, so a
         // failure here must not be SILENT: nothing else would surface that
-        // the keymap and the registered hotkeys now disagree.
+        // the keymap and the registered hotkeys now disagree. Reverting with
+        // the masks intact restores the EXACT prior registration.
         if let Err(revert_err) = set_map(Some(previous.0), Some(previous.1)) {
             eprintln!(
                 "compme: accept-keymap re-arm failed and revert to {previous:?} also failed: {revert_err:?}"
@@ -2415,16 +2435,18 @@ pub fn run() -> Result<(), String> {
             let outcome = apply_live_accept_keymap(
                 word,
                 full,
-                platform_macos::set_accept_keymap_from_config,
+                platform_macos::set_accept_keymap_from_config_with_mods,
                 || engine.rearm_accept_keys(),
-                |w, f| {
+                |w: (i64, u32), f: (i64, u32)| {
                     if let Some(path) = config::config_file_path() {
+                        // Persist with format_accept_key so a configured mask
+                        // round-trips ("shift+48") through parse_accept_key at
+                        // relaunch instead of being written back as a bare code.
                         for (key, value) in
                             [("COMPME_ACCEPT_WORD_KEY", w), ("COMPME_ACCEPT_FULL_KEY", f)]
                         {
-                            if let Err(err) =
-                                config::persist_setting(&path, key, &value.to_string())
-                            {
+                            let serialized = platform_macos::format_accept_key(value.0, value.1);
+                            if let Err(err) = config::persist_setting(&path, key, &serialized) {
                                 eprintln!("compme: failed to persist {key}: {err}");
                             }
                         }
@@ -2437,7 +2459,7 @@ pub fn run() -> Result<(), String> {
                         );
                     }
                 },
-                platform_macos::effective_accept_keys,
+                platform_macos::effective_accept_keys_with_mods,
             );
             match outcome {
                 Ok(()) => {
@@ -4097,16 +4119,16 @@ mod tests {
                 l2.borrow_mut().push("rearm".into());
                 Ok(())
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
-            || (35, 38),
+            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
+            || ((35, 0), (38, 0)),
         );
         assert!(ok.is_ok());
         assert_eq!(
             *log.borrow(),
             vec![
-                "set:Some(35),Some(38)".to_string(),
+                "set:Some((35, 0)),Some((38, 0))".to_string(),
                 "rearm".to_string(),
-                "persist:35,38".to_string(),
+                "persist:(35, 0),(38, 0)".to_string(),
             ]
         );
 
@@ -4126,16 +4148,16 @@ mod tests {
                 l2.borrow_mut().push("rearm".into());
                 Err(PlatformError::Timeout)
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
-            || (48, 50), // the pre-swap registered truth
+            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
+            || ((48, 0), (50, 0)), // the pre-swap registered truth
         );
         assert!(err.is_err());
         assert_eq!(
             *log.borrow(),
             vec![
-                "set:Some(35),Some(38)".to_string(),
+                "set:Some((35, 0)),Some((38, 0))".to_string(),
                 "rearm".to_string(),
-                "set:Some(48),Some(50)".to_string(), // revert
+                "set:Some((48, 0)),Some((50, 0))".to_string(), // revert (masks intact)
             ],
             "no persist after a failed re-arm"
         );
@@ -4158,15 +4180,17 @@ mod tests {
                     calls.set(1);
                     Ok(())
                 } else {
-                    Err(platform_macos::KeymapError::Collision(w.or(f).unwrap_or(0)))
+                    Err(platform_macos::KeymapError::Collision(
+                        w.or(f).map(|(k, _)| k).unwrap_or(0),
+                    ))
                 }
             },
             || {
                 l2.borrow_mut().push("rearm".into());
                 Err(PlatformError::Timeout)
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
-            || (48, 50),
+            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
+            || ((48, 0), (50, 0)),
         );
         assert!(
             matches!(&revert_fails, Err(e) if e.starts_with("re-arm failed")),
@@ -4195,13 +4219,13 @@ mod tests {
                 l2.borrow_mut().push("rearm".into());
                 Ok(())
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
-            || (48, 38), // post-resolution: default word stays 48
+            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
+            || ((48, 0), (38, 0)), // post-resolution: default word stays 48
         );
         assert!(partial.is_ok());
         assert_eq!(
             log.borrow().last().unwrap(),
-            "persist:48,38",
+            "persist:(48, 0),(38, 0)",
             "persist writes the RESOLVED pair, not the raw request"
         );
 
@@ -4217,13 +4241,45 @@ mod tests {
                 l2.borrow_mut().push("rearm".into());
                 Ok(())
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w},{f}")),
-            || (48, 50),
+            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
+            || ((48, 0), (50, 0)),
         );
         assert!(invalid.is_err());
         assert!(
             log.borrow().is_empty(),
             "rejected map never rearms/persists"
+        );
+    }
+
+    #[test]
+    fn live_rebind_preserves_a_configured_mask_on_the_unchanged_role() {
+        // Audit r2 regression: a recorder rebind of ONE role must not strip a
+        // config-set modifier mask off the OTHER role. word is currently
+        // Shift+48 (mask 512); the user rebinds FULL to a new bare key (50).
+        // The recorder carries word's current keycode (48) through verbatim, so
+        // word's keycode is unchanged → its Shift mask must be preserved (and
+        // persisted via format_accept_key), while the freshly-captured full key
+        // is bare.
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let l1 = std::rc::Rc::clone(&log);
+        let l3 = std::rc::Rc::clone(&log);
+        const SHIFT: u32 = 512; // Carbon shiftKey (private to platform_macos)
+        let applied = apply_live_accept_keymap(
+            Some(48), // word: unchanged keycode, carried through by the recorder
+            Some(50), // full: newly captured bare key (was 60)
+            |w, f| {
+                l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
+                Ok(())
+            },
+            || Ok(()),
+            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
+            || ((48, SHIFT), (60, 0)), // registered: word=Shift+48, full=bare 60
+        );
+        assert!(applied.is_ok());
+        assert_eq!(
+            log.borrow()[0],
+            format!("set:Some((48, {SHIFT})),Some((50, 0))"),
+            "word's Shift mask is preserved; the rebound full key is bare"
         );
     }
 
