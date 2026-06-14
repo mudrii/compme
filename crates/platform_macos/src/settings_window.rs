@@ -149,6 +149,17 @@ pub fn keycode_label(code: i64) -> String {
     named.to_string()
 }
 
+/// The accept-key label with a macOS modifier-glyph prefix (⌃⌥⇧⌘) for the
+/// Shortcuts pane (modifier-combo slice 1b). A zero mask renders exactly like
+/// [`keycode_label`], so bare keys are unchanged.
+pub fn keycode_label_with_mods(code: i64, mask: u32) -> String {
+    format!(
+        "{}{}",
+        crate::accept_key_modifier_glyphs(mask),
+        keycode_label(code)
+    )
+}
+
 /// What a recorder field renders + writes for one captured keyDown — the pure
 /// composition of [`record_decision`], [`rebind_request_for`] and
 /// [`keycode_label`] so the AppKit field's keyDown is thin glue (the field
@@ -1246,6 +1257,32 @@ mod tests {
         assert_eq!(keycode_label(7), "X");
         // Unknown keycode → a readable generic, never a crash.
         assert_eq!(keycode_label(200), "key 200");
+    }
+
+    #[test]
+    fn keycode_label_with_mods_prefixes_modifier_glyphs() {
+        // No modifiers → identical to the bare label (back-compat display).
+        assert_eq!(keycode_label_with_mods(48, 0), "Tab");
+        // A single modifier prepends its macOS glyph.
+        assert_eq!(
+            keycode_label_with_mods(48, crate::CARBON_SHIFT_KEY),
+            "\u{21e7}Tab"
+        );
+        // All four render in the canonical macOS order ⌃⌥⇧⌘ regardless of the
+        // bitwise OR order they were combined in.
+        let all = crate::CARBON_CMD_KEY
+            | crate::CARBON_SHIFT_KEY
+            | crate::CARBON_OPTION_KEY
+            | crate::CARBON_CONTROL_KEY;
+        assert_eq!(
+            keycode_label_with_mods(48, all),
+            "\u{2303}\u{2325}\u{21e7}\u{2318}Tab"
+        );
+        // Unknown keycode still falls back to the generic, with the prefix.
+        assert_eq!(
+            keycode_label_with_mods(200, crate::CARBON_CONTROL_KEY),
+            "\u{2303}key 200"
+        );
     }
 
     #[test]

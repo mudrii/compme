@@ -63,8 +63,9 @@ mod ui_prompt;
 mod url_events;
 pub use login_item::set_launch_at_login;
 pub use settings_window::{
-    keycode_label, policy_restore_needed, rebind_request_for, record_decision, MacosSettingsWindow,
-    RebindRequest, RecordDecision, RecorderRole, SettingsFlags, APPS_ROWS, SETUP_ROWS, STATS_ROWS,
+    keycode_label, keycode_label_with_mods, policy_restore_needed, rebind_request_for,
+    record_decision, MacosSettingsWindow, RebindRequest, RecordDecision, RecorderRole,
+    SettingsFlags, APPS_ROWS, SETUP_ROWS, STATS_ROWS,
 };
 pub use tray::{DisableArm, MacosTray, TrayFlags};
 pub use ui_prompt::{confirm_deep_link_prompt, confirm_delete_app_prompt, confirm_license_prompt};
@@ -2352,6 +2353,24 @@ pub fn format_accept_key(keycode: i64, mask: u32) -> String {
     out
 }
 
+/// Map a Carbon modifier mask to its macOS glyph prefix (⌃⌥⇧⌘) for the
+/// Shortcuts-pane display label, in the conventional HIG order. Empty for a
+/// bare key. Distinct from [`format_accept_key`], which emits persisted words.
+fn accept_key_modifier_glyphs(mask: u32) -> String {
+    let mut out = String::new();
+    for (glyph, bit) in [
+        ("\u{2303}", CARBON_CONTROL_KEY), // ⌃ Control
+        ("\u{2325}", CARBON_OPTION_KEY),  // ⌥ Option
+        ("\u{21e7}", CARBON_SHIFT_KEY),   // ⇧ Shift
+        ("\u{2318}", CARBON_CMD_KEY),     // ⌘ Command
+    ] {
+        if mask & bit != 0 {
+            out.push_str(glyph);
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeymapError {
     /// Two bindings would share the same keycode.
@@ -2776,6 +2795,14 @@ fn accept_keymap() -> AcceptKeymap {
 pub fn effective_accept_keys() -> (i64, i64) {
     let map = accept_keymap();
     (map.word, map.full)
+}
+
+/// Like [`effective_accept_keys`] but each key carries its Carbon modifier mask
+/// (slice 1b label half) — the Shortcuts pane renders the ⌃⌥⇧⌘ glyph prefix
+/// from these. Same single source as the registration and decision paths.
+pub fn effective_accept_keys_with_mods() -> ((i64, u32), (i64, u32)) {
+    let map = accept_keymap();
+    ((map.word, map.word_mods), (map.full, map.full_mods))
 }
 
 impl WorkerAcceptTapResource {
@@ -8390,6 +8417,12 @@ mod tests {
         let armed = accept_keymap().carbon_bindings();
         assert_eq!(armed[0], (CARBON_HOTKEY_TAB, 35, CARBON_SHIFT_KEY));
         assert_eq!(armed[1], (CARBON_HOTKEY_GRAVE, KEYCODE_GRAVE, 0));
+        // effective_accept_keys_with_mods surfaces the live masks for the label
+        // half (slice 1b): word carries its mask, the unset full key is bare.
+        assert_eq!(
+            effective_accept_keys_with_mods(),
+            ((35, CARBON_SHIFT_KEY), (KEYCODE_GRAVE, 0))
+        );
         set_accept_keymap(AcceptKeymap::default());
         assert_eq!(effective_accept_keys(), (48, 50));
     }

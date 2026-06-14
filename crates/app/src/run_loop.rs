@@ -1228,7 +1228,7 @@ fn apps_pane_lines(counts: &[(String, u64)], collection_on: bool) -> Vec<String>
         .collect()
 }
 
-use platform_macos::keycode_label;
+use platform_macos::keycode_label_with_mods;
 
 /// The Shortcuts tab's text (persist-only slice): the EFFECTIVE bindings
 /// (post-validation, from the platform's registered keymap — review-c114:
@@ -1236,14 +1236,14 @@ use platform_macos::keycode_label;
 /// the runtime fell back to defaults), the fixed non-rebindable keys, and
 /// how to change them. Static per process — bindings are read at launch
 /// until the live-rebind refactor lands.
-fn shortcuts_text(word_key: i64, full_key: i64) -> String {
+fn shortcuts_text(word: (i64, u32), full: (i64, u32)) -> String {
     format!(
         "Accept word: {}\nAccept full: {}\nDismiss: Esc\nCycle candidates: Down arrow\n\n\
          To change: set COMPME_ACCEPT_WORD_KEY / COMPME_ACCEPT_FULL_KEY (macOS \
-         keycodes) in config.env \u{2014} applies at relaunch (the in-app \
-         recorder applies live).",
-        keycode_label(word_key),
-        keycode_label(full_key),
+         keycodes, e.g. \"shift+48\") in config.env \u{2014} applies at relaunch \
+         (the in-app recorder applies live).",
+        keycode_label_with_mods(word.0, word.1),
+        keycode_label_with_mods(full.0, full.1),
     )
 }
 
@@ -1282,7 +1282,7 @@ fn build_settings_flags(
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
         shortcuts_text: {
-            let (word, full) = platform_macos::effective_accept_keys();
+            let (word, full) = platform_macos::effective_accept_keys_with_mods();
             Arc::new(Mutex::new(shortcuts_text(word, full)))
         },
         shortcuts_rebind_request: Arc::new(Mutex::new(None)),
@@ -2441,17 +2441,17 @@ pub fn run() -> Result<(), String> {
             );
             match outcome {
                 Ok(()) => {
-                    let (word_key, full_key) = platform_macos::effective_accept_keys();
+                    let (word, full) = platform_macos::effective_accept_keys_with_mods();
                     // Recompose the Shortcuts text; show() re-reads it on the
                     // next open (refresh-on-show — the c121 forward trap).
                     if let Ok(mut text) = settings_flags.shortcuts_text.lock() {
-                        *text = shortcuts_text(word_key, full_key);
+                        *text = shortcuts_text(word, full);
                     }
                     // The slice-4 recorder lives INSIDE the window, so it is
                     // open at exactly this moment — refresh the live label
                     // (show() only covers the reopen edge) (review-c133).
                     settings_window.refresh_shortcuts_label();
-                    eprintln!("compme: accept keys rebound (word={word_key} full={full_key})");
+                    eprintln!("compme: accept keys rebound (word={word:?} full={full:?})");
                 }
                 Err(err) => eprintln!("compme: accept-key rebind failed: {err}"),
             }
@@ -3230,7 +3230,7 @@ mod tests {
         // Shortcuts tab (persist-only slice): current bindings by NAME for
         // the known codes, numeric fallback for exotic rebinds, fixed rows
         // for the non-rebindable keys, and the how-to-change note.
-        let text = shortcuts_text(48, 50);
+        let text = shortcuts_text((48, 0), (50, 0));
         assert!(text.contains("Accept word: Tab"));
         assert!(text.contains("Accept full: ` (backtick)"));
         assert!(text.contains("Dismiss: Esc"));
@@ -3238,9 +3238,18 @@ mod tests {
         assert!(text.contains("COMPME_ACCEPT_WORD_KEY"));
         assert!(text.contains("relaunch"));
 
-        let custom = shortcuts_text(125, 200);
+        let custom = shortcuts_text((125, 0), (200, 0));
         assert!(custom.contains("Accept word: Down arrow"));
         assert!(custom.contains("Accept full: key 200")); // unnamed code → generic
+
+        // Modifier masks render as glyph-prefixed labels (slice 1b label half):
+        // 512 = Carbon shiftKey ⇧, 4096 = controlKey ⌃.
+        let combo = shortcuts_text((48, 512), (50, 4096));
+        assert!(combo.contains("Accept word: \u{21e7}Tab"), "{combo}");
+        assert!(
+            combo.contains("Accept full: \u{2303}` (backtick)"),
+            "{combo}"
+        );
     }
 
     #[test]
