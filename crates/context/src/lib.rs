@@ -187,6 +187,23 @@ Recent: recent\n"
     }
 
     #[test]
+    fn context_block_truncates_a_multibyte_tail_on_a_char_boundary() {
+        // tail_chars is the crate's ONLY byte-offset slice (`&s[byte_idx..]`
+        // after `char_indices().nth()`); that indirection is what keeps the cut
+        // on a char boundary. The ASCII bounds test above would still pass with
+        // naive `&s[count-max..]` byte indexing — this pins the multibyte path
+        // (clipboard/screen context routinely carries CJK/emoji), where naive
+        // indexing would panic mid-codepoint.
+        // "a日本cd" = 5 chars; keeping the last 3 must cut at 本's start byte (4),
+        // not byte index 2 (which lands inside 日).
+        let block = build_context_block(Some("a日本cd"), None, &[], 3);
+        assert!(block.contains("Clipboard: 本cd"), "got {block:?}");
+        // Astral (4-byte) tail: keep the last 2 of "x😀y" → "😀y".
+        let astral = build_context_block(Some("x😀y"), None, &[], 2);
+        assert!(astral.contains("Clipboard: 😀y"), "got {astral:?}");
+    }
+
+    #[test]
     fn context_block_bounds_after_whitespace_collapse_per_source() {
         let block = build_context_block(
             Some("clip\none two three"),
