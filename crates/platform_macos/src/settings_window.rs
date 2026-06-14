@@ -82,13 +82,71 @@ pub fn rebind_request_for(role: RecorderRole, captured: i64, current: (i64, i64)
 /// Human label for an accept keycode (Shortcuts pane + recorder idle text).
 /// Single source — the run loop's `shortcuts_text` composes through this.
 pub fn keycode_label(code: i64) -> String {
-    match code {
-        crate::KEYCODE_TAB => "Tab".to_string(),
-        crate::KEYCODE_GRAVE => "` (backtick)".to_string(),
-        crate::KEYCODE_ESCAPE => "Esc".to_string(),
-        crate::KEYCODE_DOWN => "Down arrow".to_string(),
-        other => format!("keycode {other}"),
-    }
+    // The fixed accept keys go through the crate consts (drift-safe); the rest
+    // are standard macOS virtual keycodes, DISPLAY-ONLY, so literals are fine.
+    let named = match code {
+        c if c == crate::KEYCODE_TAB => "Tab",
+        c if c == crate::KEYCODE_GRAVE => "` (backtick)",
+        c if c == crate::KEYCODE_ESCAPE => "Esc",
+        c if c == crate::KEYCODE_DOWN => "Down arrow",
+        // Letters.
+        0 => "A",
+        11 => "B",
+        8 => "C",
+        2 => "D",
+        14 => "E",
+        3 => "F",
+        5 => "G",
+        4 => "H",
+        34 => "I",
+        38 => "J",
+        40 => "K",
+        37 => "L",
+        46 => "M",
+        45 => "N",
+        31 => "O",
+        35 => "P",
+        12 => "Q",
+        15 => "R",
+        1 => "S",
+        17 => "T",
+        32 => "U",
+        9 => "V",
+        13 => "W",
+        7 => "X",
+        16 => "Y",
+        6 => "Z",
+        // Digits.
+        29 => "0",
+        18 => "1",
+        19 => "2",
+        20 => "3",
+        21 => "4",
+        23 => "5",
+        22 => "6",
+        26 => "7",
+        28 => "8",
+        25 => "9",
+        // Function keys.
+        122 => "F1",
+        120 => "F2",
+        99 => "F3",
+        118 => "F4",
+        96 => "F5",
+        97 => "F6",
+        98 => "F7",
+        100 => "F8",
+        101 => "F9",
+        109 => "F10",
+        103 => "F11",
+        111 => "F12",
+        // Common specials.
+        49 => "Space",
+        36 => "Return",
+        51 => "Delete",
+        _ => return format!("key {code}"),
+    };
+    named.to_string()
 }
 
 /// What a recorder field renders + writes for one captured keyDown — the pure
@@ -327,9 +385,28 @@ define_class!(
             // Grab first responder so the next keyDown lands here. NSView IS-A
             // NSResponder, so the upcast is a direct as_ref().
             if let Some(window) = self.window() {
+                // Force the app active + this window key so the OS routes the
+                // next keyDown HERE: under the custom CFRunLoop heartbeat a click
+                // alone doesn't give compme keyboard focus.
+                if let Some(mtm) = MainThreadMarker::new() {
+                    NSApplication::sharedApplication(mtm).activate();
+                }
+                window.makeKeyWindow();
                 let view: &NSView = self;
                 let responder: &NSResponder = view.as_ref();
-                window.makeFirstResponder(Some(responder));
+                let became = window.makeFirstResponder(Some(responder));
+                // Recording feedback: the box shows it's armed. keyDown replaces
+                // this with the captured key; Esc reverts to the current key.
+                self.ivars()
+                    .label
+                    .setStringValue(&NSString::from_str("Press a key\u{2026}"));
+                if crate::debug_enabled() {
+                    eprintln!(
+                        "compme: recorder mouseDown role={:?} first_responder={became} key_window={}",
+                        self.ivars().role,
+                        window.isKeyWindow()
+                    );
+                }
             }
         }
 
@@ -339,6 +416,12 @@ define_class!(
             // swallow the key so it is captured, never typed. The child label
             // renders the result.
             let keycode = event.keyCode() as i64;
+            if crate::debug_enabled() {
+                eprintln!(
+                    "compme: recorder keyDown role={:?} keycode={keycode}",
+                    self.ivars().role
+                );
+            }
             let label = &self.ivars().label;
             match recorder_outcome(self.ivars().role, keycode, crate::effective_accept_keys()) {
                 RecorderOutcome::Accept { request, label: text } => {
@@ -1156,7 +1239,13 @@ mod tests {
         assert_eq!(keycode_label(50), "` (backtick)");
         assert_eq!(keycode_label(53), "Esc");
         assert_eq!(keycode_label(125), "Down arrow");
-        assert_eq!(keycode_label(7), "keycode 7");
+        assert_eq!(keycode_label(96), "F5");
+        assert_eq!(keycode_label(12), "Q");
+        assert_eq!(keycode_label(20), "3");
+        assert_eq!(keycode_label(49), "Space");
+        assert_eq!(keycode_label(7), "X");
+        // Unknown keycode → a readable generic, never a crash.
+        assert_eq!(keycode_label(200), "key 200");
     }
 
     #[test]

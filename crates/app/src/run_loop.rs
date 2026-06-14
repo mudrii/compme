@@ -3237,9 +3237,9 @@ mod tests {
         assert!(text.contains("COMPME_ACCEPT_WORD_KEY"));
         assert!(text.contains("relaunch"));
 
-        let custom = shortcuts_text(125, 7);
+        let custom = shortcuts_text(125, 200);
         assert!(custom.contains("Accept word: Down arrow"));
-        assert!(custom.contains("Accept full: keycode 7"));
+        assert!(custom.contains("Accept full: key 200")); // unnamed code → generic
     }
 
     #[test]
