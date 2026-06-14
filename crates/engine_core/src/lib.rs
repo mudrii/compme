@@ -643,10 +643,11 @@ impl SuggestionMachine {
 
     /// The exact `(field, text, replace_left)` the next accept would insert, so
     /// the host can absorb its own self-insert echo (and record/replace) without
-    /// reading a divergent engine snapshot. Mirrors `on_event`'s accept paths
-    /// byte-for-byte: a replacement (`replace_left > 0`) is atomic + unfinalized;
-    /// an ordinary completion is word/full + trailing-space-finalized with
-    /// `replace_left == 0`.
+    /// reading a divergent engine snapshot. Matches `on_event`'s accept paths: a
+    /// replacement (`replace_left > 0`) is atomic + unfinalized; an ordinary
+    /// completion is word/full + trailing-space-finalized with `replace_left == 0`.
+    /// Returns `None` when there is nothing to insert (empty text) — a guard the
+    /// live accept path doesn't need because a shown candidate is never empty.
     pub fn preview_accept_insert(
         &self,
         action: AcceptAction,
@@ -756,10 +757,10 @@ impl SuggestionMachine {
             return out;
         }
         // Filter empties and dedup in order before seeding: the single-candidate
-        // path rejects empty text and the model/single paths dedup, so the multi
-        // seed must hold the same contract — Cycle must never show a blank
-        // candidate or revisit a duplicate. (Defense-in-depth: today's producers
-        // emit non-empty, unique candidates.)
+        // path rejects empty text and the completion path dedups (on a normalized
+        // key); this multi seed dedups on EXACT match — a tighter equivalence,
+        // sufficient so Cycle never shows a blank or an exact-duplicate candidate.
+        // (Defense-in-depth: today's producers emit non-empty, unique candidates.)
         let mut seen = std::collections::HashSet::new();
         let candidates: Vec<String> = candidates
             .into_iter()

@@ -33,11 +33,14 @@ pub fn parse_env_file(contents: &str) -> Vec<(String, String)> {
 }
 
 /// Parse a value, falling back to `default` when absent or unparseable, then
-/// clamp into `[min, max]`. Invalid config never fails startup.
+/// clamp into `[min, max]`. Invalid config never fails startup. Requires
+/// `min <= max` (std `clamp` panics otherwise); every call site uses literal
+/// `0..max` bounds, and the debug assert documents the invariant.
 pub fn parse_clamped<T>(raw: Option<String>, default: T, min: T, max: T) -> T
 where
     T: FromStr + Ord + Copy,
 {
+    debug_assert!(min <= max, "parse_clamped requires min <= max");
     let value = raw
         .and_then(|s| s.trim().parse::<T>().ok())
         .unwrap_or(default);
