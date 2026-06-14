@@ -73,8 +73,9 @@ For development, run unbundled with `cargo run -p app`.
 - **British-English normalization** — opt-in US→UK spelling for unambiguous American-only forms.
 - **Emoji completion** — `:shortcode`→emoji with skin-tone and gender preferences.
 - **Thesaurus / synonyms** — curated synonym suggestions for the trailing word.
-- **Per-app and per-domain control** — enable/exclude, Tab-key disable, input-collection
-  opt-out, mid-line, autocorrect, and thesaurus, resolved per app and per browser domain.
+- **Per-app and per-domain control** — per-app enable, Tab-key disable, input-collection
+  opt-out, and mid-line / autocorrect / thesaurus overrides, plus per-app and
+  per-browser-domain exclusion.
 - **Browser-domain detection** — the focused browser page's host is read from the
   Accessibility URL and matched against domain exclusions (fail-open when no URL resolves).
 - **Model picker with RAM-fit advisory** — the Setup tab lets you choose which built-in
@@ -148,7 +149,7 @@ from `tools/spike/`.
 | `ranker` | Candidate shaping helpers: word capping, first-word extraction, and repetition penalty. |
 | `prefs` | Suggestion-gating preferences: per-app and per-domain enable/exclude, per-app Tab-key disable, and a global pause/snooze, resolved against an injected clock. |
 | `compat` | Pure classifier from a macOS bundle id to a compatibility tier, plus the gating policy each tier implies (mirrors the Cotypist compatibility table). |
-| `personalization` | Prompt-based personalization: global + per-app + per-domain instructions, a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
+| `personalization` | Prompt-based personalization: global + per-app + per-domain instruction maps (the app currently wires the global preamble; per-app/per-domain instruction steering is a planned A3 follow-up), a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
 | `autocorrect` | Pure, high-precision trailing-word typo→correction table with the query's capitalization reapplied; never "corrects" a real word. |
 | `localize` | Pure, high-precision US→British spelling normalization for American-only forms; deliberately skips ambiguous words. |
 | `emoji` | Pure `:shortcode`→emoji completion honoring skin-tone (Fitzpatrick) and gender preferences. |

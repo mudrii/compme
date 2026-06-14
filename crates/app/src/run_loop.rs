@@ -2514,10 +2514,10 @@ pub fn run() -> Result<(), String> {
                 }
             }
         }
-        // Setup "Download Recommended Model": one-click fetch of the
-        // smallest unencumbered catalog entry into the app-support models
-        // dir (D14 wiring; picker UI is a later slice). Progress is logged;
-        // on Done the log says how to point COMPME_MODEL_PATH at it.
+        // Setup "Download Model": fetch the model the picker has selected
+        // (setup_model_index; defaults to the recommended entry) into the
+        // app-support models dir. Progress is logged; on Done the log says
+        // how to point COMPME_MODEL_PATH at it.
         if settings_flags
             .setup_download_model
             .swap(false, Ordering::Relaxed)

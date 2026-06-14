@@ -20,18 +20,21 @@ pub struct AppPolicy {
     /// <app>"): `None` → inherit the default (allowed — the global opt-IN is
     /// the memory `StorageMode`); `Some(false)` → never record from this app.
     pub collect_inputs: Option<bool>,
-    /// Per-app mid-line completions override (App Settings pane): `None` →
+    /// Per-app mid-line completions override (config
+    /// `COMPME_MIDLINE_ON_APPS`/`COMPME_MIDLINE_OFF_APPS`): `None` →
     /// inherit the global `COMPME_MIDLINE`. The resolved value is applied LIVE
     /// to the engine's mid-line trigger gate via `Engine::set_allow_mid_word`,
     /// re-applied on every focus change and on the Labs-switch edge (run_loop)
     /// — see `mid_line_enabled`. (The original build-time `with_trigger_gates`
     /// bake is now just the startup default; the runtime setter overrides it.)
     pub mid_line: Option<bool>,
-    /// Per-app autocorrect override (App Settings pane): `None` → inherit the
-    /// global `COMPME_AUTOCORRECT`.
+    /// Per-app autocorrect override (config
+    /// `COMPME_AUTOCORRECT_ON_APPS`/`COMPME_AUTOCORRECT_OFF_APPS`): `None` →
+    /// inherit the global `COMPME_AUTOCORRECT`.
     pub autocorrect: Option<bool>,
-    /// Per-app thesaurus override (App Settings pane): `None` → inherit the
-    /// global `COMPME_THESAURUS`.
+    /// Per-app thesaurus override (config
+    /// `COMPME_THESAURUS_ON_APPS`/`COMPME_THESAURUS_OFF_APPS`): `None` →
+    /// inherit the global `COMPME_THESAURUS`.
     pub thesaurus: Option<bool>,
 }
 

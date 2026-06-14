@@ -866,7 +866,7 @@ fn build_window(
                 sel!(requestScreenRecording:),
             ),
             ("Reveal Model in Finder", sel!(revealModel:)),
-            ("Download Recommended Model", sel!(downloadModel:)),
+            ("Download Model", sel!(downloadModel:)),
         ];
         for (i, (title, action)) in buttons.into_iter().enumerate() {
             // SAFETY: target outlives the window (held by MacosSettingsWindow).

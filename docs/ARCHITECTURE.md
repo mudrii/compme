@@ -194,8 +194,10 @@ crate is the pure classifier that drives gating.
 
 `personalization` templates prompt-based steering (§6) into a preamble that the
 host prepends to the completion prompt: custom instructions (global + per-app +
-per-domain), a 6-stop strength slider, and sender identity. Pure and
-dependency-free — no ML, no I/O. The 6 strength stops have full reach for every
+per-domain instruction maps — the crate resolves all three, though the app
+currently wires only the global preamble; per-app/per-domain instruction
+steering is a planned A3 follow-up), a 6-stop strength slider, and sender
+identity. Pure and dependency-free — no ML, no I/O. The 6 strength stops have full reach for every
 user; Cotypist's Free/Plus/Pro caps are paywall artifacts deliberately not
 cloned.
 
@@ -242,8 +244,9 @@ model paths, security settings) requires `LinkTrust::Signed`:
 `parse_deep_link_with_trust` verifies a trailing `&sig=<128 hex>` **Ed25519**
 signature over the exact URL byte-prefix against a host-pinned `TrustedKey`,
 with no canonicalization and fail-closed when no key is configured. The §16
-web-config gate stays partial until URL-scheme reception (FFI) and the host
-confirmation prompt land.
+web-config flow is wired end-to-end: `platform_macos::url_events` installs the
+Apple-Events `compme://` URL-scheme handler, and the run loop drains each link
+through a host confirmation prompt before `handle_deep_link` applies it.
 
 ### `engine_core`
 
