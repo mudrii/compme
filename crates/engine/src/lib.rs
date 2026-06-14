@@ -21,7 +21,10 @@ const SYNTHETIC_INSERT_HIDE_DELAY: Duration = Duration::from_millis(50);
 /// A text edit reported by the host, carrying the contract's metadata: the
 /// `edit` kind and `trigger` policy (which the machine gates on) plus the
 /// previous caret / value hash (part of the host-reported change surface;
-/// the current `SuggestionMachine` does not consume them).
+/// the current `SuggestionMachine` does not consume them). `inserted_text`
+/// carries the host-derived insertion delta when there is an established prior
+/// value; consumers that need privacy-preserving typing history can use it
+/// without storing the whole field snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextChange {
     pub field: FieldHandle,
@@ -30,6 +33,7 @@ pub struct TextChange {
     pub edit: EditKind,
     pub previous_caret: Option<usize>,
     pub previous_value_hash: Option<u64>,
+    pub inserted_text: Option<String>,
     pub trigger: TriggerPolicy,
     pub now_ms: u64,
 }
@@ -453,6 +457,7 @@ mod tests {
             edit: EditKind::Insert,
             previous_caret: None,
             previous_value_hash: None,
+            inserted_text: None,
             trigger: TriggerPolicy::Automatic,
             now_ms,
         }

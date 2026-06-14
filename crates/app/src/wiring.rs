@@ -45,6 +45,37 @@ fn edit_kind(prev_chars: usize, new_chars: usize) -> EditKind {
     }
 }
 
+fn inserted_text(prev: &str, new: &str) -> Option<String> {
+    let prev_chars: Vec<char> = prev.chars().collect();
+    let new_chars: Vec<char> = new.chars().collect();
+    if new_chars.len() <= prev_chars.len() {
+        return None;
+    }
+
+    let mut prefix = 0;
+    while prefix < prev_chars.len()
+        && prefix < new_chars.len()
+        && prev_chars[prefix] == new_chars[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0;
+    while suffix < prev_chars.len().saturating_sub(prefix)
+        && suffix < new_chars.len().saturating_sub(prefix)
+        && prev_chars[prev_chars.len() - 1 - suffix] == new_chars[new_chars.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    if prefix + suffix != prev_chars.len() {
+        return None;
+    }
+
+    let end = new_chars.len().saturating_sub(suffix);
+    (prefix < end).then(|| new_chars[prefix..end].iter().collect())
+}
+
 /// The result of observing a context read: either the field's content changed
 /// (typing/paste/delete) or the caret moved within unchanged content.
 ///
@@ -90,6 +121,27 @@ impl FieldTracker {
         trigger: TriggerPolicy,
         now_ms: u64,
     ) -> Observation {
+        self.observe_inner(field, ctx, trigger, now_ms, false)
+    }
+
+    pub fn observe_with_inserted_text(
+        &mut self,
+        field: &FieldHandle,
+        ctx: &TextContext,
+        trigger: TriggerPolicy,
+        now_ms: u64,
+    ) -> Observation {
+        self.observe_inner(field, ctx, trigger, now_ms, true)
+    }
+
+    fn observe_inner(
+        &mut self,
+        field: &FieldHandle,
+        ctx: &TextContext,
+        trigger: TriggerPolicy,
+        now_ms: u64,
+        capture_inserted_text: bool,
+    ) -> Observation {
         let (value, caret) = value_and_caret(ctx);
         let new_chars = value.chars().count();
 
@@ -115,11 +167,14 @@ impl FieldTracker {
             }
         }
 
-        let (edit, previous_caret, previous_value_hash) = match &prev {
+        let (edit, previous_caret, previous_value_hash, inserted_text) = match &prev {
             Some((prev_value, prev_caret)) => (
                 edit_kind(prev_value.chars().count(), new_chars),
                 Some(*prev_caret),
                 Some(hash_value(prev_value)),
+                capture_inserted_text
+                    .then(|| inserted_text(prev_value, &value))
+                    .flatten(),
             ),
             None => (
                 if new_chars == 0 {
@@ -127,6 +182,7 @@ impl FieldTracker {
                 } else {
                     EditKind::Insert
                 },
+                None,
                 None,
                 None,
             ),
@@ -139,6 +195,7 @@ impl FieldTracker {
             edit,
             previous_caret,
             previous_value_hash,
+            inserted_text,
             trigger,
             now_ms,
         })
@@ -306,6 +363,7 @@ mod tests {
         assert_eq!(change.edit, EditKind::Insert);
         assert_eq!(change.previous_caret, None);
         assert_eq!(change.previous_value_hash, None);
+        assert_eq!(change.inserted_text, None);
     }
 
     #[test]
@@ -324,6 +382,72 @@ mod tests {
         assert_eq!(change.edit, EditKind::Insert);
         assert_eq!(change.previous_caret, Some(3));
         assert_eq!(change.previous_value_hash, Some(hash_value("hel")));
+        assert_eq!(change.inserted_text, None);
+    }
+
+    #[test]
+    fn observe_with_inserted_text_captures_insert_delta() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("hel", ""), TriggerPolicy::Automatic, 0);
+        let change = typed(tracker.observe_with_inserted_text(
+            &field("f"),
+            &ctx("hell", ""),
+            TriggerPolicy::Automatic,
+            1,
+        ));
+        assert_eq!(change.inserted_text.as_deref(), Some("l"));
+    }
+
+    #[test]
+    fn inserted_text_captures_middle_insert_without_existing_text() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("ab", "cd"), TriggerPolicy::Automatic, 0);
+        let change = typed(tracker.observe_with_inserted_text(
+            &field("f"),
+            &ctx("abXY", "cd"),
+            TriggerPolicy::Automatic,
+            1,
+        ));
+        assert_eq!(change.inserted_text.as_deref(), Some("XY"));
+    }
+
+    #[test]
+    fn inserted_text_is_unicode_scalar_safe() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("café ", ""), TriggerPolicy::Automatic, 0);
+        let change = typed(tracker.observe_with_inserted_text(
+            &field("f"),
+            &ctx("café 😄", ""),
+            TriggerPolicy::Automatic,
+            1,
+        ));
+        assert_eq!(change.inserted_text.as_deref(), Some("😄"));
+    }
+
+    #[test]
+    fn inserted_text_rejects_wrapping_existing_text() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("secret", ""), TriggerPolicy::Automatic, 0);
+        let change = typed(tracker.observe_with_inserted_text(
+            &field("f"),
+            &ctx("a secret b", ""),
+            TriggerPolicy::Automatic,
+            1,
+        ));
+        assert_eq!(change.inserted_text, None);
+    }
+
+    #[test]
+    fn inserted_text_rejects_replacements() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("secret", ""), TriggerPolicy::Automatic, 0);
+        let change = typed(tracker.observe_with_inserted_text(
+            &field("f"),
+            &ctx("seXrets", ""),
+            TriggerPolicy::Automatic,
+            1,
+        ));
+        assert_eq!(change.inserted_text, None);
     }
 
     #[test]
@@ -333,6 +457,7 @@ mod tests {
         let change =
             typed(tracker.observe(&field("f"), &ctx("hel", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Delete);
+        assert_eq!(change.inserted_text, None);
     }
 
     #[test]
@@ -342,6 +467,7 @@ mod tests {
         let change =
             typed(tracker.observe(&field("f"), &ctx("cot", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Unknown);
+        assert_eq!(change.inserted_text, None);
     }
 
     #[test]

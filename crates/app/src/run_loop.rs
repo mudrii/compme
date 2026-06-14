@@ -53,6 +53,7 @@ const DEFAULT_HEARTBEAT_MS: u64 = 12;
 const DEFAULT_CANDIDATES: usize = 1;
 /// Per-source character bound when previous-input context is enabled truthily.
 const DEFAULT_CONTEXT_MAX_CHARS: usize = 160;
+const MAX_MONITORED_BUFFER_CHARS: usize = 512;
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
 /// Re-poll secure input + Accessibility trust at most this often (wall-clock ms).
 const SECURE_POLL_INTERVAL_MS: u64 = 480;
@@ -98,6 +99,30 @@ enum HostEvent {
     Dismiss,
     /// Down arrow: rotate to the next candidate (multi-candidate cycle).
     Cycle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingMonitoredText {
+    field: FieldHandle,
+    inserted: String,
+    oversized: bool,
+    app_key: Option<String>,
+    domain: Option<String>,
+    terminal_ok: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MonitoredBuffer {
+    Collecting(String),
+    DroppedUntilBoundary,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MonitoredPolicy {
+    enabled: bool,
+    secure: bool,
+    trusted: bool,
+    now_ms: u64,
 }
 
 /// Collapse a burst of consecutive same-field `Caret` events into just the last
@@ -847,6 +872,32 @@ fn request_passes_submit_gates(
     suggestion_gates_pass(app_key, &request.prompt, domain, prefs, now_ms)
 }
 
+fn browser_domain_fresh_enough_for_rules(
+    app_key: Option<&str>,
+    domain: Option<&str>,
+    prefs: &Prefs,
+) -> bool {
+    !(app_key.is_some_and(compat::is_browser)
+        && !prefs.excluded_domains.is_empty()
+        && domain.is_none())
+}
+
+fn monitored_collection_gates_pass(
+    app_key: Option<&str>,
+    domain: Option<&str>,
+    prefs: &Prefs,
+    policy: MonitoredPolicy,
+    terminal_ok: bool,
+) -> bool {
+    !policy.secure
+        && policy.trusted
+        && policy.enabled
+        && terminal_ok
+        && browser_domain_fresh_enough_for_rules(app_key, domain, prefs)
+        && app_allows_suggestions(app_key)
+        && prefs.should_suggest(app_key, domain, policy.now_ms)
+}
+
 /// The cached browser host for `app_key`, but ONLY when it is the app the
 /// read was taken under — the request's app may differ from the focus that
 /// populated the cache, and a domain must never cross-attribute. `None` =
@@ -857,6 +908,18 @@ fn cached_domain<'a>(
 ) -> Option<&'a str> {
     let (read_app, host) = cache.as_ref()?;
     (app_key == Some(read_app.as_str())).then_some(host.as_str())
+}
+
+fn typing_domain(
+    cache: &mut Option<(String, String)>,
+    app_key: Option<&str>,
+    prefs: &Prefs,
+    fresh_url: Option<&str>,
+) -> Option<String> {
+    if app_key.is_some_and(compat::is_browser) && !prefs.excluded_domains.is_empty() {
+        *cache = domain_cache_entry(app_key, fresh_url);
+    }
+    cached_domain(cache, app_key).map(str::to_owned)
 }
 
 /// First-suggestion latency (ms) for a completed request's `generation`: the
@@ -912,6 +975,149 @@ fn record_full_accept(
         if let Err(err) = store.remember(&field.app, text) {
             eprintln!("compme: memory remember failed: {err}");
         }
+    }
+}
+
+/// Route ordinary monitored insertion deltas to the encrypted memory store.
+/// `MemoryStore::monitor` is mode-aware: it persists only in `AllMonitored`
+/// mode and no-ops in `AcceptedOnly`/`Off`, while this helper preserves the app
+/// loop's privacy gates shared with accept recording.
+fn record_monitored_text(
+    field: &FieldHandle,
+    text: &str,
+    memory: Option<&memory::MemoryStore>,
+    collection_allowed: bool,
+) {
+    if !collection_allowed || field.app.starts_with("pid:") || text.is_empty() {
+        return;
+    }
+    if let Some(store) = memory {
+        if let Err(err) = store.monitor(&field.app, text) {
+            eprintln!("compme: memory monitor failed: {err}");
+        }
+    }
+}
+
+/// Queue only established insertion deltas for monitored memory. Persistence is
+/// delayed until after same-tick runtime policy changes are drained, so toggles
+/// and snoozes apply before any durable write.
+fn enqueue_monitored_change(
+    pending: &mut Vec<PendingMonitoredText>,
+    change: &engine::TextChange,
+    app_key: Option<String>,
+    domain: Option<String>,
+) {
+    let Some(inserted) = change.inserted_text.as_deref() else {
+        return;
+    };
+    if inserted.is_empty() {
+        return;
+    }
+    let oversized = inserted.chars().count() > MAX_MONITORED_BUFFER_CHARS;
+    pending.push(PendingMonitoredText {
+        field: change.field.clone(),
+        inserted: if oversized {
+            if monitored_boundary(inserted) {
+                " ".to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            inserted.to_string()
+        },
+        oversized,
+        terminal_ok: app_key
+            .as_deref()
+            .is_none_or(|app| compat::terminal_prompt_activates(app, &change.value)),
+        app_key,
+        domain,
+    });
+}
+
+fn monitored_boundary(text: &str) -> bool {
+    text.chars().any(char::is_whitespace)
+}
+
+fn buffered_monitored_text(
+    buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
+    field: &FieldHandle,
+    inserted: &str,
+) -> Option<String> {
+    match buffers
+        .entry(field.clone())
+        .or_insert_with(|| MonitoredBuffer::Collecting(String::new()))
+    {
+        MonitoredBuffer::Collecting(buffer) => {
+            buffer.push_str(inserted);
+            if buffer.chars().count() > MAX_MONITORED_BUFFER_CHARS {
+                if monitored_boundary(inserted) {
+                    buffers.remove(field);
+                } else {
+                    buffers.insert(field.clone(), MonitoredBuffer::DroppedUntilBoundary);
+                }
+                return None;
+            }
+        }
+        MonitoredBuffer::DroppedUntilBoundary => {
+            if monitored_boundary(inserted) {
+                buffers.remove(field);
+            }
+            return None;
+        }
+    }
+    if !monitored_boundary(inserted) {
+        return None;
+    }
+    match buffers.remove(field) {
+        Some(MonitoredBuffer::Collecting(text)) => Some(text),
+        Some(MonitoredBuffer::DroppedUntilBoundary) | None => None,
+    }
+}
+
+fn clear_monitored_state_for_policy_transition(
+    pending: &mut Vec<PendingMonitoredText>,
+    buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
+) {
+    pending.clear();
+    buffers.clear();
+}
+
+fn flush_monitored_changes(
+    pending: &mut Vec<PendingMonitoredText>,
+    buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
+    memory: Option<&memory::MemoryStore>,
+    prefs: &Prefs,
+    policy: MonitoredPolicy,
+) {
+    for item in pending.drain(..) {
+        if !monitored_collection_gates_pass(
+            item.app_key.as_deref(),
+            item.domain.as_deref(),
+            prefs,
+            policy,
+            item.terminal_ok,
+        ) {
+            buffers.remove(&item.field);
+            continue;
+        }
+        let collection_allowed =
+            prefs.collection_allowed(item.app_key.as_deref().or(Some(&item.field.app)));
+        if !collection_allowed {
+            buffers.remove(&item.field);
+            continue;
+        }
+        if item.oversized {
+            if monitored_boundary(&item.inserted) {
+                buffers.remove(&item.field);
+            } else {
+                buffers.insert(item.field.clone(), MonitoredBuffer::DroppedUntilBoundary);
+            }
+            continue;
+        }
+        let Some(text) = buffered_monitored_text(buffers, &item.field, &item.inserted) else {
+            continue;
+        };
+        record_monitored_text(&item.field, &text, memory, collection_allowed);
     }
 }
 
@@ -1872,11 +2078,11 @@ pub fn run() -> Result<(), String> {
     }
 
     let previous_inputs = PreviousInputs::default();
-    // Encrypted on-disk memory of accepted completions (A2 §6/§16). Off unless
-    // COMPME_MEMORY + path are configured; the key comes from
-    // COMPME_MEMORY_KEY or (default) the macOS Keychain, generated on
-    // first use. Lives on this thread (the rusqlite handle is not Send) and is
-    // only touched on Full-accept.
+    // Encrypted on-disk memory (A2 §6/§16). Off unless COMPME_MEMORY + path are
+    // configured; the key comes from COMPME_MEMORY_KEY or (default) the macOS
+    // Keychain, generated on first use. Lives on this thread (the rusqlite
+    // handle is not Send). AcceptedOnly records Full accepts; AllMonitored also
+    // records established non-secure insertion deltas.
     let memory =
         open_memory_store(
             &config.memory,
@@ -1888,6 +2094,8 @@ pub fn run() -> Result<(), String> {
                 }
             },
         );
+    let monitored_memory_active =
+        config.memory.mode == memory::StorageMode::AllMonitored && memory.is_some();
     let clipboard_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let screen_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     // Screen OCR only contributes when the grant is actually present this session.
@@ -1964,6 +2172,8 @@ pub fn run() -> Result<(), String> {
     // first-suggestion latency when the matching outcome returns (§11 p95 floor).
     let mut submit_times: HashMap<u64, u64> = HashMap::new();
     let mut latest = LatestRequest::new();
+    let mut pending_monitored: Vec<PendingMonitoredText> = Vec::new();
+    let mut monitored_buffers: HashMap<FieldHandle, MonitoredBuffer> = HashMap::new();
     let mut current_field: Option<FieldHandle> = None;
     let mut hinted_apps: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut prev_enabled = config.enabled;
@@ -2044,6 +2254,10 @@ pub fn run() -> Result<(), String> {
                 HostEvent::Focus(field) => {
                     let (field, app_key) = canonicalize_field_app(field, bundle_id_for_pid);
                     eprintln!("compme: focus {}", field.element_id);
+                    clear_monitored_state_for_policy_transition(
+                        &mut pending_monitored,
+                        &mut monitored_buffers,
+                    );
                     // Compatibility onboarding (A2 §16): surface tier-specific
                     // guidance once per app (mirror-window apps, setup-needed
                     // browsers like Google Docs/Arc).
@@ -2096,10 +2310,20 @@ pub fn run() -> Result<(), String> {
                     }
                     current_field = Some(field.clone());
                     tracker.reset();
+                    if monitored_memory_active {
+                        if let Ok(ctx) = adapter.read_context(&field) {
+                            let _ = tracker.observe_with_inserted_text(
+                                &field,
+                                &ctx,
+                                TriggerPolicy::Automatic,
+                                now_ms,
+                            );
+                        }
+                    }
                     offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
                 }
                 HostEvent::Caret(field, _rect) => {
-                    let (field, _app_key) = canonicalize_field_app(field, bundle_id_for_pid);
+                    let (field, app_key) = canonicalize_field_app(field, bundle_id_for_pid);
                     match adapter.read_context(&field) {
                         // One selection-changed notification covers both typing and a
                         // bare cursor move. Typing schedules a completion; a cursor
@@ -2115,8 +2339,38 @@ pub fn run() -> Result<(), String> {
                                     );
                                 }
                             }
-                            match tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms) {
+                            let observation = if monitored_memory_active {
+                                tracker.observe_with_inserted_text(
+                                    &field,
+                                    &ctx,
+                                    TriggerPolicy::Automatic,
+                                    now_ms,
+                                )
+                            } else {
+                                tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms)
+                            };
+                            match observation {
                                 Observation::Typed(change) => {
+                                    let fresh_url =
+                                        if app_key.as_deref().is_some_and(compat::is_browser)
+                                            && !prefs.excluded_domains.is_empty()
+                                        {
+                                            adapter.focused_page_url(&field).ok().flatten()
+                                        } else {
+                                            None
+                                        };
+                                    let domain = typing_domain(
+                                        &mut last_domain,
+                                        app_key.as_deref(),
+                                        &prefs,
+                                        fresh_url.as_deref(),
+                                    );
+                                    enqueue_monitored_change(
+                                        &mut pending_monitored,
+                                        &change,
+                                        app_key.clone(),
+                                        domain.clone(),
+                                    );
                                     offer_all(
                                         &mut latest,
                                         log_err("on_text_changed", engine.on_text_changed(change)),
@@ -2134,17 +2388,23 @@ pub fn run() -> Result<(), String> {
                                     // local offer never shows where a model one
                                     // wouldn't (warm-up is intentionally not required:
                                     // replacements are local and need no model).
-                                    let replace_app_key =
-                                        resolve_app_key(field.pid, bundle_id_for_pid);
-                                    let decision = replacement_decision(
-                                        &ctx.left,
-                                        &config,
+                                    let decision = if browser_domain_fresh_enough_for_rules(
+                                        app_key.as_deref(),
+                                        domain.as_deref(),
                                         &prefs,
-                                        replace_app_key.as_deref(),
-                                        cached_domain(&last_domain, replace_app_key.as_deref()),
-                                        flags.enabled.load(Ordering::Relaxed),
-                                        now_ms,
-                                    );
+                                    ) {
+                                        replacement_decision(
+                                            &ctx.left,
+                                            &config,
+                                            &prefs,
+                                            app_key.as_deref(),
+                                            domain.as_deref(),
+                                            flags.enabled.load(Ordering::Relaxed),
+                                            now_ms,
+                                        )
+                                    } else {
+                                        None
+                                    };
                                     if debug_enabled() {
                                         // Diagnose emoji/typo/spelling preempt vs the
                                         // model: the left context the decision saw, the
@@ -2327,6 +2587,10 @@ pub fn run() -> Result<(), String> {
         if TOGGLE.swap(false, Ordering::Relaxed) {
             let now = flags.enabled.load(Ordering::Relaxed);
             flags.enabled.store(!now, Ordering::Relaxed);
+            clear_monitored_state_for_policy_transition(
+                &mut pending_monitored,
+                &mut monitored_buffers,
+            );
         }
         // Tray "Disable Completions Globally ▸": Hour/UntilRelaunch snooze
         // globally (UntilRelaunch holds for the process life); Always flips
@@ -2337,6 +2601,10 @@ pub fn run() -> Result<(), String> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(arm) = global_arm {
+            clear_monitored_state_for_policy_transition(
+                &mut pending_monitored,
+                &mut monitored_buffers,
+            );
             if apply_global_disable(arm, &mut prefs, now_ms) {
                 flags.enabled.store(false, Ordering::Relaxed);
                 eprintln!("compme: completions disabled (persistent)");
@@ -2355,6 +2623,10 @@ pub fn run() -> Result<(), String> {
             now_ms,
         ) {
             eprintln!("compme: suggestions snoozed for {SNOOZE_MINUTES} minutes");
+            clear_monitored_state_for_policy_transition(
+                &mut pending_monitored,
+                &mut monitored_buffers,
+            );
             // A snooze must retract an already-visible ghost, exactly like the
             // disable edge below: gating runs at request-submission, so without
             // this a ghost already on screen would survive the snooze — and its
@@ -2716,6 +2988,10 @@ pub fn run() -> Result<(), String> {
             match handle_deep_link(&url, config.trusted_key.as_ref(), &mut prefs, confirm) {
                 Ok(summary) => {
                     eprintln!("compme: deep link {summary}");
+                    clear_monitored_state_for_policy_transition(
+                        &mut pending_monitored,
+                        &mut monitored_buffers,
+                    );
                     if let Some(path) = config::config_file_path() {
                         persist_web_override_prefs(&path, &prefs);
                     }
@@ -2729,6 +3005,10 @@ pub fn run() -> Result<(), String> {
         // app's typing-history override and persist the no-collect list. No
         // dismiss edge — collection gates RECORDING, not suggestion display.
         if flags.collection_toggle.swap(false, Ordering::Relaxed) {
+            clear_monitored_state_for_policy_transition(
+                &mut pending_monitored,
+                &mut monitored_buffers,
+            );
             match current_field
                 .as_ref()
                 .and_then(|f| resolve_app_key(f.pid, bundle_id_for_pid))
@@ -2765,6 +3045,10 @@ pub fn run() -> Result<(), String> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
+            clear_monitored_state_for_policy_transition(
+                &mut pending_monitored,
+                &mut monitored_buffers,
+            );
             match current_field
                 .as_ref()
                 .and_then(|f| resolve_app_key(f.pid, bundle_id_for_pid))
@@ -2790,12 +3074,41 @@ pub fn run() -> Result<(), String> {
             }
         }
         let enabled = flags.enabled.load(Ordering::Relaxed);
+        if monitored_memory_active
+            && (!pending_monitored.is_empty() || !monitored_buffers.is_empty())
+        {
+            secure = secure_input_enabled();
+            last_secure_poll_ms = Some(now_ms);
+        }
+        let secure_for_monitoring = secure;
+        if secure_for_monitoring {
+            clear_monitored_state_for_policy_transition(
+                &mut pending_monitored,
+                &mut monitored_buffers,
+            );
+        }
+        flush_monitored_changes(
+            &mut pending_monitored,
+            &mut monitored_buffers,
+            memory.as_ref(),
+            &prefs,
+            MonitoredPolicy {
+                enabled,
+                secure: secure_for_monitoring,
+                trusted,
+                now_ms,
+            },
+        );
         let status = derive_status(trusted, secure, inference.is_ready(), enabled);
         // Secure input is a true engine-state transition, not only a UI state:
         // clear queued work and invalidate the machine so held requests cannot
         // submit after the secure block clears.
         match secure_edge(prev_secure, secure, trusted) {
             SecureEdge::Enter => {
+                clear_monitored_state_for_policy_transition(
+                    &mut pending_monitored,
+                    &mut monitored_buffers,
+                );
                 latest.clear();
                 offer_all(
                     &mut latest,
@@ -2818,10 +3131,18 @@ pub fn run() -> Result<(), String> {
         }
         // Disabling is user policy: dismiss visible UI and drop queued requests.
         if should_dismiss_on_disable(prev_enabled, enabled) {
+            clear_monitored_state_for_policy_transition(
+                &mut pending_monitored,
+                &mut monitored_buffers,
+            );
             latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
         if status_drops_pending_requests(status) {
+            clear_monitored_state_for_policy_transition(
+                &mut pending_monitored,
+                &mut monitored_buffers,
+            );
             latest.clear();
         }
         // Persist a user enable/disable toggle (tray or SIGUSR1) so the next
@@ -4389,6 +4710,35 @@ mod tests {
     }
 
     #[test]
+    fn typing_domain_refreshes_browser_cache_only_when_domain_rules_exist() {
+        let mut cache = Some((
+            "com.apple.Safari".to_string(),
+            "allowed.example".to_string(),
+        ));
+        let prefs = Prefs::default();
+        assert_eq!(
+            typing_domain(&mut cache, Some("com.apple.Safari"), &prefs, None),
+            Some("allowed.example".into())
+        );
+
+        let mut prefs = Prefs::default();
+        prefs.excluded_domains.insert("blocked.example".into());
+        assert_eq!(
+            typing_domain(
+                &mut cache,
+                Some("com.apple.Safari"),
+                &prefs,
+                Some("https://blocked.example/private")
+            ),
+            Some("blocked.example".into())
+        );
+        assert_eq!(
+            typing_domain(&mut cache, Some("com.apple.Safari"), &prefs, None),
+            None
+        );
+    }
+
+    #[test]
     fn submit_gate_blocks_an_excluded_domain() {
         // The per-domain rules' submit-side consumer: with a domain present,
         // an excluded host blocks the request in an otherwise-allowed app.
@@ -4741,6 +5091,43 @@ mod tests {
     }
 
     #[test]
+    fn configured_all_monitored_store_persists_inserted_deltas_only() {
+        let path = std::env::temp_dir().join(format!(
+            "compme-all-monitored-configured-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let path_str = path.to_string_lossy().into_owned();
+        let key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let cfg = build_memory_config(&|name| match name {
+            "COMPME_MEMORY" => Some("all".into()),
+            "COMPME_MEMORY_PATH" => Some(path_str.clone()),
+            "COMPME_MEMORY_KEY" => Some(key.into()),
+            _ => None,
+        });
+        let store = open_memory_store(&cfg, || panic!("keychain consulted despite env key"))
+            .expect("configured all-monitored store opens");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "pre-existing", "pre-existing typed ");
+        let prefs = Prefs::default();
+        queue_and_flush_monitored(&change, &store, &prefs, true, false);
+        assert_eq!(
+            store.recent("com.apple.TextEdit", 10).unwrap(),
+            vec![" typed "]
+        );
+        drop(store);
+
+        let reopened = open_memory_store(&cfg, || panic!("keychain consulted despite env key"))
+            .expect("configured all-monitored store reopens");
+        assert_eq!(
+            reopened.recent("com.apple.TextEdit", 10).unwrap(),
+            vec![" typed "]
+        );
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn the_keychain_is_not_consulted_when_memory_is_off_or_path_is_missing() {
         let cfg_off = MemoryConfig {
             mode: memory::StorageMode::Off,
@@ -4837,12 +5224,175 @@ mod tests {
         }
     }
 
+    fn text_context(field: &FieldHandle, left: &str) -> platform::TextContext {
+        platform::TextContext {
+            left: left.into(),
+            right: String::new(),
+            selection: None,
+            caret: left.chars().count(),
+            source: platform::ContextSource::Accessibility,
+            field_id: field.clone(),
+            offset_encoding: platform::OffsetEncoding::UnicodeScalars,
+        }
+    }
+
+    fn typed_change_after_baseline(
+        field: &FieldHandle,
+        baseline: &str,
+        next: &str,
+    ) -> engine::TextChange {
+        let mut tracker = FieldTracker::new();
+        let _ = tracker.observe_with_inserted_text(
+            field,
+            &text_context(field, baseline),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        match tracker.observe_with_inserted_text(
+            field,
+            &text_context(field, next),
+            TriggerPolicy::Automatic,
+            2,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        }
+    }
+
     fn accepted_store() -> memory::MemoryStore {
         memory::MemoryStore::open_in_memory(
             &memory::StaticKey([3u8; 32]),
             memory::StorageMode::AcceptedOnly,
         )
         .expect("open in-memory store")
+    }
+
+    fn queue_and_flush_monitored(
+        change: &engine::TextChange,
+        store: &memory::MemoryStore,
+        prefs: &Prefs,
+        enabled: bool,
+        secure: bool,
+    ) {
+        queue_and_flush_monitored_for_app(change, store, prefs, enabled, secure, None);
+    }
+
+    fn queue_and_flush_monitored_for_app(
+        change: &engine::TextChange,
+        store: &memory::MemoryStore,
+        prefs: &Prefs,
+        enabled: bool,
+        secure: bool,
+        domain: Option<&str>,
+    ) {
+        let mut pending = Vec::new();
+        let mut buffers = HashMap::new();
+        enqueue_monitored_change(
+            &mut pending,
+            change,
+            Some(change.field.app.clone()),
+            domain.map(str::to_owned),
+        );
+        flush_monitored_changes(
+            &mut pending,
+            &mut buffers,
+            Some(store),
+            prefs,
+            monitored_policy(enabled, secure, true, 1_000),
+        );
+    }
+
+    fn queue_and_flush_monitored_with_buffers(
+        change: &engine::TextChange,
+        buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
+        store: &memory::MemoryStore,
+        prefs: &Prefs,
+        enabled: bool,
+        secure: bool,
+    ) {
+        let mut pending = Vec::new();
+        enqueue_monitored_change(&mut pending, change, Some(change.field.app.clone()), None);
+        flush_monitored_changes(
+            &mut pending,
+            buffers,
+            Some(store),
+            prefs,
+            monitored_policy(enabled, secure, true, 1_000),
+        );
+    }
+
+    fn monitored_policy(
+        enabled: bool,
+        secure: bool,
+        trusted: bool,
+        now_ms: u64,
+    ) -> MonitoredPolicy {
+        MonitoredPolicy {
+            enabled,
+            secure,
+            trusted,
+            now_ms,
+        }
+    }
+
+    fn assert_cleared_monitored_buffer_does_not_replay_partial_text() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([13u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let prefs = Prefs::default();
+        let mut tracker = FieldTracker::new();
+        let _ = tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        let partial = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, "secret"),
+            TriggerPolicy::Automatic,
+            2,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        let mut buffers = HashMap::new();
+        queue_and_flush_monitored_with_buffers(&partial, &mut buffers, &store, &prefs, true, false);
+        assert_eq!(store.count().unwrap(), 0);
+        assert!(!buffers.is_empty());
+
+        let mut pending = Vec::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &partial,
+            Some("com.apple.TextEdit".into()),
+            None,
+        );
+        assert!(!pending.is_empty());
+        clear_monitored_state_for_policy_transition(&mut pending, &mut buffers);
+        assert!(pending.is_empty());
+        assert!(buffers.is_empty());
+        let boundary = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, "secret "),
+            TriggerPolicy::Automatic,
+            3,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        queue_and_flush_monitored_with_buffers(
+            &boundary,
+            &mut buffers,
+            &store,
+            &prefs,
+            true,
+            false,
+        );
+        assert_eq!(store.recent("com.apple.TextEdit", 10).unwrap(), vec![" "]);
     }
 
     #[test]
@@ -4913,6 +5463,631 @@ mod tests {
         );
         assert_eq!(store.count().unwrap(), 1);
         assert!(prev.recent("com.apple.TextEdit").is_empty());
+    }
+
+    #[test]
+    fn all_monitored_records_typed_field_text_after_established_baseline() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([4u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let mut tracker = FieldTracker::new();
+        let first = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, "pre-existing draft"),
+            TriggerPolicy::Automatic,
+            1,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("first non-empty snapshot is typed"),
+        };
+        let prefs = Prefs::default();
+        queue_and_flush_monitored(&first, &store, &prefs, true, false);
+        assert_eq!(
+            store.count().unwrap(),
+            0,
+            "baseline snapshot is not user typing"
+        );
+
+        let second = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, "pre-existing draft! "),
+            TriggerPolicy::Automatic,
+            2,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("second snapshot changed text"),
+        };
+        queue_and_flush_monitored(&second, &store, &prefs, true, false);
+        assert_eq!(store.recent("com.apple.TextEdit", 10).unwrap(), vec!["! "]);
+    }
+
+    #[test]
+    fn all_monitored_records_first_typed_text_after_empty_baseline() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([7u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "h ");
+        let prefs = Prefs::default();
+        queue_and_flush_monitored(&change, &store, &prefs, true, false);
+        assert_eq!(store.recent("com.apple.TextEdit", 10).unwrap(), vec!["h "]);
+    }
+
+    #[test]
+    fn all_monitored_buffers_char_by_char_text_until_redactable_boundary() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([11u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let prefs = Prefs::default();
+        let mut tracker = FieldTracker::new();
+        let _ = tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        let mut buffers = HashMap::new();
+        for (idx, value) in [
+            "a",
+            "ad",
+            "ada",
+            "ada@",
+            "ada@e",
+            "ada@ex",
+            "ada@example",
+            "ada@example.",
+            "ada@example.com",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let change = match tracker.observe_with_inserted_text(
+                &field,
+                &text_context(&field, value),
+                TriggerPolicy::Automatic,
+                (idx + 2) as u64,
+            ) {
+                Observation::Typed(change) => change,
+                Observation::CaretMoved { .. } => panic!("expected typed change"),
+            };
+            queue_and_flush_monitored_with_buffers(
+                &change,
+                &mut buffers,
+                &store,
+                &prefs,
+                true,
+                false,
+            );
+            assert_eq!(store.count().unwrap(), 0);
+        }
+
+        let change = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, "ada@example.com "),
+            TriggerPolicy::Automatic,
+            99,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        queue_and_flush_monitored_with_buffers(&change, &mut buffers, &store, &prefs, true, false);
+        assert_eq!(
+            store.recent("com.apple.TextEdit", 10).unwrap(),
+            vec!["[redacted-email] "]
+        );
+    }
+
+    #[test]
+    fn accepted_only_does_not_record_monitored_typing() {
+        let store = accepted_store();
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+        let prefs = Prefs::default();
+        queue_and_flush_monitored(&change, &store, &prefs, true, false);
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn all_monitored_browser_domains_use_fresh_cached_domain_rules() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([14u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.Safari");
+        let mut prefs = Prefs::default();
+        prefs.excluded_domains.insert("sensitive.example".into());
+
+        let allowed = typed_change_after_baseline(&field, "", "allowed browser text ");
+        queue_and_flush_monitored_for_app(
+            &allowed,
+            &store,
+            &prefs,
+            true,
+            false,
+            Some("other.example"),
+        );
+        assert_eq!(
+            store.recent("com.apple.Safari", 10).unwrap(),
+            vec!["allowed browser text "]
+        );
+
+        let blocked = typed_change_after_baseline(&field, "", "blocked browser text ");
+        queue_and_flush_monitored_for_app(
+            &blocked,
+            &store,
+            &prefs,
+            true,
+            false,
+            Some("docs.sensitive.example"),
+        );
+        assert_eq!(
+            store.recent("com.apple.Safari", 10).unwrap(),
+            vec!["allowed browser text "]
+        );
+    }
+
+    #[test]
+    fn monitored_typing_honors_collection_privacy_gates() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([5u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+        let mut prefs = Prefs::default();
+        prefs
+            .per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .collect_inputs = Some(false);
+        queue_and_flush_monitored(&change, &store, &prefs, true, false);
+        assert_eq!(store.count().unwrap(), 0);
+
+        let volatile = field_with_app("pid:42");
+        let change = typed_change_after_baseline(&volatile, "", "ordinary typed text ");
+        let prefs = Prefs::default();
+        queue_and_flush_monitored(&change, &store, &prefs, true, false);
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn collection_off_drops_partial_monitored_buffer_before_reenable() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([12u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let mut tracker = FieldTracker::new();
+        let _ = tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        let partial = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, "secret"),
+            TriggerPolicy::Automatic,
+            2,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+
+        let mut pending = Vec::new();
+        let mut buffers = HashMap::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &partial,
+            Some("com.apple.TextEdit".into()),
+            None,
+        );
+        let mut prefs = Prefs::default();
+        prefs
+            .per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .collect_inputs = Some(false);
+        flush_monitored_changes(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &prefs,
+            monitored_policy(true, false, true, 1_000),
+        );
+        assert!(buffers.is_empty());
+
+        let boundary = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, "secret "),
+            TriggerPolicy::Automatic,
+            3,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        let mut pending = Vec::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &boundary,
+            Some("com.apple.TextEdit".into()),
+            None,
+        );
+        flush_monitored_changes(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &Prefs::default(),
+            monitored_policy(true, false, true, 1_001),
+        );
+        assert_eq!(store.recent("com.apple.TextEdit", 10).unwrap(), vec![" "]);
+    }
+
+    #[test]
+    fn oversized_monitored_insert_is_not_queued_before_buffer_cap() {
+        let field = field_with_app("com.apple.TextEdit");
+        let large = "x".repeat(MAX_MONITORED_BUFFER_CHARS + 1);
+        let change = typed_change_after_baseline(&field, "", &large);
+        let mut pending = Vec::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &change,
+            Some("com.apple.TextEdit".into()),
+            None,
+        );
+        assert_eq!(
+            pending,
+            vec![PendingMonitoredText {
+                field,
+                inserted: String::new(),
+                oversized: true,
+                app_key: Some("com.apple.TextEdit".into()),
+                domain: None,
+                terminal_ok: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn oversized_monitored_insert_with_boundary_clears_partial_buffer() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([15u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let prefs = Prefs::default();
+        let mut tracker = FieldTracker::new();
+        let _ = tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        let partial = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, "secret"),
+            TriggerPolicy::Automatic,
+            2,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        let mut buffers = HashMap::new();
+        queue_and_flush_monitored_with_buffers(&partial, &mut buffers, &store, &prefs, true, false);
+        assert!(!buffers.is_empty());
+
+        let oversized = format!("secret{} ", "x".repeat(MAX_MONITORED_BUFFER_CHARS + 1));
+        let change = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, &oversized),
+            TriggerPolicy::Automatic,
+            3,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        queue_and_flush_monitored_with_buffers(&change, &mut buffers, &store, &prefs, true, false);
+        assert!(buffers.is_empty());
+
+        let boundary = format!("{oversized} ");
+        let change = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, &boundary),
+            TriggerPolicy::Automatic,
+            4,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        queue_and_flush_monitored_with_buffers(&change, &mut buffers, &store, &prefs, true, false);
+        assert_eq!(store.recent("com.apple.TextEdit", 10).unwrap(), vec![" "]);
+    }
+
+    #[test]
+    fn monitored_overflow_drops_until_next_boundary() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([14u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let prefs = Prefs::default();
+        let mut tracker = FieldTracker::new();
+        let _ = tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        let mut buffers = HashMap::new();
+        let mut value = String::new();
+        for idx in 0..=MAX_MONITORED_BUFFER_CHARS {
+            value.push('x');
+            let change = match tracker.observe_with_inserted_text(
+                &field,
+                &text_context(&field, &value),
+                TriggerPolicy::Automatic,
+                (idx + 2) as u64,
+            ) {
+                Observation::Typed(change) => change,
+                Observation::CaretMoved { .. } => panic!("expected typed change"),
+            };
+            queue_and_flush_monitored_with_buffers(
+                &change,
+                &mut buffers,
+                &store,
+                &prefs,
+                true,
+                false,
+            );
+        }
+        assert_eq!(
+            buffers.get(&field),
+            Some(&MonitoredBuffer::DroppedUntilBoundary)
+        );
+
+        value.push(' ');
+        let change = match tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, &value),
+            TriggerPolicy::Automatic,
+            999,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        queue_and_flush_monitored_with_buffers(&change, &mut buffers, &store, &prefs, true, false);
+        assert!(buffers.is_empty());
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn browser_domain_rule_without_fresh_domain_blocks_replacement_offer() {
+        let config = Config::from_lookup(lookup(&[("COMPME_EMOJI", "1")]));
+        let mut prefs = Prefs::default();
+        prefs.excluded_domains.insert("bank.example".into());
+        let app = Some("com.apple.Safari");
+        let decision = if browser_domain_fresh_enough_for_rules(app, None, &prefs) {
+            replacement_decision("hi :smile", &config, &prefs, app, None, true, 0)
+        } else {
+            None
+        };
+        assert!(decision.is_none());
+    }
+
+    #[test]
+    fn focus_change_drops_partial_monitored_buffer_before_reuse() {
+        assert_cleared_monitored_buffer_does_not_replay_partial_text();
+    }
+
+    #[test]
+    fn secure_entry_drops_partial_monitored_buffer_before_reuse() {
+        assert_cleared_monitored_buffer_does_not_replay_partial_text();
+    }
+
+    #[test]
+    fn monitored_typing_stops_when_context_collection_is_blocked() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([6u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+        let prefs = Prefs::default();
+        queue_and_flush_monitored(&change, &store, &prefs, true, true);
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn queued_monitored_typing_uses_policy_after_queueing() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([8u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+        let mut pending = Vec::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &change,
+            Some("com.apple.TextEdit".into()),
+            None,
+        );
+
+        let mut prefs = Prefs::default();
+        prefs.snooze(1_000, 5);
+        let mut buffers = HashMap::new();
+        flush_monitored_changes(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &prefs,
+            monitored_policy(true, false, true, 1_001),
+        );
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn queued_monitored_typing_uses_field_app_when_app_key_is_absent() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([9u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+        let mut pending = Vec::new();
+        enqueue_monitored_change(&mut pending, &change, None, None);
+
+        let mut prefs = Prefs::default();
+        prefs
+            .per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .collect_inputs = Some(false);
+        let mut buffers = HashMap::new();
+        flush_monitored_changes(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &prefs,
+            monitored_policy(true, false, true, 1_001),
+        );
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn monitored_collection_gates_match_suggestion_privacy_blocks() {
+        let mut prefs = Prefs::default();
+        assert!(!monitored_collection_gates_pass(
+            Some("com.apple.TextEdit"),
+            None,
+            &prefs,
+            monitored_policy(false, false, true, 1_000),
+            true,
+        ));
+        assert!(!monitored_collection_gates_pass(
+            Some("com.apple.TextEdit"),
+            None,
+            &prefs,
+            monitored_policy(true, true, true, 1_000),
+            true,
+        ));
+        assert!(!monitored_collection_gates_pass(
+            Some("com.apple.TextEdit"),
+            None,
+            &prefs,
+            monitored_policy(true, false, false, 1_000),
+            true,
+        ));
+
+        prefs.excluded_apps.insert("com.apple.TextEdit".into());
+        assert!(!monitored_collection_gates_pass(
+            Some("com.apple.TextEdit"),
+            None,
+            &prefs,
+            monitored_policy(true, false, true, 1_000),
+            true,
+        ));
+        prefs.excluded_apps.clear();
+
+        prefs.excluded_domains.insert("sensitive.example".into());
+        assert!(!monitored_collection_gates_pass(
+            Some("com.apple.Safari"),
+            Some("docs.sensitive.example"),
+            &prefs,
+            monitored_policy(true, false, true, 1_000),
+            true,
+        ));
+        assert!(!monitored_collection_gates_pass(
+            Some("com.apple.Safari"),
+            None,
+            &prefs,
+            monitored_policy(true, false, true, 1_000),
+            true,
+        ));
+        assert!(monitored_collection_gates_pass(
+            Some("com.apple.Safari"),
+            Some("other.example"),
+            &prefs,
+            monitored_policy(true, false, true, 1_000),
+            true,
+        ));
+        prefs.excluded_domains.clear();
+
+        prefs.snooze(1_000, 5);
+        assert!(!monitored_collection_gates_pass(
+            Some("com.apple.TextEdit"),
+            None,
+            &prefs,
+            monitored_policy(true, false, true, 1_001),
+            true,
+        ));
+    }
+
+    #[test]
+    fn queued_monitored_typing_preserves_terminal_compatibility_without_prompt() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([10u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.googlecode.iterm2");
+        let change = typed_change_after_baseline(&field, "", "git status && ls -la ");
+        let mut pending = Vec::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &change,
+            Some("com.googlecode.iterm2".into()),
+            None,
+        );
+        assert!(!pending[0].terminal_ok);
+
+        let prefs = Prefs::default();
+        let mut buffers = HashMap::new();
+        flush_monitored_changes(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &prefs,
+            monitored_policy(true, false, true, 1_001),
+        );
+        assert_eq!(store.count().unwrap(), 0);
+
+        let prompt = typed_change_after_baseline(&field, "", "please summarize the diff for ");
+        let mut pending = Vec::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &prompt,
+            Some("com.googlecode.iterm2".into()),
+            None,
+        );
+        assert!(pending[0].terminal_ok);
+        flush_monitored_changes(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &prefs,
+            monitored_policy(true, false, true, 1_002),
+        );
+        assert_eq!(
+            store.recent("com.googlecode.iterm2", 10).unwrap(),
+            vec!["please summarize the diff for "]
+        );
     }
 
     #[test]

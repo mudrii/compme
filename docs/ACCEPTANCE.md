@@ -483,8 +483,16 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
   timed/behavioral spot-check: General switches live-flip + persist across a
   relaunch; Setup rows re-probe ≤480 ms while open; the Apps **Delete** button
   prompts with **Cancel** as the default button.
-- **Encrypted memory live gate (pending):** `COMPME_MEMORY=accepted` run,
-  Keychain key created, Apps tab counts appear, ciphertext-only on disk.
+- **Encrypted memory accepted-only live gate (completed 2026-06-10):**
+  `COMPME_MEMORY=accepted` + `COMPME_MEMORY_PATH` run without
+  `COMPME_MEMORY_KEY` created and reused one `com.compme.memory` login-keychain
+  entry across three runs; two Full-accept records landed for TextEdit, and
+  `strings` over the database showed no typed plaintext.
+- **Encrypted memory AllMonitored live gate (pending):**
+  `COMPME_MEMORY=all` run that validates redactable monitored typed runs
+  assembled from inserted deltas without storing pre-existing field text, plus
+  secure input, disabled/snoozed, app/domain excluded, volatile `pid:N`, and
+  per-app collection-off blocks.
 - **Lifetime stats gate (pending) [updated 2026-06-12, c128]:** `stats.env` is
   written by a 5-minute periodic flush during the run (quit = final flush);
   gate: accept ≥1 suggestion, quit, relaunch shows Lifetime row including the
