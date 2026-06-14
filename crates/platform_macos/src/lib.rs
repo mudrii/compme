@@ -2377,6 +2377,32 @@ fn accept_key_modifier_glyphs(mask: u32) -> String {
     out
 }
 
+/// Map an `NSEvent.modifierFlags()` bitmask to the Carbon modifier mask the
+/// accept-key stack registers (slice 2 recorder). AppKit reports modifiers in
+/// the device-independent HIGH bits; Carbon's `RegisterEventHotKey` wants the
+/// LOW bits — this is the translator. Only the four registerable modifiers are
+/// kept; every other NS flag (Caps Lock, Fn, numeric pad, device-dependent
+/// left/right bits) is ignored so it can never leak a stray Carbon bit.
+fn ns_modifier_flags_to_carbon_mask(ns_flags: u64) -> u32 {
+    // objc2-app-kit `NSEventModifierFlags` device-independent bit positions.
+    const NS_SHIFT: u64 = 1 << 17;
+    const NS_CONTROL: u64 = 1 << 18;
+    const NS_OPTION: u64 = 1 << 19;
+    const NS_COMMAND: u64 = 1 << 20;
+    let mut mask = 0u32;
+    for (ns_bit, carbon_bit) in [
+        (NS_SHIFT, CARBON_SHIFT_KEY),
+        (NS_CONTROL, CARBON_CONTROL_KEY),
+        (NS_OPTION, CARBON_OPTION_KEY),
+        (NS_COMMAND, CARBON_CMD_KEY),
+    ] {
+        if ns_flags & ns_bit != 0 {
+            mask |= carbon_bit;
+        }
+    }
+    mask
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeymapError {
     /// Two bindings would share the same keycode.
@@ -8442,6 +8468,54 @@ mod tests {
         assert_eq!(
             format_accept_key(96, CARBON_OPTION_KEY | CARBON_CMD_KEY),
             "cmd+option+96"
+        );
+    }
+
+    #[test]
+    fn ns_event_modifier_flags_map_to_carbon_bits() {
+        // Slice 2 recorder: NSEvent reports modifiers in the HIGH bits
+        // (device-independent flags) while Carbon's RegisterEventHotKey wants
+        // the LOW bits. This is the translator between the two layouts. The NS
+        // bit positions are objc2-app-kit's NSEventModifierFlags (Shift 1<<17,
+        // Control 1<<18, Option 1<<19, Command 1<<20).
+        const NS_SHIFT: u64 = 1 << 17;
+        const NS_CONTROL: u64 = 1 << 18;
+        const NS_OPTION: u64 = 1 << 19;
+        const NS_COMMAND: u64 = 1 << 20;
+
+        assert_eq!(ns_modifier_flags_to_carbon_mask(0), 0);
+        assert_eq!(ns_modifier_flags_to_carbon_mask(NS_SHIFT), CARBON_SHIFT_KEY);
+        assert_eq!(
+            ns_modifier_flags_to_carbon_mask(NS_CONTROL),
+            CARBON_CONTROL_KEY
+        );
+        assert_eq!(
+            ns_modifier_flags_to_carbon_mask(NS_OPTION),
+            CARBON_OPTION_KEY
+        );
+        assert_eq!(ns_modifier_flags_to_carbon_mask(NS_COMMAND), CARBON_CMD_KEY);
+        // A combo maps every set bit, independent of the others.
+        assert_eq!(
+            ns_modifier_flags_to_carbon_mask(NS_SHIFT | NS_COMMAND),
+            CARBON_SHIFT_KEY | CARBON_CMD_KEY
+        );
+        assert_eq!(
+            ns_modifier_flags_to_carbon_mask(NS_CONTROL | NS_OPTION | NS_SHIFT | NS_COMMAND),
+            CARBON_CONTROL_KEY | CARBON_OPTION_KEY | CARBON_SHIFT_KEY | CARBON_CMD_KEY
+        );
+        // Unrelated NS flags (CapsLock 1<<16, Fn 1<<23, numeric pad 1<<21) are
+        // NOT registerable accept modifiers — they must be ignored, not leak
+        // stray Carbon bits. CapsLock alongside Shift keeps only the Shift bit.
+        const NS_CAPSLOCK: u64 = 1 << 16;
+        const NS_NUMPAD: u64 = 1 << 21;
+        const NS_FN: u64 = 1 << 23;
+        assert_eq!(
+            ns_modifier_flags_to_carbon_mask(NS_CAPSLOCK | NS_NUMPAD | NS_FN),
+            0
+        );
+        assert_eq!(
+            ns_modifier_flags_to_carbon_mask(NS_CAPSLOCK | NS_SHIFT),
+            CARBON_SHIFT_KEY
         );
     }
 

@@ -508,8 +508,8 @@ fn download_idle(status: Option<&model_fetch::DownloadStatus>) -> bool {
 type KeyWithMods = (i64, u32);
 
 fn apply_live_accept_keymap(
-    word: Option<i64>,
-    full: Option<i64>,
+    word: Option<KeyWithMods>,
+    full: Option<KeyWithMods>,
     set_map: impl Fn(
         Option<KeyWithMods>,
         Option<KeyWithMods>,
@@ -519,21 +519,13 @@ fn apply_live_accept_keymap(
     effective: impl Fn() -> (KeyWithMods, KeyWithMods),
 ) -> Result<(), String> {
     let previous = effective();
-    // The recorder captures a BARE keycode (it cannot read modifier flags until
-    // slice 2) and carries the OTHER role's CURRENT keycode through verbatim
-    // (the c134 both-slots clobber-avoidance). So preserve an existing modifier
-    // mask for any role whose keycode is unchanged from the registered map, and
-    // treat a genuinely new keycode as bare — otherwise a recorder rebind of one
-    // role would silently strip a config-set mask (e.g. Shift+Full) off the
-    // OTHER role and persist the loss (audit r2). (Re-capturing the SAME keycode
-    // for a masked role keeps its mask — the bare-recorder ambiguity slice 2's
-    // modifierFlags capture resolves; harmless for the common bare bindings.)
-    let with_mask = |key: Option<i64>, current: KeyWithMods| {
-        key.map(|k| (k, if k == current.0 { current.1 } else { 0 }))
-    };
-    let word_b = with_mask(word, previous.0);
-    let full_b = with_mask(full, previous.1);
-    set_map(word_b, full_b).map_err(|err| format!("rejected keymap: {err:?}"))?;
+    // Slice 2: the recorder now captures `(keycode, mask)` for BOTH roles (the
+    // captured key's modifier mask via `event.modifierFlags()`, and the OTHER
+    // role's CURRENT (keycode, mask) carried through verbatim for c134
+    // clobber-avoidance). So the masks arrive already-resolved — set them as-is.
+    // The audit-r2 mask-preservation that used to be reconstructed here now
+    // lives at its source in `recorder_outcome`/`rebind_request_for`.
+    set_map(word, full).map_err(|err| format!("rejected keymap: {err:?}"))?;
     if let Err(err) = rearm() {
         // Best-effort revert. The previous pair was validated when it
         // registered, so this set_map cannot fail in practice; if it ever
@@ -4149,8 +4141,8 @@ mod tests {
         let l2 = std::rc::Rc::clone(&log);
         let l3 = std::rc::Rc::clone(&log);
         let ok = apply_live_accept_keymap(
-            Some(35),
-            Some(38),
+            Some((35, 0)),
+            Some((38, 0)),
             |w, f| {
                 l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
                 Ok(())
@@ -4178,8 +4170,8 @@ mod tests {
         let l2 = std::rc::Rc::clone(&log);
         let l3 = std::rc::Rc::clone(&log);
         let err = apply_live_accept_keymap(
-            Some(35),
-            Some(38),
+            Some((35, 0)),
+            Some((38, 0)),
             |w, f| {
                 l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
                 Ok(())
@@ -4211,8 +4203,8 @@ mod tests {
         let l2 = std::rc::Rc::clone(&log);
         let l3 = std::rc::Rc::clone(&log);
         let revert_fails = apply_live_accept_keymap(
-            Some(35),
-            Some(38),
+            Some((35, 0)),
+            Some((38, 0)),
             |w, f| {
                 // First call (the forward set) succeeds; the second (the
                 // revert) fails.
@@ -4250,7 +4242,7 @@ mod tests {
         let l3 = std::rc::Rc::clone(&log);
         let partial = apply_live_accept_keymap(
             None,
-            Some(38),
+            Some((38, 0)),
             |w, f| {
                 l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
                 Ok(())
@@ -4274,7 +4266,7 @@ mod tests {
         let l2 = std::rc::Rc::clone(&log);
         let l3 = std::rc::Rc::clone(&log);
         let invalid = apply_live_accept_keymap(
-            Some(53),
+            Some((53, 0)),
             None,
             |_, _| Err(platform_macos::KeymapError::Collision(53)),
             || {
@@ -4292,34 +4284,51 @@ mod tests {
     }
 
     #[test]
-    fn live_rebind_preserves_a_configured_mask_on_the_unchanged_role() {
-        // Audit r2 regression: a recorder rebind of ONE role must not strip a
-        // config-set modifier mask off the OTHER role. word is currently
-        // Shift+48 (mask 512); the user rebinds FULL to a new bare key (50).
-        // The recorder carries word's current keycode (48) through verbatim, so
-        // word's keycode is unchanged → its Shift mask must be preserved (and
-        // persisted via format_accept_key), while the freshly-captured full key
-        // is bare.
+    fn live_rebind_sets_and_persists_the_recorder_resolved_masks_verbatim() {
+        // Slice 2: the recorder now supplies fully-resolved (keycode, mask)
+        // pairs for BOTH roles, so apply_live_accept_keymap sets them as-is —
+        // no mask reconstruction. word=Shift+48 (the unchanged role, carried
+        // through by the recorder with its Shift mask intact — the audit-r2
+        // preservation, now done upstream in recorder_outcome) and a freshly
+        // captured bare full key (50) both reach set_map untouched, and persist
+        // receives the same resolved pair (round-trips via format_accept_key).
         let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
         let l1 = std::rc::Rc::clone(&log);
         let l3 = std::rc::Rc::clone(&log);
         const SHIFT: u32 = 512; // Carbon shiftKey (private to platform_macos)
+                                // A stateful registered map so effective() reflects what set_map last
+                                // wrote — this lets the PERSIST leg be asserted (persist reads the
+                                // resolved registered pair via effective(), exactly as the real run
+                                // loop does). Starts at the pre-rebind truth (word=Shift+48, full=60).
+                                // Typed literals let inference name the type (no complex annotation).
+        let registered =
+            std::rc::Rc::new(std::cell::RefCell::new(((48_i64, SHIFT), (60_i64, 0_u32))));
+        let r_set = std::rc::Rc::clone(&registered);
+        let r_eff = std::rc::Rc::clone(&registered);
         let applied = apply_live_accept_keymap(
-            Some(48), // word: unchanged keycode, carried through by the recorder
-            Some(50), // full: newly captured bare key (was 60)
-            |w, f| {
+            Some((48, SHIFT)), // word: unchanged Shift+48, mask carried by the recorder
+            Some((50, 0)),     // full: newly captured bare key
+            move |w, f| {
+                // Mirror set_accept_keymap_from_config_with_mods: a None slot
+                // default-fills (Tab/backtick); here both are explicit.
+                *r_set.borrow_mut() = (w.unwrap_or((48, 0)), f.unwrap_or((50, 0)));
                 l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
                 Ok(())
             },
             || Ok(()),
             |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
-            || ((48, SHIFT), (60, 0)), // registered: word=Shift+48, full=bare 60
+            move || *r_eff.borrow(),
         );
         assert!(applied.is_ok());
         assert_eq!(
             log.borrow()[0],
             format!("set:Some((48, {SHIFT})),Some((50, 0))"),
-            "word's Shift mask is preserved; the rebound full key is bare"
+            "the recorder-resolved masks reach set_map verbatim — Shift+48 kept, full bare"
+        );
+        assert_eq!(
+            log.borrow().last().unwrap(),
+            &format!("persist:(48, {SHIFT}),(50, 0)"),
+            "persist receives the resolved registered pair — the Shift mask survives to disk"
         );
     }
 
