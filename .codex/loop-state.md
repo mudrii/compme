@@ -231,3 +231,44 @@
   - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
   - Full replacement parity for non-AxSet global channels is intentionally not claimed; safe behavior now refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
+
+## 2026-06-15 Cycle
+
+- Task selected: Harden acceptance AppleScript prefix injection by passing env-provided text through `osascript` argv instead of embedding it in AppleScript source.
+- Why it was selected: The active loop state had one remaining loop-doable Minor around AppleScript quoting in acceptance scripts; the other remaining items require manual macOS GUI, permission, or relaunch validation.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `tools/acceptance/e2e-complete-me.sh`
+  - `tools/acceptance/run-a2-compat-gates.sh`
+- Tests added/updated:
+  - Added `run-a2-compat-gates.sh --self-test` coverage for AppleScript prefix argv handling.
+  - The new self-test first failed red against the pre-fix scripts because `$PREFIX` was embedded in AppleScript source.
+  - The hardened self-test now round-trips a hostile multiline prefix containing quotes, a backslash, `$PREFIX`, and a newline through `osascript - "$arg"` argv, then uses repo-root script paths for the static source guard.
+- Verification commands and result:
+  - RED: `tools/acceptance/run-a2-compat-gates.sh --self-test` failed before implementation with `FAIL self-test-applescript-prefix-argv: PREFIX is embedded in AppleScript source`.
+  - GREEN/focused: `tools/acceptance/run-a2-compat-gates.sh --self-test` passed after the argv implementation and again after the behavior-oriented self-test hardening.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1074`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed.
+  - `git diff --check` passed before and after this state-file update.
+- Test count if available: root `1074` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important test/coverage finding: replaced a brittle-only source grep with a hostile-prefix `osascript` argv round-trip self-test while keeping the static guard as backup.
+  - Fixed Important plan-alignment finding: this state entry records the completed AppleScript quoting task so the next loop does not reselect it from stale state.
+  - Fixed Minor correctness/quality finding: the static guard now reads canonical repo-root script paths instead of relying on `$0`.
+- Blocked or skipped work remaining:
+  - AllMonitored live GUI/privacy validation remains blocked/manual because it requires an unlocked macOS GUI session, real focused text targets, Accessibility/Secure Input state control, and encrypted-store inspection.
+  - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
+  - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
+  - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
+- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.

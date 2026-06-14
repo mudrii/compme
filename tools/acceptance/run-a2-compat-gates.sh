@@ -114,6 +114,31 @@ LOG
   self_test_assert "terminal-block-evidence" 1 has_terminal_cmd_block_evidence "$terminal_block" || failures=$((failures + 1))
   self_test_assert "focus-only-is-not-baseline" 0 has_unsupported_block_evidence "$focus_only" || failures=$((failures + 1))
   self_test_assert "baseline-missing" 0 has_terminal_cmd_block_evidence "$empty" || failures=$((failures + 1))
+  hostile_prefix=$'quote " backslash \\ dollar $PREFIX\nline two'
+  if round_tripped_prefix=$(/usr/bin/osascript - "$hostile_prefix" <<'OSA'
+on run argv
+  return item 1 of argv
+end run
+OSA
+  ); then
+    if [[ "$round_tripped_prefix" == "$hostile_prefix" ]]; then
+      echo "PASS self-test-applescript-prefix-argv-roundtrip"
+    else
+      echo "FAIL self-test-applescript-prefix-argv-roundtrip: argv text changed" >&2
+      failures=$((failures + 1))
+    fi
+  else
+    echo "FAIL self-test-applescript-prefix-argv-roundtrip: osascript argv probe failed" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -Eq 'keystroke "\$PREFIX"|set text of front document to "\$PREFIX"' \
+    "$ROOT_DIR/tools/acceptance/run-a2-compat-gates.sh" \
+    "$ROOT_DIR/tools/acceptance/e2e-complete-me.sh"; then
+    echo "FAIL self-test-applescript-prefix-argv: PREFIX is embedded in AppleScript source" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-applescript-prefix-argv"
+  fi
 
   rm -rf "$tmp_dir"
   if [[ "$failures" -gt 0 ]]; then
@@ -157,12 +182,16 @@ if [[ "$KIND" == "screen" ]]; then
 fi
 
 # Seed the field, then run the binary against it with a deterministic stub.
-/usr/bin/osascript >/dev/null 2>&1 <<OSA || true
-tell application "System Events"
-  set frontmost of (first process whose unix id is $PID) to true
-end tell
-delay 0.4
-tell application "System Events" to keystroke "$PREFIX"
+/usr/bin/osascript - "$PID" "$PREFIX" >/dev/null 2>&1 <<'OSA' || true
+on run argv
+  set targetPid to (item 1 of argv) as integer
+  set prefixText to item 2 of argv
+  tell application "System Events"
+    set frontmost of (first process whose unix id is targetPid) to true
+  end tell
+  delay 0.4
+  tell application "System Events" to keystroke prefixText
+end run
 OSA
 
 env \

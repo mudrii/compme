@@ -61,12 +61,15 @@ fi
 echo "E2E compme: prefix=\"$PREFIX\" stub=\"$STUB\" pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE"
 
 # 1. Seed TextEdit with a known prefix and bring it to the front.
-osascript <<OSA || fail "could not seed TextEdit"
-tell application "TextEdit"
-  activate
-  if (count of documents) = 0 then make new document
-  set text of front document to "$PREFIX"
-end tell
+osascript - "$PREFIX" <<'OSA' || fail "could not seed TextEdit"
+on run argv
+  set prefixText to item 1 of argv
+  tell application "TextEdit"
+    activate
+    if (count of documents) = 0 then make new document
+    set text of front document to prefixText
+  end tell
+end run
 OSA
 
 sleep_ms 400
