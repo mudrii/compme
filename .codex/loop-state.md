@@ -97,8 +97,8 @@
   - Input Monitoring revoked spot-check remains pending as a manual permission-state confirmation.
   - AllMonitored live GUI/product privacy gate remains pending because it requires an unlocked macOS GUI session, real TextEdit/browser focus/caret driving, Accessibility/secure-input state, and manual product validation.
   - Context and Personalization settings controls remain deferred where only env/config backing exists.
-  - Acceptance scripts still contain a Minor AppleScript quoting hardening opportunity in env-provided text paths.
-- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
+  - Superseded later: the Minor AppleScript quoting hardening opportunity was closed by `860ebab99450a984cbadcc41c8c9a5143f6f57a5`.
+- Commit hash and push confirmation, or DRY/blocked status: Committed and pushed as `f86b4f64c6ba797aa3f010c2834238ab45cc4b81`; verified local HEAD equaled `origin/spike/a0` on 2026-06-15.
 
 ## 2026-06-15 03:56:03 +08 - Completed
 
@@ -130,7 +130,7 @@
   - AllMonitored live GUI/privacy validation remains blocked/manual because it requires an unlocked macOS GUI session, real focused text targets, Accessibility/Secure Input state control, and encrypted-store inspection.
   - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
   - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
-- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
+- Commit hash and push confirmation, or DRY/blocked status: Committed and pushed as `ecce7576dcd986fdf5cd26d18a1676a1cb3a75bb`; verified local HEAD equaled `origin/spike/a0` on 2026-06-15.
 
 ## 2026-06-15 03:51:03 +08 - Completed
 
@@ -162,8 +162,8 @@
   - AllMonitored live GUI/privacy validation remains blocked/manual because it requires an unlocked macOS GUI session, real focused text targets, Accessibility/Secure Input state control, and encrypted-store inspection.
   - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
   - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
-  - Minor doc drift remains in `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` around now-completed accepted-only keychain validation versus the still-pending AllMonitored live GUI/privacy gate.
-- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
+  - Superseded later: the Minor doc drift in `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` was closed by `ecce7576dcd986fdf5cd26d18a1676a1cb3a75bb`.
+- Commit hash and push confirmation, or DRY/blocked status: Committed and pushed as `d47f7842a26aa0175bfbfc43d5636dea9c25d443`; verified local HEAD equaled `origin/spike/a0` on 2026-06-15.
 
 ## 2026-06-15 Cycle
 
@@ -230,7 +230,7 @@
   - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
   - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
   - Full replacement parity for non-AxSet global channels is intentionally not claimed; safe behavior now refuses non-atomic replacements rather than deleting user text.
-- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
+- Commit hash and push confirmation, or DRY/blocked status: Committed and pushed as `a122dad4ce164f8fcfda16da7c9bc8655fdb2abb`; verified local HEAD equaled `origin/spike/a0` on 2026-06-15.
 
 ## 2026-06-15 Cycle
 
@@ -271,4 +271,41 @@
   - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
   - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
-- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
+- Commit hash and push confirmation, or DRY/blocked status: Committed and pushed as `860ebab99450a984cbadcc41c8c9a5143f6f57a5`; verified local HEAD equaled `origin/spike/a0` on 2026-06-15.
+
+## 2026-06-15 04:21:21 +08 - Consolidation/state hygiene
+
+- Task selected: State-only consolidation audit and stale commit/push placeholder cleanup.
+- Why it was selected: The active loop state had no remaining product/code loop-doable task; the only feasible issue found by the current audit was prior cycle state entries still carrying pre-commit placeholders instead of their actual pushed commit hashes.
+- Files changed:
+  - `.codex/loop-state.md`
+- Tests added/updated: None; state-only cleanup.
+- Verification commands and result:
+  - `graphify query "current autonomous loop pending tasks plan docs tests alignment blocked manual validation remaining"` passed and surfaced the manual-gate cluster in `docs/ACCEPTANCE.md` / A2 parity docs, not a loop-doable product task.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1074`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `git diff --check` passed after the state-file update.
+- Test count if available: root `1074` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important state-hygiene finding: replaced stale placeholder commit/push lines for prior completed cycles with their actual pushed commit hashes and upstream equality confirmation.
+  - Fixed Important focused diff-review finding by rerunning the full documented gate list in this resumed tick before committing this state-only entry.
+  - Four consolidation audit passes were attempted in parallel; two completed with no product/code loop-doable findings, and two were closed after two long waits. The completed tests/coverage auditor found only manual/live blockers.
+  - Four focused diff-review passes reviewed this state-only diff; three reported no findings, and one Important verification-evidence finding was fixed by the fresh gate reruns above. The same reviewer reported one Minor graphify command evidence note; the recorded `graphify query` is accurate for the main local audit path and does not require a state change.
+  - Local docs/code/test scans found no additional current loop-doable finding beyond state placeholder cleanup.
+- Blocked or skipped work remaining:
+  - AllMonitored live GUI/privacy validation remains blocked/manual because it requires an unlocked macOS GUI session, real focused text targets, Accessibility/Secure Input state control, and encrypted-store inspection.
+  - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
+  - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
+  - Settings window timed/behavioral LOOK spot-checks remain blocked/manual: General switches live-flip + persist across relaunch, Setup rows re-probe timing, and Apps Delete confirmation default button.
+  - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
+- Commit hash and push confirmation, or DRY/blocked status: This state-only entry is committed in the commit reported by the final response; a Git commit cannot contain its own final hash without changing that hash.
