@@ -155,13 +155,13 @@ preserved.
 Browser marker geometry:
 
 ```sh
-tools/acceptance/run-a1b-live-gates.sh --skip-textedit --browser-pid <pid>
+tools/acceptance/run-a1b-live-gates.sh --skip-textedit --allow-incomplete --browser-pid <pid>
 ```
 
 External popup fallback:
 
 ```sh
-tools/acceptance/run-a1b-live-gates.sh --skip-textedit --popup-pid <pid>
+tools/acceptance/run-a1b-live-gates.sh --skip-textedit --allow-incomplete --popup-pid <pid>
 ```
 
 External popup fallback requires:
@@ -490,7 +490,8 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
   `COMPME_MEMORY=all` run that validates redactable monitored typed runs
   assembled from inserted deltas without storing pre-existing field text, plus
   secure input, disabled/snoozed, app/domain excluded, volatile `pid:N`, and
-  per-app collection-off blocks.
+  per-app collection-off blocks. This remains manual/live blocked until a
+  dedicated runner can create a GUI target and inspect the encrypted store.
 - **Input Monitoring revoked spot-check (pending):** with Accessibility still
   granted, revoke Input Monitoring and confirm the transient Carbon accept path
   keeps working. This is a manual permission-state confirmation, not a
@@ -498,4 +499,5 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
 - **Lifetime stats gate (pending) [updated 2026-06-12, c128]:** `stats.env` is
   written by a 5-minute periodic flush during the run (quit = final flush);
   gate: accept ≥1 suggestion, quit, relaunch shows Lifetime row including the
-  prior session.
+  prior session. This remains manual/live blocked until a runner can drive a
+  suggestion accept, terminate the app, relaunch, and read the UI.

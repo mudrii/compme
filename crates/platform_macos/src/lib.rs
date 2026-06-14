@@ -813,9 +813,18 @@ impl OverlayPresenter for MacosOverlayPresenter {
             // screen height used for the Y-flip, and the resulting Cocoa
             // (bottom-left/Y-up) window frame. Gated by COMPME_DEBUG.
             eprintln!(
-                "compme: ghost text={text:?} caret_rect=(x{:.1} y{:.1} w{:.1} h{:.1}) \
+                "compme: ghost text_len={} caret_rect=(x{:.1} y{:.1} w{:.1} h{:.1}) \
                  primary_h={:.1} overlay_frame=(x{:.1} y{:.1} w{:.1} h{:.1})",
-                rect.x, rect.y, rect.w, rect.h, primary_height, frame.x, frame.y, frame.w, frame.h
+                text.len(),
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                primary_height,
+                frame.x,
+                frame.y,
+                frame.w,
+                frame.h
             );
         }
         self.last_rect = Some(rect);
@@ -1056,6 +1065,7 @@ impl MacosPlatformAdapter {
             }
             InsertStrategy::SyntheticKeys => {
                 self.ensure_global_insert_target(pid)?;
+                Self::refuse_non_atomic_replacement(replace_left, strategy)?;
                 let result = self
                     .delete_left_via_backspaces(pid, replace_left)
                     .and_then(|()| (self.synthetic_key_poster)(pid, &text))
@@ -1068,6 +1078,7 @@ impl MacosPlatformAdapter {
             }
             InsertStrategy::Clipboard => {
                 self.ensure_global_insert_target(pid)?;
+                Self::refuse_non_atomic_replacement(replace_left, strategy)?;
                 let result = self
                     .delete_left_via_backspaces(pid, replace_left)
                     .and_then(|()| (self.pasteboard_poster)(pid, &text))
@@ -1209,12 +1220,10 @@ impl MacosPlatformAdapter {
     }
 
     /// Complete an AxSet insert from its readback-classified outcome. A
-    /// silently ignored write (live: iTerm2 — settable AXValue, successful
-    /// set, content untouched) falls back to synthetic input: backspaces for
-    /// the replaced token, then synthetic typing — the cycle-47 machinery's
-    /// first live consumer. The fallback needs the field's app frontmost
-    /// (same contract as the SyntheticKeys strategy); otherwise the insert
-    /// fails honestly instead of typing into the wrong app.
+    /// silently ignored plain insert (live: iTerm2 — settable AXValue,
+    /// successful set, content untouched) can fall back to synthetic input. A
+    /// replacement cannot: without the original token, deleting first on a
+    /// global input channel is not all-or-nothing.
     fn finish_axset_insert(
         &self,
         pid: i32,
@@ -1225,19 +1234,22 @@ impl MacosPlatformAdapter {
         match apply {
             AxSetApply::Applied(inserted) => Ok(inserted),
             AxSetApply::SilentlyIgnored => {
+                if replace_left > 0 {
+                    return Err(PlatformError::CannotComplete {
+                        reason: "AxSet replacement was ignored; non-atomic fallback refused".into(),
+                    });
+                }
                 if debug_enabled() {
                     eprintln!(
                         "compme: AxSet write silently ignored — falling back to synthetic input"
                     );
                 }
                 self.ensure_global_insert_target(pid)?;
-                self.delete_left_via_backspaces(pid, replace_left)
-                    .and_then(|()| (self.synthetic_key_poster)(pid, text))
-                    .map(|()| Inserted {
-                        bytes: text.len(),
-                        chars: text.chars().count(),
-                        strategy: InsertStrategy::SyntheticKeys,
-                    })
+                (self.synthetic_key_poster)(pid, text).map(|()| Inserted {
+                    bytes: text.len(),
+                    chars: text.chars().count(),
+                    strategy: InsertStrategy::SyntheticKeys,
+                })
             }
         }
     }
@@ -1254,6 +1266,19 @@ impl MacosPlatformAdapter {
             return Ok(());
         }
         (self.backspace_poster)(pid, replace_left)
+    }
+
+    fn refuse_non_atomic_replacement(
+        replace_left: usize,
+        strategy: InsertStrategy,
+    ) -> Result<(), PlatformError> {
+        if replace_left == 0 {
+            Ok(())
+        } else {
+            Err(PlatformError::CannotComplete {
+                reason: format!("macOS {strategy:?} replacement is not atomic"),
+            })
+        }
     }
 
     fn ensure_global_insert_target(&self, pid: i32) -> Result<(), PlatformError> {
@@ -7229,41 +7254,29 @@ mod tests {
     }
 
     #[test]
-    fn silently_ignored_axset_falls_back_to_backspaces_then_synthetic_text() {
-        let log = Arc::new(Mutex::new(Vec::new()));
+    fn silently_ignored_axset_replacement_refuses_non_atomic_fallback() {
+        let touched = Arc::new(Mutex::new(Vec::new()));
         let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
-        let log_in_keys = Arc::clone(&log);
-        config.synthetic_key_poster = Arc::new(move |pid, text| {
-            log_in_keys
-                .lock()
-                .unwrap()
-                .push(format!("text:{pid}:{text}"));
+        let t1 = Arc::clone(&touched);
+        config.synthetic_key_poster = Arc::new(move |_, _| {
+            t1.lock().unwrap().push("text");
             Ok(())
         });
-        let log_in_backspaces = Arc::clone(&log);
-        config.backspace_poster = Arc::new(move |pid, count| {
-            log_in_backspaces
-                .lock()
-                .unwrap()
-                .push(format!("backspace:{pid}x{count}"));
+        let t2 = Arc::clone(&touched);
+        config.backspace_poster = Arc::new(move |_, _| {
+            t2.lock().unwrap().push("backspace");
             Ok(())
         });
         let adapter = test_adapter_with_hooks(config);
 
-        let result = adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "😄", 6);
         assert_eq!(
-            result,
-            Ok(Inserted {
-                bytes: "😄".len(),
-                chars: 1,
-                strategy: InsertStrategy::SyntheticKeys,
+            adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "😄", 6),
+            Err(PlatformError::CannotComplete {
+                reason: "AxSet replacement was ignored; non-atomic fallback refused".into(),
             }),
-            "the fallback reports the strategy that actually inserted"
+            "replacement fallback cannot safely restore the deleted token"
         );
-        assert_eq!(
-            *log.lock().unwrap(),
-            vec!["backspace:42x6".to_string(), "text:42:😄".to_string()]
-        );
+        assert!(touched.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -7315,7 +7328,7 @@ mod tests {
         let adapter = test_adapter_with_hooks(config);
 
         assert_eq!(
-            adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "😄", 6),
+            adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "x", 0),
             Err(PlatformError::StaleField),
             "synthetic input must never reach an app the user switched away from"
         );
@@ -7394,7 +7407,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_replacing_synthetic_keys_posts_backspaces_before_text() {
+    fn insert_replacing_synthetic_keys_refuses_non_atomic_replacement() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
         let log_in_keys = Arc::clone(&log);
@@ -7423,16 +7436,11 @@ mod tests {
 
         assert_eq!(
             adapter.insert_replacing(&field, "the", 3, InsertStrategy::SyntheticKeys),
-            Ok(Inserted {
-                bytes: 3,
-                chars: 3,
-                strategy: InsertStrategy::SyntheticKeys,
+            Err(PlatformError::CannotComplete {
+                reason: "macOS SyntheticKeys replacement is not atomic".into(),
             })
         );
-        assert_eq!(
-            *log.lock().unwrap(),
-            vec!["backspace:42x3".to_string(), "text:42:the".to_string()]
-        );
+        assert!(log.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -7485,7 +7493,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_replacing_clipboard_posts_backspaces_before_paste() {
+    fn insert_replacing_clipboard_refuses_non_atomic_replacement() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
         let log_in_paste = Arc::clone(&log);
@@ -7514,50 +7522,11 @@ mod tests {
 
         assert_eq!(
             adapter.insert_replacing(&field, "😄", 6, InsertStrategy::Clipboard),
-            Ok(Inserted {
-                bytes: "😄".len(),
-                chars: 1,
-                strategy: InsertStrategy::Clipboard,
-            })
-        );
-        assert_eq!(
-            *log.lock().unwrap(),
-            vec!["backspace:42x6".to_string(), "paste:42:😄".to_string()]
-        );
-    }
-
-    #[test]
-    fn insert_replacing_aborts_text_post_when_backspace_synthesis_fails() {
-        let posted = Arc::new(Mutex::new(Vec::new()));
-        let posted_in_hook = Arc::clone(&posted);
-        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
-        config.synthetic_key_poster = Arc::new(move |pid, text| {
-            posted_in_hook.lock().unwrap().push((pid, text.to_string()));
-            Ok(())
-        });
-        config.backspace_poster = Arc::new(|_, _| {
             Err(PlatformError::CannotComplete {
-                reason: "backspace synthesis failed".into(),
-            })
-        });
-        let adapter = test_adapter_with_hooks(config);
-        let field = FieldHandle {
-            app: "pid:42".into(),
-            pid: Some(42),
-            element_id: pointer_identity("ax:0x123").field_element_id(),
-            generation: 1,
-        };
-
-        assert_eq!(
-            adapter.insert_replacing(&field, "the", 3, InsertStrategy::SyntheticKeys),
-            Err(PlatformError::CannotComplete {
-                reason: "backspace synthesis failed".into(),
+                reason: "macOS Clipboard replacement is not atomic".into(),
             })
         );
-        assert!(
-            posted.lock().unwrap().is_empty(),
-            "text must never be posted when the preceding deletion failed"
-        );
+        assert!(log.lock().unwrap().is_empty());
     }
 
     #[test]

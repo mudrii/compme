@@ -7,6 +7,7 @@ FORCE=0
 SKIP_BUILD=0
 SKIP_TEXTEDIT=0
 SKIP_E2E=0
+ALLOW_INCOMPLETE=0
 SELF_TEST=0
 TIMEOUT_MS=3000
 SHORT_TIMEOUT_MS=1500
@@ -23,6 +24,7 @@ HIDE_AFTER_MS="${A1B_HIDE_AFTER_MS:-100}"
 passes=0
 failures=0
 skips=0
+incomplete_skips=0
 manuals=0
 
 usage() {
@@ -39,6 +41,8 @@ Options:
   --skip-textedit        Do not run TextEdit gates. Useful when a browser or
                          popup target must stay focused.
   --skip-e2e             Do not run the end-to-end compme pipeline gate.
+  --allow-incomplete     Allow mandatory live gates to be skipped and still exit
+                         zero. Without this, missing TextEdit coverage fails.
   --self-test            Run runner classification self-tests and exit.
   --textedit-pid PID     Use this TextEdit pid instead of pgrep -x TextEdit.
   --popup-pid PID        Also run popup fallback gate against a focused writable no-rect target.
@@ -75,6 +79,7 @@ while [ "$#" -gt 0 ]; do
     --skip-build) SKIP_BUILD=1 ;;
     --skip-textedit) SKIP_TEXTEDIT=1 ;;
     --skip-e2e) SKIP_E2E=1 ;;
+    --allow-incomplete) ALLOW_INCOMPLETE=1 ;;
     --self-test) SELF_TEST=1 ;;
     --textedit-pid)
       [ "$#" -ge 2 ] || { echo "--textedit-pid requires a pid" >&2; exit 2; }
@@ -267,10 +272,14 @@ run_retryable_gate() {
 skip_gate() {
   name="$1"
   reason="$2"
+  required="${3:-optional}"
   echo
   echo "== $name =="
   echo "SKIP $name: $reason"
   skips=$((skips + 1))
+  if [ "$required" = "mandatory" ]; then
+    incomplete_skips=$((incomplete_skips + 1))
+  fi
 }
 
 manual_gate() {
@@ -334,6 +343,16 @@ run_accept_tap_gate() {
     failures=$((failures + 1))
     return "$status"
   done
+}
+
+final_status() {
+  if [ "$failures" -gt 0 ]; then
+    return 1
+  fi
+  if [ "$incomplete_skips" -gt 0 ] && [ "$ALLOW_INCOMPLETE" -eq 0 ]; then
+    return 1
+  fi
+  return 0
 }
 
 check_preflight() {
@@ -400,6 +419,23 @@ run_self_tests() {
   assert_classifies "unknown" 'some unrelated output' \
     "unknown: see log" || self_failures=$((self_failures + 1))
 
+  failures=0
+  incomplete_skips=1
+  ALLOW_INCOMPLETE=0
+  if final_status; then
+    echo "FAIL final-status-mandatory-skip" >&2
+    self_failures=$((self_failures + 1))
+  else
+    echo "PASS final-status-mandatory-skip"
+  fi
+  ALLOW_INCOMPLETE=1
+  if final_status; then
+    echo "PASS final-status-allow-incomplete"
+  else
+    echo "FAIL final-status-allow-incomplete" >&2
+    self_failures=$((self_failures + 1))
+  fi
+
   rm -rf "$self_test_dir"
   if [ "$self_failures" -gt 0 ]; then
     echo "Self-test failures: $self_failures" >&2
@@ -460,27 +496,27 @@ if [ "$DRY_RUN" -eq 0 ] && ! require_bins; then
 fi
 
 if [ "$SKIP_TEXTEDIT" -eq 1 ]; then
-  skip_gate "textedit-read" "--skip-textedit"
-  skip_gate "textedit-insert-axset" "--skip-textedit"
-  skip_gate "textedit-insert-synthetic" "--skip-textedit"
-  skip_gate "textedit-insert-clipboard" "--skip-textedit"
-  skip_gate "caret-marker-textedit-any" "--skip-textedit"
-  skip_gate "accept-insert-full" "--skip-textedit"
-  skip_gate "accept-insert-word" "--skip-textedit"
-  skip_gate "e2e-compme-pipeline" "--skip-textedit"
-  skip_gate "e2e-compme-word-remainder" "--skip-textedit"
+  skip_gate "textedit-read" "--skip-textedit" mandatory
+  skip_gate "textedit-insert-axset" "--skip-textedit" mandatory
+  skip_gate "textedit-insert-synthetic" "--skip-textedit" mandatory
+  skip_gate "textedit-insert-clipboard" "--skip-textedit" mandatory
+  skip_gate "caret-marker-textedit-any" "--skip-textedit" mandatory
+  skip_gate "accept-insert-full" "--skip-textedit" mandatory
+  skip_gate "accept-insert-word" "--skip-textedit" mandatory
+  skip_gate "e2e-compme-pipeline" "--skip-textedit" mandatory
+  skip_gate "e2e-compme-word-remainder" "--skip-textedit" mandatory
 else
   resolve_textedit_pid
   if [ -z "$TEXTEDIT_PID" ]; then
-    skip_gate "textedit-read" "TextEdit is not running; open TextEdit and focus an editable document"
-    skip_gate "textedit-insert-axset" "TextEdit is not running"
-    skip_gate "textedit-insert-synthetic" "TextEdit is not running"
-    skip_gate "textedit-insert-clipboard" "TextEdit is not running"
-    skip_gate "caret-marker-textedit-any" "TextEdit is not running"
-    skip_gate "accept-insert-full" "TextEdit is not running"
-    skip_gate "accept-insert-word" "TextEdit is not running"
-    skip_gate "e2e-compme-pipeline" "TextEdit is not running"
-    skip_gate "e2e-compme-word-remainder" "TextEdit is not running"
+    skip_gate "textedit-read" "TextEdit is not running; open TextEdit and focus an editable document" mandatory
+    skip_gate "textedit-insert-axset" "TextEdit is not running" mandatory
+    skip_gate "textedit-insert-synthetic" "TextEdit is not running" mandatory
+    skip_gate "textedit-insert-clipboard" "TextEdit is not running" mandatory
+    skip_gate "caret-marker-textedit-any" "TextEdit is not running" mandatory
+    skip_gate "accept-insert-full" "TextEdit is not running" mandatory
+    skip_gate "accept-insert-word" "TextEdit is not running" mandatory
+    skip_gate "e2e-compme-pipeline" "TextEdit is not running" mandatory
+    skip_gate "e2e-compme-word-remainder" "TextEdit is not running" mandatory
   else
     run_retryable_gate "textedit-read" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$TEXTEDIT_BIN" "$TIMEOUT_MS" read
     run_retryable_gate "textedit-insert-synthetic" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-synthetic" "$TEXTEDIT_BIN" "$TIMEOUT_MS" synthetic
@@ -529,11 +565,14 @@ run_accept_tap_gate "accept-tap-delayed-hide" env COMPME_ACCEPTANCE_HIDE_AFTER_M
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
 
 echo
-echo "Summary: pass=$passes fail=$failures skip=$skips manual=$manuals logs=$LOG_DIR"
+echo "Summary: pass=$passes fail=$failures skip=$skips incomplete=$incomplete_skips manual=$manuals logs=$LOG_DIR"
 if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
-if [ "$failures" -gt 0 ]; then
+if ! final_status; then
+  if [ "$failures" -eq 0 ] && [ "$incomplete_skips" -gt 0 ]; then
+    echo "FAIL incomplete: mandatory gates skipped; rerun with TextEdit ready or pass --allow-incomplete intentionally" >&2
+  fi
   exit 1
 fi
 exit 0

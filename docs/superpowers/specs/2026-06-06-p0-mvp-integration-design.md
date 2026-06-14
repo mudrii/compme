@@ -41,7 +41,7 @@ This design wires those proven parts into a single `compme` binary and adds a de
 ```
  dispatcher thread          MAIN THREAD (NSApplication.run)            inference thread
  ----------------          --------------------------------          ----------------
- focus cb  ──┐                                                
+ focus cb  ──┐
  caret cb  ──┼──push──▶  [evt queue] ─drain─▶ Engine.on_*  ─reqs─▶ [req slot]─▶ complete()
  accept cb ──┘  (mpsc)        ▲                   │ (latest-wins)         │
                           pump (run_in_mode)    applies overlay         │

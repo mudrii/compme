@@ -99,3 +99,70 @@
   - Context and Personalization settings controls remain deferred where only env/config backing exists.
   - Acceptance scripts still contain a Minor AppleScript quoting hardening opportunity in env-provided text paths.
 - Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
+
+## 2026-06-15 Cycle
+
+- Task selected: Fix pass-2 full-audit review findings around privacy diagnostics, accept recording timing, macOS replacement data-loss safety, CI/release/acceptance gate coverage, and stale plan/docs alignment.
+- Why it was selected: The active loop had no Critical findings, but multiple Important findings were feasible in one tick and affected privacy, data-loss safety, release validation, and source-of-truth accuracy.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/release.yml`
+  - `crates/app/src/config.rs`
+  - `crates/app/src/run_loop.rs`
+  - `crates/context/Cargo.toml`
+  - `crates/engine_core/Cargo.toml`
+  - `crates/model_client/Cargo.toml`
+  - `crates/platform/Cargo.toml`
+  - `crates/platform_macos/src/lib.rs`
+  - `crates/ranker/Cargo.toml`
+  - `docs/ACCEPTANCE.md`
+  - `docs/DEVELOPMENT.md`
+  - `docs/RELEASING.md`
+  - `docs/superpowers/plans/2026-06-04-a1b-macos-adapter-contract.md`
+  - `docs/superpowers/plans/2026-06-04-plan-review-online-validation.md`
+  - `docs/superpowers/specs/2026-06-03-cross-platform-review.md`
+  - `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md`
+  - `docs/superpowers/specs/2026-06-06-p0-mvp-integration-design.md`
+  - `docs/superpowers/specs/2026-06-09-a2-parity-design.md`
+  - `docs/superpowers/specs/2026-06-10-a3-settings-ui-design.md`
+  - `tools/acceptance/run-a1b-live-gates.sh`
+  - `tools/acceptance/run-a2-compat-gates.sh`
+- Tests added/updated:
+  - Added `run_loop::tests::completion_outcome_log_line_never_includes_candidate_text`.
+  - Added `run_loop::tests::replacement_debug_log_line_redacts_left_context`.
+  - Added `run_loop::tests::blocked_request_log_line_reports_gate_metadata_without_prompt_text`.
+  - Added `config::tests::instance_lock_error_classifies_only_wouldblock_as_held`.
+  - Added/updated macOS adapter tests for refusing non-atomic SyntheticKeys/Clipboard replacements and refusing AxSet replacement fallback after silent no-op.
+  - Updated A1b and A2 acceptance runner self-tests for mandatory-skip failure and blocked-request evidence.
+- Verification commands and result:
+  - RED checks failed before implementation: app log helper tests failed for missing helpers; platform replacement recovery test failed because deletion was not protected.
+  - Focused GREEN checks passed: `cargo test -p app log_line`, `cargo test -p app instance_lock_error_classifies_only_wouldblock_as_held`, `cargo test -p app blocked_request_log_line_reports_gate_metadata_without_prompt_text`, `cargo test -p platform_macos non_atomic`, and `cargo test -p platform_macos silently_ignored_axset`.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `git diff --check` and `git diff --check origin/main` passed.
+  - `graphify update .` passed after code changes.
+- Test count if available: root listed `1074` tests; spike listed `30` tests including the ignored Metal/GGUF model integration test.
+- Critical/Important review findings fixed:
+  - Replaced raw completion-candidate logs with generation/count/length metadata and covered it with a privacy regression test.
+  - Redacted replacement debug left-context and changed macOS ghost debug output to text length metadata.
+  - Moved full-accept memory/previous-input recording until after `engine.on_accept` succeeds.
+  - Classified instance-lock `flock` failures as `Held` only for `WouldBlock`/`EWOULDBLOCK`/`EAGAIN`; other failures now surface as IO.
+  - Refused non-atomic SyntheticKeys/Clipboard replacements and AxSet replacement fallback after silent no-op, preventing delete-before-failed-post data loss.
+  - Added blocked-request metadata logging and made A2 negative gates require explicit unsupported-app or terminal-command blocked-request evidence.
+  - Made A1b mandatory TextEdit skips fail by default, with `--allow-incomplete` for intentional partial browser/popup profiles.
+  - Added tag CI, root build, spike gates, acceptance self-tests, and release validation before packaging.
+  - Updated active docs/specs for the current 22-crate workspace, thesaurus/webconfig wiring, shortcut recorder/live rebind shipping, macOS Esc/Option+Tab validation, Input Monitoring scope, release pipeline, and `--allow-incomplete` usage.
+  - Cleaned branch-diff whitespace/newline hygiene reported by reviewers.
+- Blocked or skipped work remaining:
+  - `COMPME_MEMORY=all` live GUI/privacy validation remains blocked/manual because it requires an unlocked macOS GUI session, real focused text targets, Accessibility/Secure Input state control, and encrypted-store inspection.
+  - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
+  - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
+  - Full replacement parity for non-AxSet global channels is intentionally not claimed; safe behavior now refuses non-atomic replacements rather than deleting user text.
+- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.

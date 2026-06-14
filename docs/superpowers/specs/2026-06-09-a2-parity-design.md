@@ -100,11 +100,14 @@ WIRED and LIVE-VALIDATED** through the `replace_left` replacement pipeline
 (run_loop detection → `offer_replacement` → `Command::Replace` → AxSet honoring),
 default-off, gated, race-free; **the live §16 accept gate (step 6) PASSED
 2026-06-10** (physical Tab accept with deletion in TextEdit — ACCEPTANCE.md, A2
-Local-Replacement Live Gate). The remaining
-*unwired* cores are **`thesaurus`** (deliberate compme superset, selection-triggered
-— a different trigger design) and **`webconfig`** (A3 URL-scheme reception +
-signing). Full resolved design — `replace_left`
-shape, `Showing.replace_left` model, `offer_replacement` entry point, offer-vs-model
-priority, `insert_replacing` adapter contract, AxSet honoring, SyntheticKeys
-residual, build order, default-off flags — is in
+Local-Replacement Live Gate). **Thesaurus is also wired** through the same
+default-off local replacement path (`COMPME_THESAURUS`), with deterministic
+offer coverage in the app run-loop tests; remaining thesaurus work is live LOOK
+validation and any future selection-triggered UX, not core wiring.
+**Webconfig is wired** for signed `compme://` URL reception and draining in the
+run loop; remaining work is live browser/setup validation, not URL-event
+plumbing. Full resolved design — `replace_left`
+shape, `Showing.replace_left` model, `offer_replacement` entry point,
+offer-vs-model priority, `insert_replacing` adapter contract, AxSet honoring,
+SyntheticKeys residual, build order, default-off flags — is in
 [`2026-06-09-integration-phase-design.md`](2026-06-09-integration-phase-design.md).

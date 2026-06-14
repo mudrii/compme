@@ -1,7 +1,7 @@
 # A1b - macOS Adapter Contract Plan
 
-**Date:** 2026-06-04  
-**Status:** Active A1b macOS adapter acceptance tracker; A1a contract-first implementation has started and must stay aligned with this file.  
+**Date:** 2026-06-04
+**Status:** Active A1b macOS adapter acceptance tracker; A1a contract-first implementation has started and must stay aligned with this file.
 **Purpose:** Make the macOS adapter risks concrete before the OS-agnostic engine hardens its `Event`, `Command`, `TextContext`, and `PlatformAdapter` shapes.
 
 ## Gate

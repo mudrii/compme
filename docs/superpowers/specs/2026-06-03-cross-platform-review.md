@@ -178,8 +178,8 @@ Every cloned Cotypist feature (rows) against each target platform (cols). Legend
 | Inline ghost overlay at caret | ✓ NSPanel | ✓ layered | ◑ whole-line caret | ✓ override-redirect | ✓ layer-shell | ✗ (IME candidate UI only) |
 | Accept next-word (Tab) | ✓ | ✓ WH_KEYBOARD_LL | ✓ | ⌨ dedicated hotkey¹ | ◑ inhibit/hotkey | ⌨ IBus owns key |
 | Accept full (key-above-Tab) | ✓ | ✓ | ✓ | ⌨ hotkey | ◑ | ⌨ IME |
-| Esc dismiss + suppress (D11) | ◑ planned | ✓ | ✓ | ✓ | ✓ | ◑ IME |
-| Option/Alt+Tab literal-Tab bypass (D11) | ◑ planned | ✓ | ✓ | ✓ | ✓ | ◑ |
+| Esc dismiss + suppress (D11) | ✓ Carbon hotkey, A1b/self-test validated | ✓ | ✓ | ✓ | ✓ | ◑ IME |
+| Option/Alt+Tab literal-Tab bypass (D11) | ✓ Option+Tab bypass, A1b/self-test validated | ✓ | ✓ | ✓ | ✓ | ◑ |
 | Per-app Tab disable + per-app/domain overrides | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Secure-field / password block | ✓ SecureInput | ✓ UIPI/secure | ✓ | ✓ | ✓ | ✓ |
 | Prompt-based personalization (global+per-app+per-domain, 6-stop full-reach) | ✓ portable | ✓ | ✓ | ✓ | ✓ | ✓ |

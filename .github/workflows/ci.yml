@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main, "spike/**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -45,3 +46,36 @@ jobs:
       # can flake under parallelism; rerun the job if that single test fails.
       - name: Test
         run: cargo test --workspace --all-targets
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+  spike:
+    name: spike fmt · clippy · test · build (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format spike workspace
+        working-directory: tools/spike
+        run: cargo fmt -- --check
+
+      - name: Clippy spike workspace
+        working-directory: tools/spike
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test spike workspace
+        working-directory: tools/spike
+        run: cargo test
+
+      - name: Build spike binaries
+        working-directory: tools/spike
+        run: cargo build --bins

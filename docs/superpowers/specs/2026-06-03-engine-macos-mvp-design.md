@@ -90,24 +90,33 @@ Single process, **native Rust** (`crates/app`). **[CORR 06-07]** The shell is no
 
 ### Current Workspace And Planned Crate Map
 
-Current root workspace crates:
+Current root workspace crates (Cargo.toml is authoritative):
 
 ```
 crates/engine_core      # state machine, generation tokens, invalidation, cancel, accept logic, policy (renamed from `core`)
 crates/context          # TextContext, Selection, Caret + AX+pasteboard capture model
 crates/ranker           # candidate trim/boundary/repetition/score
-crates/model_client     # LocalModel trait + llama.cpp impl (warm-up, prefix cache, N-sample)
 crates/platform         # PlatformAdapter trait + shared types (cross-platform contract)
+crates/personalization  # instructions, sender identity, app/domain prompt policy
+crates/redaction        # persistence/diagnostic redaction helpers
+crates/prefs            # settings store and app/domain overrides
+crates/memory           # encrypted local memory, accepted-only/all-monitored modes
+crates/stats            # local usage stats and persistence
+crates/webconfig        # signed compme:// web-driven config events
+crates/emoji            # shortcode replacement data
+crates/textcase         # local word-case helpers
+crates/thesaurus        # local synonym replacement data
+crates/autocorrect      # local typo replacement data
+crates/localize         # local spelling localization
+crates/compat           # app compatibility policy
+crates/model_catalog    # model catalog and integrity metadata
+crates/model_fetch      # model download and sha verification
+crates/model_client     # LocalModel trait + llama.cpp impl (warm-up, prefix cache, N-sample)
 crates/platform_macos   # AX read, Carbon accept hotkeys, NSPanel overlay, front-app, NSStatusItem tray (objc2)
 crates/engine           # wires SuggestionMachine → adapter + overlay + accept subscription
 crates/app              # [CORR 06-07] native compme binary: run loop, inference thread, config.env, tray
 tools/spike             # throwaway A0 PoC (excluded from workspace; retained under tools/spike)
 ```
-
-Planned A2/A3 crates or modules, not current workspace members:
-
-- `crates/personalization`: custom-instructions prompt builder, sender identity, optional encrypted local memory.
-- `crates/prefs`: settings store, per-app/per-domain overrides, and migration from MVP `config.env`.
 
 **Crate strategy** (verdicts in `2026-06-03-prior-art-review.md` §3): build the AX/tap/inject layer natively via `objc2` + `objc2-app-kit` + `accessibility-sys`/`axuielement` + `core-graphics`; inference via `llama-cpp-2` (C-API surface, `metal`). **Do NOT depend on `rdev`/`rdevin` for the capture path** (stale / grab-disabled on Linux) — KeyType, Cotabby, and Espanso all hand-rolled native capture. `enigo` only as an inject shortcut later.
 
@@ -393,16 +402,16 @@ _(G3 moved to **Resolved this cycle** above — implemented + validated 2026-06-
 
 ### Open — live-desktop validation gates (status after the 2026-06-08 live run)
 
-Live run on Apple M4 Max, macOS 25.5, Accessibility + Input Monitoring granted. Initial gates ran single-display; G7 was later re-run with two displays (built-in 2× Retina + external 1×). The 2026-06-08 accept-key live evidence used the old consuming `CGEventTap` path; after the 2026-06-09 Carbon migration it remains historical evidence for bindings/insertion, not closure of product Carbon consumption.
+Live run on Apple M4 Max, macOS 25.5. Initial gates ran single-display; G7 was later re-run with two displays (built-in 2x Retina + external 1x). The 2026-06-08 accept-key live evidence used the old consuming `CGEventTap` path and remains historical binding/insertion evidence; the rebuilt NSApp-pumping scripted gates now provide the repeatable evidence for the production Carbon path, with physical-key runs retained as UX confirmation.
 
 | ID | Gate | Status |
 |---|---|---|
-| **G6** | live grave→Full desktop accept | **[2026-06-11] CLOSED — physical-key Carbon product gates PASSED 2026-06-10 (docs/ACCEPTANCE.md ~:106).** Superseded text follows. **OLD TAP PATH CLOSED; CARBON PRODUCT PENDING (2026-06-09).** `tools/acceptance/e2e-compme.sh` closed the former CGEventTap path against TextEdit on 2026-06-08. Current production uses transient Carbon hotkeys, so closure now requires a physical-key product run: visible suggestion -> grave/key-above-Tab -> `accept Full` log -> inserted field contents. |
-| **I11** | P0 E2E under current bindings | **[2026-06-11] CLOSED — physical Carbon runs recorded in ACCEPTANCE.md 2026-06-10 (full/word/Esc/Down; Option+Tab scripted).** Superseded text follows. **OLD TAP PATH CLOSED; CARBON PRODUCT PENDING (2026-06-09).** The 2026-06-08 full/word runs proved the former bindings and insertion path, including real `LlamaModel` inference. Re-close for current bindings with physical Carbon input for full, word, Esc, Down, and Option+Tab. |
+| **G6** | live grave→Full desktop accept | **CLOSED.** Former CGEventTap binding/insertion path closed against TextEdit on 2026-06-08; current transient-Carbon dispatch is covered by the rebuilt NSApp-pumping scripted gates (2026-06-11) and physical-key UX confirmation recorded in `docs/ACCEPTANCE.md`. |
+| **I11** | P0 E2E under current bindings | **CLOSED.** The 2026-06-08 full/word runs proved end-to-end insertion, including real `LlamaModel` inference; the current Carbon binding/control path is covered by rebuilt scripted gates for full, word, Esc, Down, and Option+Tab, with physical-key UX confirmation recorded separately. |
 | **G5** | Chrome/Electron caret (zero-width collapsed caret) | **FIXED + live-validated (2026-06-08).** Root cause: `usable_caret_rect` required `w > 0`, so Chrome's **zero-width collapsed-caret** rect was rejected → `resolve_caret_rect` returned `None` → popup fallback. Fix: accept `w >= 0` (a collapsed caret is a zero-width bar; a zero-width rect can never be a container, which always has positive width) while still rejecting negative/oversized widths and non-positive heights. Live re-probe (Chrome, autofocus `<textarea>`): Chrome's caret now **resolves inline** — `resolved=Some(x:609,y:264,w:0,h:21)` where it previously fell to popup. Note: on this Chrome build the `AXSelectedTextMarkerRange` query returns a *null* rect (so the resolved `source` is `NativeFallback` via the zero-length-range tier, not `Marker`); an earlier run saw a non-null marker (`w:0,h:54`) which now classifies as `Marker`. The `source=Marker` *label* is Chrome-build-dependent, but the actual defect (zero-width caret unusable on Chromium) is fixed. Safari remains a proven `source=Marker` profile. |
-| **G7** | Retina 2× / multi-monitor caret offset | **[2026-06-11] live two-display re-confirmation recorded 2026-06-10 (ACCEPTANCE.md ~:168); only the latent pixel-reporting-app caveat remains.** **Measurement-closed; live 2× re-confirm pending (2026-06-08, two displays).** Built-in **Liquid Retina XDR 3024×1964 (true 2×, logical 1512×982)** + external **3840×1600 (1×, origin x=1512)**. TextEdit caret rect measured on each: built-in window {150,120,820,560} → `RECT x=328.4 y=220 w=1 h=14` (inside window, tight caret, **no 2× doubling**); external window {1700,200,2400,640} → `RECT x=1885.1 y=300 w=1 h=14` (correct **global** cross-display coords, offset by the display origin, no mismapping). `coords_global=true`, `overlay=NativePanel`. AX returns **points** on a genuine 2× Retina panel and the multi-monitor offset maps correctly. **Caveat — FIXED (2026-06-08).** `active_display_scales` now derives the backing scale from the current `CGDisplayMode`'s native `pixel_width()` over its point `width()` (pure helper `backing_scale`, unit-tested: 3024/1512→2.0, 3840/3840→1.0, 0→1.0), instead of `CGDisplayPixelsWide` which returns logical width for scaled Retina modes (always ~1.0). The pixel-correction branch in `normalize_ax_screen_rect` now has a correct scale to work with, so a pixel-reporting app on a Retina display would be corrected. Behaviour is unchanged for normal point coordinates (they land on a display → pass-through; only off-display coords that divide cleanly onto a display are corrected). Live single-display re-check reports the ultra-wide at 1.0 correctly; the 2× value is unit-proven (live 2.0 re-confirmation needs the built-in panel reconnected). |
+| **G7** | Retina 2x / multi-monitor caret offset | **CLOSED for normal AX point coordinates; latent pixel-reporting-app caveat remains.** Live two-display confirmation was recorded 2026-06-10 (built-in true 2x Retina + external 1x). TextEdit caret rect measured on each: built-in window {150,120,820,560} -> `RECT x=328.4 y=220 w=1 h=14` (inside window, tight caret, no 2x doubling); external window {1700,200,2400,640} -> `RECT x=1885.1 y=300 w=1 h=14` (correct global cross-display coords, offset by display origin, no mismapping). `coords_global=true`, `overlay=NativePanel`. AX returns points on a genuine 2x Retina panel and the multi-monitor offset maps correctly. `active_display_scales` derives backing scale from `CGDisplayMode` native `pixel_width()` over point `width()` (unit-tested: 3024/1512 -> 2.0, 3840/3840 -> 1.0, 0 -> 1.0), so a future pixel-reporting app on Retina would be corrected. |
 
-**Remaining highest-leverage actions (now all scheduled, not open):** F1/G6/I11 manual physical-key product live consume confirmation under Carbon; D12 → b74 re-decompile task; G7 live-2× re-confirm (hardware-bound). G7's only residual is the latent true-backing-scale detection caveat above (revisit only if a pixel-reporting app surfaces).
+**Remaining highest-leverage actions (now all scheduled, not open):** D12 -> b74 re-decompile task; Input Monitoring revoked spot-check; AllMonitored live GUI/privacy validation; G7's only residual is the latent pixel-reporting-app caveat above (revisit only if such an app surfaces).
 
 ### 2026-06-08 parallel-agent re-audit (D-series)
 

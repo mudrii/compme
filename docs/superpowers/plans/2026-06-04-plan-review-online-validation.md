@@ -1,7 +1,7 @@
 # Plan Review - Online Validation and Shortcomings
 
-**Date:** 2026-06-04  
-**Scope:** `docs/superpowers/**` and `tools/spike/**`  
+**Date:** 2026-06-04
+**Scope:** `docs/superpowers/**` and `tools/spike/**`
 **Verdict:** GO for contract-first A1a implementation and A1b planning after the 2026-06-05 P6 redo and P2 model comparison. The remaining guardrail is to keep A1a bound to the A1b macOS adapter contract; `tools/spike/FINDINGS.md` is the source of truth for the model decision.
 
 **2026-06-05 P6 overlay update:** P6 is now PASS. Screenshot `/tmp/compme-p6-redo-before.png` shows visible ghost text over a Chrome click target; CoreGraphics listed the onscreen layer-101 overlay before and after the click; non-activation and click-through were verified. The click-through proof clicked `{590,1185}`, changing Chrome title from `clicked-0` to `clicked-1`.

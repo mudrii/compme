@@ -47,6 +47,14 @@ has_screen_prompt_context() {
   grep -q 'prompt_context=Some(".*On screen: ' "$1"
 }
 
+has_unsupported_block_evidence() {
+  grep -Eq 'compme: request blocked .*prompt_chars=[1-9][0-9]* .*app_allows=false' "$1"
+}
+
+has_terminal_cmd_block_evidence() {
+  grep -Eq 'compme: request blocked .*prompt_chars=[1-9][0-9]* .*terminal_ok=false' "$1"
+}
+
 self_test_assert() {
   name="$1"
   expected="$2"
@@ -69,9 +77,13 @@ run_self_tests() {
   failures=0
   good="$tmp_dir/good.log"
   producer_only="$tmp_dir/producer-only.log"
+  unsupported_block="$tmp_dir/unsupported-block.log"
+  terminal_block="$tmp_dir/terminal-block.log"
+  focus_only="$tmp_dir/focus-only.log"
   empty="$tmp_dir/empty.log"
 
   cat >"$good" <<'LOG'
+compme: focus ax:1
 compme: request gen=7 prompt="hello"
 compme: screen_context=Some(12)
 compme: prompt_context=Some("Clipboard: CLIPBOARD-CONTEXT-MARKER | On screen: visible text")
@@ -80,6 +92,17 @@ LOG
 compme: request gen=7 prompt="hello"
 compme: screen_context=Some(12)
 LOG
+  cat >"$unsupported_block" <<'LOG'
+compme: focus ax:1
+compme: request blocked gen=7 prompt_chars=28 app=com.mitchellh.ghostty app_allows=false terminal_ok=true domain_ready=true prefs_ok=true
+LOG
+  cat >"$terminal_block" <<'LOG'
+compme: focus ax:1
+compme: request blocked gen=8 prompt_chars=20 app=com.apple.Terminal app_allows=true terminal_ok=false domain_ready=true prefs_ok=true
+LOG
+  cat >"$focus_only" <<'LOG'
+compme: focus ax:1
+LOG
   : >"$empty"
 
   self_test_assert "request-present" 1 has_request "$good" || failures=$((failures + 1))
@@ -87,6 +110,10 @@ LOG
   self_test_assert "clipboard-prompt-context" 1 has_clipboard_prompt_context "$good" || failures=$((failures + 1))
   self_test_assert "screen-prompt-context" 1 has_screen_prompt_context "$good" || failures=$((failures + 1))
   self_test_assert "screen-producer-alone-is-not-submit-context" 0 has_screen_prompt_context "$producer_only" || failures=$((failures + 1))
+  self_test_assert "unsupported-block-evidence" 1 has_unsupported_block_evidence "$unsupported_block" || failures=$((failures + 1))
+  self_test_assert "terminal-block-evidence" 1 has_terminal_cmd_block_evidence "$terminal_block" || failures=$((failures + 1))
+  self_test_assert "focus-only-is-not-baseline" 0 has_unsupported_block_evidence "$focus_only" || failures=$((failures + 1))
+  self_test_assert "baseline-missing" 0 has_terminal_cmd_block_evidence "$empty" || failures=$((failures + 1))
 
   rm -rf "$tmp_dir"
   if [[ "$failures" -gt 0 ]]; then
@@ -171,7 +198,12 @@ case "$KIND" in
       || { grep -Eq 'screen_context=Some\([1-9][0-9]*\)' "$LOG" \
         && fail "OCR ran but no submitted prompt included it (timing) — retry with steadier typing" \
         || fail "expected non-empty screen context; check Screen Recording grant and visible text"; } ;;
-  unsupported|terminal-cmd)
+  unsupported)
+    has_unsupported_block_evidence "$LOG" || fail "no unsupported-app blocked-request evidence; cannot prove a gated-out request"
+    [[ "$requested" == 0 ]] && pass "completion correctly gated out" \
+      || fail "expected NO completion request, but one was logged" ;;
+  terminal-cmd)
+    has_terminal_cmd_block_evidence "$LOG" || fail "no terminal-command blocked-request evidence; cannot prove a gated-out request"
     [[ "$requested" == 0 ]] && pass "completion correctly gated out" \
       || fail "expected NO completion request, but one was logged" ;;
   *)

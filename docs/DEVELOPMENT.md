@@ -49,9 +49,12 @@ Required for live macOS acceptance:
 
 - unlocked macOS GUI session
 - Accessibility permission for the terminal
-- Input Monitoring permission for event-tap probes
 - no global Secure Input owner, unless intentionally using `--force`
 - TextEdit open with a focused editable document for TextEdit gates
+
+Input Monitoring is not required for the production Carbon accept path or the
+root live runner. It is only relevant for historical `tools/spike` CGEventTap
+probes and the explicit revoked-permission spot-check in `docs/ACCEPTANCE.md`.
 
 Required for model-backed tests:
 
@@ -263,12 +266,14 @@ Use `--dry-run` to inspect commands without executing them:
 tools/acceptance/run-a1b-live-gates.sh --dry-run
 ```
 
-Use `--skip-textedit` when validating browser or external popup targets that
-must remain focused:
+Use `--skip-textedit --allow-incomplete` when intentionally validating only a
+browser or external popup target that must remain focused. Omit
+`--allow-incomplete` for release/readiness runs; mandatory TextEdit skips fail
+by default.
 
 ```sh
-tools/acceptance/run-a1b-live-gates.sh --skip-textedit --browser-pid <pid>
-tools/acceptance/run-a1b-live-gates.sh --skip-textedit --popup-pid <pid>
+tools/acceptance/run-a1b-live-gates.sh --skip-textedit --allow-incomplete --browser-pid <pid>
+tools/acceptance/run-a1b-live-gates.sh --skip-textedit --allow-incomplete --popup-pid <pid>
 ```
 
 ## Model Development Notes

@@ -245,7 +245,18 @@ pub fn try_acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLo
     if rc == 0 {
         Ok(InstanceLock { _file: file })
     } else {
-        Err(InstanceLockError::Held)
+        Err(instance_lock_error_from(std::io::Error::last_os_error()))
+    }
+}
+
+fn instance_lock_error_from(err: std::io::Error) -> InstanceLockError {
+    if err.kind() == std::io::ErrorKind::WouldBlock
+        || err.raw_os_error() == Some(libc::EWOULDBLOCK)
+        || err.raw_os_error() == Some(libc::EAGAIN)
+    {
+        InstanceLockError::Held
+    } else {
+        InstanceLockError::Io(err.to_string())
     }
 }
 
@@ -373,6 +384,18 @@ mod tests {
             Err(InstanceLockError::Io(_))
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn instance_lock_error_classifies_only_wouldblock_as_held() {
+        assert_eq!(
+            instance_lock_error_from(std::io::Error::from_raw_os_error(libc::EWOULDBLOCK)),
+            InstanceLockError::Held
+        );
+        assert!(matches!(
+            instance_lock_error_from(std::io::Error::from_raw_os_error(libc::EACCES)),
+            InstanceLockError::Io(_)
+        ));
     }
 
     #[test]

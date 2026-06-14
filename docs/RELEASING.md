@@ -8,8 +8,8 @@ on GitHub Actions (Apple Silicon `macos-14` runners).
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push / PR | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets`. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | tag `v*` | Builds `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh), zips it with `ditto`, computes the sha256, and publishes a GitHub Release with the zip + `.sha256`. |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | branch push / PR / tag `v*` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets`, `cargo build --workspace --all-targets`. Spike gates: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --bins` in `tools/spike`. |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | tag `v*` | Runs release validation first: root fmt/clippy/test/build, acceptance script syntax + self-tests, and spike fmt/clippy/test/build. Only after validation passes, builds `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh), zips it with `ditto`, computes the sha256, and publishes a GitHub Release with the zip + `.sha256`. |
 
 Model-inference tests (`crates/model_client/tests/latency.rs`) are `#[ignore]`d —
 they need a local GGUF and a Metal GPU — so CI is hermetic. A few `platform_macos`

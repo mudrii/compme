@@ -46,7 +46,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 | Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | env/config backing shipped; no Context tab or settings switches yet; appearance sub-toggle has no equivalent (defer) |
 | Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS` | backing shipped for memory modes/instructions/strength; Apps tab count/delete UI shipped; Personalization controls for mode, instructions, and strength remain deferred |
 | Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | `includeVanillaVariants` is the one unmodeled item (§8 note) — small emoji-crate addition — **[2026-06-10] NOT SHIPPED** (deferred) |
-| Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; keymap threading from config is the open c13 residual | shortcut RECORDER UI; force-activate + the two toggle shortcuts are new hotkeys — **[2026-06-10] PARTIAL** (effective-bindings display shipped; recorder UI deferred) |
+| Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; `KeyRecorderField` rows persist live rebinds through `COMPME_ACCEPT_*` config | recorder UI + live rebind shipped; force-activate + the two toggle shortcuts remain new hotkeys — **[2026-06-15] PARTIAL** |
 | App Settings | per-app list (usage counts) with enable/mid-line/autocorrect/Tab-disable, compat mode, per-app instructions, per-app history | `prefs` overrides + `tab_disabled` (unwired); `memory` per-app counts; personalization per-app maps (unwired, c1 #5) | per-app mid-line/autocorrect overrides are new prefs fields; pane is the largest — **[2026-06-10] PARTIAL** (Apps tab: per-app counts + confirmed per-row Delete; per-app override FIELDS live since c91 but per-app UI rows deferred) |
 | Labs | mid-line toggle | `COMPME_MIDLINE` | pane only — **[2026-06-10] DONE** (shipped as a switch in the General tab — the Labs pane content moved to General) |
 | Statistics | today + 30-day charts (range/group/metric) | `stats` crate (counts/words/latency) — menu line shipped c51 | chart view; longer retention than 30d if ranges grow — **[2026-06-10] DONE-MVP** (sparkline rows + lifetime row + stats.env persistence; chart view = sparklines, range/group/metric controls deferred) |
@@ -71,8 +71,10 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
    Personalization — backing complete, persistence via persist_setting).
    **[2026-06-10] PARTIAL** — skeleton DONE (6 tabs via NSTabView); Labs DONE
    as a General-tab switch; Emoji/Context/Personalization panes deferred.
-5. **Shortcuts pane** + keymap threading (closes the c13 residual) — the
-   recorder UI is the hard part.
+5. **Shortcuts pane** + keymap threading (closes the c13 residual) —
+   **[2026-06-15] DONE for recorder UI/live rebind** via `KeyRecorderField`
+   rows and run-loop persistence. Remaining shortcut gaps are force-activate
+   and per-app/global toggle shortcuts.
 6. **App Settings pane** (largest; needs the new per-app prefs fields).
 7. Statistics charts; Setup/onboarding pane; About. **[2026-06-10] DONE**
    (Statistics DONE-MVP as sparklines; Setup and About panes shipped).

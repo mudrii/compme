@@ -880,6 +880,31 @@ fn request_passes_submit_gates(
     suggestion_gates_pass(app_key, &request.prompt, domain, prefs, now_ms)
 }
 
+fn blocked_request_log_line(
+    request: &CompletionRequest,
+    app_key: Option<&str>,
+    domain: Option<&str>,
+    prefs: &Prefs,
+    now_ms: u64,
+) -> String {
+    let app_allows = app_allows_suggestions(app_key);
+    let terminal_ok =
+        app_key.is_none_or(|app| compat::terminal_prompt_activates(app, &request.prompt));
+    let domain_ready = browser_domain_fresh_enough_for_rules(app_key, domain, prefs);
+    let prefs_ok = prefs.should_suggest(app_key, domain, now_ms);
+    format!(
+        "compme: request blocked gen={} prompt_chars={} app={} app_allows={} \
+         terminal_ok={} domain_ready={} prefs_ok={}",
+        request.generation,
+        request.prompt.chars().count(),
+        app_key.unwrap_or("unknown"),
+        app_allows,
+        terminal_ok,
+        domain_ready,
+        prefs_ok,
+    )
+}
+
 fn browser_domain_fresh_enough_for_rules(
     app_key: Option<&str>,
     domain: Option<&str>,
@@ -952,6 +977,32 @@ fn latency_sample(
     // Generations are monotonic; anything at or below this one is done or stale.
     submit_times.retain(|&gen, _| gen > generation);
     Some(u32::try_from(now_ms.saturating_sub(submit_ms)).unwrap_or(u32::MAX))
+}
+
+fn completion_outcome_log_line(generation: u64, candidates: &[String]) -> String {
+    let lengths = candidates
+        .iter()
+        .map(|candidate| candidate.len())
+        .collect::<Vec<_>>();
+    format!(
+        "compme: completion gen={generation} candidate_count={} candidate_lengths={lengths:?}",
+        candidates.len()
+    )
+}
+
+fn replacement_debug_log_line(
+    left: &str,
+    emoji: bool,
+    autocorrect: bool,
+    british: bool,
+    thesaurus: bool,
+    decision: &str,
+) -> String {
+    let redacted_left = redaction::redact(left);
+    format!(
+        "compme: replace left={redacted_left:?} emoji={emoji} autocorrect={autocorrect} \
+         british={british} thesaurus={thesaurus} decision={decision}"
+    )
 }
 
 /// Route a *Full*-accept's text to the opt-in recording sinks (design spec
@@ -2421,13 +2472,15 @@ pub fn run() -> Result<(), String> {
                                         // request fires for the same text = the local
                                         // offer is not matching/gating as expected.
                                         eprintln!(
-                                            "compme: replace left={:?} emoji={} \
-                                             autocorrect={} british={} thesaurus={} decision={decision:?}",
-                                            ctx.left,
-                                            config.emoji.is_some(),
-                                            config.autocorrect,
-                                            config.british_english,
-                                            config.thesaurus,
+                                            "{}",
+                                            replacement_debug_log_line(
+                                                &ctx.left,
+                                                config.emoji.is_some(),
+                                                config.autocorrect,
+                                                config.british_english,
+                                                config.thesaurus,
+                                                &format!("{decision:?}"),
+                                            )
                                         );
                                     }
                                     if let Some((candidates, replace_left)) = decision {
@@ -2482,23 +2535,6 @@ pub fn run() -> Result<(), String> {
                     // both the Word self-insert and the Full context record, so
                     // the two never read divergent engine snapshots.
                     let preview = engine.preview_accept_insert(action);
-                    // Record only *full* accepts: a full completion is meaningful
-                    // prior text, whereas a single word (the Word-accept payload)
-                    // is low-signal. Routed to two opt-in sinks — the volatile
-                    // previous-input ring and the encrypted on-disk memory store.
-                    if let (Some(field), Some((_, text, _))) =
-                        (current_field.as_ref(), preview.as_ref())
-                    {
-                        record_full_accept(
-                            action,
-                            field,
-                            text,
-                            config.context_max_chars,
-                            &previous_inputs,
-                            memory.as_ref(),
-                            prefs.collection_allowed(Some(&field.app)),
-                        );
-                    }
                     match engine.on_accept(action) {
                         Ok(requests) => {
                             // Absorb the accept's own insertion echo (Word OR
@@ -2508,6 +2544,19 @@ pub fn run() -> Result<(), String> {
                             // post-accept completion request (engine-macos §4 step
                             // 9: the accept's own insert is not a new edit).
                             if let Some((field, text, replace_left)) = &preview {
+                                // Record only after `on_accept` succeeds. A
+                                // failed insert must not leak a never-accepted
+                                // completion into previous-input context or
+                                // encrypted memory.
+                                record_full_accept(
+                                    action,
+                                    field,
+                                    text,
+                                    config.context_max_chars,
+                                    &previous_inputs,
+                                    memory.as_ref(),
+                                    prefs.collection_allowed(Some(&field.app)),
+                                );
                                 // Absorb the accept's echo. A replacement
                                 // (`replace_left > 0`, e.g. emoji) deletes the
                                 // typed token before inserting, so the baseline
@@ -2553,8 +2602,8 @@ pub fn run() -> Result<(), String> {
         // 2. Inference outcomes → engine (stale ones are discarded internally).
         for outcome in inference.drain_outcomes() {
             eprintln!(
-                "compme: completion gen={} candidates={:?}",
-                outcome.request.generation, outcome.candidates
+                "{}",
+                completion_outcome_log_line(outcome.request.generation, &outcome.candidates)
             );
             // First-suggestion latency for this completed request (§11).
             if let Some(latency) =
@@ -3245,6 +3294,17 @@ pub fn run() -> Result<(), String> {
                     eprintln!("{}", request_log_line(request.generation, &request.prompt));
                     submit_times.insert(request.generation, now_ms);
                     inference.submit(request);
+                } else {
+                    eprintln!(
+                        "{}",
+                        blocked_request_log_line(
+                            &request,
+                            app_key.as_deref(),
+                            cached_domain(&last_domain, app_key.as_deref()),
+                            &prefs,
+                            now_ms,
+                        )
+                    );
                 }
             }
         }
@@ -4375,6 +4435,51 @@ mod tests {
         );
         assert_eq!(store.count().expect("count"), 1);
         assert!(!previous.recent("com.apple.TextEdit").is_empty());
+    }
+
+    #[test]
+    fn completion_outcome_log_line_never_includes_candidate_text() {
+        let line = completion_outcome_log_line(7, &["secret phrase".into(), "other".into()]);
+
+        assert!(line.contains("gen=7"));
+        assert!(line.contains("candidate_count=2"));
+        assert!(line.contains("candidate_lengths=[13, 5]"));
+        assert!(
+            !line.contains("secret phrase"),
+            "diagnostics must not emit raw completion text"
+        );
+    }
+
+    #[test]
+    fn replacement_debug_log_line_redacts_left_context() {
+        let secret = "sk-abcdEFGH0123456789abcdEFGH0123";
+        let line = replacement_debug_log_line(
+            &format!("token {secret}"),
+            true,
+            false,
+            false,
+            true,
+            "None",
+        );
+
+        assert!(line.contains("left="));
+        assert!(!line.contains(secret));
+        assert!(line.contains("[redacted-secret]"));
+    }
+
+    #[test]
+    fn blocked_request_log_line_reports_gate_metadata_without_prompt_text() {
+        let prefs = Prefs::default();
+        let request = req_with_prompt("git status && print-secret");
+        let line =
+            blocked_request_log_line(&request, Some("com.apple.Terminal"), None, &prefs, 1_000);
+
+        assert!(line.contains("request blocked"));
+        assert!(line.contains("prompt_chars=26"));
+        assert!(line.contains("app=com.apple.Terminal"));
+        assert!(line.contains("terminal_ok=false"));
+        assert!(!line.contains("git status"));
+        assert!(!line.contains("print-secret"));
     }
 
     #[test]

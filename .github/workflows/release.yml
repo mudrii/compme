@@ -11,9 +11,53 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    name: Validate release gates (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Root format
+        run: cargo fmt --all -- --check
+
+      - name: Root clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Root tests
+        run: cargo test --workspace --all-targets
+
+      - name: Root build
+        run: cargo build --workspace --all-targets
+
+      - name: Acceptance script syntax
+        run: bash -n tools/acceptance/*.sh
+
+      - name: A1b runner self-test
+        run: tools/acceptance/run-a1b-live-gates.sh --self-test
+
+      - name: A2 compatibility runner self-test
+        run: tools/acceptance/run-a2-compat-gates.sh --self-test
+
+      - name: Spike gates
+        working-directory: tools/spike
+        run: |
+          cargo fmt -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+          cargo build --bins
+
   release:
     name: Build · bundle · publish (macOS)
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    needs: validate
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
