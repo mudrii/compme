@@ -3396,7 +3396,13 @@ fn caret_rect_for_field(pid: i32, field: FieldHandle) -> Result<Option<ScreenRec
         || unsafe { read_ax_bounds_for_selected_text_marker_range(element) },
         |location, length| unsafe { read_ax_bounds_for_range(element, location, length) },
     )?;
-    Ok(rect.map(|rect| normalize_caret_rect(rect, bundle_id_for_pid(pid).as_deref())))
+    Ok(rect.map(|rect| {
+        normalize_caret_rect(
+            rect,
+            bundle_id_for_pid(pid).as_deref(),
+            is_browser_omnibox(&field.element_id),
+        )
+    }))
 }
 
 /// Bundles whose AX caret rect IS the caret line (`[y, y+h]`), unlike the
@@ -3404,9 +3410,10 @@ fn caret_rect_for_field(pid: i32, field: FieldHandle) -> Result<Option<ScreenRec
 /// y+2h]`, cycle-44 live finding). Evidence-only list (2026-06-10 live
 /// screenshots: ghost one line low in Chrome/iTerm2; 2026-06-14: same in
 /// Safari's WebKit search fields — google.com/duckduckgo.com); extend per app
-/// on evidence, never by guess. NOTE for Safari: this is bundle-keyed, so it
-/// also covers the native address bar — if a future live check shows the
-/// address-bar ghost lands too HIGH, the shift must become field-aware.
+/// on evidence, never by guess. Safari's NATIVE address bar is field-aware
+/// excluded (see `normalize_caret_rect`'s `is_omnibox`) — it is TextEdit-like,
+/// not rect-is-line (2026-06-14: omnibox ghost landed too high under a blanket
+/// shift).
 const RECT_IS_LINE_BUNDLE_PREFIXES: [&str; 4] = [
     "com.google.Chrome",
     "org.chromium.",
@@ -3414,18 +3421,34 @@ const RECT_IS_LINE_BUNDLE_PREFIXES: [&str; 4] = [
     "com.apple.Safari",
 ];
 
+/// Whether `element_id` is a browser address/search bar (AXIdentifier
+/// `WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD`). Safari's is a NATIVE field whose
+/// caret-rect semantics differ from its WebKit web content — see
+/// [`normalize_caret_rect`].
+fn is_browser_omnibox(element_id: &str) -> bool {
+    element_id.contains("WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD")
+}
+
 /// Normalize an app-specific caret rect to the calibrated default semantics
 /// by shifting rect-is-line apps up one line. Degenerate rects (element
 /// bounds, not carets) pass through untouched — the overlay's bounds fallback
 /// owns those.
-fn normalize_caret_rect(rect: ScreenRect, bundle_id: Option<&str>) -> ScreenRect {
+///
+/// `is_omnibox` carves out Safari's NATIVE address/search bar, which is
+/// TextEdit-like (the line sits one rect below the caret rect) UNLIKE Safari's
+/// WebKit web content — so it must NOT get the rect-is-line shift, or the ghost
+/// lands one line too HIGH (2026-06-14 live finding). The carve-out is
+/// Safari-specific: Chrome/iTerm2 show no native-omnibox exception.
+fn normalize_caret_rect(rect: ScreenRect, bundle_id: Option<&str>, is_omnibox: bool) -> ScreenRect {
     let plausible_caret = rect.w <= CARET_MAX_W && rect.h <= CARET_MAX_H;
     let rect_is_line = bundle_id.is_some_and(|id| {
         RECT_IS_LINE_BUNDLE_PREFIXES
             .iter()
             .any(|prefix| id.starts_with(prefix))
     });
-    if plausible_caret && rect_is_line {
+    let safari_omnibox =
+        is_omnibox && bundle_id.is_some_and(|id| id.starts_with("com.apple.Safari"));
+    if plausible_caret && rect_is_line && !safari_omnibox {
         ScreenRect {
             y: rect.y - rect.h,
             ..rect
@@ -7563,7 +7586,7 @@ mod tests {
             w: 0.0,
             h: 21.0,
         };
-        let normalized = normalize_caret_rect(chrome_rect, Some("com.google.Chrome"));
+        let normalized = normalize_caret_rect(chrome_rect, Some("com.google.Chrome"), false);
         assert_eq!(normalized.y, 332.0, "shift up by one line height");
         assert_eq!(
             (normalized.x, normalized.w, normalized.h),
@@ -7572,13 +7595,13 @@ mod tests {
 
         // Chromium-family prefix matches too.
         assert_eq!(
-            normalize_caret_rect(chrome_rect, Some("org.chromium.Chromium")).y,
+            normalize_caret_rect(chrome_rect, Some("org.chromium.Chromium"), false).y,
             332.0
         );
         // iTerm2 exhibits the same semantics (live screenshots 2026-06-10:
         // ghost one line low in iTerm2, twice — user run + scripted self-test).
         assert_eq!(
-            normalize_caret_rect(chrome_rect, Some("com.googlecode.iterm2")).y,
+            normalize_caret_rect(chrome_rect, Some("com.googlecode.iterm2"), false).y,
             332.0
         );
     }
@@ -7595,12 +7618,36 @@ mod tests {
             w: 0.0,
             h: 16.0,
         };
-        let normalized = normalize_caret_rect(safari_rect, Some("com.apple.Safari"));
+        // Web content (not the omnibox) → shifted onto the line.
+        let normalized = normalize_caret_rect(safari_rect, Some("com.apple.Safari"), false);
         assert_eq!(normalized.y, 87.0, "shift up by one line height");
         assert_eq!(
             (normalized.x, normalized.w, normalized.h),
             (1741.0, 0.0, 16.0)
         );
+        // Safari's NATIVE address bar (omnibox) is TextEdit-like — NOT shifted
+        // (2026-06-14 live finding: the blanket shift put it one line too high).
+        assert_eq!(
+            normalize_caret_rect(safari_rect, Some("com.apple.Safari"), true).y,
+            103.0,
+            "the Safari omnibox keeps its raw caret y"
+        );
+        // The carve-out is Safari-specific: a Chrome omnibox still shifts.
+        assert_eq!(
+            normalize_caret_rect(safari_rect, Some("com.google.Chrome"), true).y,
+            87.0,
+            "non-Safari omnibox keeps the rect-is-line shift"
+        );
+    }
+
+    #[test]
+    fn is_browser_omnibox_detects_the_address_search_field() {
+        // The carve-out hinges on this AXIdentifier (live: Safari's address bar
+        // reports id=WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD); a web-content field
+        // (AXTextArea etc.) or an empty id is NOT the omnibox.
+        assert!(is_browser_omnibox("WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD"));
+        assert!(!is_browser_omnibox("AXTextArea"));
+        assert!(!is_browser_omnibox(""));
     }
 
     #[test]
@@ -7613,12 +7660,12 @@ mod tests {
         };
         // TextEdit semantics are the calibrated default — untouched.
         assert_eq!(
-            normalize_caret_rect(rect, Some("com.apple.TextEdit")).y,
+            normalize_caret_rect(rect, Some("com.apple.TextEdit"), false).y,
             240.0
         );
         // Unknown app — untouched (no-false-positive discipline: only
         // evidence-backed bundles shift).
-        assert_eq!(normalize_caret_rect(rect, None).y, 240.0);
+        assert_eq!(normalize_caret_rect(rect, None, false).y, 240.0);
         // A Chrome ELEMENT-BOUNDS rect (the degenerate case) must NOT shift —
         // the overlay's bounds fallback owns that path, and shifting y by a
         // 1225px "height" would garble it.
@@ -7629,7 +7676,7 @@ mod tests {
             h: 1225.0,
         };
         assert_eq!(
-            normalize_caret_rect(bounds, Some("com.google.Chrome")).y,
+            normalize_caret_rect(bounds, Some("com.google.Chrome"), false).y,
             168.0
         );
     }
