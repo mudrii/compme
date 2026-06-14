@@ -20,8 +20,8 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
-    NSControlStateValueOn, NSFont, NSSwitch, NSTabView, NSTabViewItem, NSTextField, NSView,
-    NSWindow, NSWindowStyleMask,
+    NSControlStateValueOn, NSEvent, NSFont, NSSwitch, NSTabView, NSTabViewItem, NSTextField,
+    NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
@@ -88,6 +88,49 @@ pub fn keycode_label(code: i64) -> String {
         crate::KEYCODE_ESCAPE => "Esc".to_string(),
         crate::KEYCODE_DOWN => "Down arrow".to_string(),
         other => format!("keycode {other}"),
+    }
+}
+
+/// What a recorder field renders + writes for one captured keyDown — the pure
+/// composition of [`record_decision`], [`rebind_request_for`] and
+/// [`keycode_label`] so the AppKit field's keyDown is thin glue (the field
+/// itself is LOOK-verified, per this file's AppKit convention).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum RecorderOutcome {
+    /// Esc: stop recording; restore the label to the role's CURRENT key.
+    Cancel { idle_label: String },
+    /// A reserved fixed key (Down): consumed silently — stay recording, no change.
+    RejectSilent,
+    /// The captured key collides with the other role: stay recording, show `hint`.
+    RejectCollision { hint: &'static str },
+    /// Accept: write `request` (BOTH slots — clobber-safe), show `label`, stop.
+    Accept {
+        request: RebindRequest,
+        label: String,
+    },
+}
+
+/// Compose one captured keyDown into a render+write outcome for `role`, given
+/// the (word, full) currently-registered keys (`effective_accept_keys()`). The
+/// Accept arm always carries BOTH slots so a partial request can never clobber
+/// the other role back to default (the c134 trap).
+pub fn recorder_outcome(role: RecorderRole, keycode: i64, current: (i64, i64)) -> RecorderOutcome {
+    let (role_current, other_current) = match role {
+        RecorderRole::Word => (current.0, current.1),
+        RecorderRole::Full => (current.1, current.0),
+    };
+    match record_decision(keycode, other_current) {
+        RecordDecision::Cancel => RecorderOutcome::Cancel {
+            idle_label: keycode_label(role_current),
+        },
+        RecordDecision::RejectFixed => RecorderOutcome::RejectSilent,
+        RecordDecision::RejectCollision => RecorderOutcome::RejectCollision {
+            hint: "In use \u{2014} press another",
+        },
+        RecordDecision::Accept => RecorderOutcome::Accept {
+            request: rebind_request_for(role, keycode, current),
+            label: keycode_label(keycode),
+        },
     }
 }
 
@@ -242,6 +285,95 @@ impl SettingsTarget {
         let this = Self::alloc(mtm).set_ivars(SettingsTargetIvars { flags });
         // SAFETY: NSObject's init signature is correct for this subclass.
         unsafe { objc2::msg_send![super(this), init] }
+    }
+}
+
+struct KeyRecorderFieldIvars {
+    role: RecorderRole,
+    /// keyDown parks the captured (both-slots, clobber-safe) request here; the
+    /// run loop consumes the edge (`apply_live_accept_keymap`).
+    rebind_slot: Arc<Mutex<Option<RebindRequest>>>,
+}
+
+define_class!(
+    // SAFETY: an NSTextField subclass used as an inline key recorder (recorder
+    // 5b slice 4b). keyDown consumes the event (NO super call) so the keystroke
+    // is CAPTURED, never typed; the field is non-editable/non-selectable so
+    // AppKit installs no field editor to swallow it, and acceptsFirstResponder
+    // + mouseDown make it the first responder on click. The DECISION logic is
+    // the unit-tested `recorder_outcome`; the AppKit shell is LIVE-verified
+    // (this file's convention).
+    #[unsafe(super = NSTextField)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = KeyRecorderFieldIvars]
+    struct KeyRecorderField;
+
+    impl KeyRecorderField {
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, _event: &NSEvent) {
+            // Non-editable fields don't auto-focus on click; grab first
+            // responder so the next keyDown lands here. Coerce through
+            // NSTextField (which impls AsRef<NSResponder>; the subclass does not
+            // transitively).
+            if let Some(window) = self.window() {
+                let field: &NSTextField = self;
+                window.makeFirstResponder(Some(field.as_ref()));
+            }
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            // u16 keyCode -> i64 (the crate's keycode currency). NO super call:
+            // swallow the key so it is captured, never typed into the field.
+            let keycode = event.keyCode() as i64;
+            match recorder_outcome(self.ivars().role, keycode, crate::effective_accept_keys()) {
+                RecorderOutcome::Accept { request, label } => {
+                    if let Ok(mut slot) = self.ivars().rebind_slot.lock() {
+                        *slot = Some(request);
+                    }
+                    self.setStringValue(&NSString::from_str(&label));
+                }
+                RecorderOutcome::Cancel { idle_label } => {
+                    self.setStringValue(&NSString::from_str(&idle_label));
+                }
+                RecorderOutcome::RejectSilent => {}
+                RecorderOutcome::RejectCollision { hint } => {
+                    self.setStringValue(&NSString::from_str(hint));
+                }
+            }
+        }
+    }
+);
+
+impl KeyRecorderField {
+    fn new(
+        role: RecorderRole,
+        rebind_slot: Arc<Mutex<Option<RebindRequest>>>,
+        mtm: MainThreadMarker,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(KeyRecorderFieldIvars { role, rebind_slot });
+        // set_ivars BEFORE init (the SettingsTarget pattern).
+        let this: Retained<Self> = unsafe { objc2::msg_send![super(this), init] };
+        // Non-editable + non-selectable: a selectable field engages the field
+        // editor (an NSTextView) that would steal keyDown. Bezel + background so
+        // it reads as a clickable field.
+        this.setEditable(false);
+        this.setSelectable(false);
+        this.setBezeled(true);
+        this.setDrawsBackground(true);
+        // Idle label = the role's CURRENT registered key.
+        let (word, full) = crate::effective_accept_keys();
+        let current = match role {
+            RecorderRole::Word => word,
+            RecorderRole::Full => full,
+        };
+        this.setStringValue(&NSString::from_str(&keycode_label(current)));
+        this
     }
 }
 
@@ -729,6 +861,29 @@ fn build_window(
         text
     };
 
+    // Recorder fields (recorder 5b slice 4b): click a field, then press a key
+    // to rebind that accept role live. Both write flags.shortcuts_rebind_request;
+    // the run loop consumes the edge (set keymap -> rearm -> persist). Rows sit
+    // below the effective-bindings text (y=160..330). LOOK-verified.
+    {
+        let shortcuts_view = &pane_views[3];
+        for (role, label_text, y) in [
+            (RecorderRole::Word, "Accept word:", 116.0),
+            (RecorderRole::Full, "Accept full:", 80.0),
+        ] {
+            let row_label = NSTextField::labelWithString(&NSString::from_str(label_text), mtm);
+            row_label.setFrame(NSRect::new(NSPoint::new(20.0, y), NSSize::new(110.0, 22.0)));
+            shortcuts_view.addSubview(&row_label);
+            let recorder =
+                KeyRecorderField::new(role, Arc::clone(&flags.shortcuts_rebind_request), mtm);
+            recorder.setFrame(NSRect::new(
+                NSPoint::new(140.0, y - 4.0),
+                NSSize::new(160.0, 24.0),
+            ));
+            shortcuts_view.addSubview(&recorder);
+        }
+    }
+
     // Statistics tab: header + STATS_ROWS data rows. Row strings come from
     // the run loop via flags.stats_lines; show() refreshes them on every
     // open. Monospaced font keeps sparkline glyphs column-aligned.
@@ -902,6 +1057,58 @@ mod tests {
         assert_eq!(record_decision(122, 50), RecordDecision::Accept); // F1
                                                                       // Re-recording the role's OWN current key is a harmless no-op rebind.
         assert_eq!(record_decision(48, 50), RecordDecision::Accept);
+    }
+
+    #[test]
+    fn recorder_outcome_accept_writes_both_slots_and_labels_the_captured_key() {
+        // Recording WORD with current (word=48, full=50), capture 122 (F1): the
+        // request carries BOTH slots (full stays 50 — clobber-safe) and the
+        // label is the captured key's.
+        assert_eq!(
+            recorder_outcome(RecorderRole::Word, 122, (48, 50)),
+            RecorderOutcome::Accept {
+                request: (Some(122), Some(50)),
+                label: keycode_label(122),
+            }
+        );
+        // Recording FULL keeps word's current in slot 0.
+        assert_eq!(
+            recorder_outcome(RecorderRole::Full, 122, (48, 50)),
+            RecorderOutcome::Accept {
+                request: (Some(48), Some(122)),
+                label: keycode_label(122),
+            }
+        );
+    }
+
+    #[test]
+    fn recorder_outcome_esc_cancels_and_reverts_to_the_roles_current_label() {
+        // Esc reverts to the role's OWN current key label, not the other role.
+        assert_eq!(
+            recorder_outcome(RecorderRole::Full, crate::KEYCODE_ESCAPE, (48, 50)),
+            RecorderOutcome::Cancel {
+                idle_label: keycode_label(50)
+            }
+        );
+        assert_eq!(
+            recorder_outcome(RecorderRole::Word, crate::KEYCODE_ESCAPE, (48, 50)),
+            RecorderOutcome::Cancel {
+                idle_label: keycode_label(48)
+            }
+        );
+    }
+
+    #[test]
+    fn recorder_outcome_down_is_rejected_silently_and_collision_shows_a_hint() {
+        assert_eq!(
+            recorder_outcome(RecorderRole::Word, crate::KEYCODE_DOWN, (48, 50)),
+            RecorderOutcome::RejectSilent
+        );
+        // Recording WORD, capture 50 == full's current → collision, no write.
+        assert!(matches!(
+            recorder_outcome(RecorderRole::Word, 50, (48, 50)),
+            RecorderOutcome::RejectCollision { .. }
+        ));
     }
 
     #[test]
