@@ -100,6 +100,39 @@
   - Acceptance scripts still contain a Minor AppleScript quoting hardening opportunity in env-provided text paths.
 - Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
 
+## 2026-06-15 03:51:03 +08 - Completed
+
+- Task selected: Re-validate the current P2 review finding that `COMPME_MEMORY=all` is parsed but not honored by the app loop.
+- Why it was selected: It was the only active review finding presented for this autonomous tick and directly concerned the documented all-monitored memory mode.
+- Files changed:
+  - `.codex/loop-state.md`
+- Tests added/updated: None. The current HEAD already has focused AllMonitored coverage; this tick dismissed the finding as stale rather than changing production code.
+- Verification commands and result:
+  - `graphify query "COMPME_MEMORY all monitored typing MemoryStore monitor run loop observation flow"` passed and found the current monitored-memory queue/flush path.
+  - `cargo test -p app all_monitored -- --nocapture` passed (`5` tests).
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1074`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed.
+  - `git diff --check` passed before the state-file update.
+- Test count if available: root `1074` listed tests; spike `30` listed tests; focused AllMonitored run `5` tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed: None. Four read-only review passes found the submitted P2 stale at current HEAD: `COMPME_MEMORY=all` activates inserted-text observation, queues ordinary typed deltas, flushes them each loop, and reaches `MemoryStore::monitor` through `record_monitored_text`; `AcceptedOnly` remains a no-op for monitored typing. One Minor doc-drift note remains in an older MVP spec around live keychain validation wording.
+- Blocked or skipped work remaining:
+  - AllMonitored live GUI/privacy validation remains blocked/manual because it requires an unlocked macOS GUI session, real focused text targets, Accessibility/Secure Input state control, and encrypted-store inspection.
+  - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
+  - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
+  - Minor doc drift remains in `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` around now-completed accepted-only keychain validation versus the still-pending AllMonitored live GUI/privacy gate.
+- Commit hash and push confirmation, or DRY/blocked status: Commit and push are performed after this state entry is committed; final response records the resulting commit hash and upstream equality check.
+
 ## 2026-06-15 Cycle
 
 - Task selected: Fix pass-2 full-audit review findings around privacy diagnostics, accept recording timing, macOS replacement data-loss safety, CI/release/acceptance gate coverage, and stale plan/docs alignment.
