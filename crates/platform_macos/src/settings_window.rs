@@ -12,7 +12,7 @@
 //! and live-verified, not unit-tested (tray convention); the policy-edge
 //! decision is the unit-tested pure part.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use objc2::rc::Retained;
@@ -20,8 +20,8 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
-    NSControlStateValueOn, NSEvent, NSFont, NSResponder, NSSwitch, NSTabView, NSTabViewItem,
-    NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton, NSResponder, NSSwitch, NSTabView,
+    NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
@@ -255,9 +255,18 @@ pub struct SettingsFlags {
     pub setup_grant_ax: Arc<AtomicBool>,
     pub setup_request_screen: Arc<AtomicBool>,
     pub setup_reveal_model: Arc<AtomicBool>,
-    /// Setup "Download Recommended Model" — the run loop spawns the worker
-    /// and logs progress (picker UI is a later slice).
+    /// Setup "Download Model" — the run loop spawns the worker for the
+    /// `setup_model_index` target and logs progress.
     pub setup_download_model: Arc<AtomicBool>,
+    /// Picker: the catalog index the Setup-tab popup selects as the download
+    /// target. Default = the recommended index (set by the run loop), so the
+    /// download is unchanged until the user picks another row. The run loop's
+    /// download edge reads it via `model_picker::selected_catalog_entry`,
+    /// which is total over an out-of-range value.
+    pub setup_model_index: Arc<AtomicUsize>,
+    /// Picker: model display names for the popup's items, composed once by the
+    /// run loop (model_catalog is app-side; the window only renders the names).
+    pub setup_model_names: Vec<String>,
     /// Apps rows (per-app recorded-input counts), composed by the run loop
     /// right before each show; refreshed like stats.
     pub apps_lines: Arc<Mutex<Vec<String>>>,
@@ -317,6 +326,21 @@ define_class!(
                 .flags
                 .setup_download_model
                 .store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(selectModel:))]
+        fn select_model(&self, sender: Option<&NSPopUpButton>) {
+            if let Some(popup) = sender {
+                // indexOfSelectedItem is -1 only on an empty menu; the popup is
+                // always populated, but clamp negatives to 0 defensively. The
+                // run loop resolves this index through selected_catalog_entry,
+                // which falls back to recommended on any out-of-range value.
+                let index = popup.indexOfSelectedItem().max(0) as usize;
+                self.ivars()
+                    .flags
+                    .setup_model_index
+                    .store(index, Ordering::Relaxed);
+            }
         }
 
         #[unsafe(method(deleteAppRow:))]
@@ -749,6 +773,43 @@ fn build_window(
             ));
             setup.addSubview(&label);
             setup_labels.push(label);
+        }
+
+        // Model picker: the download target. Item titles come from
+        // flags.setup_model_names (model_catalog is app-side); the selected
+        // index lands in flags.setup_model_index, which the run loop's download
+        // edge reads. Built once and pre-selected from the current index — the
+        // catalog is static and only this popup writes the index, so there is
+        // no external writer to refresh-on-show against.
+        {
+            let picker_label =
+                NSTextField::labelWithString(&NSString::from_str("Model to download:"), mtm);
+            picker_label.setFrame(NSRect::new(
+                NSPoint::new(20.0, 185.0),
+                NSSize::new(140.0, 22.0),
+            ));
+            setup.addSubview(&picker_label);
+
+            let popup = NSPopUpButton::initWithFrame_pullsDown(
+                NSPopUpButton::alloc(mtm),
+                NSRect::new(NSPoint::new(165.0, 182.0), NSSize::new(300.0, 26.0)),
+                false,
+            );
+            for name in &flags.setup_model_names {
+                popup.addItemWithTitle(&NSString::from_str(name));
+            }
+            let selected = flags.setup_model_index.load(Ordering::Relaxed);
+            if selected < flags.setup_model_names.len() {
+                popup.selectItemAtIndex(selected as isize);
+            }
+            // SAFETY: target outlives the window (held by MacosSettingsWindow);
+            // setTarget/setAction are the standard control-wiring calls.
+            unsafe {
+                let any: &AnyObject = target.as_ref();
+                popup.setTarget(Some(any));
+                popup.setAction(Some(sel!(selectModel:)));
+            }
+            setup.addSubview(&popup);
         }
 
         // Action buttons (always present; each is a harmless no-op when its

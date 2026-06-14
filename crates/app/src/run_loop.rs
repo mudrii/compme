@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1291,6 +1291,15 @@ fn build_settings_flags(
         setup_request_screen: Arc::new(AtomicBool::new(false)),
         setup_reveal_model: Arc::new(AtomicBool::new(false)),
         setup_download_model: Arc::new(AtomicBool::new(false)),
+        // Picker download target: start at the recommended index so the
+        // default download is byte-identical to before (the popup pre-selects
+        // the same row). The names cross the crate boundary here because
+        // platform_macos can't see model_catalog (the about_text pattern).
+        setup_model_index: Arc::new(AtomicUsize::new(crate::model_picker::recommended_index())),
+        setup_model_names: model_catalog::catalog()
+            .iter()
+            .map(|e| e.name.to_string())
+            .collect(),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
         shortcuts_text: {
@@ -2504,11 +2513,13 @@ pub fn run() -> Result<(), String> {
             .swap(false, Ordering::Relaxed)
             && download_idle(model_download_status.as_deref())
         {
-            // Selected-or-recommended: identical to recommended() until the
-            // picker popup (D14 3b.4 slice b) writes a different index.
+            // Selected-or-recommended: the Setup-tab popup writes the chosen
+            // catalog index into setup_model_index (default = recommended, so
+            // unchanged until the user picks another). selected_catalog_entry
+            // is total over a garbage/OOB index — never panics.
             if let (Some(entry), Some(home)) = (
                 crate::model_picker::selected_catalog_entry(
-                    crate::model_picker::recommended_index(),
+                    settings_flags.setup_model_index.load(Ordering::Relaxed),
                 ),
                 std::env::var_os("HOME"),
             ) {
