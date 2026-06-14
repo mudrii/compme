@@ -182,12 +182,13 @@ struct Config {
     /// (`COMPME_LICENSE_ACCEPTED`, comma-joined; persisted on Accept).
     /// BTreeSet so the serialized form is deterministic (sorted, deduped).
     license_accepted: std::collections::BTreeSet<String>,
-    /// Rebound accept keys (raw macOS virtual keycodes,
-    /// `COMPME_ACCEPT_WORD_KEY` / `COMPME_ACCEPT_FULL_KEY`). `None` →
-    /// defaults (Tab 48 / grave 50). Collisions fail soft to defaults at
+    /// Rebound accept keys as `(macOS virtual keycode, Carbon modifier mask)`,
+    /// parsed from `COMPME_ACCEPT_WORD_KEY` / `COMPME_ACCEPT_FULL_KEY` (e.g.
+    /// `"48"` or `"shift+48"`). `None` → defaults (Tab 48 / grave 50). A mask
+    /// of 0 is a bare key. Collisions/invalid input fail soft to defaults at
     /// startup with a logged error.
-    accept_word_key: Option<i64>,
-    accept_full_key: Option<i64>,
+    accept_word_key: Option<(i64, u32)>,
+    accept_full_key: Option<(i64, u32)>,
 }
 
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
@@ -225,9 +226,9 @@ impl Config {
                 .and_then(|raw| webconfig::TrustedKey::from_hex(&raw)),
             license_accepted: parse_license_accepted(lookup("COMPME_LICENSE_ACCEPTED")),
             accept_word_key: lookup("COMPME_ACCEPT_WORD_KEY")
-                .and_then(|raw| raw.trim().parse::<i64>().ok()),
+                .and_then(|raw| platform_macos::parse_accept_key(&raw)),
             accept_full_key: lookup("COMPME_ACCEPT_FULL_KEY")
-                .and_then(|raw| raw.trim().parse::<i64>().ok()),
+                .and_then(|raw| platform_macos::parse_accept_key(&raw)),
             acceptance_pid: lookup("COMPME_ACCEPTANCE_PID").and_then(|raw| raw.parse::<i32>().ok()),
             stub_completion: lookup("COMPME_STUB_COMPLETION").filter(|s| !s.is_empty()),
             model_path: lookup("COMPME_MODEL_PATH")
@@ -1792,7 +1793,7 @@ pub fn run() -> Result<(), String> {
     // decision logic, and the handler's id→keycode inverse all read one
     // source from the first arm. Collision/invalid → fail soft to defaults.
     if config.accept_word_key.is_some() || config.accept_full_key.is_some() {
-        match platform_macos::set_accept_keymap_from_config(
+        match platform_macos::set_accept_keymap_from_config_with_mods(
             config.accept_word_key,
             config.accept_full_key,
         ) {
@@ -3760,11 +3761,19 @@ mod tests {
             ("COMPME_ACCEPT_WORD_KEY", "122"),
             ("COMPME_ACCEPT_FULL_KEY", "120"),
         ]));
-        assert_eq!(config.accept_word_key, Some(122));
-        assert_eq!(config.accept_full_key, Some(120));
+        assert_eq!(config.accept_word_key, Some((122, 0)));
+        assert_eq!(config.accept_full_key, Some((120, 0)));
         let junk = Config::from_lookup(lookup(&[("COMPME_ACCEPT_WORD_KEY", "tab")]));
         assert_eq!(junk.accept_word_key, None);
         assert_eq!(Config::from_lookup(lookup(&[])).accept_word_key, None);
+        // Modifier combos parse into (keycode, Carbon mask): shift=512, ctrl=4096
+        // (slice 1b — Shift+Tab etc. configurable via the persisted string).
+        let combo = Config::from_lookup(lookup(&[
+            ("COMPME_ACCEPT_WORD_KEY", "shift+48"),
+            ("COMPME_ACCEPT_FULL_KEY", "ctrl+shift+50"),
+        ]));
+        assert_eq!(combo.accept_word_key, Some((48, 512)));
+        assert_eq!(combo.accept_full_key, Some((50, 512 | 4096)));
     }
 
     #[test]

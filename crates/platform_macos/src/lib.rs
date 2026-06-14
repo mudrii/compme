@@ -2274,6 +2274,84 @@ pub struct AcceptKeymap {
     full_mods: u32,
 }
 
+/// Carbon event modifier masks — the `modifiers` argument of
+/// `RegisterEventHotKey`. Standard Carbon constants; [`parse_accept_key`] maps
+/// modifier words onto them and [`format_accept_key`] back, and slice 2's
+/// recorder maps NSEvent flags onto the same bits.
+const CARBON_CMD_KEY: u32 = 256;
+const CARBON_SHIFT_KEY: u32 = 512;
+const CARBON_OPTION_KEY: u32 = 2048;
+const CARBON_CONTROL_KEY: u32 = 4096;
+
+/// The four Carbon modifier words accepted by [`parse_accept_key`] and emitted
+/// by [`format_accept_key`], in ascending bit order (cmd, shift, option,
+/// control) so `format` is deterministic. Each canonical word plus its aliases
+/// maps to one mask bit.
+const ACCEPT_KEY_MODIFIERS: [(&str, u32); 4] = [
+    ("cmd", CARBON_CMD_KEY),
+    ("shift", CARBON_SHIFT_KEY),
+    ("option", CARBON_OPTION_KEY),
+    ("control", CARBON_CONTROL_KEY),
+];
+
+/// Map one lower-cased modifier word (canonical or alias) to its Carbon bit.
+fn accept_key_modifier_bit(word: &str) -> Option<u32> {
+    match word {
+        "cmd" | "command" | "super" | "meta" | "win" => Some(CARBON_CMD_KEY),
+        "shift" => Some(CARBON_SHIFT_KEY),
+        "opt" | "option" | "alt" => Some(CARBON_OPTION_KEY),
+        "ctrl" | "control" => Some(CARBON_CONTROL_KEY),
+        _ => None,
+    }
+}
+
+/// Parse a persisted accept-key string into `(keycode, Carbon modifier mask)`.
+/// Grammar: `+`-separated, case-insensitive — zero or more modifier words
+/// (`shift`/`ctrl`/`control`/`opt`/`option`/`alt`/`cmd`/`command`/…) followed by
+/// a single non-negative integer keycode. A bare `"96"` yields `(96, 0)` so the
+/// pre-modifier config format still reads. Any malformed input (non-numeric or
+/// negative keycode, unknown modifier, missing keycode) returns `None`, letting
+/// the caller fall soft to the defaults.
+pub fn parse_accept_key(raw: &str) -> Option<(i64, u32)> {
+    let mut keycode = None;
+    let mut mask = 0u32;
+    for token in raw.split('+') {
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        if keycode.is_some() {
+            // A token after the keycode (the integer must be last).
+            return None;
+        }
+        if let Ok(code) = token.parse::<i64>() {
+            if code < 0 {
+                return None;
+            }
+            keycode = Some(code);
+        } else {
+            mask |= accept_key_modifier_bit(&token.to_ascii_lowercase())?;
+        }
+    }
+    keycode.map(|code| (code, mask))
+}
+
+/// Format a `(keycode, Carbon modifier mask)` pair into the persisted string
+/// form — the inverse of [`parse_accept_key`]. Modifiers are emitted in a fixed
+/// ascending-bit order so the output is deterministic and round-trips; a zero
+/// mask emits the bare keycode (back-compat output).
+pub fn format_accept_key(keycode: i64, mask: u32) -> String {
+    let mut out = String::new();
+    for (word, bit) in ACCEPT_KEY_MODIFIERS {
+        if mask & bit != 0 {
+            out.push_str(word);
+            out.push('+');
+        }
+    }
+    out.push_str(&keycode.to_string());
+    out
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeymapError {
     /// Two bindings would share the same keycode.
@@ -2657,7 +2735,27 @@ pub fn set_accept_keymap_from_config(
     word: Option<i64>,
     full: Option<i64>,
 ) -> Result<(), KeymapError> {
-    let map = AcceptKeymap::from_accept_keys(word, full)?;
+    // Bare-keycode entry (the live-rebind fn-pointer path still calls this):
+    // delegate to the modifier-aware form with a zero mask, so both paths
+    // share one validate-then-swap.
+    set_accept_keymap_from_config_with_mods(word.map(|k| (k, 0)), full.map(|k| (k, 0)))
+}
+
+/// Like [`set_accept_keymap_from_config`] but each key carries a Carbon modifier
+/// mask (modifier-combo support, slice 1b). Startup config reads
+/// `COMPME_ACCEPT_WORD_KEY="shift+48"` into `(keycode, mask)` and lands it here.
+/// Validates before swapping (same fail-soft contract): a collision or invalid
+/// keycode errors WITHOUT touching the live map.
+pub fn set_accept_keymap_from_config_with_mods(
+    word: Option<(i64, u32)>,
+    full: Option<(i64, u32)>,
+) -> Result<(), KeymapError> {
+    let map = AcceptKeymap::from_accept_keys_with_mods(
+        word.map(|(k, _)| k),
+        full.map(|(k, _)| k),
+        word.map(|(_, m)| m).unwrap_or(0),
+        full.map(|(_, m)| m).unwrap_or(0),
+    )?;
     set_accept_keymap(map);
     Ok(())
 }
@@ -8164,9 +8262,6 @@ mod tests {
 
     #[test]
     fn modifier_combo_collision_compares_keycode_and_modifiers() {
-        // The Carbon shiftKey modifier bit (slice 2 introduces the named
-        // constant alongside the NSEvent-flags map that consumes it).
-        const SHIFT: u32 = 512;
         // Slice 1 headline: a binding is identified by (keycode, modifier mask),
         // not keycode alone. So the SAME keycode under DIFFERENT modifiers is two
         // distinct accept keys — Tab for word, Shift+Tab for full must coexist.
@@ -8174,14 +8269,14 @@ mod tests {
             Some(KEYCODE_TAB),
             Some(KEYCODE_TAB),
             0,
-            SHIFT,
+            CARBON_SHIFT_KEY,
         )
         .expect("Tab and Shift+Tab are different bindings — no collision");
         assert_eq!(
             map.carbon_bindings(),
             [
                 (CARBON_HOTKEY_TAB, KEYCODE_TAB, 0),
-                (CARBON_HOTKEY_GRAVE, KEYCODE_TAB, SHIFT),
+                (CARBON_HOTKEY_GRAVE, KEYCODE_TAB, CARBON_SHIFT_KEY),
                 (CARBON_HOTKEY_ESCAPE, KEYCODE_ESCAPE, 0),
                 (CARBON_HOTKEY_DOWN, KEYCODE_DOWN, 0),
             ]
@@ -8196,7 +8291,13 @@ mod tests {
         // A modified word key does NOT collide with a fixed bare key of the same
         // keycode: Shift+Esc as word is distinct from bare Esc (dismiss).
         assert!(
-            AcceptKeymap::from_accept_keys_with_mods(Some(KEYCODE_ESCAPE), None, SHIFT, 0).is_ok(),
+            AcceptKeymap::from_accept_keys_with_mods(
+                Some(KEYCODE_ESCAPE),
+                None,
+                CARBON_SHIFT_KEY,
+                0
+            )
+            .is_ok(),
             "Shift+Esc (word) is distinct from bare Esc (dismiss)"
         );
 
@@ -8205,6 +8306,54 @@ mod tests {
             AcceptKeymap::from_accept_keys(Some(122), Some(120)),
             AcceptKeymap::from_accept_keys_with_mods(Some(122), Some(120), 0, 0),
         );
+    }
+
+    #[test]
+    fn accept_key_strings_parse_and_format_with_modifier_prefixes() {
+        // Bare keycode (back-compat with the pre-modifier config format).
+        assert_eq!(parse_accept_key("96"), Some((96, 0)));
+        assert_eq!(parse_accept_key("  96 "), Some((96, 0)));
+        // Single + multiple modifiers, case-insensitive, with aliases.
+        assert_eq!(parse_accept_key("shift+96"), Some((96, CARBON_SHIFT_KEY)));
+        assert_eq!(
+            parse_accept_key("Ctrl+Shift+96"),
+            Some((96, CARBON_SHIFT_KEY | CARBON_CONTROL_KEY))
+        );
+        assert_eq!(
+            parse_accept_key("cmd+opt+0"),
+            Some((0, CARBON_CMD_KEY | CARBON_OPTION_KEY))
+        );
+        assert_eq!(
+            parse_accept_key("control+option+command+12"),
+            Some((12, CARBON_CONTROL_KEY | CARBON_OPTION_KEY | CARBON_CMD_KEY))
+        );
+        // Junk → None (the caller falls soft to defaults).
+        assert_eq!(parse_accept_key(""), None);
+        assert_eq!(parse_accept_key("tab"), None); // non-numeric keycode
+        assert_eq!(parse_accept_key("hyper+96"), None); // unknown modifier
+        assert_eq!(parse_accept_key("shift+"), None); // missing keycode
+        assert_eq!(parse_accept_key("-3"), None); // negative keycode
+        assert_eq!(parse_accept_key("shift+ctrl"), None); // no numeric tail
+
+        // format → parse round-trips the (keycode, mask) pair exactly.
+        for (keycode, mask) in [
+            (96i64, 0u32),
+            (96, CARBON_SHIFT_KEY),
+            (
+                12,
+                CARBON_CONTROL_KEY | CARBON_OPTION_KEY | CARBON_SHIFT_KEY | CARBON_CMD_KEY,
+            ),
+            (0, CARBON_CMD_KEY),
+        ] {
+            let s = format_accept_key(keycode, mask);
+            assert_eq!(
+                parse_accept_key(&s),
+                Some((keycode, mask)),
+                "round-trip {s}"
+            );
+        }
+        // A bare key formats with no prefix (back-compat output).
+        assert_eq!(format_accept_key(96, 0), "96");
     }
 
     #[test]
@@ -8232,6 +8381,17 @@ mod tests {
             (48, 50),
             "global unchanged after a rejected config"
         );
+
+        // Modifier masks flow from config through to the registered bindings
+        // (slice 1b): set_accept_keymap_from_config_with_mods lands a non-zero
+        // Carbon mask in carbon_bindings (word) while the unset key stays bare;
+        // restored to the default afterward so the global is clean for others.
+        set_accept_keymap_from_config_with_mods(Some((35, CARBON_SHIFT_KEY)), None).unwrap();
+        let armed = accept_keymap().carbon_bindings();
+        assert_eq!(armed[0], (CARBON_HOTKEY_TAB, 35, CARBON_SHIFT_KEY));
+        assert_eq!(armed[1], (CARBON_HOTKEY_GRAVE, KEYCODE_GRAVE, 0));
+        set_accept_keymap(AcceptKeymap::default());
+        assert_eq!(effective_accept_keys(), (48, 50));
     }
 
     #[test]
