@@ -567,6 +567,12 @@ pub struct MacosSettingsWindow {
     // others refresh too — harmless and uniform.
     switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
     shortcuts_label: Option<Retained<NSTextField>>,
+    // Per-role recorder display boxes, refreshed to the effective keymap on
+    // every show. The wrapping shortcuts label refreshes from flags.shortcuts_
+    // text, but these bezeled boxes are separate AppKit objects — without this
+    // they could disagree with the label after a rebind that happened via a
+    // non-window path while the window was closed (the banked 4b residual).
+    recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)>,
 }
 
 impl MacosSettingsWindow {
@@ -582,6 +588,7 @@ impl MacosSettingsWindow {
             apps_delete_buttons: Vec::new(),
             switches: Vec::new(),
             shortcuts_label: None,
+            recorder_labels: Vec::new(),
         }
     }
 
@@ -599,6 +606,7 @@ impl MacosSettingsWindow {
             self.apps_delete_buttons = built.apps_delete_buttons;
             self.switches = built.switches;
             self.shortcuts_label = Some(built.shortcuts_label);
+            self.recorder_labels = built.recorder_labels;
             self.target = Some(target);
         }
         // Refresh data rows on EVERY show — the lazily built window is reused
@@ -625,6 +633,21 @@ impl MacosSettingsWindow {
         // recomposes it while the window is closed.
         if let (Some(label), Ok(text)) = (&self.shortcuts_label, self.flags.shortcuts_text.lock()) {
             label.setStringValue(&NSString::from_str(&text));
+        }
+        // Recorder boxes re-sync to the effective keymap so they never disagree
+        // with the wrapping label above after an out-of-window rebind. The
+        // in-window case needs no live cross-box update: keyDown self-updates
+        // the active box, and a rebind carries the OTHER role's key through
+        // verbatim (rebind_request_for) — so the sibling box never goes stale.
+        if !self.recorder_labels.is_empty() {
+            let (word, full) = crate::effective_accept_keys_with_mods();
+            for (role, label) in &self.recorder_labels {
+                let (code, mask) = match role {
+                    RecorderRole::Word => word,
+                    RecorderRole::Full => full,
+                };
+                label.setStringValue(&NSString::from_str(&keycode_label_with_mods(code, mask)));
+            }
         }
         // Switches re-sync from their atomics — enabled can be flipped by
         // the tray or SIGUSR1 while this window is closed.
@@ -1055,6 +1078,7 @@ fn build_window(
     // to rebind that accept role live. Both write flags.shortcuts_rebind_request;
     // the run loop consumes the edge (set keymap -> rearm -> persist). Rows sit
     // below the effective-bindings text (y=160..330). LOOK-verified.
+    let mut recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)> = Vec::new();
     {
         let shortcuts_view = &pane_views[3];
         let (word, full) = crate::effective_accept_keys_with_mods();
@@ -1093,6 +1117,8 @@ fn build_window(
             );
             recorder.setFrame(box_frame);
             shortcuts_view.addSubview(&recorder);
+            // Keep a handle so show() can re-sync the box to the effective key.
+            recorder_labels.push((role, key_label));
         }
     }
 
@@ -1162,6 +1188,7 @@ fn build_window(
         apps_delete_buttons,
         switches,
         shortcuts_label,
+        recorder_labels,
     }
 }
 
@@ -1175,6 +1202,7 @@ struct BuiltWindow {
     apps_delete_buttons: Vec<Retained<NSButton>>,
     switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
     shortcuts_label: Retained<NSTextField>,
+    recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)>,
 }
 
 /// Max Setup row count (accessibility / screen recording / model file).
