@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "spike/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt · clippy · test (macOS)
+    # Apple Silicon runner: Metal is available for the llama-cpp-2 build, and
+    # Xcode + cmake are preinstalled (the native llama.cpp build needs them).
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Model-inference tests in model_client/tests/latency.rs are #[ignore]d
+      # (they need a local GGUF + Metal GPU), so the default run is hermetic.
+      # Note: a few platform_macos tests share the process-wide NSPasteboard and
+      # can flake under parallelism; rerun the job if that single test fails.
+      - name: Test
+        run: cargo test --workspace

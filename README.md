@@ -1,5 +1,7 @@
 # Compme
 
+[![CI](https://github.com/mudrii/compme/actions/workflows/ci.yml/badge.svg)](https://github.com/mudrii/compme/actions/workflows/ci.yml)
+
 Compme is an **open-source, multi-platform** inline text-completion engine —
 a from-scratch re-implementation of all [Cotypist](https://cotypist.app) functionality
 **except payment, licensing, subscription tiers, and multi-device seats** (the only
@@ -23,6 +25,40 @@ completions, classifies field UX (inline / popup / blocked / hotkey-only /
 unsupported), shows a non-activating AppKit ghost-text overlay, intercepts accept keys
 through transient Carbon hotkeys, and inserts accepted text through Accessibility,
 synthetic keys, or a clipboard-paste fallback.
+
+## Install
+
+### Homebrew (macOS)
+
+Tagged releases ship a `Compme.app` bundle through a Homebrew cask:
+
+```sh
+brew tap mudrii/compme https://github.com/mudrii/compme
+brew install --cask compme
+```
+
+Compme is ad-hoc signed (no Apple Developer-ID notarization yet), so clear the
+Gatekeeper quarantine flag once and grant Accessibility:
+
+```sh
+xattr -dr com.apple.quarantine "$(brew --caskroom)/compme/"*/Compme.app
+```
+
+Then enable Compme under System Settings → Privacy & Security → Accessibility.
+All inference is local; nothing leaves the machine.
+
+> The cask resolves once a release is tagged (see
+> [docs/RELEASING.md](docs/RELEASING.md)). Until then, build from source.
+
+### From source
+
+```sh
+git clone https://github.com/mudrii/compme && cd compme
+tools/bundle/make-app.sh        # → target/bundle/Compme.app (ad-hoc signed)
+open target/bundle/Compme.app
+```
+
+For development, run unbundled with `cargo run -p app`.
 
 ## Features
 
@@ -279,6 +315,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Acceptance](docs/ACCEPTANCE.md)
+- [Releasing](docs/RELEASING.md)
 - [Engine/macOS MVP design](docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md)
 - [A1b macOS adapter contract](docs/superpowers/plans/2026-06-04-a1b-macos-adapter-contract.md)
 - [Current work handoff](docs/superpowers/plans/2026-06-05-current-work-handoff.md)
