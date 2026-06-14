@@ -21,10 +21,11 @@ pub struct AppPolicy {
     /// the memory `StorageMode`); `Some(false)` → never record from this app.
     pub collect_inputs: Option<bool>,
     /// Per-app mid-line completions override (App Settings pane): `None` →
-    /// inherit the global `COMPME_MIDLINE`. NOTE: the live merge into the
-    /// engine trigger gate is pending an engine API change (the gate is baked
-    /// at build time via `with_trigger_gates`); the model/persistence land
-    /// first so the settings pane has a stable shape.
+    /// inherit the global `COMPME_MIDLINE`. The resolved value is applied LIVE
+    /// to the engine's mid-line trigger gate via `Engine::set_allow_mid_word`,
+    /// re-applied on every focus change and on the Labs-switch edge (run_loop)
+    /// — see `mid_line_enabled`. (The original build-time `with_trigger_gates`
+    /// bake is now just the startup default; the runtime setter overrides it.)
     pub mid_line: Option<bool>,
     /// Per-app autocorrect override (App Settings pane): `None` → inherit the
     /// global `COMPME_AUTOCORRECT`.
@@ -127,8 +128,9 @@ impl Prefs {
             .unwrap_or(global_default)
     }
 
-    /// Effective mid-line state for `app` (same inherit pattern; live engine
-    /// merge pending — see `AppPolicy::mid_line`).
+    /// Effective mid-line state for `app` (same inherit pattern). The run loop
+    /// applies this to the engine live via `Engine::set_allow_mid_word` on focus
+    /// and Labs-switch edges — no longer build-baked. See `AppPolicy::mid_line`.
     pub fn mid_line_enabled(&self, app: Option<&str>, global_default: bool) -> bool {
         app.and_then(|app| self.per_app.get(app))
             .and_then(|policy| policy.mid_line)
