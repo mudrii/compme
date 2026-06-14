@@ -734,6 +734,39 @@ mod tests {
     }
 
     #[test]
+    fn accept_tap_arm_error_propagates_through_dispatch() {
+        // The ShowGhost dispatch arms the accept tap via set_tap_visible(true);
+        // a failure in the subscription's set_suggestion_visible must surface
+        // through on_completion, not be swallowed — the same load-bearing
+        // error-propagation contract already pinned for the overlay and adapter
+        // sinks. A swallowed arm error would silently leave the user unable to
+        // Tab-accept a ghost they can see.
+        let (mut engine, _adapter, _overlay) = engine();
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            // Fail only while ARMING (visible=true) so an incidental disarm
+            // stays Ok and the error is attributable to the show path.
+            |visible| {
+                if visible {
+                    Err(platform::PlatformError::Timeout)
+                } else {
+                    Ok(())
+                }
+            },
+            |_delay| Ok(()),
+            |_action| Ok(()),
+        ));
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        assert_eq!(
+            engine.on_completion(&requests[0], "hello world".into()),
+            Err(platform::PlatformError::Timeout),
+            "a failed accept-tap arm surfaces through dispatch"
+        );
+    }
+
+    #[test]
     fn arms_accept_tap_on_show_and_disarms_on_hide() {
         let (mut engine, _adapter, _overlay) = engine();
         let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
