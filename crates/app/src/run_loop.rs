@@ -1296,10 +1296,11 @@ fn build_settings_flags(
         // the same row). The names cross the crate boundary here because
         // platform_macos can't see model_catalog (the about_text pattern).
         setup_model_index: Arc::new(AtomicUsize::new(crate::model_picker::recommended_index())),
-        setup_model_names: model_catalog::catalog()
-            .iter()
-            .map(|e| e.name.to_string())
-            .collect(),
+        // Item titles carry a RAM-fit advisory ("name · fits/tight/exceeds")
+        // computed against this machine's physical memory, read once here.
+        setup_model_menu_titles: crate::model_picker::model_menu_titles(
+            model_catalog::bytes_to_whole_gb(platform_macos::physical_memory_bytes()),
+        ),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
         shortcuts_text: {

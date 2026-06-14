@@ -1757,6 +1757,13 @@ pub fn request_screen_recording_permission() -> bool {
     unsafe { CGRequestScreenCaptureAccess() }
 }
 
+/// Physical RAM in bytes (`NSProcessInfo.physicalMemory`), for the model
+/// picker's RAM-fit advisory. Thread-safe (no main-thread requirement); the
+/// caller floors it to whole GiB via `model_catalog::bytes_to_whole_gb`.
+pub fn physical_memory_bytes() -> u64 {
+    objc2_foundation::NSProcessInfo::processInfo().physicalMemory()
+}
+
 /// Reveal `path` in Finder (the Setup pane's model row). Main-thread only.
 pub fn reveal_file_in_finder(path: &std::path::Path) -> Result<(), PlatformError> {
     use objc2_foundation::{NSArray, NSURL};

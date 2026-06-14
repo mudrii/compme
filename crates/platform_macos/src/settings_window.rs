@@ -264,9 +264,12 @@ pub struct SettingsFlags {
     /// download edge reads it via `model_picker::selected_catalog_entry`,
     /// which is total over an out-of-range value.
     pub setup_model_index: Arc<AtomicUsize>,
-    /// Picker: model display names for the popup's items, composed once by the
-    /// run loop (model_catalog is app-side; the window only renders the names).
-    pub setup_model_names: Vec<String>,
+    /// Picker: the popup's item titles, one per catalog row in catalog order
+    /// (so the selected index still addresses the catalog), each suffixed with
+    /// its RAM-fit advisory (e.g. "qwen2.5-0.5b · fits"). Composed once by the
+    /// run loop (model_catalog + the RAM probe are app-side; the window only
+    /// renders the finished strings). Advisory — never blocks a download.
+    pub setup_model_menu_titles: Vec<String>,
     /// Apps rows (per-app recorded-input counts), composed by the run loop
     /// right before each show; refreshed like stats.
     pub apps_lines: Arc<Mutex<Vec<String>>>,
@@ -776,7 +779,7 @@ fn build_window(
         }
 
         // Model picker: the download target. Item titles come from
-        // flags.setup_model_names (model_catalog is app-side); the selected
+        // flags.setup_model_menu_titles (model_catalog is app-side); the selected
         // index lands in flags.setup_model_index, which the run loop's download
         // edge reads. Built once and pre-selected from the current index — the
         // catalog is static and only this popup writes the index, so there is
@@ -795,11 +798,11 @@ fn build_window(
                 NSRect::new(NSPoint::new(165.0, 182.0), NSSize::new(300.0, 26.0)),
                 false,
             );
-            for name in &flags.setup_model_names {
-                popup.addItemWithTitle(&NSString::from_str(name));
+            for title in &flags.setup_model_menu_titles {
+                popup.addItemWithTitle(&NSString::from_str(title));
             }
             let selected = flags.setup_model_index.load(Ordering::Relaxed);
-            if selected < flags.setup_model_names.len() {
+            if selected < flags.setup_model_menu_titles.len() {
                 popup.selectItemAtIndex(selected as isize);
             }
             // SAFETY: target outlives the window (held by MacosSettingsWindow);
