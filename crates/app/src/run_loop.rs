@@ -497,6 +497,15 @@ fn download_idle(status: Option<&model_fetch::DownloadStatus>) -> bool {
     )
 }
 
+/// Whether the destination model file is already present and complete — a
+/// non-empty `.gguf`, from the file's length (`None` = missing). A missing
+/// file or a 0-byte stub (an interrupted finalize) is NOT present, so the
+/// picker re-downloads rather than treating the stub as done. Guards a repeat
+/// "Download" click from re-fetching and clobbering a good file.
+fn model_present(dest_len: Option<u64>) -> bool {
+    matches!(dest_len, Some(len) if len > 0)
+}
+
 /// Live accept-key rebind (recorder 5b): the PINNED sequencing contract.
 /// Keymap write FIRST (an old hotkey firing mid-swap reads the new map —
 /// role-safe: the id→keycode→binding round-trip stays within one map),
@@ -2574,27 +2583,47 @@ pub fn run() -> Result<(), String> {
                         .join("Library/Application Support/compme/models")
                         .join(format!("{}.gguf", entry.name));
                     let _ = std::fs::create_dir_all(dest.parent().unwrap_or(&dest));
-                    if model_downloader.is_none() {
-                        model_downloader = model_fetch::ModelDownloader::spawn().ok();
-                    }
-                    if let Some(downloader) = &model_downloader {
-                        let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
-                        // Track the status ONLY when the request was queued:
-                        // a dropped request's status stays Idle forever and
-                        // would wedge the download_idle gate (review-c130).
-                        if downloader.request(catalog_download_request(
-                            entry,
-                            dest,
-                            std::sync::Arc::clone(&status),
-                        )) {
-                            eprintln!(
-                                "compme: downloading {} ({} MB) \u{2014} progress in this log",
-                                entry.name, entry.size_mb
-                            );
-                            model_download_status = Some(status);
-                            model_download_logged = 0;
-                        } else {
-                            eprintln!("compme: model download queue busy \u{2014} try again");
+                    // Skip the fetch when the model is already on disk — a
+                    // repeat "Download" click on a present model would otherwise
+                    // re-fetch and clobber a good file. An interrupted 0-byte
+                    // stub is NOT present, so it still re-downloads. This check
+                    // sits AFTER the license gate on purpose: keeping every
+                    // download-triggering path behind the gate is the simpler
+                    // invariant, and accepted licenses are remembered, so a
+                    // normal re-click on a present encumbered model never
+                    // re-prompts (the prompt-then-skip is an unaccepted-yet
+                    // edge case, inert for today's unencumbered catalog).
+                    let dest_len = std::fs::metadata(&dest).ok().map(|m| m.len());
+                    if model_present(dest_len) {
+                        eprintln!(
+                            "compme: {} already downloaded at {} \u{2014} delete it to re-download",
+                            entry.name,
+                            dest.display()
+                        );
+                    } else {
+                        if model_downloader.is_none() {
+                            model_downloader = model_fetch::ModelDownloader::spawn().ok();
+                        }
+                        if let Some(downloader) = &model_downloader {
+                            let status =
+                                std::sync::Arc::new(model_fetch::DownloadStatus::default());
+                            // Track the status ONLY when the request was queued:
+                            // a dropped request's status stays Idle forever and
+                            // would wedge the download_idle gate (review-c130).
+                            if downloader.request(catalog_download_request(
+                                entry,
+                                dest,
+                                std::sync::Arc::clone(&status),
+                            )) {
+                                eprintln!(
+                                    "compme: downloading {} ({} MB) \u{2014} progress in this log",
+                                    entry.name, entry.size_mb
+                                );
+                                model_download_status = Some(status);
+                                model_download_logged = 0;
+                            } else {
+                                eprintln!("compme: model download queue busy \u{2014} try again");
+                            }
                         }
                     }
                 }
@@ -5324,6 +5353,18 @@ mod tests {
         assert!(download_idle(Some(&status)), "done re-allows");
         *status.state.lock().unwrap() = DownloadState::Failed("boom".into());
         assert!(download_idle(Some(&status)), "failed re-allows retry");
+    }
+
+    #[test]
+    fn model_present_only_for_a_nonempty_existing_file() {
+        // The dest-exists guard: a complete .gguf already on disk skips the
+        // re-download (avoid clobber + wasted bandwidth on a repeat click).
+        assert!(model_present(Some(1)), "a 1-byte+ file is present");
+        assert!(model_present(Some(500_000_000)), "a real model is present");
+        // A missing file OR a 0-byte stub (an interrupted finalize) is NOT
+        // present — re-download rather than treat the stub as done.
+        assert!(!model_present(None), "missing file → re-download");
+        assert!(!model_present(Some(0)), "0-byte stub → re-download");
     }
 
     #[test]
