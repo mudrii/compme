@@ -155,6 +155,24 @@ pub fn keycode_label(code: i64) -> String {
         49 => "Space",
         36 => "Return",
         51 => "Delete",
+        117 => "Forward delete",
+        // Punctuation / symbol keys (US ANSI layout) — the PHYSICAL key, not
+        // its shifted glyph (display only, so the recorder can label a rebind
+        // to e.g. Control+] as "⌃]" rather than "⌃key 30").
+        27 => "-",
+        24 => "=",
+        33 => "[",
+        30 => "]",
+        42 => "\\",
+        41 => ";",
+        39 => "'",
+        43 => ",",
+        47 => ".",
+        44 => "/",
+        // Arrows (Down is handled above via KEYCODE_DOWN).
+        123 => "Left arrow",
+        124 => "Right arrow",
+        126 => "Up arrow",
         _ => return format!("key {code}"),
     };
     named.to_string()
@@ -1488,6 +1506,17 @@ mod tests {
         assert_eq!(keycode_label(20), "3");
         assert_eq!(keycode_label(49), "Space");
         assert_eq!(keycode_label(7), "X");
+        // Punctuation / symbol keys (US ANSI) — the LOOK gap: a rebind to
+        // Control+] used to render "⌃key 30" instead of "⌃]".
+        assert_eq!(keycode_label(30), "]");
+        assert_eq!(keycode_label(42), "\\");
+        assert_eq!(keycode_label(33), "[");
+        assert_eq!(keycode_label(27), "-");
+        assert_eq!(keycode_label(41), ";");
+        assert_eq!(keycode_label(44), "/");
+        // Arrows (Down is named above via KEYCODE_DOWN).
+        assert_eq!(keycode_label(123), "Left arrow");
+        assert_eq!(keycode_label(126), "Up arrow");
         // Unknown keycode → a readable generic, never a crash.
         assert_eq!(keycode_label(200), "key 200");
     }
