@@ -63,6 +63,18 @@ impl Default for Prefs {
     }
 }
 
+/// Whether `host` is `rule` or a subdomain of it, matched on a dot boundary.
+/// Both must already be lowercased. `google.com` matches `google.com` and
+/// `www.google.com`, but never `notgoogle.com`/`evilgoogle.com` (no dot before
+/// the rule) or `google.com.evil.com` (a different registrable domain that
+/// merely contains the rule).
+fn host_matches_domain_rule(host: &str, rule: &str) -> bool {
+    host == rule
+        || (host.len() > rule.len()
+            && host.ends_with(rule)
+            && host.as_bytes()[host.len() - rule.len() - 1] == b'.')
+}
+
 impl Prefs {
     /// Whether suggestions may fire for a focus context now. False if snoozed, if
     /// the app or domain is excluded, or if the per-app/global policy is off.
@@ -82,7 +94,14 @@ impl Prefs {
             // Fold case at the lookup to match the lowercase-normalized inserts
             // (apply_override / build_prefs). Symmetric with the write seam so a
             // mixed-case host from any source still matches a stored rule (c136).
-            if self.excluded_domains.contains(&domain.to_ascii_lowercase()) {
+            // A rule covers its subdomains (dot-boundary suffix), so "google.com"
+            // blocks www.google.com too (2026-06-14 live finding).
+            let host = domain.to_ascii_lowercase();
+            if self
+                .excluded_domains
+                .iter()
+                .any(|rule| host_matches_domain_rule(&host, rule))
+            {
                 return false;
             }
         }
@@ -495,6 +514,26 @@ mod tests {
             !p.should_suggest(Some("com.apple.Safari"), Some("Bank.Example.COM"), 1000),
             "a mixed-case host must still match a lowercase exclusion rule"
         );
+    }
+
+    #[test]
+    fn excluded_domain_matches_subdomains_on_a_dot_boundary() {
+        // A rule for the registrable domain must cover its subdomains: a user
+        // who excludes "google.com" expects www.google.com / mail.google.com
+        // too (2026-06-14 live finding — www.google.com slipped a "google.com"
+        // rule). But a DIFFERENT domain that merely CONTAINS the rule must not
+        // match (no over-blocking; the security-relevant direction).
+        let mut p = Prefs::default();
+        p.excluded_domains.insert("google.com".into());
+        // Exact host + subdomains are blocked.
+        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("google.com"), 0));
+        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("www.google.com"), 0));
+        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("mail.google.com"), 0));
+        // A different registrable domain is NOT blocked, even if it ends with
+        // the rule text without a dot boundary, or contains it as a label.
+        assert!(p.should_suggest(Some("com.apple.Safari"), Some("notgoogle.com"), 0));
+        assert!(p.should_suggest(Some("com.apple.Safari"), Some("evilgoogle.com"), 0));
+        assert!(p.should_suggest(Some("com.apple.Safari"), Some("google.com.evil.com"), 0));
     }
 
     #[test]

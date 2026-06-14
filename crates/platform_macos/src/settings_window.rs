@@ -251,6 +251,16 @@ pub fn policy_restore_needed(was_visible: bool, visible_now: bool) -> bool {
     was_visible && !visible_now
 }
 
+/// Whether an Apps-pane row names a deletable app (an "app \u{2014} N" count
+/// row from `apps_pane_lines`) rather than a status message ("Input collection
+/// is off" / "No recorded inputs yet") or an empty padding row. Drives per-row
+/// Delete-button visibility so a Delete button never sits beside a non-app row
+/// (2026-06-14 live finding: 8 Delete buttons showed against empty rows).
+/// Couples to `apps_pane_lines`'s em-dash separator; pinned by test.
+fn apps_row_is_deletable(line: &str) -> bool {
+    line.contains(" \u{2014} ")
+}
+
 pub struct MacosSettingsWindow {
     window: Option<Retained<NSWindow>>,
     flags: SettingsFlags,
@@ -263,6 +273,9 @@ pub struct MacosSettingsWindow {
     setup_labels: Vec<Retained<NSTextField>>,
     // Apps row labels, refreshed from `flags.apps_lines` the same way.
     apps_labels: Vec<Retained<NSTextField>>,
+    // Per-row Apps Delete buttons, hidden on every refresh for rows that are
+    // not deletable app rows (status/empty rows) — see `apps_row_is_deletable`.
+    apps_delete_buttons: Vec<Retained<NSButton>>,
     // General-tab switches, refreshed from their atomics on every show:
     // enabled has EXTERNAL writers (tray, SIGUSR1), so its rendered state
     // can go stale while the window is closed (c95 staleness class). The
@@ -281,6 +294,7 @@ impl MacosSettingsWindow {
             stats_labels: Vec::new(),
             setup_labels: Vec::new(),
             apps_labels: Vec::new(),
+            apps_delete_buttons: Vec::new(),
             switches: Vec::new(),
             shortcuts_label: None,
         }
@@ -297,6 +311,7 @@ impl MacosSettingsWindow {
             self.stats_labels = built.stats_labels;
             self.setup_labels = built.setup_labels;
             self.apps_labels = built.apps_labels;
+            self.apps_delete_buttons = built.apps_delete_buttons;
             self.switches = built.switches;
             self.shortcuts_label = Some(built.shortcuts_label);
             self.target = Some(target);
@@ -317,6 +332,9 @@ impl MacosSettingsWindow {
             for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
+            for (i, button) in self.apps_delete_buttons.iter().enumerate() {
+                button.setHidden(!lines.get(i).is_some_and(|l| apps_row_is_deletable(l)));
+            }
         }
         // Shortcuts text re-reads its mutex — a live rebind (recorder 5b)
         // recomposes it while the window is closed.
@@ -334,10 +352,15 @@ impl MacosSettingsWindow {
         }
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        // Bring the app forward FIRST, then force the window above other apps'
+        // windows. `activate()` alone is cooperative on modern macOS and can
+        // leave an accessory app's window BEHIND the previously-active app
+        // (2026-06-14 live finding); `orderFrontRegardless` overrides that.
+        app.activate();
         if let Some(window) = &self.window {
             window.makeKeyAndOrderFront(None);
+            window.orderFrontRegardless();
         }
-        app.activate();
         Ok(())
     }
 
@@ -367,6 +390,9 @@ impl MacosSettingsWindow {
         if let Ok(lines) = self.flags.apps_lines.lock() {
             for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
+            }
+            for (i, button) in self.apps_delete_buttons.iter().enumerate() {
+                button.setHidden(!lines.get(i).is_some_and(|l| apps_row_is_deletable(l)));
             }
         }
     }
@@ -420,6 +446,7 @@ fn build_window(
     let mut stats_labels: Vec<Retained<NSTextField>> = Vec::new();
     let mut setup_labels: Vec<Retained<NSTextField>> = Vec::new();
     let mut apps_labels: Vec<Retained<NSTextField>> = Vec::new();
+    let mut apps_delete_buttons: Vec<Retained<NSButton>> = Vec::new();
     let mut switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)> = Vec::new();
 
     // Tab layout (c105): one NSTabView as the content view, one tab per
@@ -673,7 +700,11 @@ fn build_window(
                 NSPoint::new(410.0, 266.0 - row as f64 * 26.0),
                 NSSize::new(80.0, 24.0),
             ));
+            // Hidden unless this row names a deletable app — refreshed on every
+            // show()/refresh_apps_labels as the app list changes.
+            delete.setHidden(!apps_row_is_deletable(text));
             apps.addSubview(&delete);
+            apps_delete_buttons.push(delete);
         }
     }
 
@@ -761,6 +792,7 @@ fn build_window(
         stats_labels,
         setup_labels,
         apps_labels,
+        apps_delete_buttons,
         switches,
         shortcuts_label,
     }
@@ -773,6 +805,7 @@ struct BuiltWindow {
     stats_labels: Vec<Retained<NSTextField>>,
     setup_labels: Vec<Retained<NSTextField>>,
     apps_labels: Vec<Retained<NSTextField>>,
+    apps_delete_buttons: Vec<Retained<NSButton>>,
     switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
     shortcuts_label: Retained<NSTextField>,
 }
@@ -811,6 +844,18 @@ pub fn pane_titles() -> [&'static str; PANE_COUNT] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apps_row_is_deletable_only_for_count_rows() {
+        // Drives per-row Delete-button visibility: only "app \u{2014} N" count
+        // rows (apps_pane_lines) get a Delete button; status messages and empty
+        // padding rows must NOT (2026-06-14 finding: buttons on empty rows).
+        assert!(apps_row_is_deletable("com.apple.Safari \u{2014} 5"));
+        assert!(apps_row_is_deletable("org.mozilla.firefox \u{2014} 1"));
+        assert!(!apps_row_is_deletable("Input collection is off"));
+        assert!(!apps_row_is_deletable("No recorded inputs yet"));
+        assert!(!apps_row_is_deletable(""));
+    }
 
     #[test]
     fn pane_titles_are_fixed_and_ordered() {

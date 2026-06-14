@@ -3399,15 +3399,19 @@ fn caret_rect_for_field(pid: i32, field: FieldHandle) -> Result<Option<ScreenRec
     Ok(rect.map(|rect| normalize_caret_rect(rect, bundle_id_for_pid(pid).as_deref())))
 }
 
-/// Chromium-family bundles whose AX caret rect IS the caret line (`[y, y+h]`),
-/// unlike the TextEdit-calibrated default where the line sits one rect below
-/// (`[y+h, y+2h]`, cycle-44 live finding). Evidence-only list (2026-06-10
-/// live screenshots: ghost exactly one line low in Chrome); extend per app on
-/// evidence, never by guess.
-const RECT_IS_LINE_BUNDLE_PREFIXES: [&str; 3] = [
+/// Bundles whose AX caret rect IS the caret line (`[y, y+h]`), unlike the
+/// TextEdit-calibrated default where the line sits one rect below (`[y+h,
+/// y+2h]`, cycle-44 live finding). Evidence-only list (2026-06-10 live
+/// screenshots: ghost one line low in Chrome/iTerm2; 2026-06-14: same in
+/// Safari's WebKit search fields — google.com/duckduckgo.com); extend per app
+/// on evidence, never by guess. NOTE for Safari: this is bundle-keyed, so it
+/// also covers the native address bar — if a future live check shows the
+/// address-bar ghost lands too HIGH, the shift must become field-aware.
+const RECT_IS_LINE_BUNDLE_PREFIXES: [&str; 4] = [
     "com.google.Chrome",
     "org.chromium.",
     "com.googlecode.iterm2",
+    "com.apple.Safari",
 ];
 
 /// Normalize an app-specific caret rect to the calibrated default semantics
@@ -7576,6 +7580,26 @@ mod tests {
         assert_eq!(
             normalize_caret_rect(chrome_rect, Some("com.googlecode.iterm2")).y,
             332.0
+        );
+    }
+
+    #[test]
+    fn safari_web_field_caret_rects_are_normalized_to_textedit_semantics() {
+        // Live finding 2026-06-14: the emoji ghost rendered exactly ONE LINE
+        // BELOW the text in Safari's google.com / duckduckgo.com search boxes.
+        // Safari's WebKit web-content caret rect IS the caret line (like
+        // Chromium), so it joins the rect-is-line family and shifts up by h.
+        let safari_rect = ScreenRect {
+            x: 1741.0,
+            y: 103.0,
+            w: 0.0,
+            h: 16.0,
+        };
+        let normalized = normalize_caret_rect(safari_rect, Some("com.apple.Safari"));
+        assert_eq!(normalized.y, 87.0, "shift up by one line height");
+        assert_eq!(
+            (normalized.x, normalized.w, normalized.h),
+            (1741.0, 0.0, 16.0)
         );
     }
 
