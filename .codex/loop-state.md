@@ -429,6 +429,56 @@
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 13:47:30 +08 - A2 request evidence target/marker proof
+
+- Task selected: Strengthen A2 positive request evidence so `works` / `terminal-nlp` prove resolved target identity, all submit gates, and a privacy-safe per-run prompt marker.
+- Why it was selected: The active loop state listed A2 positive acceptance checks as still accepting bare `request gen=` lines without target identity or prompt-marker proof. Earlier pending entries around `COMPME_MEMORY=all`, model gates, and release model evidence were stale at current HEAD or already fixed by prior cycles, while this was a feasible one-tick TDD task.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/app/src/run_loop.rs`
+  - `tools/acceptance/e2e-complete-me.sh`
+  - `tools/acceptance/run-a2-compat-gates.sh`
+- Tests added/updated:
+  - Updated `request_log_does_not_emit_prompt_text` to cover safe request metadata (`app`, gate booleans, `prompt_marker`) without raw prompt/marker text.
+  - Updated submit-tracking tests so accepted submissions build request evidence from a typed `RequestLogContext`, while rejected submissions still log only `compme: inference submit failed gen=...`.
+  - Added A2 self-test fixtures rejecting bare request lines, unresolved app, missing prompt marker, embedded request-shaped text, terminal app evidence for `works`, and non-terminal app evidence for `terminal-nlp`; added positive `works` / `terminal-nlp` predicate coverage.
+  - Updated E2E self-tests to require TextEdit request identity, marker proof, anchored request evidence, and hostile malformed request fixtures.
+- Verification commands and result:
+  - RED: `cargo test -p app submit_tracking_records_only_accepted_requests -- --nocapture` failed because the accepted request log lacked `app=com.apple.TextEdit`.
+  - GREEN focused: `cargo test -p app request_log_does_not_emit_prompt_text -- --nocapture` passed.
+  - GREEN focused: `cargo test -p app submit_tracking -- --nocapture` passed.
+  - GREEN focused: `cargo test -p app clipboard_and_screen_context_flags_default_off -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including verified GGUF model-backed root and spike ignored tests.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1103`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3955` nodes, `10585` edges, and `139` communities after the final edit.
+  - `git diff --check` passed.
+- Test count if available: root `1103` listed tests; spike `30` listed tests; A2 self-test `27` PASS lines; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important acceptance finding: A2 `works` / `terminal-nlp` no longer accept bare request evidence; they require anchored request lines, resolved app identity, submit gate booleans, and `prompt_marker=true`.
+  - Fixed Important plan-alignment finding: positive A2 modes now split non-terminal works-app evidence from terminal natural-language evidence.
+  - Fixed Important correctness finding: E2E request-stage evidence now accepts the new schema and requires TextEdit identity.
+  - Fixed Important tests/coverage findings: A2 and E2E self-tests now reject malformed request evidence, missing marker proof, embedded request-shaped text, and wrong app class.
+  - Fixed Important quality/type-safety finding: `submit_request_and_track` now builds request evidence from `CompletionRequest` plus `RequestLogContext` internally instead of accepting an arbitrary preformatted line.
+- Minor review findings noted:
+  - `run-a2-compat-gates.sh` duplicates the long request-line schema across three predicates; left for a future cleanup because behavior is covered by the new negative/positive self-tests and this tick fixed all Critical/Important findings.
+- Blocked or skipped work remaining:
+  - App coverage seam remains skipped: accept-failure app-level privacy/stat side effects are correct in current code, but direct app-loop coverage needs an extraction/injection seam and was not selected for this tick.
+  - App coverage seam remains skipped: submit-time auxiliary context ordering is correct in current code, but a meaningful RED would require a broader harness than this tick.
+  - Important app context finding remains: monitored-memory write failure drain/no-replay behavior is not directly tested.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 13:27:08 +08 - Release model gate enforcement
 
 - Task selected: Machine-enforce ignored model-backed gates before release publishing.

@@ -31,12 +31,22 @@ RUN_MS="${COMPME_RUN_MS:-3500}"
 WARMUP_MS="${COMPME_WARMUP_MS:-1200}"
 PREFIX="${COMPME_PREFIX:-Dear team, I wanted to }"
 STUB="${COMPME_STUB:- follow up about the }"
+PROMPT_MARKER="${COMPME_PROMPT_MARKER:-compme a2 marker ${KIND} $$}"
 LOG_DIR="$ROOT_DIR/tools/acceptance/logs"
 LOG="$LOG_DIR/a2-compat-${KIND}-$(date +%Y%m%d-%H%M%S).log"
 mkdir -p "$LOG_DIR"
 
 has_request() {
-  grep -q "request gen=" "$1"
+  grep -Eq '^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=[^[:space:]]+ app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$' "$1" \
+    && ! grep -Eq '^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=unknown ' "$1"
+}
+
+has_works_request() {
+  grep -Eq '^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=(com\.apple\.Safari|com\.google\.Chrome|com\.apple\.mail|com\.microsoft\.Word|com\.apple\.TextEdit|com\.apple\.Notes|notion\.id|md\.obsidian|com\.apple\.MobileSMS) app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$' "$1"
+}
+
+has_terminal_nlp_request() {
+  grep -Eq '^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=(com\.apple\.Terminal|com\.googlecode\.iterm2) app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$' "$1"
 }
 
 has_clipboard_prompt_context() {
@@ -103,42 +113,47 @@ run_self_tests() {
   producer_only="$tmp_dir/producer-only.log"
   unsupported_block="$tmp_dir/unsupported-block.log"
   terminal_block="$tmp_dir/terminal-block.log"
+  bare_request="$tmp_dir/bare-request.log"
+  unresolved_request="$tmp_dir/unresolved-request.log"
+  marker_missing_request="$tmp_dir/marker-missing-request.log"
+  embedded_request="$tmp_dir/embedded-request.log"
+  terminal_request="$tmp_dir/terminal-request.log"
   focus_only="$tmp_dir/focus-only.log"
   empty="$tmp_dir/empty.log"
 
   cat >"$good" <<'LOG'
 compme: focus ax:1
-compme: request gen=7 prompt="hello"
+compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
 compme: clipboard_context=Some(chars=24 marker=true)
 compme: screen_context=Some(12)
 compme: prompt_context=Some("sources=clipboard,screen chars=36 clipboard_chars=24 screen_chars=12")
 LOG
   cat >"$raw_prompt_context" <<'LOG'
 compme: focus ax:1
-compme: request gen=7 prompt="hello"
+compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
 compme: screen_context=Some(12)
 compme: prompt_context=Some("Clipboard: ada@example.com | On screen: sk-live-secret | Recent: private draft")
 LOG
   cat >"$clipboard_source_wrong_length" <<'LOG'
 compme: focus ax:1
-compme: request gen=7 prompt="hello"
+compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
 compme: clipboard_context=Some(chars=24 marker=false)
 compme: prompt_context=Some("sources=clipboard chars=12 clipboard_chars=12")
 LOG
   cat >"$clipboard_marker_false" <<'LOG'
 compme: focus ax:1
-compme: request gen=7 prompt="hello"
+compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
 compme: clipboard_context=Some(chars=24 marker=false)
 compme: prompt_context=Some("sources=clipboard chars=24 clipboard_chars=24")
 LOG
   cat >"$screen_source_missing_length" <<'LOG'
 compme: focus ax:1
-compme: request gen=7 prompt="hello"
+compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
 compme: screen_context=Some(12)
 compme: prompt_context=Some("sources=screen chars=12")
 LOG
   cat >"$producer_only" <<'LOG'
-compme: request gen=7 prompt="hello"
+compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
 compme: screen_context=Some(12)
 LOG
   cat >"$unsupported_block" <<'LOG'
@@ -149,6 +164,25 @@ LOG
 compme: focus ax:1
 compme: request blocked gen=8 prompt_chars=20 app=com.apple.Terminal app_allows=true terminal_ok=false domain_ready=true prefs_ok=true
 LOG
+  cat >"$bare_request" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt_chars=5
+LOG
+  cat >"$unresolved_request" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt_chars=5 app=unknown app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+LOG
+  cat >"$marker_missing_request" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=false
+LOG
+  cat >"$embedded_request" <<'LOG'
+compme: prompt_context=Some("compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true")
+LOG
+  cat >"$terminal_request" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt_chars=44 app=com.apple.Terminal app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+LOG
   cat >"$focus_only" <<'LOG'
 compme: focus ax:1
 LOG
@@ -156,6 +190,14 @@ LOG
 
   self_test_assert "request-present" 1 has_request "$good" || failures=$((failures + 1))
   self_test_assert "request-absent" 0 has_request "$empty" || failures=$((failures + 1))
+  self_test_assert "request-without-app-metadata-is-not-submit-proof" 0 has_request "$bare_request" || failures=$((failures + 1))
+  self_test_assert "request-without-resolved-app-is-not-submit-proof" 0 has_request "$unresolved_request" || failures=$((failures + 1))
+  self_test_assert "request-without-prompt-marker-is-not-submit-proof" 0 has_request "$marker_missing_request" || failures=$((failures + 1))
+  self_test_assert "embedded-request-text-is-not-submit-proof" 0 has_request "$embedded_request" || failures=$((failures + 1))
+  self_test_assert "works-request-present" 1 has_works_request "$good" || failures=$((failures + 1))
+  self_test_assert "works-request-requires-non-terminal-app" 0 has_works_request "$terminal_request" || failures=$((failures + 1))
+  self_test_assert "terminal-nlp-request-requires-terminal-app" 0 has_terminal_nlp_request "$good" || failures=$((failures + 1))
+  self_test_assert "terminal-nlp-request-present" 1 has_terminal_nlp_request "$terminal_request" || failures=$((failures + 1))
   self_test_assert "clipboard-prompt-context" 1 has_clipboard_prompt_context "$good" || failures=$((failures + 1))
   self_test_assert "screen-prompt-context" 1 has_screen_prompt_context "$good" || failures=$((failures + 1))
   self_test_assert "metadata-prompt-context-is-not-raw" 1 has_no_raw_prompt_context_payload "$good" || failures=$((failures + 1))
@@ -240,6 +282,10 @@ case "$KIND" in
   terminal-nlp) PREFIX="please summarize the recent changes in " ;;
 esac
 
+if [[ "$KIND" != "terminal-cmd" ]]; then
+  PREFIX="${PREFIX}${PROMPT_MARKER} "
+fi
+
 clip_env=()
 screen_env=()
 
@@ -269,6 +315,7 @@ OSA
 env \
   COMPME_STUB_COMPLETION="$STUB" \
   COMPME_ACCEPTANCE_PID="$PID" \
+  COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \
   COMPME_RUN_MS="$RUN_MS" \
   ${clip_env[@]+"${clip_env[@]}"} \
   ${screen_env[@]+"${screen_env[@]}"} \
@@ -280,6 +327,10 @@ app_status="$WAIT_STATUS"
 
 requested=0
 has_request "$LOG" && requested=1
+works_requested=0
+has_works_request "$LOG" && works_requested=1
+terminal_nlp_requested=0
+has_terminal_nlp_request "$LOG" && terminal_nlp_requested=1
 
 pass() { echo "PASS: $KIND — $1 (log: $LOG)"; exit 0; }
 fail() { echo "FAIL: $KIND — $1 (log: $LOG)"; exit 1; }
@@ -289,8 +340,11 @@ if ! product_status_ok "$app_status"; then
 fi
 
 case "$KIND" in
-  works|terminal-nlp)
-    [[ "$requested" == 1 ]] && pass "completion requested as expected" \
+  works)
+    [[ "$works_requested" == 1 ]] && pass "completion requested as expected" \
+      || fail "expected a completion request with non-terminal target identity and prompt marker, none logged" ;;
+  terminal-nlp)
+    [[ "$terminal_nlp_requested" == 1 ]] && pass "completion requested as expected" \
       || fail "expected a completion request, none logged" ;;
   clipboard)
     [[ "$requested" == 1 ]] || fail "expected a completion request, none logged"

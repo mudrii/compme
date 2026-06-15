@@ -183,6 +183,7 @@ struct Config {
     screen_context: bool,
     diag_context: bool,
     diag_clipboard_marker: Option<String>,
+    acceptance_prompt_marker: Option<String>,
     personalization: PersonalizationProfile,
     prefs: Prefs,
     memory: MemoryConfig,
@@ -297,6 +298,8 @@ impl Config {
                 .is_some_and(|v| v == "1" || v == "true"),
             diag_context: lookup("COMPME_DIAG_CONTEXT").is_some_and(|v| v == "1" || v == "true"),
             diag_clipboard_marker: lookup("COMPME_DIAG_CLIPBOARD_MARKER").filter(|v| !v.is_empty()),
+            acceptance_prompt_marker: lookup("COMPME_ACCEPTANCE_PROMPT_MARKER")
+                .filter(|v| !v.is_empty()),
             personalization: build_personalization(&lookup),
             prefs: build_prefs(&lookup),
             memory: build_memory_config(&lookup),
@@ -686,12 +689,56 @@ fn download_log_transition(state: &model_fetch::DownloadState, logged: u8) -> (u
     }
 }
 
-fn request_log_line(generation: u64, prompt: &str) -> String {
+fn request_log_line(
+    request: &CompletionRequest,
+    app_key: Option<&str>,
+    domain: Option<&str>,
+    prefs: &Prefs,
+    now_ms: u64,
+    acceptance_prompt_marker: Option<&str>,
+) -> String {
+    let app_allows = app_allows_suggestions(app_key);
+    let terminal_ok =
+        app_key.is_none_or(|app| compat::terminal_prompt_activates(app, &request.prompt));
+    let domain_ready = browser_domain_fresh_enough_for_rules(app_key, domain, prefs);
+    let prefs_ok = prefs.should_suggest(app_key, domain, now_ms);
+    let prompt_marker = match acceptance_prompt_marker {
+        Some(marker) => request.prompt.contains(marker),
+        None => false,
+    };
     format!(
-        "compme: request gen={} prompt_chars={}",
-        generation,
-        prompt.chars().count()
+        "compme: request gen={} prompt_chars={} app={} app_allows={} \
+         terminal_ok={} domain_ready={} prefs_ok={} prompt_marker={}",
+        request.generation,
+        request.prompt.chars().count(),
+        app_key.unwrap_or("unknown"),
+        app_allows,
+        terminal_ok,
+        domain_ready,
+        prefs_ok,
+        prompt_marker,
     )
+}
+
+#[derive(Clone, Debug)]
+struct RequestLogContext {
+    app_key: Option<String>,
+    domain: Option<String>,
+    prefs: Prefs,
+    acceptance_prompt_marker: Option<String>,
+}
+
+impl RequestLogContext {
+    fn line_for(&self, request: &CompletionRequest, now_ms: u64) -> String {
+        request_log_line(
+            request,
+            self.app_key.as_deref(),
+            self.domain.as_deref(),
+            &self.prefs,
+            now_ms,
+            self.acceptance_prompt_marker.as_deref(),
+        )
+    }
 }
 
 /// Parse the encrypted-memory config (A2 §6/§16). `COMPME_MEMORY` selects the
@@ -1066,10 +1113,11 @@ fn submit_request_and_track(
     submit_times: &mut HashMap<u64, u64>,
     request: CompletionRequest,
     now_ms: u64,
+    log_context: RequestLogContext,
     submit: impl FnOnce(CompletionRequest) -> bool,
 ) -> String {
     let generation = request.generation;
-    let submitted_line = request_log_line(generation, &request.prompt);
+    let submitted_line = log_context.line_for(&request, now_ms);
     if !submit(request) {
         return format!("compme: inference submit failed gen={generation}");
     }
@@ -3532,10 +3580,20 @@ pub fn run() -> Result<(), String> {
                         let caret_rect = adapter.caret_rect(&request.field).ok().flatten();
                         ScreenOcrSubmission::from_request(&request, caret_rect).send_to(ocr);
                     }
-                    let submitted_line =
-                        submit_request_and_track(&mut submit_times, request, now_ms, |request| {
-                            inference.submit(request)
-                        });
+                    let domain = cached_domain(&last_domain, app_key.as_deref()).map(str::to_owned);
+                    let log_context = RequestLogContext {
+                        app_key,
+                        domain,
+                        prefs: prefs.clone(),
+                        acceptance_prompt_marker: config.acceptance_prompt_marker.clone(),
+                    };
+                    let submitted_line = submit_request_and_track(
+                        &mut submit_times,
+                        request,
+                        now_ms,
+                        log_context,
+                        |request| inference.submit(request),
+                    );
                     eprintln!("{submitted_line}");
                 } else {
                     eprintln!(
@@ -3658,11 +3716,31 @@ mod tests {
 
     #[test]
     fn request_log_does_not_emit_prompt_text() {
-        let line = request_log_line(42, "secret prompt with ada@example.com");
-        assert!(
-            line.contains("request gen=42 prompt_chars=34"),
-            "request logs should expose only prompt length: {line}"
+        let request = CompletionRequest {
+            generation: 42,
+            field: field_with_app("com.apple.TextEdit"),
+            snapshot: 42,
+            prompt: "secret prompt with ada@example.com".into(),
+            max_tokens: 24,
+        };
+        let prefs = Prefs::default();
+        let line = request_log_line(
+            &request,
+            Some("com.apple.TextEdit"),
+            None,
+            &prefs,
+            1_000,
+            Some("ada@example.com"),
         );
+        assert!(
+            line.contains("request gen=42 prompt_chars=34 app=com.apple.TextEdit"),
+            "request logs should expose only prompt length and gate metadata: {line}"
+        );
+        assert!(line.contains("app_allows=true"));
+        assert!(line.contains("terminal_ok=true"));
+        assert!(line.contains("domain_ready=true"));
+        assert!(line.contains("prefs_ok=true"));
+        assert!(line.contains("prompt_marker=true"));
         assert!(!line.contains("secret"));
         assert!(!line.contains("ada@example.com"));
         assert!(!line.contains("prompt with"));
@@ -4798,14 +4876,17 @@ mod tests {
         assert!(!off.clipboard_context);
         assert!(!off.screen_context);
         assert!(!off.diag_context);
+        assert_eq!(off.acceptance_prompt_marker, None);
         let on = Config::from_lookup(lookup(&[
             ("COMPME_CLIPBOARD_CONTEXT", "1"),
             ("COMPME_SCREEN_CONTEXT", "true"),
             ("COMPME_DIAG_CONTEXT", "true"),
+            ("COMPME_ACCEPTANCE_PROMPT_MARKER", "run marker"),
         ]));
         assert!(on.clipboard_context);
         assert!(on.screen_context);
         assert!(on.diag_context);
+        assert_eq!(on.acceptance_prompt_marker.as_deref(), Some("run marker"));
     }
 
     #[test]
@@ -5621,6 +5702,15 @@ mod tests {
         }
     }
 
+    fn request_log_context_for_submit_tracking() -> RequestLogContext {
+        RequestLogContext {
+            app_key: Some("com.apple.TextEdit".into()),
+            domain: None,
+            prefs: Prefs::default(),
+            acceptance_prompt_marker: Some("hello".into()),
+        }
+    }
+
     #[test]
     fn submit_tracking_records_only_accepted_requests() {
         let mut submit_times = HashMap::new();
@@ -5629,6 +5719,7 @@ mod tests {
             &mut submit_times,
             request_for_submit_tracking(7),
             123,
+            request_log_context_for_submit_tracking(),
             |request| {
                 assert_eq!(request.generation, 7);
                 assert_eq!(request.prompt, "hello world");
@@ -5637,6 +5728,7 @@ mod tests {
         );
 
         assert!(log_line.contains("request gen=7"));
+        assert!(log_line.contains("app=com.apple.TextEdit"));
         assert!(!log_line.contains("inference submit failed"));
         assert_eq!(submit_times.get(&7), Some(&123));
     }
@@ -5650,6 +5742,7 @@ mod tests {
             &mut submit_times,
             request_for_submit_tracking(7),
             123,
+            request_log_context_for_submit_tracking(),
             |request| {
                 submitted_generation = Some(request.generation);
                 false

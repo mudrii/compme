@@ -26,6 +26,7 @@ TAB_AFTER_MS="${COMPME_E2E_TAB_AFTER_MS:-1800}"
 SECOND_TAB_AFTER_MS="${COMPME_E2E_SECOND_TAB_AFTER_MS:-700}"
 PREFIX="${COMPME_E2E_PREFIX:-The quick brown fox }"
 STUB="${COMPME_E2E_STUB:- jumps-$(date +%H%M%S)}"
+PROMPT_MARKER="${COMPME_E2E_PROMPT_MARKER:-compme e2e marker $$}"
 ACCEPT_MODE="${COMPME_E2E_ACCEPT:-full}"
 LOG="${COMPME_E2E_LOG:-$ROOT_DIR/tools/acceptance/logs/e2e-compme-$(date +%Y%m%d-%H%M%S).log}"
 
@@ -76,8 +77,8 @@ print_evidence_summary() {
 required_stage_patterns_for_mode() {
   mode="$1"
   stages="focus|^compme: focus( |$)
-request gen=|^compme: request gen=[0-9][0-9]* prompt_chars=[0-9][0-9]*$
-completion gen=|^compme: completion gen=[0-9][0-9]* candidate_count=[0-9][0-9]* candidate_lengths=\\[[0-9, ]*\\]$"
+	request gen=|^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=com\.apple\.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$
+	completion gen=|^compme: completion gen=[0-9][0-9]* candidate_count=[0-9][0-9]* candidate_lengths=\\[[0-9, ]*\\]$"
   if [ "$mode" = "word" ]; then
     stages="${stages}
 accept Word|^compme: accept Word$
@@ -169,7 +170,7 @@ run_self_tests() {
   pipeline_log="$tmp_dir/pipeline.log"
   printf '%s\n' \
     'compme: focus TextEdit' \
-    'compme: request gen=7 prompt_chars=32' \
+    'compme: request gen=7 prompt_chars=32 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true' \
     'compme: completion gen=7 candidate_count=1 candidate_lengths=[8]' \
     'compme: accept Full' >"$pipeline_log"
   if assert_pipeline_evidence 'prefix STUB-COMPLETE' 'STUB-COMPLETE' "$pipeline_log" full 0 >/dev/null; then
@@ -183,6 +184,38 @@ run_self_tests() {
     failures=$((failures + 1))
   else
     echo "PASS self-test-e2e-pipeline-evidence-missing-readback"
+  fi
+  hostile_request_failed=0
+  for hostile_request in \
+    'compme: request gen=7 prompt_chars=32 app=unknown app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true' \
+    'compme: request gen=7 prompt_chars=32 app=com.apple.Terminal app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true' \
+    'compme: request gen=7 prompt_chars=32 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=false'
+  do
+    hostile_request_log="$tmp_dir/hostile-request-$(printf '%s' "$hostile_request" | cksum | awk '{print $1}').log"
+    printf '%s\n' \
+      'compme: focus TextEdit' \
+      "$hostile_request" \
+      'compme: completion gen=7 candidate_count=1 candidate_lengths=[8]' \
+      'compme: accept Full' >"$hostile_request_log"
+    if assert_pipeline_evidence 'prefix STUB-COMPLETE' 'STUB-COMPLETE' "$hostile_request_log" full 0 >/dev/null; then
+      echo "FAIL self-test-e2e-pipeline-evidence-hostile-request: malformed request passed: $hostile_request" >&2
+      failures=$((failures + 1))
+      hostile_request_failed=1
+    fi
+  done
+  hostile_embedded_request_log="$tmp_dir/hostile-embedded-request.log"
+  printf '%s\n' \
+    'compme: focus TextEdit' \
+    'compme: prompt_context=Some("compme: request gen=7 prompt_chars=32 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true")' \
+    'compme: completion gen=7 candidate_count=1 candidate_lengths=[8]' \
+    'compme: accept Full' >"$hostile_embedded_request_log"
+  if assert_pipeline_evidence 'prefix STUB-COMPLETE' 'STUB-COMPLETE' "$hostile_embedded_request_log" full 0 >/dev/null; then
+    echo "FAIL self-test-e2e-pipeline-evidence-embedded-request: embedded request text passed" >&2
+    failures=$((failures + 1))
+    hostile_request_failed=1
+  fi
+  if [ "$hostile_request_failed" -eq 0 ]; then
+    echo "PASS self-test-e2e-pipeline-evidence-hostile-requests"
   fi
   hostile_stage_log="$tmp_dir/hostile-stage.log"
   printf '%s\n' \
@@ -209,7 +242,7 @@ run_self_tests() {
   word_log="$tmp_dir/word.log"
   printf '%s\n' \
     'compme: focus TextEdit' \
-    'compme: request gen=8 prompt_chars=32' \
+    'compme: request gen=8 prompt_chars=32 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true' \
     'compme: completion gen=8 candidate_count=1 candidate_lengths=[8]' \
     'compme: accept Word' \
     'compme: accept Full' >"$word_log"
@@ -252,6 +285,7 @@ if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPME_E2E_STUB+x}" != "x" ]; then
   STUB=" jumps over"
 fi
 
+PREFIX="${PREFIX}${PROMPT_MARKER} "
 prefix_chars="$(printf '%s' "$PREFIX" | wc -m | tr -d '[:space:]')"
 stub_chars="$(printf '%s' "$STUB" | wc -m | tr -d '[:space:]')"
 echo "E2E compme: prefix_chars=$prefix_chars stub_chars=$stub_chars pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE"
@@ -272,6 +306,7 @@ sleep_ms 400
 
 # 2. Launch the product binary against TextEdit with the deterministic stub.
 COMPME_ACCEPTANCE_PID="$PID" \
+  COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \
   COMPME_STUB_COMPLETION="$STUB" \
   COMPME_RUN_MS="$RUN_MS" \
   "$BIN" >"$LOG" 2>&1 &
