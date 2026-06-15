@@ -168,10 +168,16 @@ impl PersonalizationProfile {
     /// mirrors the subdomain-aware matching `prefs` uses for domain exclusions,
     /// so a user who configures both surfaces sees consistent scoping. The
     /// longest matching rule wins, making the choice deterministic.
+    ///
+    /// `host` is folded to lowercase here so the lookup is self-contained — like
+    /// `prefs`, it does not depend on every caller pre-lowercasing. Keys are
+    /// expected to be lowercased at insertion (the run loop does this for
+    /// config-sourced domains).
     fn per_domain_instruction(&self, host: &str) -> Option<&String> {
+        let host = host.to_ascii_lowercase();
         self.per_domain
             .iter()
-            .filter(|(rule, _)| host_matches_domain_rule(host, rule))
+            .filter(|(rule, _)| host_matches_domain_rule(&host, rule))
             .max_by_key(|(rule, _)| rule.len())
             .map(|(_, text)| text)
     }
@@ -398,6 +404,26 @@ mod tests {
         assert_eq!(
             p.resolve_instructions(None, Some("google.com.evil.com")),
             ""
+        );
+    }
+
+    #[test]
+    fn resolve_folds_host_case_so_lookup_is_self_contained() {
+        // The matcher lowercases the host itself (like prefs), so a mixed-case
+        // host still resolves its lowercased rule even if a caller forgot to
+        // pre-lowercase — guarding the steering-scope contract against drift.
+        let mut p = PersonalizationProfile {
+            strength: Strength::Stop3,
+            ..Default::default()
+        };
+        p.per_domain.insert("google.com".into(), "Be terse.".into());
+        assert_eq!(
+            p.resolve_instructions(None, Some("WWW.Google.COM")),
+            "Be terse."
+        );
+        assert_eq!(
+            p.resolve_instructions(None, Some("Google.com")),
+            "Be terse."
         );
     }
 
