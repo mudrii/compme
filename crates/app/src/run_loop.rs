@@ -1268,6 +1268,61 @@ fn record_full_accept(
     }
 }
 
+type AcceptPreview = (FieldHandle, String, usize);
+
+struct AcceptSideEffects<'a> {
+    action: AcceptAction,
+    preview: Option<&'a AcceptPreview>,
+    wall_ms: u64,
+    context_max_chars: usize,
+    previous_inputs: &'a PreviousInputs,
+    memory: Option<&'a memory::MemoryStore>,
+    prefs: &'a Prefs,
+    tracker: &'a mut FieldTracker,
+    usage: &'a mut stats::Stats,
+}
+
+fn apply_accept_side_effects(accepted: bool, side_effects: AcceptSideEffects<'_>) {
+    if !accepted {
+        return;
+    }
+    let Some((field, text, replace_left)) = side_effects.preview else {
+        return;
+    };
+
+    // Record only after `on_accept` succeeds. A failed insert must not leak a
+    // never-accepted completion into previous-input context or encrypted memory.
+    record_full_accept(
+        side_effects.action,
+        field,
+        text,
+        side_effects.context_max_chars,
+        side_effects.previous_inputs,
+        side_effects.memory,
+        side_effects.prefs.collection_allowed(Some(&field.app)),
+    );
+    // Absorb the accept's echo. A replacement (`replace_left > 0`, e.g. emoji)
+    // deletes the typed token before inserting, so the baseline must
+    // delete-then-insert to match the field; an ordinary completion is
+    // append-only.
+    if *replace_left > 0 {
+        side_effects
+            .tracker
+            .apply_self_replace(field, text, *replace_left);
+    } else {
+        side_effects.tracker.apply_self_insert(field, text);
+    }
+    // Local usage stats (§11/§16): count every accept (both Word and Full —
+    // unlike the full-only previous-inputs/memory block above) and the words it
+    // inserted (menu-bar word count). At least one word per accept.
+    side_effects.usage.record(
+        side_effects.wall_ms,
+        stats::Outcome::Accepted {
+            words: accept_word_count(text),
+        },
+    );
+}
+
 /// Route ordinary monitored insertion deltas to the encrypted memory store.
 /// `MemoryStore::monitor` is mode-aware: it persists only in `AllMonitored`
 /// mode and no-ops in `AcceptedOnly`/`Off`, while this helper preserves the app
@@ -2896,45 +2951,39 @@ pub fn run() -> Result<(), String> {
                             // typing — otherwise the echo would arm a spurious
                             // post-accept completion request (engine-macos §4 step
                             // 9: the accept's own insert is not a new edit).
-                            if let Some((field, text, replace_left)) = &preview {
-                                // Record only after `on_accept` succeeds. A
-                                // failed insert must not leak a never-accepted
-                                // completion into previous-input context or
-                                // encrypted memory.
-                                record_full_accept(
+                            apply_accept_side_effects(
+                                true,
+                                AcceptSideEffects {
                                     action,
-                                    field,
-                                    text,
-                                    config.context_max_chars,
-                                    &previous_inputs,
-                                    memory.as_ref(),
-                                    prefs.collection_allowed(Some(&field.app)),
-                                );
-                                // Absorb the accept's echo. A replacement
-                                // (`replace_left > 0`, e.g. emoji) deletes the
-                                // typed token before inserting, so the baseline
-                                // must delete-then-insert to match the field; an
-                                // ordinary completion is append-only.
-                                if *replace_left > 0 {
-                                    tracker.apply_self_replace(field, text, *replace_left);
-                                } else {
-                                    tracker.apply_self_insert(field, text);
-                                }
-                                // Local usage stats (§11/§16): count every accept
-                                // (both Word and Full — unlike the full-only
-                                // previous-inputs/memory block above) and the words
-                                // it inserted (menu-bar word count). At least one
-                                // word per accept.
-                                usage.record(
+                                    preview: preview.as_ref(),
                                     wall_ms,
-                                    stats::Outcome::Accepted {
-                                        words: accept_word_count(text),
-                                    },
-                                );
-                            }
+                                    context_max_chars: config.context_max_chars,
+                                    previous_inputs: &previous_inputs,
+                                    memory: memory.as_ref(),
+                                    prefs: &prefs,
+                                    tracker: &mut tracker,
+                                    usage: &mut usage,
+                                },
+                            );
                             offer_all(&mut latest, requests);
                         }
-                        Err(err) => eprintln!("compme: on_accept error: {err:?}"),
+                        Err(err) => {
+                            apply_accept_side_effects(
+                                false,
+                                AcceptSideEffects {
+                                    action,
+                                    preview: preview.as_ref(),
+                                    wall_ms,
+                                    context_max_chars: config.context_max_chars,
+                                    previous_inputs: &previous_inputs,
+                                    memory: memory.as_ref(),
+                                    prefs: &prefs,
+                                    tracker: &mut tracker,
+                                    usage: &mut usage,
+                                },
+                            );
+                            eprintln!("compme: on_accept error: {err:?}");
+                        }
                     }
                 }
                 HostEvent::Dismiss => {
@@ -4906,6 +4955,76 @@ mod tests {
         );
         assert_eq!(store.count().expect("count"), 1);
         assert!(!previous.recent("com.apple.TextEdit").is_empty());
+    }
+
+    #[test]
+    fn failed_accept_records_no_context_memory_or_accept_stats() {
+        let previous = PreviousInputs::default();
+        let store = accepted_store();
+        let mut tracker = FieldTracker::new();
+        let mut usage = stats::Stats::new();
+        let prefs = Prefs::default();
+        let preview = (
+            field_with_app("com.apple.TextEdit"),
+            "never inserted secret".to_string(),
+            0usize,
+        );
+
+        apply_accept_side_effects(
+            false,
+            AcceptSideEffects {
+                action: AcceptAction::Full,
+                preview: Some(&preview),
+                wall_ms: 10_000,
+                context_max_chars: 160,
+                previous_inputs: &previous,
+                memory: Some(&store),
+                prefs: &prefs,
+                tracker: &mut tracker,
+                usage: &mut usage,
+            },
+        );
+
+        assert_eq!(store.count().unwrap(), 0);
+        assert!(previous.recent("com.apple.TextEdit").is_empty());
+        let totals = usage.session_totals();
+        assert_eq!(totals.counts.accepted, 0);
+        assert_eq!(totals.words, 0);
+    }
+
+    #[test]
+    fn successful_accept_records_context_memory_and_accept_stats() {
+        let previous = PreviousInputs::default();
+        let store = accepted_store();
+        let mut tracker = FieldTracker::new();
+        let mut usage = stats::Stats::new();
+        let prefs = Prefs::default();
+        let preview = (
+            field_with_app("com.apple.TextEdit"),
+            "accepted words".to_string(),
+            0usize,
+        );
+
+        apply_accept_side_effects(
+            true,
+            AcceptSideEffects {
+                action: AcceptAction::Full,
+                preview: Some(&preview),
+                wall_ms: 10_000,
+                context_max_chars: 160,
+                previous_inputs: &previous,
+                memory: Some(&store),
+                prefs: &prefs,
+                tracker: &mut tracker,
+                usage: &mut usage,
+            },
+        );
+
+        assert_eq!(store.count().unwrap(), 1);
+        assert_eq!(previous.recent("com.apple.TextEdit").len(), 1);
+        let totals = usage.session_totals();
+        assert_eq!(totals.counts.accepted, 1);
+        assert_eq!(totals.words, 2);
     }
 
     #[test]

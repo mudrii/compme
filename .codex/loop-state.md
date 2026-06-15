@@ -429,6 +429,52 @@
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 15:02:55 +08 - Failed accept side-effects TDD pass
+
+- Task selected: Add app-level TDD coverage and a focused seam for accept-failure privacy/stat side effects.
+- Why it was selected: Current state still listed direct app coverage for accept-failure side effects as a loop-doable gap. Higher-priority candidates were checked first and skipped as stale in the current checkout: `model_fetch::download_url` already has fresh/resumed progress-total coverage, and same-field OCR freshness is already pinned by inference tests.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/app/src/run_loop.rs`
+- Tests added/updated:
+  - Added `failed_accept_records_no_context_memory_or_accept_stats`, proving a failed accept with a preview records no previous-input context, no encrypted memory entry, and no accepted usage stats.
+  - Added `successful_accept_records_context_memory_and_accept_stats`, proving the extracted seam still records previous-input context, encrypted memory, and accepted usage stats after a successful accept.
+  - Extracted `apply_accept_side_effects` / `AcceptSideEffects` so both accept success and accept failure route through the same tested seam.
+- Verification commands and result:
+  - RED: `cargo test -p app failed_accept_records_no_context_memory_or_accept_stats` failed because `apply_accept_side_effects` did not exist.
+  - Focused GREEN: `cargo test -p app failed_accept_records_no_context_memory_or_accept_stats` passed.
+  - Focused GREEN: `cargo test -p app successful_accept_records_context_memory_and_accept_stats` passed.
+  - Focused regression: `cargo test -p app full_accept_records_to_both_sinks_under_a_resolved_bundle_id` passed.
+  - Focused regression: `cargo test -p app collection_disabled_skips_both_recording_sinks` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` initially failed on `too_many_arguments`; fixed by introducing `AcceptSideEffects`, then passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1108`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `git diff --check` passed.
+  - `graphify update .` passed and rebuilt `3993` nodes, `10661` edges, and `148` communities.
+- Test count if available: root `1108` listed tests; spike `30` listed tests; full workspace run included app `307` tests and platform_macos `223` tests; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Fixed Important app coverage gap: failed accepts now have a direct app-level seam test proving they do not record previous-input context, encrypted memory, or accepted stats.
+  - Fixed Important local quality finding: the false branch is called from the product accept-error branch, so the tested seam is on the runtime path.
+  - Fixed clippy Important gate failure by replacing a 10-argument helper with an `AcceptSideEffects` context struct.
+  - No Critical findings. Two subagent diff reviews reported no findings; local quality/tests passes reported no remaining Important issues.
+- Blocked or skipped work remaining:
+  - Stale pending items skipped this tick: `model_fetch` fresh/resumed progress-total coverage and same-field OCR freshness are already covered in current code/tests.
+  - App coverage seam skipped: submit-time auxiliary context ordering is still correct in current code but lacks a combined inference-level contract test.
+  - Monitored-memory write failure drain/no-replay is still not directly tested; needs a legitimate failure-injection seam.
+  - Pre-existing dirty roadmap/spec/README work remains unstaged; `docs/ROADMAP.md` and A2 spec still contain stale Tier 2.1 personalization wording relative to the last two commits.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 13:56:23 +08 - DRY consolidation audit
 
 - Task selected: Consolidation audit only.
