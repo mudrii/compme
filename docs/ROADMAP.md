@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last re-analyzed:** 2026-06-15 (re-validated, gate run) · **Branch:** `main` · **Tests:** full deterministic gates passed; root listed `1119` tests and spike listed `30` tests
+> **Last updated:** 2026-06-16 (Tier-1 cross-platform *foundation* shipped — scaffolds + CI) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1111 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -25,28 +25,41 @@ tested**. Everything below is what the plan still calls for.
 
 ## Tier 1 — Largest committed deliverables
 
-### 1.1 ☐🔒 Cross-platform adapters (Windows + Linux)
+### 1.1 ◑🔒 Cross-platform adapters (Windows + Linux) — foundation shipped, real impls env-gated
 
 **Plan:** `README.md:10` — *"macOS ships first; Windows and Linux are committed
 deliverables built behind a shared cross-platform `PlatformAdapter` contract."*
 The `platform` crate was deliberately shaped as a trait/contract to accept them.
 
-**Status:** Only `platform` (contract) and `platform_macos` (impl) exist. No
-`platform_windows`, no `platform_linux` crate. This is the single largest unbuilt
-block and the biggest gap between the README's public promise and the code.
+**Foundation ✅ DONE (2026-06-16, gate-green on macOS):**
+- **`crates/platform_windows`** (`1f8cace`) — implements the full
+  `platform::PlatformAdapter` contract as a **fail-closed stub**: `environment()`
+  reports Windows; every subscribe/IO method returns `PlatformError::UnsupportedField`
+  (never panics, no partial state); each method is doc-commented with the Win32 API
+  its real impl will use (UIA / `WH_KEYBOARD_LL` / `SendInput` / layered overlay).
+  Unit-tested (environment, fail-closed `subscribe_focus` + `insert_replacing`).
+- **`crates/platform_linux`** (`5236a56`) — the same, for Linux (AT-SPI2 / XTEST /
+  `wtype` / IBus / X11-or-layer-shell overlay).
+- **CI matrix** (`a7427c6`) — `windows-latest` + `ubuntu-latest` jobs run
+  fmt/clippy/test/build scoped to each new crate (`-p platform_windows` /
+  `-p platform_linux`), so the real per-OS code gets gated the moment it lands.
+- Both crates are **inert** — nothing wires them into the app (still `platform_macos`),
+  so the workspace builds + gates green on the macOS-only dev host.
 
-**Pending:**
-- `crates/platform_windows/` — UI Automation (UIA) for text-field read/insert,
-  `WH_KEYBOARD_LL` low-level keyboard hook for the accept key, a layered overlay
-  window for the ghost, foreground-window/process identity for per-app gating.
-- `crates/platform_linux/` — AT-SPI2 for accessibility read/insert, XTEST / `wtype`
-  for synthetic keys, an IBus IME path for Wayland (where synthetic injection is
-  restricted), X11 + Wayland overlay surfaces.
-- Both must satisfy the existing `platform` trait so `app`/`engine` need no changes.
+**Pending (🔒 needs Windows + Linux build+test environments — not doable on macOS):**
+- The actual **Windows** adapter behind `#[cfg(windows)]` (uncomment the `windows`
+  dep in its `Cargo.toml`): UIA focus/caret/text + `WH_KEYBOARD_LL` accept tap +
+  `SendInput`/ValuePattern insert + layered overlay.
+- The actual **Linux** adapter behind `#[cfg(target_os = "linux")]`: AT-SPI2
+  read/insert/events + XTEST/`wtype` synthetic keys (IBus IME fallback on Wayland)
+  + override-redirect/layer-shell overlay. (AT-SPI device key-listeners are
+  deprecated → prefer XTEST/XGrabKey or libei for the accept tap.)
+- The **app's adapter selection** — a `#[cfg]` target switch to pick the right
+  adapter (currently hardcoded `platform_macos`) — lands with the impls.
 
 **Effort:** Very large, multi-phase (each platform is its own A-sized milestone).
-**Recommendation:** Scope as a dedicated milestone, not a loop tick. Until then,
-the README line should be read as "planned," and CI cannot enforce it.
+Each method's required Win32/Linux API is mapped in its crate's `src/lib.rs` doc
+comments — the scaffold doubles as the implementation guide.
 
 ### 1.2 ☐🔒 Distribution hardening (signing, notarization, updater)
 
