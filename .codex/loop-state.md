@@ -1640,3 +1640,46 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
   - Medium UI work remains outside a DRY tick: Tier 3 settings panes for personalization/context/emoji and per-app editing require AppKit/FFI build-and-LOOK work.
 - Commit hash and push confirmation, or DRY/blocked status: DRY audit entry pending commit/push in this tick.
+
+## 2026-06-15 16:15:39 +0800 - Personalization roadmap doc alignment
+
+- Task selected: Align the roadmap/spec docs with the already-shipped per-app/per-domain personalization config and runtime domain wiring.
+- Why it was selected: The prior DRY audit identified stale Tier 2.1 roadmap/spec wording as the only remaining loop-doable plan-alignment item outside manual/live validation and medium UI work. The current code/tests already prove the behavior, so the loop-doable task was to repair the project source of truth rather than add speculative production code.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `docs/ROADMAP.md`
+  - `docs/superpowers/specs/2026-06-09-a2-parity-design.md`
+  - `docs/superpowers/specs/2026-06-10-a3-settings-ui-design.md`
+- Tests added/updated: None; docs-only alignment. The behavior is covered by existing focused app tests.
+- Verification commands and result:
+  - RED/docs check: `rg -n 'config-unwired|never filled|never populated from config|hard-coded None|not yet config-wired|unwired, c1|profile\.build_preamble\(Some\(&request\.field\.app\), None\)|Highest leverage, fully autonomous' docs/ROADMAP.md docs/superpowers/specs/2026-06-09-a2-parity-design.md docs/superpowers/specs/2026-06-10-a3-settings-ui-design.md README.md` found stale roadmap/spec claims before the docs were updated.
+  - Focused docs GREEN: the same `rg` command returned no matches after the roadmap/spec updates.
+  - `graphify query "docs ROADMAP Tier 2.1 per-app per-domain personalization current implementation tests build_personalization request domain"` passed and pointed at the current implementation/tests.
+  - `cargo test -p app personalization_built_from_per_app_and_domain_config_keys -- --nocapture` passed.
+  - `cargo test -p app personalization_skips_ambiguous_per_target_instruction_keys -- --nocapture` passed.
+  - `cargo test -p app per_domain_personalization_uses_request_domain -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1111`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `git diff --check` passed before this state-file update.
+  - Final hygiene after review fixes: `git diff --cached --check`, `git diff --check`, and the stale roadmap/spec text check passed.
+- Test count if available: root `1111` listed tests; spike `30` listed tests; focused personalization revalidation ran `3` tests; full workspace run included app `309` tests and platform_macos `223` tests; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; A2 self-test `30` PASS lines; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Fixed Important plan-alignment findings from subagent review: roadmap/A3 global-disable anchors now point to the current tray source plus `apply_global_disable` and run-loop consumption ranges; the obsolete A3 stale-note line citation was removed.
+  - Fixed local quality finding: the recorded RED grep command no longer uses nested backticks inside the inline command span.
+  - Fixed Minor anchor/wording findings while green: roadmap domain-forwarding and stats-row anchors now point at current implementation ranges, and the A3 note says "per-app disable counterpart" instead of "mirror submenu."
+- Blocked or skipped work remaining:
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+  - Medium UI work remains: Tier 3 settings panes for personalization/context/emoji and per-app editing require AppKit/FFI build-and-LOOK work.
+- Commit hash and push confirmation, or DRY/blocked status: Pending commit/push in this tick.

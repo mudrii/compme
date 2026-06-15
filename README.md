@@ -324,6 +324,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 ## Documentation Index
 
+- [Roadmap & pending work](docs/ROADMAP.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Acceptance](docs/ACCEPTANCE.md)
