@@ -840,11 +840,12 @@ fn app_allows_suggestions(app_key: Option<&str>) -> bool {
 /// prompt/context: the app's compatibility tier allows inline (and isn't
 /// sidebar-only), a terminal only when `text` reads as a natural-language prompt,
 /// and per-app exclude / snooze (`should_suggest`) pass. Shared by the model
-/// submit gate and the local replacement-offer gate so both honor the same
-/// per-app/snooze/terminal policy.
+/// submit gate and the local replacement-offer gate for per-app/snooze/terminal
+/// policy; submit adds a domain-freshness fail-closed guard before calling it.
 /// `domain` is the focused browser page's HOST when known (the Focus arm's
-/// AX read via `domain_cache_entry`); `None` = no browser frontmost or no
-/// URL resolved — fail-open.
+/// AX read via `domain_cache_entry`). This helper treats `None` as fail-open;
+/// callers that need browser-rule freshness must wrap it with
+/// `browser_domain_fresh_enough_for_rules`.
 fn suggestion_gates_pass(
     app_key: Option<&str>,
     text: &str,
@@ -939,7 +940,8 @@ fn request_passes_submit_gates(
     prefs: &Prefs,
     now_ms: u64,
 ) -> bool {
-    suggestion_gates_pass(app_key, &request.prompt, domain, prefs, now_ms)
+    browser_domain_fresh_enough_for_rules(app_key, domain, prefs)
+        && suggestion_gates_pass(app_key, &request.prompt, domain, prefs, now_ms)
 }
 
 fn blocked_request_log_line(
@@ -5014,8 +5016,10 @@ mod tests {
             &prefs,
             0
         ));
-        // No domain resolved → fail-open, exactly today's behavior.
-        assert!(request_passes_submit_gates(
+        // Browser domain rules configured but no fresh domain resolved:
+        // fail closed on model submit so a missed URL read cannot bypass an
+        // excluded-domain rule.
+        assert!(!request_passes_submit_gates(
             &req_with_prompt("Dear team"),
             Some("com.apple.Safari"),
             None,

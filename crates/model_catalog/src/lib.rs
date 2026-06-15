@@ -157,7 +157,7 @@ pub fn catalog() -> &'static [ModelEntry] {
     &[
         ModelEntry {
             name: "qwen2.5-0.5b-q4_k_m",
-            url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/9217f5db79a29953eb74d5343926648285ec7e67/qwen2.5-0.5b-instruct-q4_k_m.gguf",
             size_mb: 398,
             min_ram_gb: 2,
             license: License::Apache2,
@@ -167,7 +167,7 @@ pub fn catalog() -> &'static [ModelEntry] {
         },
         ModelEntry {
             name: "llama-3.2-1b-q4_k_m",
-            url: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            url: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/067b946cf014b7c697f3654f621d577a3e3afd1c/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
             size_mb: 808,
             min_ram_gb: 4,
             license: License::LlamaCommunity,
@@ -177,7 +177,7 @@ pub fn catalog() -> &'static [ModelEntry] {
         },
         ModelEntry {
             name: "qwen2.5-1.5b-q4_k_m",
-            url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
             size_mb: 986,
             min_ram_gb: 4,
             license: License::Apache2,
@@ -187,7 +187,7 @@ pub fn catalog() -> &'static [ModelEntry] {
         },
         ModelEntry {
             name: "gemma-2-2b-q4_k_m",
-            url: "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf",
+            url: "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/855f67caed130e1befc571b52bd181be2e858883/gemma-2-2b-it-Q4_K_M.gguf",
             size_mb: 1708,
             min_ram_gb: 6,
             license: License::GemmaTerms,
@@ -203,28 +203,28 @@ pub fn catalog_provenance() -> &'static [ModelProvenance] {
     &[
         ModelProvenance {
             name: "qwen2.5-0.5b-q4_k_m",
-            url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/9217f5db79a29953eb74d5343926648285ec7e67/qwen2.5-0.5b-instruct-q4_k_m.gguf",
             hf_repo_commit: "9217f5db79a29953eb74d5343926648285ec7e67",
             hf_x_linked_etag:
                 "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
         },
         ModelProvenance {
             name: "llama-3.2-1b-q4_k_m",
-            url: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            url: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/067b946cf014b7c697f3654f621d577a3e3afd1c/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
             hf_repo_commit: "067b946cf014b7c697f3654f621d577a3e3afd1c",
             hf_x_linked_etag:
                 "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
         },
         ModelProvenance {
             name: "qwen2.5-1.5b-q4_k_m",
-            url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
             hf_repo_commit: "91cad51170dc346986eccefdc2dd33a9da36ead9",
             hf_x_linked_etag:
                 "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
         },
         ModelProvenance {
             name: "gemma-2-2b-q4_k_m",
-            url: "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf",
+            url: "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/855f67caed130e1befc571b52bd181be2e858883/gemma-2-2b-it-Q4_K_M.gguf",
             hf_repo_commit: "855f67caed130e1befc571b52bd181be2e858883",
             hf_x_linked_etag:
                 "e0aee85060f168f0f2d8473d7ea41ce2f3230c1bc1374847505ea599288a7787",
@@ -408,6 +408,34 @@ mod tests {
                 entry.expected_sha256,
                 Some(provenance.hf_x_linked_etag),
                 "{}: pinned hash must match recorded upstream LFS etag",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_urls_are_pinned_to_recorded_repo_commits() {
+        let provenance_by_name: std::collections::HashMap<_, _> =
+            catalog_provenance().iter().map(|p| (p.name, p)).collect();
+
+        for entry in catalog() {
+            let provenance = provenance_by_name
+                .get(entry.name)
+                .unwrap_or_else(|| panic!("{}: missing provenance", entry.name));
+            let commit_path = format!("/resolve/{}/", provenance.hf_repo_commit);
+            assert!(
+                entry.url.contains(&commit_path),
+                "{}: catalog URL must pin the recorded Hugging Face commit",
+                entry.name
+            );
+            assert!(
+                provenance.url.contains(&commit_path),
+                "{}: provenance URL must pin the recorded Hugging Face commit",
+                entry.name
+            );
+            assert!(
+                !entry.url.contains("/resolve/main/") && !provenance.url.contains("/resolve/main/"),
+                "{}: catalog URLs must not track mutable resolve/main",
                 entry.name
             );
         }

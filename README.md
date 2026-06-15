@@ -77,7 +77,8 @@ For development, run unbundled with `cargo run -p app`.
   opt-out, and mid-line / autocorrect / thesaurus overrides, plus per-app and
   per-browser-domain exclusion.
 - **Browser-domain detection** — the focused browser page's host is read from the
-  Accessibility URL and matched against domain exclusions (fail-open when no URL resolves).
+  Accessibility URL and matched against domain exclusions. Model submit fails closed
+  when browser-domain rules are configured and no fresh URL resolves.
 - **Model picker with RAM-fit advisory** — the Setup tab lets you choose which built-in
   catalog model to download, each row carrying a `fits` / `tight` / `exceeds` verdict
   for this machine, with a dest-exists guard that skips a model already on disk.
@@ -269,7 +270,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,085 tests:
+suite is roughly 1,086 tests:
 
 ```sh
 cargo fmt --all -- --check

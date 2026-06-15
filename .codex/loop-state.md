@@ -429,6 +429,57 @@
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 10:41:48 +08 - Catalog pinning and browser submit domain gate TDD pass
+
+- Task selected: Pin built-in model catalog URLs to recorded Hugging Face commits, then fix the pass-3 Critical browser-domain submit gate found by runtime review.
+- Why it was selected: The prior loop-state listed mutable `/resolve/main/` model catalog URLs as Important and loop-doable. During the pass-3 parallel review, the app/runtime reviewer found a Critical privacy/security gap: model submit failed open when browser domain rules existed but no fresh domain was available. That Critical finding superseded committing the catalog-only slice, so both deterministic test-quality fixes were completed before shipping.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/app/src/run_loop.rs`
+  - `crates/model_catalog/src/lib.rs`
+  - `docs/DEVELOPMENT.md`
+- Tests added/updated:
+  - Added `catalog_urls_are_pinned_to_recorded_repo_commits`, proving every built-in catalog and provenance URL contains its recorded `hf_repo_commit` in the Hugging Face `/resolve/<commit>/` path and never uses mutable `/resolve/main/`.
+  - Updated `submit_gate_blocks_an_excluded_domain` so Safari model submits fail closed when excluded-domain rules are configured but no fresh domain is resolved.
+  - Updated README/domain-gate wording and the submit helper comment after final plan-alignment review so docs match the new fail-closed submit behavior.
+  - Updated root test-count prose from roughly `1085` to `1086`.
+- Verification commands and result:
+  - RED: `cargo test -p model_catalog catalog_urls_are_pinned_to_recorded_repo_commits -- --nocapture` failed before implementation on `qwen2.5-0.5b-q4_k_m: catalog URL must pin the recorded Hugging Face commit`.
+  - GREEN focused: `cargo test -p model_catalog -- --nocapture` passed.
+  - RED: `cargo test -p app submit_gate_blocks_an_excluded_domain -- --nocapture` failed before implementation because `request_passes_submit_gates` still allowed Safari submit with excluded-domain rules and `domain=None`.
+  - GREEN focused: `cargo test -p app submit_gate -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1086`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3899` nodes, `10403` edges, and `130` communities.
+  - `git diff --check` passed.
+- Test count if available: root `1086` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Critical app/runtime privacy finding: model submit now requires fresh browser-domain evidence when browser domain rules are configured, so a missed URL read cannot bypass excluded-domain rules.
+  - Fixed Important model/release finding: built-in catalog and provenance URLs now pin the recorded Hugging Face repository commits instead of tracking mutable `/resolve/main/`.
+  - Fixed Important final diff-review finding: README browser-domain detection wording now states model submit fails closed when browser-domain rules are configured and no fresh URL resolves.
+- Blocked or skipped work remaining:
+  - Important release finding remains: tag workflow can publish without machine-checkable evidence that ignored model-backed gates were run for the tag/commit.
+  - Important model-download finding remains: an already-present non-empty GGUF at the catalog destination is treated as present without rechecking the catalog hash.
+  - Important remote-provenance finding remains: no opt-in live HEAD gate confirms pinned Hugging Face URLs still expose `x-linked-etag` matching the pinned hashes.
+  - Important acceptance findings remain: E2E self-tests do not cover missing inserted stub/request/completion/accept evidence; A1b self-tests do not cover runner counters/retry/summary wrappers; A2 self-tests do not reject raw sensitive `prompt_context` or empty `On screen:` context.
+  - Important app/runtime findings remain: same-field stale OCR can be consumed by a later request; accept insert failure lacks app-level side-effect sink coverage; AllMonitored live/privacy coverage remains pending.
+  - Important pure-crate findings remain: redaction does not explicitly cover short `SG.` SendGrid tokens; card redaction lacks above-band numeric substring coverage; thesaurus docs/spec describe multi-group merging while tests enforce no overlap.
+  - Minor findings remain: A2 screen-context gate does not prove the same OCR marker reached the matching `prompt_context`; webconfig/stats exact test counts in the long-lived spec are stale; model picker LOOK gate lacks a product-facing pure decision harness.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 10:11:07 +08 - Compat terminal classifier TDD pass
 
 - Task selected: Harden `compat` terminal prompt gating so shell-shaped terminal input is not treated as AI-agent prose.
