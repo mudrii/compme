@@ -508,6 +508,45 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 14:15:33 +08 - DRY AllMonitored review consolidation
+
+- Task selected: Consolidation audit for the pasted `COMPME_MEMORY=all` P2 review finding.
+- Why it was selected: The user supplied a fresh review comment claiming `AllMonitored` is parsed/exposed but not honored by the app loop. Current code and prior loop state contradicted that claim, so this tick verified the exact path before selecting any code change. No production-code TDD slice was justified because the current checkout already routes ordinary caret typing through `enqueue_monitored_change`, `flush_monitored_changes_after_secure_recheck`, `flush_monitored_changes`, and `MemoryStore::monitor`.
+- Files changed:
+  - `.codex/loop-state.md`
+- Tests added/updated: None. Existing focused tests already pin the behavior.
+- Verification commands and result:
+  - `graphify query "COMPME_MEMORY all AllMonitored MemoryStore monitor run_loop caret typed observations enqueue_monitored_change flush_monitored_changes"` passed and surfaced the current queue/flush/monitor path plus AllMonitored tests.
+  - `cargo test -p app all_monitored_records_typed_field_text_after_established_baseline -- --nocapture` passed.
+  - `cargo test -p app monitored_flush_rechecks_secure_input_before_persisting_pending_text -- --nocapture` passed.
+  - `cargo test -p memory all_monitored_mode_stores_both -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed with `11` PASS lines.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed with `8` PASS lines.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed with `30` PASS lines.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1103`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3978` nodes, `10611` edges, and `139` communities with no tracked graph diff.
+  - `git diff --check` passed.
+- Test count if available: root `1103` listed tests; spike `30` listed tests; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; A2 self-test `30` PASS lines; ignored model-backed release gate passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Dismissed the pasted P2 AllMonitored finding as stale for this checkout: `record_monitored_text` calls `MemoryStore::monitor`; ordinary caret typing enqueues monitored deltas; the main loop flushes pending monitored text through the monitor path after secure-input/policy checks; focused app and memory crate tests pass.
+  - Fixed Important plan-alignment review finding: replaced an incomplete inline dirty-worktree inventory with a pointer to `git status --short` as the authoritative inventory.
+- Blocked or skipped work remaining:
+  - App coverage seam remains skipped: accept-failure app-level privacy/stat side effects are correct in current code, but direct app-loop coverage needs an extraction/injection seam.
+  - App coverage seam remains skipped: submit-time auxiliary context ordering is correct in current code, but a meaningful RED needs a broader harness.
+  - Important app context finding remains skipped for now: monitored-memory write failure drain/no-replay behavior is not directly tested; current code drains pending work before persistence and removes boundary buffers before calling `MemoryStore::monitor`, so a direct behavior test needs a legitimate failure-injection seam.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+  - Unrelated pre-existing or concurrent worktree changes remain unstaged; use `git status --short` for the authoritative dirty inventory before the next tick.
+- Commit hash and push confirmation, or DRY/blocked status: DRY state-only consolidation entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 13:47:30 +08 - A2 request evidence target/marker proof
 
 - Task selected: Strengthen A2 positive request evidence so `works` / `terminal-nlp` prove resolved target identity, all submit gates, and a privacy-safe per-run prompt marker.
