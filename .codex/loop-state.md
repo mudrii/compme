@@ -1602,3 +1602,41 @@
   - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
+## 2026-06-15 16:07:02 +0800 - DRY consolidation audit
+
+- Task selected: Consolidation audit after rechecking the active `COMPME_MEMORY=all` review finding and the roadmap's Tier 2.1 personalization pending item.
+- Why it was selected: The most specific active loop state had already shipped the last loop-doable code/test gaps, while the current active review finding and the untracked roadmap's highest-priority autonomous item were stale against current code and tests. The remaining plan-aligned cleanup is doc drift inside pre-existing dirty/untracked docs, so this tick records it as skipped rather than taking ownership of unrelated pre-existing work.
+- Files changed:
+  - `.codex/loop-state.md`
+- Tests added/updated: None; this was a DRY audit because current focused tests already cover the candidate gaps.
+- Verification commands and result:
+  - `graphify query "build_personalization COMPME_INSTRUCTIONS per_app per_domain config keys personalization profile run_loop tests"` passed and pointed at the current personalization implementation/tests.
+  - `cargo test -p app all_monitored -- --nocapture` passed (`5` tests), proving `COMPME_MEMORY=all` routes monitored typing through the app-loop monitor path.
+  - `cargo test -p app personalization_built_from_per_app_and_domain_config_keys -- --nocapture` passed.
+  - `cargo test -p app personalization_skips_ambiguous_per_target_instruction_keys -- --nocapture` passed.
+  - `cargo test -p app per_domain_personalization_uses_request_domain -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1111`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `git diff --check` passed before the state-file update.
+- Test count if available: root `1111` listed tests; spike `30` listed tests; focused AllMonitored run `5` tests; full workspace run included app `309` tests and platform_macos `223` tests; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; A2 self-test `30` PASS lines; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - None. The pasted P2 AllMonitored finding was dismissed as stale: current `run_loop.rs` queues monitored insertion deltas, flushes them after policy checks, and calls `MemoryStore::monitor`; `AcceptedOnly` remains covered as a no-op for monitored typing.
+  - None. The roadmap Tier 2.1 pending item was dismissed as stale: `build_personalization` now parses per-app/per-domain instruction keys, inference passes `request.domain`, and focused tests cover config population, ambiguous suffix rejection, and runtime domain preambles.
+  - Fixed Important plan-alignment review finding: the DRY justification now explicitly treats the stale roadmap/spec cleanup as skipped pre-existing doc drift, not as nonexistent work.
+- Blocked or skipped work remaining:
+  - Pre-existing tracked README/spec edits remain unstaged; untracked `docs/ROADMAP.md` still contains stale Tier 2.1 wording relative to current HEAD.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+  - Medium UI work remains outside a DRY tick: Tier 3 settings panes for personalization/context/emoji and per-app editing require AppKit/FFI build-and-LOOK work.
+- Commit hash and push confirmation, or DRY/blocked status: DRY audit entry pending commit/push in this tick.
