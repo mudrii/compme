@@ -1269,6 +1269,11 @@ fn flush_monitored_changes(
     prefs: &Prefs,
     policy: MonitoredPolicy,
 ) {
+    if policy.secure {
+        pending.clear();
+        buffers.clear();
+        return;
+    }
     for item in pending.drain(..) {
         if !monitored_collection_gates_pass(
             item.app_key.as_deref(),
@@ -1299,6 +1304,45 @@ fn flush_monitored_changes(
         };
         record_monitored_text(&item.field, &text, memory, collection_allowed);
     }
+}
+
+struct MonitoredFlushRuntime {
+    monitored_memory_active: bool,
+    enabled: bool,
+    trusted: bool,
+    now_ms: u64,
+}
+
+struct MonitoredFlushState<'a> {
+    secure: &'a mut bool,
+    last_secure_poll_ms: &'a mut Option<u64>,
+}
+
+fn flush_monitored_changes_after_secure_recheck(
+    pending: &mut Vec<PendingMonitoredText>,
+    buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
+    memory: Option<&memory::MemoryStore>,
+    prefs: &Prefs,
+    state: MonitoredFlushState<'_>,
+    runtime: MonitoredFlushRuntime,
+    secure_probe: impl FnOnce() -> bool,
+) {
+    if runtime.monitored_memory_active && (!pending.is_empty() || !buffers.is_empty()) {
+        *state.secure = secure_probe();
+        *state.last_secure_poll_ms = Some(runtime.now_ms);
+    }
+    flush_monitored_changes(
+        pending,
+        buffers,
+        memory,
+        prefs,
+        MonitoredPolicy {
+            enabled: runtime.enabled,
+            secure: *state.secure,
+            trusted: runtime.trusted,
+            now_ms: runtime.now_ms,
+        },
+    );
 }
 
 /// Words inserted by an accept, for the menu-bar word count — at least one per
@@ -3328,30 +3372,22 @@ pub fn run() -> Result<(), String> {
             }
         }
         let enabled = flags.enabled.load(Ordering::Relaxed);
-        if monitored_memory_active
-            && (!pending_monitored.is_empty() || !monitored_buffers.is_empty())
-        {
-            secure = secure_input_enabled();
-            last_secure_poll_ms = Some(now_ms);
-        }
-        let secure_for_monitoring = secure;
-        if secure_for_monitoring {
-            clear_monitored_state_for_policy_transition(
-                &mut pending_monitored,
-                &mut monitored_buffers,
-            );
-        }
-        flush_monitored_changes(
+        flush_monitored_changes_after_secure_recheck(
             &mut pending_monitored,
             &mut monitored_buffers,
             memory.as_ref(),
             &prefs,
-            MonitoredPolicy {
+            MonitoredFlushState {
+                secure: &mut secure,
+                last_secure_poll_ms: &mut last_secure_poll_ms,
+            },
+            MonitoredFlushRuntime {
+                monitored_memory_active,
                 enabled,
-                secure: secure_for_monitoring,
                 trusted,
                 now_ms,
             },
+            secure_input_enabled,
         );
         let status = derive_status(trusted, secure, inference.is_ready(), enabled);
         // Secure input is a true engine-state transition, not only a UI state:
@@ -6339,6 +6375,83 @@ mod tests {
         let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
         let prefs = Prefs::default();
         queue_and_flush_monitored(&change, &store, &prefs, true, true);
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn secure_policy_clears_buffered_monitored_text_without_boundary() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([16u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let mut buffers = HashMap::from([(
+            field.clone(),
+            MonitoredBuffer::Collecting("partial secret".into()),
+        )]);
+        let mut pending = Vec::new();
+
+        flush_monitored_changes(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &Prefs::default(),
+            monitored_policy(true, true, true, 1_001),
+        );
+
+        assert!(pending.is_empty());
+        assert!(buffers.is_empty());
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn monitored_flush_rechecks_secure_input_before_persisting_pending_text() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([17u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+        let mut pending = Vec::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &change,
+            Some("com.apple.TextEdit".into()),
+            None,
+        );
+        let mut buffers = HashMap::new();
+        let mut secure = false;
+        let mut last_secure_poll_ms = None;
+        let mut probe_called = false;
+
+        flush_monitored_changes_after_secure_recheck(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &Prefs::default(),
+            MonitoredFlushState {
+                secure: &mut secure,
+                last_secure_poll_ms: &mut last_secure_poll_ms,
+            },
+            MonitoredFlushRuntime {
+                monitored_memory_active: true,
+                enabled: true,
+                trusted: true,
+                now_ms: 1_001,
+            },
+            || {
+                probe_called = true;
+                true
+            },
+        );
+
+        assert!(probe_called);
+        assert!(secure);
+        assert_eq!(last_secure_poll_ms, Some(1_001));
+        assert!(pending.is_empty());
+        assert!(buffers.is_empty());
         assert_eq!(store.count().unwrap(), 0);
     }
 

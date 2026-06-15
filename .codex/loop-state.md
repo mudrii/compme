@@ -429,6 +429,52 @@
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 12:52:05 +08 - Secure monitored flush TDD pass
+
+- Task selected: Pin secure-input recheck before monitored-memory flush and clear buffered monitored text on secure policy.
+- Why it was selected: The active loop state listed secure-input recheck before monitored-memory flush as an Important app-context gap that was feasible without GUI access, external credentials, or manual validation.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/app/src/run_loop.rs`
+- Tests added/updated:
+  - Added `secure_policy_clears_buffered_monitored_text_without_boundary`.
+  - Added `monitored_flush_rechecks_secure_input_before_persisting_pending_text`.
+- Verification commands and result:
+  - RED: `cargo test -p app secure_policy_clears_buffered_monitored_text_without_boundary -- --nocapture` failed before implementation because buffered monitored text survived `secure=true`.
+  - GREEN focused: `cargo test -p app secure_policy_clears_buffered_monitored_text_without_boundary -- --nocapture` passed.
+  - GREEN focused: `cargo test -p app monitored_flush_rechecks_secure_input_before_persisting_pending_text -- --nocapture` passed after extracting the runtime recheck helper.
+  - `cargo test -p app monitored -- --nocapture` passed (`20` tests).
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` initially failed on `clippy::too_many_arguments`; after grouping secure flush state it passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1103`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3938` nodes, `10546` edges, and `136` communities.
+  - `git diff --check` passed.
+- Test count if available: root `1103` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important plan-alignment finding from diff review: the test now pins the actual runtime edge by injecting a secure probe into the production recheck-and-flush path, not only the lower-level flush helper.
+  - Fixed Important app-context coverage gap: pending monitored memory is rechecked for secure input before persistence, updates `last_secure_poll_ms`, and clears pending/buffered state when Secure Input is active.
+  - Fixed Important privacy hardening gap found during RED: buffered partial monitored text is cleared when flush receives a secure policy even if no boundary insertion is pending.
+- Blocked or skipped work remaining:
+  - Skipped stale model-fetch progress note: current `download_url_reports_fresh_and_resumed_progress_totals` already covers fresh/resumed progress totals.
+  - Important app context finding remains: accept-failure privacy/stats side effects are not directly covered at the app level.
+  - Important app context finding remains: submit-time auxiliary context ordering is not pinned by a targeted test.
+  - Important app context finding remains: monitored-memory write failure drain/no-replay behavior is not directly tested.
+  - Important release/model finding remains: ignored model-backed evidence is not machine-enforced before release.
+  - Important acceptance/privacy finding remains: some harness output still needs raw-context suppression and hostile-content negative fixtures.
+  - Minor pure-crate findings remain: model-catalog provenance commit shape lacks direct coverage; thesaurus docs still describe multi-group dedupe while the table/test invariant forbids overlap.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 12:21:23 +08 - Screen OCR freshness TDD pass
 
 - Task selected: Add a targeted inference/runtime contract for same-field/same-element OCR freshness and make screen context request-specific.
