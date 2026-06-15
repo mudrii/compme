@@ -124,8 +124,17 @@ settings editor for these values remains part of Tier 3.2.
 Per `2026-06-10-a3-settings-ui-design.md`. The window ships as 8 tabs
 (Setup/General/Apps/Context/Emoji/Shortcuts/Statistics/About via NSTabView). Backing
 config + crates exist for the remaining panes; what's missing is narrower UI
-surface: Apps editing rows, Personalization controls, Emoji gender controls,
-Statistics range/group/metric controls, and the Context appearance sub-toggle.
+surface: Apps editing rows, a Personalization pane (mode/strength/instructions),
+the Statistics metric picker, the Context appearance sub-toggle, and the new
+Shortcuts hotkeys.
+
+> **Autonomous-loop status (2026-06-15):** the cleanly loop-doable Tier-3
+> controls have shipped — Statistics **range** + **grouping** pickers (3.3) and
+> the Emoji **gender** picker (3.2), plus the pure foundations for the Shortcuts
+> hotkeys (3.4) and Statistics chart model. The **remaining** items are
+> design-gated or need a runtime-application refactor, not clean FFI-over-pure-layer
+> (see each below) — they are handed off rather than blind-built. Live UX gates
+> for what shipped are in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md).
 
 ### 3.1 ☐ Per-app override *editing* rows (Apps pane) — the largest residual pane
 - **Status:** Apps pane is **display + delete only** — per-app recorded-input
@@ -153,23 +162,47 @@ Statistics range/group/metric controls, and the Context appearance sub-toggle.
   renders the rows and writes `emoji_enabled` / `emoji_skin_tone_index`;
   `run_loop.rs:1996-2010` initializes them from config; `run_loop.rs:3647-3672`
   persists switch and skin-tone edges.
-- **Pending:** Personalization pane (mode AcceptedOnly/AllMonitored, instructions
-  editor, 6-stop strength slider); Context appearance sub-toggle (deferred
-  upstream-equivalent gap); Emoji gender control
-  (`COMPME_EMOJI_GENDER` backing exists). Spec:
+- **Emoji gender ✅ DONE (`6366f64`):** a `COMPME_EMOJI_GENDER` popup
+  (Neutral/Female/Male) below the skin-tone popup, mirroring the skin-tone
+  feature (`emoji_gender_index` + `handle_emoji_gender_change`, unit-tested). The
+  **Emoji pane is now complete** (enable + skin-tone + gender).
+- **Pending — Personalization pane (🔒 design/refactor-gated, NOT clean FFI):**
+  mode (AcceptedOnly/AllMonitored), 6-stop strength, instructions editor. Backing
+  is parsed at startup (`build_personalization`, `parse_storage_mode`), but the
+  `PersonalizationProfile` is **moved into the inference worker** at startup
+  (`inference.rs`), so a *runtime-applying* control needs shared-mutable-profile
+  threading (a refactor + design choice); **mode** changes also need encrypted-store
+  open/close lifecycle; the **instructions** editor is a novel text-input + persist-timing
+  UX decision. Persist-only "applies next launch" is possible but is itself a UX
+  call. Context appearance sub-toggle remains deferred. Spec:
   `a3-settings-ui-design.md:46,47,48,73`.
 
-### 3.3 ☐ Statistics range / group / metric controls
-- **Status:** Sparklines only — fixed shown/accepted/words rows + lifetime row
-  (`run_loop.rs:1841-1850`, `stats::sparkline` at `stats/src/lib.rs:87`). No
-  range/group/metric pickers. Spec: `a3-settings-ui-design.md:52` ("DONE-MVP …
-  range/group/metric controls deferred").
+### 3.3 ◑ Statistics range / group / metric controls — range + group DONE
+- **Range picker ✅ DONE (`48f7fc5`):** an NSPopUpButton (Last 7/14/30 days)
+  drives the `daily_buckets` span via `StatRange::from_index().days()`.
+- **Grouping picker ✅ DONE (`3722a1d`):** a second popup (Daily/Weekly)
+  re-buckets the rows via `stats::group_buckets`; `metric_series` was refactored
+  onto it so the weekly chunk-of-7 rule lives once. Both pickers are bare
+  self-describing popups on the header row.
+- **Metric picker — deferred (design):** the pane renders one sparkline row per
+  metric (shown/accepted/words) already, so a metric *selector* implies a
+  single-metric-chart redesign — arguably already satisfied by the 3-row layout.
+  The pure selection model (`StatMetric::{ALL,label,from_index}` + `metric_series`)
+  is shipped and unit-tested, ready if a redesign is chosen.
+- Spec: `a3-settings-ui-design.md:52`.
 
-### 3.4 ◑ Shortcuts pane — recorder done; new hotkeys pending
+### 3.4 ◑ Shortcuts pane — recorder + parse foundation done; new hotkeys gated
 - **Status:** ✅ `KeyRecorderField` rows + live rebind + modifier-combo capture
-  (⌃⌥⇧⌘) are DONE and live-validated. **Pending:** force-activate hotkey, per-app
-  temp-toggle shortcut, global-toggle shortcut (three *new* hotkeys, not yet
-  surfaced). Spec: `a3-settings-ui-design.md:49,75`.
+  (⌃⌥⇧⌘) are DONE and live-validated. **Parse foundation ✅ DONE (`52f1bc6`):**
+  `ShortcutBindings::from_config` parses `COMPME_FORCE_ACTIVATE_KEY` /
+  `_TOGGLE_APP_KEY` / `_TOGGLE_GLOBAL_KEY` (+ internal-collision check), unit-tested.
+- **Pending — registration + actions (🔒 design/novel-FFI-gated):** the three
+  hotkeys need **always-on** Carbon registration (a new lifecycle — accept keys
+  are *transient*, armed only while a suggestion shows) and on-fire behavior.
+  toggle-app / toggle-global mirror the existing tray disable submenus, but
+  **force-activate's semantics ("force a completion now") are an unresolved design
+  decision**, and persistent global-hotkey registration + fire-handling is novel
+  FFI requiring live validation. Spec: `a3-settings-ui-design.md:49,75`.
 
 ### 3.5 ☐ Emoji `includeVanillaVariants` (deferred by design)
 - Deferred: an alternate vanilla glyph has no display path in the single-ghost
