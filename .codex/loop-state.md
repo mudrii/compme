@@ -475,6 +475,53 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 13:11:53 +08 - Sanitize E2E acceptance evidence
+
+- Task selected: Stop the E2E acceptance harness from printing raw document/log/prefix/stub content and require structured product evidence for the pipeline assertions.
+- Why it was selected: The active loop state listed acceptance/privacy raw-context suppression and hostile-content negative fixtures as an Important gap; it had a real RED path in the harness self-tests and did not require GUI access, credentials, or manual validation.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `tools/acceptance/e2e-complete-me.sh`
+- Tests added/updated:
+  - Added `self-test-e2e-no-raw-output`.
+  - Added `self-test-e2e-no-raw-banner`.
+  - Added `self-test-e2e-evidence-summary-redacts-hostile-content`.
+  - Added positive and negative pipeline evidence self-tests for full and word accept modes, including missing readback, hostile raw-context stage text, and missing-stage fixtures.
+- Verification commands and result:
+  - RED: `tools/acceptance/e2e-complete-me.sh --self-test` failed before implementation because the live gate printed raw log/document output.
+  - RED: `tools/acceptance/e2e-complete-me.sh --self-test` then failed because the live banner printed raw prefix/stub values.
+  - GREEN focused: `tools/acceptance/e2e-complete-me.sh --self-test` passed after switching to metadata-only evidence and anchored stage assertions.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1103`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3942` nodes, `10554` edges, and `137` communities; it left no tracked graph diff.
+  - `git diff --check` passed.
+- Test count if available: root `1103` listed tests; spike `30` listed tests; E2E self-test reported `10` self-test cases; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important acceptance/privacy finding: live E2E output now reports log path, line/byte counts, and document character count instead of raw log or document contents.
+  - Fixed Important acceptance/privacy finding: live E2E banner now reports prefix/stub character counts instead of raw seed text.
+  - Fixed Important test-realism finding: the harness self-tests now include hostile raw-context sentinels and negative fixtures for missing inserted text and missing product-stage evidence.
+  - Fixed Important correctness finding from review: stage evidence now uses anchored product log schemas so raw prompt-context text cannot satisfy pipeline assertions.
+- Blocked or skipped work remaining:
+  - Newly reported P2 review finding remains pending for a later tick: `COMPME_MEMORY=all` is parsed/exposed but the app loop still needs direct all-monitored memory behavior coverage and implementation.
+  - Important app context finding remains: accept-failure privacy/stats side effects are not directly covered at the app level.
+  - Important app context finding remains: submit-time auxiliary context ordering is not pinned by a targeted test.
+  - Important app context finding remains: monitored-memory write failure drain/no-replay behavior is not directly tested.
+  - Important release/model finding remains: ignored model-backed evidence is not machine-enforced before release.
+  - Minor pure-crate findings remain: model-catalog provenance commit shape lacks direct coverage; thesaurus docs still describe multi-group dedupe while the table/test invariant forbids overlap.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 12:21:23 +08 - Screen OCR freshness TDD pass
 
 - Task selected: Add a targeted inference/runtime contract for same-field/same-element OCR freshness and make screen context request-specific.

@@ -60,6 +60,66 @@ record_app_status() {
   return 1
 }
 
+print_evidence_summary() {
+  log_file="$1"
+  document_text="$2"
+  log_lines=0
+  log_bytes=0
+  if [ -f "$log_file" ]; then
+    log_lines="$(wc -l <"$log_file" | tr -d '[:space:]')"
+    log_bytes="$(wc -c <"$log_file" | tr -d '[:space:]')"
+  fi
+  document_chars="$(printf '%s' "$document_text" | wc -m | tr -d '[:space:]')"
+  echo "E2E evidence: log=$log_file log_lines=$log_lines log_bytes=$log_bytes document_chars=$document_chars"
+}
+
+required_stage_patterns_for_mode() {
+  mode="$1"
+  stages="focus|^compme: focus( |$)
+request gen=|^compme: request gen=[0-9][0-9]* prompt_chars=[0-9][0-9]*$
+completion gen=|^compme: completion gen=[0-9][0-9]* candidate_count=[0-9][0-9]* candidate_lengths=\\[[0-9, ]*\\]$"
+  if [ "$mode" = "word" ]; then
+    stages="${stages}
+accept Word|^compme: accept Word$
+accept Full|^compme: accept Full$"
+  else
+    stages="${stages}
+accept Full|^compme: accept Full$"
+  fi
+  printf '%s\n' "$stages"
+}
+
+assert_pipeline_evidence() {
+  document_text="$1"
+  stub_text="$2"
+  log_file="$3"
+  accept_mode="$4"
+  app_status="$5"
+  ok=1
+  if ! record_app_status "$app_status"; then
+    ok=0
+  fi
+
+  case "$document_text" in
+    *"$stub_text"*) echo "E2E: stub text inserted into document [PASS]" ;;
+    *) echo "E2E: stub text NOT found in document [FAIL]"; ok=0 ;;
+  esac
+
+  while IFS='|' read -r stage pattern; do
+    [ -n "$stage" ] || continue
+    if grep -Eq "$pattern" "$log_file"; then
+      echo "E2E: stage present: '$stage' [PASS]"
+    else
+      echo "E2E: stage missing: '$stage' [FAIL]"
+      ok=0
+    fi
+  done <<EOF
+$(required_stage_patterns_for_mode "$accept_mode")
+EOF
+
+  [ "$ok" -eq 1 ]
+}
+
 run_self_tests() {
   failures=0
   ( exit 7 ) &
@@ -78,6 +138,95 @@ run_self_tests() {
     echo "FAIL self-test-e2e-product-exit-status-success: zero app exit was not observed as success" >&2
     failures=$((failures + 1))
   fi
+  if grep -Eq '^[[:space:]]*cat "\$LOG"|^[[:space:]]*echo "\$RESULT"' "$0"; then
+    echo "FAIL self-test-e2e-no-raw-output: live gate prints raw log or document output" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-no-raw-output"
+  fi
+  if grep -Eq '^[[:space:]]*echo .*prefix=.*\$PREFIX|^[[:space:]]*echo .*stub=.*\$STUB' "$0"; then
+    echo "FAIL self-test-e2e-no-raw-banner: live gate prints raw prefix or stub output" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-no-raw-banner"
+  fi
+  tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t compme-e2e-self-test)"
+  hostile_log="$tmp_dir/hostile.log"
+  printf '%s\n' \
+    'compme: prompt_context=Some("Clipboard: RAW-CLIPBOARD-SENTINEL")' \
+    'compme: request gen=7 prompt_chars=32' >"$hostile_log"
+  hostile_doc='RAW-DOCUMENT-SENTINEL with private context'
+  evidence="$(print_evidence_summary "$hostile_log" "$hostile_doc")"
+  if [[ "$evidence" == *RAW-CLIPBOARD-SENTINEL* || "$evidence" == *RAW-DOCUMENT-SENTINEL* ]]; then
+    echo "FAIL self-test-e2e-evidence-summary-redacts-hostile-content: raw sentinel leaked" >&2
+    failures=$((failures + 1))
+  elif [[ "$evidence" == *"log=$hostile_log"* && "$evidence" == *"log_lines=2"* && "$evidence" == *"document_chars=42"* ]]; then
+    echo "PASS self-test-e2e-evidence-summary-redacts-hostile-content"
+  else
+    echo "FAIL self-test-e2e-evidence-summary-redacts-hostile-content: metadata missing from summary: $evidence" >&2
+    failures=$((failures + 1))
+  fi
+  pipeline_log="$tmp_dir/pipeline.log"
+  printf '%s\n' \
+    'compme: focus TextEdit' \
+    'compme: request gen=7 prompt_chars=32' \
+    'compme: completion gen=7 candidate_count=1 candidate_lengths=[8]' \
+    'compme: accept Full' >"$pipeline_log"
+  if assert_pipeline_evidence 'prefix STUB-COMPLETE' 'STUB-COMPLETE' "$pipeline_log" full 0 >/dev/null; then
+    echo "PASS self-test-e2e-pipeline-evidence-full-success"
+  else
+    echo "FAIL self-test-e2e-pipeline-evidence-full-success" >&2
+    failures=$((failures + 1))
+  fi
+  if assert_pipeline_evidence 'prefix only' 'STUB-COMPLETE' "$pipeline_log" full 0 >/dev/null; then
+    echo "FAIL self-test-e2e-pipeline-evidence-missing-readback: missing stub passed" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-pipeline-evidence-missing-readback"
+  fi
+  hostile_stage_log="$tmp_dir/hostile-stage.log"
+  printf '%s\n' \
+    'compme: prompt_context=Some("focus request gen=7 completion gen=7 accept Full")' >"$hostile_stage_log"
+  if assert_pipeline_evidence 'prefix STUB-COMPLETE' 'STUB-COMPLETE' "$hostile_stage_log" full 0 >/dev/null; then
+    echo "FAIL self-test-e2e-pipeline-evidence-hostile-stage-text: raw context satisfied stage evidence" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-pipeline-evidence-hostile-stage-text"
+  fi
+  full_missing_failed=0
+  for missing in 'focus' 'request gen=' 'completion gen=' 'accept Full'; do
+    missing_log="$tmp_dir/full-missing-$(printf '%s' "$missing" | tr -c '[:alnum:]' '_').log"
+    grep -v "$missing" "$pipeline_log" >"$missing_log"
+    if assert_pipeline_evidence 'prefix STUB-COMPLETE' 'STUB-COMPLETE' "$missing_log" full 0 >/dev/null; then
+      echo "FAIL self-test-e2e-pipeline-evidence-full-missing-stage: $missing passed" >&2
+      failures=$((failures + 1))
+      full_missing_failed=1
+    fi
+  done
+  if [ "$full_missing_failed" -eq 0 ]; then
+    echo "PASS self-test-e2e-pipeline-evidence-full-missing-stages"
+  fi
+  word_log="$tmp_dir/word.log"
+  printf '%s\n' \
+    'compme: focus TextEdit' \
+    'compme: request gen=8 prompt_chars=32' \
+    'compme: completion gen=8 candidate_count=1 candidate_lengths=[8]' \
+    'compme: accept Word' \
+    'compme: accept Full' >"$word_log"
+  word_missing_failed=0
+  for missing in 'accept Word' 'accept Full'; do
+    missing_log="$tmp_dir/word-missing-$(printf '%s' "$missing" | tr -c '[:alnum:]' '_').log"
+    grep -v "$missing" "$word_log" >"$missing_log"
+    if assert_pipeline_evidence 'prefix STUB-COMPLETE' 'STUB-COMPLETE' "$missing_log" word 0 >/dev/null; then
+      echo "FAIL self-test-e2e-pipeline-evidence-word-missing-stage: $missing passed" >&2
+      failures=$((failures + 1))
+      word_missing_failed=1
+    fi
+  done
+  if [ "$word_missing_failed" -eq 0 ]; then
+    echo "PASS self-test-e2e-pipeline-evidence-word-missing-stages"
+  fi
+  rm -rf "$tmp_dir"
   [ "$failures" -eq 0 ] || return 1
   echo "E2E self-tests passed"
   return 0
@@ -103,7 +252,9 @@ if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPME_E2E_STUB+x}" != "x" ]; then
   STUB=" jumps over"
 fi
 
-echo "E2E compme: prefix=\"$PREFIX\" stub=\"$STUB\" pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE"
+prefix_chars="$(printf '%s' "$PREFIX" | wc -m | tr -d '[:space:]')"
+stub_chars="$(printf '%s' "$STUB" | wc -m | tr -d '[:space:]')"
+echo "E2E compme: prefix_chars=$prefix_chars stub_chars=$stub_chars pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE"
 
 # 1. Seed TextEdit with a known prefix and bring it to the front.
 osascript - "$PREFIX" <<'OSA' || fail "could not seed TextEdit"
@@ -149,45 +300,12 @@ app_status="$WAIT_STATUS"
 
 # 6. Read the document back and assert.
 RESULT="$(osascript -e 'tell application "TextEdit" to get text of front document' 2>/dev/null)"
-echo "---- binary log ----"
-cat "$LOG"
-echo "---- document ----"
-echo "$RESULT"
-echo "--------------------"
+print_evidence_summary "$LOG" "$RESULT"
 
 ok=1
-if ! record_app_status "$app_status"; then
+if ! assert_pipeline_evidence "$RESULT" "$STUB" "$LOG" "$ACCEPT_MODE" "$app_status"; then
   ok=0
 fi
 
-case "$RESULT" in
-  *"$STUB"*) echo "E2E: stub text inserted into document [PASS]" ;;
-  *) echo "E2E: stub text NOT found in document [FAIL]"; ok=0 ;;
-esac
-
-stages="focus
-request gen=
-completion gen="
-if [ "$ACCEPT_MODE" = "word" ]; then
-  stages="${stages}
-accept Word
-accept Full"
-else
-  stages="${stages}
-accept Full"
-fi
-
-while IFS= read -r stage; do
-  [ -n "$stage" ] || continue
-  if grep -q "$stage" "$LOG"; then
-    echo "E2E: stage present: '$stage' [PASS]"
-  else
-    echo "E2E: stage missing: '$stage' [FAIL]"
-    ok=0
-  fi
-done <<EOF
-$stages
-EOF
-
-[ "$ok" -eq 1 ] || fail "pipeline assertions failed (see log above)"
+[ "$ok" -eq 1 ] || fail "pipeline assertions failed (see log: $LOG)"
 echo "E2E PASS: $ACCEPT_MODE focus->read->infer->ghost->accept->insert pipeline"
