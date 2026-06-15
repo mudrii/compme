@@ -390,6 +390,15 @@ mod tests {
         );
         // Look-alike host must NOT match on a non-dot boundary.
         assert_eq!(p.resolve_instructions(None, Some("evilgoogle.com")), "");
+        // Nor when the rule appears as a non-boundary suffix substring inside a
+        // different registrable domain (the classic `google.com.evil.com`
+        // over-match). `prefs::host_matches_domain_rule` pins this exact
+        // negative; personalization's independent matcher must agree so the two
+        // never drift apart.
+        assert_eq!(
+            p.resolve_instructions(None, Some("google.com.evil.com")),
+            ""
+        );
     }
 
     #[test]
