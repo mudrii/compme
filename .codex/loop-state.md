@@ -652,6 +652,54 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 11:50:59 +08 - Stats sparkline overflow TDD pass
+
+- Task selected: Add TDD coverage and fix `stats::sparkline` scaling for pathological `usize::MAX` values.
+- Why it was selected: The latest loop state recorded this as a loop-doable Important pure-crate correctness gap, and it could be fixed with a focused public behavior test without GUI, credentials, or manual validation.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/stats/src/lib.rs`
+  - `docs/DEVELOPMENT.md`
+- Tests added/updated:
+  - Added `sparkline_handles_usize_max_without_overflow`.
+- Verification commands and result:
+  - Baseline focused check: `cargo test -p stats sparkline_scales_bars_to_the_series_maximum -- --nocapture` passed before the new regression test.
+  - RED: `cargo test -p stats sparkline_handles_usize_max_without_overflow -- --nocapture` failed before implementation with `attempt to multiply with overflow`.
+  - GREEN focused: `cargo test -p stats sparkline_handles_usize_max_without_overflow -- --nocapture` passed.
+  - `cargo test -p stats -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1095`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify query "stats sparkline tests overflow coverage in crates/stats"` passed and scoped the affected public function/test area.
+  - `graphify update .` passed and rebuilt `3915` nodes, `10445` edges, and `138` communities.
+- Test count if available: root `1095` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important pure-crate correctness finding: `stats::sparkline` now uses widened scaling arithmetic, so `usize::MAX` values render correctly without debug overflow or release wraparound.
+  - Final four-axis diff review reported no Critical or Important findings.
+- Blocked or skipped work remaining:
+  - Important pure/core finding remains: `model_fetch::download_url` progress callback and worker `status.total` semantics need loopback coverage for fresh and resumed downloads.
+  - Important app context finding remains: same-field/same-element OCR freshness needs a targeted inference-level contract test.
+  - Important app context finding remains: secure-input recheck before monitored-memory flush is not directly pinned by a run-loop slice test.
+  - Important app context finding remains: accept-failure privacy/stats side effects are not directly covered at the app level.
+  - Important app context finding remains: submit-time auxiliary context ordering is not pinned by a targeted test.
+  - Important app context finding remains: monitored-memory write failure drain/no-replay behavior is not directly tested.
+  - Important release/model finding remains: ignored model-backed evidence is not machine-enforced before release.
+  - Important acceptance/privacy finding remains: some harness output still needs raw-context suppression and hostile-content negative fixtures.
+  - Minor pure-crate findings remain: model-catalog provenance commit shape lacks direct coverage; thesaurus docs still describe multi-group dedupe while the table/test invariant forbids overlap.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 11:37:17 +08 - Privacy redaction guard TDD pass
 
 - Task selected: Add TDD coverage and fixes for privacy redaction at the PAN recognizer and accepted-input storage boundary.

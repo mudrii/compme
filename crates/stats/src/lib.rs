@@ -94,7 +94,10 @@ pub fn sparkline(values: &[usize]) -> String {
                 BARS[0]
             } else {
                 // Ceiling division onto 0..=7: v=0 → 0, v=max → 7.
-                BARS[(v * (BARS.len() - 1)).div_ceil(max).min(BARS.len() - 1)]
+                let scaled = ((v as u128) * ((BARS.len() - 1) as u128))
+                    .div_ceil(max as u128)
+                    .min((BARS.len() - 1) as u128) as usize;
+                BARS[scaled]
             }
         })
         .collect()
@@ -483,6 +486,12 @@ mod tests {
         assert_eq!(sparkline(&[2, 2]), "██"); // every max is full-height
         assert_eq!(sparkline(&[0, 0]), "▁▁"); // all-zero series stays baseline
         assert_eq!(sparkline(&[]), "");
+    }
+
+    #[test]
+    fn sparkline_handles_usize_max_without_overflow() {
+        assert_eq!(sparkline(&[0, usize::MAX]), "▁█");
+        assert_eq!(sparkline(&[usize::MAX, usize::MAX]), "██");
     }
 
     #[test]
