@@ -30,9 +30,9 @@ macOS runner.
    be fetched or verified:
 
    ```sh
-   COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored
+   COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1
    cd tools/spike
-   COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored
+   COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1
    cd ../..
    ```
 

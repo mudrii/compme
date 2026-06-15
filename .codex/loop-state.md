@@ -1464,3 +1464,55 @@
   - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
+## 2026-06-15 15:38:53 +0800 - Serialized model-backed release gate TDD pass
+
+- Task selected: Serialize model-backed ignored release gate commands and add machine verification for the docs.
+- Why it was selected: The first two active loop-state items were stale in the current checkout (`compat::terminal_prompt_activates` already covers path/flag command lines and `model_fetch::download_url` already covers fresh/resumed progress totals). The next real loop-doable gap was the release/docs item requiring `--test-threads=1` on ignored model-backed gates plus a checker that prevents future drift.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `docs/ACCEPTANCE.md`
+  - `docs/RELEASING.md`
+  - `tools/release/check-model-gates.sh`
+  - `tools/release/run-model-gates.sh`
+- Tests added/updated:
+  - Updated `tools/release/check-model-gates.sh` to require serialized ignored model-backed commands in both the executable gate script and the acceptance/release docs.
+  - Updated `tools/release/run-model-gates.sh`, `docs/ACCEPTANCE.md`, and `docs/RELEASING.md` to run/document `--ignored --test-threads=1`.
+- Verification commands and result:
+  - Stale-skip check: `cargo test -p compat terminal_skips -- --nocapture` passed with `2` tests, proving the terminal path/flag command item is already covered.
+  - Stale-skip check: `cargo test -p model_fetch download_url_reports_fresh_and_resumed_progress_totals -- --nocapture` passed, proving the model-fetch progress-total item is already covered.
+  - RED: `bash tools/release/check-model-gates.sh` failed with `missing release model gate: serialized root ignored model tests` after the checker was changed before the executable gate script.
+  - Focused GREEN: `bash tools/release/check-model-gates.sh` passed after serializing the gate script.
+  - Focused model-backed gate: `bash tools/release/run-model-gates.sh` passed with the serialized ignored model tests.
+  - Focused post-review check: `bash tools/release/check-model-gates.sh && bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed after adding docs verification checks.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1110`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `git diff --check` passed.
+  - `graphify query "compat terminal_prompt_activates lowercase path flag command coverage gap /usr/local/bin ./script --dry-run"` passed and identified the existing compat helper/test cluster.
+  - `graphify query "model_fetch download_url progress callback status.total fresh resumed loopback tests"` passed and identified the existing model-fetch progress-total test.
+  - `graphify update .` passed and rebuilt `4005` nodes, `10712` edges, and `145` communities.
+- Test count if available: root `1110` listed tests; spike `30` listed tests; full workspace run included app `309` tests and platform_macos `223` tests; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Correctness/security/release-risk subagent review reported no findings and confirmed the `--test-threads=1` placement is valid for libtest arguments.
+  - Fixed Important plan-alignment finding from subagent review: `tools/release/check-model-gates.sh` now verifies the serialized commands in `docs/ACCEPTANCE.md` and `docs/RELEASING.md`, not just `tools/release/run-model-gates.sh`.
+  - Local quality/architecture/shell-portability review found no remaining Critical or Important findings after the docs checks were added.
+  - Local tests/coverage review found no remaining Critical or Important findings; the policy checker now fails on executable or documented command drift.
+- Blocked or skipped work remaining:
+  - Skipped as stale/currently covered: `compat::terminal_prompt_activates` lowercase path/flag command coverage gap; current tests include `./script --dry-run now`, `/usr/local/bin/tool`, `~/bin/tool`, `/tmp/tool`, `/private/tmp/tool`, `/nix/store/...`, and `cargo test -p compat terminal_skips -- --nocapture` passed.
+  - Skipped as stale/currently covered: `model_fetch::download_url` fresh/resumed progress callback and total semantics; `download_url_reports_fresh_and_resumed_progress_totals` exists and passed.
+  - Platform/acceptance raw-log item appears stale for tracked repo artifacts: `git ls-files tools/acceptance/logs` reported `0`; live gate self-tests already check no raw output and hostile raw-context rejection.
+  - Acceptance negative-fixture and A2 submit-proof items appear stale/currently covered by `e2e-complete-me.sh --self-test` and `run-a2-compat-gates.sh --self-test`, which passed with missing readback/stage, hostile embedded request, resolved app identity, terminal identity, and prompt-marker checks.
+  - Release workflow machine-check item appears covered: `.github/workflows/release.yml` runs `bash tools/release/run-model-gates.sh`, release job depends on `validate`, and `tools/release/check-model-gates.sh` passed after checking that workflow.
+  - Thesaurus Minor remains: docs describe multi-group dedupe behavior while tests enforce no overlap; either test a fixture helper for overlap or narrow the docs to the invariant.
+  - README Minor remains: Current Validation Gates omit the model-backed release gates; existing unstaged README edits predate this tick and were left untouched.
+  - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
