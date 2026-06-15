@@ -1382,19 +1382,17 @@ fn apply_accept_side_effects(accepted: bool, side_effects: AcceptSideEffects<'_>
 /// `MemoryStore::monitor` is mode-aware: it persists only in `AllMonitored`
 /// mode and no-ops in `AcceptedOnly`/`Off`, while this helper preserves the app
 /// loop's privacy gates shared with accept recording.
-fn record_monitored_text(
+fn record_monitored_text_with_monitor(
     field: &FieldHandle,
     text: &str,
-    memory: Option<&memory::MemoryStore>,
     collection_allowed: bool,
+    monitor: &mut impl FnMut(&FieldHandle, &str) -> std::result::Result<(), memory::MemoryError>,
 ) {
     if !collection_allowed || field.app.starts_with("pid:") || text.is_empty() {
         return;
     }
-    if let Some(store) = memory {
-        if let Err(err) = store.monitor(&field.app, text) {
-            eprintln!("compme: memory monitor failed: {err}");
-        }
+    if let Err(err) = monitor(field, text) {
+        eprintln!("compme: memory monitor failed: {err}");
     }
 }
 
@@ -1489,6 +1487,21 @@ fn flush_monitored_changes(
     prefs: &Prefs,
     policy: MonitoredPolicy,
 ) {
+    flush_monitored_changes_with_monitor(pending, buffers, prefs, policy, |field, text| {
+        if let Some(store) = memory {
+            store.monitor(&field.app, text)?;
+        }
+        Ok(())
+    });
+}
+
+fn flush_monitored_changes_with_monitor(
+    pending: &mut Vec<PendingMonitoredText>,
+    buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
+    prefs: &Prefs,
+    policy: MonitoredPolicy,
+    mut monitor: impl FnMut(&FieldHandle, &str) -> std::result::Result<(), memory::MemoryError>,
+) {
     if policy.secure {
         pending.clear();
         buffers.clear();
@@ -1522,7 +1535,7 @@ fn flush_monitored_changes(
         let Some(text) = buffered_monitored_text(buffers, &item.field, &item.inserted) else {
             continue;
         };
-        record_monitored_text(&item.field, &text, memory, collection_allowed);
+        record_monitored_text_with_monitor(&item.field, &text, collection_allowed, &mut monitor);
     }
 }
 
@@ -6932,6 +6945,63 @@ mod tests {
         assert!(pending.is_empty());
         assert!(buffers.is_empty());
         assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn monitored_write_failure_drains_boundary_without_replay() {
+        let field = field_with_app("com.apple.TextEdit");
+        let prefs = Prefs::default();
+        let mut pending = Vec::new();
+        let mut buffers = HashMap::new();
+        let first = typed_change_after_baseline(&field, "", "first ");
+        enqueue_monitored_change(
+            &mut pending,
+            &first,
+            Some("com.apple.TextEdit".into()),
+            None,
+        );
+        let mut attempts = Vec::new();
+
+        flush_monitored_changes_with_monitor(
+            &mut pending,
+            &mut buffers,
+            &prefs,
+            monitored_policy(true, false, true, 1_001),
+            |field, text| {
+                attempts.push((field.app.clone(), text.to_string()));
+                Err(memory::MemoryError::Db("forced failure".into()))
+            },
+        );
+
+        assert_eq!(
+            attempts,
+            vec![("com.apple.TextEdit".into(), "first ".into())]
+        );
+        assert!(pending.is_empty());
+        assert!(buffers.is_empty());
+
+        let next = typed_change_after_baseline(&field, "first ", "first next ");
+        enqueue_monitored_change(&mut pending, &next, Some("com.apple.TextEdit".into()), None);
+        flush_monitored_changes_with_monitor(
+            &mut pending,
+            &mut buffers,
+            &prefs,
+            monitored_policy(true, false, true, 1_002),
+            |field, text| {
+                attempts.push((field.app.clone(), text.to_string()));
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            attempts,
+            vec![
+                ("com.apple.TextEdit".into(), "first ".into()),
+                ("com.apple.TextEdit".into(), "next ".into()),
+            ]
+        );
+        assert!(pending.is_empty());
+        assert!(buffers.is_empty());
     }
 
     #[test]

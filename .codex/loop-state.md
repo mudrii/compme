@@ -1413,3 +1413,54 @@
   - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
+## 2026-06-15 15:29:18 +0800 - Monitored memory write-failure drain TDD pass
+
+- Task selected: Add monitored-memory write-failure drain/no-replay coverage.
+- Why it was selected: The active loop state listed this as the highest-priority loop-doable app coverage gap after the submit auxiliary context ordering pass. It was feasible in one tick because the behavior could be pinned with a narrow monitor-writer seam instead of requiring live GUI or external credentials.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/app/src/run_loop.rs`
+- Tests added/updated:
+  - Added `monitored_write_failure_drains_boundary_without_replay`, proving a failed monitored memory write still drains the pending boundary text, clears the buffer, and does not replay the failed text on the next boundary.
+  - Extracted `flush_monitored_changes_with_monitor` / `record_monitored_text_with_monitor` so the existing production path still uses `MemoryStore::monitor` while tests can inject a deterministic write failure.
+- Verification commands and result:
+  - RED: `cargo test -p app monitored_write_failure_drains_boundary_without_replay -- --nocapture` failed because `flush_monitored_changes_with_monitor` did not exist.
+  - Focused GREEN: `cargo test -p app monitored_write_failure_drains_boundary_without_replay -- --nocapture` passed.
+  - Focused regression: `cargo test -p app monitored -- --nocapture` passed with `21` tests.
+  - `cargo fmt --all -- --check` passed after applying `cargo fmt --all`.
+  - `cargo clippy -p app --all-targets -- -D warnings` passed during local quality review.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1110`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `git diff --check` passed.
+  - `graphify query "monitored memory write failure drain no replay flush_monitored_changes MemoryStore monitor"` passed and identified the monitored-memory helper/test cluster.
+  - `graphify update .` passed and rebuilt `4004` nodes, `10711` edges, and `136` communities.
+- Test count if available: root `1110` listed tests; spike `30` listed tests; full workspace run included app `309` tests and platform_macos `223` tests; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Correctness/security/data-loss subagent review reported no findings for this tick's `crates/app/src/run_loop.rs` diff.
+  - Plan-alignment subagent review reported no findings and confirmed the change addresses the monitored-memory write-failure drain/no-replay task without broadening scope.
+  - Local quality/architecture/type-safety review found no Critical or Important findings after rustfmt; `cargo clippy -p app --all-targets -- -D warnings` passed.
+  - Local tests/coverage/real-behavior review found no Critical or Important findings; the new test exercises a real flush-path writer callback and verifies no stale text replay.
+- Blocked or skipped work remaining:
+  - Core-crate Important: `compat::terminal_prompt_activates` still has a lowercase path/flag command coverage gap; add a red test for `/usr/local/bin/tool --flag /tmp/out` / `./script --dry-run now` returning false, then tighten the terminal prose gate.
+  - Core-crate Important: `model_fetch::download_url` progress callback semantics and worker `status.total` need loopback tests covering fresh and resumed downloads.
+  - Platform/acceptance Important: live acceptance logs still include raw field/prompt context in some example/script paths; add a red formatting-helper test and route logs through redacted/metadata-only output.
+  - Acceptance Important: `e2e-complete-me.sh --self-test` still lacks negative fixture tests for missing document readback and missing required stage-log evidence.
+  - Acceptance Important: A2 `works` / `terminal-nlp` log checks still accept any `request gen=` without proving target identity or prompt marker.
+  - Release/docs Important: model-backed ignored gate commands are documented without `--test-threads=1`; add a docs verification check and serialize them.
+  - Release/docs Important: `release.yml` still has no machine-checkable model-gate evidence requirement before tag publishing.
+  - Thesaurus Minor: docs describe multi-group dedupe behavior while tests enforce no overlap; either test a fixture helper for overlap or narrow the docs to the invariant.
+  - README Minor: Current Validation Gates omit the model-backed release gates; add a release/model-backed pointer after the serialized command docs are fixed.
+  - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
