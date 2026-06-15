@@ -111,6 +111,30 @@ pub struct DayBucket {
     pub words: usize,
 }
 
+/// Re-bucket trailing daily slices by the Statistics grouping picker: `Daily`
+/// returns them unchanged; `Weekly` sums every 7 consecutive slices into one
+/// bucket, oldest group first (a trailing partial week is summed as-is),
+/// summing every outcome count and accepted-words total. Feeds `stats_pane_lines`.
+pub fn group_buckets(buckets: &[DayBucket], grouping: StatGrouping) -> Vec<DayBucket> {
+    match grouping {
+        StatGrouping::Daily => buckets.to_vec(),
+        StatGrouping::Weekly => buckets
+            .chunks(7)
+            .map(|week| {
+                let mut agg = DayBucket::default();
+                for b in week {
+                    agg.counts.shown += b.counts.shown;
+                    agg.counts.accepted += b.counts.accepted;
+                    agg.counts.dismissed += b.counts.dismissed;
+                    agg.counts.superseded += b.counts.superseded;
+                    agg.words += b.words;
+                }
+                agg
+            })
+            .collect(),
+    }
+}
+
 /// Selectable trailing span for the Statistics-pane chart (the "range" control).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatRange {
@@ -471,15 +495,12 @@ impl Stats {
         grouping: StatGrouping,
         metric: StatMetric,
     ) -> Vec<usize> {
-        let daily: Vec<usize> = self
-            .daily_buckets(now_ms, range.days())
+        // Re-bucket by the grouping (the weekly chunk-of-7 rule lives once in
+        // group_buckets), then project each bucket onto the chosen metric.
+        group_buckets(&self.daily_buckets(now_ms, range.days()), grouping)
             .iter()
             .map(|b| metric.of(b))
-            .collect();
-        match grouping {
-            StatGrouping::Daily => daily,
-            StatGrouping::Weekly => daily.chunks(7).map(|week| week.iter().sum()).collect(),
-        }
+            .collect()
     }
 
     /// One human-readable line for the menu bar (§11 "words completed" display):
@@ -1121,5 +1142,38 @@ mod tests {
         assert_eq!(StatRange::from_index(99), StatRange::Last7Days);
         assert_eq!(StatGrouping::from_index(99), StatGrouping::Daily);
         assert_eq!(StatMetric::from_index(99), StatMetric::Shown);
+    }
+
+    #[test]
+    fn group_buckets_weekly_sums_each_seven_day_chunk_oldest_first() {
+        // The Statistics grouping picker: Daily returns the buckets unchanged;
+        // Weekly sums every 7 trailing slices (oldest group first, trailing
+        // partial group summed as-is) into one bucket per week.
+        let mk = |shown, accepted, words| DayBucket {
+            counts: Counts {
+                shown,
+                accepted,
+                dismissed: 0,
+                superseded: 0,
+            },
+            words,
+        };
+        let mut daily = vec![DayBucket::default(); 9]; // week0 = 0..6, week1 = 7..8
+        daily[0] = mk(1, 0, 2);
+        daily[6] = mk(0, 1, 3);
+        daily[7] = mk(2, 0, 0);
+        daily[8] = mk(0, 1, 5);
+
+        // Daily grouping is the identity.
+        assert_eq!(group_buckets(&daily, StatGrouping::Daily), daily);
+
+        // Weekly collapses to one bucket per 7-day chunk, summing every field.
+        let weekly = group_buckets(&daily, StatGrouping::Weekly);
+        assert_eq!(weekly.len(), 2);
+        assert_eq!(weekly[0], mk(1, 1, 5)); // sum of idx 0..6
+        assert_eq!(weekly[1], mk(2, 1, 5)); // sum of idx 7..8 (partial week)
+
+        // Empty input → empty (no panic on chunks of 0).
+        assert!(group_buckets(&[], StatGrouping::Weekly).is_empty());
     }
 }

@@ -2066,6 +2066,13 @@ fn build_settings_flags(
             .iter()
             .map(|r| r.label().to_string())
             .collect(),
+        // Default index 0 = StatGrouping::ALL[0] (Daily) → group_buckets is the
+        // identity, so the rendered rows are byte-identical to pre-picker.
+        stat_group_index: Arc::new(AtomicUsize::new(0)),
+        stat_group_titles: stats::StatGrouping::ALL
+            .iter()
+            .map(|g| g.label().to_string())
+            .collect(),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
         shortcuts_text: {
@@ -3390,12 +3397,17 @@ pub fn run() -> Result<(), String> {
             // Compose the Statistics rows right before showing — the window
             // renders strings only; data stays on this side of the seam.
             if let Ok(mut lines) = settings_flags.stats_lines.lock() {
-                // Span chosen by the Statistics range picker (default 7 days).
+                // Span + bucketing chosen by the Statistics range/group pickers
+                // (defaults: 7 days, Daily → identity bucketing).
                 let days = stats::StatRange::from_index(
                     settings_flags.stat_range_index.load(Ordering::Relaxed),
                 )
                 .days();
-                *lines = stats_pane_lines(&usage.daily_buckets(wall_ms, days));
+                let grouping = stats::StatGrouping::from_index(
+                    settings_flags.stat_group_index.load(Ordering::Relaxed),
+                );
+                let buckets = stats::group_buckets(&usage.daily_buckets(wall_ms, days), grouping);
+                *lines = stats_pane_lines(&buckets);
                 // Grow-only session totals, NOT window-derived counts: past
                 // 30 days the window prunes and the row would regress — and
                 // it must agree with what the periodic flush writes to disk.

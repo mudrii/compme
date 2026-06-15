@@ -14,15 +14,22 @@
 
 ## Tier 3 settings UI
 
-### 3.3 Statistics — range picker (commit `feat(stats)…` range picker)
-- [ ] Settings → **Statistics** tab shows a **Range:** dropdown at the top-right
-      of the pane, not overlapping the "This session + lifetime" header.
-- [ ] The dropdown lists exactly **Last 7 days / Last 14 days / Last 30 days**
-      in that order, with **Last 7 days** preselected.
-- [ ] Selecting **Last 14 days** / **Last 30 days**, then reopening Settings
-      (the rows recompose on show), re-renders the sparkline rows over the
-      chosen span (more glyphs / different shape for a wider window).
-- [ ] Default (Last 7 days) renders identically to before the picker existed.
+### 3.3 Statistics — range + grouping pickers (commits `feat(stats)…` range / grouping picker)
+- [ ] Settings → **Statistics** tab shows **two** bare dropdowns side-by-side on
+      the header row (no text labels — the items are self-describing): a range
+      popup then a grouping popup, both right of the "This session + lifetime"
+      header with no overlap and no clipping at the pane's right edge (the group
+      popup ends ~22px from the usable edge — confirm it isn't cut off).
+- [ ] No orphaned/ghost "Range:" label remains (it was removed when the second
+      picker landed).
+- [ ] Range popup lists **Last 7 days / Last 14 days / Last 30 days** (Last 7
+      preselected); grouping popup lists **Daily / Weekly** (Daily preselected).
+- [ ] Range default (7 days) + grouping default (Daily) render identically to
+      before the pickers existed.
+- [ ] Switching grouping to **Weekly** with a ≥14-day range, then reopening
+      Settings (rows recompose on show, not instantly — same as the range
+      picker), collapses the rows to one bar per week, oldest week first, with
+      the trailing partial week summed (not dropped).
 
 _Backed by pure, unit-tested logic: `stats::StatRange::{ALL,days,label,from_index}`
 + `metric_series` (range/group/metric series) + `from_index` OOB-clamp. Only the

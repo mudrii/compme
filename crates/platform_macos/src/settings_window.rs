@@ -286,6 +286,13 @@ pub struct SettingsFlags {
     /// order (so the index addresses the enum). Composed app-side because the
     /// window can't see the `stats` crate (the `setup_model_menu_titles` seam).
     pub stat_range_titles: Vec<String>,
+    /// Statistics: selected grouping-picker row (a `StatGrouping` index —
+    /// Daily/Weekly). The run loop reads it to re-bucket the daily slices via
+    /// `stats::group_buckets` before composing `stats_lines`. Default 0 (Daily)
+    /// is the identity re-bucketing, so the legacy display is unchanged.
+    pub stat_group_index: Arc<AtomicUsize>,
+    /// Statistics grouping-picker item titles, one per `StatGrouping::ALL` row.
+    pub stat_group_titles: Vec<String>,
     /// About text (version/license/no-telemetry/repo/credits), composed once
     /// at startup — static for the process lifetime, rendered verbatim.
     pub about_text: String,
@@ -398,6 +405,18 @@ define_class!(
                 self.ivars()
                     .flags
                     .stat_range_index
+                    .store(index, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(selectStatGroup:))]
+        fn select_stat_group(&self, sender: Option<&NSPopUpButton>) {
+            if let Some(popup) = sender {
+                // Resolved by StatGrouping::from_index (total over OOB).
+                let index = popup.indexOfSelectedItem().max(0) as usize;
+                self.ivars()
+                    .flags
+                    .stat_group_index
                     .store(index, Ordering::Relaxed);
             }
         }
@@ -1395,36 +1414,52 @@ fn build_window(
         ));
         stats.addSubview(&stats_header);
 
-        // Range picker (Tier 3.3): selects the trailing span the run loop
-        // renders the rows over. Titles + selection cross the seam via flags.
+        // Range + grouping pickers (Tier 3.3): select the trailing span and the
+        // daily/weekly bucketing the run loop renders the rows over. Bare,
+        // self-describing popups ("Last 7 days" / "Daily") on the header row —
+        // range x=250..358, grouping x=364..472, both clearing the 220-wide
+        // header (x=20..240) and sitting at y=297, above the data rows (y<=270).
         {
-            let range_label = NSTextField::labelWithString(&NSString::from_str("Range:"), mtm);
-            range_label.setFrame(NSRect::new(
-                NSPoint::new(300.0, 300.0),
-                NSSize::new(48.0, 22.0),
-            ));
-            stats.addSubview(&range_label);
-
-            let popup = NSPopUpButton::initWithFrame_pullsDown(
+            let range_popup = NSPopUpButton::initWithFrame_pullsDown(
                 NSPopUpButton::alloc(mtm),
-                NSRect::new(NSPoint::new(348.0, 297.0), NSSize::new(132.0, 26.0)),
+                NSRect::new(NSPoint::new(250.0, 297.0), NSSize::new(108.0, 26.0)),
                 false,
             );
             for title in &flags.stat_range_titles {
-                popup.addItemWithTitle(&NSString::from_str(title));
+                range_popup.addItemWithTitle(&NSString::from_str(title));
             }
             let selected = flags.stat_range_index.load(Ordering::Relaxed);
             if selected < flags.stat_range_titles.len() {
-                popup.selectItemAtIndex(selected as isize);
+                range_popup.selectItemAtIndex(selected as isize);
             }
             // SAFETY: target outlives the window (held by MacosSettingsWindow);
             // setTarget/setAction are the standard control-wiring calls.
             unsafe {
                 let any: &AnyObject = target.as_ref();
-                popup.setTarget(Some(any));
-                popup.setAction(Some(sel!(selectStatRange:)));
+                range_popup.setTarget(Some(any));
+                range_popup.setAction(Some(sel!(selectStatRange:)));
             }
-            stats.addSubview(&popup);
+            stats.addSubview(&range_popup);
+
+            let group_popup = NSPopUpButton::initWithFrame_pullsDown(
+                NSPopUpButton::alloc(mtm),
+                NSRect::new(NSPoint::new(364.0, 297.0), NSSize::new(108.0, 26.0)),
+                false,
+            );
+            for title in &flags.stat_group_titles {
+                group_popup.addItemWithTitle(&NSString::from_str(title));
+            }
+            let selected = flags.stat_group_index.load(Ordering::Relaxed);
+            if selected < flags.stat_group_titles.len() {
+                group_popup.selectItemAtIndex(selected as isize);
+            }
+            // SAFETY: as above — target outlives the window.
+            unsafe {
+                let any: &AnyObject = target.as_ref();
+                group_popup.setTarget(Some(any));
+                group_popup.setAction(Some(sel!(selectStatGroup:)));
+            }
+            stats.addSubview(&group_popup);
         }
 
         let initial: Vec<String> = flags
