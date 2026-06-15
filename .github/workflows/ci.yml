@@ -43,12 +43,24 @@ jobs:
       # Model-inference tests in model_client/tests/latency.rs are #[ignore]d
       # (they need a local GGUF + Metal GPU), so the default run is hermetic.
       # Note: a few platform_macos tests share the process-wide NSPasteboard and
-      # can flake under parallelism; rerun the job if that single test fails.
+      # are serialized to avoid cross-test pasteboard state leaks.
       - name: Test
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets -- --test-threads=1
 
       - name: Build
         run: cargo build --workspace --all-targets
+
+      - name: Acceptance script syntax
+        run: bash -n tools/acceptance/*.sh
+
+      - name: E2E runner self-test
+        run: tools/acceptance/e2e-complete-me.sh --self-test
+
+      - name: A1b runner self-test
+        run: tools/acceptance/run-a1b-live-gates.sh --self-test
+
+      - name: A2 compatibility runner self-test
+        run: tools/acceptance/run-a2-compat-gates.sh --self-test
 
   spike:
     name: spike fmt · clippy · test · build (macOS)

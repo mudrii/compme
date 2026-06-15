@@ -81,6 +81,7 @@
   - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
   - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
   - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - Final affected rerun after acceptance-doc review fix: `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
   - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
   - `git diff --check` passed.
   - Stale-text/overclaim scan passed with no matches for the reviewed contradiction patterns.
@@ -365,4 +366,65 @@
   - Settings window timed/behavioral LOOK spot-checks remain blocked/manual: General switches live-flip + persist across relaunch, Setup rows re-probe timing, and Apps Delete confirmation default button.
   - A2 GUI/session-dependent compatibility, OCR quality/performance, and mirror validation remain blocked/manual pending a real macOS GUI session.
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
-- Commit hash and push confirmation, or DRY/blocked status: This entry is included in the final commit for the cycle; the exact self-referential commit hash and upstream equality check are reported in the final response.
+- Commit hash and push confirmation, or DRY/blocked status: Committed and pushed as `555688e2dd956ae5f6d91819c2a701d90dae1655`; verified local HEAD equaled `origin/spike/a0` on 2026-06-15.
+
+## 2026-06-15 09:09:22 +08 - Startup hardening and validation gate alignment
+
+- Task selected: Fix the current full-review Important findings around CI/full-gate alignment, A1b E2E mandatory coverage, instance-lock fail-closed startup, model-download error surfacing, and stale docs/state.
+- Why it was selected: The review passes found no Critical findings. These Important findings were loop-doable in one tick and affected validation reliability, startup safety, privacy/data-loss risk, and source-of-truth consistency.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/release.yml`
+  - `README.md`
+  - `crates/app/src/config.rs`
+  - `crates/app/src/run_loop.rs`
+  - `docs/ACCEPTANCE.md`
+  - `docs/DEVELOPMENT.md`
+  - `docs/RELEASING.md`
+  - `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md`
+  - `tools/acceptance/run-a1b-live-gates.sh`
+- Tests added/updated:
+  - Added A1b self-test coverage proving `--skip-e2e` is a mandatory incomplete gate unless `--allow-incomplete` is set.
+  - Added app unit coverage proving lock IO failure and missing lock path fail before startup side effects.
+  - Added app unit coverage proving model-download parent-prep and downloader-spawn failures do not enqueue requests or mark downloads running.
+  - Updated acceptance/CI/release docs and workflows to run serialized root tests plus acceptance script syntax and E2E/A1b/A2 self-tests.
+- Verification commands and result:
+  - RED: `tools/acceptance/run-a1b-live-gates.sh --self-test` failed before implementation with `FAIL final-status-e2e-skip-mandatory`.
+  - RED: `cargo test -p app fails_closed -- --nocapture` failed before the instance-lock startup gate fix.
+  - RED: `cargo test -p app model_download_dest_parent_failure -- --nocapture` failed before surfacing model-download destination preparation failures.
+  - Focused: `cargo test -p app instance_lock -- --nocapture` passed.
+  - Focused: `cargo test -p app model_download -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1080`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3880` nodes, `10358` edges, and `142` communities.
+  - `git diff --check` passed.
+- Test count if available: root `1080` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important correctness/security finding: instance lock IO failure and missing lock path now fail closed before startup side effects instead of running unguarded.
+  - Fixed Important quality finding: model-download destination creation and downloader spawn failures are now logged and do not enqueue or wedge a running download status.
+  - Fixed Important validation finding: A1b E2E skips now make the run incomplete unless explicitly allowed.
+  - Fixed Important tests/coverage findings: CI now runs acceptance script syntax plus E2E/A1b/A2 self-tests; release docs require local model-backed pre-tag gates.
+  - Fixed Important plan/docs findings: root test commands are serialized in CI/release/docs, acceptance docs list the harness self-tests, MVP spec no longer overclaims overlay/picker/keybinding scope, and prior cycle state records its actual pushed hash.
+  - Fixed Important final plan-alignment finding: acceptance docs now state TextEdit/E2E mandatory skips fail by default unless `--allow-incomplete` is explicitly used, and the options list includes `--allow-incomplete`, `--skip-e2e`, and `--self-test`.
+  - Focused diff reviews found no remaining Critical findings; Important loop-state and acceptance-doc findings were fixed in this entry.
+- Blocked or skipped work remaining:
+  - AllMonitored live GUI/privacy validation remains blocked/manual because it requires an unlocked macOS GUI session, real focused text targets, Accessibility/Secure Input state control, and encrypted-store inspection.
+  - Input Monitoring revoked spot-check remains blocked/manual because it requires changing system permission state.
+  - Lifetime stats persistence UI relaunch gate remains blocked/manual until a runner can accept a suggestion, quit/relaunch, and inspect the UI.
+  - Settings window timed/behavioral LOOK spot-checks remain blocked/manual: General switches live-flip + persist across relaunch, Setup rows re-probe timing, and Apps Delete confirmation default button.
+  - A2 GUI/session-dependent compatibility, OCR quality/performance, and mirror validation remain blocked/manual pending a real macOS GUI session.
+  - Model-backed release automation on GitHub-hosted runners remains blocked by local GGUF/Metal requirements; the pre-tag local gate is documented and passed locally.
+  - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.

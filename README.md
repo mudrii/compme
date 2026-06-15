@@ -237,7 +237,7 @@ cargo build --workspace --all-targets
 Run the root test suite, including example-target regression tests:
 
 ```sh
-cargo test --workspace --all-targets
+cargo test --workspace --all-targets -- --test-threads=1
 ```
 
 Run the root lint gate:
@@ -269,13 +269,18 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,025 tests:
+suite is roughly 1,080 tests:
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
+cargo test --workspace --all-targets -- --test-threads=1
 cargo build --workspace --all-targets
+
+bash -n tools/acceptance/*.sh
+tools/acceptance/e2e-complete-me.sh --self-test
+tools/acceptance/run-a1b-live-gates.sh --self-test
+tools/acceptance/run-a2-compat-gates.sh --self-test
 
 cd tools/spike
 cargo fmt -- --check

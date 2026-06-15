@@ -133,7 +133,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 Test:
 
 ```sh
-cargo test --workspace --all-targets
+cargo test --workspace --all-targets -- --test-threads=1
 ```
 
 Build:
@@ -142,7 +142,7 @@ Build:
 cargo build --workspace --all-targets
 ```
 
-The suite is ~1025 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1080 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -168,8 +168,13 @@ Run this before considering a change ready for review:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
+cargo test --workspace --all-targets -- --test-threads=1
 cargo build --workspace --all-targets
+
+bash -n tools/acceptance/*.sh
+tools/acceptance/e2e-complete-me.sh --self-test
+tools/acceptance/run-a1b-live-gates.sh --self-test
+tools/acceptance/run-a2-compat-gates.sh --self-test
 
 cd tools/spike
 cargo fmt -- --check
@@ -178,10 +183,13 @@ cargo test
 cargo build --bins
 ```
 
-The root suite is ~1025 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1080 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
-The full gate uses `cargo test --workspace --all-targets` because the
-`platform_macos` example regression tests are part of the acceptance surface.
+The full gate uses `cargo test --workspace --all-targets -- --test-threads=1`
+because the `platform_macos` example regression tests are part of the acceptance
+surface and several macOS pasteboard checks share process-wide OS state.
+For release-readiness audits with the local GGUF model installed, also run the
+ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md).
 
 For macOS adapter work, also run the live acceptance harness when the GUI state
 is available:
@@ -219,7 +227,7 @@ Root workspace coverage includes:
 
 The macOS example tests are important because they verify behavior used by live
 acceptance binaries. Compile them via the `--all-targets` gate; run them with
-`cargo test --workspace --all-targets`.
+`cargo test --workspace --all-targets -- --test-threads=1`.
 
 **Known flake.** A small number of `platform_macos` tests share the process-wide
 general `NSPasteboard`, so running them in parallel can intermittently fail when

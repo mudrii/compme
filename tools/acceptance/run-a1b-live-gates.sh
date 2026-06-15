@@ -40,7 +40,8 @@ Options:
   --skip-build           Do not run cargo build -p platform_macos --examples first.
   --skip-textedit        Do not run TextEdit gates. Useful when a browser or
                          popup target must stay focused.
-  --skip-e2e             Do not run the end-to-end compme pipeline gate.
+  --skip-e2e             Do not run the end-to-end compme pipeline gate. This is
+                         incomplete unless paired with --allow-incomplete.
   --allow-incomplete     Allow mandatory live gates to be skipped and still exit
                          zero. Without this, missing TextEdit coverage fails.
   --self-test            Run runner classification self-tests and exit.
@@ -282,6 +283,10 @@ skip_gate() {
   fi
 }
 
+skip_e2e_gate() {
+  skip_gate "$1" "$2" mandatory
+}
+
 manual_gate() {
   name="$1"
   reason="$2"
@@ -436,6 +441,18 @@ run_self_tests() {
     self_failures=$((self_failures + 1))
   fi
 
+  failures=0
+  skips=0
+  incomplete_skips=0
+  ALLOW_INCOMPLETE=0
+  skip_e2e_gate "e2e-compme-pipeline" "self-test e2e skip" >/dev/null
+  if final_status; then
+    echo "FAIL final-status-e2e-skip-mandatory" >&2
+    self_failures=$((self_failures + 1))
+  else
+    echo "PASS final-status-e2e-skip-mandatory"
+  fi
+
   rm -rf "$self_test_dir"
   if [ "$self_failures" -gt 0 ]; then
     echo "Self-test failures: $self_failures" >&2
@@ -526,11 +543,11 @@ else
     run_retryable_gate "accept-insert-full" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_INSERT_BIN" "$SHORT_TIMEOUT_MS" full
     run_retryable_gate "accept-insert-word" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_INSERT_BIN" "$SHORT_TIMEOUT_MS" word
     if [ "$SKIP_E2E" -eq 1 ]; then
-      skip_gate "e2e-compme-pipeline" "--skip-e2e"
-      skip_gate "e2e-compme-word-remainder" "--skip-e2e"
+      skip_e2e_gate "e2e-compme-pipeline" "--skip-e2e"
+      skip_e2e_gate "e2e-compme-word-remainder" "--skip-e2e"
     elif [ ! -x "$COMPME_BIN" ]; then
-      skip_gate "e2e-compme-pipeline" "compme binary not built (run: cargo build -p app)"
-      skip_gate "e2e-compme-word-remainder" "compme binary not built (run: cargo build -p app)"
+      skip_e2e_gate "e2e-compme-pipeline" "compme binary not built (run: cargo build -p app)"
+      skip_e2e_gate "e2e-compme-word-remainder" "compme binary not built (run: cargo build -p app)"
     else
       run_gate "e2e-compme-pipeline" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_E2E_ACCEPT=full "$E2E_SCRIPT"
       run_gate "e2e-compme-word-remainder" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_E2E_ACCEPT=word "$E2E_SCRIPT"

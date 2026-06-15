@@ -508,6 +508,68 @@ fn catalog_download_request(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DownloadStartResult {
+    PreparedFailed(String),
+    AlreadyPresent,
+    SpawnFailed(String),
+    Queued,
+    Busy,
+}
+
+struct ModelDownloadEdge<'a, D, Prepare, MetadataLen, Spawn, Request> {
+    entry: &'a model_catalog::ModelEntry,
+    dest: &'a std::path::Path,
+    downloader: &'a mut Option<D>,
+    model_download_status: &'a mut Option<std::sync::Arc<model_fetch::DownloadStatus>>,
+    model_download_logged: &'a mut u8,
+    prepare: Prepare,
+    metadata_len: MetadataLen,
+    spawn: Spawn,
+    request: Request,
+}
+
+fn start_model_download_edge<D, Prepare, MetadataLen, Spawn, Request>(
+    edge: ModelDownloadEdge<'_, D, Prepare, MetadataLen, Spawn, Request>,
+) -> DownloadStartResult
+where
+    Prepare: for<'p> FnOnce(&'p std::path::Path) -> Result<(), String>,
+    MetadataLen: for<'p> FnOnce(&'p std::path::Path) -> Option<u64>,
+    Spawn: FnOnce() -> Result<D, String>,
+    Request: for<'d> FnOnce(&'d D, model_fetch::DownloadRequest) -> bool,
+{
+    if let Err(err) = (edge.prepare)(edge.dest) {
+        return DownloadStartResult::PreparedFailed(err);
+    }
+    if model_present((edge.metadata_len)(edge.dest)) {
+        return DownloadStartResult::AlreadyPresent;
+    }
+    if edge.downloader.is_none() {
+        match (edge.spawn)() {
+            Ok(spawned) => *edge.downloader = Some(spawned),
+            Err(err) => return DownloadStartResult::SpawnFailed(err),
+        }
+    }
+    let Some(downloader) = edge.downloader.as_ref() else {
+        return DownloadStartResult::SpawnFailed("model downloader unavailable".into());
+    };
+    let status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
+    if (edge.request)(
+        downloader,
+        catalog_download_request(
+            edge.entry,
+            edge.dest.to_path_buf(),
+            std::sync::Arc::clone(&status),
+        ),
+    ) {
+        *edge.model_download_status = Some(status);
+        *edge.model_download_logged = 0;
+        DownloadStartResult::Queued
+    } else {
+        DownloadStartResult::Busy
+    }
+}
+
 /// Whether a new download may start: none ran yet, or the last one reached
 /// a terminal state (Done/Failed — retry and re-download both work).
 /// Idle/Running block (a request is queued or in flight). Replaces the
@@ -1932,6 +1994,71 @@ fn status_drops_pending_requests(status: AppStatus) -> bool {
     )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InstanceStartupDecision {
+    ExitOk(String),
+    Fail(String),
+}
+
+fn instance_startup_decision(error: Option<config::InstanceLockError>) -> InstanceStartupDecision {
+    match error {
+        None => InstanceStartupDecision::Fail(
+            "compme: no config dir for the instance lock — refusing to start unguarded".into(),
+        ),
+        Some(config::InstanceLockError::Held) => InstanceStartupDecision::ExitOk(
+            "compme: another instance is already running — exiting".into(),
+        ),
+        Some(config::InstanceLockError::Io(err)) => InstanceStartupDecision::Fail(format!(
+            "compme: instance lock unavailable ({err}) — refusing to start unguarded"
+        )),
+    }
+}
+
+fn instance_lock_startup_gate<L>(
+    path: Option<std::path::PathBuf>,
+    acquire: impl FnOnce(&std::path::Path) -> Result<L, config::InstanceLockError>,
+    after_lock_acquired: impl FnOnce(),
+) -> Result<Option<L>, String> {
+    let Some(path) = path else {
+        return match instance_startup_decision(None) {
+            InstanceStartupDecision::ExitOk(message) => {
+                eprintln!("{message}");
+                Ok(None)
+            }
+            InstanceStartupDecision::Fail(message) => Err(message),
+        };
+    };
+    match acquire(&path) {
+        Ok(lock) => {
+            after_lock_acquired();
+            Ok(Some(lock))
+        }
+        Err(err) => match instance_startup_decision(Some(err)) {
+            InstanceStartupDecision::ExitOk(message) => {
+                eprintln!("{message}");
+                Ok(None)
+            }
+            InstanceStartupDecision::Fail(message) => Err(message),
+        },
+    }
+}
+
+fn prepare_model_download_dest(dest: &std::path::Path) -> Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create model directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn model_download_dest_len(dest: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(dest).ok().map(|m| m.len())
+}
+
 /// Build the whole stack, run until a signal (or the run-ms deadline), then tear
 /// down in order.
 pub fn run() -> Result<(), String> {
@@ -1940,24 +2067,13 @@ pub fn run() -> Result<(), String> {
     // of those (live c92 finding: open(1) launches a second copy via Launch
     // Services when the registered handler isn't already running). flock is
     // launch-method-agnostic and kernel-released on any exit.
-    let _instance_lock = match config::instance_lock_path() {
-        Some(path) => match config::try_acquire_instance_lock(&path) {
-            Ok(lock) => Some(lock),
-            Err(config::InstanceLockError::Held) => {
-                eprintln!("compme: another instance is already running — exiting");
-                return Ok(());
-            }
-            Err(config::InstanceLockError::Io(err)) => {
-                // An IO failure is NOT "another instance" — say so, and keep
-                // running unguarded rather than refusing to start.
-                eprintln!("compme: instance lock unavailable ({err}) — continuing unguarded");
-                None
-            }
-        },
-        None => {
-            eprintln!("compme: no config dir for the instance lock — continuing unguarded");
-            None
-        }
+    let Some(_instance_lock) = instance_lock_startup_gate(
+        config::instance_lock_path(),
+        config::try_acquire_instance_lock,
+        || {},
+    )?
+    else {
+        return Ok(());
     };
 
     // Mutable: General-tab switches update globals live (autocorrect today;
@@ -2911,7 +3027,6 @@ pub fn run() -> Result<(), String> {
                     let dest = std::path::PathBuf::from(home)
                         .join("Library/Application Support/compme/models")
                         .join(format!("{}.gguf", entry.name));
-                    let _ = std::fs::create_dir_all(dest.parent().unwrap_or(&dest));
                     // Skip the fetch when the model is already on disk — a
                     // repeat "Download" click on a present model would otherwise
                     // re-fetch and clobber a good file. An interrupted 0-byte
@@ -2922,37 +3037,38 @@ pub fn run() -> Result<(), String> {
                     // normal re-click on a present encumbered model never
                     // re-prompts (the prompt-then-skip is an unaccepted-yet
                     // edge case, inert for today's unencumbered catalog).
-                    let dest_len = std::fs::metadata(&dest).ok().map(|m| m.len());
-                    if model_present(dest_len) {
-                        eprintln!(
+                    match start_model_download_edge(ModelDownloadEdge {
+                        entry,
+                        dest: &dest,
+                        downloader: &mut model_downloader,
+                        model_download_status: &mut model_download_status,
+                        model_download_logged: &mut model_download_logged,
+                        prepare: prepare_model_download_dest,
+                        metadata_len: model_download_dest_len,
+                        spawn: || {
+                            model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string())
+                        },
+                        request: |downloader: &model_fetch::ModelDownloader, request| {
+                            downloader.request(request)
+                        },
+                    }) {
+                        DownloadStartResult::PreparedFailed(err) => {
+                            eprintln!("compme: {err}");
+                        }
+                        DownloadStartResult::AlreadyPresent => eprintln!(
                             "compme: {} already downloaded at {} \u{2014} delete it to re-download",
                             entry.name,
                             dest.display()
-                        );
-                    } else {
-                        if model_downloader.is_none() {
-                            model_downloader = model_fetch::ModelDownloader::spawn().ok();
+                        ),
+                        DownloadStartResult::SpawnFailed(err) => {
+                            eprintln!("compme: failed to start model downloader \u{2014} {err}");
                         }
-                        if let Some(downloader) = &model_downloader {
-                            let status =
-                                std::sync::Arc::new(model_fetch::DownloadStatus::default());
-                            // Track the status ONLY when the request was queued:
-                            // a dropped request's status stays Idle forever and
-                            // would wedge the download_idle gate (review-c130).
-                            if downloader.request(catalog_download_request(
-                                entry,
-                                dest,
-                                std::sync::Arc::clone(&status),
-                            )) {
-                                eprintln!(
-                                    "compme: downloading {} ({} MB) \u{2014} progress in this log",
-                                    entry.name, entry.size_mb
-                                );
-                                model_download_status = Some(status);
-                                model_download_logged = 0;
-                            } else {
-                                eprintln!("compme: model download queue busy \u{2014} try again");
-                            }
+                        DownloadStartResult::Queued => eprintln!(
+                            "compme: downloading {} ({} MB) \u{2014} progress in this log",
+                            entry.name, entry.size_mb
+                        ),
+                        DownloadStartResult::Busy => {
+                            eprintln!("compme: model download queue busy \u{2014} try again");
                         }
                     }
                 }
@@ -6717,6 +6833,95 @@ mod tests {
     }
 
     #[test]
+    fn model_download_prepare_failure_does_not_spawn_or_enqueue() {
+        let entry = model_catalog::recommended().expect("catalog has a recommended model");
+        let dest = std::path::PathBuf::from("/tmp/compme-model.gguf");
+        let mut downloader: Option<()> = None;
+        let mut status = Some(std::sync::Arc::new(model_fetch::DownloadStatus::default()));
+        let previous_status = status.as_ref().map(std::sync::Arc::as_ptr).unwrap();
+        let mut logged = 7;
+        let metadata_checked = std::cell::Cell::new(false);
+        let spawned = std::cell::Cell::new(false);
+        let requested = std::cell::Cell::new(false);
+
+        let result = start_model_download_edge(ModelDownloadEdge {
+            entry,
+            dest: &dest,
+            downloader: &mut downloader,
+            model_download_status: &mut status,
+            model_download_logged: &mut logged,
+            prepare: |_: &std::path::Path| Err("no model directory".into()),
+            metadata_len: |_: &std::path::Path| {
+                metadata_checked.set(true);
+                None
+            },
+            spawn: || {
+                spawned.set(true);
+                Ok(())
+            },
+            request: |_: &(), _| {
+                requested.set(true);
+                true
+            },
+        });
+
+        assert_eq!(
+            result,
+            DownloadStartResult::PreparedFailed("no model directory".into())
+        );
+        assert!(
+            !metadata_checked.get(),
+            "metadata must not run after prep fails"
+        );
+        assert!(!spawned.get(), "downloader must not spawn after prep fails");
+        assert!(
+            !requested.get(),
+            "request must not enqueue after prep fails"
+        );
+        assert_eq!(
+            status.as_ref().map(std::sync::Arc::as_ptr),
+            Some(previous_status)
+        );
+        assert_eq!(logged, 7);
+    }
+
+    #[test]
+    fn model_download_spawn_failure_does_not_enqueue_or_mark_running() {
+        let entry = model_catalog::recommended().expect("catalog has a recommended model");
+        let dest = std::path::PathBuf::from("/tmp/compme-model.gguf");
+        let mut downloader: Option<()> = None;
+        let mut status = None;
+        let mut logged = 7;
+        let requested = std::cell::Cell::new(false);
+
+        let result = start_model_download_edge(ModelDownloadEdge {
+            entry,
+            dest: &dest,
+            downloader: &mut downloader,
+            model_download_status: &mut status,
+            model_download_logged: &mut logged,
+            prepare: |_: &std::path::Path| Ok(()),
+            metadata_len: |_: &std::path::Path| None,
+            spawn: || Err("thread unavailable".into()),
+            request: |_: &(), _| {
+                requested.set(true);
+                true
+            },
+        });
+
+        assert_eq!(
+            result,
+            DownloadStartResult::SpawnFailed("thread unavailable".into())
+        );
+        assert!(
+            !requested.get(),
+            "request must not enqueue without a downloader"
+        );
+        assert!(status.is_none(), "failed spawn must not set running status");
+        assert_eq!(logged, 7);
+    }
+
+    #[test]
     fn replacement_decision_combines_gate_and_offer() {
         let config = Config::from_lookup(lookup(&[("COMPME_EMOJI", "1")]));
         let allowed = Some("com.apple.TextEdit");
@@ -6864,6 +7069,69 @@ mod tests {
         assert!(status_drops_pending_requests(AppStatus::Blocked(
             BlockReason::SecureInput
         )));
+    }
+
+    #[test]
+    fn instance_lock_io_failure_fails_closed_before_startup_side_effects() {
+        let side_effects = std::cell::Cell::new(0);
+        let result: Result<Option<()>, String> = instance_lock_startup_gate(
+            Some(std::path::PathBuf::from("/tmp/compme.lock")),
+            |_| Err(config::InstanceLockError::Io("permission denied".into())),
+            || side_effects.set(side_effects.get() + 1),
+        );
+        assert!(matches!(
+            result,
+            Err(message) if message.contains("permission denied")
+        ));
+        assert_eq!(
+            side_effects.get(),
+            0,
+            "startup side effects must not run after lock IO failure"
+        );
+        assert!(matches!(
+            instance_startup_decision(Some(config::InstanceLockError::Io("permission denied".into()))),
+            InstanceStartupDecision::Fail(message) if message.contains("permission denied")
+        ));
+    }
+
+    #[test]
+    fn missing_instance_lock_path_fails_closed_before_startup_side_effects() {
+        let side_effects = std::cell::Cell::new(0);
+        let result: Result<Option<()>, String> = instance_lock_startup_gate(
+            None::<std::path::PathBuf>,
+            |_| Ok(()),
+            || side_effects.set(side_effects.get() + 1),
+        );
+        assert!(matches!(
+            result,
+            Err(message) if message.contains("instance lock")
+        ));
+        assert_eq!(
+            side_effects.get(),
+            0,
+            "startup side effects must not run without an instance lock path"
+        );
+        assert!(matches!(
+            instance_startup_decision(None),
+            InstanceStartupDecision::Fail(message) if message.contains("instance lock")
+        ));
+    }
+
+    #[test]
+    fn model_download_dest_parent_failure_is_reported() {
+        let file_parent = std::env::temp_dir().join(format!(
+            "compme-download-parent-blocker-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&file_parent);
+        std::fs::write(&file_parent, b"not a directory").unwrap();
+        let dest = file_parent.join("model.gguf");
+        let result = prepare_model_download_dest(&dest);
+        let _ = std::fs::remove_file(&file_parent);
+        assert!(
+            result.is_err(),
+            "download preparation must report parent creation failures"
+        );
     }
 
     #[test]

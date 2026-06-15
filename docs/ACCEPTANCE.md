@@ -10,8 +10,17 @@ Root workspace:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
+cargo test --workspace --all-targets -- --test-threads=1
 cargo build --workspace --all-targets
+```
+
+Acceptance harness syntax and deterministic self-tests:
+
+```sh
+bash -n tools/acceptance/*.sh
+tools/acceptance/e2e-complete-me.sh --self-test
+tools/acceptance/run-a1b-live-gates.sh --self-test
+tools/acceptance/run-a2-compat-gates.sh --self-test
 ```
 
 Spike workspace:
@@ -25,7 +34,8 @@ cargo build --bins
 ```
 
 The root test gate must use `--all-targets` because `platform_macos` keeps
-acceptance regression tests in example targets.
+acceptance regression tests in example targets. It is serialized because several
+macOS pasteboard checks share process-wide OS state.
 
 Model-backed local gates:
 
@@ -92,7 +102,9 @@ By default the runner builds the `platform_macos` examples, builds the
 - `overlay-presenter`
 
 If TextEdit is not running, TextEdit-dependent gates are skipped instead of
-misreporting app-focus failures as product failures.
+misreporting app-focus failures as product failures. These are mandatory skips:
+the run fails as incomplete by default, and `--allow-incomplete` is only for
+intentionally partial target-specific runs.
 
 **[2026-06-11] Scripted Carbon gates REBUILT.** The long-standing claim that
 synthetic key posts cannot fire `RegisterEventHotKey` was re-tested and is
@@ -213,8 +225,11 @@ are validated outside the A1b gate runner:
 ```text
 --dry-run
 --force
+--allow-incomplete
 --skip-build
+--skip-e2e
 --skip-textedit
+--self-test
 --textedit-pid PID
 --popup-pid PID
 --browser-pid PID

@@ -225,10 +225,9 @@ pub enum InstanceLockError {
 /// copy and a direct-exec'd binary contend on the same file (the c92 finding
 /// — two instances would double AX observers and hotkey registrations).
 ///
-/// On [`InstanceLockError::Io`] the caller logs and continues UNGUARDED —
-/// deliberate graceful degradation: a truly unwritable config dir means no
-/// lock contention is possible, so multi-instance protection is silently
-/// absent there (startup must not be refused over an IO hiccup).
+/// On [`InstanceLockError::Io`] the app fails closed before installing AX
+/// observers or hotkeys. Running unguarded can double-observe private context
+/// and double-insert completions.
 pub fn try_acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLockError> {
     use std::os::unix::io::AsRawFd;
     if let Some(dir) = path.parent() {

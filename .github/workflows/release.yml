@@ -32,7 +32,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Root tests
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets -- --test-threads=1
 
       - name: Root build
         run: cargo build --workspace --all-targets
@@ -45,6 +45,9 @@ jobs:
 
       - name: A2 compatibility runner self-test
         run: tools/acceptance/run-a2-compat-gates.sh --self-test
+
+      - name: E2E runner self-test
+        run: tools/acceptance/e2e-complete-me.sh --self-test
 
       - name: Spike gates
         working-directory: tools/spike
