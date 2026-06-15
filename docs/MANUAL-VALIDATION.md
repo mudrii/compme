@@ -28,6 +28,18 @@ _Backed by pure, unit-tested logic: `stats::StatRange::{ALL,days,label,from_inde
 + `metric_series` (range/group/metric series) + `from_index` OOB-clamp. Only the
 NSPopUpButton wiring is unverified here._
 
-<!-- Future Tier-3 FFI items (group/metric pickers, Personalization/Emoji
-controls, Apps editing rows, the 3.4 hotkey recorder rows + Carbon registration)
-append their LOOK gates below as they land. -->
+### 3.2 Emoji — gender picker (commit `feat(emoji): add gender picker`)
+- [ ] Settings → **Emoji** tab shows a **Gender** dropdown directly below the
+      **Skin tone** dropdown, with no visual overlap.
+- [ ] The dropdown lists **Neutral / Female / Male** and reflects the persisted
+      `COMPME_EMOJI_GENDER` on open (Neutral by default).
+- [ ] Changing it persists `COMPME_EMOJI_GENDER` to `config.env` and (if a ghost
+      suggestion is visible) dismisses it, mirroring the skin-tone picker.
+
+_Backed by unit-tested pure helpers (`emoji_gender_{index,from_index,value}` +
+`handle_emoji_gender_change[_with_invalidation]`); only the NSPopUpButton wiring
+is unverified here._
+
+<!-- Future Tier-3 FFI items (group/metric pickers, Personalization controls,
+Apps editing rows, the 3.4 hotkey recorder rows + Carbon registration) append
+their LOOK gates below as they land. -->

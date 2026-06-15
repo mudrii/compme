@@ -272,6 +272,9 @@ pub struct SettingsFlags {
     /// The run loop maps the index to the app-side `SkinTone` enum and
     /// persists the config value.
     pub emoji_skin_tone_index: Arc<AtomicUsize>,
+    /// Emoji: selected gender popup row (`COMPME_EMOJI_GENDER`). The run loop
+    /// maps the index to the app-side `Gender` enum and persists the value.
+    pub emoji_gender_index: Arc<AtomicUsize>,
     /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
     /// before each show; the window only renders them (one label per line).
     pub stats_lines: Arc<Mutex<Vec<String>>>,
@@ -487,6 +490,17 @@ define_class!(
                 self.ivars()
                     .flags
                     .emoji_skin_tone_index
+                    .store(index, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(selectEmojiGender:))]
+        fn select_emoji_gender(&self, sender: Option<&NSPopUpButton>) {
+            if let Some(popup) = sender {
+                let index = popup.indexOfSelectedItem().max(0) as usize;
+                self.ivars()
+                    .flags
+                    .emoji_gender_index
                     .store(index, Ordering::Relaxed);
             }
         }
@@ -1268,6 +1282,36 @@ fn build_window(
             tone_popup.setAction(Some(sel!(selectEmojiSkinTone:)));
         }
         emoji.addSubview(&tone_popup);
+
+        let gender_label = NSTextField::labelWithString(&NSString::from_str("Gender"), mtm);
+        gender_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 244.0),
+            NSSize::new(160.0, 20.0),
+        ));
+        emoji.addSubview(&gender_label);
+
+        let gender_popup = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(mtm),
+            NSRect::new(NSPoint::new(220.0, 240.0), NSSize::new(180.0, 26.0)),
+            false,
+        );
+        // Order mirrors the app-side EMOJI_GENDER_VALUES table (index addresses it).
+        for title in ["Neutral", "Female", "Male"] {
+            gender_popup.addItemWithTitle(&NSString::from_str(title));
+        }
+        let selected = flags.emoji_gender_index.load(Ordering::Relaxed);
+        if selected < 3 {
+            gender_popup.selectItemAtIndex(selected as isize);
+        }
+        // SAFETY: target outlives the window (held by MacosSettingsWindow).
+        unsafe {
+            gender_popup.setTarget(Some({
+                let any: &AnyObject = target.as_ref();
+                any
+            }));
+            gender_popup.setAction(Some(sel!(selectEmojiGender:)));
+        }
+        emoji.addSubview(&gender_popup);
     }
 
     let shortcuts_label = {

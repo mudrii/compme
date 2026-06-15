@@ -393,6 +393,35 @@ fn parse_gender(raw: Option<String>) -> Gender {
     }
 }
 
+/// Gender popup rows in menu order (index addresses this table); the second
+/// element is the persisted `COMPME_EMOJI_GENDER` value `parse_gender` reads.
+const EMOJI_GENDER_VALUES: [(Gender, &str); 3] = [
+    (Gender::Neutral, "neutral"),
+    (Gender::Female, "female"),
+    (Gender::Male, "male"),
+];
+
+fn emoji_gender_index(gender: Gender) -> usize {
+    EMOJI_GENDER_VALUES
+        .iter()
+        .position(|(candidate, _)| *candidate == gender)
+        .unwrap_or(0)
+}
+
+fn emoji_gender_from_index(index: usize) -> Gender {
+    EMOJI_GENDER_VALUES
+        .get(index)
+        .map(|(gender, _)| *gender)
+        .unwrap_or_default()
+}
+
+fn emoji_gender_value(gender: Gender) -> &'static str {
+    EMOJI_GENDER_VALUES
+        .iter()
+        .find_map(|(candidate, value)| (*candidate == gender).then_some(*value))
+        .unwrap_or("neutral")
+}
+
 /// A local emoji *replacement* for the typed left-context, when emoji completion
 /// is enabled: `Some((glyph, replace_chars))` to offer, else `None`. Pure wrapper
 /// over `emoji::suggest` behind the enable flag so the run-loop wiring is testable.
@@ -2008,6 +2037,9 @@ fn build_settings_flags(
         emoji_skin_tone_index: Arc::new(AtomicUsize::new(emoji_skin_tone_index(
             config.emoji_prefs.skin_tone,
         ))),
+        emoji_gender_index: Arc::new(AtomicUsize::new(emoji_gender_index(
+            config.emoji_prefs.gender,
+        ))),
         stats_lines: Arc::new(Mutex::new(Vec::new())),
         about_text: crate::about::about_text(),
         setup_lines: Arc::new(Mutex::new(Vec::new())),
@@ -2228,6 +2260,50 @@ fn handle_emoji_skin_tone_change_with_invalidation(
     let tone = handle_emoji_skin_tone_change(flag, current, config_emoji, saved_prefs, persist)?;
     invalidate_visible_suggestion();
     Some(tone)
+}
+
+fn apply_emoji_gender(
+    config_emoji: &mut Option<EmojiPrefs>,
+    saved_prefs: &mut EmojiPrefs,
+    gender: Gender,
+) {
+    saved_prefs.gender = gender;
+    if let Some(prefs) = config_emoji.as_mut() {
+        prefs.gender = gender;
+    }
+}
+
+fn handle_emoji_gender_change(
+    flag: &AtomicUsize,
+    current: &mut usize,
+    config_emoji: &mut Option<EmojiPrefs>,
+    saved_prefs: &mut EmojiPrefs,
+    mut persist: impl FnMut(&'static str),
+) -> Option<Gender> {
+    let now = flag
+        .load(Ordering::Relaxed)
+        .min(EMOJI_GENDER_VALUES.len() - 1);
+    if now == *current {
+        return None;
+    }
+    *current = now;
+    let gender = emoji_gender_from_index(now);
+    apply_emoji_gender(config_emoji, saved_prefs, gender);
+    persist(emoji_gender_value(gender));
+    Some(gender)
+}
+
+fn handle_emoji_gender_change_with_invalidation(
+    flag: &AtomicUsize,
+    current: &mut usize,
+    config_emoji: &mut Option<EmojiPrefs>,
+    saved_prefs: &mut EmojiPrefs,
+    persist: impl FnMut(&'static str),
+    mut invalidate_visible_suggestion: impl FnMut(),
+) -> Option<Gender> {
+    let gender = handle_emoji_gender_change(flag, current, config_emoji, saved_prefs, persist)?;
+    invalidate_visible_suggestion();
+    Some(gender)
 }
 
 /// Persist one switch edge and log it. A persist failure is logged, not
@@ -2867,6 +2943,7 @@ pub fn run() -> Result<(), String> {
     let mut emoji_enabled = config.emoji.is_some();
     let mut emoji_prefs = config.emoji_prefs;
     let mut emoji_skin_tone_index = emoji_skin_tone_index(emoji_prefs.skin_tone);
+    let mut emoji_gender_index = emoji_gender_index(emoji_prefs.gender);
     let settings_flags = build_settings_flags(&config, Arc::clone(&flags.enabled));
     // The app ids behind the Apps rows as last rendered (index == row).
     let mut apps_ids: Vec<String> = Vec::new();
@@ -3679,6 +3756,17 @@ pub fn run() -> Result<(), String> {
             &mut config.emoji,
             &mut emoji_prefs,
             |value| persist_and_log_value("COMPME_EMOJI_SKIN_TONE", "emoji skin tone", value),
+            || {
+                latest.clear();
+                let _ = log_err("on_dismiss", engine.on_dismiss());
+            },
+        );
+        handle_emoji_gender_change_with_invalidation(
+            &settings_flags.emoji_gender_index,
+            &mut emoji_gender_index,
+            &mut config.emoji,
+            &mut emoji_prefs,
+            |value| persist_and_log_value("COMPME_EMOJI_GENDER", "emoji gender", value),
             || {
                 latest.clear();
                 let _ = log_err("on_dismiss", engine.on_dismiss());
@@ -5142,6 +5230,85 @@ mod tests {
         );
         assert_eq!(saved.skin_tone, SkinTone::Light);
         assert_eq!(persisted, vec!["light"]);
+    }
+
+    #[test]
+    fn emoji_gender_edge_applies_config_and_persists_only_on_change() {
+        let index = AtomicUsize::new(emoji_gender_index(Gender::Female));
+        let mut current = emoji_gender_index(Gender::Female);
+        let mut config_emoji = Some(EmojiPrefs {
+            skin_tone: SkinTone::Medium,
+            gender: Gender::Female,
+        });
+        let mut saved = config_emoji.unwrap();
+        let mut persisted = Vec::new();
+
+        // No change → None, nothing persisted.
+        assert_eq!(
+            handle_emoji_gender_change(
+                &index,
+                &mut current,
+                &mut config_emoji,
+                &mut saved,
+                |value| persisted.push(value.to_string()),
+            ),
+            None
+        );
+        assert_eq!(persisted, Vec::<String>::new());
+
+        // Change to Male → applies to config + saved, persists "male".
+        index.store(emoji_gender_index(Gender::Male), Ordering::Relaxed);
+        assert_eq!(
+            handle_emoji_gender_change(
+                &index,
+                &mut current,
+                &mut config_emoji,
+                &mut saved,
+                |value| persisted.push(value.to_string()),
+            ),
+            Some(Gender::Male)
+        );
+        assert_eq!(
+            config_emoji,
+            Some(EmojiPrefs {
+                skin_tone: SkinTone::Medium,
+                gender: Gender::Male,
+            })
+        );
+        assert_eq!(saved.gender, Gender::Male);
+        assert_eq!(persisted, vec!["male"]);
+
+        // Index↔value round-trip for every variant; OOB clamps to the default.
+        for g in [Gender::Neutral, Gender::Female, Gender::Male] {
+            assert_eq!(emoji_gender_from_index(emoji_gender_index(g)), g);
+        }
+        assert_eq!(emoji_gender_from_index(99), Gender::Neutral);
+        assert_eq!(emoji_gender_value(Gender::Neutral), "neutral");
+        assert_eq!(parse_gender(Some("male".into())), Gender::Male);
+    }
+
+    #[test]
+    fn emoji_gender_edge_invalidates_stale_visible_suggestion() {
+        let index = AtomicUsize::new(emoji_gender_index(Gender::Male));
+        let mut current = emoji_gender_index(Gender::Neutral);
+        let mut config_emoji = Some(EmojiPrefs::default());
+        let mut saved = EmojiPrefs::default();
+        let mut persisted = Vec::new();
+        let mut invalidations = 0;
+
+        assert_eq!(
+            handle_emoji_gender_change_with_invalidation(
+                &index,
+                &mut current,
+                &mut config_emoji,
+                &mut saved,
+                |value| persisted.push(value.to_string()),
+                || invalidations += 1,
+            ),
+            Some(Gender::Male)
+        );
+        assert_eq!(persisted, vec!["male"]);
+        assert_eq!(invalidations, 1);
     }
 
     #[test]
