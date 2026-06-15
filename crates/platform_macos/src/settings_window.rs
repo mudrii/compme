@@ -275,6 +275,14 @@ pub struct SettingsFlags {
     /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
     /// before each show; the window only renders them (one label per line).
     pub stats_lines: Arc<Mutex<Vec<String>>>,
+    /// Statistics: selected range-picker row (a `StatRange` index — 7/14/30
+    /// days). The run loop reads it to choose the `daily_buckets` span before
+    /// composing `stats_lines`. Default 0 (Last 7 days) keeps the legacy span.
+    pub stat_range_index: Arc<AtomicUsize>,
+    /// Statistics range-picker item titles, one per `StatRange::ALL` row in
+    /// order (so the index addresses the enum). Composed app-side because the
+    /// window can't see the `stats` crate (the `setup_model_menu_titles` seam).
+    pub stat_range_titles: Vec<String>,
     /// About text (version/license/no-telemetry/repo/credits), composed once
     /// at startup — static for the process lifetime, rendered verbatim.
     pub about_text: String,
@@ -373,6 +381,20 @@ define_class!(
                 self.ivars()
                     .flags
                     .setup_model_index
+                    .store(index, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(selectStatRange:))]
+        fn select_stat_range(&self, sender: Option<&NSPopUpButton>) {
+            if let Some(popup) = sender {
+                // indexOfSelectedItem is -1 only on an empty menu; clamp
+                // defensively. The run loop resolves it via StatRange::from_index,
+                // which is total over an out-of-range value.
+                let index = popup.indexOfSelectedItem().max(0) as usize;
+                self.ivars()
+                    .flags
+                    .stat_range_index
                     .store(index, Ordering::Relaxed);
             }
         }
@@ -1321,11 +1343,45 @@ fn build_window(
         let stats = &pane_views[6];
         let stats_header =
             NSTextField::labelWithString(&NSString::from_str("This session + lifetime"), mtm);
+        // Width 220 (not 300) so the header clears the Range picker's label at
+        // x=300; the string is ~150pt at this size so it isn't clipped.
         stats_header.setFrame(NSRect::new(
             NSPoint::new(20.0, 300.0),
-            NSSize::new(300.0, 24.0),
+            NSSize::new(220.0, 24.0),
         ));
         stats.addSubview(&stats_header);
+
+        // Range picker (Tier 3.3): selects the trailing span the run loop
+        // renders the rows over. Titles + selection cross the seam via flags.
+        {
+            let range_label = NSTextField::labelWithString(&NSString::from_str("Range:"), mtm);
+            range_label.setFrame(NSRect::new(
+                NSPoint::new(300.0, 300.0),
+                NSSize::new(48.0, 22.0),
+            ));
+            stats.addSubview(&range_label);
+
+            let popup = NSPopUpButton::initWithFrame_pullsDown(
+                NSPopUpButton::alloc(mtm),
+                NSRect::new(NSPoint::new(348.0, 297.0), NSSize::new(132.0, 26.0)),
+                false,
+            );
+            for title in &flags.stat_range_titles {
+                popup.addItemWithTitle(&NSString::from_str(title));
+            }
+            let selected = flags.stat_range_index.load(Ordering::Relaxed);
+            if selected < flags.stat_range_titles.len() {
+                popup.selectItemAtIndex(selected as isize);
+            }
+            // SAFETY: target outlives the window (held by MacosSettingsWindow);
+            // setTarget/setAction are the standard control-wiring calls.
+            unsafe {
+                let any: &AnyObject = target.as_ref();
+                popup.setTarget(Some(any));
+                popup.setAction(Some(sel!(selectStatRange:)));
+            }
+            stats.addSubview(&popup);
+        }
 
         let initial: Vec<String> = flags
             .stats_lines

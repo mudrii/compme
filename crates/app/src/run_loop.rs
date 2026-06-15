@@ -2025,6 +2025,15 @@ fn build_settings_flags(
         setup_model_menu_titles: crate::model_picker::model_menu_titles(
             model_catalog::bytes_to_whole_gb(platform_macos::physical_memory_bytes()),
         ),
+        // Statistics range picker. Default index 0 = StatRange::ALL[0]
+        // (Last 7 days), so the rendered span is byte-identical to the
+        // pre-picker `daily_buckets(.., 7)`. Titles cross the seam here because
+        // platform_macos can't see the `stats` crate (the model-picker pattern).
+        stat_range_index: Arc::new(AtomicUsize::new(0)),
+        stat_range_titles: stats::StatRange::ALL
+            .iter()
+            .map(|r| r.label().to_string())
+            .collect(),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
         shortcuts_text: {
@@ -3304,7 +3313,12 @@ pub fn run() -> Result<(), String> {
             // Compose the Statistics rows right before showing — the window
             // renders strings only; data stays on this side of the seam.
             if let Ok(mut lines) = settings_flags.stats_lines.lock() {
-                *lines = stats_pane_lines(&usage.daily_buckets(wall_ms, 7));
+                // Span chosen by the Statistics range picker (default 7 days).
+                let days = stats::StatRange::from_index(
+                    settings_flags.stat_range_index.load(Ordering::Relaxed),
+                )
+                .days();
+                *lines = stats_pane_lines(&usage.daily_buckets(wall_ms, days));
                 // Grow-only session totals, NOT window-derived counts: past
                 // 30 days the window prunes and the row would regress — and
                 // it must agree with what the periodic flush writes to disk.
