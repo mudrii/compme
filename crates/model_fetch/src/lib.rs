@@ -498,6 +498,43 @@ mod tests {
     }
 
     #[test]
+    fn worker_enforces_expected_sha256_and_reports_failed_state() {
+        let url = serve(b"corrupt worker bytes", RangeMode::Honor);
+        let dest = temp_dest("worker-badsha");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let worker = ModelDownloader::spawn().unwrap();
+        let status = std::sync::Arc::new(DownloadStatus::default());
+        assert!(worker.request(DownloadRequest {
+            url,
+            dest: dest.clone(),
+            expected_sha256: Some(sha256_hex(b"expected worker bytes")),
+            status: std::sync::Arc::clone(&status),
+        }));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let state = status.state.lock().unwrap();
+                match &*state {
+                    DownloadState::Failed(msg) => {
+                        assert!(msg.contains("sha256 mismatch"), "got: {msg}");
+                        break;
+                    }
+                    DownloadState::Done(path) => panic!("unexpected success: {path:?}"),
+                    _ => {}
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "worker timed out");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!dest.exists(), "dest never appears on mismatch");
+        assert!(part.exists(), "part kept for inspection");
+        let _ = std::fs::remove_file(&part);
+    }
+
+    #[test]
     fn stalled_server_times_out_instead_of_hanging_forever() {
         // review-c118 CRITICAL: no read timeout = a stalled server hangs the
         // download (and later the worker thread's shutdown) forever. The

@@ -529,31 +529,35 @@ enum DownloadStartResult {
     Busy,
 }
 
-struct ModelDownloadEdge<'a, D, Prepare, MetadataLen, Spawn, Request> {
+struct ModelDownloadEdge<'a, D, Prepare, ExistingModel, Spawn, Request> {
     entry: &'a model_catalog::ModelEntry,
     dest: &'a std::path::Path,
     downloader: &'a mut Option<D>,
     model_download_status: &'a mut Option<std::sync::Arc<model_fetch::DownloadStatus>>,
     model_download_logged: &'a mut u8,
     prepare: Prepare,
-    metadata_len: MetadataLen,
+    existing_model: ExistingModel,
     spawn: Spawn,
     request: Request,
 }
 
-fn start_model_download_edge<D, Prepare, MetadataLen, Spawn, Request>(
-    edge: ModelDownloadEdge<'_, D, Prepare, MetadataLen, Spawn, Request>,
+fn start_model_download_edge<D, Prepare, ExistingModel, Spawn, Request>(
+    edge: ModelDownloadEdge<'_, D, Prepare, ExistingModel, Spawn, Request>,
 ) -> DownloadStartResult
 where
     Prepare: for<'p> FnOnce(&'p std::path::Path) -> Result<(), String>,
-    MetadataLen: for<'p> FnOnce(&'p std::path::Path) -> Option<u64>,
+    ExistingModel: for<'p> FnOnce(&'p std::path::Path, Option<&str>) -> Result<bool, String>,
     Spawn: FnOnce() -> Result<D, String>,
     Request: for<'d> FnOnce(&'d D, model_fetch::DownloadRequest) -> bool,
 {
     if let Err(err) = (edge.prepare)(edge.dest) {
         return DownloadStartResult::PreparedFailed(err);
     }
-    if model_present((edge.metadata_len)(edge.dest)) {
+    let already_present = match (edge.existing_model)(edge.dest, edge.entry.expected_sha256) {
+        Ok(already_present) => already_present,
+        Err(err) => return DownloadStartResult::PreparedFailed(err),
+    };
+    if already_present {
         return DownloadStartResult::AlreadyPresent;
     }
     if edge.downloader.is_none() {
@@ -2088,6 +2092,23 @@ fn model_download_dest_len(dest: &std::path::Path) -> Option<u64> {
     std::fs::metadata(dest).ok().map(|m| m.len())
 }
 
+fn model_download_dest_present(
+    dest: &std::path::Path,
+    expected_sha256: Option<&str>,
+) -> Result<bool, String> {
+    if !model_present(model_download_dest_len(dest)) {
+        return Ok(false);
+    }
+    let Some(expected) = expected_sha256 else {
+        return Ok(true);
+    };
+    let file = std::fs::File::open(dest)
+        .map_err(|err| format!("failed to read existing model {}: {err}", dest.display()))?;
+    let actual = model_fetch::read_sha256_hex(std::io::BufReader::new(file))
+        .map_err(|err| format!("failed to hash existing model {}: {err}", dest.display()))?;
+    Ok(actual == expected.to_ascii_lowercase())
+}
+
 /// Build the whole stack, run until a signal (or the run-ms deadline), then tear
 /// down in order.
 pub fn run() -> Result<(), String> {
@@ -3073,7 +3094,7 @@ pub fn run() -> Result<(), String> {
                         model_download_status: &mut model_download_status,
                         model_download_logged: &mut model_download_logged,
                         prepare: prepare_model_download_dest,
-                        metadata_len: model_download_dest_len,
+                        existing_model: model_download_dest_present,
                         spawn: || {
                             model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string())
                         },
@@ -6926,6 +6947,156 @@ mod tests {
     }
 
     #[test]
+    fn model_download_requeues_existing_file_when_hash_mismatches() {
+        const EXPECTED_HASH: &str =
+            "3aa927ba0345110f5880efe4a064beafcd9b37d4652c0293ca266654223ebf1f";
+        let entry = model_catalog::ModelEntry {
+            name: "test-model",
+            url: "https://example.invalid/m.gguf",
+            size_mb: 1,
+            min_ram_gb: 1,
+            license: model_catalog::License::Apache2,
+            expected_sha256: Some(EXPECTED_HASH),
+        };
+        let dest = std::env::temp_dir().join(format!(
+            "compme-existing-hash-mismatch-{}.gguf",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&dest, b"wrong model bytes").unwrap();
+        assert_eq!(
+            model_download_dest_present(&dest, Some(EXPECTED_HASH)),
+            Ok(false),
+            "the helper must hash nonempty pinned files before trusting them"
+        );
+        let mut downloader = Some(());
+        let mut status = None;
+        let mut logged = 7;
+        let requested_hash = std::cell::RefCell::new(None::<String>);
+
+        let result = start_model_download_edge(ModelDownloadEdge {
+            entry: &entry,
+            dest: &dest,
+            downloader: &mut downloader,
+            model_download_status: &mut status,
+            model_download_logged: &mut logged,
+            prepare: |_: &std::path::Path| Ok(()),
+            existing_model: model_download_dest_present,
+            spawn: || Ok(()),
+            request: |_: &(), request: model_fetch::DownloadRequest| {
+                *requested_hash.borrow_mut() = request.expected_sha256;
+                true
+            },
+        });
+        let _ = std::fs::remove_file(&dest);
+
+        assert_eq!(
+            result,
+            DownloadStartResult::Queued,
+            "a nonempty file with the wrong hash must be re-downloaded"
+        );
+        assert_eq!(requested_hash.borrow().as_deref(), entry.expected_sha256);
+        assert!(
+            status.is_some(),
+            "queued re-download must expose a fresh status block"
+        );
+        assert_eq!(logged, 0);
+        std::fs::write(&dest, b"expected model bytes").unwrap();
+        assert_eq!(
+            model_download_dest_present(&dest, Some(EXPECTED_HASH)),
+            Ok(true),
+            "a matching pinned model may skip the download"
+        );
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn model_download_skips_existing_file_when_hash_matches() {
+        const EXPECTED_HASH: &str =
+            "de516b3d3641c9011fbf3cea3198c39f339fd92066b124279b69949640b171a5";
+        let entry = model_catalog::ModelEntry {
+            name: "test-model",
+            url: "https://example.invalid/m.gguf",
+            size_mb: 1,
+            min_ram_gb: 1,
+            license: model_catalog::License::Apache2,
+            expected_sha256: Some(EXPECTED_HASH),
+        };
+        let dest = std::env::temp_dir().join(format!(
+            "compme-existing-hash-match-{}.gguf",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&dest, b"matching model bytes").unwrap();
+        let mut downloader = Some(());
+        let original_status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
+        *original_status.state.lock().unwrap() =
+            model_fetch::DownloadState::Done("/tmp/previous.gguf".into());
+        let original_ptr = std::sync::Arc::as_ptr(&original_status);
+        let mut status = Some(original_status);
+        let mut logged = 2;
+        let requested = std::cell::Cell::new(false);
+
+        let result = start_model_download_edge(ModelDownloadEdge {
+            entry: &entry,
+            dest: &dest,
+            downloader: &mut downloader,
+            model_download_status: &mut status,
+            model_download_logged: &mut logged,
+            prepare: |_: &std::path::Path| Ok(()),
+            existing_model: model_download_dest_present,
+            spawn: || Ok(()),
+            request: |_: &(), _request: model_fetch::DownloadRequest| {
+                requested.set(true);
+                true
+            },
+        });
+        let _ = std::fs::remove_file(&dest);
+
+        assert_eq!(result, DownloadStartResult::AlreadyPresent);
+        assert!(!requested.get(), "matching existing model skips enqueue");
+        assert_eq!(
+            status.as_ref().map(std::sync::Arc::as_ptr),
+            Some(original_ptr),
+            "skip path must not replace the tracked status block"
+        );
+        assert_eq!(logged, 2);
+    }
+
+    #[test]
+    fn model_download_busy_does_not_replace_tracked_status() {
+        let entry = model_catalog::recommended().expect("catalog has a recommended model");
+        let dest = std::path::PathBuf::from("/tmp/compme-model.gguf");
+        let mut downloader = Some(());
+        let original_status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
+        *original_status.state.lock().unwrap() =
+            model_fetch::DownloadState::Failed("previous failure".into());
+        let original_ptr = std::sync::Arc::as_ptr(&original_status);
+        let mut status = Some(original_status);
+        let mut logged = 2;
+
+        let result = start_model_download_edge(ModelDownloadEdge {
+            entry,
+            dest: &dest,
+            downloader: &mut downloader,
+            model_download_status: &mut status,
+            model_download_logged: &mut logged,
+            prepare: |_: &std::path::Path| Ok(()),
+            existing_model: |_: &std::path::Path, _: Option<&str>| Ok(false),
+            spawn: || Ok(()),
+            request: |_: &(), _request: model_fetch::DownloadRequest| false,
+        });
+
+        assert_eq!(result, DownloadStartResult::Busy);
+        assert_eq!(
+            status.as_ref().map(std::sync::Arc::as_ptr),
+            Some(original_ptr),
+            "dropped requests must not expose a fresh idle status"
+        );
+        assert_eq!(logged, 2);
+    }
+
+    #[test]
     fn download_log_transitions_log_each_stage_exactly_once() {
         use model_fetch::DownloadState;
         // Running logs once, never repeats.
@@ -6976,9 +7147,9 @@ mod tests {
             model_download_status: &mut status,
             model_download_logged: &mut logged,
             prepare: |_: &std::path::Path| Err("no model directory".into()),
-            metadata_len: |_: &std::path::Path| {
+            existing_model: |_: &std::path::Path, _: Option<&str>| {
                 metadata_checked.set(true);
-                None
+                Ok(false)
             },
             spawn: || {
                 spawned.set(true);
@@ -7026,7 +7197,7 @@ mod tests {
             model_download_status: &mut status,
             model_download_logged: &mut logged,
             prepare: |_: &std::path::Path| Ok(()),
-            metadata_len: |_: &std::path::Path| None,
+            existing_model: |_: &std::path::Path, _: Option<&str>| Ok(false),
             spawn: || Err("thread unavailable".into()),
             request: |_: &(), _| {
                 requested.set(true);

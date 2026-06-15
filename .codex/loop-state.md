@@ -429,6 +429,58 @@
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 11:24:36 +08 - Existing model hash verification TDD pass
+
+- Task selected: Verify pinned existing GGUF model files before the app skips a model download.
+- Why it was selected: The active test-quality loop state listed a Critical model-download gap: an already-present non-empty GGUF was trusted by file length without checking the catalog `expected_sha256`. This was loop-doable without GUI permissions or external services.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/app/src/run_loop.rs`
+  - `crates/model_fetch/src/lib.rs`
+  - `docs/DEVELOPMENT.md`
+- Tests added/updated:
+  - Added `run_loop::tests::model_download_requeues_existing_file_when_hash_mismatches`.
+  - Added `run_loop::tests::model_download_skips_existing_file_when_hash_matches`.
+  - Added `run_loop::tests::model_download_busy_does_not_replace_tracked_status`.
+  - Added `model_fetch::tests::worker_enforces_expected_sha256_and_reports_failed_state`.
+  - Updated README and DEVELOPMENT root test-count prose from `1088` to `1092`.
+- Verification commands and result:
+  - RED: `cargo test -p app model_download_requeues_existing_file_when_hash_mismatches -- --nocapture` first failed for a test type-inference setup issue; after fixing the test, it failed for the right reason with `AlreadyPresent` instead of `Queued`.
+  - GREEN focused: `cargo test -p app model_download_requeues_existing_file_when_hash_mismatches -- --nocapture` passed after existing pinned files were hashed before the skip decision.
+  - Focused model-download rerun: `cargo test -p app model_download -- --nocapture` passed with `6` tests.
+  - Focused worker integrity rerun: `cargo test -p model_fetch worker_enforces_expected_sha256_and_reports_failed_state -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1092`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3910` nodes, `10433` edges, and `140` communities.
+  - `git diff --check` passed before this state-file update.
+- Test count if available: root `1092` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Critical model-download finding: the app no longer treats any non-empty pinned GGUF as complete; it hashes the existing file and requeues the download on mismatch.
+  - Fixed Important model-integrity review finding: worker-level coverage now proves `ModelDownloader` enforces `expected_sha256` and reports `Failed` on mismatch while keeping `.part` for inspection.
+  - Fixed Important model-integrity review finding: a matching pinned existing model skips enqueue without replacing the tracked status block.
+  - Fixed Important model-integrity review finding: the Busy path preserves the previous tracked status and log state when the worker queue rejects a request.
+- Blocked or skipped work remaining:
+  - Important app/context findings from the parallel reviewer remain: same-element different-generation OCR freshness, submit context refresh ordering, accept-failure side-effect coverage, secure-input recheck ordering before monitored-memory flush, and monitored-memory write failure drain/no-replay behavior.
+  - Minor model-catalog finding remains: provenance commit strings are not yet explicitly tested as full 40-character lowercase hex commit IDs.
+  - Important release/provenance finding remains: no opt-in live HEAD gate confirms pinned Hugging Face URLs still expose `x-linked-etag` matching the pinned hashes.
+  - Important release finding remains: tag workflow can publish without machine-checkable evidence that ignored model-backed gates were run for the tag/commit.
+  - Important acceptance/privacy finding remains: E2E/A1b output can still print raw live document or product-log evidence; add sanitized evidence output or explicit raw opt-in.
+  - Important pure-crate findings remain: PAN redaction lacks tabs/newlines/repeated-space separator coverage; `PreviousInputs::record` relies on callers to pre-redact; `stats::sparkline` lacks pathological large-value coverage.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 10:41:48 +08 - Catalog pinning and browser submit domain gate TDD pass
 
 - Task selected: Pin built-in model catalog URLs to recorded Hugging Face commits, then fix the pass-3 Critical browser-domain submit gate found by runtime review.
