@@ -120,6 +120,13 @@ pub enum StatRange {
 }
 
 impl StatRange {
+    /// Picker menu order (drives the range NSPopUpButton's item list).
+    pub const ALL: [StatRange; 3] = [
+        StatRange::Last7Days,
+        StatRange::Last14Days,
+        StatRange::Last30Days,
+    ];
+
     /// The number of trailing 24h slices this range covers.
     pub fn days(self) -> usize {
         match self {
@@ -127,6 +134,21 @@ impl StatRange {
             StatRange::Last14Days => 14,
             StatRange::Last30Days => 30,
         }
+    }
+
+    /// Human-readable picker item title.
+    pub fn label(self) -> &'static str {
+        match self {
+            StatRange::Last7Days => "Last 7 days",
+            StatRange::Last14Days => "Last 14 days",
+            StatRange::Last30Days => "Last 30 days",
+        }
+    }
+
+    /// Decode a selected picker-row index; out-of-range clamps to the first
+    /// item (mirrors the model picker's total-over-OOB selection).
+    pub fn from_index(index: usize) -> Self {
+        *Self::ALL.get(index).unwrap_or(&Self::ALL[0])
     }
 }
 
@@ -140,6 +162,24 @@ pub enum StatGrouping {
     Weekly,
 }
 
+impl StatGrouping {
+    /// Picker menu order (drives the grouping NSPopUpButton's item list).
+    pub const ALL: [StatGrouping; 2] = [StatGrouping::Daily, StatGrouping::Weekly];
+
+    /// Human-readable picker item title.
+    pub fn label(self) -> &'static str {
+        match self {
+            StatGrouping::Daily => "Daily",
+            StatGrouping::Weekly => "Weekly",
+        }
+    }
+
+    /// Decode a selected picker-row index; out-of-range clamps to the first item.
+    pub fn from_index(index: usize) -> Self {
+        *Self::ALL.get(index).unwrap_or(&Self::ALL[0])
+    }
+}
+
 /// Which metric series the chart plots (the "metric" control).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatMetric {
@@ -151,6 +191,31 @@ pub enum StatMetric {
 }
 
 impl StatMetric {
+    /// Picker menu order (drives the metric NSPopUpButton's item list).
+    pub const ALL: [StatMetric; 5] = [
+        StatMetric::Shown,
+        StatMetric::Accepted,
+        StatMetric::Dismissed,
+        StatMetric::Superseded,
+        StatMetric::Words,
+    ];
+
+    /// Human-readable picker item title.
+    pub fn label(self) -> &'static str {
+        match self {
+            StatMetric::Shown => "Shown",
+            StatMetric::Accepted => "Accepted",
+            StatMetric::Dismissed => "Dismissed",
+            StatMetric::Superseded => "Superseded",
+            StatMetric::Words => "Words",
+        }
+    }
+
+    /// Decode a selected picker-row index; out-of-range clamps to the first item.
+    pub fn from_index(index: usize) -> Self {
+        *Self::ALL.get(index).unwrap_or(&Self::ALL[0])
+    }
+
     /// Pull this metric's value out of a single day bucket.
     fn of(self, bucket: &DayBucket) -> usize {
         match self {
@@ -1003,5 +1068,58 @@ mod tests {
         assert_eq!(StatRange::Last7Days.days(), 7);
         assert_eq!(StatRange::Last14Days.days(), 14);
         assert_eq!(StatRange::Last30Days.days(), 30);
+    }
+
+    #[test]
+    fn stat_picker_enums_expose_menu_order_labels_and_index_decode() {
+        // The Statistics-pane range/group/metric pickers (NSPopUpButtons) drive
+        // these enums: ALL is the menu order, label() the item title, and
+        // from_index decodes the selected row (OOB clamps to the first item,
+        // like the model picker's total-over-OOB selection).
+        assert_eq!(
+            StatRange::ALL,
+            [
+                StatRange::Last7Days,
+                StatRange::Last14Days,
+                StatRange::Last30Days
+            ]
+        );
+        assert_eq!(
+            StatGrouping::ALL,
+            [StatGrouping::Daily, StatGrouping::Weekly]
+        );
+        assert_eq!(
+            StatMetric::ALL,
+            [
+                StatMetric::Shown,
+                StatMetric::Accepted,
+                StatMetric::Dismissed,
+                StatMetric::Superseded,
+                StatMetric::Words
+            ]
+        );
+
+        // Labels are human-readable and, per metric, distinct (no two menu rows
+        // can share a title).
+        assert_eq!(StatRange::Last30Days.label(), "Last 30 days");
+        assert_eq!(StatGrouping::Weekly.label(), "Weekly");
+        assert_eq!(StatMetric::Accepted.label(), "Accepted");
+        let labels: Vec<&str> = StatMetric::ALL.iter().map(|m| m.label()).collect();
+        let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(unique.len(), labels.len());
+
+        // from_index round-trips ALL and clamps out-of-range to the first item.
+        for (i, &r) in StatRange::ALL.iter().enumerate() {
+            assert_eq!(StatRange::from_index(i), r);
+        }
+        for (i, &g) in StatGrouping::ALL.iter().enumerate() {
+            assert_eq!(StatGrouping::from_index(i), g);
+        }
+        for (i, &m) in StatMetric::ALL.iter().enumerate() {
+            assert_eq!(StatMetric::from_index(i), m);
+        }
+        assert_eq!(StatRange::from_index(99), StatRange::Last7Days);
+        assert_eq!(StatGrouping::from_index(99), StatGrouping::Daily);
+        assert_eq!(StatMetric::from_index(99), StatMetric::Shown);
     }
 }
