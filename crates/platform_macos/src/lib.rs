@@ -2391,6 +2391,59 @@ pub fn format_accept_key(keycode: i64, mask: u32) -> String {
     out
 }
 
+/// The three optional global shortcut hotkeys configurable beyond the accept
+/// keys (A3 Shortcuts pane, ROADMAP Tier 3.4): force a completion now, toggle
+/// completions for the focused app, and toggle completions globally. Each is
+/// `None` until the user binds it — default-off, so no extra global hotkey is
+/// registered. Parsed from the persisted `COMPME_FORCE_ACTIVATE_KEY` /
+/// `COMPME_TOGGLE_APP_KEY` / `COMPME_TOGGLE_GLOBAL_KEY` config strings via
+/// [`parse_accept_key`] (same grammar as the accept keys, so modifier combos
+/// like `ctrl+shift+50` work). The Carbon registration of these always-on
+/// hotkeys and the recorder rows that edit them are a later FFI tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShortcutBindings {
+    pub force_activate: Option<(i64, u32)>,
+    pub toggle_app: Option<(i64, u32)>,
+    pub toggle_global: Option<(i64, u32)>,
+}
+
+impl ShortcutBindings {
+    /// Parse the three optional config strings into `(keycode, mask)` bindings.
+    /// A `None`, empty, or malformed string leaves that binding unset, matching
+    /// the accept keys' fail-soft-to-default behavior. Collisions are NOT
+    /// rejected here — call [`Self::has_internal_collision`] before registering.
+    pub fn from_config(
+        force_activate: Option<&str>,
+        toggle_app: Option<&str>,
+        toggle_global: Option<&str>,
+    ) -> Self {
+        Self {
+            force_activate: force_activate.and_then(parse_accept_key),
+            toggle_app: toggle_app.and_then(parse_accept_key),
+            toggle_global: toggle_global.and_then(parse_accept_key),
+        }
+    }
+
+    /// `true` if any two bound shortcuts share the same `(keycode, mask)` chord.
+    /// A single chord can't register two distinct global hotkeys, so the caller
+    /// must reject/ignore a colliding set before installing them. Same keycode
+    /// with different modifiers is a distinct chord (not a collision).
+    pub fn has_internal_collision(&self) -> bool {
+        let bound: Vec<(i64, u32)> = [self.force_activate, self.toggle_app, self.toggle_global]
+            .into_iter()
+            .flatten()
+            .collect();
+        for i in 0..bound.len() {
+            for j in (i + 1)..bound.len() {
+                if bound[i] == bound[j] {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 /// Map a Carbon modifier mask to its macOS glyph prefix (⌃⌥⇧⌘) for the
 /// Shortcuts-pane display label, in the conventional HIG order. Empty for a
 /// bare key. Distinct from [`format_accept_key`], which emits persisted words.
@@ -8378,6 +8431,32 @@ mod tests {
             AcceptKeymap::from_accept_keys(Some(122), Some(120)),
             AcceptKeymap::from_accept_keys_with_mods(Some(122), Some(120), 0, 0),
         );
+    }
+
+    #[test]
+    fn shortcut_bindings_parse_from_config_and_detect_internal_collisions() {
+        // The three optional global shortcuts (A3 Shortcuts pane) each parse via
+        // parse_accept_key; None/empty/malformed leaves that binding unset.
+        let b = ShortcutBindings::from_config(Some("shift+96"), None, Some("garbage"));
+        assert_eq!(b.force_activate, Some((96, CARBON_SHIFT_KEY)));
+        assert_eq!(b.toggle_app, None);
+        assert_eq!(b.toggle_global, None); // malformed → unset (fail-soft)
+        assert!(!b.has_internal_collision());
+
+        // All-unset is the default (no global hotkey registered).
+        assert_eq!(
+            ShortcutBindings::default(),
+            ShortcutBindings::from_config(None, None, None)
+        );
+
+        // Two bindings on the SAME (keycode, mask) chord collide — the caller
+        // must reject the set before registering (one chord can't fire two).
+        let clash = ShortcutBindings::from_config(Some("ctrl+50"), Some("ctrl+50"), None);
+        assert!(clash.has_internal_collision());
+
+        // Same keycode, DIFFERENT modifiers is NOT a collision (distinct chords).
+        let distinct = ShortcutBindings::from_config(Some("50"), Some("shift+50"), Some("ctrl+50"));
+        assert!(!distinct.has_internal_collision());
     }
 
     #[test]
