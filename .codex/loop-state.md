@@ -469,6 +469,45 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: DRY state-only consolidation entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 14:09:53 +08 - A2 request predicate cleanup
+
+- Task selected: Centralize duplicated A2 request-line predicates and pin the generic request edge cases.
+- Why it was selected: The latest active loop state carried this as the only loop-doable cleanup outside app-loop seams and manual/live validation. The app seams still need broader extraction/injection harnesses, while the A2 predicate cleanup was isolated, behavior-preserving, and covered by deterministic self-tests.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `tools/acceptance/run-a2-compat-gates.sh`
+- Tests added/updated:
+  - Added A2 self-test fixture `request-allows-resolved-custom-app`, proving generic submit detection remains broader than the known works/terminal app lists.
+  - Added A2 self-test fixture `mixed-unknown-request-is-not-submit-proof`, preserving strict rejection when a valid-looking unresolved `app=unknown` request appears in the same log.
+  - Added A2 self-test fixture `mixed-malformed-unknown-request-is-not-submit-proof`, preserving the older broad unresolved-app rejection even when the unknown request line is malformed after the app field.
+- Verification commands and result:
+  - Baseline before refactor: `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - Focused after refactor: `tools/acceptance/run-a2-compat-gates.sh --self-test` passed with `29` PASS lines.
+  - Focused after the unknown-app tightening: `tools/acceptance/run-a2-compat-gates.sh --self-test` passed with `30` PASS lines.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1103`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3959` nodes, `10593` edges, and `141` communities.
+  - `git diff --check` passed.
+- Test count if available: root `1103` listed tests; spike `30` listed tests; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; A2 self-test `30` PASS lines; ignored model-backed release gate passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed: None. Four-axis diff review found no Critical, Important, or Minor findings; two subagent reviews covered correctness/security/data-loss and plan alignment, and local review covered quality/shell portability and tests/coverage.
+- Blocked or skipped work remaining:
+  - App coverage seam remains skipped: accept-failure app-level privacy/stat side effects are correct in current code, but direct app-loop coverage needs an extraction/injection seam.
+  - App coverage seam remains skipped: submit-time auxiliary context ordering is correct in current code, but a meaningful RED needs a broader harness.
+  - Important app context finding remains skipped for now: monitored-memory write failure drain/no-replay behavior is not directly tested; current code drains pending work before persistence and removes boundary buffers before calling `MemoryStore::monitor`, so a direct behavior test needs a legitimate failure-injection seam.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 13:47:30 +08 - A2 request evidence target/marker proof
 
 - Task selected: Strengthen A2 positive request evidence so `works` / `terminal-nlp` prove resolved target identity, all submit gates, and a privacy-safe per-run prompt marker.

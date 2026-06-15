@@ -36,17 +36,30 @@ LOG_DIR="$ROOT_DIR/tools/acceptance/logs"
 LOG="$LOG_DIR/a2-compat-${KIND}-$(date +%Y%m%d-%H%M%S).log"
 mkdir -p "$LOG_DIR"
 
+REQUEST_LINE_PREFIX='^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app='
+REQUEST_LINE_SUFFIX=' app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$'
+WORKS_APP_PATTERN='(com\.apple\.Safari|com\.google\.Chrome|com\.apple\.mail|com\.microsoft\.Word|com\.apple\.TextEdit|com\.apple\.Notes|notion\.id|md\.obsidian|com\.apple\.MobileSMS)'
+TERMINAL_APP_PATTERN='(com\.apple\.Terminal|com\.googlecode\.iterm2)'
+
+has_request_for_app_pattern() {
+  grep -Eq "${REQUEST_LINE_PREFIX}$2${REQUEST_LINE_SUFFIX}" "$1"
+}
+
+has_unknown_request_app() {
+  grep -Eq "${REQUEST_LINE_PREFIX}unknown " "$1"
+}
+
 has_request() {
-  grep -Eq '^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=[^[:space:]]+ app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$' "$1" \
-    && ! grep -Eq '^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=unknown ' "$1"
+  has_request_for_app_pattern "$1" '[^[:space:]]+' \
+    && ! has_unknown_request_app "$1"
 }
 
 has_works_request() {
-  grep -Eq '^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=(com\.apple\.Safari|com\.google\.Chrome|com\.apple\.mail|com\.microsoft\.Word|com\.apple\.TextEdit|com\.apple\.Notes|notion\.id|md\.obsidian|com\.apple\.MobileSMS) app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$' "$1"
+  has_request_for_app_pattern "$1" "$WORKS_APP_PATTERN"
 }
 
 has_terminal_nlp_request() {
-  grep -Eq '^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=(com\.apple\.Terminal|com\.googlecode\.iterm2) app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$' "$1"
+  has_request_for_app_pattern "$1" "$TERMINAL_APP_PATTERN"
 }
 
 has_clipboard_prompt_context() {
@@ -114,6 +127,9 @@ run_self_tests() {
   unsupported_block="$tmp_dir/unsupported-block.log"
   terminal_block="$tmp_dir/terminal-block.log"
   bare_request="$tmp_dir/bare-request.log"
+  custom_app_request="$tmp_dir/custom-app-request.log"
+  mixed_unknown_request="$tmp_dir/mixed-unknown-request.log"
+  mixed_malformed_unknown_request="$tmp_dir/mixed-malformed-unknown-request.log"
   unresolved_request="$tmp_dir/unresolved-request.log"
   marker_missing_request="$tmp_dir/marker-missing-request.log"
   embedded_request="$tmp_dir/embedded-request.log"
@@ -168,6 +184,20 @@ LOG
 compme: focus ax:1
 compme: request gen=7 prompt_chars=5
 LOG
+  cat >"$custom_app_request" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt_chars=5 app=com.example.CustomEditor app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+LOG
+  cat >"$mixed_unknown_request" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: request gen=8 prompt_chars=5 app=unknown app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+LOG
+  cat >"$mixed_malformed_unknown_request" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: request gen=8 prompt_chars=5 app=unknown unresolved metadata
+LOG
   cat >"$unresolved_request" <<'LOG'
 compme: focus ax:1
 compme: request gen=7 prompt_chars=5 app=unknown app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
@@ -191,6 +221,9 @@ LOG
   self_test_assert "request-present" 1 has_request "$good" || failures=$((failures + 1))
   self_test_assert "request-absent" 0 has_request "$empty" || failures=$((failures + 1))
   self_test_assert "request-without-app-metadata-is-not-submit-proof" 0 has_request "$bare_request" || failures=$((failures + 1))
+  self_test_assert "request-allows-resolved-custom-app" 1 has_request "$custom_app_request" || failures=$((failures + 1))
+  self_test_assert "mixed-unknown-request-is-not-submit-proof" 0 has_request "$mixed_unknown_request" || failures=$((failures + 1))
+  self_test_assert "mixed-malformed-unknown-request-is-not-submit-proof" 0 has_request "$mixed_malformed_unknown_request" || failures=$((failures + 1))
   self_test_assert "request-without-resolved-app-is-not-submit-proof" 0 has_request "$unresolved_request" || failures=$((failures + 1))
   self_test_assert "request-without-prompt-marker-is-not-submit-proof" 0 has_request "$marker_missing_request" || failures=$((failures + 1))
   self_test_assert "embedded-request-text-is-not-submit-proof" 0 has_request "$embedded_request" || failures=$((failures + 1))
