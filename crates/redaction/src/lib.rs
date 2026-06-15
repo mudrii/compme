@@ -56,12 +56,12 @@ fn looks_high_entropy(token: &str) -> bool {
     has_digit || (has_upper && has_lower) || has_b64_punct
 }
 
-/// Matches a run of 13–19 digits, optionally separated by single spaces,
+/// Matches a run of 13–19 digits, optionally separated by whitespace runs,
 /// dashes, or no-break spaces (a candidate card number; Luhn-checked before
 /// redacting).
 fn card_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\d(?:[ \u{00a0}-]?\d){12,18}").expect("card regex"))
+    RE.get_or_init(|| Regex::new(r"\d(?:[\s\u{00a0}-]*\d){12,18}").expect("card regex"))
 }
 
 fn email_re() -> &'static Regex {
@@ -330,6 +330,19 @@ mod tests {
         let out = redact("pan 4242\u{00a0}4242\u{00a0}4242\u{00a0}4242 end");
         assert!(out.contains("[redacted-card]"), "got {out:?}");
         assert!(!out.contains("4242"), "got {out:?}");
+    }
+
+    #[test]
+    fn redacts_cards_with_tabs_newlines_and_repeated_spaces() {
+        let out = redact("pan 4242\t4242\n4242   4242 end");
+        assert!(out.contains("[redacted-card]"), "got {out:?}");
+        assert!(!out.contains("4242"), "got {out:?}");
+
+        let non_luhn = redact("order 1234\t5678\n1234   5671 end");
+        assert!(
+            non_luhn.contains("1234\t5678\n1234   5671"),
+            "non-Luhn digit runs must survive: {non_luhn:?}"
+        );
     }
 
     #[test]

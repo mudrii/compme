@@ -652,6 +652,61 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 11:37:17 +08 - Privacy redaction guard TDD pass
+
+- Task selected: Add TDD coverage and fixes for privacy redaction at the PAN recognizer and accepted-input storage boundary.
+- Why it was selected: The current pure-crate review found loop-doable Important privacy gaps that needed no GUI, external credentials, or manual hardware validation.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/app/src/inference.rs`
+  - `crates/redaction/src/lib.rs`
+  - `docs/DEVELOPMENT.md`
+- Tests added/updated:
+  - Added `redacts_cards_with_tabs_newlines_and_repeated_spaces`.
+  - Added `previous_inputs_record_redacts_before_prompt_context`.
+- Verification commands and result:
+  - RED: `cargo test -p redaction redacts_cards_with_tabs_newlines_and_repeated_spaces -- --nocapture` failed before implementation because the tab/newline/repeated-space PAN remained visible.
+  - GREEN focused: `cargo test -p redaction redacts_cards_with_tabs_newlines_and_repeated_spaces -- --nocapture` passed.
+  - RED: `cargo test -p app previous_inputs_record_redacts_before_prompt_context -- --nocapture` failed before implementation because a direct `PreviousInputs::record` caller could put a raw token in prompt context.
+  - GREEN focused: `cargo test -p app previous_inputs_record_redacts_before_prompt_context -- --nocapture` passed.
+  - `cargo test -p redaction -- --nocapture` passed.
+  - `cargo test -p app previous_inputs -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1094`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3914` nodes, `10444` edges, and `133` communities.
+- Test count if available: root `1094` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important privacy finding: PANs separated by tabs, newlines, repeated spaces, no-break spaces, or dashes are redacted when they pass Luhn validation, while non-Luhn lookalikes survive.
+  - Fixed Important privacy finding: `PreviousInputs::record` now redacts at the storage boundary, so direct callers cannot leak raw secrets into future prompt context.
+  - Fixed Important final diff-review finding: narrowed this tick to the selected privacy-redaction task and moved unrelated stats overflow work back to remaining work.
+  - Fixed Important final diff-review finding: reran and recorded the documented model-backed gates with `COMPME_REQUIRE_MODEL_TESTS=1`.
+- Blocked or skipped work remaining:
+  - Important pure-crate correctness finding remains: `stats::sparkline` can overflow on `usize::MAX`; add a red test for `[0, usize::MAX]` and widen scaling before a future commit.
+  - Important app context finding remains: OCR context generation-specific freshness only indirectly covers same-element newer-generation reuse.
+  - Important app context finding remains: submit-time auxiliary context ordering is not pinned by a targeted test.
+  - Important app context finding remains: accept-failure privacy side effects are not directly covered at the app level.
+  - Important app context finding remains: secure-input recheck before monitored-memory flush is not directly pinned.
+  - Important app context finding remains: monitored-memory write failure drain/no-replay behavior is not directly tested.
+  - Important release/provenance finding remains: built-in model URLs still need a live HEAD/provenance gate.
+  - Important release/model finding remains: ignored model-backed evidence is not machine-enforced before release.
+  - Important acceptance/privacy finding remains: some harness output still needs raw-context suppression and hostile-content negative fixtures.
+  - Minor final diff-review finding noted: `record_full_accept` still pre-redacts before `PreviousInputs::record`; left as harmless defense in depth because `PreviousInputs::record` now owns the storage-boundary privacy invariant.
+  - Minor pure-crate finding remains: model-catalog provenance commit shape lacks direct coverage.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 09:49:01 +08 - Submit failure tracking TDD pass
 
 - Task selected: Add TDD coverage and fix runtime bookkeeping for rejected inference submissions.

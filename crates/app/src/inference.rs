@@ -36,13 +36,14 @@ pub struct PreviousInputs {
 impl PreviousInputs {
     const CAPACITY: usize = 5;
 
-    /// Record an already-redacted accepted completion for `app`, evicting the
-    /// oldest. Consecutive duplicates are ignored so word-by-word repeats don't
-    /// flood the ring.
+    /// Record an accepted completion for `app`, redacting before storage,
+    /// evicting the oldest. Consecutive duplicates are ignored so word-by-word
+    /// repeats don't flood the ring.
     pub fn record(&self, app: &str, text: String) {
         if text.trim().is_empty() {
             return;
         }
+        let text = redaction::redact(&text);
         // Recover the guard on poisoning rather than silently dropping forever.
         let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let buf = map.entry(app.to_string()).or_default();
@@ -469,6 +470,38 @@ mod tests {
             outcome.candidates[0]
         );
         assert!(outcome.candidates[0].contains("now typing"));
+        inference.shutdown();
+    }
+
+    #[test]
+    fn previous_inputs_record_redacts_before_prompt_context() {
+        let previous = PreviousInputs::default();
+        let token = "sk-abcdEFGH0123456789abcdEFGH0123";
+        previous.record("TextEdit", token.into());
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext {
+                previous_inputs: previous,
+                max_chars: 160,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        inference.submit(request("now typing", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            outcome.candidates[0].contains("Recent: [redacted-secret]"),
+            "redacted previous input should be used as context: {:?}",
+            outcome.candidates[0]
+        );
+        assert!(
+            !outcome.candidates[0].contains(token),
+            "raw previous input secret leaked into context: {:?}",
+            outcome.candidates[0]
+        );
         inference.shutdown();
     }
 
