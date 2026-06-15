@@ -1,0 +1,21 @@
+[package]
+name = "platform_linux"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+# SCAFFOLD (ROADMAP Tier 1.1). The PlatformAdapter contract is implemented as a
+# fail-closed stub on every host so `cargo build/test --workspace` stays green on
+# the macOS-only dev/CI environment this was authored in. The real AT-SPI2 /
+# XTEST / wtype / IBus implementation lands behind `#[cfg(target_os = "linux")]`
+# on a Linux build+test environment — its Linux-only dependencies go under a
+# target table so non-Linux hosts never pull them:
+#
+#   [target.'cfg(target_os = "linux")'.dependencies]
+#   atspi = "..."        # AT-SPI2 accessibility over D-Bus (read/insert, focus/caret events)
+#   x11rb = "..."        # XTEST synthetic keys + X11 overlay window (X11 sessions)
+#   # Wayland: shell out to `wtype`, or use libei, for synthetic input where
+#   # XTEST is unavailable; IBus bindings for the IME commit path.
+
+[dependencies]
+platform = { path = "../platform" }
