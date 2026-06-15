@@ -296,10 +296,9 @@ fn run(
 
     while let Some((request, screen_text)) = request_with_screen_context(&requests, &worker_context)
     {
-        // Personalization steering for the focused app (domain support is a later
-        // browser feature; None for now), then shape the engine's raw left-context
-        // prefix per the configured strategy (terse continuation by default).
-        let preamble = profile.build_preamble(Some(&request.field.app), None);
+        // Personalization steering for the focused app and, when the request
+        // came from a monitored browser field, the resolved website domain.
+        let preamble = profile.build_preamble(Some(&request.field.app), request.domain.as_deref());
         // Opt-in context augmentation (clipboard + previous inputs): prepend a
         // bounded, already-redacted block ahead of the steering preamble.
         let block = worker_context.block_for_with_screen_text(&request, screen_text.as_deref());
@@ -467,6 +466,7 @@ mod tests {
                 element_id: "f".into(),
                 generation,
             },
+            domain: None,
             snapshot: generation,
             prompt: prompt.into(),
             max_tokens: 8,
@@ -645,6 +645,7 @@ mod tests {
                 element_id: "other-field".into(),
                 generation: 2,
             },
+            domain: None,
             snapshot: 2,
             prompt: "target field".into(),
             max_tokens: 8,
@@ -685,6 +686,7 @@ mod tests {
             generation: 2,
             snapshot: 2,
             field: source.field.clone(),
+            domain: None,
             prompt: "target typing".into(),
             max_tokens: 8,
         };
@@ -1046,6 +1048,43 @@ mod tests {
         assert!(second.candidates[0].contains("Use short completions."));
         assert!(!second.candidates[0].contains("Use a plain-text tone."));
         assert!(second.candidates[0].contains("Notes draft"));
+        inference.shutdown();
+    }
+
+    #[test]
+    fn per_domain_personalization_uses_request_domain() {
+        let mut profile = PersonalizationProfile {
+            global_instructions: "Use short completions.".into(),
+            ..Default::default()
+        };
+        profile.per_domain.insert(
+            "docs.google.com".into(),
+            "Prefer spreadsheet language.".into(),
+        );
+
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            profile,
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        assert!(inference.submit(CompletionRequest {
+            domain: Some("docs.google.com".into()),
+            ..request("Budget draft", 1)
+        }));
+        let first = inference.recv_outcome().expect("domain outcome");
+
+        assert!(inference.submit(request("Local draft", 2)));
+        let second = inference.recv_outcome().expect("local outcome");
+
+        assert!(first.candidates[0].contains("Use short completions."));
+        assert!(first.candidates[0].contains("Prefer spreadsheet language."));
+        assert!(first.candidates[0].contains("Budget draft"));
+        assert!(second.candidates[0].contains("Use short completions."));
+        assert!(!second.candidates[0].contains("Prefer spreadsheet language."));
+        assert!(second.candidates[0].contains("Local draft"));
         inference.shutdown();
     }
 

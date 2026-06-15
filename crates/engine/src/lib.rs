@@ -48,6 +48,7 @@ pub struct TextChange {
 pub struct CompletionRequest {
     pub generation: u64,
     pub field: FieldHandle,
+    pub domain: Option<String>,
     pub snapshot: SnapshotId,
     pub prompt: String,
     pub max_tokens: usize,
@@ -334,6 +335,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                 } => requests.push(CompletionRequest {
                     generation,
                     field,
+                    domain: None,
                     snapshot,
                     prompt,
                     max_tokens: self.max_tokens,

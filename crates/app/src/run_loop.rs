@@ -1128,13 +1128,17 @@ fn cached_domain<'a>(
     (app_key == Some(read_app.as_str())).then_some(host.as_str())
 }
 
+fn domain_observation_enabled(prefs: &Prefs, profile: &PersonalizationProfile) -> bool {
+    !prefs.excluded_domains.is_empty() || !profile.per_domain.is_empty()
+}
+
 fn typing_domain(
     cache: &mut Option<(String, String)>,
     app_key: Option<&str>,
-    prefs: &Prefs,
+    refresh_browser_domain: bool,
     fresh_url: Option<&str>,
 ) -> Option<String> {
-    if app_key.is_some_and(compat::is_browser) && !prefs.excluded_domains.is_empty() {
+    if app_key.is_some_and(compat::is_browser) && refresh_browser_domain {
         *cache = domain_cache_entry(app_key, fresh_url);
     }
     cached_domain(cache, app_key).map(str::to_owned)
@@ -1166,11 +1170,14 @@ fn latency_sample(
 
 fn submit_request_and_track(
     submit_times: &mut HashMap<u64, u64>,
-    request: CompletionRequest,
+    mut request: CompletionRequest,
     now_ms: u64,
     log_context: RequestLogContext,
     submit: impl FnOnce(CompletionRequest) -> bool,
 ) -> String {
+    if request.domain.is_none() {
+        request.domain = log_context.domain.clone();
+    }
     let generation = request.generation;
     let submitted_line = log_context.line_for(&request, now_ms);
     if !submit(request) {
@@ -2754,9 +2761,11 @@ pub fn run() -> Result<(), String> {
                             };
                             match observation {
                                 Observation::Typed(change) => {
+                                    let observe_domain =
+                                        domain_observation_enabled(&prefs, &config.personalization);
                                     let fresh_url =
                                         if app_key.as_deref().is_some_and(compat::is_browser)
-                                            && !prefs.excluded_domains.is_empty()
+                                            && observe_domain
                                         {
                                             adapter.focused_page_url(&field).ok().flatten()
                                         } else {
@@ -2765,7 +2774,7 @@ pub fn run() -> Result<(), String> {
                                     let domain = typing_domain(
                                         &mut last_domain,
                                         app_key.as_deref(),
-                                        &prefs,
+                                        observe_domain,
                                         fresh_url.as_deref(),
                                     );
                                     enqueue_monitored_change(
@@ -3859,6 +3868,7 @@ mod tests {
         let request = CompletionRequest {
             generation: 42,
             field: field_with_app("com.apple.TextEdit"),
+            domain: None,
             snapshot: 42,
             prompt: "secret prompt with ada@example.com".into(),
             max_tokens: 24,
@@ -5320,30 +5330,27 @@ mod tests {
     }
 
     #[test]
-    fn typing_domain_refreshes_browser_cache_only_when_domain_rules_exist() {
+    fn typing_domain_refreshes_browser_cache_when_a_domain_consumer_is_enabled() {
         let mut cache = Some((
             "com.apple.Safari".to_string(),
             "allowed.example".to_string(),
         ));
-        let prefs = Prefs::default();
         assert_eq!(
-            typing_domain(&mut cache, Some("com.apple.Safari"), &prefs, None),
+            typing_domain(&mut cache, Some("com.apple.Safari"), false, None),
             Some("allowed.example".into())
         );
 
-        let mut prefs = Prefs::default();
-        prefs.excluded_domains.insert("blocked.example".into());
         assert_eq!(
             typing_domain(
                 &mut cache,
                 Some("com.apple.Safari"),
-                &prefs,
+                true,
                 Some("https://blocked.example/private")
             ),
             Some("blocked.example".into())
         );
         assert_eq!(
-            typing_domain(&mut cache, Some("com.apple.Safari"), &prefs, None),
+            typing_domain(&mut cache, Some("com.apple.Safari"), true, None),
             None
         );
     }
@@ -5836,6 +5843,7 @@ mod tests {
                 element_id: "ax:field".into(),
                 generation: 1,
             },
+            domain: None,
             snapshot: generation,
             prompt: "hello world".into(),
             max_tokens: 24,
@@ -5854,15 +5862,18 @@ mod tests {
     #[test]
     fn submit_tracking_records_only_accepted_requests() {
         let mut submit_times = HashMap::new();
+        let mut log_context = request_log_context_for_submit_tracking();
+        log_context.domain = Some("docs.google.com".into());
 
         let log_line = submit_request_and_track(
             &mut submit_times,
             request_for_submit_tracking(7),
             123,
-            request_log_context_for_submit_tracking(),
+            log_context,
             |request| {
                 assert_eq!(request.generation, 7);
                 assert_eq!(request.prompt, "hello world");
+                assert_eq!(request.domain.as_deref(), Some("docs.google.com"));
                 true
             },
         );
@@ -6933,6 +6944,7 @@ mod tests {
         let matching_request = engine::CompletionRequest {
             generation: 7,
             field: canonical.clone(),
+            domain: None,
             snapshot: 7,
             prompt: "now".into(),
             max_tokens: 8,
@@ -6945,6 +6957,7 @@ mod tests {
                 element_id: "ax:field".into(),
                 generation: 7,
             },
+            domain: None,
             snapshot: 7,
             prompt: "now".into(),
             max_tokens: 8,
@@ -7857,6 +7870,7 @@ mod tests {
         CompletionRequest {
             generation,
             field: host_field("f"),
+            domain: None,
             snapshot: generation,
             prompt: "p".into(),
             max_tokens: 8,

@@ -508,6 +508,54 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 14:48:06 +08 - Runtime per-domain personalization TDD pass
+
+- Task selected: Thread resolved browser domains into completion requests so configured per-domain personalization affects runtime prompts.
+- Why it was selected: The most specific active loop state had already landed per-app/per-domain config parsing but left `inference` calling `build_preamble(app, None)`, making domain instructions inert. The user review also flagged that `COMPME_MEMORY=all` still needs work, but the current plan/state selected personalization as the next loop-doable pending item and this slice was smaller than the memory-mode run-loop audit.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/engine/src/lib.rs`
+  - `crates/app/src/inference.rs`
+  - `crates/app/src/run_loop.rs`
+  - `crates/app/src/wiring.rs`
+- Tests added/updated:
+  - Added `per_domain_personalization_uses_request_domain`, proving a request carrying `docs.google.com` receives the domain-specific preamble while a request with no domain does not.
+  - Updated `submit_tracking_records_only_accepted_requests` to prove the run-loop submit seam forwards the resolved domain to inference.
+  - Updated `typing_domain_refreshes_browser_cache_when_a_domain_consumer_is_enabled` to prove browser-domain observation refreshes when any domain consumer is enabled, not only excluded-domain rules.
+- Verification commands and result:
+  - RED: `cargo test -p app per_domain_personalization_uses_request_domain -- --exact` failed because `CompletionRequest` had no `domain` field.
+  - RED for review fix: `cargo test -p app typing_domain_refreshes_browser_cache_when_a_domain_consumer_is_enabled` failed because `typing_domain` still accepted `&Prefs` and only encoded the excluded-domain refresh contract.
+  - Focused GREEN: `cargo test -p app per_domain_personalization_uses_request_domain` passed.
+  - Focused GREEN: `cargo test -p app submit_tracking_records_only_accepted_requests` passed.
+  - Focused GREEN: `cargo test -p app typing_domain_refreshes_browser_cache_when_a_domain_consumer_is_enabled` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1106`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `git diff --check` passed.
+  - `graphify update .` passed and rebuilt `3985` nodes, `10637` edges, and `136` communities.
+- Test count if available: root `1106` listed tests; spike `30` listed tests; full workspace run included app `305` tests and platform_macos `223` tests; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Fixed Important correctness finding from both subagent reviewers: domain refresh no longer depends only on excluded-domain rules; per-domain personalization config also enables fresh browser-domain reads, preventing stale or missing domains after same-browser navigation.
+  - No Critical findings.
+- Blocked or skipped work remaining:
+  - User-provided review finding remains pending for a future tick: `COMPME_MEMORY=all` still parses/exposes AllMonitored but ordinary monitored observations are not yet passed through `MemoryStore::monitor`; needs its own RED/GREEN slice.
+  - Minor subagent note skipped this tick: pre-existing dirty `docs/superpowers/specs/2026-06-09-a2-parity-design.md` status text is stale relative to per-domain parsing/threading; not staged because it was pre-existing dirty work outside this code slice.
+  - App coverage seam skipped: accept-failure app-level privacy/stat side effects need an extraction/injection seam.
+  - App coverage seam skipped: submit-time auxiliary context ordering needs broader harness coverage.
+  - Monitored-memory write failure drain/no-replay is still not directly tested; needs a legitimate failure-injection seam.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 14:15:33 +08 - DRY AllMonitored review consolidation
 
 - Task selected: Consolidation audit for the pasted `COMPME_MEMORY=all` P2 review finding.

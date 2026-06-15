@@ -792,6 +792,7 @@ mod tests {
         CompletionRequest {
             generation,
             field: field("f"),
+            domain: None,
             snapshot: generation,
             prompt: "p".into(),
             max_tokens: 16,
