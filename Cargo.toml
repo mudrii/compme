@@ -21,6 +21,7 @@ members = [
     "crates/model_fetch",
     "crates/model_client",
     "crates/platform_macos",
+    "crates/platform_windows",
     "crates/engine",
     "crates/app",
 ]

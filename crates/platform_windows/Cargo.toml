@@ -1,0 +1,22 @@
+[package]
+name = "platform_windows"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+# SCAFFOLD (ROADMAP Tier 1.1). The PlatformAdapter contract is implemented as a
+# fail-closed stub on every host so `cargo build/test --workspace` stays green on
+# the macOS-only dev/CI environment this was authored in. The real UI Automation
+# / WH_KEYBOARD_LL / SendInput implementation lands behind `#[cfg(windows)]` on a
+# Windows build+test environment — its Windows-only dependencies go under a
+# target table so non-Windows hosts never pull them:
+#
+#   [target.'cfg(windows)'.dependencies]
+#   windows = { version = "...", features = [
+#     "Win32_UI_Accessibility",            # UI Automation
+#     "Win32_UI_Input_KeyboardAndMouse",   # WH_KEYBOARD_LL, SendInput
+#     "Win32_Foundation", "Win32_UI_WindowsAndMessaging",
+#   ] }
+
+[dependencies]
+platform = { path = "../platform" }

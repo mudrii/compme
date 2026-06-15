@@ -1125,6 +1125,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "platform_windows"
+version = "0.1.0"
+dependencies = [
+ "platform",
+]
+
+[[package]]
 name = "polyval"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
