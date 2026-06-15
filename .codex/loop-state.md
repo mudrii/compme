@@ -481,6 +481,56 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 12:05:25 +0800 - Model fetch progress totals TDD pass
+
+- Task selected: Add public loopback coverage for `model_fetch::download_url` progress totals, including fresh downloads, resumed downloads, and worker `DownloadStatus.total` propagation.
+- Why it was selected: The latest active loop state listed this as the highest-priority pure/core pending test-quality gap that was loop-doable without GUI validation, external credentials, live hardware, or manual UX checks.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/model_fetch/src/lib.rs`
+  - `docs/DEVELOPMENT.md`
+- Tests added/updated:
+  - Added `download_url_reports_fresh_and_resumed_progress_totals`.
+  - Updated `downloader_worker_runs_a_request_off_thread_and_reports_progress` to assert `DownloadStatus.total`.
+- Verification commands and result:
+  - RED attempt: `cargo test -p model_fetch download_url_reports_fresh_and_resumed_progress_totals -- --nocapture` failed for the wrong reason because the test tried to mutate captured `Vec`s inside an `Fn` progress closure.
+  - Test-harness correction: replaced the captured vectors with `RefCell<Vec<_>>`, then reran the focused test.
+  - Corrected focused test: `cargo test -p model_fetch download_url_reports_fresh_and_resumed_progress_totals -- --nocapture` passed, showing the current production `download_url` behavior already reported fresh and resumed final totals correctly.
+  - Review fix focused test: `cargo test -p model_fetch downloader_worker_runs_a_request_off_thread_and_reports_progress -- --nocapture` passed after adding the worker `status.total` assertion.
+  - `cargo test -p model_fetch -- --nocapture` passed with `20` tests.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1096`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3917` nodes, `10450` edges, and `146` communities.
+- Test count if available: root `1096` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important plan-alignment finding: appended this loop-state entry before shipping.
+  - Fixed Important plan/test coverage finding: added worker `DownloadStatus.total` coverage instead of overclaiming the `download_url` callback-only test as complete coverage.
+  - Fixed Important test-quality gap: fresh and resumed `download_url` progress callbacks now have loopback coverage for final `(downloaded, total)` values.
+  - Minor quality finding also fixed: the fresh progress test now removes any stale `.part` file before exercising the fresh path.
+- Blocked or skipped work remaining:
+  - Important app context finding remains: same-field/same-element OCR freshness needs a targeted inference-level contract test.
+  - Important app context finding remains: secure-input recheck before monitored-memory flush is not directly pinned by a run-loop slice test.
+  - Important app context finding remains: accept-failure privacy/stats side effects are not directly covered at the app level.
+  - Important app context finding remains: submit-time auxiliary context ordering is not pinned by a targeted test.
+  - Important app context finding remains: monitored-memory write failure drain/no-replay behavior is not directly tested.
+  - Important release/model finding remains: ignored model-backed evidence is not machine-enforced before release.
+  - Important acceptance/privacy finding remains: some harness output still needs raw-context suppression and hostile-content negative fixtures.
+  - Minor pure-crate findings remain: model-catalog provenance commit shape lacks direct coverage; thesaurus docs still describe multi-group dedupe while the table/test invariant forbids overlap.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 10:41:48 +08 - Catalog pinning and browser submit domain gate TDD pass
 
 - Task selected: Pin built-in model catalog URLs to recorded Hugging Face commits, then fix the pass-3 Critical browser-domain submit gate found by runtime review.

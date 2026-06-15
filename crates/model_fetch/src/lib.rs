@@ -494,6 +494,10 @@ mod tests {
             status.downloaded.load(std::sync::atomic::Ordering::Relaxed),
             b"worker model bytes".len() as u64
         );
+        assert_eq!(
+            status.total.load(std::sync::atomic::Ordering::Relaxed),
+            b"worker model bytes".len() as u64
+        );
         let _ = std::fs::remove_file(&dest);
     }
 
@@ -617,6 +621,43 @@ mod tests {
         let got = download_url(&url, &dest, None, |_, _| {}).unwrap();
         assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
         let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn download_url_reports_fresh_and_resumed_progress_totals() {
+        let fresh_url = serve(b"fresh model bytes", RangeMode::Honor);
+        let fresh_dest = temp_dest("progress-fresh");
+        let fresh_part = fresh_dest.with_extension("part");
+        let _ = std::fs::remove_file(&fresh_dest);
+        let _ = std::fs::remove_file(&fresh_part);
+        let fresh_events = std::cell::RefCell::new(Vec::new());
+        let got = download_url(&fresh_url, &fresh_dest, None, |written, total| {
+            fresh_events.borrow_mut().push((written, total));
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"fresh model bytes");
+        assert_eq!(
+            fresh_events.borrow().last(),
+            Some(&(
+                b"fresh model bytes".len() as u64,
+                Some(b"fresh model bytes".len() as u64)
+            ))
+        );
+        let _ = std::fs::remove_file(&fresh_dest);
+
+        let resumed_url = serve(b"0123456789", RangeMode::Honor);
+        let resumed_dest = temp_dest("progress-resume");
+        let resumed_part = resumed_dest.with_extension("part");
+        let _ = std::fs::remove_file(&resumed_dest);
+        std::fs::write(&resumed_part, b"0123").unwrap();
+        let resumed_events = std::cell::RefCell::new(Vec::new());
+        let got = download_url(&resumed_url, &resumed_dest, None, |written, total| {
+            resumed_events.borrow_mut().push((written, total));
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
+        assert_eq!(resumed_events.borrow().last(), Some(&(10, Some(10))));
+        let _ = std::fs::remove_file(&resumed_dest);
     }
 
     #[test]
