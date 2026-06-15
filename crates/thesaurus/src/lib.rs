@@ -29,6 +29,7 @@ const GROUPS: &[&[&str]] = &[
     &["bad", "poor", "terrible", "awful", "dreadful"],
     &["important", "crucial", "vital", "essential", "key"],
     &["smart", "clever", "intelligent", "bright", "sharp"],
+    &["bright", "luminous", "radiant", "vivid", "sharp"],
     &["begin", "start", "commence", "initiate"],
     &["end", "finish", "conclude", "complete", "wrap"],
     &["show", "display", "demonstrate", "reveal", "present"],
@@ -171,6 +172,22 @@ mod tests {
     }
 
     #[test]
+    fn multi_sense_query_merges_matching_groups_and_dedupes() {
+        assert_eq!(
+            synonyms("bright"),
+            vec![
+                "smart",
+                "clever",
+                "intelligent",
+                "sharp",
+                "luminous",
+                "radiant",
+                "vivid",
+            ]
+        );
+    }
+
+    #[test]
     fn every_table_word_has_at_least_one_synonym() {
         // Guards against introducing a degenerate <2-member group, which would
         // make has_synonyms() true but synonyms() empty.
@@ -188,13 +205,9 @@ mod tests {
     }
 
     #[test]
-    fn no_word_appears_in_more_than_one_group() {
-        // The dedup path in synonyms() (`!seen.contains(&syn)`) only fires when a
-        // word lives in more than one group. A prior cycle merged the overlapping
-        // groups (e.g. "happy") so today every word is in exactly one group,
-        // leaving that path dead. This pins the no-overlap invariant permanently:
-        // if a future edit reintroduces a duplicate, this fails first, flagging
-        // that the (still-present) dedup defense is once again load-bearing.
+    fn only_intentional_multi_sense_words_appear_in_more_than_one_group() {
+        // Multi-sense words keep the merge/dedup behavior load-bearing without
+        // allowing accidental table overlap to silently alter suggestions.
         use std::collections::HashMap;
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for group in GROUPS {
@@ -202,9 +215,12 @@ mod tests {
                 *counts.entry(word).or_insert(0) += 1;
             }
         }
-        let max = counts.values().copied().max().unwrap_or(0);
-        let dupes: Vec<_> = counts.iter().filter(|(_, &c)| c > 1).collect();
-        assert_eq!(max, 1, "words appearing in multiple groups: {dupes:?}");
+        let mut dupes: Vec<_> = counts
+            .iter()
+            .filter_map(|(&word, &count)| (count > 1).then_some((word, count)))
+            .collect();
+        dupes.sort_unstable_by_key(|&(word, _)| word);
+        assert_eq!(dupes, vec![("bright", 2), ("sharp", 2)]);
     }
 
     #[test]

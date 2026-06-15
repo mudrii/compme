@@ -1516,3 +1516,49 @@
   - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
+## 2026-06-15 15:49:36 +0800 - Thesaurus multi-sense dedupe TDD pass
+
+- Task selected: Add real Thesaurus multi-group merge/dedup behavior coverage.
+- Why it was selected: The latest active state had already marked the earlier Important items as fixed or stale/currently covered. The remaining loop-doable coverage gap was the Thesaurus Minor: docs said `synonyms()` supports multi-group merge + dedup, but the table no longer contained any intentional overlap and the tests only pinned a no-overlap invariant.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/thesaurus/src/lib.rs`
+- Tests added/updated:
+  - Added `multi_sense_query_merges_matching_groups_and_dedupes`, proving a multi-sense query merges all matching groups, excludes the query word, preserves table order, and dedupes overlapping alternatives.
+  - Replaced the no-overlap table invariant with `only_intentional_multi_sense_words_appear_in_more_than_one_group`, which now asserts the exact intentional duplicate counts for `bright` and `sharp`.
+- Verification commands and result:
+  - RED: `cargo test -p thesaurus multi_sense_query_merges_matching_groups_and_dedupes -- --nocapture` failed because `bright` returned only `["smart", "clever", "intelligent", "sharp"]` and did not include the second sense group.
+  - Focused GREEN: `cargo test -p thesaurus multi_sense_query_merges_matching_groups_and_dedupes -- --nocapture` passed after adding the intentional overlapping group.
+  - Focused crate: `cargo test -p thesaurus -- --nocapture` passed with `16` tests.
+  - Focused host smoke: `cargo test -p app thesaurus_offer_fires_for_enabled_feature -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy -p thesaurus --all-targets -- -D warnings` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `git diff --check` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1111`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify query "COMPME_MEMORY all AllMonitored MemoryStore monitor record_full_accept run_loop"` passed and showed the current AllMonitored monitor flush path and tests; the pasted AllMonitored review finding is stale in the current checkout.
+  - `graphify query "thesaurus synonyms multi-group merge dedup overlapping groups tests docs"` passed and identified the Thesaurus test cluster.
+  - `graphify update .` passed and rebuilt `4007` nodes, `10714` edges, and `137` communities.
+- Test count if available: root `1111` listed tests; spike `30` listed tests; full workspace run included app `309` tests, platform_macos `223` tests, and thesaurus `16` tests; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Correctness/security/data-loss subagent review reported no findings for this tick's `crates/thesaurus/src/lib.rs` diff.
+  - Fixed Important plan-alignment finding from subagent review: the intentional-overlap guard now asserts exact duplicate counts, so adding `bright` or `sharp` to a third group fails instead of silently changing suggestions.
+  - Local quality/architecture/type-safety review found no remaining Critical or Important findings; `cargo fmt --all -- --check` and `cargo clippy -p thesaurus --all-targets -- -D warnings` passed.
+  - Local tests/coverage/real-behavior review found no remaining Critical or Important findings; the new test exercises the public `synonyms()` behavior rather than private implementation details.
+- Blocked or skipped work remaining:
+  - Skipped as stale/currently covered: the pasted AllMonitored review finding. Current code routes monitored typing through `flush_monitored_changes` / `MemoryStore::monitor` when `COMPME_MEMORY=all`, and the full workspace tests passed with the AllMonitored run-loop tests.
+  - README Minor remains: Current Validation Gates omit the model-backed release gates; existing unstaged README edits predate this tick and were left untouched.
+  - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
