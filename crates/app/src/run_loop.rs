@@ -1187,6 +1187,61 @@ fn submit_request_and_track(
     submitted_line
 }
 
+struct SubmitRequestContext<'a> {
+    submit_times: &'a mut HashMap<u64, u64>,
+    now_ms: u64,
+    log_context: RequestLogContext,
+}
+
+struct AuxiliarySubmitContext<'a> {
+    clipboard_enabled: bool,
+    diag_context: bool,
+    diag_clipboard_marker: Option<&'a str>,
+    clipboard_cell: &'a Arc<Mutex<Option<String>>>,
+    screen_enabled: bool,
+}
+
+fn submit_request_with_auxiliary_context(
+    request: CompletionRequest,
+    submit_context: SubmitRequestContext<'_>,
+    aux_context: AuxiliarySubmitContext<'_>,
+    read_clipboard: impl FnOnce() -> Option<String>,
+    screen_caret_rect: impl FnOnce(&CompletionRequest) -> Option<ScreenRect>,
+    submit_screen: impl FnOnce(ScreenOcrSubmission),
+    submit: impl FnOnce(CompletionRequest) -> bool,
+) -> (Option<String>, String) {
+    let clipboard_diag = if aux_context.clipboard_enabled {
+        let raw_clip = read_clipboard();
+        let diag = aux_context.diag_context.then(|| {
+            clipboard_diagnostic_line(raw_clip.as_deref(), aux_context.diag_clipboard_marker)
+        });
+        let clip = raw_clip.map(|text| redaction::redact(&text));
+        *aux_context
+            .clipboard_cell
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = clip;
+        diag
+    } else {
+        None
+    };
+
+    if aux_context.screen_enabled {
+        submit_screen(ScreenOcrSubmission::from_request(
+            &request,
+            screen_caret_rect(&request),
+        ));
+    }
+
+    let submitted_line = submit_request_and_track(
+        submit_context.submit_times,
+        request,
+        submit_context.now_ms,
+        submit_context.log_context,
+        submit,
+    );
+    (clipboard_diag, submitted_line)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct ScreenOcrSubmission {
     field: FieldHandle,
@@ -3664,35 +3719,6 @@ pub fn run() -> Result<(), String> {
                     &prefs,
                     now_ms,
                 ) {
-                    // Refresh the clipboard context cell (redacted) just before a
-                    // submit that will use it (A2 §16 clipboard context). Invariant:
-                    // the cell is rewritten before *every* gated submit, so the
-                    // worker (which reads the latest cell for the surviving
-                    // coalesced request) never attaches a prior app's clipboard.
-                    if config.clipboard_context {
-                        let raw_clip = read_pasteboard_text();
-                        if config.diag_context {
-                            eprintln!(
-                                "compme: clipboard_context={}",
-                                clipboard_diagnostic_line(
-                                    raw_clip.as_deref(),
-                                    config.diag_clipboard_marker.as_deref()
-                                )
-                            );
-                        }
-                        let clip = raw_clip.map(|text| redaction::redact(&text));
-                        *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = clip;
-                    }
-                    // Screen-aware context (A2 §16): hand the request field and
-                    // caret display to the off-thread OCR worker (it captures,
-                    // OCRs, redacts, and publishes a field-scoped value into
-                    // `screen_cell`). Fire-and-forget so the run loop never
-                    // blocks on Vision. caret_rect read is the only on-loop AX
-                    // touch and is cheap.
-                    if let Some(ocr) = &screen_ocr {
-                        let caret_rect = adapter.caret_rect(&request.field).ok().flatten();
-                        ScreenOcrSubmission::from_request(&request, caret_rect).send_to(ocr);
-                    }
                     let domain = cached_domain(&last_domain, app_key.as_deref()).map(str::to_owned);
                     let log_context = RequestLogContext {
                         app_key,
@@ -3700,13 +3726,37 @@ pub fn run() -> Result<(), String> {
                         prefs: prefs.clone(),
                         acceptance_prompt_marker: config.acceptance_prompt_marker.clone(),
                     };
-                    let submitted_line = submit_request_and_track(
-                        &mut submit_times,
+                    // Refresh clipboard and dispatch screen OCR immediately before
+                    // submitting this exact request. The worker reads auxiliary
+                    // cells after coalescing, so this order prevents stale
+                    // clipboard/screen context from a prior gated request.
+                    let screen_enabled = screen_ocr.is_some();
+                    let (clipboard_diag, submitted_line) = submit_request_with_auxiliary_context(
                         request,
-                        now_ms,
-                        log_context,
+                        SubmitRequestContext {
+                            submit_times: &mut submit_times,
+                            now_ms,
+                            log_context,
+                        },
+                        AuxiliarySubmitContext {
+                            clipboard_enabled: config.clipboard_context,
+                            diag_context: config.diag_context,
+                            diag_clipboard_marker: config.diag_clipboard_marker.as_deref(),
+                            clipboard_cell: &clipboard_cell,
+                            screen_enabled,
+                        },
+                        read_pasteboard_text,
+                        |request| adapter.caret_rect(&request.field).ok().flatten(),
+                        |submission| {
+                            if let Some(ocr) = &screen_ocr {
+                                submission.send_to(ocr);
+                            }
+                        },
                         |request| inference.submit(request),
                     );
+                    if let Some(line) = clipboard_diag {
+                        eprintln!("compme: clipboard_context={line}");
+                    }
                     eprintln!("{submitted_line}");
                 } else {
                     eprintln!(
@@ -3797,6 +3847,7 @@ pub fn run() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::collections::HashMap;
 
     /// Build a lookup closure from a list of key/value pairs.
@@ -6028,6 +6079,71 @@ mod tests {
             None,
             "rejected worker submissions must not create phantom latency samples"
         );
+    }
+
+    #[test]
+    fn auxiliary_context_is_prepared_before_submitting_the_request() {
+        let clipboard_cell = Arc::new(Mutex::new(None));
+        let order = RefCell::new(Vec::new());
+        let mut submit_times = HashMap::new();
+        let mut log_context = request_log_context_for_submit_tracking();
+        log_context.domain = Some("docs.google.com".into());
+        let request = CompletionRequest {
+            generation: 17,
+            snapshot: 42,
+            ..request_for_submit_tracking(17)
+        };
+
+        let (clipboard_diag, submit_line) = submit_request_with_auxiliary_context(
+            request,
+            SubmitRequestContext {
+                submit_times: &mut submit_times,
+                now_ms: 321,
+                log_context,
+            },
+            AuxiliarySubmitContext {
+                clipboard_enabled: true,
+                diag_context: true,
+                diag_clipboard_marker: Some("copied marker"),
+                clipboard_cell: &clipboard_cell,
+                screen_enabled: true,
+            },
+            || {
+                order.borrow_mut().push("clipboard");
+                Some("copied marker".into())
+            },
+            |_| {
+                order.borrow_mut().push("caret");
+                rect(9.0)
+            },
+            |submission| {
+                order.borrow_mut().push("screen");
+                assert_eq!(submission.generation, 17);
+                assert_eq!(submission.snapshot, 42);
+                assert_eq!(submission.caret_rect.unwrap().x, 9.0);
+            },
+            |request| {
+                order.borrow_mut().push("submit");
+                assert_eq!(request.generation, 17);
+                assert_eq!(request.domain.as_deref(), Some("docs.google.com"));
+                true
+            },
+        );
+
+        assert_eq!(
+            *order.borrow(),
+            vec!["clipboard", "caret", "screen", "submit"]
+        );
+        assert_eq!(
+            *clipboard_cell.lock().unwrap(),
+            Some("copied marker".to_string())
+        );
+        assert_eq!(
+            clipboard_diag.as_deref(),
+            Some("Some(chars=13 marker=true)")
+        );
+        assert!(submit_line.contains("request gen=17"));
+        assert_eq!(submit_times.get(&17), Some(&321));
     }
 
     #[test]

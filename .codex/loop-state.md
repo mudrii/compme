@@ -1371,3 +1371,45 @@
   - README Minor: Current Validation Gates omit the model-backed release gates; add a release/model-backed pointer after the serialized command docs are fixed.
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
+## 2026-06-15 15:18:39 +0800 - Submit auxiliary context ordering TDD pass
+
+- Task selected: Pin submit-time auxiliary context ordering with a tested runtime seam.
+- Why it was selected: The latest active loop state still listed submit-time auxiliary context ordering as a loop-doable app coverage seam. The stale `COMPME_MEMORY=all` review finding was already fixed/revalidated in current state and current code, and the monitored-memory write-failure seam still needs a larger failure-injection boundary.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/app/src/run_loop.rs`
+- Tests added/updated:
+  - Added `auxiliary_context_is_prepared_before_submitting_the_request`, proving clipboard refresh, caret capture, screen OCR submission, and inference submit happen in order for the same request while preserving domain threading and submit-time latency tracking.
+  - Extracted `submit_request_with_auxiliary_context` with `SubmitRequestContext` / `AuxiliarySubmitContext` so the runtime submit path uses the tested seam.
+- Verification commands and result:
+  - RED: `cargo test -p app auxiliary_context_is_prepared_before_submitting_the_request -- --nocapture` failed because `SubmitRequestContext`, `AuxiliarySubmitContext`, and `submit_request_with_auxiliary_context` did not exist.
+  - Focused GREEN: `cargo test -p app auxiliary_context_is_prepared_before_submitting_the_request -- --nocapture` passed.
+  - Focused regression: `cargo test -p app submit_tracking -- --nocapture` passed.
+  - Focused regression: `cargo test -p app screen_ocr_submission_preserves_request_stamp_and_caret_rect -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1109`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `git diff --check` passed.
+  - `graphify update .` passed and rebuilt `3999` nodes, `10688` edges, and `140` communities.
+- Test count if available: root `1109` listed tests; spike `30` listed tests; full workspace run included app `308` tests and platform_macos `223` tests; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Fixed Important local quality/tests finding: the first helper version accepted a precomputed caret rect, so the test did not pin the full screen-preparation order. The final helper now calls the caret callback after clipboard refresh and before screen OCR submission.
+  - Correctness/security/data-loss subagent review reported no findings for `crates/app/src/run_loop.rs`.
+  - Plan-alignment subagent review reported an Important finding for pre-existing README/spec dirty files; dismissed for this tick because those files were dirty before the task and will remain unstaged, while the committed diff is scoped to `run_loop.rs` plus this state entry.
+  - Local quality/architecture/type-safety and tests/coverage reviews found no remaining Critical or Important findings after the caret-order fix.
+- Blocked or skipped work remaining:
+  - Important app context finding remains: monitored-memory write failure drain/no-replay behavior is not directly tested; it still needs a legitimate failure-injection seam.
+  - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
