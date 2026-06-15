@@ -9,9 +9,10 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use engine::CompletionRequest;
 use model_client::LocalModel;
@@ -74,42 +75,109 @@ pub struct WorkerContext {
     pub previous_inputs: PreviousInputs,
     pub clipboard: Arc<Mutex<Option<String>>>,
     pub screen: Arc<Mutex<Option<ScreenContext>>>,
+    pub screen_wait: Duration,
     pub max_chars: usize,
     pub diag_context: bool,
 }
 
-/// Redacted OCR text scoped to the field that produced it. The screen worker is
-/// asynchronous, so the inference worker must not attach a prior field's screen
-/// text to the next request that happens to arrive.
+/// Redacted OCR text scoped to the completion request that produced it. The
+/// screen worker is asynchronous, so the inference worker must not attach a
+/// prior field or prior request's screen text to the next request that happens
+/// to arrive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenContext {
     pub field: FieldHandle,
+    pub generation: u64,
+    pub snapshot: u64,
     pub text: String,
 }
 
 impl WorkerContext {
-    pub(crate) fn block_for(&self, request: &CompletionRequest) -> String {
+    fn matching_screen_text_now(&self, request: &CompletionRequest) -> Option<String> {
+        self.screen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|ctx| {
+                ctx.field == request.field
+                    && ctx.generation == request.generation
+                    && ctx.snapshot == request.snapshot
+            })
+            .map(|ctx| ctx.text.clone())
+    }
+
+    fn wait_for_screen_or_newer(
+        &self,
+        mut request: CompletionRequest,
+        requests: &Receiver<CompletionRequest>,
+    ) -> (CompletionRequest, Option<String>) {
+        if self.screen_wait.is_zero() {
+            let screen_text = self.matching_screen_text_now(&request);
+            return (request, screen_text);
+        }
+
+        let mut deadline = Instant::now() + self.screen_wait;
+        loop {
+            while let Ok(newer) = requests.try_recv() {
+                request = newer;
+                deadline = Instant::now() + self.screen_wait;
+            }
+
+            if let Some(text) = self.matching_screen_text_now(&request) {
+                return (request, Some(text));
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                return (request, None);
+            }
+
+            match requests.recv_timeout(
+                deadline
+                    .saturating_duration_since(now)
+                    .min(Duration::from_millis(5)),
+            ) {
+                Ok(newer) => {
+                    request = newer;
+                    deadline = Instant::now() + self.screen_wait;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return (request, None),
+            }
+        }
+    }
+
+    fn block_for_with_screen_text(
+        &self,
+        request: &CompletionRequest,
+        screen_text: Option<&str>,
+    ) -> String {
         if self.max_chars == 0 {
             return String::new();
         }
         let recent = self.previous_inputs.recent(&request.field.app);
-        let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
+        let recent_refs = recent.iter().map(String::as_str).collect::<Vec<_>>();
         let clip = self
             .clipboard
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let screen = self
-            .screen
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let screen_text = screen
-            .as_ref()
-            .filter(|ctx| ctx.field == request.field)
-            .map(|ctx| ctx.text.as_str());
         context::build_context_block(clip.as_deref(), screen_text, &recent_refs, self.max_chars)
     }
+
+    #[cfg(test)]
+    pub(crate) fn block_for(&self, request: &CompletionRequest) -> String {
+        let screen_text = self.matching_screen_text_now(request);
+        self.block_for_with_screen_text(request, screen_text.as_deref())
+    }
+}
+
+fn request_with_screen_context(
+    requests: &Receiver<CompletionRequest>,
+    worker_context: &WorkerContext,
+) -> Option<(CompletionRequest, Option<String>)> {
+    let request = recv_latest(requests)?;
+    Some(worker_context.wait_for_screen_or_newer(request, requests))
 }
 
 fn context_diagnostic_line(block: &str) -> Option<String> {
@@ -226,14 +294,15 @@ fn run(
     ready.store(true, Ordering::SeqCst);
     eprintln!("compme: state=ready");
 
-    while let Some(request) = recv_latest(&requests) {
+    while let Some((request, screen_text)) = request_with_screen_context(&requests, &worker_context)
+    {
         // Personalization steering for the focused app (domain support is a later
         // browser feature; None for now), then shape the engine's raw left-context
         // prefix per the configured strategy (terse continuation by default).
         let preamble = profile.build_preamble(Some(&request.field.app), None);
         // Opt-in context augmentation (clipboard + previous inputs): prepend a
         // bounded, already-redacted block ahead of the steering preamble.
-        let block = worker_context.block_for(&request);
+        let block = worker_context.block_for_with_screen_text(&request, screen_text.as_deref());
         if worker_context.diag_context {
             eprintln!(
                 "compme: prompt_context={:?}",
@@ -539,6 +608,8 @@ mod tests {
         let req = request("typing", 1);
         let screen = Arc::new(Mutex::new(Some(ScreenContext {
             field: req.field.clone(),
+            generation: req.generation,
+            snapshot: req.snapshot,
             text: "visible window text".to_string(),
         })));
         let inference = InferenceHandle::spawn(
@@ -580,6 +651,8 @@ mod tests {
         };
         let screen = Arc::new(Mutex::new(Some(ScreenContext {
             field: source.field,
+            generation: source.generation,
+            snapshot: source.snapshot,
             text: "visible source text".to_string(),
         })));
         let inference = InferenceHandle::spawn(
@@ -602,6 +675,158 @@ mod tests {
             outcome.candidates[0]
         );
         assert!(outcome.candidates[0].contains("target field"));
+        inference.shutdown();
+    }
+
+    #[test]
+    fn screen_context_is_not_reused_for_newer_same_field_request() {
+        let source = request("source typing", 1);
+        let target = CompletionRequest {
+            generation: 2,
+            snapshot: 2,
+            field: source.field.clone(),
+            prompt: "target typing".into(),
+            max_tokens: 8,
+        };
+        let screen = Arc::new(Mutex::new(Some(ScreenContext {
+            field: source.field,
+            generation: source.generation,
+            snapshot: source.snapshot,
+            text: "stale visible source text".to_string(),
+        })));
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext {
+                screen,
+                max_chars: 160,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        inference.submit(target);
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            !outcome.candidates[0].contains("stale visible source text"),
+            "stale same-field screen context leaked into newer request: {:?}",
+            outcome.candidates[0]
+        );
+        assert!(outcome.candidates[0].contains("target typing"));
+        inference.shutdown();
+    }
+
+    #[test]
+    fn screen_context_waits_for_matching_same_request_ocr() {
+        let req = request("typing", 1);
+        let screen = Arc::new(Mutex::new(None));
+        let delayed_screen = Arc::clone(&screen);
+        let screen_field = req.field.clone();
+        let (release_tx, release_rx) = channel();
+        let writer = thread::spawn(move || {
+            release_rx.recv().unwrap();
+            *delayed_screen.lock().unwrap() = Some(ScreenContext {
+                field: screen_field,
+                generation: 1,
+                snapshot: 1,
+                text: "delayed visible text".to_string(),
+            });
+        });
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext {
+                screen,
+                screen_wait: Duration::from_millis(80),
+                max_chars: 160,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        inference.submit(req);
+        release_tx.send(()).unwrap();
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            outcome.candidates[0].contains("On screen: delayed visible text"),
+            "matching delayed screen context should reach prompt: {:?}",
+            outcome.candidates[0]
+        );
+        writer.join().unwrap();
+        inference.shutdown();
+    }
+
+    #[test]
+    fn screen_wait_switches_to_newer_request_before_building_context() {
+        let old = request("old typing", 1);
+        let new = request("new typing", 2);
+        let screen = Arc::new(Mutex::new(None));
+        let delayed_screen = Arc::clone(&screen);
+        let screen_field = new.field.clone();
+        let (request_tx, request_rx) = channel();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            *delayed_screen.lock().unwrap() = Some(ScreenContext {
+                field: screen_field,
+                generation: 2,
+                snapshot: 2,
+                text: "newer visible text".to_string(),
+            });
+            request_tx.send(new).unwrap();
+        });
+        let worker_context = WorkerContext {
+            screen,
+            screen_wait: Duration::from_millis(80),
+            max_chars: 160,
+            ..Default::default()
+        };
+
+        let (selected, screen_text) = worker_context.wait_for_screen_or_newer(old, &request_rx);
+
+        assert_eq!(selected.generation, 2);
+        assert_eq!(screen_text.as_deref(), Some("newer visible text"));
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn screen_context_wait_is_bounded_when_matching_ocr_is_late() {
+        let req = request("typing", 1);
+        let screen = Arc::new(Mutex::new(None));
+        let delayed_screen = Arc::clone(&screen);
+        let screen_field = req.field.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(40));
+            *delayed_screen.lock().unwrap() = Some(ScreenContext {
+                field: screen_field,
+                generation: 1,
+                snapshot: 1,
+                text: "late visible text".to_string(),
+            });
+        });
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext {
+                screen,
+                screen_wait: Duration::from_millis(5),
+                max_chars: 160,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        inference.submit(req);
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            !outcome.candidates[0].contains("late visible text"),
+            "late screen context should not hold inference past the bounded wait: {:?}",
+            outcome.candidates[0]
+        );
+        assert!(outcome.candidates[0].contains("typing"));
+        writer.join().unwrap();
         inference.shutdown();
     }
 

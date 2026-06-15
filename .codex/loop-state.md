@@ -429,6 +429,65 @@
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 12:21:23 +08 - Screen OCR freshness TDD pass
+
+- Task selected: Add a targeted inference/runtime contract for same-field/same-element OCR freshness and make screen context request-specific.
+- Why it was selected: The latest active loop state listed same-field/same-element OCR freshness as the highest-priority loop-doable app context finding. It needed no human decision, live GUI validation, credentials, or hardware-only manual check.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/app/src/inference.rs`
+  - `crates/app/src/run_loop.rs`
+  - `crates/app/src/screen_ocr.rs`
+  - `docs/DEVELOPMENT.md`
+- Tests added/updated:
+  - Added `screen_context_is_not_reused_for_newer_same_field_request`.
+  - Added `screen_context_waits_for_matching_same_request_ocr` as a review-fix regression after the first exact-stamp implementation proved too racy.
+  - Added `screen_context_wait_is_bounded_when_matching_ocr_is_late` to pin screen context as bounded best-effort when OCR misses the wait budget.
+  - Added `screen_wait_switches_to_newer_request_before_building_context` to pin that the OCR wait is interruptible by newer inference requests.
+  - Added `screen_ocr_submission_preserves_request_stamp_and_caret_rect` to pin the run-loop handoff of field, generation, snapshot, and caret rect into the OCR request.
+  - Updated screen OCR queue tests to assert queued request generation/snapshot retention.
+- Verification commands and result:
+  - RED: `cargo test -p app screen_context_is_not_reused_for_newer_same_field_request -- --nocapture` failed before implementation because stale same-field OCR text leaked into a newer request.
+  - GREEN focused: `cargo test -p app screen_context_is_not_reused_for_newer_same_field_request -- --nocapture` passed.
+  - Focused review-fix regression: `cargo test -p app screen_context -- --nocapture` passed.
+  - Focused queue regression: `cargo test -p app screen_ocr -- --nocapture` passed.
+  - App suite: `cargo test -p app -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1101`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3933` nodes, `10520` edges, and `139` communities.
+  - `graphify update .` produced no tracked graphify artifact diff for this tick.
+  - `git diff --check` passed.
+- Test count if available: root `1101` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important correctness/privacy finding: screen OCR context is stamped with field, generation, and snapshot, so stale OCR from the same field/element is not attached to a newer request.
+  - Fixed Important correctness finding from diff review: exact stamping no longer drops ordinary matching OCR in the common async path because the inference worker waits briefly, off the AppKit loop, for matching screen context before building the prompt.
+  - Fixed Important correctness finding from final diff review: if the screen OCR worker fails to spawn, `screen_wait` now stays zero instead of adding a 250 ms wait for context that can never arrive.
+  - Fixed Important tests/coverage finding from final diff review: run-loop OCR request stamp plumbing is now covered, and the late-OCR path is explicitly tested as bounded best-effort rather than guaranteed.
+  - Fixed Important quality/concurrency finding from final diff review: the screen OCR wait now drains newer requests while waiting, so a stale older request cannot hold the worker behind its OCR wait.
+  - Fixed Important plan-alignment finding from diff review: the loop state now records this tick and removes same-field OCR freshness from the current remaining-work list.
+- Blocked or skipped work remaining:
+  - Important app context finding remains: secure-input recheck before monitored-memory flush is not directly pinned by a run-loop slice test.
+  - Important app context finding remains: accept-failure privacy/stats side effects are not directly covered at the app level.
+  - Important app context finding remains: submit-time auxiliary context ordering is not pinned by a targeted test.
+  - Important app context finding remains: monitored-memory write failure drain/no-replay behavior is not directly tested.
+  - Important release/model finding remains: ignored model-backed evidence is not machine-enforced before release.
+  - Important acceptance/privacy finding remains: some harness output still needs raw-context suppression and hostile-content negative fixtures.
+  - Minor pure-crate findings remain: model-catalog provenance commit shape lacks direct coverage; thesaurus docs still describe multi-group dedupe while the table/test invariant forbids overlap.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 11:24:36 +08 - Existing model hash verification TDD pass
 
 - Task selected: Verify pinned existing GGUF model files before the app skips a model download.

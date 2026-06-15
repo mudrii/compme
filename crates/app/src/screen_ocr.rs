@@ -10,8 +10,8 @@
 //! redacted result into the shared `screen` cell the inference worker reads.
 //! Callers fire-and-forget the focused field plus caret rect per gated submit;
 //! bursts coalesce to the latest request. The inference worker only consumes a
-//! result when its field still matches, so async OCR cannot leak a prior field's
-//! visible text into a later prompt.
+//! result when its request stamp still matches, so async OCR cannot leak a prior
+//! request's visible text into a later prompt.
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -31,6 +31,8 @@ pub struct ScreenOcr {
 #[derive(Clone, Debug, PartialEq)]
 struct ScreenOcrRequest {
     field: FieldHandle,
+    generation: u64,
+    snapshot: u64,
     caret_rect: Option<ScreenRect>,
 }
 
@@ -106,9 +108,20 @@ impl ScreenOcr {
     /// Fire-and-forget an OCR request for the display under `caret_rect`. Never
     /// waits for OCR; if the worker is behind, stale pending work is replaced by
     /// the newest request.
-    pub fn request(&self, field: FieldHandle, caret_rect: Option<ScreenRect>) {
+    pub fn request(
+        &self,
+        field: FieldHandle,
+        generation: u64,
+        snapshot: u64,
+        caret_rect: Option<ScreenRect>,
+    ) {
         if let Some(queue) = &self.queue {
-            queue.submit(ScreenOcrRequest { field, caret_rect });
+            queue.submit(ScreenOcrRequest {
+                field,
+                generation,
+                snapshot,
+                caret_rect,
+            });
         }
     }
 }
@@ -150,6 +163,8 @@ fn run(
         }
         *screen.lock().unwrap_or_else(|e| e.into_inner()) = text.map(|text| ScreenContext {
             field: request.field,
+            generation: request.generation,
+            snapshot: request.snapshot,
             text,
         });
     }
@@ -182,18 +197,26 @@ mod tests {
         let queue = LatestRequestQueue::default();
         queue.submit(ScreenOcrRequest {
             field: field(1),
+            generation: 1,
+            snapshot: 1,
             caret_rect: rect(1.0),
         });
         queue.submit(ScreenOcrRequest {
             field: field(2),
+            generation: 2,
+            snapshot: 2,
             caret_rect: rect(2.0),
         });
         queue.submit(ScreenOcrRequest {
             field: field(3),
+            generation: 3,
+            snapshot: 3,
             caret_rect: rect(3.0),
         });
         let latest = queue.recv().unwrap();
         assert_eq!(latest.field.generation, 3);
+        assert_eq!(latest.generation, 3);
+        assert_eq!(latest.snapshot, 3);
         assert_eq!(latest.caret_rect.unwrap().x, 3.0);
         queue.close();
         assert!(queue.recv().is_none());
@@ -217,10 +240,12 @@ mod tests {
             handle: None,
         };
         for x in 0..100 {
-            ocr.request(field(x), rect(x as f64));
+            ocr.request(field(x), x, x, rect(x as f64));
         }
         let latest = queue.recv().unwrap();
         assert_eq!(latest.field.generation, 99);
+        assert_eq!(latest.generation, 99);
+        assert_eq!(latest.snapshot, 99);
         assert_eq!(latest.caret_rect.unwrap().x, 99.0);
         queue.close();
         assert!(queue.recv().is_none());

@@ -51,6 +51,9 @@ const DEFAULT_MAX_TOKENS: usize = 24;
 const DEFAULT_HEARTBEAT_MS: u64 = 12;
 /// Candidate completions generated per request (1 = single, up to 5 for cycle).
 const DEFAULT_CANDIDATES: usize = 1;
+/// Bounded best-effort wait for exact-stamped screen OCR. Vision can be slower
+/// than this; late OCR is dropped rather than making suggestion latency unbounded.
+const SCREEN_CONTEXT_WAIT_MS: u64 = 250;
 /// Per-source character bound when previous-input context is enabled truthily.
 const DEFAULT_CONTEXT_MAX_CHARS: usize = 160;
 const MAX_MONITORED_BUFFER_CHARS: usize = 512;
@@ -1072,6 +1075,29 @@ fn submit_request_and_track(
     }
     submit_times.insert(generation, now_ms);
     submitted_line
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ScreenOcrSubmission {
+    field: FieldHandle,
+    generation: u64,
+    snapshot: u64,
+    caret_rect: Option<ScreenRect>,
+}
+
+impl ScreenOcrSubmission {
+    fn from_request(request: &CompletionRequest, caret_rect: Option<ScreenRect>) -> Self {
+        Self {
+            field: request.field.clone(),
+            generation: request.generation,
+            snapshot: request.snapshot,
+            caret_rect,
+        }
+    }
+
+    fn send_to(self, ocr: &ScreenOcr) {
+        ocr.request(self.field, self.generation, self.snapshot, self.caret_rect);
+    }
 }
 
 fn completion_outcome_log_line(generation: u64, candidates: &[String]) -> String {
@@ -2332,10 +2358,31 @@ pub fn run() -> Result<(), String> {
         screen_active,
         config.context_max_chars,
     );
+    // Screen OCR (Vision, ~200–800 ms) runs on its own thread so it never
+    // stalls this AppKit run loop (overlay repaint + Carbon accept callbacks).
+    // It publishes redacted text into `screen_cell`, which the inference worker
+    // waits for briefly off the AppKit loop and accepts only when stamped for
+    // the submitted request.
+    let screen_ocr = if screen_active {
+        match ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context) {
+            Ok(ocr) => Some(ocr),
+            Err(err) => {
+                eprintln!("compme: screen OCR worker unavailable: {err}; screen context disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let worker_context = WorkerContext {
         previous_inputs: previous_inputs.clone(),
         clipboard: Arc::clone(&clipboard_cell),
         screen: Arc::clone(&screen_cell),
+        screen_wait: if screen_ocr.is_some() {
+            Duration::from_millis(SCREEN_CONTEXT_WAIT_MS)
+        } else {
+            Duration::ZERO
+        },
         max_chars: context_bound,
         diag_context: config.diag_context,
     };
@@ -2369,22 +2416,6 @@ pub fn run() -> Result<(), String> {
             eprintln!("compme: tray unavailable: {err:?}");
             None
         }
-    };
-
-    // Screen OCR (Vision, ~200–800 ms) runs on its own thread so it never
-    // stalls this AppKit run loop (overlay repaint + Carbon accept callbacks).
-    // It publishes redacted text into `screen_cell`, which the inference worker
-    // reads; one-submit staleness is accepted (as for clipboard).
-    let screen_ocr = if screen_active {
-        match ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context) {
-            Ok(ocr) => Some(ocr),
-            Err(err) => {
-                eprintln!("compme: screen OCR worker unavailable: {err}; screen context disabled");
-                None
-            }
-        }
-    } else {
-        None
     };
 
     let heartbeat = Duration::from_millis(config.heartbeat_ms);
@@ -3463,7 +3494,7 @@ pub fn run() -> Result<(), String> {
                     // touch and is cheap.
                     if let Some(ocr) = &screen_ocr {
                         let caret_rect = adapter.caret_rect(&request.field).ok().flatten();
-                        ocr.request(request.field.clone(), caret_rect);
+                        ScreenOcrSubmission::from_request(&request, caret_rect).send_to(ocr);
                     }
                     let submitted_line =
                         submit_request_and_track(&mut submit_times, request, now_ms, |request| {
@@ -5598,6 +5629,21 @@ mod tests {
             None,
             "rejected worker submissions must not create phantom latency samples"
         );
+    }
+
+    #[test]
+    fn screen_ocr_submission_preserves_request_stamp_and_caret_rect() {
+        let request = CompletionRequest {
+            generation: 17,
+            snapshot: 42,
+            ..request_for_submit_tracking(17)
+        };
+        let submission = ScreenOcrSubmission::from_request(&request, rect(9.0));
+
+        assert_eq!(submission.field, request.field);
+        assert_eq!(submission.generation, 17);
+        assert_eq!(submission.snapshot, 42);
+        assert_eq!(submission.caret_rect.unwrap().x, 9.0);
     }
 
     fn field_with_app(app: &str) -> FieldHandle {
