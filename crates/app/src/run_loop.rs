@@ -1041,6 +1041,21 @@ fn latency_sample(
     Some(u32::try_from(now_ms.saturating_sub(submit_ms)).unwrap_or(u32::MAX))
 }
 
+fn submit_request_and_track(
+    submit_times: &mut HashMap<u64, u64>,
+    request: CompletionRequest,
+    now_ms: u64,
+    submit: impl FnOnce(CompletionRequest) -> bool,
+) -> String {
+    let generation = request.generation;
+    let submitted_line = request_log_line(generation, &request.prompt);
+    if !submit(request) {
+        return format!("compme: inference submit failed gen={generation}");
+    }
+    submit_times.insert(generation, now_ms);
+    submitted_line
+}
+
 fn completion_outcome_log_line(generation: u64, candidates: &[String]) -> String {
     let lengths = candidates
         .iter()
@@ -3408,9 +3423,11 @@ pub fn run() -> Result<(), String> {
                         let caret_rect = adapter.caret_rect(&request.field).ok().flatten();
                         ocr.request(request.field.clone(), caret_rect);
                     }
-                    eprintln!("{}", request_log_line(request.generation, &request.prompt));
-                    submit_times.insert(request.generation, now_ms);
-                    inference.submit(request);
+                    let submitted_line =
+                        submit_request_and_track(&mut submit_times, request, now_ms, |request| {
+                            inference.submit(request)
+                        });
+                    eprintln!("{submitted_line}");
                 } else {
                     eprintln!(
                         "{}",
@@ -5452,6 +5469,67 @@ mod tests {
         assert_eq!(latency_sample(&mut submit, 2, 150), Some(50));
         assert_eq!(latency_sample(&mut submit, 3, 200), Some(70));
         assert!(submit.is_empty());
+    }
+
+    fn request_for_submit_tracking(generation: u64) -> CompletionRequest {
+        CompletionRequest {
+            generation,
+            field: FieldHandle {
+                app: "com.apple.TextEdit".into(),
+                pid: Some(7),
+                element_id: "ax:field".into(),
+                generation: 1,
+            },
+            snapshot: generation,
+            prompt: "hello world".into(),
+            max_tokens: 24,
+        }
+    }
+
+    #[test]
+    fn submit_tracking_records_only_accepted_requests() {
+        let mut submit_times = HashMap::new();
+
+        let log_line = submit_request_and_track(
+            &mut submit_times,
+            request_for_submit_tracking(7),
+            123,
+            |request| {
+                assert_eq!(request.generation, 7);
+                assert_eq!(request.prompt, "hello world");
+                true
+            },
+        );
+
+        assert!(log_line.contains("request gen=7"));
+        assert!(!log_line.contains("inference submit failed"));
+        assert_eq!(submit_times.get(&7), Some(&123));
+    }
+
+    #[test]
+    fn submit_tracking_does_not_record_rejected_requests() {
+        let mut submit_times = HashMap::new();
+
+        let mut submitted_generation = None;
+        let log_line = submit_request_and_track(
+            &mut submit_times,
+            request_for_submit_tracking(7),
+            123,
+            |request| {
+                submitted_generation = Some(request.generation);
+                false
+            },
+        );
+
+        assert_eq!(log_line, "compme: inference submit failed gen=7");
+        assert!(!log_line.contains("request gen="));
+        assert_eq!(submitted_generation, Some(7));
+        assert!(!submit_times.contains_key(&7));
+        assert_eq!(
+            latency_sample(&mut submit_times, 7, 200),
+            None,
+            "rejected worker submissions must not create phantom latency samples"
+        );
     }
 
     fn field_with_app(app: &str) -> FieldHandle {

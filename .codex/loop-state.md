@@ -428,3 +428,56 @@
   - Model-backed release automation on GitHub-hosted runners remains blocked by local GGUF/Metal requirements; the pre-tag local gate is documented and passed locally.
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
+## 2026-06-15 09:49:01 +08 - Submit failure tracking TDD pass
+
+- Task selected: Add TDD coverage and fix runtime bookkeeping for rejected inference submissions.
+- Why it was selected: The app/test-quality review found an Important loop-doable gap: the run loop recorded latency state and emitted request evidence without checking whether `InferenceHandle::submit(request)` accepted the request. This directly affected runtime failure behavior and acceptance-log evidence.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/app/src/inference.rs`
+  - `crates/app/src/run_loop.rs`
+  - `docs/DEVELOPMENT.md`
+- Tests added/updated:
+  - Added `submit_tracking_records_only_accepted_requests`.
+  - Added `submit_tracking_does_not_record_rejected_requests`, covering that the real `CompletionRequest` is handed to the submitter, rejected submissions leave no submit timestamp, and a later matching outcome cannot produce a phantom latency sample.
+  - Added `submit_returns_false_when_worker_request_channel_is_closed`, covering the real `InferenceHandle::submit` false return when the worker request receiver is gone.
+- Verification commands and result:
+  - RED: `cargo test -p app submit_tracking -- --nocapture` failed before implementation because the submit-tracking helper behavior did not exist.
+  - GREEN focused: `cargo test -p app submit_tracking -- --nocapture` passed.
+  - Coverage focused: `cargo test -p app submit_returns_false_when_worker_request_channel_is_closed -- --nocapture` passed.
+  - Regression focused: `cargo test -p app latency_sample -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1083`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3887` nodes, `10377` edges, and `137` communities.
+  - `git diff --check` passed.
+- Test count if available: root `1083` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important app coverage/runtime finding: rejected inference-worker submissions no longer create submit-time latency state.
+  - Fixed Important plan-alignment finding from diff review: `request gen=` evidence is emitted only after the submitter accepts the request; rejected submissions emit `inference submit failed gen=...` without prompt text.
+  - Fixed Important tests/coverage finding from diff review: tests now exercise the request-consuming submit edge and prove a rejected submission cannot later produce a latency sample.
+  - Fixed Important tests/coverage finding from final diff review: direct coverage now proves the real inference submitter returns `false` when the worker request channel is closed.
+- Blocked or skipped work remaining:
+  - Core-crate Important: `compat::terminal_prompt_activates` still has a lowercase path/flag command coverage gap; add a red test for `/usr/local/bin/tool --flag /tmp/out` / `./script --dry-run now` returning false, then tighten the terminal prose gate.
+  - Core-crate Important: `model_fetch::download_url` progress callback semantics and worker `status.total` need loopback tests covering fresh and resumed downloads.
+  - Platform/acceptance Important: live acceptance logs still include raw field/prompt context in some example/script paths; add a red formatting-helper test and route logs through redacted/metadata-only output.
+  - Acceptance Important: `e2e-complete-me.sh --self-test` still lacks negative fixture tests for missing document readback and missing required stage-log evidence.
+  - Acceptance Important: A2 `works` / `terminal-nlp` log checks still accept any `request gen=` without proving target identity or prompt marker.
+  - Release/docs Important: model-backed ignored gate commands are documented without `--test-threads=1`; add a docs verification check and serialize them.
+  - Release/docs Important: `release.yml` still has no machine-checkable model-gate evidence requirement before tag publishing.
+  - Thesaurus Minor: docs describe multi-group dedupe behavior while tests enforce no overlap; either test a fixture helper for overlap or narrow the docs to the invariant.
+  - README Minor: Current Validation Gates omit the model-backed release gates; add a release/model-backed pointer after the serialized command docs are fixed.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.

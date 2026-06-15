@@ -744,6 +744,21 @@ mod tests {
     }
 
     #[test]
+    fn submit_returns_false_when_worker_request_channel_is_closed() {
+        let (request_tx, request_rx) = channel::<CompletionRequest>();
+        drop(request_rx);
+        let (_outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
+        let inference = InferenceHandle {
+            request_tx: Some(request_tx),
+            outcome_rx,
+            ready: Arc::new(AtomicBool::new(false)),
+            handle: None,
+        };
+
+        assert!(!inference.submit(request("lost worker", 1)));
+    }
+
+    #[test]
     fn warm_up_failure_is_non_fatal() {
         // A failing warm-up must not block readiness or completions.
         let inference = InferenceHandle::spawn(
