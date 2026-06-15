@@ -1969,6 +1969,7 @@ fn build_settings_flags(
         general_trailing_space: Arc::new(AtomicBool::new(config.trailing_space)),
         context_clipboard: Arc::new(AtomicBool::new(config.clipboard_context)),
         context_screen: Arc::new(AtomicBool::new(config.screen_context)),
+        emoji_enabled: Arc::new(AtomicBool::new(config.emoji.is_some())),
         stats_lines: Arc::new(Mutex::new(Vec::new())),
         about_text: crate::about::about_text(),
         setup_lines: Arc::new(Mutex::new(Vec::new())),
@@ -2058,13 +2059,14 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
 /// must be added here or its shadow goes unwarned (review-c111/c127; the
 /// len-pinned test below backstops this). Deliberately conservative: a key
 /// set to "" still warns — it parses falsy but still occupies the env layer.
-const SWITCH_KEYS: [&str; 14] = [
+const SWITCH_KEYS: [&str; 15] = [
     "COMPME_ENABLED",
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
     "COMPME_TRAILING_SPACE",
     "COMPME_CLIPBOARD_CONTEXT",
     "COMPME_SCREEN_CONTEXT",
+    "COMPME_EMOJI",
     "COMPME_NO_COLLECT_APPS",
     "COMPME_EXCLUDED_APPS",
     "COMPME_EXCLUDED_DOMAINS",
@@ -2107,6 +2109,33 @@ fn switch_edge(flag: &AtomicBool, current: &mut bool) -> Option<bool> {
         *current = now;
         now
     })
+}
+
+fn apply_emoji_enabled(
+    config_emoji: &mut Option<EmojiPrefs>,
+    saved_prefs: &mut EmojiPrefs,
+    enabled: bool,
+) {
+    if enabled {
+        *config_emoji = Some(*saved_prefs);
+    } else {
+        if let Some(prefs) = config_emoji.take() {
+            *saved_prefs = prefs;
+        }
+    }
+}
+
+fn handle_emoji_switch_edge(
+    flag: &AtomicBool,
+    current: &mut bool,
+    config_emoji: &mut Option<EmojiPrefs>,
+    saved_prefs: &mut EmojiPrefs,
+    mut persist: impl FnMut(bool),
+) -> Option<bool> {
+    let on = switch_edge(flag, current)?;
+    apply_emoji_enabled(config_emoji, saved_prefs, on);
+    persist(on);
+    Some(on)
 }
 
 /// Persist one switch edge and log it. A persist failure is logged, not
@@ -2729,10 +2758,13 @@ pub fn run() -> Result<(), String> {
     let mut last_stats_line: Option<String> = None;
     let mut read_err_squelch = LogSquelch::default();
     // S2 settings window (lazy NSWindow) + the activation-policy poll state.
-    // Labs pane: the NSSwitch writes this flag; the watcher below persists and
-    // re-applies it. `global_mid_word` is the live global default (config is
-    // only the launch-time snapshot once the pane can change it).
+    // Settings switches write flags; the watchers below persist and apply them.
+    // `global_mid_word` is the live global default because per-app overrides
+    // still derive from it. Emoji is stored as an Option<EmojiPrefs>, so track
+    // its bool edge separately from the config payload.
     let mut global_mid_word = config.allow_mid_word;
+    let mut emoji_enabled = config.emoji.is_some();
+    let mut emoji_prefs = config.emoji.unwrap_or_default();
     let settings_flags = build_settings_flags(&config, Arc::clone(&flags.enabled));
     // The app ids behind the Apps rows as last rendered (index == row).
     let mut apps_ids: Vec<String> = Vec::new();
@@ -3519,6 +3551,21 @@ pub fn run() -> Result<(), String> {
             }
             persist_and_log_switch("COMPME_SCREEN_CONTEXT", "screen context", on);
         }
+        // Emoji-pane watcher: the replacement path reads config.emoji on each
+        // observation, so changing the Option is the live apply. Keep the parsed
+        // prefs payload across live off/on cycles until skin tone / gender
+        // controls ship.
+        let emoji_edge = handle_emoji_switch_edge(
+            &settings_flags.emoji_enabled,
+            &mut emoji_enabled,
+            &mut config.emoji,
+            &mut emoji_prefs,
+            |on| persist_and_log_switch("COMPME_EMOJI", "emoji completions", on),
+        );
+        if emoji_edge == Some(false) {
+            latest.clear();
+            let _ = log_err("on_dismiss", engine.on_dismiss());
+        }
         // Drain received compme:// deep links (strict fail-closed parse →
         // reversible override). Every outcome is logged (the §16 user-visible
         // requirement; a confirmation prompt is the follow-up). An applied
@@ -4293,6 +4340,10 @@ mod tests {
         assert!(flags.general_autocorrect.load(Ordering::Relaxed) == config.autocorrect);
         assert!(flags.context_clipboard.load(Ordering::Relaxed) == config.clipboard_context);
         assert!(flags.context_screen.load(Ordering::Relaxed) == config.screen_context);
+        assert_eq!(
+            flags.emoji_enabled.load(Ordering::Relaxed),
+            config.emoji.is_some()
+        );
     }
 
     #[test]
@@ -4737,6 +4788,7 @@ mod tests {
             "COMPME_TRAILING_SPACE",
             "COMPME_CLIPBOARD_CONTEXT",
             "COMPME_SCREEN_CONTEXT",
+            "COMPME_EMOJI",
             "COMPME_NO_COLLECT_APPS",
             "COMPME_EXCLUDED_APPS",
             "COMPME_EXCLUDED_DOMAINS",
@@ -4751,7 +4803,7 @@ mod tests {
                 "{key} must warn when env shadows persisted config"
             );
         }
-        assert_eq!(every_warning.len(), 14);
+        assert_eq!(every_warning.len(), 15);
     }
 
     #[test]
@@ -4789,6 +4841,87 @@ mod tests {
         assert!(
             !Config::from_lookup(lookup(&[("COMPME_MIDLINE", switch_value(false))])).allow_mid_word
         );
+    }
+
+    #[test]
+    fn emoji_persist_value_round_trips_through_the_parser() {
+        assert!(
+            Config::from_lookup(lookup(&[("COMPME_EMOJI", switch_value(true))]))
+                .emoji
+                .is_some()
+        );
+        assert!(
+            Config::from_lookup(lookup(&[("COMPME_EMOJI", switch_value(false))]))
+                .emoji
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn emoji_toggle_preserves_custom_prefs_within_the_session() {
+        let mut config_emoji = Some(EmojiPrefs {
+            skin_tone: SkinTone::MediumDark,
+            gender: Gender::Female,
+        });
+        let mut saved = config_emoji.unwrap();
+
+        apply_emoji_enabled(&mut config_emoji, &mut saved, false);
+        assert!(config_emoji.is_none());
+
+        apply_emoji_enabled(&mut config_emoji, &mut saved, true);
+        assert_eq!(
+            config_emoji,
+            Some(EmojiPrefs {
+                skin_tone: SkinTone::MediumDark,
+                gender: Gender::Female,
+            })
+        );
+    }
+
+    #[test]
+    fn emoji_switch_edge_applies_config_and_persists_only_on_change() {
+        let flag = AtomicBool::new(true);
+        let mut current = true;
+        let mut config_emoji = Some(EmojiPrefs {
+            skin_tone: SkinTone::MediumDark,
+            gender: Gender::Female,
+        });
+        let mut saved = config_emoji.unwrap();
+        let mut persisted = Vec::new();
+
+        assert_eq!(
+            handle_emoji_switch_edge(&flag, &mut current, &mut config_emoji, &mut saved, |on| {
+                persisted.push(on)
+            },),
+            None
+        );
+        assert_eq!(persisted, Vec::<bool>::new());
+
+        flag.store(false, Ordering::Relaxed);
+        assert_eq!(
+            handle_emoji_switch_edge(&flag, &mut current, &mut config_emoji, &mut saved, |on| {
+                persisted.push(on)
+            },),
+            Some(false)
+        );
+        assert!(config_emoji.is_none());
+        assert_eq!(persisted, vec![false]);
+
+        flag.store(true, Ordering::Relaxed);
+        assert_eq!(
+            handle_emoji_switch_edge(&flag, &mut current, &mut config_emoji, &mut saved, |on| {
+                persisted.push(on)
+            },),
+            Some(true)
+        );
+        assert_eq!(
+            config_emoji,
+            Some(EmojiPrefs {
+                skin_tone: SkinTone::MediumDark,
+                gender: Gender::Female,
+            })
+        );
+        assert_eq!(persisted, vec![false, true]);
     }
 
     #[test]

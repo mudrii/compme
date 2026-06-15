@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last re-analyzed:** 2026-06-15 (re-validated, gate run) · **Branch:** `spike/a0` · **Tests:** full deterministic gates passed; root listed `1111` tests and spike listed `30` tests
+> **Last re-analyzed:** 2026-06-15 (re-validated, gate run) · **Branch:** `spike/a0` · **Tests:** full deterministic gates passed; root listed `1116` tests and spike listed `30` tests
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -121,10 +121,10 @@ settings editor for these values remains part of Tier 3.2.
 
 ## Tier 3 — A3 settings-UI residuals (medium, build-then-LOOK)
 
-Per `2026-06-10-a3-settings-ui-design.md`. The window ships as 7 tabs
-(Setup/General/Apps/Context/Shortcuts/Statistics/About via NSTabView). Backing
+Per `2026-06-10-a3-settings-ui-design.md`. The window ships as 8 tabs
+(Setup/General/Apps/Context/Emoji/Shortcuts/Statistics/About via NSTabView). Backing
 config + crates exist for the remaining panes; what's missing is narrower UI
-surface: Apps editing rows, Personalization controls, Emoji controls,
+surface: Apps editing rows, Personalization controls, Emoji skin/gender controls,
 Statistics range/group/metric controls, and the Context appearance sub-toggle.
 
 ### 3.1 ☐ Per-app override *editing* rows (Apps pane) — the largest residual pane
@@ -147,10 +147,14 @@ Statistics range/group/metric controls, and the Context appearance sub-toggle.
   carries 4 switches —
   `general_enabled`, `labs_midline` (mid-line, moved here from Labs),
   `general_autocorrect`, `general_trailing_space` (`settings_window.rs:926-1045`).
+  Emoji now exists as a dedicated tab with a live `COMPME_EMOJI` enable switch:
+  `settings_window.rs:1367-1378` includes `Emoji`; `settings_window.rs:1168-1199`
+  renders the switch row and writes `emoji_enabled`; `run_loop.rs:1961-1972`
+  initializes it from config; `run_loop.rs:3525-3534` persists switch edges.
 - **Pending:** Personalization pane (mode AcceptedOnly/AllMonitored, instructions
   editor, 6-stop strength slider); Context appearance sub-toggle (deferred
-  upstream-equivalent gap); Emoji pane (skin tone / gender —
-  `COMPME_EMOJI`/`_SKIN_TONE`/`_GENDER` backing exists). Spec:
+  upstream-equivalent gap); Emoji skin tone / gender controls
+  (`COMPME_EMOJI_SKIN_TONE` / `COMPME_EMOJI_GENDER` backing exists). Spec:
   `a3-settings-ui-design.md:46,47,48,73`.
 
 ### 3.3 ☐ Statistics range / group / metric controls

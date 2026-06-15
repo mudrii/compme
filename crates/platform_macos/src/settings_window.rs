@@ -266,6 +266,9 @@ pub struct SettingsFlags {
     /// (`COMPME_SCREEN_CONTEXT`). Turning it on persists for the next launch;
     /// turning it off also gates new OCR submissions in the current run.
     pub context_screen: Arc<AtomicBool>,
+    /// Emoji: offer :shortcode completions (`COMPME_EMOJI`). Skin tone and
+    /// gender remain config/env-backed until their dedicated controls ship.
+    pub emoji_enabled: Arc<AtomicBool>,
     /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
     /// before each show; the window only renders them (one label per line).
     pub stats_lines: Arc<Mutex<Vec<String>>>,
@@ -437,6 +440,17 @@ define_class!(
                 self.ivars()
                     .flags
                     .context_screen
+                    .store(on, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(toggleEmoji:))]
+        fn toggle_emoji(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars()
+                    .flags
+                    .emoji_enabled
                     .store(on, Ordering::Relaxed);
             }
         }
@@ -1151,8 +1165,42 @@ fn build_window(
     // Shortcuts tab: composed by the run loop; refreshed on every show
     // since recorder 5b (a live rebind recomposes the text — build-once
     // would lie about the registered keys).
+    {
+        let emoji = &pane_views[4];
+        let label = NSTextField::labelWithString(
+            &NSString::from_str("Emoji shortcode completions (:smile)"),
+            mtm,
+        );
+        label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 320.0),
+            NSSize::new(380.0, 20.0),
+        ));
+        emoji.addSubview(&label);
+
+        let switch = NSSwitch::new(mtm);
+        switch.setFrame(NSRect::new(
+            NSPoint::new(420.0, 316.0),
+            NSSize::new(60.0, 26.0),
+        ));
+        switch.setState(if flags.emoji_enabled.load(Ordering::Relaxed) {
+            objc2_app_kit::NSControlStateValueOn
+        } else {
+            objc2_app_kit::NSControlStateValueOff
+        });
+        // SAFETY: target outlives the window (held by MacosSettingsWindow).
+        unsafe {
+            switch.setTarget(Some({
+                let any: &AnyObject = target.as_ref();
+                any
+            }));
+            switch.setAction(Some(sel!(toggleEmoji:)));
+        }
+        emoji.addSubview(&switch);
+        switches.push((switch, Arc::clone(&flags.emoji_enabled)));
+    }
+
     let shortcuts_label = {
-        let shortcuts_view = &pane_views[4];
+        let shortcuts_view = &pane_views[5];
         let initial = flags
             .shortcuts_text
             .lock()
@@ -1175,7 +1223,7 @@ fn build_window(
     // below the effective-bindings text (y=160..330). LOOK-verified.
     let mut recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)> = Vec::new();
     {
-        let shortcuts_view = &pane_views[4];
+        let shortcuts_view = &pane_views[5];
         let (word, full) = crate::effective_accept_keys_with_mods();
         for (role, label_text, y) in [
             (RecorderRole::Word, "Accept word:", 116.0),
@@ -1221,7 +1269,7 @@ fn build_window(
     // the run loop via flags.stats_lines; show() refreshes them on every
     // open. Monospaced font keeps sparkline glyphs column-aligned.
     {
-        let stats = &pane_views[5];
+        let stats = &pane_views[6];
         let stats_header =
             NSTextField::labelWithString(&NSString::from_str("This session + lifetime"), mtm);
         stats_header.setFrame(NSRect::new(
@@ -1255,7 +1303,7 @@ fn build_window(
     // About tab: static for the process lifetime, so build-once is fine
     // here (unlike the Statistics rows above).
     {
-        let about_view = &pane_views[6];
+        let about_view = &pane_views[7];
         let about =
             NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.about_text), mtm);
         about.setFrame(NSRect::new(
@@ -1316,7 +1364,7 @@ pub const APPS_ROWS: usize = 8;
 pub const STATS_ROWS: usize = 4;
 
 /// Number of settings tabs.
-pub const PANE_COUNT: usize = 7;
+pub const PANE_COUNT: usize = 8;
 
 /// Tab titles in display order (Cotypist order) — Setup first, About last;
 /// new panes insert between, never around.
@@ -1326,6 +1374,7 @@ pub fn pane_titles() -> [&'static str; PANE_COUNT] {
         "General",
         "Apps",
         "Context",
+        "Emoji",
         "Shortcuts",
         "Statistics",
         "About",
@@ -1359,6 +1408,7 @@ mod tests {
                 "General",
                 "Apps",
                 "Context",
+                "Emoji",
                 "Shortcuts",
                 "Statistics",
                 "About"

@@ -1684,6 +1684,58 @@
   - Medium UI work remains: Tier 3 settings panes for personalization/context/emoji and per-app editing require AppKit/FFI build-and-LOOK work.
 - Commit hash and push confirmation, or DRY/blocked status: Pending commit/push in this tick.
 
+## Cycle 2026-06-15 16:53:40 +0800 - Emoji settings enable switch
+
+- Task selected: Add the dedicated Emoji settings pane enable-switch slice with live `COMPME_EMOJI` runtime wiring.
+- Why it was selected: The most specific active loop state and roadmap ranked Tier 3 settings panes next. Parallel explorers and local inspection agreed that Emoji enable was the smallest loop-doable TDD slice because `COMPME_EMOJI` parsing and replacement behavior already existed, while the settings UI and runtime switch watcher were missing.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/app/src/run_loop.rs`
+  - `crates/platform_macos/src/settings_window.rs`
+  - `docs/ROADMAP.md`
+  - `docs/superpowers/specs/2026-06-10-a3-settings-ui-design.md`
+- Tests added/updated:
+  - Updated `settings_window::tests::pane_titles_are_fixed_and_ordered` to pin the 8-tab Setup/General/Apps/Context/Emoji/Shortcuts/Statistics/About order.
+  - Extended `settings_flags_share_the_tray_enabled_atomic` and `env_shadow_warnings_name_only_set_switch_keys` for `emoji_enabled` / `COMPME_EMOJI`.
+  - Added `emoji_persist_value_round_trips_through_the_parser`.
+  - Added `emoji_toggle_preserves_custom_prefs_within_the_session`.
+  - Added `emoji_switch_edge_applies_config_and_persists_only_on_change`.
+- Verification commands and result:
+  - RED: `cargo test -p platform_macos pane_titles_are_fixed_and_ordered` failed because `Emoji` was missing from the tab list.
+  - GREEN focused: `cargo test -p platform_macos pane_titles_are_fixed_and_ordered` passed.
+  - GREEN focused: `cargo test -p app settings_flags_share_the_tray_enabled_atomic` passed.
+  - GREEN focused: `cargo test -p app env_shadow_warnings_name_only_set_switch_keys` passed.
+  - GREEN focused: `cargo test -p app emoji_persist_value_round_trips_through_the_parser` passed.
+  - GREEN focused after review fixes: `cargo test -p app emoji_toggle_preserves_custom_prefs_within_the_session` passed.
+  - GREEN focused after review fixes: `cargo test -p app emoji_switch_edge_applies_config_and_persists_only_on_change` passed.
+  - `graphify update .` passed and rebuilt `4021` nodes, `10744` edges, and `141` communities.
+  - `git diff --check` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed after replacing clone-on-Copy uses.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `tools/release/run-model-gates.sh` passed, including GGUF verification and model-backed tests.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1116`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+- Test count if available: root `1116` listed tests; spike `30` listed tests; full workspace run included app `314` tests and platform_macos `223` tests; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; A2 compatibility self-test `30` PASS lines; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Fixed Important correctness/quality/tests findings: live off/on Emoji toggles preserve parsed skin tone/gender prefs instead of restoring defaults.
+  - Fixed Important tests/coverage finding: extracted `handle_emoji_switch_edge` and tested no-edge, disable, enable, prefs preservation, and persistence calls.
+  - Fixed Important plan-alignment finding: disabling Emoji now clears the visible pending ghost with `latest.clear()` plus `engine.on_dismiss()`.
+  - Fixed Important docs/spec findings: roadmap and A3 settings spec now say 8 tabs with Emoji enable shipped and only Emoji skin tone/gender controls deferred.
+  - Fixed Important loop-state alignment finding in this entry by narrowing remaining Emoji work to skin/gender controls.
+- Blocked or skipped work remaining:
+  - Tier 3 settings work remains: Personalization pane controls, Emoji skin tone/gender controls, Apps editing rows, Statistics range/group/metric controls, Context appearance sub-toggle, and force-activate/per-app/global toggle hotkeys.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing including direct AppKit Emoji switch validation, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+  - External blockers remain: Developer ID signing/notarization/updater and Windows/Linux platform adapters.
+- Commit hash and push confirmation, or DRY/blocked status: Pending commit/push in this tick.
+
 ## 2026-06-15 16:45:00 +0800 - Context settings pane TDD pass
 
 - Task selected: Add the dedicated Context settings pane slice with clipboard/screen context switches and privacy-safe runtime wiring.
