@@ -429,6 +429,46 @@
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 13:56:23 +08 - DRY consolidation audit
+
+- Task selected: Consolidation audit only.
+- Why it was selected: The latest active loop state leaves only app-loop coverage seams and manual/live validation. The two skipped app seams still need broader extraction/injection harnesses, and the monitored-memory write-failure drain/no-replay behavior is correct by inspection but has no existing failure-injection path for a meaningful strict RED test in one tick. The pasted `COMPME_MEMORY=all` P2 was already dismissed as stale in current loop state and current code/tests. A prior Minor note about duplicate A2 request-line predicates remains a cleanup opportunity, but it was not a pending Critical/Important loop task and was not selected over the active app coverage seams.
+- Files changed:
+  - `.codex/loop-state.md`
+- Tests added/updated: None; no loop-doable RED/GREEN task was available without inventing a test-only seam.
+- Verification commands and result:
+  - `graphify query "COMPME_MEMORY all AllMonitored MemoryStore monitor run_loop accept handler record_full_accept monitored typing"` passed and found the current monitored queue/flush path and AllMonitored tests.
+  - `graphify query "model_fetch download_url progress callback status total fresh resumed tests"` passed and confirmed the stale model-fetch progress note is already covered.
+  - `rg -n "1103|1083|1088|1095|cargo test --workspace|run-model-gates|Current Validation Gates|Validation Gates|test count|tests" README.md docs/DEVELOPMENT.md docs/ACCEPTANCE.md .github/workflows/*.yml tools/release/*.sh` passed for docs/tests alignment.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1103`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+- Test count if available: root `1103` listed tests; spike `30` listed tests; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; A2 self-test `27` PASS lines; ignored model-backed release gate passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important state-review finding: this entry now carries forward the previously noted Minor A2 request-line predicate duplication instead of implying it did not exist.
+  - Fixed Important state-review finding: this entry now records the current-diff review outcome for the state-only change.
+  - Correctness/security/data-loss diff review reported no Critical, Important, or Minor findings.
+  - Plan-alignment diff review reported the two Important state-entry issues above and one Minor status-wording issue; all were fixed in this entry.
+  - Quality/architecture/type-safety self-review reported no Critical, Important, or Minor findings for this state-only diff.
+  - Tests/coverage/real-behavior self-review reported no Critical, Important, or Minor findings after the recorded command list and test counts were checked against this tick's outputs.
+- Blocked or skipped work remaining:
+  - App coverage seam remains skipped: accept-failure app-level privacy/stat side effects are correct in current code, but direct app-loop coverage needs an extraction/injection seam.
+  - App coverage seam remains skipped: submit-time auxiliary context ordering is correct in current code, but a meaningful RED needs a broader harness.
+  - Important app context finding remains skipped for now: monitored-memory write failure drain/no-replay behavior is not directly tested; current code drains pending work before persistence and removes boundary buffers before calling `MemoryStore::monitor`, so a direct behavior test needs a legitimate failure-injection seam.
+  - Minor cleanup remains: `run-a2-compat-gates.sh` duplicates the request-line schema across predicates; behavior is covered by positive/negative self-tests, but a future cleanup can centralize the predicate.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: DRY state-only consolidation entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 13:47:30 +08 - A2 request evidence target/marker proof
 
 - Task selected: Strengthen A2 positive request evidence so `works` / `terminal-nlp` prove resolved target identity, all submit gates, and a privacy-safe per-run prompt marker.
