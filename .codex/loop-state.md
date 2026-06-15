@@ -429,6 +429,56 @@
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 13:27:08 +08 - Release model gate enforcement
+
+- Task selected: Machine-enforce ignored model-backed gates before release publishing.
+- Why it was selected: The active loop state listed the release/model finding as an Important pending task, and the initial RED policy check failed because `.github/workflows/release.yml` had no machine-checkable evidence that tag publishing runs the ignored model-backed suites.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/release.yml`
+  - `docs/ACCEPTANCE.md`
+  - `docs/RELEASING.md`
+  - `tools/release/check-model-gates.sh`
+  - `tools/release/run-model-gates.sh`
+- Tests added/updated:
+  - Added `tools/release/check-model-gates.sh`, a deterministic CI policy check that parses the release workflow as YAML, verifies the release job depends on `validate`, verifies the validate job invokes the model-gate runner, syntax-checks that runner, and verifies the pinned model URL, SHA, and ignored model-backed test commands.
+  - Added `tools/release/run-model-gates.sh`, which verifies or repairs the pinned GGUF download via sha256, then runs the root and spike ignored model-backed suites with `COMPME_REQUIRE_MODEL_TESTS=1`.
+  - Updated CI, release workflow, and acceptance/release docs to include the release model-gate policy.
+- Verification commands and result:
+  - RED: `bash tools/release/check-model-gates.sh` failed before workflow/script implementation because the release model gate was absent.
+  - GREEN focused: `bash tools/release/check-model-gates.sh` passed.
+  - Negative focused: a temporary workflow containing only inert/comment-like model-gate text failed the checker with `missing release model gate: release workflow invokes model gate script`.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF sha256 verification, 3 root ignored model-client tests, and 1 spike ignored model integration test.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1103`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed; final run reported no code-graph topology changes.
+  - `git diff --check` passed.
+- Test count if available: root `1103` listed tests; spike `30` listed tests; ignored model-backed gate script passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important release/model finding: tag release validation now runs `tools/release/run-model-gates.sh` before the publish job can start, and the publish job still depends on `validate`.
+  - Fixed Important review finding: the policy checker no longer accepts raw strings anywhere in the workflow; it parses `release.yml` as YAML and checks the executable validate step plus release dependency.
+  - Fixed Important plan-alignment finding: this entry records the release/model finding as fixed so future loop ticks do not reselect stale state.
+  - Dismissed Important `.claude/settings.json` review note for this tick because `.claude/` is untracked local config and was not staged or committed.
+  - Fixed Minor review finding: stale/corrupt model files are repaired by downloading to a temp file, verifying the temp file, and atomically moving it into place.
+- Blocked or skipped work remaining:
+  - Core-crate Important: `compat::terminal_prompt_activates` still has a lowercase path/flag command coverage gap.
+  - Core-crate Important: `model_fetch::download_url` progress callback semantics and worker `status.total` need loopback tests covering fresh and resumed downloads.
+  - Platform/acceptance Important: live acceptance logs still include raw field/prompt context in some example/script paths.
+  - Acceptance Important: A2 `works` / `terminal-nlp` log checks still need stronger target identity and prompt-marker proof.
+  - App coverage seams remain for accept-failure privacy/stats, submit-time auxiliary context ordering, and monitored-memory write failure drain/no-replay; subagent review found current behavior correct but the remaining seams need dedicated future TDD slices.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 12:52:05 +08 - Secure monitored flush TDD pass
 
 - Task selected: Pin secure-input recheck before monitored-memory flush and clear buffered monitored text on secure policy.

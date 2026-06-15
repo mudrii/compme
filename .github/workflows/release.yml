@@ -34,6 +34,9 @@ jobs:
       - name: Root tests
         run: cargo test --workspace --all-targets -- --test-threads=1
 
+      - name: Model-backed release gates
+        run: bash tools/release/run-model-gates.sh
+
       - name: Root build
         run: cargo build --workspace --all-targets
 
@@ -48,6 +51,9 @@ jobs:
 
       - name: E2E runner self-test
         run: tools/acceptance/e2e-complete-me.sh --self-test
+
+      - name: Release model gate policy
+        run: bash tools/release/check-model-gates.sh
 
       - name: Spike gates
         working-directory: tools/spike

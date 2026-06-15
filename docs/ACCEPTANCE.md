@@ -21,6 +21,7 @@ bash -n tools/acceptance/*.sh
 tools/acceptance/e2e-complete-me.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-a2-compat-gates.sh --self-test
+bash tools/release/check-model-gates.sh
 ```
 
 Spike workspace:
@@ -48,6 +49,10 @@ COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored
 These ignored suites need the GGUF files and Metal GPU. Without
 `COMPME_REQUIRE_MODEL_TESTS=1` they skip absent models for developer convenience;
 with it, a missing model is a failed acceptance gate.
+
+The Release workflow must invoke `tools/release/run-model-gates.sh` before
+publishing a tag; `tools/release/check-model-gates.sh` is the machine check that
+prevents the workflow from silently dropping that model-backed gate script.
 
 ## Live macOS Acceptance Runner
 
