@@ -1782,3 +1782,55 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
   - External blockers remain: Developer ID signing/notarization/updater and Windows/Linux platform adapters.
 - Commit hash and push confirmation, or DRY/blocked status: Pending commit/push in this tick.
+
+## Cycle 2026-06-15 17:36:06 +0800 - Emoji skin-tone settings popup
+
+- Task selected: Add the dedicated Emoji settings skin-tone popup slice with live `COMPME_EMOJI_SKIN_TONE` runtime wiring.
+- Why it was selected: The most specific active roadmap state ranked Tier 3 settings panes next. The prior Emoji enable slice left skin/gender controls pending, and the skin-tone popup was the smallest loop-doable TDD slice because parser/rendering behavior already existed and the missing work was a settings control, persistence, and live `EmojiPrefs` application.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/app/src/run_loop.rs`
+  - `crates/platform_macos/src/settings_window.rs`
+  - `docs/ROADMAP.md`
+  - `docs/superpowers/specs/2026-06-10-a3-settings-ui-design.md`
+- Tests added/updated:
+  - Extended `settings_flags_share_the_tray_enabled_atomic` for `emoji_skin_tone_index`.
+  - Extended `env_shadow_warnings_name_only_set_switch_keys` for `COMPME_EMOJI_SKIN_TONE`.
+  - Extended `emoji_persist_value_round_trips_through_the_parser` for persisted skin tone.
+  - Added `disabled_emoji_preserves_persisted_skin_tone_for_later_enable`.
+  - Added `emoji_skin_tone_edge_applies_config_and_persists_only_on_change`.
+  - Added `emoji_skin_tone_edge_invalidates_stale_visible_suggestion`.
+- Verification commands and result:
+  - RED: `cargo test -p app settings_flags_share_the_tray_enabled_atomic` failed because `SettingsFlags.emoji_skin_tone_index` and `emoji_skin_tone_index` did not exist.
+  - RED: `cargo test -p app env_shadow_warnings_name_only_set_switch_keys` failed because `COMPME_EMOJI_SKIN_TONE` was missing from `SWITCH_KEYS`.
+  - RED: `cargo test -p app emoji_skin_tone_edge_applies_config_and_persists_only_on_change` failed because `handle_emoji_skin_tone_change` did not exist.
+  - RED after review: `cargo test -p app emoji_skin_tone_edge_invalidates_stale_visible_suggestion` failed because stale-visible-suggestion invalidation did not exist.
+  - RED after review: `cargo test -p app disabled_emoji_preserves_persisted_skin_tone_for_later_enable` failed because config did not retain `emoji_prefs` while Emoji was disabled.
+  - GREEN focused: the new/updated app tests passed individually after implementation.
+  - GREEN focused: `cargo test -p platform_macos pane_titles_are_fixed_and_ordered` passed.
+  - `graphify update .` passed and rebuilt `4034` nodes, `10791` edges, and `138` communities.
+  - `git diff --check` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus model-backed tests.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1119`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+- Test count if available: root `1119` listed tests; spike `30` listed tests; full workspace run included app `317` tests and platform_macos `223` tests; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; A2 compatibility self-test `30` PASS lines; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Fixed Important correctness/plan findings from subagent review: persisted `COMPME_EMOJI_SKIN_TONE` / `COMPME_EMOJI_GENDER` now parse into `Config.emoji_prefs` even when `COMPME_EMOJI` is off, so relaunch + later enable preserves the saved tone/gender.
+  - Fixed Important quality finding from subagent review: changing the skin-tone popup now clears the pending request and dismisses the visible ghost so accepting cannot insert a stale old-tone suggestion.
+  - Fixed Important plan-alignment findings from subagent review: roadmap/spec narrow remaining Emoji work to gender only, and roadmap anchors/header now match the current code and completed gates.
+  - Local tests/coverage pass found no additional Critical or Important gaps; the fourth review subagent timed out twice and was shut down.
+- Blocked or skipped work remaining:
+  - Tier 3 settings work remains: Emoji gender control, Personalization pane controls, Apps editing rows, Statistics range/group/metric controls, Context appearance sub-toggle, and force-activate/per-app/global toggle hotkeys.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing including direct AppKit Emoji popup validation, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+  - External blockers remain: Developer ID signing/notarization/updater and Windows/Linux platform adapters.
+- Commit hash and push confirmation, or DRY/blocked status: Pending commit/push in this tick; final response records the pushed commit hash.

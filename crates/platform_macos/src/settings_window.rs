@@ -266,9 +266,12 @@ pub struct SettingsFlags {
     /// (`COMPME_SCREEN_CONTEXT`). Turning it on persists for the next launch;
     /// turning it off also gates new OCR submissions in the current run.
     pub context_screen: Arc<AtomicBool>,
-    /// Emoji: offer :shortcode completions (`COMPME_EMOJI`). Skin tone and
-    /// gender remain config/env-backed until their dedicated controls ship.
+    /// Emoji: offer :shortcode completions (`COMPME_EMOJI`).
     pub emoji_enabled: Arc<AtomicBool>,
+    /// Emoji: selected skin-tone popup row (`COMPME_EMOJI_SKIN_TONE`).
+    /// The run loop maps the index to the app-side `SkinTone` enum and
+    /// persists the config value.
+    pub emoji_skin_tone_index: Arc<AtomicUsize>,
     /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
     /// before each show; the window only renders them (one label per line).
     pub stats_lines: Arc<Mutex<Vec<String>>>,
@@ -452,6 +455,17 @@ define_class!(
                     .flags
                     .emoji_enabled
                     .store(on, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(selectEmojiSkinTone:))]
+        fn select_emoji_skin_tone(&self, sender: Option<&NSPopUpButton>) {
+            if let Some(popup) = sender {
+                let index = popup.indexOfSelectedItem().max(0) as usize;
+                self.ivars()
+                    .flags
+                    .emoji_skin_tone_index
+                    .store(index, Ordering::Relaxed);
             }
         }
     }
@@ -1162,9 +1176,8 @@ fn build_window(
         }
     }
 
-    // Shortcuts tab: composed by the run loop; refreshed on every show
-    // since recorder 5b (a live rebind recomposes the text — build-once
-    // would lie about the registered keys).
+    // Emoji tab: enable switch plus skin-tone popup. The run loop owns policy
+    // and persistence; the window only writes atomics.
     {
         let emoji = &pane_views[4];
         let label = NSTextField::labelWithString(
@@ -1197,6 +1210,42 @@ fn build_window(
         }
         emoji.addSubview(&switch);
         switches.push((switch, Arc::clone(&flags.emoji_enabled)));
+
+        let tone_label = NSTextField::labelWithString(&NSString::from_str("Skin tone"), mtm);
+        tone_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 280.0),
+            NSSize::new(160.0, 20.0),
+        ));
+        emoji.addSubview(&tone_label);
+
+        let tone_popup = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(mtm),
+            NSRect::new(NSPoint::new(220.0, 276.0), NSSize::new(180.0, 26.0)),
+            false,
+        );
+        for title in [
+            "Default",
+            "Light",
+            "Medium light",
+            "Medium",
+            "Medium dark",
+            "Dark",
+        ] {
+            tone_popup.addItemWithTitle(&NSString::from_str(title));
+        }
+        let selected = flags.emoji_skin_tone_index.load(Ordering::Relaxed);
+        if selected < 6 {
+            tone_popup.selectItemAtIndex(selected as isize);
+        }
+        // SAFETY: target outlives the window (held by MacosSettingsWindow).
+        unsafe {
+            tone_popup.setTarget(Some({
+                let any: &AnyObject = target.as_ref();
+                any
+            }));
+            tone_popup.setAction(Some(sel!(selectEmojiSkinTone:)));
+        }
+        emoji.addSubview(&tone_popup);
     }
 
     let shortcuts_label = {
