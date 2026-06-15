@@ -1,11 +1,12 @@
 # A3 Settings UI + Tray Menu — Cotypist-Reference Plan
 
-> **Status annotations updated 2026-06-10 (cycles c95-c115):** window shipped
-> as 6 tabs (Setup/General/Apps/Shortcuts/Statistics/About) via NSTabView.
+> **Status annotations updated 2026-06-15:** window ships as 7 tabs
+> (Setup/General/Apps/Context/Shortcuts/Statistics/About) via NSTabView; the
+> Context tab now exposes clipboard + screen-OCR context switches.
 >
 > **Live pending status (re-verified 2026-06-15): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
-> — the per-pane residuals (Apps editing rows, Personalization/Context/Emoji
-> panes, Statistics controls, force-activate/toggle hotkeys) are tracked there
+> — the per-pane residuals (Apps editing rows, Personalization/Emoji panes,
+> Context appearance sub-toggle, Statistics controls, force-activate/toggle hotkeys) are tracked there
 > as Tier 3. Inline per-line annotations below remain accurate except where a
 > dated correction supersedes them.
 
@@ -49,7 +50,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 |---|---|---|---|
 | Setup | permission states (AX, Screen Recording), model downloaded, macOS text-suggestions off, clipboard context | `accessibility_trusted`, `screen_recording_permission`, model_select, compat | pane only; "disable macOS suggestions" helper is new — **[2026-06-10] DONE** (checklist + Grant/Request/Reveal buttons + 480ms visible-only poll) |
 | General | launch-at-login; menu-bar icon toggle; accessory button; model picker + reveal; enable-by-default; max length (S/M/L); autocorrect toggles | SMAppService (bundle exists, c80); tray exists; model_select + `COMPME_MODEL_PATH`; `COMPME_ENABLED`; `COMPME_MAX_WORDS`; `COMPME_AUTOCORRECT` | launch-at-login wiring; model CATALOG/download mgr (§15 D14 — big, own item); accessory floating button = new feature (defer) — **[2026-06-10] DONE** for 3 live switches (mid-line/autocorrect/trailing-space); launch-at-login wiring done via SMAppService; model catalog still separate D14 |
-| Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | env/config backing shipped; no Context tab or settings switches yet; appearance sub-toggle has no equivalent (defer) |
+| Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | dedicated Context tab with clipboard + screen-OCR switches shipped; screen enable takes effect on next launch, screen disable gates new OCR submissions immediately; appearance sub-toggle has no equivalent (defer) |
 | Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS`, `COMPME_INSTRUCTIONS_APPS` / `_APP_*`, `COMPME_INSTRUCTIONS_DOMAINS` / `_DOMAIN_*` | backing shipped for memory modes/global-app-domain instructions/strength; Apps tab count/delete UI shipped; Personalization controls for mode, instructions, and strength remain deferred |
 | Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | `includeVanillaVariants` is the one unmodeled item (§8 note) — small emoji-crate addition — **[2026-06-10] NOT SHIPPED** (deferred) |
 | Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; `KeyRecorderField` rows persist live rebinds through `COMPME_ACCEPT_*` config | recorder UI + live rebind shipped; force-activate + the two toggle shortcuts remain new hotkeys — **[2026-06-15] PARTIAL** |
@@ -79,8 +80,9 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
    **[2026-06-10] DONE** (wired via SMAppService).
 4. **S2 window skeleton** + the pure panes first (Labs, Emoji, Context,
    Personalization — backing complete, persistence via persist_setting).
-   **[2026-06-10] PARTIAL** — skeleton DONE (6 tabs via NSTabView); Labs DONE
-   as a General-tab switch; Emoji/Context/Personalization panes deferred.
+   **[2026-06-15] PARTIAL** — skeleton DONE (7 tabs via NSTabView); Labs DONE
+   as a General-tab switch; Context DONE for clipboard + screen-OCR switches;
+   Emoji/Personalization panes and the Context appearance sub-toggle deferred.
 5. **Shortcuts pane** + keymap threading (closes the c13 residual) —
    **[2026-06-15] DONE for recorder UI/live rebind** via `KeyRecorderField`
    rows and run-loop persistence. Remaining shortcut gaps are force-activate

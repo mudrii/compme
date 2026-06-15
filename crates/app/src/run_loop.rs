@@ -472,6 +472,13 @@ fn context_bound_chars(clipboard: bool, screen_active: bool, max_chars: usize) -
     }
 }
 
+fn settings_context_bound_chars(max_chars: usize) -> usize {
+    // Settings can enable clipboard context after launch. Keep the inference
+    // worker's bound positive enough for that later enable; with no cells
+    // populated, the generated context block remains empty.
+    context_bound_chars(true, false, max_chars)
+}
+
 fn clipboard_diagnostic_line(text: Option<&str>, marker: Option<&str>) -> String {
     match text {
         Some(text) => {
@@ -1222,6 +1229,10 @@ fn submit_request_with_auxiliary_context(
             .unwrap_or_else(|e| e.into_inner()) = clip;
         diag
     } else {
+        *aux_context
+            .clipboard_cell
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         None
     };
 
@@ -1956,6 +1967,8 @@ fn build_settings_flags(
         labs_midline: Arc::new(AtomicBool::new(config.allow_mid_word)),
         general_autocorrect: Arc::new(AtomicBool::new(config.autocorrect)),
         general_trailing_space: Arc::new(AtomicBool::new(config.trailing_space)),
+        context_clipboard: Arc::new(AtomicBool::new(config.clipboard_context)),
+        context_screen: Arc::new(AtomicBool::new(config.screen_context)),
         stats_lines: Arc::new(Mutex::new(Vec::new())),
         about_text: crate::about::about_text(),
         setup_lines: Arc::new(Mutex::new(Vec::new())),
@@ -2045,11 +2058,13 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
 /// must be added here or its shadow goes unwarned (review-c111/c127; the
 /// len-pinned test below backstops this). Deliberately conservative: a key
 /// set to "" still warns — it parses falsy but still occupies the env layer.
-const SWITCH_KEYS: [&str; 12] = [
+const SWITCH_KEYS: [&str; 14] = [
     "COMPME_ENABLED",
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
     "COMPME_TRAILING_SPACE",
+    "COMPME_CLIPBOARD_CONTEXT",
+    "COMPME_SCREEN_CONTEXT",
     "COMPME_NO_COLLECT_APPS",
     "COMPME_EXCLUDED_APPS",
     "COMPME_EXCLUDED_DOMAINS",
@@ -2628,13 +2643,10 @@ pub fn run() -> Result<(), String> {
     let screen_cell: Arc<Mutex<Option<ScreenContext>>> = Arc::new(Mutex::new(None));
     // Screen OCR only contributes when the grant is actually present this session.
     let screen_active = config.screen_context && screen_recording_permission();
-    // Clipboard/screen context work independently of previous-input context, so
-    // the worker needs a positive char bound when any of them is enabled.
-    let context_bound = context_bound_chars(
-        config.clipboard_context,
-        screen_active,
-        config.context_max_chars,
-    );
+    // Clipboard/screen context work independently of previous-input context.
+    // The Settings pane can enable clipboard context after launch, so keep the
+    // worker bound positive enough for a later live enable.
+    let context_bound = settings_context_bound_chars(config.context_max_chars);
     // Screen OCR (Vision, ~200–800 ms) runs on its own thread so it never
     // stalls this AppKit run loop (overlay repaint + Carbon accept callbacks).
     // It publishes redacted text into `screen_cell`, which the inference worker
@@ -3488,6 +3500,25 @@ pub fn run() -> Result<(), String> {
             engine.set_allow_mid_word(prefs.mid_line_enabled(last_app_key.as_deref(), on));
             persist_and_log_switch("COMPME_MIDLINE", "mid-line completions", on);
         }
+        // Context-pane watchers. Clipboard context applies live because submit
+        // reads `config.clipboard_context` for each request. Screen OCR cannot
+        // start its worker after launch, but disabling it gates new submissions
+        // immediately (`screen_enabled` also checks config.screen_context).
+        if let Some(on) = switch_edge(
+            &settings_flags.context_clipboard,
+            &mut config.clipboard_context,
+        ) {
+            if !on {
+                *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+            persist_and_log_switch("COMPME_CLIPBOARD_CONTEXT", "clipboard context", on);
+        }
+        if let Some(on) = switch_edge(&settings_flags.context_screen, &mut config.screen_context) {
+            if !on {
+                *screen_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+            persist_and_log_switch("COMPME_SCREEN_CONTEXT", "screen context", on);
+        }
         // Drain received compme:// deep links (strict fail-closed parse →
         // reversible override). Every outcome is logged (the §16 user-visible
         // requirement; a confirmation prompt is the follow-up). An applied
@@ -3743,7 +3774,7 @@ pub fn run() -> Result<(), String> {
                     // submitting this exact request. The worker reads auxiliary
                     // cells after coalescing, so this order prevents stale
                     // clipboard/screen context from a prior gated request.
-                    let screen_enabled = screen_ocr.is_some();
+                    let screen_enabled = config.screen_context && screen_ocr.is_some();
                     let (clipboard_diag, submitted_line) = submit_request_with_auxiliary_context(
                         request,
                         SubmitRequestContext {
@@ -4260,6 +4291,8 @@ mod tests {
         let flags = build_settings_flags(&config, Arc::clone(&tray_enabled));
         assert!(Arc::ptr_eq(&flags.general_enabled, &tray_enabled));
         assert!(flags.general_autocorrect.load(Ordering::Relaxed) == config.autocorrect);
+        assert!(flags.context_clipboard.load(Ordering::Relaxed) == config.clipboard_context);
+        assert!(flags.context_screen.load(Ordering::Relaxed) == config.screen_context);
     }
 
     #[test]
@@ -4702,6 +4735,8 @@ mod tests {
             "COMPME_MIDLINE",
             "COMPME_AUTOCORRECT",
             "COMPME_TRAILING_SPACE",
+            "COMPME_CLIPBOARD_CONTEXT",
+            "COMPME_SCREEN_CONTEXT",
             "COMPME_NO_COLLECT_APPS",
             "COMPME_EXCLUDED_APPS",
             "COMPME_EXCLUDED_DOMAINS",
@@ -4716,7 +4751,7 @@ mod tests {
                 "{key} must warn when env shadows persisted config"
             );
         }
-        assert_eq!(every_warning.len(), 12);
+        assert_eq!(every_warning.len(), 14);
     }
 
     #[test]
@@ -6160,6 +6195,40 @@ mod tests {
     }
 
     #[test]
+    fn auxiliary_context_off_clears_stale_clipboard_and_skips_screen_submission() {
+        let clipboard_cell = Arc::new(Mutex::new(Some("stale clipboard".into())));
+        let mut submit_times = HashMap::new();
+
+        let (clipboard_diag, submit_line) = submit_request_with_auxiliary_context(
+            request_for_submit_tracking(18),
+            SubmitRequestContext {
+                submit_times: &mut submit_times,
+                now_ms: 444,
+                log_context: request_log_context_for_submit_tracking(),
+            },
+            AuxiliarySubmitContext {
+                clipboard_enabled: false,
+                diag_context: true,
+                diag_clipboard_marker: Some("marker"),
+                clipboard_cell: &clipboard_cell,
+                screen_enabled: false,
+            },
+            || panic!("clipboard must not be read when context is disabled"),
+            |_| panic!("caret must not be read when screen context is disabled"),
+            |_| panic!("screen OCR must not be submitted when disabled"),
+            |request| {
+                assert_eq!(request.generation, 18);
+                true
+            },
+        );
+
+        assert_eq!(clipboard_diag, None);
+        assert_eq!(*clipboard_cell.lock().unwrap(), None);
+        assert!(submit_line.contains("request gen=18"));
+        assert_eq!(submit_times.get(&18), Some(&444));
+    }
+
+    #[test]
     fn screen_ocr_submission_preserves_request_stamp_and_caret_rect() {
         let request = CompletionRequest {
             generation: 17,
@@ -7542,6 +7611,15 @@ mod tests {
             50,
             "explicit bound wins"
         );
+    }
+
+    #[test]
+    fn settings_context_bound_supports_late_clipboard_enable() {
+        // Clipboard can now be enabled from Settings after launch; the inference
+        // worker therefore needs a positive bound even when context env vars
+        // were off at startup.
+        assert_eq!(settings_context_bound_chars(0), DEFAULT_CONTEXT_MAX_CHARS);
+        assert_eq!(settings_context_bound_chars(120), 120);
     }
 
     #[test]

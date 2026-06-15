@@ -1683,3 +1683,50 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
   - Medium UI work remains: Tier 3 settings panes for personalization/context/emoji and per-app editing require AppKit/FFI build-and-LOOK work.
 - Commit hash and push confirmation, or DRY/blocked status: Pending commit/push in this tick.
+
+## 2026-06-15 16:45:00 +0800 - Context settings pane TDD pass
+
+- Task selected: Add the dedicated Context settings pane slice with clipboard/screen context switches and privacy-safe runtime wiring.
+- Why it was selected: The current roadmap ranked Tier 3 settings panes as the highest non-blocked work. Parallel explorers and local inspection found a narrow loop-doable TDD slice: the settings window still pinned the old 6-tab contract while `COMPME_CLIPBOARD_CONTEXT` / `COMPME_SCREEN_CONTEXT` backing already existed.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `crates/app/src/run_loop.rs`
+  - `crates/platform_macos/src/settings_window.rs`
+  - `docs/ROADMAP.md`
+  - `docs/superpowers/specs/2026-06-10-a3-settings-ui-design.md`
+- Tests added/updated:
+  - Updated `settings_window::tests::pane_titles_are_fixed_and_ordered` to pin the 7-tab Setup/General/Apps/Context/Shortcuts/Statistics/About order.
+  - Extended `env_shadow_warnings_name_only_set_switch_keys` and `settings_flags_share_the_tray_enabled_atomic` for Context switch config wiring.
+  - Added `auxiliary_context_off_clears_stale_clipboard_and_skips_screen_submission`.
+  - Added `settings_context_bound_supports_late_clipboard_enable`.
+- Verification commands and result:
+  - RED: `cargo test -p platform_macos pane_titles_are_fixed_and_ordered -- --nocapture` failed because `Context` was missing from the tab list.
+  - RED: `cargo test -p app env_shadow_warnings_name_only_set_switch_keys -- --nocapture` failed because the context switch keys were not shadow-warning keys.
+  - RED after review: `cargo test -p app settings_context_bound_supports_late_clipboard_enable -- --nocapture` failed because the settings runtime context-bound helper did not exist.
+  - GREEN focused: `cargo test -p platform_macos settings_window::tests:: -- --nocapture` passed (`16` tests).
+  - GREEN focused: `cargo test -p app auxiliary_context -- --nocapture`, `cargo test -p app context_bound -- --nocapture`, `cargo test -p app env_shadow_warnings_name_only_set_switch_keys -- --nocapture`, and `cargo test -p app settings_flags_share_the_tray_enabled_atomic -- --nocapture` passed.
+  - `graphify update .` passed and rebuilt `4015` nodes, `10728` edges, and `153` communities.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1113`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `git diff --check` passed before this state-file update.
+- Test count if available: root `1113` listed tests; spike `30` listed tests; full workspace run included app `311` tests and platform_macos `223` tests; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; A2 self-test `30` PASS lines; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Fixed Important plan-alignment findings from subagent review: roadmap/spec references now say 7 tabs with Context shipped, and no longer say Context is deferred or the skeleton is 6 tabs.
+  - Fixed Critical/Important privacy/coverage findings from correctness/tests reviews: disabling clipboard context now clears stale clipboard context immediately and during submit preparation; screen context off skips caret/OCR submission; late clipboard enable now has a positive worker context bound.
+  - Fixed Minor label finding: the Screen OCR switch now says "restart to enable" instead of implying disabling waits for relaunch.
+- Blocked or skipped work remaining:
+  - Tier 3 settings work remains: Personalization pane controls, Emoji pane controls, Apps editing rows, Statistics range/group/metric controls, Context appearance sub-toggle, and force-activate/per-app/global toggle hotkeys.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+  - External blockers remain: Developer ID signing/notarization/updater and Windows/Linux platform adapters.
+- Commit hash and push confirmation, or DRY/blocked status: Pending commit/push in this tick.

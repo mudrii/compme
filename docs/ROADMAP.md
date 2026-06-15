@@ -121,9 +121,11 @@ settings editor for these values remains part of Tier 3.2.
 
 ## Tier 3 — A3 settings-UI residuals (medium, build-then-LOOK)
 
-Per `2026-06-10-a3-settings-ui-design.md`. The window ships as 6 tabs
-(Setup/General/Apps/Shortcuts/Statistics/About via NSTabView). Backing config +
-crates exist for all of these; what's missing is UI surface.
+Per `2026-06-10-a3-settings-ui-design.md`. The window ships as 7 tabs
+(Setup/General/Apps/Context/Shortcuts/Statistics/About via NSTabView). Backing
+config + crates exist for the remaining panes; what's missing is narrower UI
+surface: Apps editing rows, Personalization controls, Emoji controls,
+Statistics range/group/metric controls, and the Context appearance sub-toggle.
 
 ### 3.1 ☐ Per-app override *editing* rows (Apps pane) — the largest residual pane
 - **Status:** Apps pane is **display + delete only** — per-app recorded-input
@@ -134,15 +136,22 @@ crates exist for all of these; what's missing is UI surface.
   suppression are live; only the editing UI is missing.
 - Spec: `a3-settings-ui-design.md:50,78` (Phase S2 "App Settings pane — largest").
 
-### 3.2 ☐ Dedicated Personalization / Context / Emoji panes
-- **Status:** Do not exist as panes. General carries 4 switches —
+### 3.2 ◑ Dedicated Personalization / Context / Emoji panes
+- **Status:** Context now exists as a dedicated settings tab with clipboard and
+  screen-OCR context switches (`settings_window.rs:1323-1333` includes
+  `Context`; `settings_window.rs:1103-1148` renders the two switch rows and
+  writes `context_clipboard` / `context_screen` atomics; `run_loop.rs:1961-1971`
+  initializes them from config; `run_loop.rs:3503-3520` persists switch edges
+  and clears disabled context cells; `run_loop.rs:3777` gates screen submissions
+  by the current config). General
+  carries 4 switches —
   `general_enabled`, `labs_midline` (mid-line, moved here from Labs),
-  `general_autocorrect`, `general_trailing_space` (`settings_window.rs:904-1016`).
+  `general_autocorrect`, `general_trailing_space` (`settings_window.rs:926-1045`).
 - **Pending:** Personalization pane (mode AcceptedOnly/AllMonitored, instructions
-  editor, 6-stop strength slider); Context pane (screenshot-context + clipboard
-  toggles — `COMPME_SCREEN_CONTEXT`/`COMPME_CLIPBOARD_CONTEXT` backing exists);
-  Emoji pane (skin tone / gender — `COMPME_EMOJI`/`_SKIN_TONE`/`_GENDER` backing
-  exists). Spec: `a3-settings-ui-design.md:46,47,48,73`.
+  editor, 6-stop strength slider); Context appearance sub-toggle (deferred
+  upstream-equivalent gap); Emoji pane (skin tone / gender —
+  `COMPME_EMOJI`/`_SKIN_TONE`/`_GENDER` backing exists). Spec:
+  `a3-settings-ui-design.md:46,47,48,73`.
 
 ### 3.3 ☐ Statistics range / group / metric controls
 - **Status:** Sparklines only — fixed shown/accepted/words rows + lifetime row

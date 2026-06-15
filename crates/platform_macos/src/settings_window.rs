@@ -259,6 +259,13 @@ pub struct SettingsFlags {
     /// General: trailing space after single-word accepts
     /// (`COMPME_TRAILING_SPACE`). Same watcher pattern.
     pub general_trailing_space: Arc<AtomicBool>,
+    /// Context: include clipboard text as bounded prompt context
+    /// (`COMPME_CLIPBOARD_CONTEXT`). The run loop watches/persists the edge.
+    pub context_clipboard: Arc<AtomicBool>,
+    /// Context: include screen OCR text as bounded prompt context
+    /// (`COMPME_SCREEN_CONTEXT`). Turning it on persists for the next launch;
+    /// turning it off also gates new OCR submissions in the current run.
+    pub context_screen: Arc<AtomicBool>,
     /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
     /// before each show; the window only renders them (one label per line).
     pub stats_lines: Arc<Mutex<Vec<String>>>,
@@ -409,6 +416,28 @@ define_class!(
             if let Some(switch) = sender {
                 let on = switch.state() == NSControlStateValueOn;
                 self.ivars().flags.labs_midline.store(on, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(toggleClipboardContext:))]
+        fn toggle_clipboard_context(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars()
+                    .flags
+                    .context_clipboard
+                    .store(on, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(toggleScreenContext:))]
+        fn toggle_screen_context(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars()
+                    .flags
+                    .context_screen
+                    .store(on, Ordering::Relaxed);
             }
         }
     }
@@ -1071,11 +1100,59 @@ fn build_window(
         }
     }
 
+    // Context tab: prompt-context sources. Clipboard applies live; screen OCR is
+    // a persisted opt-in that can be disabled immediately but starts its worker
+    // on the next launch.
+    {
+        let context = &pane_views[3];
+        let rows: [(&str, &Arc<AtomicBool>, objc2::runtime::Sel); 2] = [
+            (
+                "Clipboard context",
+                &flags.context_clipboard,
+                sel!(toggleClipboardContext:),
+            ),
+            (
+                "Screen OCR context (restart to enable)",
+                &flags.context_screen,
+                sel!(toggleScreenContext:),
+            ),
+        ];
+        for (row, (title, flag, action)) in rows.into_iter().enumerate() {
+            let label = NSTextField::labelWithString(&NSString::from_str(title), mtm);
+            label.setFrame(NSRect::new(
+                NSPoint::new(20.0, 320.0 - row as f64 * 40.0),
+                NSSize::new(380.0, 20.0),
+            ));
+            context.addSubview(&label);
+
+            let switch = NSSwitch::new(mtm);
+            switch.setFrame(NSRect::new(
+                NSPoint::new(420.0, 316.0 - row as f64 * 40.0),
+                NSSize::new(60.0, 26.0),
+            ));
+            switch.setState(if flag.load(Ordering::Relaxed) {
+                objc2_app_kit::NSControlStateValueOn
+            } else {
+                objc2_app_kit::NSControlStateValueOff
+            });
+            // SAFETY: target outlives the window (held by MacosSettingsWindow).
+            unsafe {
+                switch.setTarget(Some({
+                    let any: &AnyObject = target.as_ref();
+                    any
+                }));
+                switch.setAction(Some(action));
+            }
+            context.addSubview(&switch);
+            switches.push((switch, Arc::clone(flag)));
+        }
+    }
+
     // Shortcuts tab: composed by the run loop; refreshed on every show
     // since recorder 5b (a live rebind recomposes the text — build-once
     // would lie about the registered keys).
     let shortcuts_label = {
-        let shortcuts_view = &pane_views[3];
+        let shortcuts_view = &pane_views[4];
         let initial = flags
             .shortcuts_text
             .lock()
@@ -1098,7 +1175,7 @@ fn build_window(
     // below the effective-bindings text (y=160..330). LOOK-verified.
     let mut recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)> = Vec::new();
     {
-        let shortcuts_view = &pane_views[3];
+        let shortcuts_view = &pane_views[4];
         let (word, full) = crate::effective_accept_keys_with_mods();
         for (role, label_text, y) in [
             (RecorderRole::Word, "Accept word:", 116.0),
@@ -1144,7 +1221,7 @@ fn build_window(
     // the run loop via flags.stats_lines; show() refreshes them on every
     // open. Monospaced font keeps sparkline glyphs column-aligned.
     {
-        let stats = &pane_views[4];
+        let stats = &pane_views[5];
         let stats_header =
             NSTextField::labelWithString(&NSString::from_str("This session + lifetime"), mtm);
         stats_header.setFrame(NSRect::new(
@@ -1178,7 +1255,7 @@ fn build_window(
     // About tab: static for the process lifetime, so build-once is fine
     // here (unlike the Statistics rows above).
     {
-        let about_view = &pane_views[5];
+        let about_view = &pane_views[6];
         let about =
             NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.about_text), mtm);
         about.setFrame(NSRect::new(
@@ -1239,7 +1316,7 @@ pub const APPS_ROWS: usize = 8;
 pub const STATS_ROWS: usize = 4;
 
 /// Number of settings tabs.
-pub const PANE_COUNT: usize = 6;
+pub const PANE_COUNT: usize = 7;
 
 /// Tab titles in display order (Cotypist order) — Setup first, About last;
 /// new panes insert between, never around.
@@ -1248,6 +1325,7 @@ pub fn pane_titles() -> [&'static str; PANE_COUNT] {
         "Setup",
         "General",
         "Apps",
+        "Context",
         "Shortcuts",
         "Statistics",
         "About",
@@ -1275,11 +1353,12 @@ mod tests {
         // Tab order is part of the settings UX contract (Cotypist order):
         // Setup first, About last. New panes insert between, never around.
         assert_eq!(
-            pane_titles(),
-            [
+            pane_titles().as_slice(),
+            &[
                 "Setup",
                 "General",
                 "Apps",
+                "Context",
                 "Shortcuts",
                 "Statistics",
                 "About"
