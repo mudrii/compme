@@ -425,9 +425,16 @@ define_class!(
         fn delete_app_row(&self, sender: Option<&NSButton>) {
             if let Some(button) = sender {
                 let row = button.tag().max(0) as usize;
-                if let Ok(mut slot) = self.ivars().flags.apps_delete_row.lock() {
-                    *slot = Some(row);
-                }
+                // Recover from a poisoned lock rather than silently dropping the
+                // user's Delete click: the slot is a plain `Option<usize>` whose
+                // bytes are valid even if some other holder panicked.
+                let mut slot = self
+                    .ivars()
+                    .flags
+                    .apps_delete_row
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                *slot = Some(row);
             }
         }
 
@@ -621,9 +628,15 @@ define_class!(
                 crate::effective_accept_keys_with_mods(),
             ) {
                 RecorderOutcome::Accept { request, label: text } => {
-                    if let Ok(mut slot) = self.ivars().rebind_slot.lock() {
-                        *slot = Some(request);
-                    }
+                    // Recover from a poisoned lock rather than silently dropping
+                    // the user's rebind: the slot holds a plain `Option<_>` whose
+                    // bytes stay valid even if some other holder panicked.
+                    let mut slot = self
+                        .ivars()
+                        .rebind_slot
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    *slot = Some(request);
                     label.setStringValue(&NSString::from_str(&text));
                 }
                 RecorderOutcome::Cancel { idle_label } => {

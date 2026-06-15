@@ -138,5 +138,10 @@ mod tests {
             adapter.insert_replacing(&field, "x", 1, InsertStrategy::None),
             Err(PlatformError::UnsupportedField { .. })
         ));
+        // The two methods the scaffold inherits as trait defaults (fail-OPEN by
+        // design: "no anchor / no domain", which is safe) are pinned here so a
+        // future change to the trait defaults can't silently alter stub behavior.
+        assert!(matches!(adapter.popup_anchor(&field), Ok(None)));
+        assert!(matches!(adapter.focused_page_url(&field), Ok(None)));
     }
 }

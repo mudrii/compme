@@ -207,10 +207,8 @@ impl LlamaModel {
                         return;
                     }
                 };
-                let context_params = LlamaContextParams::default().with_n_ctx(Some(
-                    // SAFETY: 2048 is non-zero
-                    unsafe { NonZeroU32::new_unchecked(2048) },
-                ));
+                let context_params = LlamaContextParams::default()
+                    .with_n_ctx(Some(NonZeroU32::new(2048).expect("2048 is non-zero")));
                 let mut context = match model.new_context(backend, context_params) {
                     Ok(context) => context,
                     Err(err) => {

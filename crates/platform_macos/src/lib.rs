@@ -847,14 +847,17 @@ impl OverlayPresenter for MacosOverlayPresenter {
             });
         };
         let frame = overlay_frame_for_text(rect, text, primary_screen_height(mtm));
-        if let Some(panel) = &self.panel {
-            panel.setFrame_display(ns_rect(frame), true);
-        }
-        let Some(label) = &self.label else {
+        // Bind panel and label together before mutating either: the panel and
+        // label are created as a pair in `ensure_panel`, so a half-present state
+        // is unreachable on the live path — but resizing the panel and *then*
+        // erroring on a missing label would leave the panel resized while still
+        // showing stale text. Check both up front so the update is all-or-nothing.
+        let (Some(panel), Some(label)) = (&self.panel, &self.label) else {
             return Err(PlatformError::CannotComplete {
                 reason: "cannot update hidden overlay".into(),
             });
         };
+        panel.setFrame_display(ns_rect(frame), true);
         configure_overlay_label(label, frame, text);
         Ok(())
     }

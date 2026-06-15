@@ -486,6 +486,10 @@ pub trait PlatformAdapter: Send + Sync {
     /// (yet) must still implement this explicitly — typically delegating to
     /// [`insert`](Self::insert) — so the degradation is a stated decision.
     ///
+    /// `replace_left == 0` MUST behave exactly as [`insert`](Self::insert): a
+    /// pure append at the caret with no deletion. Pinning the zero case here
+    /// keeps the (future) platform adapters from each inventing their own answer.
+    ///
     /// REQUIRED (no default) on purpose: this used to default to an append-only
     /// `insert` delegate, and a forwarding wrapper (`SharedAdapter`) silently
     /// inherited it — live result was `:smile😄` (emoji appended, typed token

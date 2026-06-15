@@ -345,6 +345,10 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // geometry) falls back to the adapter's popup anchor. Mirror
                     // mode (MirrorOnly apps) renders at the popup/mirror anchor
                     // directly, since these apps have no usable inline caret.
+                    // Asymmetry is intentional: `Ok(None)` (no geometry) falls
+                    // back to the other anchor, but an `Err` (a real AX failure)
+                    // is fail-loud — `?` aborts the dispatch rather than papering
+                    // over a broken accessibility tree with a fallback anchor.
                     let rect = if self.mirror_mode {
                         match self.adapter.popup_anchor(&field)? {
                             Some(rect) => Some(rect),
@@ -374,6 +378,11 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // show→accept→hide cycle.
                     let strategy = self.caps.insert_strategy;
                     self.adapter.insert(&field, &text, strategy)?;
+                    // Cross-crate invariant: this flag is consumed by the *next*
+                    // `Hide` to delay the synthetic-keys tap teardown. Correct only
+                    // because `engine_core` always emits an `Insert`/`Replace`
+                    // immediately followed by its `Hide`; reordering them there
+                    // would silently misapply (or skip) the teardown delay here.
                     delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
                 }
                 Command::Replace {

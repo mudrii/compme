@@ -152,7 +152,7 @@ impl PersonalizationProfile {
             }
         }
         if let Some(domain) = domain {
-            if let Some(text) = self.per_domain.get(domain) {
+            if let Some(text) = self.per_domain_instruction(domain) {
                 let text = text.trim();
                 if !text.is_empty() {
                     sections.push(text);
@@ -160,6 +160,20 @@ impl PersonalizationProfile {
             }
         }
         sections.join("\n")
+    }
+
+    /// Resolve the per-domain instruction for `host`, matching the exact host or
+    /// the most-specific parent-domain rule on a dot boundary (a `google.com`
+    /// rule applies to `www.google.com`, but never to `evilgoogle.com`). This
+    /// mirrors the subdomain-aware matching `prefs` uses for domain exclusions,
+    /// so a user who configures both surfaces sees consistent scoping. The
+    /// longest matching rule wins, making the choice deterministic.
+    fn per_domain_instruction(&self, host: &str) -> Option<&String> {
+        self.per_domain
+            .iter()
+            .filter(|(rule, _)| host_matches_domain_rule(host, rule))
+            .max_by_key(|(rule, _)| rule.len())
+            .map(|(_, text)| text)
     }
 
     /// Build the steering preamble prepended to the completion prompt. Returns an
@@ -194,6 +208,18 @@ impl PersonalizationProfile {
         }
         out
     }
+}
+
+/// True when `host` is matched by a domain `rule`: either an exact match or a
+/// subdomain on a dot boundary (`www.google.com` matches `google.com`, but
+/// `evilgoogle.com` does not). Kept in sync with the prefs domain-exclusion
+/// matcher so per-domain steering and per-domain exclusions scope alike.
+fn host_matches_domain_rule(host: &str, rule: &str) -> bool {
+    if host == rule {
+        return true;
+    }
+    host.strip_suffix(rule)
+        .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 #[cfg(test)]
@@ -339,6 +365,53 @@ mod tests {
         );
         // An unmatched domain with empty global yields nothing.
         assert_eq!(p.resolve_instructions(None, Some("other.com")), "");
+    }
+
+    #[test]
+    fn resolve_matches_subdomain_against_parent_domain_rule() {
+        // A `google.com` rule applies to its subdomains (dot-boundary match),
+        // mirroring prefs domain exclusions, but never to a look-alike host.
+        let mut p = PersonalizationProfile {
+            strength: Strength::Stop3,
+            ..Default::default()
+        };
+        p.per_domain.insert("google.com".into(), "Be terse.".into());
+        assert_eq!(
+            p.resolve_instructions(None, Some("google.com")),
+            "Be terse."
+        );
+        assert_eq!(
+            p.resolve_instructions(None, Some("www.google.com")),
+            "Be terse."
+        );
+        assert_eq!(
+            p.resolve_instructions(None, Some("docs.google.com")),
+            "Be terse."
+        );
+        // Look-alike host must NOT match on a non-dot boundary.
+        assert_eq!(p.resolve_instructions(None, Some("evilgoogle.com")), "");
+    }
+
+    #[test]
+    fn resolve_prefers_most_specific_domain_rule() {
+        // When both a parent and a more-specific rule match, the longest
+        // (most specific) rule wins deterministically.
+        let mut p = PersonalizationProfile {
+            strength: Strength::Stop3,
+            ..Default::default()
+        };
+        p.per_domain
+            .insert("google.com".into(), "Parent rule.".into());
+        p.per_domain
+            .insert("docs.google.com".into(), "Doc rule.".into());
+        assert_eq!(
+            p.resolve_instructions(None, Some("docs.google.com")),
+            "Doc rule."
+        );
+        assert_eq!(
+            p.resolve_instructions(None, Some("mail.google.com")),
+            "Parent rule."
+        );
     }
 
     #[test]

@@ -526,6 +526,15 @@ impl SuggestionMachine {
                         out.push(Command::Hide);
                         self.advance_snapshot();
                     } else {
+                        // Advance the caret to the position it will occupy AFTER
+                        // the host inserts `word`. This intentionally moves past
+                        // the current `self.value` length — `self.value` still
+                        // holds the pre-insert text and only grows when the host
+                        // echoes the next `TextChanged`, so clamping to it here
+                        // would wrongly pin the caret behind the accepted word and
+                        // hide a ghost that should stay visible. Downstream context
+                        // helpers clamp defensively, so a transiently-unsynced caret
+                        // can never panic; it self-corrects on the next edit.
                         showing.caret += word.chars().count();
                         self.caret = showing.caret;
                         // Collapse to the active candidate: the siblings still

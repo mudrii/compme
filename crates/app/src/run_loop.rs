@@ -901,6 +901,11 @@ fn open_memory_store(
 /// instructions key steers every request; optional per-app/per-domain target
 /// lists activate supplemental value keys without delimiter-parsing free text.
 fn build_personalization(lookup: &impl Fn(&str) -> Option<String>) -> PersonalizationProfile {
+    // Case-handling asymmetry is intentional: per-app keys are kept verbatim
+    // (`|app| app.to_string()`) because bundle ids are case-stable identifiers
+    // matched against the verbatim `request.field.app`, while per-domain keys are
+    // lowercased to match the lowercased host from `domain_from_url`. Do NOT
+    // "normalize per_app too" — that would break bundle-id keying.
     let mut profile = PersonalizationProfile {
         global_instructions: lookup("COMPME_INSTRUCTIONS").unwrap_or_default(),
         per_app: instruction_map_from_config(
@@ -4016,10 +4021,12 @@ pub fn run() -> Result<(), String> {
         if status.suggestions_allowed() {
             if let Some(request) = latest.take() {
                 // Per-app/domain gating + pause/snooze (A2 §8). The exclude list
-                // is keyed on bundle ids, so resolve the focused pid to a bundle
-                // id (the field's own `app` is a volatile `pid:N`); fail-open if
-                // it can't be resolved. The domain comes from the Focus arm's
-                // cache, guarded on the same app key (c131).
+                // is keyed on bundle ids. `request.field.app` is already the
+                // canonical bundle id (rewritten by `canonicalize_field_app` in
+                // the Focus/Caret arms before the request was built), so this is a
+                // defensive re-resolution from the pid for the gating/logging key;
+                // fail-open if it can't be resolved. The domain comes from the
+                // Focus arm's cache, guarded on the same app key (c131).
                 let app_key = resolve_app_key(request.field.pid, bundle_id_for_pid);
                 if request_passes_submit_gates(
                     &request,

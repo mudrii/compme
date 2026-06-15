@@ -238,6 +238,12 @@ fn lookup(token: &str) -> Option<&'static Entry> {
 }
 
 /// Apply a skin-tone modifier to a base people-emoji glyph.
+///
+/// The Fitzpatrick modifier is appended directly after the base codepoint, so
+/// every `skin_tone:true` base MUST be a bare glyph with no trailing VS-16
+/// (U+FE0F): appending the modifier after a variation selector produces an
+/// invalid sequence (e.g. `☝️🏽` instead of the correct `☝🏽`). This invariant
+/// is enforced by `skin_tone_bases_carry_no_variation_selector` below.
 fn with_skin_tone(base: &str, skin_tone: SkinTone) -> String {
     let mut glyph = base.to_string();
     if let Some(modifier) = skin_tone.modifier() {
@@ -300,6 +306,33 @@ mod tests {
 
     fn suggest_default(left: &str) -> Option<Suggestion> {
         suggest(left, &EmojiPrefs::default())
+    }
+
+    /// Table invariant: any glyph that `with_skin_tone` may modify must be a
+    /// bare base with no trailing VS-16 (U+FE0F). Appending a Fitzpatrick
+    /// modifier after a variation selector yields an invalid sequence, so this
+    /// guards future table edits from silently corrupting skin-toned output.
+    #[test]
+    fn skin_tone_bases_carry_no_variation_selector() {
+        const VS16: char = '\u{FE0F}';
+        for entry in TABLE.iter().filter(|e| e.skin_tone) {
+            assert!(
+                !entry.base.contains(VS16),
+                "skin_tone:true base {:?} ({}) carries U+FE0F",
+                entry.base,
+                entry.shortcode
+            );
+            // The neutral glyph of a gendered entry is also fed through
+            // `with_skin_tone` (see `render`), so it carries the same invariant.
+            if let Some((neutral, _, _)) = entry.gendered {
+                assert!(
+                    !neutral.contains(VS16),
+                    "skin_tone:true gendered-neutral base {:?} ({}) carries U+FE0F",
+                    neutral,
+                    entry.shortcode
+                );
+            }
+        }
     }
 
     #[test]

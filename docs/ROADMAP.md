@@ -32,8 +32,10 @@ deliverables built behind a shared cross-platform `PlatformAdapter` contract."*
 The `platform` crate was deliberately shaped as a trait/contract to accept them.
 
 **Foundation ✅ DONE (2026-06-16, gate-green on macOS):**
-- **`crates/platform_windows`** (`1f8cace`) — implements the full
-  `platform::PlatformAdapter` contract as a **fail-closed stub**: `environment()`
+- **`crates/platform_windows`** (`1f8cace`) — implements every IO/subscribe
+  method of the `platform::PlatformAdapter` contract as a **fail-closed stub**
+  (the two optional anchor/URL methods take the trait's safe `Ok(None)`
+  defaults, pinned by test): `environment()`
   reports Windows; every subscribe/IO method returns `PlatformError::UnsupportedField`
   (never panics, no partial state); each method is doc-commented with the Win32 API
   its real impl will use (UIA / `WH_KEYBOARD_LL` / `SendInput` / layered overlay).

@@ -193,6 +193,10 @@ fn download_with_agent(
             Err(e) => return Err(FetchError::Network(e.to_string())),
         }
     }
+    // Flush buffered bytes to disk before the rename so a crash between the
+    // write and the rename can't leave `dest` pointing at unpersisted data.
+    // On failure the part file is kept as the resume base.
+    file.sync_all().map_err(|e| FetchError::Io(e.to_string()))?;
     drop(file);
     // Verify BEFORE the rename: dest must never exist with wrong bytes. A
     // mismatch keeps the part for inspection (resume would re-download from
