@@ -547,6 +547,56 @@
   - Unrelated pre-existing or concurrent worktree changes remain unstaged; use `git status --short` for the authoritative dirty inventory before the next tick.
 - Commit hash and push confirmation, or DRY/blocked status: DRY state-only consolidation entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 14:34:10 +08 - Personalization map config TDD pass
+
+- Task selected: Wire config parsing for per-app and per-domain personalization instruction maps.
+- Why it was selected: The active loop state left only app-loop harness seams and manual/live blockers, but the current untracked roadmap/docs identified a smaller loop-doable personalization gap: `PersonalizationProfile` supports per-app/per-domain maps, and inference already consumes the app map, but `build_personalization` only populated global instructions. This was pure-testable and higher leverage than manual GUI validation.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/app/src/run_loop.rs`
+  - `docs/ARCHITECTURE.md`
+- Tests added/updated:
+  - Added `personalization_built_from_per_app_and_domain_config_keys`.
+  - Added `personalization_skips_ambiguous_per_target_instruction_keys`.
+- Verification commands and result:
+  - `graphify query "build_personalization COMPME_INSTRUCTIONS per_app per_domain personalization config keys build_preamble"` passed and scoped the config/parser area.
+  - RED: `cargo test -p app personalization_built_from_per_app_and_domain_config_keys -- --nocapture` failed because `profile.per_app.get("com.apple.TextEdit")` was `None`.
+  - GREEN focused: `cargo test -p app personalization_built_from_per_app_and_domain_config_keys -- --nocapture` passed after parsing `COMPME_INSTRUCTIONS_APPS` / `COMPME_INSTRUCTIONS_APP_<BUNDLE>` and `COMPME_INSTRUCTIONS_DOMAINS` / `COMPME_INSTRUCTIONS_DOMAIN_<HOST>`.
+  - Regression focused: `cargo test -p app personalization_built_from_config_keys -- --nocapture` passed.
+  - Regression focused: `cargo test -p app per_app_personalization_uses_request_app -- --nocapture` passed.
+  - Focused group: `cargo test -p app personalization -- --nocapture` passed with `5` tests before the ambiguity hardening and `6` app personalization tests in the full suite after it.
+  - RED for review finding: `cargo test -p app personalization_skips_ambiguous_per_target_instruction_keys -- --nocapture` failed because colliding sanitized keys could apply one value to multiple targets.
+  - GREEN focused: `cargo test -p app personalization_skips_ambiguous_per_target_instruction_keys -- --nocapture` passed after duplicate generated value keys fail closed for the listed target set.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed.
+  - `bash tools/release/check-model-gates.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed with `11` PASS lines.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed with `8` PASS lines.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed with `30` PASS lines.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1105`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3982` nodes, `10627` edges, and `143` communities with no tracked graph diff.
+  - `git diff --check` passed.
+- Test count if available: root `1105` listed tests; spike `30` listed tests; E2E self-test `11` PASS lines; A1b self-test `8` PASS lines; A2 self-test `30` PASS lines; ignored model-backed release gate passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed the selected personalization coverage gap: config can now populate the existing per-app and per-domain personalization maps using target-list keys plus sanitized per-target instruction keys, so request-time app steering can be configured without a settings UI.
+  - Fixed Minor correctness review finding: duplicate generated per-target instruction keys now fail closed instead of applying one instruction value to multiple listed targets.
+  - Four-axis diff review found no Critical or Important findings; two subagent reviews covered correctness/security/data-loss and plan alignment, and local review covered quality/type-safety and tests/coverage.
+- Blocked or skipped work remaining:
+  - Runtime per-domain personalization remains pending: inference still calls `build_preamble(app, None)`, so domain instructions parse but do not affect completions until the browser domain is threaded into submitted requests.
+  - App coverage seam remains skipped: accept-failure app-level privacy/stat side effects are correct in current code, but direct app-loop coverage needs an extraction/injection seam.
+  - App coverage seam remains skipped: submit-time auxiliary context ordering is correct in current code, but a meaningful RED needs a broader harness.
+  - Important app context finding remains skipped for now: monitored-memory write failure drain/no-replay behavior is not directly tested; current code drains pending work before persistence and removes boundary buffers before calling `MemoryStore::monitor`, so a direct behavior test needs a legitimate failure-injection seam.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+  - Unrelated pre-existing or concurrent worktree changes remain unstaged; use `git status --short` for the authoritative dirty inventory before the next tick. At this tick they included untracked `.claude/` and `docs/ROADMAP.md`, plus existing edits in `docs/superpowers/specs/2026-06-09-a2-parity-design.md`, `docs/superpowers/specs/2026-06-10-a3-settings-ui-design.md`, and one README roadmap-link hunk.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 13:47:30 +08 - A2 request evidence target/marker proof
 
 - Task selected: Strengthen A2 positive request evidence so `works` / `terminal-nlp` prove resolved target identity, all submit gates, and a privacy-safe per-run prompt marker.

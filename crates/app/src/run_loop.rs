@@ -826,12 +826,24 @@ fn open_memory_store(
     }
 }
 
-/// Build the personalization profile from config (A2 §6). Per-app/per-domain
-/// instruction maps are an A3 settings concern; A2 wires the global instructions,
-/// strength stop, and sender identity, which are enough to steer completions.
+/// Build the personalization profile from config (A2 §6). The global
+/// instructions key steers every request; optional per-app/per-domain target
+/// lists activate supplemental value keys without delimiter-parsing free text.
 fn build_personalization(lookup: &impl Fn(&str) -> Option<String>) -> PersonalizationProfile {
     let mut profile = PersonalizationProfile {
         global_instructions: lookup("COMPME_INSTRUCTIONS").unwrap_or_default(),
+        per_app: instruction_map_from_config(
+            lookup,
+            "COMPME_INSTRUCTIONS_APPS",
+            "COMPME_INSTRUCTIONS_APP_",
+            |app| app.to_string(),
+        ),
+        per_domain: instruction_map_from_config(
+            lookup,
+            "COMPME_INSTRUCTIONS_DOMAINS",
+            "COMPME_INSTRUCTIONS_DOMAIN_",
+            |domain| domain.to_ascii_lowercase(),
+        ),
         sender: SenderIdentity {
             name: lookup("COMPME_SENDER_NAME").unwrap_or_default(),
             email: lookup("COMPME_SENDER_EMAIL").unwrap_or_default(),
@@ -842,6 +854,49 @@ fn build_personalization(lookup: &impl Fn(&str) -> Option<String>) -> Personaliz
         profile.strength = Strength::from_stop(stop);
     }
     profile
+}
+
+fn instruction_map_from_config(
+    lookup: &impl Fn(&str) -> Option<String>,
+    list_key: &str,
+    value_prefix: &str,
+    normalize_target: impl Fn(&str) -> String,
+) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let targets = comma_list(lookup(list_key));
+    let mut key_counts = HashMap::new();
+    for target in &targets {
+        let value_key = format!("{value_prefix}{}", config_target_key_suffix(target));
+        *key_counts.entry(value_key).or_insert(0usize) += 1;
+    }
+    for target in targets {
+        let value_key = format!("{value_prefix}{}", config_target_key_suffix(&target));
+        if key_counts.get(&value_key) != Some(&1) {
+            continue;
+        }
+        let Some(value) = lookup(&value_key) else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        map.insert(normalize_target(&target), value.to_string());
+    }
+    map
+}
+
+fn config_target_key_suffix(target: &str) -> String {
+    target
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Parse the previous-input context setting (A2 §16): off by default; an explicit
@@ -3706,6 +3761,91 @@ mod tests {
         let preamble = profile.build_preamble(Some("com.apple.TextEdit"), None);
         assert!(preamble.contains("Be terse."));
         assert!(preamble.contains("Ada"));
+    }
+
+    #[test]
+    fn personalization_built_from_per_app_and_domain_config_keys() {
+        let profile = build_personalization(&lookup(&[
+            ("COMPME_INSTRUCTIONS", "Be terse."),
+            (
+                "COMPME_INSTRUCTIONS_APPS",
+                "com.apple.TextEdit, com.apple.Notes, com.missing.App",
+            ),
+            (
+                "COMPME_INSTRUCTIONS_APP_COM_APPLE_TEXTEDIT",
+                "Use a plain-text tone.",
+            ),
+            (
+                "COMPME_INSTRUCTIONS_APP_COM_APPLE_NOTES",
+                "Prefer note bullets.",
+            ),
+            (
+                "COMPME_INSTRUCTIONS_DOMAINS",
+                "Docs.Google.com, mail.example",
+            ),
+            (
+                "COMPME_INSTRUCTIONS_DOMAIN_DOCS_GOOGLE_COM",
+                "Prefer document context.",
+            ),
+        ]));
+
+        assert_eq!(
+            profile.per_app.get("com.apple.TextEdit"),
+            Some(&"Use a plain-text tone.".to_string())
+        );
+        assert_eq!(
+            profile.per_app.get("com.apple.Notes"),
+            Some(&"Prefer note bullets.".to_string())
+        );
+        assert!(
+            !profile.per_app.contains_key("com.missing.App"),
+            "listed apps without instruction values should not create empty entries"
+        );
+        assert_eq!(
+            profile.per_domain.get("docs.google.com"),
+            Some(&"Prefer document context.".to_string())
+        );
+        assert!(
+            !profile.per_domain.contains_key("mail.example"),
+            "listed domains without instruction values should not create empty entries"
+        );
+
+        let preamble = profile.build_preamble(Some("com.apple.TextEdit"), Some("docs.google.com"));
+        assert!(preamble.contains("Be terse."));
+        assert!(preamble.contains("Use a plain-text tone."));
+        assert!(preamble.contains("Prefer document context."));
+        assert!(!preamble.contains("Prefer note bullets."));
+    }
+
+    #[test]
+    fn personalization_skips_ambiguous_per_target_instruction_keys() {
+        let profile = build_personalization(&lookup(&[
+            (
+                "COMPME_INSTRUCTIONS_APPS",
+                "com.example.Editor, com-example-Editor",
+            ),
+            (
+                "COMPME_INSTRUCTIONS_APP_COM_EXAMPLE_EDITOR",
+                "Use editor-specific style.",
+            ),
+            (
+                "COMPME_INSTRUCTIONS_DOMAINS",
+                "docs.google.com, docs-google-com",
+            ),
+            (
+                "COMPME_INSTRUCTIONS_DOMAIN_DOCS_GOOGLE_COM",
+                "Use docs-specific style.",
+            ),
+        ]));
+
+        assert!(
+            profile.per_app.is_empty(),
+            "colliding app suffixes must not apply one value to multiple apps"
+        );
+        assert!(
+            profile.per_domain.is_empty(),
+            "colliding domain suffixes must not apply one value to multiple domains"
+        );
     }
 
     #[test]

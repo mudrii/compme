@@ -151,7 +151,7 @@ from `tools/spike/`.
 | `ranker` | Candidate shaping helpers: word capping, first-word extraction, and repetition penalty. |
 | `prefs` | Suggestion-gating preferences: per-app and per-domain enable/exclude, per-app Tab-key disable, and a global pause/snooze, resolved against an injected clock. |
 | `compat` | Pure classifier from a macOS bundle id to a compatibility tier, plus the gating policy each tier implies (mirrors the Cotypist compatibility table). |
-| `personalization` | Prompt-based personalization: global + per-app + per-domain instruction maps (the app currently wires the global preamble; per-app/per-domain instruction steering is a planned A3 follow-up), a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
+| `personalization` | Prompt-based personalization: global + per-app + per-domain instruction maps (request-time app steering is wired; request-time domain steering remains a follow-up), a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
 | `autocorrect` | Pure, high-precision trailing-word typo→correction table with the query's capitalization reapplied; never "corrects" a real word. |
 | `localize` | Pure, high-precision US→British spelling normalization for American-only forms; deliberately skips ambiguous words. |
 | `emoji` | Pure `:shortcode`→emoji completion honoring skin-tone (Fitzpatrick) and gender preferences. |
@@ -210,6 +210,8 @@ comma-separated bundle ids.
 | `COMPME_SCREEN_CONTEXT` | Opt-in: include screen text in the context block. |
 | `COMPME_PREVIOUS_INPUT_CONTEXT` | Cap (characters) of previous-input context to include; off when unset. |
 | `COMPME_INSTRUCTIONS` | Custom steering instructions prepended to the prompt. |
+| `COMPME_INSTRUCTIONS_APPS` / `COMPME_INSTRUCTIONS_APP_<BUNDLE>` | Comma-separated bundle ids and sanitized per-app instruction values, e.g. `COMPME_INSTRUCTIONS_APP_COM_APPLE_TEXTEDIT`. |
+| `COMPME_INSTRUCTIONS_DOMAINS` / `COMPME_INSTRUCTIONS_DOMAIN_<HOST>` | Comma-separated hosts and sanitized per-domain instruction values, e.g. `COMPME_INSTRUCTIONS_DOMAIN_DOCS_GOOGLE_COM`. |
 | `COMPME_STRENGTH` | Personalization strength (6 stops). |
 | `COMPME_SENDER_NAME` / `COMPME_SENDER_EMAIL` | Sender identity templated into the steering preamble. |
 | `COMPME_MEMORY` | Typing-memory collection mode: `off` / `accepted` / `all` (default `off`). |
