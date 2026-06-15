@@ -628,6 +628,61 @@ mod tests {
     }
 
     #[test]
+    fn resume_then_sha_verify_stitches_and_renames_or_keeps_part_on_mismatch() {
+        // The existing resume test (no hash) and the sha test (fresh download)
+        // are disjoint. Joining them: a resumed download whose STITCHED whole
+        // file must still pass verify-before-rename. A correct prefix on disk
+        // → the appended tail completes the file, the hash matches, dest
+        // appears. A WRONG prefix (right length, garbage bytes) → the stitched
+        // file hashes differently, so dest must NOT appear and the part stays.
+        let body: &[u8] = b"0123456789";
+        let full_hash = sha256_hex(body);
+
+        // (a) correct 4-byte prefix → resume, stitch, verify, rename.
+        let url = serve(body, RangeMode::Honor);
+        let dest = temp_dest("resume-sha-ok");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&part, b"0123").unwrap();
+        let got = download_url(&url, &dest, Some(&full_hash), |_, _| {}).unwrap();
+        assert_eq!(got, dest, "verified resume renames the part to dest");
+        assert_eq!(
+            std::fs::read(&got).unwrap(),
+            body,
+            "the stitched whole file is the full body"
+        );
+        assert!(!part.exists(), "a verified resume removes the part");
+        let _ = std::fs::remove_file(&dest);
+
+        // (b) WRONG prefix of the right length → the server appends from
+        // offset 4, so the stitched file is b"WRON" + b"456789" which hashes
+        // differently from the real body → HashMismatch, no dest, part kept.
+        let url = serve(body, RangeMode::Honor);
+        let dest = temp_dest("resume-sha-bad");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&part, b"WRON").unwrap();
+        let err = download_url(&url, &dest, Some(&full_hash), |_, _| {}).unwrap_err();
+        match err {
+            FetchError::HashMismatch { expected, actual } => {
+                assert_eq!(expected, full_hash, "expected side is the catalog hash");
+                assert_eq!(
+                    actual,
+                    sha256_hex(b"WRON456789"),
+                    "actual side is the stitched corrupt-prefix file's hash"
+                );
+            }
+            other => panic!("expected HashMismatch, got {other}"),
+        }
+        assert!(
+            !dest.exists(),
+            "dest never appears when the resume verify fails"
+        );
+        assert!(part.exists(), "the part is kept for inspection on mismatch");
+        let _ = std::fs::remove_file(&part);
+    }
+
+    #[test]
     fn download_url_reports_fresh_and_resumed_progress_totals() {
         let fresh_url = serve(b"fresh model bytes", RangeMode::Honor);
         let fresh_dest = temp_dest("progress-fresh");
@@ -662,6 +717,40 @@ mod tests {
         assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
         assert_eq!(resumed_events.borrow().last(), Some(&(10, Some(10))));
         let _ = std::fs::remove_file(&resumed_dest);
+    }
+
+    #[test]
+    fn resumed_download_first_progress_event_starts_at_the_resume_offset() {
+        // The existing progress test only checks `.last()`. The FIRST event in
+        // a resumed download must already include the bytes that were on disk
+        // (written starts at `existing`, not 0) — otherwise a resumed download
+        // would briefly report a backwards/zeroed progress bar to the UI. With
+        // a 4-byte part and a 10-byte body, the server appends 6 bytes one
+        // chunk at a time, so the first reported `written` is existing(4)+1.
+        let url = serve(b"0123456789", RangeMode::Honor);
+        let dest = temp_dest("progress-resume-first");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&part, b"0123").unwrap();
+        let events = std::cell::RefCell::new(Vec::new());
+        let got = download_url(&url, &dest, None, |written, total| {
+            events.borrow_mut().push((written, total));
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
+        let first = *events
+            .borrow()
+            .first()
+            .expect("a resumed download still reports at least one chunk");
+        assert!(
+            first.0 >= 4,
+            "first progress event must start at the resume offset (>= existing 4), got {}",
+            first.0
+        );
+        // Stronger: it must NOT report from zero — the resume offset is baked
+        // into the running counter before the first chunk lands.
+        assert_ne!(first.0, 0, "a resumed download must never report written=0");
+        let _ = std::fs::remove_file(&dest);
     }
 
     #[test]
@@ -804,6 +893,62 @@ mod tests {
             matches!(&*third, DownloadState::Idle),
             "overflow request must be dropped, not queued"
         );
+    }
+
+    #[test]
+    fn restart_from_zero_still_verifies_the_sha_before_renaming() {
+        // The existing restart tests (server-ignores-Range, 416, lying/unvalidated
+        // 206) all pass `None` for the hash, so none prove that a RESTART path
+        // still runs verify-before-rename. Here a stale part forces a restart
+        // (the server ignores Range and replies 200 full body), and we pass
+        // Some(hash): the from-zero body must be verified before it can become
+        // dest. Correct hash → dest appears; wrong hash → mismatch, no dest,
+        // part kept.
+        let body: &[u8] = b"0123456789";
+
+        // (a) restart + correct hash → verify passes → rename.
+        let url = serve(body, RangeMode::Ignore); // always 200, full body
+        let dest = temp_dest("restart-sha-ok");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&part, b"STALE GARBAGE").unwrap();
+        let got = download_url(&url, &dest, Some(&sha256_hex(body)), |_, _| {}).unwrap();
+        assert_eq!(
+            std::fs::read(&got).unwrap(),
+            body,
+            "the restart discarded the stale part and wrote the full fresh body"
+        );
+        assert!(!part.exists(), "a verified restart removes the part");
+        let _ = std::fs::remove_file(&dest);
+
+        // (b) restart + WRONG expected hash → verify fails AFTER the restart →
+        // dest never appears, part kept. Proves the verify gate is on the
+        // restart path, not just the resume/fresh paths.
+        let url = serve(body, RangeMode::Ignore);
+        let dest = temp_dest("restart-sha-bad");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&part, b"STALE GARBAGE").unwrap();
+        let err = download_url(
+            &url,
+            &dest,
+            Some(&sha256_hex(b"a different body")),
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, FetchError::HashMismatch { .. }),
+            "a restart must still verify before rename; got {err}"
+        );
+        assert!(
+            !dest.exists(),
+            "dest never appears when the restart verify fails"
+        );
+        assert!(
+            part.exists(),
+            "part kept for inspection on a failed restart verify"
+        );
+        let _ = std::fs::remove_file(&part);
     }
 
     #[test]

@@ -145,4 +145,46 @@ mod tests {
         assert!(matches!(adapter.popup_anchor(&field), Ok(None)));
         assert!(matches!(adapter.focused_page_url(&field), Ok(None)));
     }
+
+    #[test]
+    fn every_io_and_subscribe_method_fails_closed() {
+        // Fail-closed is the scaffold's whole point: the prior test pinned only
+        // subscribe_focus + insert_replacing. Pin the rest so any one method
+        // regressing to Ok (e.g. an accidental stub returning empty caps) is a
+        // test failure, not a silent live-fire of an unimplemented adapter.
+        let adapter = LinuxAdapter::new();
+        let field = FieldHandle {
+            app: "test".to_string(),
+            pid: None,
+            element_id: "scaffold".to_string(),
+            generation: 0,
+        };
+
+        let caret_cb: CaretCallback = Arc::new(|_field, _rect| {});
+        assert!(matches!(
+            adapter.subscribe_caret(caret_cb),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+        let accept_cb: AcceptCallback = Arc::new(|_tap| {});
+        assert!(matches!(
+            adapter.subscribe_accept(accept_cb),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+        assert!(matches!(
+            adapter.capabilities(&field),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+        assert!(matches!(
+            adapter.read_context(&field),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+        assert!(matches!(
+            adapter.caret_rect(&field),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+        assert!(matches!(
+            adapter.insert(&field, "x", InsertStrategy::None),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+    }
 }

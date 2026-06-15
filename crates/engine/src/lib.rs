@@ -1278,6 +1278,27 @@ mod tests {
     }
 
     #[test]
+    fn mirror_mode_popup_anchor_error_propagates_when_showing() {
+        // The non-mirror popup-error path is covered above. In mirror mode the
+        // ShowGhost path calls popup_anchor FIRST (before any caret fallback), so
+        // a failing popup anchor must surface even though a caret rect exists —
+        // the error is fail-loud, not papered over by the caret fallback.
+        let mut adapter = FakeAdapter::new(); // caret rect present by default
+        adapter.fail_popup = true;
+        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+        engine.set_mirror_mode(true);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+
+        assert_eq!(
+            engine.on_completion(&requests[0], "hi".into()),
+            Err(PlatformError::Timeout)
+        );
+    }
+
+    #[test]
     fn secure_state_change_hides_showing_ghost() {
         let (mut engine, _adapter, overlay) = showing("hello there");
 

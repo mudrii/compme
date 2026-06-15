@@ -356,6 +356,16 @@ mod tests {
     }
 
     #[test]
+    fn truncate_at_sentence_end_keeps_terminator_followed_by_multibyte_char() {
+        // The `next` byte after the terminator is the first byte of a multibyte
+        // scalar (`世`, 0xE4), which is not ASCII whitespace, so the terminator
+        // is NOT a sentence end and the text is kept whole. Pins the non-ASCII
+        // branch of the `is_ascii_whitespace` check (only ASCII space + decimals
+        // were pinned before).
+        assert_eq!(truncate_at_sentence_end("Done.世界"), "Done.世界");
+    }
+
+    #[test]
     fn strip_suffix_overlap_removes_words_already_after_caret() {
         // caret in "the quick| fox"; right context is "fox"; model returned
         // "quick brown fox" — the trailing "fox" must be dropped.

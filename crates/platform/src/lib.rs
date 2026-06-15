@@ -651,6 +651,19 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_wins_over_hotkey_only_intercept() {
+        // The Unsupported gate (no insert strategy) runs before the intercept
+        // check, so a field that is both unwritable-by-strategy AND HotkeyOnly
+        // classifies as Unsupported, not Hotkey. Mirrors the secure/hotkey
+        // ordering test one precedence level down.
+        let mut c = caps();
+        c.insert_strategy = InsertStrategy::None;
+        c.accept_intercept = KeyInterceptMode::HotkeyOnly;
+
+        assert_eq!(ux_mode(&c), UxMode::Unsupported);
+    }
+
+    #[test]
     fn not_readable_is_unsupported() {
         let mut c = caps();
         c.readable_text = false;
@@ -744,6 +757,37 @@ mod tests {
         assert_eq!(visible.load(Ordering::Relaxed), 1);
         assert_eq!(hide.load(Ordering::Relaxed), 1);
         assert_eq!(action.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn accept_subscription_forwards_set_suggestion_visible_err() {
+        // Only set_accept_action's err path was proven; set_suggestion_visible
+        // must surface its closure's Err too — a swallowed error here would let
+        // the host believe the tap state was updated when it was not.
+        let subscription = AcceptSubscription::new(
+            Subscription::new(11),
+            |_visible| Err(PlatformError::Timeout),
+            |_delay| Ok(()),
+            |_action| Ok(()),
+        );
+
+        assert!(subscription.set_suggestion_visible(true).is_err());
+    }
+
+    #[test]
+    fn accept_subscription_forwards_hide_suggestion_after_err() {
+        // Companion to the set_suggestion_visible err test: the hide failsafe's
+        // Err must surface so a missed-hide schedule failure is observable.
+        let subscription = AcceptSubscription::new(
+            Subscription::new(12),
+            |_visible| Ok(()),
+            |_delay| Err(PlatformError::Timeout),
+            |_action| Ok(()),
+        );
+
+        assert!(subscription
+            .hide_suggestion_after(std::time::Duration::from_millis(5))
+            .is_err());
     }
 
     #[test]

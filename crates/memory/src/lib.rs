@@ -491,4 +491,40 @@ mod tests {
         assert!(other.recent("app", 10).unwrap().is_empty());
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn tampered_ciphertext_byte_is_skipped_not_returned_or_panicked() {
+        // Distinct from the wrong-key case: here the CORRECT key and app are
+        // used, but one ciphertext byte (past the nonce) is flipped. The GCM
+        // auth tag must reject the corrupted blob — `recent()` skips it as
+        // best-effort (no panic, not returned), while `count()` still sees the
+        // stored row.
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(15), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "intact secret note").unwrap();
+        }
+        // Tamper: flip one byte INSIDE the ciphertext body (after NONCE_LEN, so
+        // the nonce is preserved and the blob length stays valid) via a raw
+        // connection, keeping the row's app label intact.
+        {
+            let raw = rusqlite::Connection::open(&path).unwrap();
+            let mut blob: Vec<u8> = raw
+                .query_row("SELECT blob FROM memories LIMIT 1", [], |row| row.get(0))
+                .unwrap();
+            assert!(
+                blob.len() > NONCE_LEN + 1,
+                "sanity: blob has a ciphertext body to corrupt"
+            );
+            blob[NONCE_LEN] ^= 0x01;
+            raw.execute("UPDATE memories SET blob = ?1", params![blob])
+                .unwrap();
+        }
+        // Reopen with the SAME correct key: row present, but the corrupted
+        // ciphertext fails GCM authentication and is dropped from recent().
+        let store = MemoryStore::open(&path, &key(15), StorageMode::AcceptedOnly).unwrap();
+        assert_eq!(store.count().unwrap(), 1);
+        assert!(store.recent("app", 10).unwrap().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
 }

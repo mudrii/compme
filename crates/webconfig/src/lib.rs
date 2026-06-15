@@ -699,6 +699,33 @@ mod tests {
     }
 
     #[test]
+    fn a_valid_signature_over_a_malformed_payload_surfaces_the_parse_error() {
+        // Verify-THEN-parse ordering: when a payload is correctly signed by
+        // the trusted key but is itself malformed, the caller must see the
+        // PARSE error (so the host can tell the user *what* was wrong with the
+        // link), NOT a signature error. A reversed order (parse-then-verify,
+        // or short-circuiting parse failures into InvalidSignature) would hide
+        // the real defect behind a misleading "signature failed".
+        //
+        // (a) a genuinely-signed but empty scope → InvalidScope, not a sig error.
+        let url = signed_url("compme://setOverride?app=&enabled=true");
+        assert_eq!(
+            parse_deep_link_with_trust(&url, Some(&test_trusted_key())),
+            Err(ParseError::InvalidScope),
+            "a verified signature over an invalid scope must surface InvalidScope"
+        );
+
+        // (b) a signed but unknown command → UnknownCommand, surfacing the
+        // command name — again the parse error, not the signature layer.
+        let url = signed_url("compme://setPreference?app=com.foo.bar&enabled=true");
+        assert_eq!(
+            parse_deep_link_with_trust(&url, Some(&test_trusted_key())),
+            Err(ParseError::UnknownCommand("setPreference".into())),
+            "a verified signature over an unknown command must surface UnknownCommand"
+        );
+    }
+
+    #[test]
     fn a_signature_from_an_untrusted_signer_fails_verification() {
         use ed25519_dalek::Signer;
         let payload = "compme://setOverride?app=com.apple.TextEdit&enabled=true";

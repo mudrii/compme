@@ -4243,6 +4243,43 @@ mod tests {
     }
 
     #[test]
+    fn personalization_per_domain_steers_a_subdomain_through_the_assembled_profile() {
+        // End-to-end app wiring of the round-1 subdomain matcher: a `google.com`
+        // rule from config must steer `www.google.com` (the host is lowercased and
+        // matched on a dot boundary), but never a look-alike `evilgoogle.com`.
+        // This pins the app-level lowercasing + subdomain seam, not just the
+        // personalization crate's resolve_instructions.
+        let profile = build_personalization(&lookup(&[
+            ("COMPME_STRENGTH", "5"),
+            ("COMPME_INSTRUCTIONS_DOMAINS", "Google.com"),
+            (
+                "COMPME_INSTRUCTIONS_DOMAIN_GOOGLE_COM",
+                "Prefer search-friendly phrasing.",
+            ),
+        ]));
+
+        // Config domain was lowercased into the profile key.
+        assert_eq!(
+            profile.per_domain.get("google.com"),
+            Some(&"Prefer search-friendly phrasing.".to_string())
+        );
+
+        // A subdomain of the rule is steered.
+        let on_subdomain = profile.build_preamble(None, Some("www.google.com"));
+        assert!(
+            on_subdomain.contains("Prefer search-friendly phrasing."),
+            "subdomain www.google.com should match the google.com rule: {on_subdomain:?}"
+        );
+
+        // A look-alike host on a non-dot boundary is NOT steered.
+        let on_lookalike = profile.build_preamble(None, Some("evilgoogle.com"));
+        assert!(
+            !on_lookalike.contains("Prefer search-friendly phrasing."),
+            "evilgoogle.com must not match the google.com rule: {on_lookalike:?}"
+        );
+    }
+
+    #[test]
     fn personalization_skips_ambiguous_per_target_instruction_keys() {
         let profile = build_personalization(&lookup(&[
             (
@@ -6137,6 +6174,30 @@ mod tests {
     }
 
     #[test]
+    fn domain_observation_enabled_fires_on_either_consumer() {
+        // Domain reads are an OR of the two per-domain consumers: excluded-domain
+        // rules and per-domain steering instructions. Pin each disjunct so neither
+        // consumer silently stops requesting browser-domain detection.
+        let empty_profile = PersonalizationProfile::default();
+        let empty_prefs = Prefs::default();
+
+        // Both empty → no consumer wants domains.
+        assert!(!domain_observation_enabled(&empty_prefs, &empty_profile));
+
+        // Only excluded_domains non-empty → enabled.
+        let mut prefs_only = Prefs::default();
+        prefs_only.excluded_domains.insert("bank.example".into());
+        assert!(domain_observation_enabled(&prefs_only, &empty_profile));
+
+        // Only per_domain steering non-empty → enabled.
+        let mut profile_only = PersonalizationProfile::default();
+        profile_only
+            .per_domain
+            .insert("docs.google.com".into(), "Match the doc tone.".into());
+        assert!(domain_observation_enabled(&empty_prefs, &profile_only));
+    }
+
+    #[test]
     fn submit_gate_blocks_an_excluded_domain() {
         // The per-domain rules' submit-side consumer: with a domain present,
         // an excluded host blocks the request in an otherwise-allowed app.
@@ -6166,6 +6227,58 @@ mod tests {
             &prefs,
             0
         ));
+    }
+
+    #[test]
+    fn submit_gate_blocks_a_subdomain_of_an_excluded_domain() {
+        // Privacy-critical subdomain consumer: an excluded `bank.example` rule
+        // must also block a request typed on the subdomain `login.bank.example`
+        // (dot-boundary match), through both the model submit gate and the
+        // local-replacement gate. A look-alike host on a non-dot boundary stays
+        // allowed.
+        let config = Config::from_lookup(lookup(&[("COMPME_EMOJI", "1")]));
+        let mut prefs = Prefs::default();
+        prefs.excluded_domains.insert("bank.example".into());
+        let app = Some("com.apple.Safari");
+
+        // Submit gate: subdomain blocked.
+        assert!(!request_passes_submit_gates(
+            &req_with_prompt("Dear team"),
+            app,
+            Some("login.bank.example"),
+            &prefs,
+            0
+        ));
+        // Submit gate: look-alike on a non-dot boundary is NOT blocked.
+        assert!(request_passes_submit_gates(
+            &req_with_prompt("Dear team"),
+            app,
+            Some("notbank.example"),
+            &prefs,
+            0
+        ));
+
+        // Replacement gate: the same subdomain rule blocks the local path too.
+        assert!(replacement_decision(
+            "hi :smile",
+            &config,
+            &prefs,
+            app,
+            Some("login.bank.example"),
+            true,
+            0
+        )
+        .is_none());
+        assert!(replacement_decision(
+            "hi :smile",
+            &config,
+            &prefs,
+            app,
+            Some("notbank.example"),
+            true,
+            0
+        )
+        .is_some());
     }
 
     #[test]

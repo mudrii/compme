@@ -6788,6 +6788,48 @@ mod tests {
     }
 
     #[test]
+    fn rect_center_on_the_bound_edges_is_inclusive() {
+        // Pins the >=/<= inclusivity at both extremes (existing test only does
+        // clearly-inside / clearly-outside). bounds covers x∈[100,900], y∈[-50,550].
+        let bounds = CGRect::new(&CGPoint::new(100.0, -50.0), &CGSize::new(800.0, 600.0));
+        // A zero-size rect places its center exactly at (x, y).
+        let center_at = |x: f64, y: f64| ScreenRect {
+            x,
+            y,
+            w: 0.0,
+            h: 0.0,
+        };
+        // Center exactly on the origin corner is inside (>= / >=).
+        assert!(rect_center_is_inside_bounds(
+            center_at(100.0, -50.0),
+            bounds
+        ));
+        // Center exactly on the far corner (origin + size) is inside (<= / <=).
+        assert!(rect_center_is_inside_bounds(
+            center_at(900.0, 550.0),
+            bounds
+        ));
+        // A hair past either edge is outside — proving the comparison is at the
+        // edge, not merely lenient.
+        assert!(!rect_center_is_inside_bounds(
+            center_at(99.999, -50.0),
+            bounds
+        ));
+        assert!(!rect_center_is_inside_bounds(
+            center_at(900.001, 550.0),
+            bounds
+        ));
+        assert!(!rect_center_is_inside_bounds(
+            center_at(100.0, -50.001),
+            bounds
+        ));
+        assert!(!rect_center_is_inside_bounds(
+            center_at(900.0, 550.001),
+            bounds
+        ));
+    }
+
+    #[test]
     fn resolve_retained_observer_event_without_element_is_pointer_only() {
         // No retained AX element → pointer-only identity, no rect, no FFI deref.
         let event = resolve_retained_observer_event(

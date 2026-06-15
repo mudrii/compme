@@ -247,6 +247,31 @@ mod tests {
     }
 
     #[test]
+    fn redacts_email_secret_and_card_together_in_one_pass() {
+        // Existing tests isolate one PII class each; this pins the staged
+        // email→secret→card interaction when all three are present in a single
+        // input. A regression where one stage's replacement text fragments a
+        // later stage's match (or an early-return short-circuit) would leak one
+        // class while the others still scrub.
+        let out = redact(
+            "mail ada@example.com key sk-abcdEFGH0123456789abcdEFGH0123 card 4242 4242 4242 4242 end",
+        );
+        assert!(out.contains("[redacted-email]"), "email scrubbed: {out:?}");
+        assert!(
+            out.contains("[redacted-secret]"),
+            "secret scrubbed: {out:?}"
+        );
+        assert!(out.contains("[redacted-card]"), "card scrubbed: {out:?}");
+        // None of the original sensitive substrings survive.
+        assert!(!out.contains("ada@example.com"), "got {out:?}");
+        assert!(!out.contains("sk-abcd"), "got {out:?}");
+        assert!(!out.contains("4242"), "got {out:?}");
+        // The non-sensitive framing words are untouched.
+        assert!(out.starts_with("mail "), "got {out:?}");
+        assert!(out.ends_with(" end"), "got {out:?}");
+    }
+
+    #[test]
     fn redacts_all_letter_mixed_case_secret() {
         // Base64/base64url secrets are often all letters (no digit); the
         // letter+digit heuristic must not let them through (review finding 1).

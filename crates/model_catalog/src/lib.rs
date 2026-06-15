@@ -235,9 +235,19 @@ pub fn catalog_provenance() -> &'static [ModelProvenance] {
 /// The one-click download target: the smallest catalog entry whose license
 /// needs no click-through acceptance (the gate UI is a separate slice).
 pub fn recommended() -> Option<&'static ModelEntry> {
-    catalog()
+    recommended_in(catalog())
+}
+
+/// The smallest unencumbered entry in `entries`, by `size_mb`. Selecting by
+/// size (not list position) makes the choice correct-by-construction: the
+/// catalog no longer has to be authored smallest-first for `recommended` to
+/// pick the smallest. Ties resolve to the first such entry (`min_by_key` is
+/// stable), and a fully-gated list yields `None`.
+fn recommended_in(entries: &[ModelEntry]) -> Option<&ModelEntry> {
+    entries
         .iter()
-        .find(|entry| !entry.license.needs_acceptance())
+        .filter(|entry| !entry.license.needs_acceptance())
+        .min_by_key(|entry| entry.size_mb)
 }
 
 /// Advisory RAM fit: `Exceeds` below the minimum, `Tight` with less than
@@ -272,6 +282,75 @@ mod tests {
         let entry = recommended().expect("catalog has an unencumbered entry");
         assert_eq!(entry.name, "qwen2.5-0.5b-q4_k_m");
         assert!(!entry.license.needs_acceptance());
+    }
+
+    #[test]
+    fn recommended_is_unencumbered_and_the_globally_smallest_such() {
+        // Ordering-independent restatement of recommended()'s contract against
+        // the REAL catalog: the returned entry needs no acceptance AND no other
+        // unencumbered entry is smaller. (The skip-gated-and-pick-smallest logic
+        // is isolated against a crafted list in `recommended_in_*` below; this
+        // guards the wired-up `recommended()` over the shipping data.)
+        let entry = recommended().expect("catalog has an unencumbered entry");
+        assert!(
+            !entry.license.needs_acceptance(),
+            "recommended() must skip gated entries"
+        );
+        let smallest_unencumbered = catalog()
+            .iter()
+            .filter(|e| !e.license.needs_acceptance())
+            .min_by_key(|e| e.size_mb)
+            .expect("at least one unencumbered entry");
+        assert_eq!(
+            entry.size_mb, smallest_unencumbered.size_mb,
+            "recommended() must be the smallest unencumbered entry by size"
+        );
+        // And no GATED entry is smaller than the pick that was skipped over —
+        // i.e. if a smaller entry exists, it is only because it is gated.
+        // (Guards the skip-gated branch: a smaller gated entry must NOT win.)
+        for e in catalog().iter().filter(|e| e.size_mb < entry.size_mb) {
+            assert!(
+                e.license.needs_acceptance(),
+                "{}: a smaller entry than recommended() must be gated, else recommended() picked wrong",
+                e.name
+            );
+        }
+    }
+
+    #[test]
+    fn recommended_in_skips_a_smaller_gated_entry_and_picks_the_smallest_unencumbered() {
+        // Isolated, order-independent proof of the selection logic: a SMALLER
+        // gated entry sits FIRST, so a `.find(first unencumbered)` would still
+        // be correct here only by luck of ordering — but a smaller gated entry
+        // placed first must NOT win, and the smallest UNENCUMBERED entry must,
+        // wherever it sits in the list.
+        fn make(name: &'static str, size_mb: u32, license: License) -> ModelEntry {
+            ModelEntry {
+                name,
+                url: "https://example.invalid/m.gguf",
+                size_mb,
+                min_ram_gb: 8,
+                license,
+                expected_sha256: None,
+            }
+        }
+        let entries = [
+            make("tiny-but-gated", 100, License::LlamaCommunity),
+            make("big-open", 900, License::Apache2),
+            make("small-open", 300, License::Mit),
+            make("smaller-but-gated", 50, License::GemmaTerms),
+        ];
+        let pick = recommended_in(&entries).expect("an unencumbered entry exists");
+        assert_eq!(pick.name, "small-open");
+        assert_eq!(pick.size_mb, 300);
+        assert!(!pick.license.needs_acceptance());
+
+        // A fully-gated list yields None.
+        let all_gated = [
+            make("a", 100, License::GemmaTerms),
+            make("b", 50, License::LlamaCommunity),
+        ];
+        assert!(recommended_in(&all_gated).is_none());
     }
 
     #[test]

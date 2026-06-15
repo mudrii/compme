@@ -501,6 +501,37 @@ mod tests {
     }
 
     #[test]
+    fn build_preamble_renders_all_three_sections_in_global_app_domain_order() {
+        // resolve_instructions is tested for the three-way merge, but the
+        // assembled build_preamble (directive + fenced block) was never pinned
+        // with all three sections present at once. Prove the fenced block carries
+        // global, per-app and per-domain text, in global→app→domain order, for a
+        // single focus context.
+        let mut p = profile();
+        p.per_app
+            .insert("com.apple.TextEdit".into(), "Use plain text.".into());
+        p.per_domain
+            .insert("docs.google.com".into(), "Match the doc tone.".into());
+
+        let preamble = p.build_preamble(Some("com.apple.TextEdit"), Some("docs.google.com"));
+
+        let global_at = preamble.find("Write concisely.").expect("global present");
+        let app_at = preamble.find("Use plain text.").expect("per-app present");
+        let domain_at = preamble
+            .find("Match the doc tone.")
+            .expect("per-domain present");
+        assert!(
+            global_at < app_at && app_at < domain_at,
+            "sections must be global→app→domain ordered: {preamble:?}"
+        );
+        // All three live inside the fenced instruction block (open+close fence).
+        assert!(
+            preamble.matches(INSTRUCTION_FENCE).count() >= 2,
+            "all three sections fenced together: {preamble:?}"
+        );
+    }
+
+    #[test]
     fn instructions_are_fenced_in_the_preamble() {
         // Free-text user/domain instructions are fenced so they cannot dissolve
         // the directive frame (review finding C — per-domain text can arrive from

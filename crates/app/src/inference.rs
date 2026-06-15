@@ -850,6 +850,26 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_context_line_accounts_for_an_unknown_source() {
+        // The happy-path test only covers the three recognized prefixes. A
+        // non-empty line that matches no known prefix (and is not the header)
+        // falls into the unknown branch: it must add "unknown" to the sources
+        // list and emit an `unknown_chars=` accounting for the whole trimmed
+        // line, counted into the total `chars`.
+        let block = "Clipboard: hi\nMystery: leftover data\n";
+        let diag = context_diagnostic_line(block).expect("diagnostic summary");
+        // "hi" = 2 chars; "Mystery: leftover data" = 22 chars → total 24.
+        assert_eq!(
+            diag,
+            "sources=clipboard,unknown chars=24 clipboard_chars=2 unknown_chars=22"
+        );
+        // The diagnostic must still not leak the raw unknown text body... but the
+        // whole line IS the unknown body here, so just pin the accounting above
+        // and confirm the unknown source is named.
+        assert!(diag.contains("unknown_chars=22"));
+    }
+
+    #[test]
     fn context_disabled_prepends_nothing() {
         let previous = PreviousInputs::default();
         previous.record("TextEdit", "earlier".into());

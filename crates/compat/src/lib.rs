@@ -555,6 +555,48 @@ mod tests {
     }
 
     #[test]
+    fn deep_relative_path_not_under_bin_or_scripts_is_not_an_executable_invocation() {
+        // is_executable_path_token's ./ (and ../) arm only treats a SINGLE-segment
+        // relative path or one under bin/ or scripts/ as executable; any other
+        // deep relative path (e.g. ./foo/bar) falls through. With a prose-only
+        // tail (no flags, no path tokens) looks_like_shell_path_invocation is
+        // false, so classification rests on the lowercase-prose rule — and the
+        // line activates as an AI-agent prompt rather than being skipped as a
+        // shell invocation.
+        let term = "com.googlecode.iterm2";
+        assert!(
+            terminal_prompt_activates(term, "./foo/bar runs now"),
+            "a deep relative path not under bin/ or scripts/ is not an executable path"
+        );
+        // Contrast: the SAME tail under bin/ IS an executable path → shell input,
+        // so it does NOT activate. This isolates the executable-path branch as the
+        // only differentiator.
+        assert!(
+            !terminal_prompt_activates(term, "./bin/tool runs now"),
+            "the same line under bin/ is an executable-path invocation"
+        );
+    }
+
+    #[test]
+    fn applications_path_without_contents_macos_is_not_an_executable_invocation() {
+        // is_executable_path_token's /Applications/ arm requires /Contents/MacOS/
+        // — a /Applications/Foo.app/bar path WITHOUT it is not executable. With a
+        // prose-only tail it falls through to the lowercase-prose rule and the
+        // line activates as a prompt.
+        let term = "com.googlecode.iterm2";
+        assert!(
+            terminal_prompt_activates(term, "/Applications/Foo.app/bar runs now"),
+            "an /Applications path without /Contents/MacOS/ is not an executable path"
+        );
+        // Contrast: WITH /Contents/MacOS/ it is an executable path → shell input,
+        // so it does NOT activate (mirrors the existing positive case).
+        assert!(
+            !terminal_prompt_activates(term, "/Applications/Foo.app/Contents/MacOS/bar runs now"),
+            "the /Contents/MacOS/ form is an executable-path invocation"
+        );
+    }
+
+    #[test]
     fn non_terminal_apps_are_never_restricted_by_the_prompt_heuristic() {
         assert!(terminal_prompt_activates("com.apple.TextEdit", "ls -la"));
         assert!(terminal_prompt_activates("com.apple.mail", "cd"));

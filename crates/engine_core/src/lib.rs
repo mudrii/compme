@@ -1714,6 +1714,35 @@ mod tests {
     }
 
     #[test]
+    fn multi_candidate_mixed_failures_show_only_the_survivor() {
+        // Each candidate fails for a DIFFERENT reason and one survives: with the
+        // caret after "the quick" (right context " fox"), "fox" empties under the
+        // overlap strip, "ha ha ha" trips degenerate repetition, and "brown text"
+        // survives both shapers — only the survivor is shown. Exercises the
+        // overlap-empties branch in the multi path (the existing survivor test
+        // only covers the degenerate-drop branch).
+        let mut machine = machine();
+        machine.on_event(text_changed("the quick fox", 9, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReadyMulti {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                candidates: vec!["fox".into(), "ha ha ha".into(), "brown text".into()],
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "brown text".into(),
+            }]
+        );
+        // Only one candidate survived → a Cycle has nothing else to rotate to.
+        assert_eq!(machine.on_event(Event::Cycle), vec![]);
+    }
+
+    #[test]
     fn multi_candidate_all_filtered_shows_nothing() {
         // When EVERY candidate fails shaping (both degenerate repetition), the
         // multi path shows nothing and leaves no stale Showing behind — the
@@ -1826,6 +1855,29 @@ mod tests {
         let mut machine = showing_candidates(&["world there friend", "world other text"]);
         machine.on_event(Event::AcceptWord); // inserts "world ", keeps "there friend"
         assert_eq!(machine.on_event(Event::Cycle), vec![]);
+    }
+
+    #[test]
+    fn accept_full_after_word_collapse_inserts_the_remaining_candidate() {
+        // Follow-through after the collapse in
+        // accept_word_collapses_to_the_active_candidate: a word-accept collapses
+        // the multi-candidate set to the single active candidate ("world there
+        // friend") with "world " already inserted; a subsequent AcceptFull must
+        // insert exactly the REMAINDER ("there friend"), not the original full
+        // candidate or a sibling, then hide.
+        let mut machine = showing_candidates(&["world there friend", "world other text"]);
+        machine.on_event(Event::AcceptWord); // inserts "world ", keeps "there friend"
+
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "there friend".into(),
+                },
+                Command::Hide,
+            ]
+        );
     }
 
     #[test]

@@ -1085,6 +1085,47 @@ mod tests {
     }
 
     #[test]
+    fn metric_series_weekly_30day_range_sums_nonzero_data_into_the_right_weeks() {
+        // The existing 30-day weekly test only pins the bucket COUNT with
+        // all-zero data. This one places non-zero data in DISTINCT weeks and
+        // asserts each weekly bucket sums the right values (the chunk-of-7
+        // aggregation, not just its shape). now = T0 + 30 days → cutoff = T0,
+        // so a day-index `d` slice is `[T0 + d*DAY_MS, T0 + (d+1)*DAY_MS)`.
+        // Weeks: w0=idx0-6, w1=7-13, w2=14-20, w3=21-27, w4=28-29 (partial).
+        let mut s = Stats::new();
+        let now = T0 + 30 * DAY_MS;
+        // Week 0: two accepts (idx 2 and idx 5) → accepted=2, words=3+4=7.
+        s.record(T0 + 2 * DAY_MS + 1, Outcome::Accepted { words: 3 });
+        s.record(T0 + 5 * DAY_MS + 1, Outcome::Accepted { words: 4 });
+        // Week 2: one accept (idx 14) → accepted=1, words=10.
+        s.record(T0 + 14 * DAY_MS + 1, Outcome::Accepted { words: 10 });
+        // Week 4 (partial trailing group): one accept at the newest slice
+        // (idx 29 == now) → accepted=1, words=6.
+        s.record(now, Outcome::Accepted { words: 6 });
+
+        // Accepted-count series sums per week; weeks 1 and 3 stay empty.
+        assert_eq!(
+            s.metric_series(
+                now,
+                StatRange::Last30Days,
+                StatGrouping::Weekly,
+                StatMetric::Accepted
+            ),
+            vec![2, 0, 1, 0, 1],
+        );
+        // Words series sums the per-accept word totals into the same weeks.
+        assert_eq!(
+            s.metric_series(
+                now,
+                StatRange::Last30Days,
+                StatGrouping::Weekly,
+                StatMetric::Words
+            ),
+            vec![7, 0, 10, 0, 6],
+        );
+    }
+
+    #[test]
     fn stat_range_days_are_fixed_spans() {
         assert_eq!(StatRange::Last7Days.days(), 7);
         assert_eq!(StatRange::Last14Days.days(), 14);

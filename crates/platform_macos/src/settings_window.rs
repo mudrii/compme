@@ -1748,6 +1748,37 @@ mod tests {
     }
 
     #[test]
+    fn recorder_outcome_full_role_carries_words_masked_current_into_slot_zero() {
+        // The Full-role symmetry of the c134 wrong-slot-clobber trap: rebinding
+        // FULL must not strip WORD back to default. WORD currently holds a masked
+        // binding (48, SHIFT); capturing a masked key (122, SHIFT) for FULL must
+        // carry WORD's (48, SHIFT) through verbatim in slot 0 (the tuple-swap arm
+        // of rebind_request_for) and land FULL's masked capture in slot 1. A
+        // regression that wrote the captured key to slot 0 (Word's), or dropped
+        // Word's mask, would clobber the wrong role — exactly what c134 traps.
+        assert_eq!(
+            recorder_outcome(
+                RecorderRole::Full,
+                122,
+                crate::CARBON_SHIFT_KEY,
+                ((48, crate::CARBON_SHIFT_KEY), (50, 0))
+            ),
+            RecorderOutcome::Accept {
+                request: (
+                    Some((48, crate::CARBON_SHIFT_KEY)),
+                    Some((122, crate::CARBON_SHIFT_KEY))
+                ),
+                label: keycode_label_with_mods(122, crate::CARBON_SHIFT_KEY),
+            }
+        );
+        // The label carries the ⇧ glyph for the captured FULL key.
+        assert!(
+            keycode_label_with_mods(122, crate::CARBON_SHIFT_KEY).starts_with('\u{21e7}'),
+            "the captured Shift modifier prefixes the Full label with ⇧"
+        );
+    }
+
+    #[test]
     fn recorder_outcome_esc_cancels_and_reverts_to_the_roles_current_label() {
         // Esc reverts to the role's OWN current key label (with its glyph), not
         // the other role.

@@ -292,6 +292,36 @@ mod tests {
     }
 
     #[test]
+    fn collection_continues_while_suggestions_are_gated_by_snooze_or_exclusion() {
+        // Pins the recording/suggestion seam: `collection_allowed` is governed
+        // ONLY by per-app `collect_inputs` (opt-out model), while snooze and
+        // exclusion gate `should_suggest`. So a snoozed or excluded app keeps
+        // recording typing history even though suggestions stop firing — the two
+        // gates are deliberately independent (collection opt-out is the privacy
+        // control for recording; snooze/exclude only silence suggestions).
+        let mut p = Prefs::default();
+
+        // Snoozed app: suggestions off, collection still on.
+        p.snooze_app("com.apple.TextEdit", 1_000, 60);
+        assert!(!p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        assert!(p.collection_allowed(Some("com.apple.TextEdit")));
+
+        // Excluded app: suggestions hard-blocked, collection still on.
+        p.excluded_apps.insert("com.apple.Safari".into());
+        assert!(!p.should_suggest(Some("com.apple.Safari"), None, 1_000));
+        assert!(p.collection_allowed(Some("com.apple.Safari")));
+
+        // Only the per-app collect_inputs opt-out stops recording — and it does
+        // NOT re-enable suggestions for the excluded app.
+        p.per_app
+            .entry("com.apple.Safari".into())
+            .or_default()
+            .collect_inputs = Some(false);
+        assert!(!p.collection_allowed(Some("com.apple.Safari")));
+        assert!(!p.should_suggest(Some("com.apple.Safari"), None, 1_000));
+    }
+
+    #[test]
     fn app_snooze_until_relaunch_saturates_and_clear_reenables() {
         let mut p = Prefs::default();
         // u64::MAX minutes saturates: effectively "until relaunch".
