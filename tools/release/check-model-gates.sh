@@ -6,12 +6,26 @@ release_workflow="${1:-$repo_root/.github/workflows/release.yml}"
 gate_script="$repo_root/tools/release/run-model-gates.sh"
 acceptance_doc="$repo_root/docs/ACCEPTANCE.md"
 releasing_doc="$repo_root/docs/RELEASING.md"
+readme_doc="$repo_root/README.md"
 
 require_line() {
   file="$1"
   pattern="$2"
   label="$3"
   if ! grep -Eq "$pattern" "$file"; then
+    echo "missing release model gate: $label" >&2
+    return 1
+  fi
+}
+
+require_readme_gate_line() {
+  pattern="$1"
+  label="$2"
+  if ! awk '
+    /^## Current Validation Gates$/ { in_section = 1; next }
+    in_section && /^## / { in_section = 0 }
+    in_section { print }
+  ' "$readme_doc" | grep -Eq "$pattern"; then
     echo "missing release model gate: $label" >&2
     return 1
   fi
@@ -44,3 +58,5 @@ require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p mode
 require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized spike ignored model tests"
 require_line "$releasing_doc" '^[[:space:]]*COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized root ignored model tests"
 require_line "$releasing_doc" '^[[:space:]]*COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized spike ignored model tests"
+require_readme_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "README release gate policy check"
+require_readme_gate_line '^bash tools/release/run-model-gates\.sh[[:space:]]*$' "README model-backed release gate"

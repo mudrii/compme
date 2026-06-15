@@ -1562,3 +1562,43 @@
   - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
+## 2026-06-15 16:00:03 +0800 - README model-backed validation gate TDD pass
+
+- Task selected: Add README Current Validation Gates coverage for the model-backed release gates.
+- Why it was selected: The latest active loop state left only the README Minor as a loop-doable test/docs alignment gap after the Thesaurus item was fixed. The README validation block still omitted `tools/release/run-model-gates.sh`, so the top-level gate list did not match the release/acceptance docs.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md` (Current Validation Gates hunk only; pre-existing Documentation Index roadmap link remains unstaged)
+  - `tools/release/check-model-gates.sh`
+- Tests added/updated:
+  - Updated `tools/release/check-model-gates.sh` to require `bash tools/release/check-model-gates.sh` and `bash tools/release/run-model-gates.sh` inside README's `## Current Validation Gates` section.
+  - Updated README's Current Validation Gates block to include both release-gate commands and refreshed the root listed test count to `1,111`.
+- Verification commands and result:
+  - RED: `bash tools/release/check-model-gates.sh` failed with `missing release model gate: README model-backed release gate` after adding the README checker before updating README.
+  - Focused GREEN: `bash tools/release/check-model-gates.sh` passed after adding the README gate lines.
+  - Focused post-review check: `bash tools/release/check-model-gates.sh && bash -n tools/release/*.sh tools/acceptance/*.sh tools/bundle/*.sh` passed after tightening the checker to inspect only README's Current Validation Gates section.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `git diff --check` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `bash tools/release/run-model-gates.sh` passed, including GGUF verification plus ignored root and spike model-backed tests.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1111`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify query "README Current Validation Gates model-backed release gates run-model-gates check-model-gates"` passed.
+  - `graphify update .` passed and rebuilt `4009` nodes, `10717` edges, and `140` communities.
+- Test count if available: root `1111` listed tests; spike `30` listed tests; full workspace run included app `309` tests and platform_macos `223` tests; model-backed release gate passed via `tools/release/run-model-gates.sh`.
+- Critical/Important review findings fixed:
+  - Correctness/security/data-loss subagent review reported no findings for the README Current Validation Gates hunk and release checker diff.
+  - Fixed Important plan-alignment finding from subagent review: the README checker now scopes to the `## Current Validation Gates` section and requires both the release policy check and the model-backed gate command there.
+  - Local quality/architecture/shell-portability review found no remaining Critical or Important findings; `bash -n` and `bash tools/release/check-model-gates.sh` passed.
+  - Local tests/coverage/real-behavior review found no remaining Critical or Important findings; the checker now prevents the README validation block from silently dropping release gate evidence.
+- Blocked or skipped work remaining:
+  - Pre-existing dirty roadmap/spec/README work remains unstaged; use `git status --short` for the authoritative inventory before the next tick.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.

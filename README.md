@@ -272,7 +272,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,101 tests:
+suite is roughly 1,111 tests:
 
 ```sh
 cargo fmt --all -- --check
@@ -284,6 +284,8 @@ bash -n tools/acceptance/*.sh
 tools/acceptance/e2e-complete-me.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-a2-compat-gates.sh --self-test
+bash tools/release/check-model-gates.sh
+bash tools/release/run-model-gates.sh
 
 cd tools/spike
 cargo fmt -- --check
