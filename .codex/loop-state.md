@@ -429,6 +429,66 @@
   - Full replacement parity for non-AxSet global channels remains intentionally not claimed; safe behavior refuses non-atomic replacements rather than deleting user text.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 10:11:07 +08 - Compat terminal classifier TDD pass
+
+- Task selected: Harden `compat` terminal prompt gating so shell-shaped terminal input is not treated as AI-agent prose.
+- Why it was selected: The prior loop-state listed a Core-crate Important gap in `compat::terminal_prompt_activates`: lowercase executable paths and flags activated suggestions. The fresh pass-2 core review found the same class for common lowercase CLI leaders and a related unsupported-app list gap in the deterministic classifier.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/compat/src/lib.rs`
+  - `docs/DEVELOPMENT.md`
+- Tests added/updated:
+  - Updated `terminal_skips_uppercase_or_pathy_lines_with_no_prose` so lowercase executable path invocations like `/usr/local/bin/tool --flag /tmp/OUT`, `/usr/local/bin/tool input output`, nested relative/home script paths, `/tmp/tool`, `/Applications/.../Contents/MacOS/tool`, and `./script run now` are expected to stay inactive in terminals.
+  - Added `terminal_skips_common_lowercase_shell_commands` for representative modern CLI inputs: `npx`, `pnpm`, `go test`, `go fix ./...`, `go fix` import paths/packages including `.`, `all`, `std`, `net/http`, and `cmd/go`, `go help`, `go bug`, `go telemetry`, and `rg`.
+  - Added `terminal_keeps_command_like_natural_language_prompts_active` after final diff review, proving prompts like `go fix the failing tests`, slash commands with flags, `/tmp` and `/Applications` path-context prompts, and home/repo path-context prompts still activate.
+  - Extended `known_apps_map_to_their_tiers` for unsupported OneNote, BBEdit, and Sublime Text bundle ids.
+- Verification commands and result:
+  - RED: `cargo test -p compat terminal_skips_uppercase_or_pathy_lines_with_no_prose -- --nocapture` failed before implementation on `/usr/local/bin/tool --flag /tmp/OUT`.
+  - RED: the same focused test failed during final diff review on `/usr/local/bin/tool input output` before executable path detection was tightened.
+  - RED: `cargo test -p compat terminal_skips_common_lowercase_shell_commands -- --nocapture` failed before implementation on `npx ctx7 latest`.
+  - RED: the same focused test failed during final diff review on `go fix ./...` before Go subcommand handling was made command-shape aware.
+  - RED: the same focused test failed during final diff review on `go fix example.com/x` before Go fix import/package target handling was added.
+  - RED: `cargo test -p compat terminal_keeps_command_like_natural_language_prompts_active -- --nocapture` failed during final diff review on `go fix the failing tests`.
+  - RED: the same focused test failed during final diff review on `/graphify --update current repo` before single-segment slash commands with flags were preserved as prompt-like.
+  - RED: `cargo test -p compat terminal_ -- --nocapture` failed during final diff review on `go fix .`, `/Applications/MyTool.app crashes on launch`, and `./scripts/tool input output`.
+  - RED: `cargo test -p compat known_apps_map_to_their_tiers -- --nocapture` failed before implementation on `com.microsoft.onenote.mac`.
+  - GREEN focused: `cargo test -p compat -- --nocapture` passed.
+  - `cargo fmt --all -- --check` initially failed on rustfmt wrapping; `cargo fmt --all` was applied, then the check passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1085`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3897` nodes, `10398` edges, and `145` communities.
+  - `git diff --check` passed.
+- Test count if available: root `1085` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Important compat terminal coverage/runtime finding: lowercase executable path invocations, including path/flag and path/positional-arg lines, no longer activate terminal suggestions.
+  - Fixed Important compat terminal coverage/runtime finding from the fresh core review: common lowercase CLI inputs (`npx`, `pnpm`, `go test`, `go fix ./...`, `go bug report`, `go telemetry on`, `rg`) now remain shell input rather than AI-agent prose.
+  - Fixed Important final diff-review finding: `go fix` import/package targets and absolute executable paths outside `/usr`/`/opt`, including `/Applications/.../Contents/MacOS/...`, remain suppressed as shell input.
+  - Fixed Important final diff-review finding: command-like natural-language prompts beginning with `go`, slash commands with flags, or path-context still activate, while `go` shell subcommands remain suppressed.
+  - Fixed Important final diff-review finding: absolute path-context prompts like `/tmp has failing tests` and `/Applications/MyTool.app crashes on launch` stay active, while executable roots such as `/tmp/tool`, `/private/tmp/tool`, `/nix/store/...`, and `/Users/<user>/.local/bin/...` remain suppressed.
+  - Fixed Important final diff-review finding: nested relative/home executable paths and additional Go package targets (`go fix .`, `go fix net/http`, `go fix cmd/go`) remain suppressed as shell input.
+  - Fixed Important compat/spec alignment finding: deterministic unsupported classification now includes OneNote, BBEdit, and Sublime Text bundle ids named by the parity docs.
+- Blocked or skipped work remaining:
+  - Important model/release finding remains: `model_catalog` built-in URLs still use mutable Hugging Face `/resolve/main/` paths; add a red test requiring URLs to contain each entry's recorded `hf_repo_commit`, then pin them.
+  - Important release/docs finding remains: ignored model-backed release gates are documented as pre-tag local requirements but not machine-enforced by GitHub Actions.
+  - Important acceptance/privacy finding remains: A2 context diagnostics and E2E harness output still use raw prompt/context/document evidence; replace with sanitized metadata and add absence-of-raw-marker self-tests.
+  - Important acceptance/evidence finding remains: A2 and E2E stage checks use unanchored grep patterns that can be satisfied by raw content; anchor to real log schema and add hostile-content negative fixtures.
+  - Important A1b harness finding remains: `run-a1b-live-gates.sh --self-test` does not yet cover accept-tap control matching, retry, missing-summary, duplicate-control, and retry-exhausted behavior.
+  - Important app/runtime findings from pass-2 review remain for future TDD slices: prior `PreviousInputs` reuse after collection-off, accept insertion committed but post-insert hide failure treated as failed accept, and same-field stale OCR freshness.
+  - Minor findings remain: hardware fit gate wording vs advisory behavior, README cask finalization wording, branch-filter wording in releasing docs, stale "both real-GGUF tests" wording, dead `manual_gate` counter, and temp-dir cleanup traps in acceptance self-tests.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 09:49:01 +08 - Submit failure tracking TDD pass
 
 - Task selected: Add TDD coverage and fix runtime bookkeeping for rejected inference submissions.

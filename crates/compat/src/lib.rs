@@ -98,7 +98,30 @@ pub fn needs_accessibility_setup(bundle_id: &str, readable_text: bool) -> bool {
 /// AI-agent natural-language prompt.
 const SHELL_LEADERS: &[&str] = &[
     "cd", "ls", "git", "cat", "rm", "cp", "mv", "mkdir", "sudo", "brew", "npm", "cargo", "python",
-    "pip", "ssh", "curl", "grep", "echo", "vim", "nano", "make", "docker", "kubectl",
+    "pip", "ssh", "curl", "grep", "rg", "echo", "vim", "nano", "make", "docker", "kubectl", "npx",
+    "pnpm",
+];
+
+const GO_SUBCOMMANDS: &[&str] = &[
+    "bug",
+    "build",
+    "clean",
+    "doc",
+    "env",
+    "fmt",
+    "generate",
+    "get",
+    "help",
+    "install",
+    "list",
+    "mod",
+    "run",
+    "telemetry",
+    "test",
+    "tool",
+    "version",
+    "vet",
+    "work",
 ];
 
 /// Whether a bundle id is a terminal emulator whose suggestions should only
@@ -134,8 +157,100 @@ pub fn terminal_prompt_activates(bundle_id: &str, left_context: &str) -> bool {
     if SHELL_LEADERS.contains(&tokens[0].to_lowercase().as_str()) {
         return false;
     }
+    if is_go_command(&tokens) {
+        return false;
+    }
+    // Executable path invocation → treat as shell input even when the path or
+    // flags contain lowercase ASCII that would otherwise look prose-like.
+    if looks_like_shell_path_invocation(tokens[0], &tokens[1..]) {
+        return false;
+    }
     // Require some lowercase-alphabetic prose so a bare path/flags line is skipped.
     line.chars().any(|c| c.is_ascii_lowercase())
+}
+
+fn looks_like_shell_path_invocation(first: &str, rest: &[&str]) -> bool {
+    if !is_path_token(first) || is_single_segment_slash_command(first) {
+        return false;
+    }
+    if is_executable_path_token(first) {
+        return true;
+    }
+    rest.iter()
+        .any(|token| token.starts_with('-') || is_path_token(token))
+}
+
+fn is_single_segment_slash_command(token: &str) -> bool {
+    token.starts_with('/') && !token[1..].contains('/')
+}
+
+fn is_executable_path_token(token: &str) -> bool {
+    if let Some(relative) = token
+        .strip_prefix("./")
+        .or_else(|| token.strip_prefix("../"))
+    {
+        return !relative.contains('/')
+            || relative.starts_with("bin/")
+            || relative.starts_with("scripts/");
+    }
+    if let Some(home_relative) = token.strip_prefix("~/") {
+        return !home_relative.contains('/')
+            || home_relative.starts_with("bin/")
+            || home_relative.starts_with(".local/bin/");
+    }
+    if token.starts_with("/Applications/") {
+        return token.contains("/Contents/MacOS/");
+    }
+    if is_users_executable_path(token) {
+        return true;
+    }
+    token.starts_with("/bin/")
+        || token.starts_with("/sbin/")
+        || token.starts_with("/usr/")
+        || token.starts_with("/opt/")
+        || token.starts_with("/tmp/")
+        || token.starts_with("/private/tmp/")
+        || token.starts_with("/nix/store/")
+}
+
+fn is_users_executable_path(token: &str) -> bool {
+    let Some(rest) = token.strip_prefix("/Users/") else {
+        return false;
+    };
+    let Some((_, user_relative)) = rest.split_once('/') else {
+        return false;
+    };
+    user_relative.starts_with("bin/") || user_relative.starts_with(".local/bin/")
+}
+
+fn is_go_command(tokens: &[&str]) -> bool {
+    if !tokens[0].eq_ignore_ascii_case("go") {
+        return false;
+    }
+    let Some(subcommand) = tokens.get(1).map(|token| token.to_lowercase()) else {
+        return false;
+    };
+    if subcommand == "fix" {
+        return tokens.iter().skip(2).any(|token| is_go_fix_target(token));
+    }
+    GO_SUBCOMMANDS.contains(&subcommand.as_str())
+}
+
+fn is_go_fix_target(token: &str) -> bool {
+    token.starts_with('-')
+        || is_path_token(token)
+        || token == "."
+        || token == "all"
+        || token == "std"
+        || token.contains("...")
+        || token.contains('/')
+}
+
+fn is_path_token(token: &str) -> bool {
+    token.starts_with('/')
+        || token.starts_with("./")
+        || token.starts_with("../")
+        || token.starts_with("~/")
 }
 
 /// Classify a macOS application bundle id into a compatibility tier.
@@ -172,6 +287,10 @@ pub fn compatibility_tier(bundle_id: &str) -> CompatTier {
         "org.mozilla.thunderbird"
         | "com.apple.iWork.Pages"
         | "com.literatureandlatte.scrivener3"
+        | "com.microsoft.onenote.mac"
+        | "com.barebones.bbedit"
+        | "com.sublimetext.3"
+        | "com.sublimetext.4"
         | "com.mitchellh.ghostty"
         | "dev.warp.Warp-Stable" => CompatTier::Unsupported,
 
@@ -208,6 +327,10 @@ mod tests {
             ("org.mozilla.thunderbird", CompatTier::Unsupported),
             ("com.apple.iWork.Pages", CompatTier::Unsupported),
             ("com.literatureandlatte.scrivener3", CompatTier::Unsupported),
+            ("com.microsoft.onenote.mac", CompatTier::Unsupported),
+            ("com.barebones.bbedit", CompatTier::Unsupported),
+            ("com.sublimetext.3", CompatTier::Unsupported),
+            ("com.sublimetext.4", CompatTier::Unsupported),
             ("com.mitchellh.ghostty", CompatTier::Unsupported),
             ("dev.warp.Warp-Stable", CompatTier::Unsupported),
         ] {
@@ -322,6 +445,55 @@ mod tests {
     }
 
     #[test]
+    fn terminal_skips_common_lowercase_shell_commands() {
+        let term = "com.googlecode.iterm2";
+        for command in [
+            "npx ctx7 latest",
+            "pnpm add react",
+            "go test ./...",
+            "go fix ./...",
+            "go fix example.com/x",
+            "go fix example.com/acme/widget",
+            "go fix all",
+            "go fix std",
+            "go fix .",
+            "go fix net/http",
+            "go fix cmd/go",
+            "go bug report",
+            "go help test",
+            "go help buildconstraint",
+            "go telemetry on",
+            "rg foo crates",
+        ] {
+            assert!(
+                !terminal_prompt_activates(term, command),
+                "{command} should be treated as shell input"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_keeps_command_like_natural_language_prompts_active() {
+        let term = "com.googlecode.iterm2";
+        for prompt in [
+            "go fix the failing tests",
+            "/review the current tracked diff",
+            "/graphify --update current repo",
+            "/review --all current diff",
+            "/Users/mudrii/src/compme has failing tests",
+            "/tmp has failing tests",
+            "/Applications/MyTool.app crashes on launch",
+            "~/src/compme has failing tests",
+            "./crates/compat has failing tests",
+        ] {
+            assert!(
+                terminal_prompt_activates(term, prompt),
+                "{prompt} should be treated as an AI-agent prompt"
+            );
+        }
+    }
+
+    #[test]
     fn terminal_empty_or_whitespace_line_does_not_activate() {
         // A freshly-cleared agent line (caret on an empty prompt) yields zero
         // tokens → the `< 3` branch returns false, so nothing fires on a blank
@@ -344,14 +516,40 @@ mod tests {
             term,
             "/USR/LOCAL/BIN/TOOL --FLAG /TMP/OUT"
         ));
-        // The same shape but lowercased contains prose → activates (true).
-        // NOTE: the originally-suggested "/usr/local/bin/tool --flag /tmp/OUT"
-        // actually ACTIVATES because the path/flag segments are lowercase ASCII
-        // prose, so the guard does not skip it. We assert the real behavior.
-        assert!(terminal_prompt_activates(
+        // The same shell shape lowercased is still a command, not prose.
+        assert!(!terminal_prompt_activates(
             term,
             "/usr/local/bin/tool --flag /tmp/OUT"
         ));
+        assert!(!terminal_prompt_activates(term, "./script --dry-run now"));
+        assert!(!terminal_prompt_activates(
+            term,
+            "./scripts/tool input output"
+        ));
+        assert!(!terminal_prompt_activates(term, "../bin/tool input output"));
+        assert!(!terminal_prompt_activates(term, "~/bin/tool input output"));
+        assert!(!terminal_prompt_activates(
+            term,
+            "/Users/mudrii/.local/bin/tool input output"
+        ));
+        assert!(!terminal_prompt_activates(
+            term,
+            "/usr/local/bin/tool input output"
+        ));
+        assert!(!terminal_prompt_activates(term, "/tmp/tool input output"));
+        assert!(!terminal_prompt_activates(
+            term,
+            "/Applications/MyTool.app/Contents/MacOS/tool input output"
+        ));
+        assert!(!terminal_prompt_activates(
+            term,
+            "/private/tmp/tool input output"
+        ));
+        assert!(!terminal_prompt_activates(
+            term,
+            "/nix/store/hash-tool/bin/tool input output"
+        ));
+        assert!(!terminal_prompt_activates(term, "./script run now"));
         // Lowercase prose present (mixed-case line) → activates.
         assert!(terminal_prompt_activates(term, "RUN the build now"));
     }
