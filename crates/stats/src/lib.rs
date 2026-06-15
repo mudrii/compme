@@ -111,6 +111,58 @@ pub struct DayBucket {
     pub words: usize,
 }
 
+/// Selectable trailing span for the Statistics-pane chart (the "range" control).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatRange {
+    Last7Days,
+    Last14Days,
+    Last30Days,
+}
+
+impl StatRange {
+    /// The number of trailing 24h slices this range covers.
+    pub fn days(self) -> usize {
+        match self {
+            StatRange::Last7Days => 7,
+            StatRange::Last14Days => 14,
+            StatRange::Last30Days => 30,
+        }
+    }
+}
+
+/// How the chart groups its trailing daily slices (the "group" control).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatGrouping {
+    /// One bar per 24h slice.
+    Daily,
+    /// One bar per 7 consecutive slices, oldest group first; a trailing
+    /// partial group (e.g. the last 2 days of a 30-day range) is summed as-is.
+    Weekly,
+}
+
+/// Which metric series the chart plots (the "metric" control).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatMetric {
+    Shown,
+    Accepted,
+    Dismissed,
+    Superseded,
+    Words,
+}
+
+impl StatMetric {
+    /// Pull this metric's value out of a single day bucket.
+    fn of(self, bucket: &DayBucket) -> usize {
+        match self {
+            StatMetric::Shown => bucket.counts.shown,
+            StatMetric::Accepted => bucket.counts.accepted,
+            StatMetric::Dismissed => bucket.counts.dismissed,
+            StatMetric::Superseded => bucket.counts.superseded,
+            StatMetric::Words => bucket.words,
+        }
+    }
+}
+
 /// A completion-lifecycle outcome worth counting (design spec §11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -341,6 +393,28 @@ impl Stats {
             }
         }
         buckets
+    }
+
+    /// Chart series for the Statistics pane's range/group/metric selector: the
+    /// chosen `metric` over the `range`, grouped per `grouping`, oldest bar
+    /// first. Daily yields one value per trailing 24h slice; Weekly sums every
+    /// 7 slices (a trailing partial week is summed as-is). Feeds `sparkline`.
+    pub fn metric_series(
+        &self,
+        now_ms: u64,
+        range: StatRange,
+        grouping: StatGrouping,
+        metric: StatMetric,
+    ) -> Vec<usize> {
+        let daily: Vec<usize> = self
+            .daily_buckets(now_ms, range.days())
+            .iter()
+            .map(|b| metric.of(b))
+            .collect();
+        match grouping {
+            StatGrouping::Daily => daily,
+            StatGrouping::Weekly => daily.chunks(7).map(|week| week.iter().sum()).collect(),
+        }
     }
 
     /// One human-readable line for the menu bar (§11 "words completed" display):
@@ -827,5 +901,107 @@ mod tests {
         assert_eq!(s.counts(T0 + 29 * DAY_MS).shown, 3);
         // Advancing past T0+30d drops the oldest from the window.
         assert_eq!(s.counts(T0 + WINDOW_MS + 1).shown, 2);
+    }
+
+    #[test]
+    fn metric_series_daily_selects_the_chosen_metric_per_day() {
+        // The Statistics-pane range/group/metric control: a Daily grouping over
+        // the Last7Days range yields one value per trailing 24h slice, oldest
+        // first, for the chosen metric.
+        let mut s = Stats::new();
+        let now = T0 + 7 * DAY_MS;
+        s.record(now, Outcome::Accepted { words: 5 }); // newest slice (idx 6)
+        s.record(now - DAY_MS - 1, Outcome::Accepted { words: 2 }); // idx 5
+        s.record(now - DAY_MS - 1, Outcome::Shown); // idx 5
+        s.record(now - 2 * DAY_MS - 1, Outcome::Dismissed); // idx 4
+        s.record(now - 2 * DAY_MS - 1, Outcome::Superseded); // idx 4
+
+        assert_eq!(
+            s.metric_series(
+                now,
+                StatRange::Last7Days,
+                StatGrouping::Daily,
+                StatMetric::Accepted
+            ),
+            vec![0, 0, 0, 0, 0, 1, 1],
+        );
+        assert_eq!(
+            s.metric_series(
+                now,
+                StatRange::Last7Days,
+                StatGrouping::Daily,
+                StatMetric::Dismissed
+            ),
+            vec![0, 0, 0, 0, 1, 0, 0],
+        );
+        assert_eq!(
+            s.metric_series(
+                now,
+                StatRange::Last7Days,
+                StatGrouping::Daily,
+                StatMetric::Superseded
+            ),
+            vec![0, 0, 0, 0, 1, 0, 0],
+        );
+        assert_eq!(
+            s.metric_series(
+                now,
+                StatRange::Last7Days,
+                StatGrouping::Daily,
+                StatMetric::Words
+            ),
+            vec![0, 0, 0, 0, 0, 2, 5],
+        );
+        assert_eq!(
+            s.metric_series(
+                now,
+                StatRange::Last7Days,
+                StatGrouping::Daily,
+                StatMetric::Shown
+            ),
+            vec![0, 0, 0, 0, 0, 1, 0],
+        );
+    }
+
+    #[test]
+    fn metric_series_weekly_sums_each_seven_day_group_oldest_first() {
+        // Weekly grouping sums every 7 trailing daily slices into one bar,
+        // oldest group first; a trailing partial group is summed as-is.
+        let mut s = Stats::new();
+        let now = T0 + 14 * DAY_MS;
+        s.record(now - 10 * DAY_MS, Outcome::Accepted { words: 1 }); // older week
+        s.record(now - 2 * DAY_MS, Outcome::Accepted { words: 1 }); // newer week
+        s.record(now, Outcome::Accepted { words: 1 }); // newer week
+
+        assert_eq!(
+            s.metric_series(
+                now,
+                StatRange::Last14Days,
+                StatGrouping::Weekly,
+                StatMetric::Accepted
+            ),
+            vec![1, 2],
+        );
+    }
+
+    #[test]
+    fn metric_series_weekly_30day_range_groups_into_five_buckets() {
+        // 30 daily slices → chunks of 7 → 4 full weeks + a trailing 2-day group.
+        let s = Stats::new();
+        let series = s.metric_series(
+            T0 + WINDOW_MS,
+            StatRange::Last30Days,
+            StatGrouping::Weekly,
+            StatMetric::Dismissed,
+        );
+        assert_eq!(series.len(), 5);
+        assert!(series.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn stat_range_days_are_fixed_spans() {
+        assert_eq!(StatRange::Last7Days.days(), 7);
+        assert_eq!(StatRange::Last14Days.days(), 14);
+        assert_eq!(StatRange::Last30Days.days(), 30);
     }
 }
