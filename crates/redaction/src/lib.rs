@@ -35,6 +35,7 @@ fn secret_re() -> &'static Regex {
               (?:AKIA|ASIA)[0-9A-Z]{16}
             | AIza[0-9A-Za-z_\-]{16,}
             | xox[baprs]-[A-Za-z0-9-]{10,}
+            | SG\.[A-Za-z0-9._-]{10,}
             | (?:whsec_|glpat-)[A-Za-z0-9_-]{16,}
             | (?:sk|ghp|gho|ghu|ghs|ghr|pk|rk)[-_][A-Za-z0-9_-]{16,}
             | [A-Za-z0-9+/=._-]{32,}
@@ -300,6 +301,17 @@ mod tests {
             assert!(out.contains("[redacted-secret]"), "{token} -> {out:?}");
             assert!(!out.contains(token), "{token} leaked -> {out:?}");
         }
+    }
+
+    #[test]
+    fn redacts_sendgrid_prefix_without_generic_length_entropy() {
+        // SG. is a documented always-redacted vendor prefix. Keep it covered
+        // below the generic 32+ char token branch so the prefix contract is
+        // what protects it.
+        let token = "SG.shortKey123";
+        let out = redact(&format!("sendgrid {token} done"));
+        assert!(out.contains("[redacted-secret]"), "got {out:?}");
+        assert!(!out.contains(token), "SG-prefixed token leaked -> {out:?}");
     }
 
     #[test]

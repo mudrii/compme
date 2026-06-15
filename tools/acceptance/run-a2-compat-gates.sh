@@ -11,8 +11,8 @@
 #   unsupported  Ghostty/Pages/Warp ...  → expect NO `request gen=` line.
 #   terminal-cmd Terminal/iTerm, type a shell command  → NO request.
 #   terminal-nlp Terminal/iTerm, type a natural-language prompt → request.
-#   clipboard    works app + COMPME_CLIPBOARD_CONTEXT=1; the copied text
-#                is logged by the diagnostic context path before submit.
+#   clipboard    works app + COMPME_CLIPBOARD_CONTEXT=1; diagnostic context
+#                metadata proves clipboard context reached submit.
 #   screen       works app + COMPME_SCREEN_CONTEXT=1; Screen Recording must
 #                be granted and OCR must return context before submit.
 #
@@ -40,11 +40,20 @@ has_request() {
 }
 
 has_clipboard_prompt_context() {
-  grep -q 'prompt_context=Some("Clipboard: CLIPBOARD-CONTEXT-MARKER' "$1"
+  grep -Eq 'prompt_context=Some\("sources=[^"]*clipboard[^"]*clipboard_chars=24([^0-9]|")' "$1" \
+    && grep -q 'clipboard_context=Some(chars=24 marker=true)' "$1"
 }
 
 has_screen_prompt_context() {
-  grep -q 'prompt_context=Some(".*On screen: ' "$1"
+  grep -Eq 'prompt_context=Some\("sources=[^"]*screen[^"]*screen_chars=[1-9][0-9]*([^0-9]|")' "$1"
+}
+
+has_raw_prompt_context_payload() {
+  grep -Eq 'prompt_context=Some\("[^"]*(Clipboard:|On screen:|Recent:)' "$1"
+}
+
+has_no_raw_prompt_context_payload() {
+  ! has_raw_prompt_context_payload "$1"
 }
 
 has_unsupported_block_evidence() {
@@ -87,6 +96,10 @@ run_self_tests() {
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/a2-compat-tests.XXXXXX")"
   failures=0
   good="$tmp_dir/good.log"
+  raw_prompt_context="$tmp_dir/raw-prompt-context.log"
+  clipboard_source_wrong_length="$tmp_dir/clipboard-source-wrong-length.log"
+  clipboard_marker_false="$tmp_dir/clipboard-marker-false.log"
+  screen_source_missing_length="$tmp_dir/screen-source-missing-length.log"
   producer_only="$tmp_dir/producer-only.log"
   unsupported_block="$tmp_dir/unsupported-block.log"
   terminal_block="$tmp_dir/terminal-block.log"
@@ -96,8 +109,33 @@ run_self_tests() {
   cat >"$good" <<'LOG'
 compme: focus ax:1
 compme: request gen=7 prompt="hello"
+compme: clipboard_context=Some(chars=24 marker=true)
 compme: screen_context=Some(12)
-compme: prompt_context=Some("Clipboard: CLIPBOARD-CONTEXT-MARKER | On screen: visible text")
+compme: prompt_context=Some("sources=clipboard,screen chars=36 clipboard_chars=24 screen_chars=12")
+LOG
+  cat >"$raw_prompt_context" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt="hello"
+compme: screen_context=Some(12)
+compme: prompt_context=Some("Clipboard: ada@example.com | On screen: sk-live-secret | Recent: private draft")
+LOG
+  cat >"$clipboard_source_wrong_length" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt="hello"
+compme: clipboard_context=Some(chars=24 marker=false)
+compme: prompt_context=Some("sources=clipboard chars=12 clipboard_chars=12")
+LOG
+  cat >"$clipboard_marker_false" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt="hello"
+compme: clipboard_context=Some(chars=24 marker=false)
+compme: prompt_context=Some("sources=clipboard chars=24 clipboard_chars=24")
+LOG
+  cat >"$screen_source_missing_length" <<'LOG'
+compme: focus ax:1
+compme: request gen=7 prompt="hello"
+compme: screen_context=Some(12)
+compme: prompt_context=Some("sources=screen chars=12")
 LOG
   cat >"$producer_only" <<'LOG'
 compme: request gen=7 prompt="hello"
@@ -120,6 +158,12 @@ LOG
   self_test_assert "request-absent" 0 has_request "$empty" || failures=$((failures + 1))
   self_test_assert "clipboard-prompt-context" 1 has_clipboard_prompt_context "$good" || failures=$((failures + 1))
   self_test_assert "screen-prompt-context" 1 has_screen_prompt_context "$good" || failures=$((failures + 1))
+  self_test_assert "metadata-prompt-context-is-not-raw" 1 has_no_raw_prompt_context_payload "$good" || failures=$((failures + 1))
+  self_test_assert "raw-prompt-context-detected" 1 has_raw_prompt_context_payload "$raw_prompt_context" || failures=$((failures + 1))
+  self_test_assert "clipboard-source-without-marker-length-is-not-submit-proof" 0 has_clipboard_prompt_context "$clipboard_source_wrong_length" || failures=$((failures + 1))
+  self_test_assert "clipboard-source-without-marker-match-is-not-submit-proof" 0 has_clipboard_prompt_context "$clipboard_marker_false" || failures=$((failures + 1))
+  self_test_assert "screen-source-without-length-is-not-submit-proof" 0 has_screen_prompt_context "$screen_source_missing_length" || failures=$((failures + 1))
+  self_test_assert "raw-prompt-context-is-not-submit-proof" 0 has_screen_prompt_context "$raw_prompt_context" || failures=$((failures + 1))
   self_test_assert "screen-producer-alone-is-not-submit-context" 0 has_screen_prompt_context "$producer_only" || failures=$((failures + 1))
   self_test_assert "unsupported-block-evidence" 1 has_unsupported_block_evidence "$unsupported_block" || failures=$((failures + 1))
   self_test_assert "terminal-block-evidence" 1 has_terminal_cmd_block_evidence "$terminal_block" || failures=$((failures + 1))
@@ -200,8 +244,9 @@ clip_env=()
 screen_env=()
 
 if [[ "$KIND" == "clipboard" ]]; then
-  /usr/bin/osascript -e 'set the clipboard to "CLIPBOARD-CONTEXT-MARKER"' >/dev/null 2>&1 || true
-  clip_env=(COMPME_CLIPBOARD_CONTEXT=1 COMPME_DIAG_CONTEXT=1)
+  /usr/bin/osascript -e 'set the clipboard to "CLIPBOARD-CONTEXT-MARKER"' >/dev/null 2>&1 \
+    || { echo "FAIL: could not seed clipboard context marker" >&2; exit 2; }
+  clip_env=(COMPME_CLIPBOARD_CONTEXT=1 COMPME_DIAG_CONTEXT=1 COMPME_DIAG_CLIPBOARD_MARKER=CLIPBOARD-CONTEXT-MARKER)
 fi
 
 if [[ "$KIND" == "screen" ]]; then
@@ -249,13 +294,17 @@ case "$KIND" in
       || fail "expected a completion request, none logged" ;;
   clipboard)
     [[ "$requested" == 1 ]] || fail "expected a completion request, none logged"
+    has_no_raw_prompt_context_payload "$LOG" \
+      || fail "diagnostic prompt_context leaked raw context payload"
     has_clipboard_prompt_context "$LOG" \
-      && pass "clipboard context marker reached the submit path" \
-      || fail "expected CLIPBOARD-CONTEXT-MARKER in diagnostic prompt_context" ;;
+      && pass "clipboard context metadata reached the submit path" \
+      || fail "expected clipboard source metadata in diagnostic prompt_context" ;;
   screen)
     [[ "$requested" == 1 ]] || fail "expected a completion request, none logged"
+    has_no_raw_prompt_context_payload "$LOG" \
+      || fail "diagnostic prompt_context leaked raw context payload"
     has_screen_prompt_context "$LOG" \
-      && pass "screen OCR text was included in a submitted prompt" \
+      && pass "screen OCR metadata was included in a submitted prompt" \
       || { grep -Eq 'screen_context=Some\([1-9][0-9]*\)' "$LOG" \
         && fail "OCR ran but no submitted prompt included it (timing) — retry with steadier typing" \
         || fail "expected non-empty screen context; check Screen Recording grant and visible text"; } ;;

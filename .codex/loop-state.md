@@ -480,6 +480,66 @@
   - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
 - Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
 
+## 2026-06-15 11:04:13 +08 - Sanitized context diagnostics TDD pass
+
+- Task selected: Replace raw A2/app prompt-context diagnostics with sanitized source metadata, and cover the short SendGrid `SG.` redaction prefix found by the pure-crate review.
+- Why it was selected: The highest-priority loop-doable finding was Critical/Important privacy coverage around A2 `COMPME_DIAG_CONTEXT` proving clipboard/screen context by logging raw `prompt_context` text. A small redaction finding for short `SG.` tokens was already in progress and fit the same privacy hardening slice.
+- Files changed:
+  - `.codex/loop-state.md`
+  - `README.md`
+  - `crates/app/src/inference.rs`
+  - `crates/app/src/run_loop.rs`
+  - `crates/redaction/src/lib.rs`
+  - `docs/DEVELOPMENT.md`
+  - `tools/acceptance/run-a2-compat-gates.sh`
+- Tests added/updated:
+  - Updated `inference::tests::diagnostic_context_line_reports_sources_without_context_text` to require `sources=...`, aggregate/source char counts, and absence of raw clipboard/screen/recent text.
+  - Added `redaction::tests::redacts_sendgrid_prefix_without_generic_length_entropy` for a short `SG.` token below the generic 32+ character secret branch.
+  - Added `run_loop::tests::clipboard_diagnostic_reports_marker_without_raw_text` for exact, non-raw clipboard marker diagnostics.
+  - Updated `run-a2-compat-gates.sh --self-test` fixtures so A2 accepts sanitized `prompt_context` metadata, rejects raw `Clipboard:` / `On screen:` / `Recent:` prompt-context payloads, rejects a generic clipboard source that lacks the seeded marker match, and rejects screen metadata missing nonzero `screen_chars`.
+  - Updated README and DEVELOPMENT root test-count prose from `1086` to `1088`.
+- Verification commands and result:
+  - RED: `cargo test -p redaction redacts_sendgrid_prefix_without_generic_length_entropy -- --nocapture` failed before implementation because `SG.shortKey123` leaked.
+  - GREEN focused: `cargo test -p redaction redacts_sendgrid_prefix_without_generic_length_entropy -- --nocapture` passed.
+  - RED: `cargo test -p app diagnostic_context_line_reports_sources_without_context_text -- --nocapture` failed before implementation because diagnostics returned raw context text.
+  - GREEN focused: `cargo test -p app diagnostic_context_line_reports_sources_without_context_text -- --nocapture` passed after source metadata replaced raw text.
+  - RED after diff review: `cargo test -p app diagnostic_context_line_reports_sources_without_context_text -- --nocapture` failed when the test was tightened to require per-source lengths.
+  - GREEN after diff review: `cargo test -p app diagnostic_context_line_reports_sources_without_context_text -- --nocapture` passed with aggregate and per-source char counts.
+  - RED after final diff review: `cargo test -p app clipboard_diagnostic_reports_marker_without_raw_text -- --nocapture` failed because the sanitized marker diagnostic helper did not exist.
+  - GREEN after final diff review: `cargo test -p app clipboard_diagnostic_reports_marker_without_raw_text -- --nocapture` passed.
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - `cargo test --workspace --all-targets -- --test-threads=1` passed.
+  - `cargo build --workspace --all-targets` passed.
+  - `bash -n tools/acceptance/*.sh` passed.
+  - `tools/acceptance/e2e-complete-me.sh --self-test` passed.
+  - `tools/acceptance/run-a1b-live-gates.sh --self-test` passed.
+  - `tools/acceptance/run-a2-compat-gates.sh --self-test` passed.
+  - `(cd tools/spike && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --bins)` passed.
+  - `cargo test -p model_client --test latency -- --ignored` passed.
+  - `(cd tools/spike && cargo test --test model_integration -- --ignored)` passed.
+  - `cargo test --workspace --all-targets -- --list | rg -c ': test$'` passed and reported `1088`.
+  - `(cd tools/spike && cargo test -- --list | rg -c ': test$')` passed and reported `30`.
+  - `graphify update .` passed and rebuilt `3905` nodes, `10416` edges, and `136` communities.
+- Test count if available: root `1088` listed tests; spike `30` listed tests; ignored model-backed runs passed `3` root model-client tests and `1` spike model integration test.
+- Critical/Important review findings fixed:
+  - Fixed Critical acceptance/privacy finding: `COMPME_DIAG_CONTEXT` no longer logs raw clipboard/screen/recent prompt-context text through the app diagnostic line.
+  - Fixed Important tests/coverage finding from final diff review: the A2 clipboard gate now requires sanitized metadata proving the seeded `CLIPBOARD-CONTEXT-MARKER` matched the clipboard source, not merely any clipboard source or any 24-character clipboard payload.
+  - Fixed Important final diff-review finding: the A2 screen gate now requires nonzero `screen_chars` metadata rather than accepting a bare `sources=screen` label.
+  - Fixed Important plan-alignment finding from final diff review by adding this current loop-state entry with the exact files, tests, verification, and `1088` root test count.
+  - Fixed Important pure-crate finding: short `SG.` SendGrid-style tokens are redacted without relying on the generic long-token branch.
+- Blocked or skipped work remaining:
+  - Critical app/runtime finding remains for a future tick: same-field stale OCR can be consumed by a later request because screen context is scoped by field but not freshness.
+  - Critical model-download finding remains for a future tick: already-present non-empty GGUF files are trusted without hashing against `entry.expected_sha256`.
+  - Important release finding remains: tag workflow can publish without machine-checkable evidence that ignored model-backed gates were run for the tag/commit.
+  - Important remote-provenance finding remains: no opt-in live HEAD gate confirms pinned Hugging Face URLs still expose `x-linked-etag` matching the pinned hashes.
+  - Important acceptance/privacy finding remains: E2E/A1b output can still print raw live document or product-log evidence; add sanitized evidence output or explicit raw opt-in.
+  - Important app/runtime finding remains: accept insert failure lacks app-level side-effect sink coverage.
+  - Important pure-crate findings remain: PAN redaction lacks tabs/newlines/repeated-space separator coverage; `PreviousInputs::record` relies on callers to pre-redact; `stats::sparkline` lacks pathological large-value coverage.
+  - Minor findings remain: A2 screen-context gate does not yet prove the same OCR marker reached the matching sanitized `prompt_context`; A2 lacks `--log-dir`; long-lived MVP spec has stale webconfig/stats exact test counts; model picker lacks a pure end-to-end decision harness.
+  - Manual/live blockers remain: AllMonitored GUI/privacy validation, revoked Input Monitoring spot-check, lifetime stats relaunch/readback, settings LOOK timing, A2 GUI/OCR/mirror validation, and full non-AxSet replacement parity.
+- Commit hash and push confirmation, or DRY/blocked status: Commit hash cannot be embedded truthfully in the commit that creates this entry; final response for this tick reports the exact commit hash and upstream equality after push.
+
 ## 2026-06-15 10:11:07 +08 - Compat terminal classifier TDD pass
 
 - Task selected: Harden `compat` terminal prompt gating so shell-shaped terminal input is not treated as AI-agent prose.

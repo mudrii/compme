@@ -179,6 +179,7 @@ struct Config {
     clipboard_context: bool,
     screen_context: bool,
     diag_context: bool,
+    diag_clipboard_marker: Option<String>,
     personalization: PersonalizationProfile,
     prefs: Prefs,
     memory: MemoryConfig,
@@ -292,6 +293,7 @@ impl Config {
             screen_context: lookup("COMPME_SCREEN_CONTEXT")
                 .is_some_and(|v| v == "1" || v == "true"),
             diag_context: lookup("COMPME_DIAG_CONTEXT").is_some_and(|v| v == "1" || v == "true"),
+            diag_clipboard_marker: lookup("COMPME_DIAG_CLIPBOARD_MARKER").filter(|v| !v.is_empty()),
             personalization: build_personalization(&lookup),
             prefs: build_prefs(&lookup),
             memory: build_memory_config(&lookup),
@@ -461,6 +463,16 @@ fn context_bound_chars(clipboard: bool, screen_active: bool, max_chars: usize) -
         DEFAULT_CONTEXT_MAX_CHARS
     } else {
         max_chars
+    }
+}
+
+fn clipboard_diagnostic_line(text: Option<&str>, marker: Option<&str>) -> String {
+    match text {
+        Some(text) => {
+            let marker_found = marker.is_some_and(|marker| text == marker);
+            format!("Some(chars={} marker={marker_found})", text.chars().count())
+        }
+        None => "None".to_string(),
     }
 }
 
@@ -3409,10 +3421,17 @@ pub fn run() -> Result<(), String> {
                     // worker (which reads the latest cell for the surviving
                     // coalesced request) never attaches a prior app's clipboard.
                     if config.clipboard_context {
-                        let clip = read_pasteboard_text().map(|text| redaction::redact(&text));
+                        let raw_clip = read_pasteboard_text();
                         if config.diag_context {
-                            eprintln!("compme: clipboard_context={clip:?}");
+                            eprintln!(
+                                "compme: clipboard_context={}",
+                                clipboard_diagnostic_line(
+                                    raw_clip.as_deref(),
+                                    config.diag_clipboard_marker.as_deref()
+                                )
+                            );
                         }
+                        let clip = raw_clip.map(|text| redaction::redact(&text));
                         *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = clip;
                     }
                     // Screen-aware context (A2 §16): hand the request field and
@@ -4699,6 +4718,30 @@ mod tests {
         assert!(on.clipboard_context);
         assert!(on.screen_context);
         assert!(on.diag_context);
+    }
+
+    #[test]
+    fn clipboard_diagnostic_reports_marker_without_raw_text() {
+        let line = clipboard_diagnostic_line(
+            Some("CLIPBOARD-CONTEXT-MARKER"),
+            Some("CLIPBOARD-CONTEXT-MARKER"),
+        );
+        assert_eq!(line, "Some(chars=24 marker=true)");
+        assert!(
+            !line.contains("CLIPBOARD-CONTEXT-MARKER"),
+            "diagnostic leaked marker text: {line:?}"
+        );
+        assert_eq!(
+            clipboard_diagnostic_line(
+                Some("other 24 character text"),
+                Some("CLIPBOARD-CONTEXT-MARKER")
+            ),
+            "Some(chars=23 marker=false)"
+        );
+        assert_eq!(
+            clipboard_diagnostic_line(None, Some("CLIPBOARD-CONTEXT-MARKER")),
+            "None"
+        );
     }
 
     #[test]

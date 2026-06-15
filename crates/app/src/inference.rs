@@ -112,13 +112,74 @@ impl WorkerContext {
 }
 
 fn context_diagnostic_line(block: &str) -> Option<String> {
-    let line = block
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" | ");
-    (!line.is_empty()).then_some(line)
+    let mut has_clipboard = false;
+    let mut has_screen = false;
+    let mut has_recent = false;
+    let mut has_unknown = false;
+    let mut chars = 0usize;
+    let mut clipboard_chars = 0usize;
+    let mut screen_chars = 0usize;
+    let mut recent_chars = 0usize;
+    let mut unknown_chars = 0usize;
+
+    for line in block.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line == "Context (for reference only):" {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("Clipboard:") {
+            has_clipboard = true;
+            let count = value.trim_start().chars().count();
+            clipboard_chars += count;
+            chars += count;
+        } else if let Some(value) = line.strip_prefix("On screen:") {
+            has_screen = true;
+            let count = value.trim_start().chars().count();
+            screen_chars += count;
+            chars += count;
+        } else if let Some(value) = line.strip_prefix("Recent:") {
+            has_recent = true;
+            let count = value.trim_start().chars().count();
+            recent_chars += count;
+            chars += count;
+        } else {
+            has_unknown = true;
+            let count = line.chars().count();
+            unknown_chars += count;
+            chars += count;
+        }
+    }
+
+    if chars == 0 {
+        return None;
+    }
+
+    let mut sources = Vec::new();
+    if has_clipboard {
+        sources.push("clipboard");
+    }
+    if has_screen {
+        sources.push("screen");
+    }
+    if has_recent {
+        sources.push("recent");
+    }
+    if has_unknown {
+        sources.push("unknown");
+    }
+    let mut line = format!("sources={} chars={chars}", sources.join(","));
+    if has_clipboard {
+        line.push_str(&format!(" clipboard_chars={clipboard_chars}"));
+    }
+    if has_screen {
+        line.push_str(&format!(" screen_chars={screen_chars}"));
+    }
+    if has_recent {
+        line.push_str(&format!(" recent_chars={recent_chars}"));
+    }
+    if has_unknown {
+        line.push_str(&format!(" unknown_chars={unknown_chars}"));
+    }
+    Some(line)
 }
 
 /// A completed inference, paired with the request that produced it so the engine
@@ -512,14 +573,18 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_context_line_reports_the_model_prompt_context() {
+    fn diagnostic_context_line_reports_sources_without_context_text() {
         let block = "Clipboard: copied snippet\nOn screen: visible window text\nRecent: accepted\n";
+        let diag = context_diagnostic_line(block).expect("diagnostic summary");
         assert_eq!(
-            context_diagnostic_line(block),
-            Some(
-                "Clipboard: copied snippet | On screen: visible window text | Recent: accepted"
-                    .to_string()
-            )
+            diag,
+            "sources=clipboard,screen,recent chars=41 clipboard_chars=14 screen_chars=19 recent_chars=8"
+        );
+        assert!(
+            !diag.contains("copied snippet")
+                && !diag.contains("visible window text")
+                && !diag.contains("accepted"),
+            "diagnostic context leaked raw text: {diag:?}"
         );
         assert_eq!(context_diagnostic_line(" \n\t\n"), None);
     }
