@@ -102,26 +102,27 @@ instruction maps, with the settings design deferring the editing UI.
 **Status (re-validated 2026-06-15):**
 - `build_personalization` parses `COMPME_INSTRUCTIONS_APPS` /
   `COMPME_INSTRUCTIONS_APP_<TARGET>` into `PersonalizationProfile.per_app`
-  (`crates/app/src/run_loop.rs:832-840`) and `COMPME_INSTRUCTIONS_DOMAINS` /
+  and `COMPME_INSTRUCTIONS_DOMAINS` /
   `COMPME_INSTRUCTIONS_DOMAIN_<TARGET>` into
-  `PersonalizationProfile.per_domain` (`run_loop.rs:841-846`).
+  `PersonalizationProfile.per_domain` (`crates/app/src/run_loop.rs`,
+  `build_personalization`).
 - Ambiguous target suffixes are ignored instead of applying one value to
-  multiple apps/domains (`instruction_map_from_config`, `run_loop.rs:859-887`).
+  multiple apps/domains (`instruction_map_from_config` in `run_loop.rs`).
 - Inference now calls
   `profile.build_preamble(Some(&request.field.app), request.domain.as_deref())`
   (`crates/app/src/inference.rs:297-302`), so resolved browser domains can
   activate per-domain steering.
-- The submit path reads the cached browser domain into `RequestLogContext`
-  (`run_loop.rs:3735-3740`), and `submit_request_and_track` copies it onto the
-  request before dispatch (`run_loop.rs:1178-1180`). Existing per-app keying
+- The submit path reads the cached browser domain into `RequestLogContext`, and
+  `submit_request_and_track` copies it onto the request before dispatch
+  (`run_loop.rs`). Existing per-app keying
   remains by canonical bundle id.
 
 **Coverage:**
-- `personalization_built_from_per_app_and_domain_config_keys`
-  (`run_loop.rs:3888-3940`) covers config population, missing values, normalized
-  domains, and combined global/app/domain preambles.
+- `personalization_built_from_per_app_and_domain_config_keys` covers config
+  population, missing values, normalized domains, and combined global/app/domain
+  preambles.
 - `personalization_skips_ambiguous_per_target_instruction_keys`
-  (`run_loop.rs:3942-3970`) covers collision handling.
+  covers collision handling.
 - `per_domain_personalization_uses_request_domain`
   (`crates/app/src/inference.rs`) covers runtime domain steering.
 - Focused revalidation passed on 2026-06-15:
@@ -162,21 +163,19 @@ Shortcuts hotkeys.
 
 ### 3.2 ◑ Dedicated Personalization / Context / Emoji panes
 - **Status:** Context now exists as a dedicated settings tab with clipboard and
-  screen-OCR context switches (`settings_window.rs:1323-1333` includes
-  `Context`; `settings_window.rs:1103-1148` renders the two switch rows and
-  writes `context_clipboard` / `context_screen` atomics; `run_loop.rs:1961-1971`
-  initializes them from config; `run_loop.rs:3503-3520` persists switch edges
-  and clears disabled context cells; `run_loop.rs:3777` gates screen submissions
-  by the current config). General
+  screen-OCR context switches (`pane_titles` includes `Context`;
+  `settings_window.rs` renders the two switch rows and writes
+  `context_clipboard` / `context_screen` atomics; `run_loop.rs` initializes them
+  from config, persists switch edges, clears disabled context cells, and gates
+  screen submissions by the current config). General
   carries 4 switches —
   `general_enabled`, `labs_midline` (mid-line, moved here from Labs),
   `general_autocorrect`, `general_trailing_space` (`settings_window.rs:926-1045`).
   Emoji now exists as a dedicated tab with a live `COMPME_EMOJI` enable switch
-  and `COMPME_EMOJI_SKIN_TONE` popup:
-  `settings_window.rs:1420-1430` includes `Emoji`; `settings_window.rs:1179-1247`
-  renders the rows and writes `emoji_enabled` / `emoji_skin_tone_index`;
-  `run_loop.rs:1996-2010` initializes them from config; `run_loop.rs:3647-3672`
-  persists switch and skin-tone edges.
+  `COMPME_EMOJI_SKIN_TONE` popup:
+  `pane_titles` includes `Emoji`; `settings_window.rs` renders the rows and
+  writes `emoji_enabled` / `emoji_skin_tone_index`; `run_loop.rs` initializes
+  them from config and persists switch and skin-tone edges.
 - **Emoji gender ✅ DONE (`6366f64`):** a `COMPME_EMOJI_GENDER` popup
   (Neutral/Female/Male) below the skin-tone popup, mirroring the skin-tone
   feature (`emoji_gender_index` + `handle_emoji_gender_change`, unit-tested). The

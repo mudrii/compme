@@ -457,6 +457,11 @@ A quick LOOK pass over all eight panes:
   live-apply and persist.
 - **Apps** — per-app recorded-input counts from the encrypted memory store;
   count rows (`app — N`) carry a Delete button, status/empty rows do not.
+- **Context** — Clipboard and Screen Context switches match their current
+  config-backed state; disabling either clears the cached context source and
+  gates new submissions.
+- **Emoji** — the enable switch, skin-tone popup, and Gender popup render in
+  the dedicated pane and persist through `COMPME_EMOJI*` keys.
 - **Shortcuts** — current bindings (glyph-labelled) + the recorder boxes above.
 - **Statistics** — shown / accepted / words / lifetime rows.
 - **About** — static version / license / no-telemetry / repo / credits text.
@@ -495,9 +500,10 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
 ## Pending Manual Gates [added 2026-06-10]
 
 - **Settings window LOOK gate [updated 2026-06-14]:** the structural pieces are
-  now covered by the "Live UI LOOK Gates" section above (6 tabs render in
-  Cotypist order; the modifier-combo recorder, Shortcuts glyph re-sync, model
-  picker, and tray template icon each have a procedure). Still pending as a
+  now covered by the "Live UI LOOK Gates" section above (8 tabs render in
+  display order; the modifier-combo recorder, Shortcuts glyph re-sync, model
+  picker, Context/Emoji panes, and tray template icon each have a procedure).
+  Still pending as a
   timed/behavioral spot-check: General switches live-flip + persist across a
   relaunch; Setup rows re-probe ≤480 ms while open; the Apps **Delete** button
   prompts with **Cancel** as the default button.
