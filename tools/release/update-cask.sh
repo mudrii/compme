@@ -7,26 +7,79 @@
 # prints the same values to its job summary). Run it, then commit + push.
 #
 # Usage: tools/release/update-cask.sh vX.Y.Z   (or X.Y.Z)
+#        tools/release/update-cask.sh --self-test
 set -euo pipefail
 
-raw="${1:?usage: update-cask.sh vX.Y.Z}"
-version="${raw#v}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cask="$repo_root/Casks/compme.rb"
+
+usage() {
+  echo "usage: update-cask.sh vX.Y.Z | --self-test" >&2
+}
+
+rewrite_cask() {
+  cask_path="$1"
+  version="$2"
+  sha="$3"
+
+  # Portable in-place sed (BSD/macOS needs the empty -i arg; GNU tolerates -i'').
+  sed -i'' -E "s/^  version \".*\"/  version \"${version}\"/" "$cask_path"
+  sed -i'' -E "s/^  sha256 \"[0-9a-f]*\"/  sha256 \"${sha}\"/" "$cask_path"
+}
+
+run_self_test() {
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-cask-test.XXXXXX")"
+  trap 'rm -rf "$tmp"' EXIT
+
+  fixture="$tmp/compme.rb"
+  artifact="$tmp/compme-9.8.7-macos.zip"
+  cat >"$fixture" <<'CASK'
+cask "compme" do
+  version "0.0.0"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+end
+CASK
+  printf 'fixture artifact\n' >"$artifact"
+  expected_sha="$(shasum -a 256 "$artifact" | awk '{print $1}')"
+
+  COMPME_CASK_PATH="$fixture" COMPME_CASK_ARTIFACT="$artifact" "$0" v9.8.7 >"$tmp/out.log"
+
+  grep -q 'version "9.8.7"' "$fixture"
+  grep -q "sha256 \"$expected_sha\"" "$fixture"
+  grep -q "version=9.8.7 sha256=$expected_sha" "$tmp/out.log"
+  echo "Self-test passed"
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  run_self_test
+  exit 0
+fi
+
+raw="${1:-}"
+if [ -z "$raw" ]; then
+  usage
+  exit 2
+fi
+
+version="${raw#v}"
+cask="${COMPME_CASK_PATH:-"$repo_root/Casks/compme.rb"}"
 zip="compme-${version}-macos.zip"
 url="https://github.com/mudrii/compme/releases/download/v${version}/${zip}"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-echo "downloading $url"
-curl -fsSL "$url" -o "$tmp/$zip"
-sha="$(shasum -a 256 "$tmp/$zip" | awk '{print $1}')"
+if [ -n "${COMPME_CASK_ARTIFACT:-}" ]; then
+  artifact="$COMPME_CASK_ARTIFACT"
+  echo "using local artifact $artifact"
+else
+  artifact="$tmp/$zip"
+  echo "downloading $url"
+  curl -fsSL "$url" -o "$artifact"
+fi
+sha="$(shasum -a 256 "$artifact" | awk '{print $1}')"
 echo "version=$version sha256=$sha"
 
-# Portable in-place sed (BSD/macOS needs the empty -i arg; GNU tolerates -i'').
-sed -i'' -E "s/^  version \".*\"/  version \"${version}\"/" "$cask"
-sed -i'' -E "s/^  sha256 \"[0-9a-f]*\"/  sha256 \"${sha}\"/" "$cask"
+rewrite_cask "$cask" "$version" "$sha"
 
 echo "updated $cask:"
 grep -E '^\s+(version|sha256) ' "$cask"

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use core_graphics::event::{CGEvent, CGEventTapLocation, KeyCode};
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, KeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use platform::{
     AcceptAction, FieldHandle, InsertStrategy, PlatformAdapter, PlatformError, TapControl,
@@ -15,6 +15,53 @@ use platform_macos::MacosPlatformAdapter;
 /// Grave/backtick (key above Tab). Must match the engine's accept binding:
 /// Tab accepts the next word, grave accepts the full completion.
 const KEYCODE_GRAVE: u16 = 50;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RequirementPlan {
+    Accept {
+        action: AcceptAction,
+        expected_text: String,
+        keycode: u16,
+        key_label: &'static str,
+    },
+    Passthrough {
+        armed_action: AcceptAction,
+        expected_text: String,
+        keycode: u16,
+        key_label: &'static str,
+        option_down: bool,
+    },
+}
+
+impl RequirementPlan {
+    fn action_to_arm(&self) -> AcceptAction {
+        match self {
+            RequirementPlan::Accept { action, .. } => *action,
+            RequirementPlan::Passthrough { armed_action, .. } => *armed_action,
+        }
+    }
+
+    fn expected_text(&self) -> &str {
+        match self {
+            RequirementPlan::Accept { expected_text, .. }
+            | RequirementPlan::Passthrough { expected_text, .. } => expected_text,
+        }
+    }
+
+    fn post_key(&self) -> (u16, &'static str, bool) {
+        match self {
+            RequirementPlan::Accept {
+                keycode, key_label, ..
+            } => (*keycode, key_label, false),
+            RequirementPlan::Passthrough {
+                keycode,
+                key_label,
+                option_down,
+                ..
+            } => (*keycode, key_label, *option_down),
+        }
+    }
+}
 
 #[derive(Default)]
 struct HarnessState {
@@ -112,16 +159,17 @@ fn main() {
     let full_text =
         env::var("COMPME_ACCEPTANCE_FULL_TEXT").unwrap_or_else(|_| " accepted-full".into());
     let word_text = env::var("COMPME_ACCEPTANCE_WORD_TEXT").unwrap_or_else(|_| " accepted".into());
-    let (action, expected_text) =
-        match accept_plan_for_requirement(&requirement, full_text, word_text) {
-            Some(plan) => plan,
-            None => {
-                eprintln!("unknown requirement {requirement:?}; expected full or word");
-                drop(caret);
-                drop(focus);
-                process::exit(2);
-            }
-        };
+    let plan = match accept_plan_for_requirement(&requirement, full_text, word_text) {
+        Some(plan) => plan,
+        None => {
+            eprintln!("unknown requirement {requirement:?}; expected full, word, or option-tab");
+            drop(caret);
+            drop(focus);
+            process::exit(2);
+        }
+    };
+    let action = plan.action_to_arm();
+    let expected_text = plan.expected_text().to_string();
 
     let adapter_for_accept = Arc::clone(&adapter);
     let accept_state = Arc::clone(&state);
@@ -163,9 +211,9 @@ fn main() {
         .set_accept_action(Some(action))
         .expect("arm accept action");
 
-    // grave accepts the full completion, Tab accepts the next word — post the key
-    // that matches the requirement so the gate exercises the real accept path.
-    let (accept_keycode, accept_key_label) = key_to_post_for_requirement(&requirement);
+    // Grave accepts the full completion, Tab accepts the next word, and
+    // Option+Tab must pass through to the target app as a literal tab.
+    let (accept_keycode, accept_key_label, option_down) = plan.post_key();
     let post_after = env::var("COMPME_ACCEPTANCE_POST_TAB_AFTER_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
@@ -173,7 +221,7 @@ fn main() {
         .unwrap_or_else(|| Duration::from_millis(300));
     thread::spawn(move || {
         thread::sleep(post_after);
-        match post_accept_key(accept_keycode) {
+        match post_accept_key(accept_keycode, option_down) {
             Ok(()) => println!("POSTED_{accept_key_label}"),
             Err(err) => eprintln!("POST_KEY_ERROR {err}"),
         }
@@ -214,12 +262,20 @@ fn main() {
     }
     println!("SUMMARY actions={actions:?} insert_results={insert_results:?}");
 
-    let accepted = actions == vec![action]
-        && matches!(insert_results.as_slice(), [Ok(())])
-        && matches!(
-            (pre_read.as_ref(), post_read.as_ref()),
-            (Some(before), Some(Ok(after))) if inserted_delta_matches(before, after, &expected_text)
-        );
+    let text_matches = matches!(
+        (pre_read.as_ref(), post_read.as_ref()),
+        (Some(before), Some(Ok(after))) if inserted_delta_matches(before, after, &expected_text)
+    );
+    let accepted = match &plan {
+        RequirementPlan::Accept { action, .. } => {
+            actions == vec![*action]
+                && matches!(insert_results.as_slice(), [Ok(())])
+                && text_matches
+        }
+        RequirementPlan::Passthrough { .. } => {
+            actions.is_empty() && insert_results.is_empty() && text_matches
+        }
+    };
     if !accepted {
         process::exit(1);
     }
@@ -229,18 +285,28 @@ fn accept_plan_for_requirement(
     requirement: &str,
     full_text: String,
     word_text: String,
-) -> Option<(AcceptAction, String)> {
+) -> Option<RequirementPlan> {
     match requirement {
-        "full" => Some((AcceptAction::Full, full_text)),
-        "word" => Some((AcceptAction::Word, word_text)),
+        "full" => Some(RequirementPlan::Accept {
+            action: AcceptAction::Full,
+            expected_text: full_text,
+            keycode: KEYCODE_GRAVE,
+            key_label: "GRAVE",
+        }),
+        "word" => Some(RequirementPlan::Accept {
+            action: AcceptAction::Word,
+            expected_text: word_text,
+            keycode: KeyCode::TAB,
+            key_label: "TAB",
+        }),
+        "option-tab" => Some(RequirementPlan::Passthrough {
+            armed_action: AcceptAction::Word,
+            expected_text: "\t".into(),
+            keycode: KeyCode::TAB,
+            key_label: "OPTION_TAB",
+            option_down: true,
+        }),
         _ => None,
-    }
-}
-
-fn key_to_post_for_requirement(requirement: &str) -> (u16, &'static str) {
-    match requirement {
-        "full" => (KEYCODE_GRAVE, "GRAVE"),
-        _ => (KeyCode::TAB, "TAB"),
     }
 }
 
@@ -280,13 +346,17 @@ fn looks_like_text_field(field: &FieldHandle) -> bool {
     field.element_id.contains("role=AXTextArea") || field.element_id.contains("role=AXTextField")
 }
 
-fn post_accept_key(keycode: u16) -> Result<(), String> {
+fn post_accept_key(keycode: u16, option_down: bool) -> Result<(), String> {
     let source = CGEventSource::new(CGEventSourceStateID::Private)
         .map_err(|_| "failed to create CGEventSource".to_string())?;
     let key_down = CGEvent::new_keyboard_event(source.clone(), keycode, true)
         .map_err(|_| "failed to create key-down event".to_string())?;
     let key_up = CGEvent::new_keyboard_event(source, keycode, false)
         .map_err(|_| "failed to create key-up event".to_string())?;
+    if option_down {
+        key_down.set_flags(CGEventFlags::CGEventFlagAlternate);
+        key_up.set_flags(CGEventFlags::CGEventFlagAlternate);
+    }
     key_down.post(CGEventTapLocation::HID);
     key_up.post(CGEventTapLocation::HID);
     Ok(())
@@ -318,11 +388,21 @@ mod tests {
     fn accept_plan_matches_full_and_word_contract() {
         assert_eq!(
             accept_plan_for_requirement("full", " all".into(), " one".into()),
-            Some((AcceptAction::Full, " all".into()))
+            Some(RequirementPlan::Accept {
+                action: AcceptAction::Full,
+                expected_text: " all".into(),
+                keycode: KEYCODE_GRAVE,
+                key_label: "GRAVE",
+            })
         );
         assert_eq!(
             accept_plan_for_requirement("word", " all".into(), " one".into()),
-            Some((AcceptAction::Word, " one".into()))
+            Some(RequirementPlan::Accept {
+                action: AcceptAction::Word,
+                expected_text: " one".into(),
+                keycode: KeyCode::TAB,
+                key_label: "TAB",
+            })
         );
         assert_eq!(
             accept_plan_for_requirement("escape", " all".into(), " one".into()),
@@ -331,12 +411,13 @@ mod tests {
     }
 
     #[test]
-    fn key_to_post_matches_accept_contract() {
-        assert_eq!(
-            key_to_post_for_requirement("full"),
-            (KEYCODE_GRAVE, "GRAVE")
-        );
-        assert_eq!(key_to_post_for_requirement("word"), (KeyCode::TAB, "TAB"));
+    fn option_tab_plan_passes_native_tab_without_accepting() {
+        let plan = accept_plan_for_requirement("option-tab", " all".into(), " one".into())
+            .expect("option-tab plan");
+
+        assert_eq!(plan.action_to_arm(), AcceptAction::Word);
+        assert_eq!(plan.expected_text(), "\t");
+        assert_eq!(plan.post_key(), (KeyCode::TAB, "OPTION_TAB", true));
     }
 
     #[test]

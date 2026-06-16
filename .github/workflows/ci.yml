@@ -50,8 +50,8 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets
 
-      - name: Acceptance script syntax
-        run: bash -n tools/acceptance/*.sh
+      - name: Script syntax
+        run: bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 
       - name: E2E runner self-test
         run: tools/acceptance/e2e-complete-me.sh --self-test
@@ -64,6 +64,9 @@ jobs:
 
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh
+
+      - name: Release cask updater self-test
+        run: tools/release/update-cask.sh --self-test
 
   spike:
     name: spike fmt · clippy · test · build (macOS)

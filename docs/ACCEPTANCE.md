@@ -94,6 +94,7 @@ By default the runner builds the `platform_macos` examples, builds the
 - `caret-marker-textedit-any`
 - `accept-insert-full`
 - `accept-insert-word`
+- `accept-insert-option-tab`
 - `e2e-compme-pipeline`
 - `e2e-compme-word-remainder`
 - `accept-tap-inactive`
@@ -110,6 +111,11 @@ If TextEdit is not running, TextEdit-dependent gates are skipped instead of
 misreporting app-focus failures as product failures. These are mandatory skips:
 the run fails as incomplete by default, and `--allow-incomplete` is only for
 intentionally partial target-specific runs.
+
+`accept-insert-option-tab` is the public TextEdit-backed passthrough gate for
+the Option+Tab contract: the harness arms a visible word suggestion, posts
+Option+Tab, confirms no accept callback fired, and reads the focused TextEdit
+document to prove the native key event inserted a literal tab.
 
 **[2026-06-11] Scripted Carbon gates REBUILT.** The long-standing claim that
 synthetic key posts cannot fire `RegisterEventHotKey` was re-tested and is
@@ -507,6 +513,20 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
   timed/behavioral spot-check: General switches live-flip + persist across a
   relaunch; Setup rows re-probe ≤480 ms while open; the Apps **Delete** button
   prompts with **Cancel** as the default button.
+- **Statistics range/grouping LOOK gate (pending):** Settings →
+  **Statistics** shows two side-by-side dropdowns in the header row: range
+  (**Last 7 days / Last 14 days / Last 30 days**) and grouping
+  (**Daily / Weekly**), with no orphaned label, overlap, or right-edge
+  clipping. Switching to Weekly with a 14+ day range and reopening Settings
+  recomposes one bar per week, oldest first, with the trailing partial week
+  summed. Pure range/grouping logic is unit-tested; this gate remains the live
+  NSPopUpButton wiring check.
+- **Emoji gender LOOK gate (pending):** Settings → **Emoji** shows a
+  **Gender** dropdown directly below **Skin tone**, lists **Neutral / Female /
+  Male**, reflects the persisted `COMPME_EMOJI_GENDER` value on open, and
+  persists changes while dismissing any visible ghost suggestion. Pure gender
+  helpers are unit-tested; this gate remains the live NSPopUpButton wiring
+  check.
 - **Encrypted memory accepted-only live gate (completed 2026-06-10):**
   `COMPME_MEMORY=accepted` + `COMPME_MEMORY_PATH` run without
   `COMPME_MEMORY_KEY` created and reused one `com.compme.memory` login-keychain

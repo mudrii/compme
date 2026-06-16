@@ -409,6 +409,18 @@ assert_classifies() {
   return 1
 }
 
+assert_log_contains() {
+  name="$1"
+  file="$2"
+  pattern="$3"
+  if grep -Eq "$pattern" "$file"; then
+    echo "PASS $name"
+    return 0
+  fi
+  echo "FAIL $name: missing pattern $pattern" >&2
+  return 1
+}
+
 run_self_tests() {
   self_test_dir="$(mktemp -d "${TMPDIR:-/tmp}/a1b-runner-tests.XXXXXX")"
   self_failures=0
@@ -452,6 +464,45 @@ run_self_tests() {
   else
     echo "PASS final-status-e2e-skip-mandatory"
   fi
+
+  dry_run_log="$self_test_dir/default-dry-run.log"
+  A1B_LOG_DIR="$self_test_dir/default-dry-run-logs" "$0" --dry-run >"$dry_run_log" 2>&1
+  dry_run_status=$?
+  if [ "$dry_run_status" -eq 0 ]; then
+    echo "PASS default-dry-run-exits-zero"
+  else
+    echo "FAIL default-dry-run-exits-zero: $dry_run_status" >&2
+    self_failures=$((self_failures + 1))
+  fi
+  for gate in \
+    build-platform-macos-examples \
+    build-compme \
+    textedit-read \
+    textedit-insert-synthetic \
+    textedit-insert-clipboard \
+    textedit-insert-axset \
+    caret-marker-textedit-any \
+    accept-insert-full \
+    accept-insert-word \
+    accept-insert-option-tab \
+    e2e-compme-pipeline \
+    e2e-compme-word-remainder \
+    caret-marker-browser-marker \
+    popup-fallback-fixture \
+    accept-tap-inactive \
+    accept-tap-full \
+    accept-tap-word \
+    accept-tap-escape \
+    accept-tap-option-tab \
+    accept-tap-cycle \
+    accept-tap-delayed-hide \
+    overlay-presenter; do
+    assert_log_contains "default-dry-run-gate-$gate" "$dry_run_log" "^== $gate ==$" \
+      || self_failures=$((self_failures + 1))
+  done
+  assert_log_contains "default-dry-run-optional-browser-skip" "$dry_run_log" \
+    '^SKIP caret-marker-browser-marker: pass --browser-pid after focusing a Chrome/Safari text field$' \
+    || self_failures=$((self_failures + 1))
 
   rm -rf "$self_test_dir"
   if [ "$self_failures" -gt 0 ]; then
@@ -520,6 +571,7 @@ if [ "$SKIP_TEXTEDIT" -eq 1 ]; then
   skip_gate "caret-marker-textedit-any" "--skip-textedit" mandatory
   skip_gate "accept-insert-full" "--skip-textedit" mandatory
   skip_gate "accept-insert-word" "--skip-textedit" mandatory
+  skip_gate "accept-insert-option-tab" "--skip-textedit" mandatory
   skip_gate "e2e-compme-pipeline" "--skip-textedit" mandatory
   skip_gate "e2e-compme-word-remainder" "--skip-textedit" mandatory
 else
@@ -532,6 +584,7 @@ else
     skip_gate "caret-marker-textedit-any" "TextEdit is not running" mandatory
     skip_gate "accept-insert-full" "TextEdit is not running" mandatory
     skip_gate "accept-insert-word" "TextEdit is not running" mandatory
+    skip_gate "accept-insert-option-tab" "TextEdit is not running" mandatory
     skip_gate "e2e-compme-pipeline" "TextEdit is not running" mandatory
     skip_gate "e2e-compme-word-remainder" "TextEdit is not running" mandatory
   else
@@ -542,6 +595,7 @@ else
     run_retryable_gate "caret-marker-textedit-any" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$MARKER_BIN" "$SHORT_TIMEOUT_MS" any
     run_retryable_gate "accept-insert-full" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_INSERT_BIN" "$SHORT_TIMEOUT_MS" full
     run_retryable_gate "accept-insert-word" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_INSERT_BIN" "$SHORT_TIMEOUT_MS" word
+    run_retryable_gate "accept-insert-option-tab" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_INSERT_BIN" "$SHORT_TIMEOUT_MS" option-tab
     if [ "$SKIP_E2E" -eq 1 ]; then
       skip_e2e_gate "e2e-compme-pipeline" "--skip-e2e"
       skip_e2e_gate "e2e-compme-word-remainder" "--skip-e2e"
