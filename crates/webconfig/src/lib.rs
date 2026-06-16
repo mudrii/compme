@@ -182,8 +182,8 @@ pub fn parse_deep_link(url: &str) -> Result<OverrideCommand, ParseError> {
     let scope = match (app, domain) {
         (Some(_), Some(_)) => return Err(ParseError::AmbiguousScope),
         (None, None) => return Err(ParseError::MissingScope),
-        (Some(a), None) => Scope::App(valid_scope(a)?),
-        (None, Some(d)) => Scope::Domain(valid_scope(d)?),
+        (Some(a), None) => Scope::App(valid_app_scope(a)?),
+        (None, Some(d)) => Scope::Domain(valid_domain_scope(d)?),
     };
 
     let action = match (enabled, excluded) {
@@ -334,11 +334,11 @@ fn parse_bool(value: &str) -> Result<bool, ParseError> {
     }
 }
 
-/// A bundle id or domain: non-empty, bounded, and limited to the unreserved
-/// characters real identifiers use. Rejects spaces, percent-encoding, path or
-/// query metacharacters — so an attacker can't smuggle a second command or a
-/// control sequence through the scope.
-fn valid_scope(s: String) -> Result<String, ParseError> {
+/// Shared lexical scope check: non-empty, bounded, and limited to the
+/// unreserved characters real identifiers use. Rejects spaces,
+/// percent-encoding, path or query metacharacters — so an attacker can't
+/// smuggle a second command or a control sequence through the scope.
+fn valid_scope_lexical(s: &str) -> Result<(), ParseError> {
     // Charset first: only ASCII unreserved identifier characters. This both
     // blocks smuggling and guarantees one byte per character, so the length cap
     // below is unambiguously a character count.
@@ -353,6 +353,34 @@ fn valid_scope(s: String) -> Result<String, ParseError> {
     if s.len() > MAX_SCOPE_LEN {
         return Err(ParseError::InvalidScope);
     }
+    Ok(())
+}
+
+fn valid_app_scope(s: String) -> Result<String, ParseError> {
+    valid_scope_lexical(&s)?;
+    Ok(s)
+}
+
+fn valid_domain_scope(s: String) -> Result<String, ParseError> {
+    valid_scope_lexical(&s)?;
+
+    let labels: Vec<&str> = s.split('.').collect();
+    if labels.len() < 2 {
+        return Err(ParseError::InvalidScope);
+    }
+
+    for label in &labels {
+        if label.is_empty() || label.starts_with('-') || label.ends_with('-') || label.contains('_')
+        {
+            return Err(ParseError::InvalidScope);
+        }
+    }
+
+    let tld = labels.last().expect("at least two labels");
+    if tld.len() < 2 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Err(ParseError::InvalidScope);
+    }
+
     Ok(s)
 }
 
@@ -392,6 +420,40 @@ mod tests {
             Ok(OverrideCommand {
                 scope: Scope::Domain("docs.google.com".into()),
                 action: OverrideAction::Exclude,
+            })
+        );
+    }
+
+    #[test]
+    fn domain_scope_rejects_overly_broad_or_malformed_hosts() {
+        for bad in [
+            "com",
+            "localhost",
+            ".example.com",
+            "example.com.",
+            "example..com",
+            "bad_domain.com",
+            "-example.com",
+            "example-.com",
+            "example.c",
+            "example.123",
+        ] {
+            let url = format!("compme://setOverride?domain={bad}&excluded=true");
+            assert_eq!(
+                parse_deep_link(&url),
+                Err(ParseError::InvalidScope),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn app_scope_still_accepts_bundle_identifier_underscores() {
+        assert_eq!(
+            parse_deep_link("compme://setOverride?app=com.example.My_App&enabled=false"),
+            Ok(OverrideCommand {
+                scope: Scope::App("com.example.My_App".into()),
+                action: OverrideAction::Disable,
             })
         );
     }

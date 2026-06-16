@@ -504,6 +504,22 @@ run_self_tests() {
     '^SKIP caret-marker-browser-marker: pass --browser-pid after focusing a Chrome/Safari text field$' \
     || self_failures=$((self_failures + 1))
 
+  skip_textedit_log="$self_test_dir/skip-textedit-dry-run.log"
+  A1B_LOG_DIR="$self_test_dir/skip-textedit-dry-run-logs" "$0" --dry-run --skip-textedit >"$skip_textedit_log" 2>&1
+  skip_textedit_status=$?
+  if [ "$skip_textedit_status" -eq 0 ]; then
+    echo "PASS skip-textedit-dry-run-exits-zero"
+  else
+    echo "FAIL skip-textedit-dry-run-exits-zero: $skip_textedit_status" >&2
+    self_failures=$((self_failures + 1))
+  fi
+  assert_log_contains "skip-textedit-option-tab-is-mandatory" "$skip_textedit_log" \
+    '^SKIP accept-insert-option-tab: --skip-textedit$' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
+    '^Summary: pass=0 fail=0 skip=11 incomplete=10 manual=0 logs=' \
+    || self_failures=$((self_failures + 1))
+
   rm -rf "$self_test_dir"
   if [ "$self_failures" -gt 0 ]; then
     echo "Self-test failures: $self_failures" >&2
