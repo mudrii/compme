@@ -8878,6 +8878,49 @@ mod tests {
     }
 
     #[test]
+    fn acquiring_the_instance_lock_runs_startup_side_effects_once_and_proceeds() {
+        // The proceed path: a clean acquire returns Ok(Some(lock)) AND runs the
+        // startup side effects exactly once (installing AX observers etc.). A
+        // regression that swallowed a successful acquire, or ran the side effects
+        // zero/twice, would slip past the fail-closed tests alone.
+        let side_effects = std::cell::Cell::new(0);
+        let result = instance_lock_startup_gate(
+            Some(std::path::PathBuf::from("/tmp/compme.lock")),
+            |_| Ok("held-lock"),
+            || side_effects.set(side_effects.get() + 1),
+        );
+        assert!(matches!(result, Ok(Some("held-lock"))));
+        assert_eq!(
+            side_effects.get(),
+            1,
+            "startup side effects must run exactly once after a clean acquire"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_instance_exits_gracefully_without_startup_side_effects() {
+        // The graceful-duplicate path: `Held` maps to ExitOk, so the gate returns
+        // Ok(None) (caller exits 0, not an error) and the startup side effects
+        // never run — a second launch must not install observers or touch state.
+        let side_effects = std::cell::Cell::new(0);
+        let result: Result<Option<()>, String> = instance_lock_startup_gate(
+            Some(std::path::PathBuf::from("/tmp/compme.lock")),
+            |_| Err(config::InstanceLockError::Held),
+            || side_effects.set(side_effects.get() + 1),
+        );
+        assert!(matches!(result, Ok(None)));
+        assert_eq!(
+            side_effects.get(),
+            0,
+            "a duplicate instance must not run startup side effects"
+        );
+        assert!(matches!(
+            instance_startup_decision(Some(config::InstanceLockError::Held)),
+            InstanceStartupDecision::ExitOk(message) if message.contains("already running")
+        ));
+    }
+
+    #[test]
     fn model_download_dest_parent_failure_is_reported() {
         let file_parent = std::env::temp_dir().join(format!(
             "compme-download-parent-blocker-{}",
