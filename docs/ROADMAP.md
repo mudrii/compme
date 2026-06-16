@@ -153,8 +153,8 @@ Shortcuts hotkeys.
 
 ### 3.1 ☐ Per-app override *editing* rows (Apps pane) — the largest residual pane
 - **Status:** Apps pane is **display + delete only** — per-app recorded-input
-  count rows (`settings_window.rs:293`) with per-row Delete buttons (`:581`,
-  gated by `apps_row_is_deletable` `:563`). No add-app control, no per-row
+  count rows (`settings_window.rs:1171-1193`) with per-row Delete buttons gated
+  by `apps_row_is_deletable`. No add-app control, no per-row
   enable / mid-line / autocorrect / Tab-disable toggles.
 - **Backing exists:** `prefs` per-app override fields + `tab_disabled` tap
   suppression are live; only the editing UI is missing.
@@ -226,8 +226,8 @@ Shortcuts hotkeys.
 
 > **Corrected 2026-06-15:** the global disable submenu (For 1 Hour / Until
 > Relaunch / Always) is **✅ DONE** (`crates/platform_macos/src/tray.rs:238-246`,
-> `DisableArm` `:53-59`; mapped in `run_loop.rs:1668-1680` and consumed at
-> `run_loop.rs:3122-3143`). The older "NOT built — only flat Snooze-1h" note is
+> `DisableArm` `:53-59`; mapped in `run_loop.rs:3357-3370` through
+> `apply_global_disable`). The older "NOT built — only flat Snooze-1h" note is
 > superseded by the current corrected A3 status.
 
 ---

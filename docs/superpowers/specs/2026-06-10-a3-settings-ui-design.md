@@ -55,7 +55,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 | General | launch-at-login; menu-bar icon toggle; accessory button; model picker + reveal; enable-by-default; max length (S/M/L); autocorrect toggles | SMAppService (bundle exists, c80); tray exists; model_select + `COMPME_MODEL_PATH`; `COMPME_ENABLED`; `COMPME_MAX_WORDS`; `COMPME_AUTOCORRECT` | launch-at-login wiring; model CATALOG/download mgr (§15 D14 — big, own item); accessory floating button = new feature (defer) — **[2026-06-10] DONE** for 3 live switches (mid-line/autocorrect/trailing-space); launch-at-login wiring done via SMAppService; model catalog still separate D14 |
 | Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | dedicated Context tab with clipboard + screen-OCR switches shipped; screen enable takes effect on next launch, screen disable gates new OCR submissions immediately; appearance sub-toggle has no equivalent (defer) |
 | Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS`, `COMPME_INSTRUCTIONS_APPS` / `_APP_*`, `COMPME_INSTRUCTIONS_DOMAINS` / `_DOMAIN_*` | backing shipped for memory modes/global-app-domain instructions/strength; Apps tab count/delete UI shipped; Personalization controls for mode, instructions, and strength remain deferred |
-| Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | enable switch and skin-tone popup shipped in a dedicated Emoji tab; gender control remains deferred; `includeVanillaVariants` is unmodeled and deferred until multi-candidate replacement display exists |
+| Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | enable switch plus skin-tone and gender popups shipped in a dedicated Emoji tab; `includeVanillaVariants` is unmodeled and deferred until multi-candidate replacement display exists |
 | Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; `KeyRecorderField` rows persist live rebinds through `COMPME_ACCEPT_*` config | recorder UI + live rebind shipped; force-activate + the two toggle shortcuts remain new hotkeys — **[2026-06-15] PARTIAL** |
 | App Settings | per-app list (usage counts) with enable/mid-line/autocorrect/Tab-disable, compat mode, per-app instructions, per-app history | `prefs` overrides + `tab_disabled` tap suppression; `memory` per-app counts; personalization per-app maps (config-wired; editor missing) | per-app mid-line/autocorrect overrides are new prefs fields; pane is the largest — **[2026-06-15] PARTIAL** (Apps tab: per-app counts + confirmed per-row Delete; Tab-disable consumption, per-app override fields, and config-backed personalization maps are live, but per-app UI rows and personalization editors are deferred) |
 | Labs | mid-line toggle | `COMPME_MIDLINE` | pane only — **[2026-06-10] DONE** (shipped as a switch in the General tab — the Labs pane content moved to General) |
@@ -69,7 +69,8 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
    snooze). **[2026-06-15 DONE] Per-app timed disable ▸ DONE; the GLOBAL
    disable submenu (For 1 Hour / Until Relaunch / Always) IS built
    (`crates/platform_macos/src/tray.rs:238-246`, `DisableArm` enum `:53-59`,
-   mapped in `run_loop.rs:1668-1680` and consumed at `run_loop.rs:3122-3143`);
+   mapped and consumed in `run_loop.rs:3357-3370` through
+   `apply_global_disable`);
    the per-app disable counterpart also exists
    (`crates/platform_macos/src/tray.rs:205-221`). Flat Snooze-1h still coexists. Input-collection =
    single toggle (works, persists; stateful submenu text is the only polish
@@ -85,9 +86,8 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
    Personalization — backing complete, persistence via persist_setting).
    **[2026-06-15] PARTIAL** — skeleton DONE (8 tabs via NSTabView); Labs DONE
    as a General-tab switch; Context DONE for clipboard + screen-OCR switches;
-   Emoji DONE for the enable switch and skin-tone popup; Personalization
-   controls, Emoji gender control, and the Context appearance sub-toggle
-   deferred.
+   Emoji DONE for the enable switch, skin-tone popup, and gender popup;
+   Personalization controls and the Context appearance sub-toggle deferred.
 5. **Shortcuts pane** + keymap threading (closes the c13 residual) —
    **[2026-06-15] DONE for recorder UI/live rebind** via `KeyRecorderField`
    rows and run-loop persistence. Remaining shortcut gaps are force-activate

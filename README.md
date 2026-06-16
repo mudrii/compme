@@ -2,22 +2,26 @@
 
 [![CI](https://github.com/mudrii/compme/actions/workflows/ci.yml/badge.svg)](https://github.com/mudrii/compme/actions/workflows/ci.yml)
 
-Compme is an **open-source, multi-platform** inline text-completion engine —
-a from-scratch re-implementation of all [Cotypist](https://cotypist.app) functionality
-**except payment, licensing, subscription tiers, and multi-device seats** (the only
-parts deliberately not cloned). Every feature is available to every user with no
-pricing gates; the only constraint on which local models are offered is hardware
-capability. macOS ships first; **Windows and Linux are committed deliverables** built
-behind a shared cross-platform `PlatformAdapter` contract. All inference is local
-(llama.cpp), with no proprietary telemetry.
+Compme is an **open-source, multi-platform** inline text-completion engine with
+the project scope of re-implementing all [Cotypist](https://cotypist.app)
+functionality **except payment, licensing, subscription tiers, and multi-device
+seats** (the only parts deliberately not cloned). Every feature is intended to be
+available to every user with no pricing gates; the only constraint on which local
+models are offered is hardware capability. macOS ships first; **Windows and Linux
+are committed deliverables** built behind a shared cross-platform
+`PlatformAdapter` contract. All inference is local (llama.cpp), with no
+proprietary telemetry.
 
-The repository is a Rust workspace of 22 crates: a pure completion core, a set of
-OS-agnostic text features (autocorrect, British-English, emoji, thesaurus, redaction,
-stats, personalization, ranking, compatibility tiers, model catalog), a macOS platform
-adapter with a ghost-text overlay and a six-tab settings window, a llama.cpp-backed
-local model seam with an async downloader, and the `compme` binary that wires them
-together. A separate spike prototype under `tools/spike` validates low-level macOS
-behavior before it is promoted into the workspace.
+The current validated workspace has the deterministic macOS MVP and A2/A3 core
+surfaces implemented; the remaining parity and live-validation backlog is tracked
+in [docs/ROADMAP.md](docs/ROADMAP.md). The repository is a Rust workspace of 24
+crates: a pure completion core, a set of OS-agnostic text features
+(autocorrect, British-English, emoji, thesaurus, redaction, stats,
+personalization, ranking, compatibility tiers, model catalog), macOS/Windows/Linux
+platform adapter crates, a llama.cpp-backed local model seam with an async
+downloader, and the `compme` binary that wires them together. A separate spike
+prototype under `tools/spike` validates low-level macOS behavior before it is
+promoted into the workspace.
 
 The project is not packaged as an end-user app yet, but the macOS run loop is
 functional: it reads caret/text context through Accessibility, generates short local
@@ -87,7 +91,8 @@ For development, run unbundled with `cargo run -p app`.
   Keychain-managed key.
 - **Usage statistics** — a rolling 30-day accumulator (shown / accepted / dismissed /
   superseded, words completed, latency) surfaced in the Statistics pane.
-- **Six-tab settings window** — Setup, General, Apps, Shortcuts, Statistics, About.
+- **Eight-tab settings window** — Setup, General, Apps, Context, Emoji,
+  Shortcuts, Statistics, About.
 - **Menu-bar icon** — a caret + double-chevron template image (it recently replaced the
   old "CM…" text title; that title remains only as a fallback if the image fails to load).
 - **Signed deep-link config** — a fail-closed `compme://setOverride` URL scheme for
@@ -102,6 +107,8 @@ For development, run unbundled with `cargo run -p app`.
 ├── crates/
 │   ├── platform/                      # Cross-platform adapter + UX contract
 │   ├── platform_macos/                # macOS Accessibility/AppKit/Carbon adapter
+│   ├── platform_windows/              # Windows adapter scaffold (fail-closed)
+│   ├── platform_linux/                # Linux adapter scaffold (fail-closed)
 │   ├── context/                       # Pure caret/text-context helpers
 │   ├── engine_core/                   # Deterministic suggestion state machine
 │   ├── engine/                        # Runtime host: engine_core ↔ platform ↔ overlay
@@ -142,6 +149,8 @@ from `tools/spike/`.
 |-------|---------|
 | `platform` | Cross-platform contract shared by the pure engine and platform adapters: field handles, capabilities, insertion strategies, subscriptions, overlay presenter, and UX-mode classification. |
 | `platform_macos` | macOS implementation of the adapter and overlay presenter using Accessibility, CoreGraphics, AppKit/Carbon, and pasteboard APIs; ghost overlay, tray, key recorder, and settings window. |
+| `platform_windows` | Windows adapter scaffold that reports Windows and fails closed for platform I/O/subscription methods until a real adapter is implemented. |
+| `platform_linux` | Linux adapter scaffold that reports Linux and fails closed for platform I/O/subscription methods until a real adapter is implemented. |
 | `context` | Pure text-context helpers around a caret (left/right context, left-tail extraction, prompt-prefix trimming). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
@@ -151,7 +160,7 @@ from `tools/spike/`.
 | `ranker` | Candidate shaping helpers: word capping, first-word extraction, and repetition penalty. |
 | `prefs` | Suggestion-gating preferences: per-app and per-domain enable/exclude, per-app Tab-key disable, and a global pause/snooze, resolved against an injected clock. |
 | `compat` | Pure classifier from a macOS bundle id to a compatibility tier, plus the gating policy each tier implies (mirrors the Cotypist compatibility table). |
-| `personalization` | Prompt-based personalization: global + per-app + per-domain instruction maps (request-time app steering is wired; request-time domain steering remains a follow-up), a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
+| `personalization` | Prompt-based personalization: global + per-app + per-domain instruction maps (request-time app and domain steering are wired; the Settings editor remains a follow-up), a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
 | `autocorrect` | Pure, high-precision trailing-word typo→correction table with the query's capitalization reapplied; never "corrects" a real word. |
 | `localize` | Pure, high-precision US→British spelling normalization for American-only forms; deliberately skips ambiguous words. |
 | `emoji` | Pure `:shortcode`→emoji completion honoring skin-tone (Fitzpatrick) and gender preferences. |
@@ -202,7 +211,7 @@ comma-separated bundle ids.
 | `COMPME_EMOJI_GENDER` | Preferred gender (neutral / female / male) for emoji completion. |
 | `COMPME_ACCEPT_WORD_KEY` | Word-accept key as a `modifier+keycode` string (e.g. `48` or `shift+48`); default Tab (48). Applies at relaunch. |
 | `COMPME_ACCEPT_FULL_KEY` | Full-accept key as a `modifier+keycode` string (e.g. `50` or `ctrl+shift+50`); default grave/backtick (50). |
-| `COMPME_EXCLUDED_APPS` | Comma-separated bundle ids excluded from completion (persisted from the Apps pane). |
+| `COMPME_EXCLUDED_APPS` | Comma-separated bundle ids excluded from completion (persisted by tray/deep-link/config today; Apps editing UI pending). |
 | `COMPME_EXCLUDED_DOMAINS` | Comma-separated browser hosts excluded from completion. |
 | `COMPME_ENABLED_APPS` / `COMPME_DISABLED_APPS` | Per-app enable / Tab-disable overrides. |
 | `COMPME_NO_COLLECT_APPS` | Apps for which input is never collected into typing memory. |
@@ -317,8 +326,9 @@ At a high level:
    accept actions through transient Carbon hotkeys (`RegisterEventHotKey`, armed
    only while a suggestion is shown, supporting modifier+key combos rebound from
    the Shortcuts pane), and inserts accepted text through the safest available
-   strategy. A menu-bar tray icon and a six-tab settings window (Setup / General /
-   Apps / Shortcuts / Statistics / About) drive configuration and the model picker.
+   strategy. A menu-bar tray icon and an eight-tab settings window (Setup /
+   General / Apps / Context / Emoji / Shortcuts / Statistics / About) drive
+   configuration and the model picker.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 

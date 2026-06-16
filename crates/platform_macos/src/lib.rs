@@ -2546,15 +2546,16 @@ impl AcceptKeymap {
         }
     }
 
-    /// The Carbon `(hotkey-id, keycode)` pairs to register for this keymap.
+    /// The Carbon `(hotkey-id, keycode, modifier-mask)` triples to register for
+    /// this keymap.
     /// The bindings to REGISTER for one arm cycle: all four, minus any
-    /// binding on the literal Tab keycode when the focused app has per-app
+    /// binding on the bare Tab key when the focused app has per-app
     /// Tab disable (§16) — an unregistered hotkey lets Tab reach the app
     /// untouched, which is the entire point. Pure (no global reads).
     pub fn arm_bindings(&self, suppress_tab: bool) -> Vec<(u32, i64, u32)> {
         self.carbon_bindings()
             .into_iter()
-            .filter(|&(_, code, _)| !(suppress_tab && code == KEYCODE_TAB))
+            .filter(|&(_, code, mods)| !(suppress_tab && code == KEYCODE_TAB && mods == 0))
             .collect()
     }
 
@@ -8784,9 +8785,26 @@ mod tests {
         assert_eq!(map.arm_bindings(false).len(), 4);
         let armed = map.arm_bindings(true);
         assert_eq!(armed.len(), 3);
-        assert!(armed.iter().all(|&(_, code, _)| code != KEYCODE_TAB));
+        assert!(armed
+            .iter()
+            .all(|&(_, code, mods)| !(code == KEYCODE_TAB && mods == 0)));
 
-        // Suppression targets the LITERAL Tab keycode, not the word role:
+        // Suppression targets bare Tab, not every binding on Tab. Modifier+Tab
+        // remains a deliberate accept shortcut and is distinct from literal Tab.
+        let modified_tab = AcceptKeymap::from_accept_keys_with_mods(
+            Some(KEYCODE_TAB),
+            Some(KEYCODE_TAB),
+            0,
+            CARBON_SHIFT_KEY,
+        )
+        .unwrap();
+        let modified_armed = modified_tab.arm_bindings(true);
+        assert_eq!(modified_armed.len(), 3);
+        assert!(modified_armed
+            .iter()
+            .any(|&(_, code, mods)| code == KEYCODE_TAB && mods == CARBON_SHIFT_KEY));
+
+        // Suppression targets the bare Tab binding, not the word role:
         // a word key rebound elsewhere keeps all four bindings.
         let rebound = AcceptKeymap::from_accept_keys(Some(35), None).unwrap();
         assert_eq!(rebound.arm_bindings(true).len(), 4);

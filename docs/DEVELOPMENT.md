@@ -16,11 +16,11 @@ Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
 
 ## Repository State
 
-The current checkout is on branch `spike/a0` and has no git tags. Treat the
-code as unreleased workspace behavior unless a future release process adds tags,
-release notes, or packaged artifacts.
+The current checkout is on `main` and has no git tags. Treat the code as
+unreleased workspace behavior unless a future release process adds tags, release
+notes, or packaged artifacts.
 
-The root `Cargo.toml` is a Rust workspace with 22 members
+The root `Cargo.toml` is a Rust workspace with 24 members
 ([updated 2026-06-14] — keep in sync with `Cargo.toml`):
 
 - `crates/platform` — cross-platform adapter contract
@@ -32,6 +32,7 @@ The root `Cargo.toml` is a Rust workspace with 22 members
 - `crates/compat` — per-app compatibility tiers
 - `crates/model_catalog`, `crates/model_fetch`, `crates/model_client` — model catalog, downloads, llama.cpp client
 - `crates/platform_macos` — the macOS adapter (AX, overlay, tray, settings window)
+- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1
 - `crates/app` — the `compme` binary
 
 `tools/spike` is excluded from the root workspace and must be checked

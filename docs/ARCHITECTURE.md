@@ -1,17 +1,18 @@
 # Architecture
 
-Compme is split into a pure completion core, a platform contract, a macOS
-adapter, a local model seam, and a ring of small pure feature crates (text
+Compme is split into a pure completion core, a platform contract, platform
+adapters, a local model seam, and a ring of small pure feature crates (text
 features, gating, personalization, privacy, catalog/download). The current
 implementation focuses on macOS because the hard integration points are
 Accessibility, event taps, AppKit overlays, Secure Input, and pasteboard
 behavior.
 
-The workspace now holds 22 crates. The shape is deliberate: almost everything
-is pure (text in → decision out, time and keys injected, no I/O), so it is
-unit-testable without a clock, a network, or AppKit. The impurity is fenced
-into three crates — `model_client` (llama.cpp), `model_fetch` (network), and
-`platform_macos` (AppKit/AX/Carbon) — and orchestrated by `app`.
+The workspace now holds 24 crates. The shape is deliberate: almost everything
+outside the model/download seams, platform adapters, and host is pure (text in →
+decision out, time and keys injected, no I/O), so it is unit-testable without a
+clock, a network, or AppKit. The impurity is fenced into `model_client`
+(llama.cpp), `model_fetch` (network), the `platform_*` adapter crates, and
+`app`.
 
 ## System Overview
 
@@ -59,14 +60,15 @@ honor the same per-app/per-domain prefs gate.
 
 ## Workspace Crates
 
-The 22 crates fall into five groups: the **contract + core** (`platform`,
+The 24 crates fall into six groups: the **contract + core** (`platform`,
 `engine_core`, `engine`, `context`, `ranker`), the **model seam**
 (`model_client`, `model_catalog`, `model_fetch`), **pure text features**
 (`autocorrect`, `localize`, `thesaurus`, `emoji`, `textcase`), **policy &
 privacy** (`prefs`, `compat`, `personalization`, `redaction`, `memory`,
-`stats`, `webconfig`), and the **macOS host** (`platform_macos`, `app`). Every
-crate outside the model seam and `platform_macos` is pure and OS-agnostic, with
-time and keys injected, so the host owns all I/O, clocks, and toggles.
+`stats`, `webconfig`), **platform adapters** (`platform_macos`,
+`platform_windows`, `platform_linux`), and the **host binary** (`app`). The
+non-platform feature crates are pure and OS-agnostic, with time and keys
+injected, so the host owns all I/O, clocks, and toggles.
 
 ### `platform`
 
@@ -377,8 +379,9 @@ Major responsibilities:
 - apply per-app mid-line override live on focus via `Engine::set_allow_mid_word`
 - marshal platform callbacks onto the AppKit main-thread engine host
 - keep only the latest pending completion request
-- compose the settings window panes (Setup checklist, Statistics sparklines,
-  Apps recorded-input counts, About) and apply tray/window flags each heartbeat
+- compose the settings window panes (Setup checklist, General switches, Apps
+  recorded-input counts, Context/Emoji controls, Shortcuts bindings, Statistics
+  sparklines, About) and apply tray/window flags each heartbeat
 - pick the download target from `model_catalog` with a RAM-fit advisory,
   enforce the click-through license gate, and spawn the `model_fetch` worker
 - apply parked accept-key rebinds in the PINNED order (set keymap → re-arm →
@@ -411,7 +414,7 @@ Major responsibilities:
 - AppKit `NSPanel` overlay presenter that is transparent, click-through, and
   non-activating.
 - `NSStatusItem` tray with a template menu-bar icon and status menu.
-- A 6-tab settings `NSWindow` shell (render-only; the run loop owns policy),
+- An 8-tab settings `NSWindow` shell (render-only; the run loop owns policy),
   including the `KeyRecorderField` accept-key recorder.
 
 ## macOS Runtime Model
@@ -518,8 +521,9 @@ it on each heartbeat.
 
 ### Settings Window
 
-The settings window is a 6-tab AppKit `NSWindow` — **Setup, General, Apps,
-Shortcuts, Statistics, About** (an `NSTabView`). It is render-only: the run loop
+The settings window is an 8-tab AppKit `NSWindow` — **Setup, General, Apps,
+Context, Emoji, Shortcuts, Statistics, About** (an `NSTabView`). It is
+render-only: the run loop
 owns all policy and pushes pane contents and reads back UI intents through a
 flags struct each heartbeat (the tray-flags pattern). Because the app is an
 `LSUIElement` accessory, showing the window promotes the activation policy to

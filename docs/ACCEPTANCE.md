@@ -382,10 +382,10 @@ COMPME_EMOJI=1 COMPME_DEBUG=1 cargo run -p app 2>&1 | tee /tmp/cm.log
 ```
 
 Open Settings from the tray menu (or the tray's Settings item). The window has
-six tabs in display order (Cotypist order, `pane_titles`):
-**Setup, General, Apps, Shortcuts, Statistics, About**. Setup, Apps,
-Statistics, and Shortcuts rows are recomposed by the run loop right before each
-show; General switches re-read their atomics on every show.
+eight tabs in display order (`pane_titles`): **Setup, General, Apps, Context,
+Emoji, Shortcuts, Statistics, About**. Setup, Apps, Context, Emoji, Statistics,
+and Shortcuts rows are recomposed by the run loop right before each show;
+General switches re-read their atomics on every show.
 
 ### Menu-bar icon LOOK gate
 
@@ -446,9 +446,9 @@ The advisory is **advisory only** — it never blocks a download. To exercise:
    prompt** appears (the `download_gate` `NeedsLicense` path) before any fetch.
    Today's recommended default is unencumbered, so a plain run never prompts.
 
-### Six-tab Settings walkthrough
+### Eight-tab Settings walkthrough
 
-A quick LOOK pass over all six panes:
+A quick LOOK pass over all eight panes:
 
 - **Setup** — readiness checklist (Accessibility / Screen Recording / model
   file) plus the model picker + Download button; rows re-probe on each show.
