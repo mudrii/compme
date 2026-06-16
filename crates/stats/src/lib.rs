@@ -438,7 +438,10 @@ impl Stats {
         samples.sort_unstable();
         let n = samples.len();
         // Nearest-rank: rank = ceil(pct/100 * n), 1-based; clamp into range.
-        let rank = (pct as usize * n).div_ceil(100);
+        // `saturating_mul` mirrors the `daily_buckets` cutoff guard — the product
+        // is unreachably large here (window-pruned deque), but kept overflow-safe
+        // for parity so neither percentile path can wrap.
+        let rank = (pct as usize).saturating_mul(n).div_ceil(100);
         let idx = rank.clamp(1, n) - 1;
         Some(samples[idx])
     }
