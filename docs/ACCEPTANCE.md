@@ -231,7 +231,9 @@ are validated outside the A1b gate runner:
 > **[CORR 06-12] Accept-key evidence boundary:** the current default runner
 > exercises transient Carbon hotkeys through the rebuilt scripted harnesses.
 > Physical keyboard runs remain UX confirmation, and the Input Monitoring
-> revoked check remains a manual permission-state spot-check.
+> revoked check remains a permission-state spot-check: the runner only scripts it
+> when read-only preflight shows Input Monitoring is already revoked, and
+> otherwise leaves it as a manual checklist item.
 
 ### Useful Options
 
@@ -380,10 +382,12 @@ therefore remains open.
 
 ## Live UI LOOK Gates (Settings window / tray)
 
-These are macOS-only manual gates. They are driven by launching the product
-binary with debug logging and exercising the AppKit UI by hand (the AppKit glue
-is render-only, so LOOK + log evidence is the contract — the pure halves are
-unit-tested). Launch once and watch the log:
+These are macOS-only supplemental LOOK checklists. They are driven by launching
+the product binary with debug logging and exercising the AppKit UI by hand (the
+AppKit glue is render-only, so LOOK + log evidence is the contract — the pure
+halves are unit-tested). They are not the runner-pinned remaining manual gate
+list; the runner-emitted manual gates are tracked under **Pending Manual
+Gates** below. Launch once and watch the log:
 
 ```sh
 cd ~/src/compme
@@ -551,10 +555,13 @@ quietly disappear from the acceptance surface.
   no encrypted rows. This remains manual/live blocked only for the product-loop
   GUI proof: a disposable GUI target/db/key must be driven and the encrypted
   store inspected after allowed typing and runtime policy transitions.
-- **Input Monitoring revoked spot-check (pending):** with Accessibility still
-  granted, revoke Input Monitoring and confirm the transient Carbon accept path
-  keeps working. This is a manual permission-state confirmation, not a
-  requirement for the production accept path.
+- **Input Monitoring revoked spot-check (pending/conditional):** with
+  Accessibility still granted, revoke Input Monitoring and confirm the transient
+  Carbon accept path keeps working. `run-a1b-live-gates.sh` uses
+  `CGPreflightListenEventAccess()` to automate this only when the current
+  process is already revoked; it never requests or changes the permission. This
+  is a permission-state confirmation, not a requirement for the production
+  accept path.
 - **Lifetime stats relaunch gate (completed 2026-06-17):** a disposable
   `COMPME_CONFIG` run with `COMPME_STUB_COMPLETION=' world'` drove TextEdit
   through the production Carbon Tab accept path (`accept Word`), quit via the

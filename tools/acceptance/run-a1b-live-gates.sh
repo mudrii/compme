@@ -73,7 +73,10 @@ exact-match control checks (mismatched runs retry up to --retries).
 
 The runner also prints MANUAL gates for live UI/permission checks that cannot be
 driven safely from a shell script. Treat those lines as the repeatable checklist
-to execute and record after the deterministic gates pass.
+to execute and record after the deterministic gates pass. The Input Monitoring
+revoked spot-check is conditionally scripted only when read-only preflight shows
+the current process is already revoked; this runner never requests or changes
+Input Monitoring.
 USAGE
 }
 
@@ -156,6 +159,7 @@ ACCEPT_INSERT_BIN="$ROOT_DIR/target/debug/examples/accept_insert_acceptance"
 MARKER_BIN="$ROOT_DIR/target/debug/examples/caret_marker_acceptance"
 OVERLAY_BIN="$ROOT_DIR/target/debug/examples/overlay_presenter_acceptance"
 POPUP_FIXTURE_BIN="$ROOT_DIR/target/debug/examples/popup_fallback_acceptance"
+INPUT_MONITORING_BIN="$ROOT_DIR/target/debug/examples/input_monitoring_preflight_acceptance"
 COMPME_BIN="$ROOT_DIR/target/debug/compme"
 E2E_SCRIPT="$ROOT_DIR/tools/acceptance/e2e-complete-me.sh" # historical harness kept under its original name
 
@@ -352,6 +356,73 @@ run_accept_tap_gate() {
     failures=$((failures + 1))
     return "$status"
   done
+}
+
+run_input_monitoring_revoked_carbon_gate() {
+  name="input-monitoring-revoked-carbon-accept"
+
+  echo
+  echo "== $name =="
+  print_cmd "$INPUT_MONITORING_BIN" revoked
+  print_cmd env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" full
+  print_cmd env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" word
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "MANUAL $name: if read-only preflight reports Input Monitoring is granted, revoke it and rerun to confirm transient Carbon accept still works"
+    manuals=$((manuals + 1))
+    return 0
+  fi
+
+  sleep_ms "$GATE_PAUSE_MS"
+  preflight_log="$LOG_DIR/$name.preflight.log"
+  "$INPUT_MONITORING_BIN" revoked >"$preflight_log" 2>&1
+  preflight_status=$?
+  cat "$preflight_log"
+  if [ "$preflight_status" -ne 0 ]; then
+    echo "MANUAL $name: current process is not in the revoked Input Monitoring state; revoke it manually and rerun to automate this spot-check"
+    manuals=$((manuals + 1))
+    return 0
+  fi
+
+  for mode in full word; do
+    attempts="$RETRIES"
+    case "$attempts" in
+      ''|*[!0-9]*) attempts=1 ;;
+    esac
+    [ "$attempts" -ge 1 ] || attempts=1
+
+    attempt=1
+    while [ "$attempt" -le "$attempts" ]; do
+      sleep_ms "$GATE_PAUSE_MS"
+      if [ "$attempts" -gt 1 ]; then
+        log_file="$LOG_DIR/$name-$mode.attempt-$attempt.log"
+        echo "-- $mode attempt $attempt/$attempts --"
+      else
+        log_file="$LOG_DIR/$name-$mode.log"
+      fi
+
+      env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" "$mode" >"$log_file" 2>&1
+      status=$?
+      cat "$log_file"
+
+      if [ "$status" -eq 0 ]; then
+        break
+      fi
+
+      if [ "$attempt" -lt "$attempts" ] && grep -q '^SUMMARY controls=' "$log_file"; then
+        echo "RETRY $name-$mode ($status): control set mismatched — ambient key presses contaminate the system-wide hotkeys; keep hands off the keyboard"
+        attempt=$((attempt + 1))
+        continue
+      fi
+
+      echo "FAIL $name ($status): $(classify_blocker "$log_file")"
+      failures=$((failures + 1))
+      return "$status"
+    done
+  done
+
+  echo "PASS $name"
+  passes=$((passes + 1))
 }
 
 final_status() {
@@ -665,7 +736,7 @@ run_accept_tap_gate "accept-tap-delayed-hide" env COMPME_ACCEPTANCE_HIDE_AFTER_M
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
 
 manual_gate "encrypted-memory-all-monitored-live" "run COMPME_MEMORY=all against a disposable GUI target/db/key, decrypt-inspect the store for redacted inserted deltas only, scan raw bytes for plaintext absence, and confirm secure-input, disabled/snoozed, app/domain-excluded, volatile-pid, and collection-off transitions add no rows"
-manual_gate "input-monitoring-revoked-carbon-accept" "with Accessibility still granted, revoke Input Monitoring and confirm transient Carbon accept still works"
+run_input_monitoring_revoked_carbon_gate
 
 echo
 echo "Summary: pass=$passes fail=$failures skip=$skips incomplete=$incomplete_skips manual=$manuals logs=$LOG_DIR"

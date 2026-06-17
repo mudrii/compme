@@ -1,9 +1,10 @@
 # compme — Manual UX Validation Checklist
 
-> Live, human-at-the-Mac validation gates **deferred** by the autonomous Tier-3
-> loop. Each item below is **code-complete and gate-green** (`fmt` + `clippy -D
-> warnings` + `cargo test --workspace` all pass) but its on-screen behavior was
-> not visually confirmed — AppKit/objc2 construction is build-verified only.
+> Live, human-at-the-Mac validation record for the Tier-3 settings UI. The
+> Statistics range/grouping and Emoji gender LOOK gates below were completed on
+> 2026-06-17 and are summarized in [`ACCEPTANCE.md`](ACCEPTANCE.md). Future
+> AppKit LOOK items can still use this file as the working checklist before
+> their evidence is promoted into the acceptance record.
 >
 > Run the app and work down the list:
 > ```sh
@@ -14,38 +15,37 @@
 
 ## Tier 3 settings UI
 
-### 3.3 Statistics — range + grouping pickers (commits `feat(stats)…` range / grouping picker)
-- [ ] Settings → **Statistics** tab shows **two** bare dropdowns side-by-side on
+### 3.3 Statistics — range + grouping pickers (completed 2026-06-17)
+- [x] Settings → **Statistics** tab shows **two** bare dropdowns side-by-side on
       the header row (no text labels — the items are self-describing): a range
       popup then a grouping popup, both right of the "This session + lifetime"
       header with no overlap and no clipping at the pane's right edge (the group
       popup ends ~22px from the usable edge — confirm it isn't cut off).
-- [ ] No orphaned/ghost "Range:" label remains (it was removed when the second
+- [x] No orphaned/ghost "Range:" label remains (it was removed when the second
       picker landed).
-- [ ] Range popup lists **Last 7 days / Last 14 days / Last 30 days** (Last 7
+- [x] Range popup lists **Last 7 days / Last 14 days / Last 30 days** (Last 7
       preselected); grouping popup lists **Daily / Weekly** (Daily preselected).
-- [ ] Range default (7 days) + grouping default (Daily) render identically to
+- [x] Range default (7 days) + grouping default (Daily) render identically to
       before the pickers existed.
-- [ ] Switching grouping to **Weekly** with a ≥14-day range, then reopening
+- [x] Switching grouping to **Weekly** with a ≥14-day range, then reopening
       Settings (rows recompose on show, not instantly — same as the range
       picker), collapses the rows to one bar per week, oldest week first, with
       the trailing partial week summed (not dropped).
 
-_Backed by pure, unit-tested logic: `stats::StatRange::{ALL,days,label,from_index}`
-+ `metric_series` (range/group/metric series) + `from_index` OOB-clamp. Only the
-NSPopUpButton wiring is unverified here._
+_Live evidence: Settings preserved Last 14 days + Weekly across reopen and
+rendered weekly two-bar sparklines with the Lifetime row still visible._
 
-### 3.2 Emoji — gender picker (commit `feat(emoji): add gender picker`)
-- [ ] Settings → **Emoji** tab shows a **Gender** dropdown directly below the
+### 3.2 Emoji — gender picker (completed 2026-06-17)
+- [x] Settings → **Emoji** tab shows a **Gender** dropdown directly below the
       **Skin tone** dropdown, with no visual overlap.
-- [ ] The dropdown lists **Neutral / Female / Male** and reflects the persisted
+- [x] The dropdown lists **Neutral / Female / Male** and reflects the persisted
       `COMPME_EMOJI_GENDER` on open (Neutral by default).
-- [ ] Changing it persists `COMPME_EMOJI_GENDER` to `config.env` and (if a ghost
+- [x] Changing it persists `COMPME_EMOJI_GENDER` to `config.env` and (if a ghost
       suggestion is visible) dismisses it, mirroring the skin-tone picker.
 
-_Backed by unit-tested pure helpers (`emoji_gender_{index,from_index,value}` +
-`handle_emoji_gender_change[_with_invalidation]`); only the NSPopUpButton wiring
-is unverified here._
+_Live evidence: the dropdown exposed Neutral/Female/Male, persisted
+`COMPME_EMOJI_GENDER=female`, and reopened with Female selected. Stale-ghost
+invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visible_suggestion`._
 
 <!-- Future Tier-3 FFI items (group/metric pickers, Personalization controls,
 Apps editing rows, the 3.4 hotkey recorder rows + Carbon registration) append

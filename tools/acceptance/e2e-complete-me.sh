@@ -74,22 +74,6 @@ print_evidence_summary() {
   echo "E2E evidence: log=$log_file log_lines=$log_lines log_bytes=$log_bytes document_chars=$document_chars"
 }
 
-required_stage_patterns_for_mode() {
-  mode="$1"
-  stages="focus|^compme: focus( |$)
-	request gen=|^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=com\.apple\.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$
-	completion gen=|^compme: completion gen=[0-9][0-9]* candidate_count=[0-9][0-9]* candidate_lengths=\\[[0-9, ]*\\]$"
-  if [ "$mode" = "word" ]; then
-    stages="${stages}
-accept Word|^compme: accept Word$
-accept Full|^compme: accept Full$"
-  else
-    stages="${stages}
-accept Full|^compme: accept Full$"
-  fi
-  printf '%s\n' "$stages"
-}
-
 assert_pipeline_evidence() {
   document_text="$1"
   stub_text="$2"
@@ -106,17 +90,45 @@ assert_pipeline_evidence() {
     *) echo "E2E: stub text NOT found in document [FAIL]"; ok=0 ;;
   esac
 
-  while IFS='|' read -r stage pattern; do
-    [ -n "$stage" ] || continue
-    if grep -Eq "$pattern" "$log_file"; then
-      echo "E2E: stage present: '$stage' [PASS]"
+  if grep -Eq '^compme: focus( |$)' "$log_file"; then
+    echo "E2E: stage present: 'focus' [PASS]"
+  else
+    echo "E2E: stage missing: 'focus' [FAIL]"
+    ok=0
+  fi
+
+  request_pattern='^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=com\.apple\.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$'
+  request_line="$(grep -E "$request_pattern" "$log_file" | head -n 1 || true)"
+  request_gen=""
+  if [ -n "$request_line" ]; then
+    request_gen="$(printf '%s\n' "$request_line" | sed -n 's/^compme: request gen=\([0-9][0-9]*\) .*/\1/p')"
+    echo "E2E: stage present: 'request gen=' [PASS]"
+  else
+    echo "E2E: stage missing: 'request gen=' [FAIL]"
+    ok=0
+  fi
+
+  if [ -n "$request_gen" ] && grep -Eq "^compme: completion gen=$request_gen candidate_count=[0-9][0-9]* candidate_lengths=\\[[0-9, ]*\\]$" "$log_file"; then
+    echo "E2E: stage present: 'completion gen=$request_gen' [PASS]"
+  else
+    echo "E2E: stage missing: 'completion gen=${request_gen:-<request>}' [FAIL]"
+    ok=0
+  fi
+
+  if [ "$accept_mode" = "word" ]; then
+    if grep -Eq '^compme: accept Word$' "$log_file"; then
+      echo "E2E: stage present: 'accept Word' [PASS]"
     else
-      echo "E2E: stage missing: '$stage' [FAIL]"
+      echo "E2E: stage missing: 'accept Word' [FAIL]"
       ok=0
     fi
-  done <<EOF
-$(required_stage_patterns_for_mode "$accept_mode")
-EOF
+  fi
+  if grep -Eq '^compme: accept Full$' "$log_file"; then
+    echo "E2E: stage present: 'accept Full' [PASS]"
+  else
+    echo "E2E: stage missing: 'accept Full' [FAIL]"
+    ok=0
+  fi
 
   [ "$ok" -eq 1 ]
 }
@@ -184,6 +196,18 @@ run_self_tests() {
     failures=$((failures + 1))
   else
     echo "PASS self-test-e2e-pipeline-evidence-missing-readback"
+  fi
+  mismatch_log="$tmp_dir/mismatched-generation.log"
+  printf '%s\n' \
+    'compme: focus TextEdit' \
+    'compme: request gen=7 prompt_chars=32 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true' \
+    'compme: completion gen=8 candidate_count=1 candidate_lengths=[8]' \
+    'compme: accept Full' >"$mismatch_log"
+  if assert_pipeline_evidence 'prefix STUB-COMPLETE' 'STUB-COMPLETE' "$mismatch_log" full 0 >/dev/null; then
+    echo "FAIL self-test-e2e-pipeline-evidence-mismatched-generation: mismatched request/completion passed" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-pipeline-evidence-mismatched-generation"
   fi
   hostile_request_failed=0
   for hostile_request in \
