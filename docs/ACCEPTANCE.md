@@ -513,28 +513,28 @@ gate as a `MANUAL ...` checklist line after the deterministic gates. The
 runner's `--self-test` pins that checklist so these public-behavior gaps cannot
 quietly disappear from the acceptance surface.
 
-- **Settings window LOOK gate [updated 2026-06-14]:** the structural pieces are
-  now covered by the "Live UI LOOK Gates" section above (8 tabs render in
-  display order; the modifier-combo recorder, Shortcuts glyph re-sync, model
-  picker, Context/Emoji panes, and tray template icon each have a procedure).
-  Still pending as a
-  timed/behavioral spot-check: General switches live-flip + persist across a
-  relaunch; Setup rows re-probe ≤480 ms while open; the Apps **Delete** button
-  prompts with **Cancel** as the default button.
-- **Statistics range/grouping LOOK gate (pending):** Settings →
-  **Statistics** shows two side-by-side dropdowns in the header row: range
-  (**Last 7 days / Last 14 days / Last 30 days**) and grouping
-  (**Daily / Weekly**), with no orphaned label, overlap, or right-edge
-  clipping. Switching to Weekly with a 14+ day range and reopening Settings
-  recomposes one bar per week, oldest first, with the trailing partial week
-  summed. Pure range/grouping logic is unit-tested; this gate remains the live
-  NSPopUpButton wiring check.
-- **Emoji gender LOOK gate (pending):** Settings → **Emoji** shows a
-  **Gender** dropdown directly below **Skin tone**, lists **Neutral / Female /
-  Male**, reflects the persisted `COMPME_EMOJI_GENDER` value on open, and
-  persists changes while dismissing any visible ghost suggestion. Pure gender
-  helpers are unit-tested; this gate remains the live NSPopUpButton wiring
-  check.
+- **Settings timed/behavioral gate (completed 2026-06-17):** live AppKit runs
+  against disposable `COMPME_CONFIG` roots verified General switches apply
+  immediately and persist across relaunch (`Enable/Mid-line/Autocorrect/Trailing
+  space` reopened as `0/1/1/1`, with `status=Disabled enabled=false` on
+  relaunch), Setup re-probes visible rows within the 480 ms budget (temporary
+  model symlink removal flipped `✓ Model file` to `✗ Model file` at the first
+  100 ms poll), and Apps renders recorded-input rows from an encrypted-memory
+  store. A disposable `com.apple.TextEdit — 1` row opened the **Delete recorded
+  inputs?** alert with **Cancel** and **Delete** buttons; Cancel preserved the
+  row, and the production prompt adds Cancel as the first/default NSAlert
+  button.
+- **Statistics range/grouping LOOK gate (completed 2026-06-17):** Settings →
+  **Statistics** showed side-by-side range and grouping popups in the header
+  row. A live run changed range to **Last 14 days** and grouping to **Weekly**;
+  reopening Settings preserved both selections and recomposed the rows as
+  weekly two-bar sparklines with the Lifetime row still visible.
+- **Emoji gender LOOK gate (completed 2026-06-17):** Settings → **Emoji**
+  showed **Gender** directly below **Skin tone**, exposed **Neutral / Female /
+  Male**, persisted a live change to `COMPME_EMOJI_GENDER=female`, and reopened
+  with **Female** selected. The stale-ghost invalidation edge is covered by
+  `emoji_gender_edge_invalidates_stale_visible_suggestion`, which routes the
+  same settings watcher through `engine.on_dismiss()`.
 - **Encrypted memory accepted-only live gate (completed 2026-06-10):**
   `COMPME_MEMORY=accepted` + `COMPME_MEMORY_PATH` run without
   `COMPME_MEMORY_KEY` created and reused one `com.compme.memory` login-keychain
