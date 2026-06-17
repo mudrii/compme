@@ -457,6 +457,29 @@ mod tests {
     }
 
     #[test]
+    fn all_monitored_rows_count_and_delete_by_app() {
+        let store = MemoryStore::open_in_memory(&key(13), StorageMode::AllMonitored).unwrap();
+        store.remember("com.apple.TextEdit", "accepted").unwrap();
+        store.monitor("com.apple.TextEdit", "typed").unwrap();
+        store.monitor("com.apple.Notes", "note").unwrap();
+
+        assert_eq!(
+            store.count_by_app().unwrap(),
+            vec![
+                ("com.apple.TextEdit".into(), 2),
+                ("com.apple.Notes".into(), 1),
+            ]
+        );
+
+        assert_eq!(store.delete_app("com.apple.TextEdit").unwrap(), 2);
+        assert_eq!(
+            store.count_by_app().unwrap(),
+            vec![("com.apple.Notes".into(), 1)]
+        );
+        assert_eq!(store.recent("com.apple.Notes", 10).unwrap(), vec!["note"]);
+    }
+
+    #[test]
     fn off_mode_ignores_monitor_too() {
         let store = MemoryStore::open_in_memory(&key(11), StorageMode::Off).unwrap();
         store.monitor("app", "x").unwrap();

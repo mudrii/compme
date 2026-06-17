@@ -510,6 +510,9 @@ run_self_tests() {
     assert_log_contains "default-dry-run-manual-$gate" "$dry_run_log" "^MANUAL $gate:" \
       || self_failures=$((self_failures + 1))
   done
+  assert_log_contains "default-dry-run-manual-all-monitored-secure-input" "$dry_run_log" \
+    '^MANUAL encrypted-memory-all-monitored-live: .*secure-input.*volatile-pid.*collection-off' \
+    || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-optional-browser-skip" "$dry_run_log" \
     '^SKIP caret-marker-browser-marker: pass --browser-pid after focusing a Chrome/Safari text field$' \
     || self_failures=$((self_failures + 1))
@@ -661,7 +664,7 @@ run_accept_tap_gate "accept-tap-delayed-hide" env COMPME_ACCEPTANCE_HIDE_AFTER_M
 
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
 
-manual_gate "encrypted-memory-all-monitored-live" "run COMPME_MEMORY=all against a disposable GUI target/db/key, decrypt-inspect the store for redacted inserted deltas only, scan raw bytes for plaintext absence, and confirm disabled/snoozed/excluded/collection-off transitions add no rows"
+manual_gate "encrypted-memory-all-monitored-live" "run COMPME_MEMORY=all against a disposable GUI target/db/key, decrypt-inspect the store for redacted inserted deltas only, scan raw bytes for plaintext absence, and confirm secure-input, disabled/snoozed, app/domain-excluded, volatile-pid, and collection-off transitions add no rows"
 manual_gate "input-monitoring-revoked-carbon-accept" "with Accessibility still granted, revoke Input Monitoring and confirm transient Carbon accept still works"
 
 echo

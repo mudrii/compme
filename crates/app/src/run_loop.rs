@@ -7727,6 +7727,181 @@ mod tests {
     }
 
     #[test]
+    fn monitored_flush_persists_when_secure_recheck_clears() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([19u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+        let mut pending = Vec::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &change,
+            Some("com.apple.TextEdit".into()),
+            None,
+        );
+        let mut buffers = HashMap::new();
+        let mut secure = true;
+        let mut last_secure_poll_ms = None;
+        let mut probe_called = false;
+
+        flush_monitored_changes_after_secure_recheck(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &Prefs::default(),
+            MonitoredFlushState {
+                secure: &mut secure,
+                last_secure_poll_ms: &mut last_secure_poll_ms,
+            },
+            MonitoredFlushRuntime {
+                monitored_memory_active: true,
+                enabled: true,
+                trusted: true,
+                now_ms: 1_002,
+            },
+            || {
+                probe_called = true;
+                false
+            },
+        );
+
+        assert!(probe_called);
+        assert!(!secure);
+        assert_eq!(last_secure_poll_ms, Some(1_002));
+        assert!(pending.is_empty());
+        assert!(buffers.is_empty());
+        assert_eq!(
+            store.recent("com.apple.TextEdit", 10).unwrap(),
+            vec!["ordinary typed text "]
+        );
+    }
+
+    #[test]
+    fn monitored_flush_skips_secure_recheck_without_pending_work() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([20u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let mut pending = Vec::new();
+        let mut buffers = HashMap::new();
+        let mut secure = false;
+        let mut last_secure_poll_ms = None;
+
+        flush_monitored_changes_after_secure_recheck(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &Prefs::default(),
+            MonitoredFlushState {
+                secure: &mut secure,
+                last_secure_poll_ms: &mut last_secure_poll_ms,
+            },
+            MonitoredFlushRuntime {
+                monitored_memory_active: true,
+                enabled: true,
+                trusted: true,
+                now_ms: 1_003,
+            },
+            || panic!("secure probe must not run without pending monitored work"),
+        );
+
+        assert!(!secure);
+        assert_eq!(last_secure_poll_ms, None);
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn monitored_buffers_are_isolated_per_field() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([21u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field_a = field_with_app("com.apple.TextEdit");
+        let field_b = field_with_app("com.apple.Notes");
+        let prefs = Prefs::default();
+        let mut tracker_a = FieldTracker::new();
+        let mut tracker_b = FieldTracker::new();
+        let _ = tracker_a.observe_with_inserted_text(
+            &field_a,
+            &text_context(&field_a, ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        let _ = tracker_b.observe_with_inserted_text(
+            &field_b,
+            &text_context(&field_b, ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        let partial_a = match tracker_a.observe_with_inserted_text(
+            &field_a,
+            &text_context(&field_a, "secret"),
+            TriggerPolicy::Automatic,
+            2,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        let partial_b = match tracker_b.observe_with_inserted_text(
+            &field_b,
+            &text_context(&field_b, "note"),
+            TriggerPolicy::Automatic,
+            2,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        let mut buffers = HashMap::new();
+        queue_and_flush_monitored_with_buffers(
+            &partial_a,
+            &mut buffers,
+            &store,
+            &prefs,
+            true,
+            false,
+        );
+        queue_and_flush_monitored_with_buffers(
+            &partial_b,
+            &mut buffers,
+            &store,
+            &prefs,
+            true,
+            false,
+        );
+        assert_eq!(store.count().unwrap(), 0);
+        assert!(buffers.contains_key(&field_a));
+        assert!(buffers.contains_key(&field_b));
+
+        let boundary_b = match tracker_b.observe_with_inserted_text(
+            &field_b,
+            &text_context(&field_b, "note "),
+            TriggerPolicy::Automatic,
+            3,
+        ) {
+            Observation::Typed(change) => change,
+            Observation::CaretMoved { .. } => panic!("expected typed change"),
+        };
+        queue_and_flush_monitored_with_buffers(
+            &boundary_b,
+            &mut buffers,
+            &store,
+            &prefs,
+            true,
+            false,
+        );
+
+        assert_eq!(store.recent("com.apple.Notes", 10).unwrap(), vec!["note "]);
+        assert!(store.recent("com.apple.TextEdit", 10).unwrap().is_empty());
+        assert!(buffers.contains_key(&field_a));
+        assert!(!buffers.contains_key(&field_b));
+    }
+
+    #[test]
     fn monitored_write_failure_drains_boundary_without_replay() {
         let field = field_with_app("com.apple.TextEdit");
         let prefs = Prefs::default();
