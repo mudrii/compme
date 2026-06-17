@@ -36,25 +36,27 @@ it top-to-bottom, with its first consumer (emoji), behind a default-off flag.
 
 ## Resolved design decisions
 
-### 1. Replacement shape = `replace_left: usize` (caret-anchored, left-only)
+### 1. Replacement shape = `Command::Replace` with `replace_left: usize` (caret-anchored, left-only)
 All four features replace a token that **ends at the caret** (the user just typed
 `:smile`, `teh`, `color`). Deletion is therefore purely to the left; no right-side
 or arbitrary-range replacement is needed. The count is in **characters**
 (`chars().count()` of the matched/typed token), converted to UTF-16 units at the
 AX boundary. `emoji::suggest` already returns this as `replace_chars`.
 
-- `engine_core::Command::Insert { field, text, replace_left: usize }` — add the
-  field; `replace_left == 0` is a plain insert (every current emit site sets 0 →
-  byte-identical behavior; existing tests change only the struct literal).
+- `engine_core::Command::Replace { field, text, replace_left: usize }` — carries
+  caret-anchored replacement text separately from plain inserts. `replace_left`
+  is always non-zero for production replacement offers; plain completions continue
+  through `Command::Insert`.
 
 ### 2. A replacement is "a `Showing` with `replace_left > 0`"
 Add `replace_left: usize` (default 0) to `engine_core::Showing`. Model completions
 create showings with `replace_left = 0` (unchanged). Both accept paths emit
-`Command::Insert { replace_left: showing.replace_left, .. }`:
+`Command::Replace { replace_left: showing.replace_left, .. }` when the showing is
+a replacement, otherwise they keep emitting `Command::Insert`:
 - `AcceptFull` → emit with the showing's `replace_left`.
 - `AcceptWord` on a replacement: replacements are atomic single tokens, so
   `next_word` returns the whole glyph/word with empty rest → behaves as full →
-  emit `replace_left`. (Word-accept never *partially* replaces.)
+   emit `Command::Replace`. (Word-accept never *partially* replaces.)
 - `preview_accept_insert` must apply the **same** `replace_left`/text as `on_event`
   (the host absorbs the self-insert echo via `preview`; divergence re-arms a
   spurious request — the trailing-space feature already established this invariant).
@@ -78,10 +80,12 @@ and feeds them in. engine_core gains **no** dependency on those crates.
   that turn. (Cotypist behaves this way — emoji/typo offers are local + immediate.)
 
 ### 4. Host adapter contract (the FFI hop)
-`platform::PlatformAdapter` gains a **defaulted** method:
+`platform::PlatformAdapter` gained a **required** method; the first live
+validation found that a default silently hid `SharedAdapter` support, so the
+default was removed:
 ```rust
 fn insert_replacing(&self, field, text, replace_left: usize, strategy)
-    -> Result<Inserted, PlatformError> { self.insert(field, text, strategy) } // default ignores
+    -> Result<Inserted, PlatformError>;
 ```
 Engine dispatch calls `insert_replacing` when `replace_left > 0`, else `insert`
 (common path unchanged → zero risk to existing tests). `FakeAdapter` overrides it
@@ -112,13 +116,14 @@ the engine-macos design as the wiring contract. Each gates whether the host call
 the corresponding crate in the `TextChanged` replacement-detection step.
 
 ## Build order (each step tested before the next)
-1. **engine_core:** `Command::Insert.replace_left` + `Showing.replace_left` (default
-   0) + accept paths emit it + `preview` parity. Tests: completions always emit 0;
-   a showing with `replace_left=N` accepts to `Insert{replace_left:N}`. *(pure)*
+1. **engine_core:** `Command::Replace` + `Showing.replace_left` (default 0) +
+   accept paths emit replacement commands + `preview` parity. Tests: completions
+   still emit plain inserts; a showing with `replace_left=N` accepts to
+   `Replace{replace_left:N}`. *(pure)*
 2. **engine_core:** `offer_replacement` reusing completion gating. Tests: offers only
    when gates pass; secure/suppressed/disabled block it; emits ShowGhost+Shown.
    *(pure)*
-3. **engine + platform:** defaulted `insert_replacing`; dispatch threads
+3. **engine + platform:** required `insert_replacing`; dispatch threads
    `replace_left`; `FakeAdapter` wiring test. *(pure)*
 4. **platform_macos:** `replacement_range` pure helper + test; AxSet honoring wired.
    *(pure helper + FFI call)*
@@ -145,18 +150,17 @@ thesaurus work is live LOOK/UX validation and any future selection-trigger desig
 
 ## Pre-wiring checklist (from the step 1–3 code review)
 
-Steps 1–3 are built (engine_core `Command::Replace` + `Showing.replace_left` +
-`offer_replacement`; defaulted `insert_replacing`; engine dispatch arm) and are
-correct + safe **only because nothing emits `Command::Replace` in production yet**.
-Before step 5 wires `offer_replacement` into the run loop, these MUST be done or a
-replacement accept will misbehave:
+These were the safety blockers that had to close before step 5 wired
+`offer_replacement` into the production run loop. They are now complete, which is
+why the local-replacement path can safely emit production replacement offers.
 
 1. **[DONE, cycle 24] Echo absorption for replacements.** `preview_accept_insert`
    now returns `(field, text, replace_left)` — mirroring the accept paths byte-for-
    byte (a replacement is atomic + unfinalized). `FieldTracker::apply_self_replace`
    (delete-left then insert, clamped) was added and the run-loop accept path routes
    to it when `replace_left > 0`. Fully unit-tested; no behavior change in
-   production (replace_left stays 0 until the detection point in step 5 lands).
+   production for plain completions (`replace_left == 0`), while local
+   replacements use the widened self-echo path after step 5.
 2. **[DONE, cycle 21] Field-identity guard.** `offer_replacement` now returns early
    unless `self.field.as_ref() == Some(field)` (focus-race guard; tested).
 3. **[DONE, cycle 21] FakeAdapter wiring test.** `FakeAdapter::insert_replacing`
@@ -170,8 +174,10 @@ multi-word synonyms are never split and never drop the deletion); replacement te
 is **not** trailing-spaced; `enabled()` blocks secure fields; the snapshot guard
 discards stale model completions so they cannot supersede an offered ghost.
 
-## Open question for the human
-Offer UX when *both* a local replacement and a model completion are plausible, and
-whether thesaurus (selection-triggered, not type-triggered) needs a different
-trigger than emoji/autocorrect/localize. Defaulting to "local replacement preempts;
-thesaurus is a separate selection-mode trigger" per §4 above unless overridden.
+## Resolved UX decision
+When both a local replacement and a model completion are plausible, the local
+replacement preempts the model request for that turn. Emoji, autocorrect,
+British-English normalization, and the current thesaurus host path are
+type-triggered trailing-token offers. Selection-triggered thesaurus UX remains
+future parity work and should reuse the same lookup once a selection surface
+exists.

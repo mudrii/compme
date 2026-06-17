@@ -1,7 +1,7 @@
 # P1 MVP Quality — Design
 
 **Date:** 2026-06-07
-**Status:** Implemented + live-validated on macOS (M4 Max). **[CORR 06-07; updated 06-08 per §15 G7]** All P1 items are *implemented*; live validation is complete **except** two hardware/UI-bound residuals: (1) **true-2× / multi-monitor** caret offset — **since measured on two displays** (built-in 2× Retina + external 1×, design spec §15 G7) with the backing-scale helper unit-proven; only a **live 2× re-confirm needs the built-in Retina panel reconnected** (not "no second display"); and (2) a literal tray-menu mouse click (the accessory-policy status item exposes no menu to System Events — the Enable toggle is validated via `SIGUSR1` instead). See "Live validation" and "Known environment limits" below.
+**Status:** Implemented + live-validated on macOS (M4 Max). **[CORR 06-17 per §15 G7]** All P1 items are *implemented*; live validation is complete **except** the literal tray-menu mouse click (the accessory-policy status item exposes no menu to System Events, so the Enable toggle is validated via `SIGUSR1` instead). The **true-2× / multi-monitor** caret offset case was later measured on the built-in 2× Retina display plus an external 1× display (design spec §15 G7); no offset was observed, and only a latent caveat remains for apps that report pixels instead of points. See "Live validation" and "Known environment limits" below.
 **Scope:** P1 "MVP quality / correctness" items from the pending list:
 - **6** Retina/multi-monitor offset — quantify via diagnostic + manual measurement (coordinate code already exists).
 - **7** Tray / menu-bar UI — status + enable/disable toggle.
@@ -139,11 +139,11 @@ This is the bulk of the AppKit/objc2 glue: **build-verified + live**, not unit-t
 - **Tray instantiates** live (status item appears; binary exits clean) — smoke run, no panic, no "tray unavailable".
 - **Enable/disable toggle + gating + dismiss** verified live and headless via `SIGUSR1` (a scriptable equivalent of the tray's Enable item): `status=Ready` with completions flowing → SIGUSR1 → `status=Disabled enabled=false` (suggestions gated, showing ghost dismissed) → SIGUSR1 → `status=Ready`. The tray menu's Enable item flips the same `flags.enabled` atomic.
 - **Permissions:** `accessibility_trusted()` returns true (granted); status derivation + re-poll exercised live.
-- **Retina (item 6):** measured on the built-in display — `display_scales = [(0,0,3840×1600), 1.0]` and caret rect `(619.05, 215.0, 1×14)` global screen points. Scale 1.0 ⇒ AX points equal pixels, `normalize_ax_screen_rect` pass-through correct, **no offset**. **[Updated 06-08 — §15 G7]** The true-2× / multi-monitor case (scale > 1.0) was **measured on two displays** (built-in 2× Retina + external 1×) and the backing-scale helper is unit-proven (3024/1512→2.0); only a **live 2× re-confirm remains** (needs the built-in Retina panel reconnected). The diagnostic + normalization code are ready and exercised.
+- **Retina (item 6):** measured first on the built-in display — `display_scales = [(0,0,3840×1600), 1.0]` and caret rect `(619.05, 215.0, 1×14)` global screen points. Scale 1.0 ⇒ AX points equal pixels, `normalize_ax_screen_rect` pass-through correct, **no offset**. **[Updated 06-17 — §15 G7]** The true-2× / multi-monitor case (scale > 1.0) was later measured on two displays (built-in 2× Retina + external 1×), and the backing-scale helper is unit-proven (3024/1512→2.0). G7 is closed except for the latent caveat documented in the engine-macos spec: if a future app reports pixels instead of points, the existing pixel-normalization guard is the path to re-check.
 
 ### Known environment limits (manual QA only)
 - **Visual menu-bar click** of the tray cannot be automated: macOS exposes 0 menu bars for an accessory-policy status item to System Events. The toggle *behavior* is verified via SIGUSR1 + unit tests (`should_dismiss`, `derive_status`, `suggestions_allowed`); only the literal mouse-click on the menu item is manual.
-- **Multi-monitor Retina offset** — measured on two displays (§15 G7); only a live 2× re-confirm needs the built-in Retina panel reconnected.
+- **Multi-monitor Retina offset** — measured on two displays (§15 G7) and closed; keep only the latent pixel-reporting-app caveat from the engine-macos spec.
 
 ## Additional config knobs (implemented)
 

@@ -70,6 +70,10 @@ live 2026-06-11 — synthetic Tab/grave/Esc/Down all fired through the
 rebuilt harness). The hotkeys are system-wide: keep hands off the keyboard
 during the run — ambient Tab/grave/Esc/Down presses contaminate the
 exact-match control checks (mismatched runs retry up to --retries).
+
+The runner also prints MANUAL gates for live UI/permission checks that cannot be
+driven safely from a shell script. Treat those lines as the repeatable checklist
+to execute and record after the deterministic gates pass.
 USAGE
 }
 
@@ -500,6 +504,16 @@ run_self_tests() {
     assert_log_contains "default-dry-run-gate-$gate" "$dry_run_log" "^== $gate ==$" \
       || self_failures=$((self_failures + 1))
   done
+  for gate in \
+    settings-window-timed-behavior \
+    statistics-range-grouping-ui \
+    emoji-gender-ui \
+    encrypted-memory-all-monitored-live \
+    input-monitoring-revoked-carbon-accept \
+    lifetime-stats-relaunch-ui; do
+    assert_log_contains "default-dry-run-manual-$gate" "$dry_run_log" "^MANUAL $gate:" \
+      || self_failures=$((self_failures + 1))
+  done
   assert_log_contains "default-dry-run-optional-browser-skip" "$dry_run_log" \
     '^SKIP caret-marker-browser-marker: pass --browser-pid after focusing a Chrome/Safari text field$' \
     || self_failures=$((self_failures + 1))
@@ -517,7 +531,7 @@ run_self_tests() {
     '^SKIP accept-insert-option-tab: --skip-textedit$' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
-    '^Summary: pass=0 fail=0 skip=11 incomplete=10 manual=0 logs=' \
+    '^Summary: pass=0 fail=0 skip=11 incomplete=10 manual=6 logs=' \
     || self_failures=$((self_failures + 1))
 
   rm -rf "$self_test_dir"
@@ -650,6 +664,13 @@ run_accept_tap_gate "accept-tap-cycle" env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="
 run_accept_tap_gate "accept-tap-delayed-hide" env COMPME_ACCEPTANCE_HIDE_AFTER_MS="$HIDE_AFTER_MS" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" delayed-hide
 
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
+
+manual_gate "settings-window-timed-behavior" "open Settings and verify General switches live-flip and persist across relaunch, Setup rows re-probe within 480 ms while visible, and Apps Delete prompts with Cancel as the default button"
+manual_gate "statistics-range-grouping-ui" "Settings > Statistics shows Range and Grouping popups, persists selections, and recomposes weekly buckets without clipping"
+manual_gate "emoji-gender-ui" "Settings > Emoji shows the Gender popup below Skin tone, reflects COMPME_EMOJI_GENDER, persists changes, and dismisses any visible emoji ghost"
+manual_gate "encrypted-memory-all-monitored-live" "run COMPME_MEMORY=all against a GUI target and inspect the encrypted store for redacted deltas plus secure/disabled/snoozed/excluded/volatile-app blocks"
+manual_gate "input-monitoring-revoked-carbon-accept" "with Accessibility still granted, revoke Input Monitoring and confirm transient Carbon accept still works"
+manual_gate "lifetime-stats-relaunch-ui" "accept at least one suggestion, quit, relaunch, and verify the Statistics Lifetime row includes the prior session"
 
 echo
 echo "Summary: pass=$passes fail=$failures skip=$skips incomplete=$incomplete_skips manual=$manuals logs=$LOG_DIR"

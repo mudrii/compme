@@ -508,6 +508,11 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
 
 ## Pending Manual Gates [added 2026-06-10]
 
+`tools/acceptance/run-a1b-live-gates.sh` now emits each remaining manual/live
+gate as a `MANUAL ...` checklist line after the deterministic gates. The
+runner's `--self-test` pins that checklist so these public-behavior gaps cannot
+quietly disappear from the acceptance surface.
+
 - **Settings window LOOK gate [updated 2026-06-14]:** the structural pieces are
   now covered by the "Live UI LOOK Gates" section above (8 tabs render in
   display order; the modifier-combo recorder, Shortcuts glyph re-sync, model

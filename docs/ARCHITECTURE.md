@@ -153,9 +153,11 @@ through the local-replacement path.
 `thesaurus` looks a word up in a curated synonym table and returns the
 alternatives, applying the queried word's case pattern (`textcase`) so a host
 can drop a replacement straight in. The host gates it on the "thesaurus" toggle
-and chooses between *selection* mode (highlight a word → offer synonyms) and
-*auto* mode (offer as you type); the lookup is identical. Mirrors Cotypist's
-`featureThesaurus{AutoMode,SelectionMode}`.
+and currently offers synonyms for the trailing word at the caret (*auto* mode).
+Selection-trigger UX (highlight a word → offer synonyms) remains future A2/A3
+work; the same lookup table is intended to serve both modes once that host
+surface exists. Mirrors Cotypist's `featureThesaurusAutoMode` today and keeps
+`featureThesaurusSelectionMode` as tracked parity work.
 
 ### `emoji`
 

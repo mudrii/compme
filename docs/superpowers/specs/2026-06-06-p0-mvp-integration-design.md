@@ -149,7 +149,15 @@ The product binary is the thing under test; the gate drives the real product pat
 
 ## Out of scope (P1+, per the pending list)
 
-Historical P0 exclusions, some of which were closed by P1: tray/menu-bar UI, Accessibility/Input-Monitoring permission first-run UX, full settings/config surface, Retina multi-monitor offset measurement, prefix/KV-cache reuse, long-lived model actor, N-sample multi-candidate generation, sentence/punctuation stop-boundary, and all P2–P4 items. See `2026-06-07-p1-mvp-quality-design.md` for the items P1 has since implemented or measured; true-2x/multi-monitor geometry and literal tray-menu mouse-click validation remain environment/manual checks there.
+Historical P0 exclusions, some of which were closed by P1 or later parity work:
+tray/menu-bar UI, Accessibility/Input-Monitoring permission first-run UX, full
+settings/config surface, Retina multi-monitor offset measurement, prefix/KV-cache
+reuse, long-lived model actor, N-sample multi-candidate generation,
+sentence/punctuation stop-boundary, and all P2-P4 items. See
+`2026-06-07-p1-mvp-quality-design.md` for the items P1 has since implemented or
+measured. True-2x/multi-monitor geometry is now closed for normal AX point
+coordinates; only the latent pixel-reporting-app caveat remains. Literal
+tray-menu mouse-click validation remains a manual environment check.
 
 Additional Cotypist-alignment items are also out of P0: optional Screen Recording / OCR context, Google Docs Accessibility onboarding, browser compatibility guidance and mirror fallback, Terminal/iTerm AI-agent prompt heuristics, per-app/per-domain controls, encrypted local personalization storage, emoji/typo features, full shortcut settings, signed/updating app packaging, and telemetry policy.
 

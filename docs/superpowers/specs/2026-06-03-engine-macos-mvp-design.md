@@ -428,7 +428,7 @@ Three agents ran in parallel: (1) static+dynamic decompile of `/Applications/Cot
 | **D7** | `core` → `engine_core` crate rename not propagated to `README.md`, `ARCHITECTURE.md`, `DEVELOPMENT.md`, design §2/§9; `crates/core/` does not exist. | Medium (trust) | **Fixed** across docs. |
 | **D8** | **P0 grave→Full live-gate self-contradiction:** earlier docs mixed old CGEventTap live evidence with the current Carbon product gate. | High (trust) | **Reconciled 2026-06-12:** §15 G6/I11 now distinguish old tap prior art from the current Carbon path. The rebuilt NSApp-pumping scripted gates are the repeatable closure for Carbon dispatch; physical-key runs remain supplemental UX confirmation and the Input Monitoring revoked check remains a manual permission-state spot-check. |
 | **D9** | `maxCompletionLength`: Cotypist live default **4**, our `DEFAULT_MAX_WORDS=8` — deliberate divergence, previously undocumented. | Trivial | **Documented** in §13. |
-| **D10** | G7 true-2× Retina label vs `p1`/`ACCEPTANCE` "scale>1 unverified". 2× is unit-proven, not live-proven. | Low | **Resolved 2026-06-09:** G7 row label softened to **"Measurement-closed; live 2× re-confirm pending"** so it no longer overstates closure; matches `ACCEPTANCE.md` ("measurement-closed but not yet live-re-confirmed"). |
+| **D10** | G7 true-2x Retina label vs earlier docs that had not yet recorded the two-display evidence. | Low | **Resolved 2026-06-17:** later two-display live evidence closed normal AX point-coordinate behavior on a genuine 2x Retina panel plus external 1x display. The only residual is the latent pixel-reporting-app caveat in the G7 row. |
 
 ### 2026-06-09 peer-review additions (D11–D13)
 
