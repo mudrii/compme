@@ -36,6 +36,35 @@ fail() {
   exit 1
 }
 
+configure_e2e_mode() {
+  case "$ACCEPT_MODE" in
+    full|word) ;;
+    *) fail "COMPME_E2E_ACCEPT must be full or word" ;;
+  esac
+
+  case "$(printf '%s' "$REAL_MODEL" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) REAL_MODEL=1 ;;
+    0|false|no|off|'') REAL_MODEL=0 ;;
+    *) fail "COMPME_E2E_REAL_MODEL must be 0/1, true/false, yes/no, or on/off" ;;
+  esac
+
+  if [ "$REAL_MODEL" -eq 1 ]; then
+    if [ "${COMPME_E2E_STUB+x}" = "x" ]; then
+      fail "COMPME_E2E_REAL_MODEL=1 cannot be combined with COMPME_E2E_STUB"
+    fi
+    if [ "${COMPME_STUB_COMPLETION+x}" = "x" ]; then
+      fail "COMPME_E2E_REAL_MODEL=1 cannot inherit COMPME_STUB_COMPLETION"
+    fi
+    STUB=""
+    return 0
+  fi
+
+  STUB="${COMPME_E2E_STUB:- jumps-$(date +%H%M%S)}"
+  if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPME_E2E_STUB+x}" != "x" ]; then
+    STUB=" jumps over"
+  fi
+}
+
 sleep_ms() {
   ms="$1"
   case "$ms" in
@@ -310,6 +339,38 @@ run_self_tests() {
   else
     echo "PASS self-test-e2e-pipeline-evidence-real-model-unchanged-readback"
   fi
+  if (
+    ACCEPT_MODE=full
+    REAL_MODEL=1
+    STUB=""
+    unset COMPME_E2E_STUB
+    unset COMPME_STUB_COMPLETION
+    configure_e2e_mode
+    [ "$REAL_MODEL" -eq 1 ] && [ -z "$STUB" ]
+  ); then
+    echo "PASS self-test-e2e-real-model-configures-without-stub"
+  else
+    echo "FAIL self-test-e2e-real-model-configures-without-stub" >&2
+    failures=$((failures + 1))
+  fi
+  real_mode_stub_log="$tmp_dir/real-mode-stub-completion.log"
+  if (
+    ACCEPT_MODE=full
+    REAL_MODEL=1
+    STUB=""
+    unset COMPME_E2E_STUB
+    COMPME_STUB_COMPLETION=" inherited-stub"
+    export COMPME_STUB_COMPLETION
+    configure_e2e_mode
+  ) >"$real_mode_stub_log" 2>&1; then
+    echo "FAIL self-test-e2e-real-model-rejects-stub-completion: inherited stub passed" >&2
+    failures=$((failures + 1))
+  elif grep -q 'COMPME_E2E_REAL_MODEL=1 cannot inherit COMPME_STUB_COMPLETION' "$real_mode_stub_log"; then
+    echo "PASS self-test-e2e-real-model-rejects-stub-completion"
+  else
+    echo "FAIL self-test-e2e-real-model-rejects-stub-completion: expected error missing" >&2
+    failures=$((failures + 1))
+  fi
   rm -rf "$tmp_dir"
   [ "$failures" -eq 0 ] || return 1
   echo "E2E self-tests passed"
@@ -321,33 +382,13 @@ if [ "${1:-}" = "--self-test" ]; then
   exit $?
 fi
 
+configure_e2e_mode
+
 [ -x "$BIN" ] || fail "binary not built: $BIN (run: cargo build -p app)"
 [ -n "$PID" ] || fail "set COMPME_ACCEPTANCE_PID to the TextEdit pid"
 command -v osascript >/dev/null 2>&1 || fail "osascript unavailable (macOS only)"
 
 mkdir -p "$(dirname "$LOG")"
-
-case "$ACCEPT_MODE" in
-  full|word) ;;
-  *) fail "COMPME_E2E_ACCEPT must be full or word" ;;
-esac
-
-case "$(printf '%s' "$REAL_MODEL" | tr '[:upper:]' '[:lower:]')" in
-  1|true|yes|on) REAL_MODEL=1 ;;
-  0|false|no|off|'') REAL_MODEL=0 ;;
-  *) fail "COMPME_E2E_REAL_MODEL must be 0/1, true/false, yes/no, or on/off" ;;
-esac
-
-if [ "$REAL_MODEL" -eq 1 ] && [ "${COMPME_E2E_STUB+x}" = "x" ]; then
-  fail "COMPME_E2E_REAL_MODEL=1 cannot be combined with COMPME_E2E_STUB"
-fi
-
-if [ "$REAL_MODEL" -eq 0 ]; then
-  STUB="${COMPME_E2E_STUB:- jumps-$(date +%H%M%S)}"
-  if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPME_E2E_STUB+x}" != "x" ]; then
-    STUB=" jumps over"
-  fi
-fi
 
 PREFIX="${PREFIX}${PROMPT_MARKER} "
 prefix_chars="$(printf '%s' "$PREFIX" | wc -m | tr -d '[:space:]')"
@@ -371,7 +412,8 @@ sleep_ms 400
 # 2. Launch the product binary against TextEdit. The default deterministic gate
 #    uses the stub model; COMPME_E2E_REAL_MODEL=1 exercises LlamaModel instead.
 if [ "$REAL_MODEL" -eq 1 ]; then
-  COMPME_ACCEPTANCE_PID="$PID" \
+  env -u COMPME_STUB_COMPLETION \
+    COMPME_ACCEPTANCE_PID="$PID" \
     COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \
     COMPME_RUN_MS="$RUN_MS" \
     "$BIN" >"$LOG" 2>&1 &
