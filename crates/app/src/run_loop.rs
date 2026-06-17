@@ -7815,14 +7815,62 @@ mod tests {
     }
 
     #[test]
-    fn monitored_buffers_are_isolated_per_field() {
+    fn monitored_flush_rechecks_secure_input_for_buffered_work() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([22u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let mut pending = Vec::new();
+        let mut buffers = HashMap::from([(
+            field.clone(),
+            MonitoredBuffer::Collecting("partial secret".into()),
+        )]);
+        let mut secure = false;
+        let mut last_secure_poll_ms = None;
+        let mut probe_called = false;
+
+        flush_monitored_changes_after_secure_recheck(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &Prefs::default(),
+            MonitoredFlushState {
+                secure: &mut secure,
+                last_secure_poll_ms: &mut last_secure_poll_ms,
+            },
+            MonitoredFlushRuntime {
+                monitored_memory_active: true,
+                enabled: true,
+                trusted: true,
+                now_ms: 1_004,
+            },
+            || {
+                probe_called = true;
+                true
+            },
+        );
+
+        assert!(probe_called);
+        assert!(secure);
+        assert_eq!(last_secure_poll_ms, Some(1_004));
+        assert!(pending.is_empty());
+        assert!(buffers.is_empty());
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn monitored_buffers_are_isolated_per_same_app_field() {
         let store = memory::MemoryStore::open_in_memory(
             &memory::StaticKey([21u8; 32]),
             memory::StorageMode::AllMonitored,
         )
         .expect("open in-memory store");
         let field_a = field_with_app("com.apple.TextEdit");
-        let field_b = field_with_app("com.apple.Notes");
+        let mut field_b = field_with_app("com.apple.TextEdit");
+        field_b.element_id = "ax:other-field".into();
+        field_b.generation = 2;
         let prefs = Prefs::default();
         let mut tracker_a = FieldTracker::new();
         let mut tracker_b = FieldTracker::new();
@@ -7895,8 +7943,10 @@ mod tests {
             false,
         );
 
-        assert_eq!(store.recent("com.apple.Notes", 10).unwrap(), vec!["note "]);
-        assert!(store.recent("com.apple.TextEdit", 10).unwrap().is_empty());
+        assert_eq!(
+            store.recent("com.apple.TextEdit", 10).unwrap(),
+            vec!["note "]
+        );
         assert!(buffers.contains_key(&field_a));
         assert!(!buffers.contains_key(&field_b));
     }
