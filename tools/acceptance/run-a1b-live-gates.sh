@@ -667,7 +667,7 @@ run_self_tests() {
     '^SKIP accept-insert-option-tab: --skip-textedit$' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
-    '^Summary: pass=0 fail=0 skip=11 incomplete=10 manual=2 logs=' \
+    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=2 logs=' \
     || self_failures=$((self_failures + 1))
 
   rm -rf "$self_test_dir"

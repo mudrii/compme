@@ -152,16 +152,22 @@ impl MemoryStore {
     /// The most recent `limit` decryptable records for `app`, newest first.
     /// Records that fail to decrypt (e.g. a different key) are skipped.
     pub fn recent(&self, app: &str, limit: usize) -> Result<Vec<String>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let mut stmt = self
             .conn
-            .prepare("SELECT blob FROM memories WHERE app = ?1 ORDER BY id DESC LIMIT ?2")?;
-        let blobs = stmt.query_map(params![app, limit as i64], |row| row.get::<_, Vec<u8>>(0))?;
+            .prepare("SELECT blob FROM memories WHERE app = ?1 ORDER BY id DESC")?;
+        let blobs = stmt.query_map(params![app], |row| row.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
         for blob in blobs {
             // Best-effort read: a row that fails to decrypt (wrong key, or app
             // column tampered so the AAD no longer matches) is treated as absent.
             if let Some(text) = self.decrypt(&blob?, app.as_bytes()) {
                 out.push(text);
+                if out.len() == limit {
+                    break;
+                }
             }
         }
         Ok(out)
@@ -600,5 +606,40 @@ mod tests {
         assert_eq!(store.count().unwrap(), 1);
         assert!(store.recent("app", 10).unwrap().is_empty());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recent_limit_counts_decryptable_rows_after_skipping_corrupt_newer_rows() {
+        let store = MemoryStore::open_in_memory(&key(16), StorageMode::AcceptedOnly).unwrap();
+        store.remember("app", "older").unwrap();
+        store.remember("app", "newer").unwrap();
+
+        let mut blob: Vec<u8> = store
+            .conn
+            .query_row(
+                "SELECT blob FROM memories WHERE app = 'app' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            blob.len() > NONCE_LEN + 1,
+            "sanity: blob has a ciphertext body to corrupt"
+        );
+        blob[NONCE_LEN] ^= 0x01;
+        store
+            .conn
+            .execute(
+                "UPDATE memories SET blob = ?1 WHERE id = (SELECT MAX(id) FROM memories WHERE app = 'app')",
+                params![blob],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.recent("app", 1).unwrap(),
+            vec!["older"],
+            "a corrupt newest row must not consume the caller's decryptable limit"
+        );
+        assert_eq!(store.count().unwrap(), 2);
     }
 }

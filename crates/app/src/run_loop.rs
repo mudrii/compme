@@ -606,6 +606,62 @@ enum DownloadStartResult {
     Busy,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct AcceptedLicenseDecision {
+    model: &'static str,
+    license_name: &'static str,
+    value: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ModelDownloadClickDecision {
+    BlockedByRam(String),
+    LicenseDeclined {
+        model: &'static str,
+    },
+    Ready {
+        entry: &'static model_catalog::ModelEntry,
+        accepted_license: Option<AcceptedLicenseDecision>,
+    },
+}
+
+fn model_download_click_decision(
+    selected_index: usize,
+    available_ram_gb: u32,
+    accepted_licenses: &mut std::collections::BTreeSet<String>,
+    mut confirm_license: impl FnMut(&str, &str, &str) -> bool,
+) -> Option<ModelDownloadClickDecision> {
+    let entry = crate::model_picker::selected_catalog_entry(selected_index)?;
+    if let Some(message) = model_download_ram_block_message(entry, available_ram_gb) {
+        return Some(ModelDownloadClickDecision::BlockedByRam(message));
+    }
+    match model_catalog::download_gate(entry, |name| accepted_licenses.contains(name)) {
+        model_catalog::DownloadGate::Proceed => Some(ModelDownloadClickDecision::Ready {
+            entry,
+            accepted_license: None,
+        }),
+        model_catalog::DownloadGate::NeedsLicense {
+            model,
+            license_name,
+            terms_url,
+        } => {
+            if confirm_license(model, license_name, terms_url) {
+                let value = record_license_acceptance(accepted_licenses, model);
+                Some(ModelDownloadClickDecision::Ready {
+                    entry,
+                    accepted_license: Some(AcceptedLicenseDecision {
+                        model,
+                        license_name,
+                        value,
+                    }),
+                })
+            } else {
+                Some(ModelDownloadClickDecision::LicenseDeclined { model })
+            }
+        }
+    }
+}
+
 struct ModelDownloadEdge<'a, D, Prepare, ExistingModel, Spawn, Request> {
     entry: &'a model_catalog::ModelEntry,
     dest: &'a std::path::Path,
@@ -3597,112 +3653,96 @@ pub fn run() -> Result<(), String> {
             .swap(false, Ordering::Relaxed)
             && download_idle(model_download_status.as_deref())
         {
-            // Selected-or-recommended: the Setup-tab popup writes the chosen
-            // catalog index into setup_model_index (default = recommended, so
-            // unchanged until the user picks another). selected_catalog_entry
-            // is total over a garbage/OOB index — never panics.
-            if let (Some(entry), Some(home)) = (
-                crate::model_picker::selected_catalog_entry(
-                    settings_flags.setup_model_index.load(Ordering::Relaxed),
-                ),
-                std::env::var_os("HOME"),
-            ) {
-                if let Some(message) = model_download_ram_block_message(entry, available_ram_gb) {
-                    eprintln!("compme: {message}");
-                    continue;
-                }
-                // License click-through gate (D14, c95 "once per model"):
-                // inert for today's unencumbered recommended() target; bites
-                // when a future picker selects a GemmaTerms/LlamaCommunity
-                // entry. EVERY download path must route through this gate —
-                // a second path that skips it silently bypasses the terms.
-                let allowed = match model_catalog::download_gate(entry, |name| {
-                    config.license_accepted.contains(name)
-                }) {
-                    model_catalog::DownloadGate::Proceed => true,
-                    model_catalog::DownloadGate::NeedsLicense {
-                        model,
-                        license_name,
-                        terms_url,
-                    } => {
-                        // Prompt failure (typed but unreachable off-main) =
-                        // decline: the gate fails closed.
-                        let accepted =
-                            platform_macos::confirm_license_prompt(model, license_name, terms_url)
-                                .unwrap_or(false);
-                        if accepted {
-                            // In-memory FIRST (same-session re-prompt guard),
-                            // then persist; a failed write only logs — the
-                            // user DID accept, so the download proceeds.
-                            let value =
-                                record_license_acceptance(&mut config.license_accepted, model);
-                            if let Some(path) = config::config_file_path() {
-                                if let Err(err) = config::persist_setting(
-                                    &path,
-                                    "COMPME_LICENSE_ACCEPTED",
-                                    &value,
-                                ) {
-                                    eprintln!(
-                                        "compme: failed to persist COMPME_LICENSE_ACCEPTED: {err}"
-                                    );
-                                }
-                            }
-                            eprintln!("compme: {license_name} accepted for {model}");
-                        } else {
-                            eprintln!(
-                                "compme: download of {model} cancelled (license not accepted)"
-                            );
-                        }
-                        accepted
-                    }
-                };
-                if allowed {
-                    let dest = std::path::PathBuf::from(home)
-                        .join("Library/Application Support/compme/models")
-                        .join(format!("{}.gguf", entry.name));
-                    // Skip the fetch when the model is already on disk — a
-                    // repeat "Download" click on a present model would otherwise
-                    // re-fetch and clobber a good file. An interrupted 0-byte
-                    // stub is NOT present, so it still re-downloads. This check
-                    // sits AFTER the license gate on purpose: keeping every
-                    // download-triggering path behind the gate is the simpler
-                    // invariant, and accepted licenses are remembered, so a
-                    // normal re-click on a present encumbered model never
-                    // re-prompts (the prompt-then-skip is an unaccepted-yet
-                    // edge case, inert for today's unencumbered catalog).
-                    match start_model_download_edge(ModelDownloadEdge {
+            if let Some(home) = std::env::var_os("HOME") {
+                // Selected-or-recommended, RAM hard block, and license
+                // click-through live in a pure decision helper so this edge is
+                // covered as a single app-level policy before download IO.
+                let selected_index = settings_flags.setup_model_index.load(Ordering::Relaxed);
+                let decision = model_download_click_decision(
+                    selected_index,
+                    available_ram_gb,
+                    &mut config.license_accepted,
+                    |model, license_name, terms_url| {
+                        platform_macos::confirm_license_prompt(model, license_name, terms_url)
+                            .unwrap_or(false)
+                    },
+                );
+                let (entry, accepted_license) = match decision {
+                    Some(ModelDownloadClickDecision::Ready {
                         entry,
-                        dest: &dest,
-                        downloader: &mut model_downloader,
-                        model_download_status: &mut model_download_status,
-                        model_download_logged: &mut model_download_logged,
-                        prepare: prepare_model_download_dest,
-                        existing_model: model_download_dest_present,
-                        spawn: || {
-                            model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string())
-                        },
-                        request: |downloader: &model_fetch::ModelDownloader, request| {
-                            downloader.request(request)
-                        },
-                    }) {
-                        DownloadStartResult::PreparedFailed(err) => {
-                            eprintln!("compme: {err}");
+                        accepted_license,
+                    }) => (entry, accepted_license),
+                    Some(ModelDownloadClickDecision::BlockedByRam(message)) => {
+                        eprintln!("compme: {message}");
+                        continue;
+                    }
+                    Some(ModelDownloadClickDecision::LicenseDeclined { model }) => {
+                        eprintln!("compme: download of {model} cancelled (license not accepted)");
+                        continue;
+                    }
+                    None => continue,
+                };
+                if let Some(accepted) = accepted_license {
+                    // In-memory FIRST (same-session re-prompt guard), then
+                    // persist; a failed write only logs — the user DID accept,
+                    // so the download proceeds.
+                    if let Some(path) = config::config_file_path() {
+                        if let Err(err) = config::persist_setting(
+                            &path,
+                            "COMPME_LICENSE_ACCEPTED",
+                            &accepted.value,
+                        ) {
+                            eprintln!("compme: failed to persist COMPME_LICENSE_ACCEPTED: {err}");
                         }
-                        DownloadStartResult::AlreadyPresent => eprintln!(
-                            "compme: {} already downloaded at {} \u{2014} delete it to re-download",
-                            entry.name,
-                            dest.display()
-                        ),
-                        DownloadStartResult::SpawnFailed(err) => {
-                            eprintln!("compme: failed to start model downloader \u{2014} {err}");
-                        }
-                        DownloadStartResult::Queued => eprintln!(
-                            "compme: downloading {} ({} MB) \u{2014} progress in this log",
-                            entry.name, entry.size_mb
-                        ),
-                        DownloadStartResult::Busy => {
-                            eprintln!("compme: model download queue busy \u{2014} try again");
-                        }
+                    }
+                    eprintln!(
+                        "compme: {} accepted for {}",
+                        accepted.license_name, accepted.model
+                    );
+                }
+                let dest = std::path::PathBuf::from(home)
+                    .join("Library/Application Support/compme/models")
+                    .join(format!("{}.gguf", entry.name));
+                // Skip the fetch when the model is already on disk — a
+                // repeat "Download" click on a present model would otherwise
+                // re-fetch and clobber a good file. An interrupted 0-byte
+                // stub is NOT present, so it still re-downloads. This check
+                // sits AFTER the license gate on purpose: keeping every
+                // download-triggering path behind the gate is the simpler
+                // invariant, and accepted licenses are remembered, so a
+                // normal re-click on a present encumbered model never
+                // re-prompts (the prompt-then-skip is an unaccepted-yet
+                // edge case, inert for today's unencumbered catalog).
+                match start_model_download_edge(ModelDownloadEdge {
+                    entry,
+                    dest: &dest,
+                    downloader: &mut model_downloader,
+                    model_download_status: &mut model_download_status,
+                    model_download_logged: &mut model_download_logged,
+                    prepare: prepare_model_download_dest,
+                    existing_model: model_download_dest_present,
+                    spawn: || model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string()),
+                    request: |downloader: &model_fetch::ModelDownloader, request| {
+                        downloader.request(request)
+                    },
+                }) {
+                    DownloadStartResult::PreparedFailed(err) => {
+                        eprintln!("compme: {err}");
+                    }
+                    DownloadStartResult::AlreadyPresent => eprintln!(
+                        "compme: {} already downloaded at {} \u{2014} delete it to re-download",
+                        entry.name,
+                        dest.display()
+                    ),
+                    DownloadStartResult::SpawnFailed(err) => {
+                        eprintln!("compme: failed to start model downloader \u{2014} {err}");
+                    }
+                    DownloadStartResult::Queued => eprintln!(
+                        "compme: downloading {} ({} MB) \u{2014} progress in this log",
+                        entry.name, entry.size_mb
+                    ),
+                    DownloadStartResult::Busy => {
+                        eprintln!("compme: model download queue busy \u{2014} try again");
                     }
                 }
             }
@@ -9045,6 +9085,154 @@ mod tests {
             None,
             "tight-at-minimum models are allowed with a picker warning"
         );
+    }
+
+    #[test]
+    fn model_download_click_blocks_below_min_ram_before_prompt_or_enqueue() {
+        let entry = model_catalog::recommended().expect("catalog has a recommended model");
+        let mut accepted = std::collections::BTreeSet::new();
+        let prompted = std::cell::Cell::new(false);
+
+        let decision = model_download_click_decision(
+            crate::model_picker::recommended_index(),
+            entry.min_ram_gb.saturating_sub(1),
+            &mut accepted,
+            |_, _, _| {
+                prompted.set(true);
+                true
+            },
+        )
+        .expect("catalog has an entry");
+
+        match decision {
+            ModelDownloadClickDecision::BlockedByRam(message) => {
+                assert!(message.contains(entry.name));
+            }
+            other => panic!("expected RAM block, got {other:?}"),
+        }
+        assert!(
+            !prompted.get(),
+            "RAM block must happen before license prompt"
+        );
+        assert!(accepted.is_empty());
+    }
+
+    #[test]
+    fn model_download_click_declines_license_without_recording_acceptance() {
+        let encumbered_index = model_catalog::catalog()
+            .iter()
+            .position(|entry| entry.license.needs_acceptance())
+            .expect("catalog has an encumbered entry");
+        let encumbered = &model_catalog::catalog()[encumbered_index];
+        let mut accepted = std::collections::BTreeSet::new();
+
+        let decision = model_download_click_decision(
+            encumbered_index,
+            encumbered.min_ram_gb,
+            &mut accepted,
+            |model, license_name, terms_url| {
+                assert_eq!(model, encumbered.name);
+                assert_eq!(license_name, encumbered.license.display_name());
+                assert_eq!(terms_url, encumbered.license.terms_url());
+                false
+            },
+        )
+        .expect("catalog has an entry");
+
+        assert_eq!(
+            decision,
+            ModelDownloadClickDecision::LicenseDeclined {
+                model: encumbered.name
+            }
+        );
+        assert!(
+            accepted.is_empty(),
+            "declining a license must not persist acceptance"
+        );
+    }
+
+    #[test]
+    fn model_download_click_accepts_license_and_returns_persist_value() {
+        let encumbered_index = model_catalog::catalog()
+            .iter()
+            .position(|entry| entry.license.needs_acceptance())
+            .expect("catalog has an encumbered entry");
+        let encumbered = &model_catalog::catalog()[encumbered_index];
+        let mut accepted = std::collections::BTreeSet::new();
+
+        let decision = model_download_click_decision(
+            encumbered_index,
+            encumbered.min_ram_gb,
+            &mut accepted,
+            |model, license_name, terms_url| {
+                assert_eq!(model, encumbered.name);
+                assert_eq!(license_name, encumbered.license.display_name());
+                assert_eq!(terms_url, encumbered.license.terms_url());
+                true
+            },
+        )
+        .expect("catalog has an entry");
+
+        match decision {
+            ModelDownloadClickDecision::Ready {
+                entry,
+                accepted_license: Some(accepted_license),
+            } => {
+                assert_eq!(entry.name, encumbered.name);
+                assert_eq!(accepted_license.model, encumbered.name);
+                assert_eq!(
+                    accepted_license.license_name,
+                    encumbered.license.display_name()
+                );
+                assert_eq!(accepted_license.value, encumbered.name);
+            }
+            other => panic!("expected accepted license ready decision, got {other:?}"),
+        }
+        assert!(accepted.contains(encumbered.name));
+    }
+
+    #[test]
+    fn model_download_click_uses_selected_index_and_oob_falls_back_to_recommended() {
+        let selected_index = model_catalog::catalog()
+            .iter()
+            .position(|entry| {
+                entry.license == model_catalog::License::Apache2
+                    && Some(entry.name) != model_catalog::recommended().map(|e| e.name)
+            })
+            .expect("catalog has a non-default unencumbered entry");
+        let selected = &model_catalog::catalog()[selected_index];
+        let mut accepted = std::collections::BTreeSet::new();
+
+        let selected_decision = model_download_click_decision(
+            selected_index,
+            selected.min_ram_gb,
+            &mut accepted,
+            |_, _, _| panic!("unencumbered selected model must not prompt"),
+        )
+        .expect("catalog has an entry");
+        match selected_decision {
+            ModelDownloadClickDecision::Ready {
+                entry,
+                accepted_license: None,
+            } => assert_eq!(entry.name, selected.name),
+            other => panic!("expected selected entry to be ready, got {other:?}"),
+        }
+
+        let recommended = model_catalog::recommended().expect("catalog has a recommended model");
+        let fallback_decision = model_download_click_decision(
+            usize::MAX,
+            recommended.min_ram_gb,
+            &mut accepted,
+            |_, _, _| panic!("recommended model must not prompt"),
+        )
+        .expect("fallback catalog entry");
+        match fallback_decision {
+            ModelDownloadClickDecision::Ready {
+                entry,
+                accepted_license: None,
+            } => assert_eq!(entry.name, recommended.name),
+            other => panic!("expected OOB fallback to recommended, got {other:?}"),
+        }
     }
 
     #[test]

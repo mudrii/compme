@@ -65,6 +65,9 @@ jobs:
       - name: A2 compatibility runner self-test
         run: tools/acceptance/run-a2-compat-gates.sh --self-test
 
+      - name: Model client feature policy
+        run: tools/release/check-model-client-features.sh
+
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh
 

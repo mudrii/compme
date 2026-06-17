@@ -294,6 +294,7 @@ tools/bundle/check-bundle-metadata.sh
 tools/acceptance/e2e-complete-me.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-a2-compat-gates.sh --self-test
+tools/release/check-model-client-features.sh
 bash tools/release/check-model-gates.sh
 tools/release/update-cask.sh --self-test
 bash tools/release/run-model-gates.sh

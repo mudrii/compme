@@ -446,10 +446,13 @@ mod tests {
 
     /// Errors only on prompts containing "bad" — lets a test exercise the
     /// complete()-error branch and confirm the worker keeps serving afterwards.
-    struct ConditionalModel;
+    struct ConditionalModel {
+        failed_prompt_seen: Sender<()>,
+    }
     impl LocalModel for ConditionalModel {
         fn complete(&self, prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
             if prompt.contains("bad") {
+                let _ = self.failed_prompt_seen.send(());
                 Err(LocalModelError::new("infer", "nope"))
             } else {
                 Ok(prompt.to_string())
@@ -1164,8 +1167,9 @@ mod tests {
     fn complete_error_is_non_fatal_worker_keeps_serving() {
         // The worker hits a complete() error on the "bad" request, then must
         // still serve the later "good" request.
+        let (failed_prompt_seen, failed_prompt_rx) = channel();
         let inference = InferenceHandle::spawn(
-            Box::new(ConditionalModel),
+            Box::new(ConditionalModel { failed_prompt_seen }),
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
@@ -1173,6 +1177,9 @@ mod tests {
         )
         .unwrap();
         inference.submit(request("bad", 1));
+        failed_prompt_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the worker must actually exercise the complete() error path");
         inference.submit(request("good", 2));
         let outcome = inference
             .recv_outcome()

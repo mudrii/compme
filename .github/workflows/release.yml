@@ -55,6 +55,9 @@ jobs:
       - name: E2E runner self-test
         run: tools/acceptance/e2e-complete-me.sh --self-test
 
+      - name: Model client feature policy
+        run: tools/release/check-model-client-features.sh
+
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh
 

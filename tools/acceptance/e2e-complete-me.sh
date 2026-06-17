@@ -59,9 +59,12 @@ configure_e2e_mode() {
     return 0
   fi
 
-  STUB="${COMPME_E2E_STUB:- jumps-$(date +%H%M%S)}"
-  if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPME_E2E_STUB+x}" != "x" ]; then
+  if [ "${COMPME_E2E_STUB+x}" = "x" ]; then
+    STUB="$COMPME_E2E_STUB"
+  elif [ "$ACCEPT_MODE" = "word" ]; then
     STUB=" jumps over"
+  else
+    STUB=" jumps-$(date +%H%M%S)"
   fi
 }
 
@@ -206,6 +209,32 @@ run_self_tests() {
     failures=$((failures + 1))
   else
     echo "PASS self-test-e2e-no-raw-banner"
+  fi
+  if (
+    unset COMPME_E2E_STUB COMPME_STUB_COMPLETION
+    ACCEPT_MODE=word
+    REAL_MODEL=0
+    STUB=""
+    configure_e2e_mode
+    [ "$(printf '%s\n' "$STUB" | awk '{print NF}')" -ge 2 ]
+  ); then
+    echo "PASS self-test-e2e-word-default-has-remainder"
+  else
+    echo "FAIL self-test-e2e-word-default-has-remainder: word mode default stub must contain at least two words" >&2
+    failures=$((failures + 1))
+  fi
+  if (
+    COMPME_E2E_STUB=" custom completion"
+    ACCEPT_MODE=word
+    REAL_MODEL=0
+    STUB=""
+    configure_e2e_mode
+    [ "$STUB" = " custom completion" ]
+  ); then
+    echo "PASS self-test-e2e-word-explicit-stub-preserved"
+  else
+    echo "FAIL self-test-e2e-word-explicit-stub-preserved: explicit word-mode stub was replaced" >&2
+    failures=$((failures + 1))
   fi
   tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t compme-e2e-self-test)"
   hostile_log="$tmp_dir/hostile.log"
