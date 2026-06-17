@@ -528,6 +528,66 @@ run_self_tests() {
     self_failures=$((self_failures + 1))
   fi
 
+  missing_bin_log="$self_test_dir/require-bins-missing-input-monitoring.log"
+  if (
+    TEXTEDIT_BIN=/bin/sh
+    ACCEPT_BIN=/bin/sh
+    ACCEPT_INSERT_BIN=/bin/sh
+    MARKER_BIN=/bin/sh
+    OVERLAY_BIN=/bin/sh
+    POPUP_FIXTURE_BIN=/bin/sh
+    INPUT_MONITORING_BIN="$self_test_dir/missing-input-monitoring-helper"
+    require_bins
+  ) >"$missing_bin_log" 2>&1; then
+    echo "FAIL require-bins-input-monitoring-missing" >&2
+    self_failures=$((self_failures + 1))
+  else
+    assert_log_contains "require-bins-input-monitoring-missing" "$missing_bin_log" \
+      'Missing example binary: .*/missing-input-monitoring-helper$' \
+      || self_failures=$((self_failures + 1))
+  fi
+
+  fake_input_monitoring="$self_test_dir/fake-input-monitoring"
+  fake_accept="$self_test_dir/fake-accept"
+  fake_accept_log="$self_test_dir/fake-accept.invocations"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'echo "INPUT_MONITORING granted=false"' \
+    'exit 0' >"$fake_input_monitoring"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\n" "$*" >>"$FAKE_ACCEPT_LOG"' \
+    'echo "SUMMARY controls=expected"' \
+    'exit 0' >"$fake_accept"
+  chmod +x "$fake_input_monitoring" "$fake_accept"
+  revoked_branch_log="$self_test_dir/input-monitoring-revoked-branch.log"
+  if (
+    DRY_RUN=0
+    LOG_DIR="$self_test_dir/input-monitoring-revoked-branch-logs"
+    mkdir -p "$LOG_DIR"
+    INPUT_MONITORING_BIN="$fake_input_monitoring"
+    ACCEPT_BIN="$fake_accept"
+    FAKE_ACCEPT_LOG="$fake_accept_log"
+    export FAKE_ACCEPT_LOG
+    SHORT_TIMEOUT_MS=321
+    POST_TAB_AFTER_MS=123
+    GATE_PAUSE_MS=0
+    RETRIES=1
+    passes=0
+    failures=0
+    manuals=0
+    run_input_monitoring_revoked_carbon_gate
+    [ "$passes" -eq 1 ] && [ "$failures" -eq 0 ] && [ "$manuals" -eq 0 ]
+  ) >"$revoked_branch_log" 2>&1; then
+    assert_log_contains "input-monitoring-revoked-branch-full" "$fake_accept_log" '^321 full$' \
+      || self_failures=$((self_failures + 1))
+    assert_log_contains "input-monitoring-revoked-branch-word" "$fake_accept_log" '^321 word$' \
+      || self_failures=$((self_failures + 1))
+  else
+    echo "FAIL input-monitoring-revoked-branch" >&2
+    self_failures=$((self_failures + 1))
+  fi
+
   failures=0
   skips=0
   incomplete_skips=0
@@ -626,7 +686,7 @@ resolve_textedit_pid() {
 
 require_bins() {
   missing=0
-  for bin in "$TEXTEDIT_BIN" "$ACCEPT_BIN" "$ACCEPT_INSERT_BIN" "$MARKER_BIN" "$OVERLAY_BIN" "$POPUP_FIXTURE_BIN"; do
+  for bin in "$TEXTEDIT_BIN" "$ACCEPT_BIN" "$ACCEPT_INSERT_BIN" "$MARKER_BIN" "$OVERLAY_BIN" "$POPUP_FIXTURE_BIN" "$INPUT_MONITORING_BIN"; do
     if [ ! -x "$bin" ]; then
       echo "Missing example binary: $bin" >&2
       missing=1

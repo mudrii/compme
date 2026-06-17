@@ -8,9 +8,9 @@
 #   Tab (key code 48) = next-word accept.
 #
 # Pass = the stub text ends up in the document AND the binary logged each stage.
-# A separate manual run (omit COMPME_E2E_STUB / set a real model) exercises
-# the same path with the real LlamaModel; that asserts an insert occurred but not
-# exact text, since real output is nondeterministic.
+# A separate manual run with COMPME_E2E_REAL_MODEL=1 and a real model configured
+# exercises the same path with LlamaModel; that asserts the document changed but
+# not exact text, since real output is nondeterministic.
 #
 # Requires: macOS, osascript, Accessibility granted to the terminal, an unlocked
 # session, and the TextEdit pid in COMPME_ACCEPTANCE_PID. Production accept
@@ -25,7 +25,8 @@ WARMUP_MS="${COMPME_E2E_WARMUP_MS:-1200}"
 TAB_AFTER_MS="${COMPME_E2E_TAB_AFTER_MS:-1800}"
 SECOND_TAB_AFTER_MS="${COMPME_E2E_SECOND_TAB_AFTER_MS:-700}"
 PREFIX="${COMPME_E2E_PREFIX:-The quick brown fox }"
-STUB="${COMPME_E2E_STUB:- jumps-$(date +%H%M%S)}"
+REAL_MODEL="${COMPME_E2E_REAL_MODEL:-0}"
+STUB=""
 PROMPT_MARKER="${COMPME_E2E_PROMPT_MARKER:-compme e2e marker $$}"
 ACCEPT_MODE="${COMPME_E2E_ACCEPT:-full}"
 LOG="${COMPME_E2E_LOG:-$ROOT_DIR/tools/acceptance/logs/e2e-compme-$(date +%Y%m%d-%H%M%S).log}"
@@ -76,19 +77,33 @@ print_evidence_summary() {
 
 assert_pipeline_evidence() {
   document_text="$1"
-  stub_text="$2"
+  expected_text="$2"
   log_file="$3"
   accept_mode="$4"
   app_status="$5"
+  readback_mode="${6:-stub}"
   ok=1
   if ! record_app_status "$app_status"; then
     ok=0
   fi
 
-  case "$document_text" in
-    *"$stub_text"*) echo "E2E: stub text inserted into document [PASS]" ;;
-    *) echo "E2E: stub text NOT found in document [FAIL]"; ok=0 ;;
-  esac
+  if [ "$readback_mode" = "real" ]; then
+    document_chars="$(printf '%s' "$document_text" | wc -m | tr -d '[:space:]')"
+    baseline_chars="$(printf '%s' "$expected_text" | wc -m | tr -d '[:space:]')"
+    if [ "$document_chars" -gt "$baseline_chars" ]; then
+      echo "E2E: document grew after real-model accept [PASS]"
+    else
+      echo "E2E: document did not grow after real-model accept [FAIL]"
+      ok=0
+    fi
+  else
+    if [ -n "$expected_text" ] && [[ "$document_text" == *"$expected_text"* ]]; then
+      echo "E2E: stub text inserted into document [PASS]"
+    else
+      echo "E2E: stub text NOT found in document [FAIL]"
+      ok=0
+    fi
+  fi
 
   if grep -Eq '^compme: focus( |$)' "$log_file"; then
     echo "E2E: stage present: 'focus' [PASS]"
@@ -283,6 +298,18 @@ run_self_tests() {
   if [ "$word_missing_failed" -eq 0 ]; then
     echo "PASS self-test-e2e-pipeline-evidence-word-missing-stages"
   fi
+  if assert_pipeline_evidence 'prefix real output' 'prefix ' "$pipeline_log" full 0 real >/dev/null; then
+    echo "PASS self-test-e2e-pipeline-evidence-real-model-readback-success"
+  else
+    echo "FAIL self-test-e2e-pipeline-evidence-real-model-readback-success" >&2
+    failures=$((failures + 1))
+  fi
+  if assert_pipeline_evidence 'prefix ' 'prefix ' "$pipeline_log" full 0 real >/dev/null; then
+    echo "FAIL self-test-e2e-pipeline-evidence-real-model-unchanged-readback: unchanged document passed" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-pipeline-evidence-real-model-unchanged-readback"
+  fi
   rm -rf "$tmp_dir"
   [ "$failures" -eq 0 ] || return 1
   echo "E2E self-tests passed"
@@ -305,14 +332,27 @@ case "$ACCEPT_MODE" in
   *) fail "COMPME_E2E_ACCEPT must be full or word" ;;
 esac
 
-if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPME_E2E_STUB+x}" != "x" ]; then
-  STUB=" jumps over"
+case "$(printf '%s' "$REAL_MODEL" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on) REAL_MODEL=1 ;;
+  0|false|no|off|'') REAL_MODEL=0 ;;
+  *) fail "COMPME_E2E_REAL_MODEL must be 0/1, true/false, yes/no, or on/off" ;;
+esac
+
+if [ "$REAL_MODEL" -eq 1 ] && [ "${COMPME_E2E_STUB+x}" = "x" ]; then
+  fail "COMPME_E2E_REAL_MODEL=1 cannot be combined with COMPME_E2E_STUB"
+fi
+
+if [ "$REAL_MODEL" -eq 0 ]; then
+  STUB="${COMPME_E2E_STUB:- jumps-$(date +%H%M%S)}"
+  if [ "$ACCEPT_MODE" = "word" ] && [ "${COMPME_E2E_STUB+x}" != "x" ]; then
+    STUB=" jumps over"
+  fi
 fi
 
 PREFIX="${PREFIX}${PROMPT_MARKER} "
 prefix_chars="$(printf '%s' "$PREFIX" | wc -m | tr -d '[:space:]')"
 stub_chars="$(printf '%s' "$STUB" | wc -m | tr -d '[:space:]')"
-echo "E2E compme: prefix_chars=$prefix_chars stub_chars=$stub_chars pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE"
+echo "E2E compme: prefix_chars=$prefix_chars stub_chars=$stub_chars pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE real_model=$REAL_MODEL"
 
 # 1. Seed TextEdit with a known prefix and bring it to the front.
 osascript - "$PREFIX" <<'OSA' || fail "could not seed TextEdit"
@@ -328,12 +368,20 @@ OSA
 
 sleep_ms 400
 
-# 2. Launch the product binary against TextEdit with the deterministic stub.
-COMPME_ACCEPTANCE_PID="$PID" \
-  COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \
-  COMPME_STUB_COMPLETION="$STUB" \
-  COMPME_RUN_MS="$RUN_MS" \
-  "$BIN" >"$LOG" 2>&1 &
+# 2. Launch the product binary against TextEdit. The default deterministic gate
+#    uses the stub model; COMPME_E2E_REAL_MODEL=1 exercises LlamaModel instead.
+if [ "$REAL_MODEL" -eq 1 ]; then
+  COMPME_ACCEPTANCE_PID="$PID" \
+    COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \
+    COMPME_RUN_MS="$RUN_MS" \
+    "$BIN" >"$LOG" 2>&1 &
+else
+  COMPME_ACCEPTANCE_PID="$PID" \
+    COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \
+    COMPME_STUB_COMPLETION="$STUB" \
+    COMPME_RUN_MS="$RUN_MS" \
+    "$BIN" >"$LOG" 2>&1 &
+fi
 APP_PID=$!
 
 # 3. After warm-up, move the caret to end-of-line so a selection-changed
@@ -362,9 +410,19 @@ RESULT="$(osascript -e 'tell application "TextEdit" to get text of front documen
 print_evidence_summary "$LOG" "$RESULT"
 
 ok=1
-if ! assert_pipeline_evidence "$RESULT" "$STUB" "$LOG" "$ACCEPT_MODE" "$app_status"; then
-  ok=0
+if [ "$REAL_MODEL" -eq 1 ]; then
+  if ! assert_pipeline_evidence "$RESULT" "$PREFIX" "$LOG" "$ACCEPT_MODE" "$app_status" real; then
+    ok=0
+  fi
+else
+  if ! assert_pipeline_evidence "$RESULT" "$STUB" "$LOG" "$ACCEPT_MODE" "$app_status"; then
+    ok=0
+  fi
 fi
 
 [ "$ok" -eq 1 ] || fail "pipeline assertions failed (see log: $LOG)"
-echo "E2E PASS: $ACCEPT_MODE focus->read->infer->ghost->accept->insert pipeline"
+if [ "$REAL_MODEL" -eq 1 ]; then
+  echo "E2E PASS: $ACCEPT_MODE focus->read->llama->ghost->accept->insert pipeline"
+else
+  echo "E2E PASS: $ACCEPT_MODE focus->read->infer->ghost->accept->insert pipeline"
+fi
