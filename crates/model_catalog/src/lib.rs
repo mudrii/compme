@@ -156,12 +156,12 @@ pub fn catalog() -> &'static [ModelEntry] {
     &[
         ModelEntry {
             name: "qwen2.5-0.5b-q4_k_m",
-            url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/9217f5db79a29953eb74d5343926648285ec7e67/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            url: "https://huggingface.co/Brianpuz/Qwen2.5-0.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2.5-0.5b-q4_k_m.gguf",
             size_mb: 398,
             min_ram_gb: 2,
             license: License::Apache2,
             expected_sha256: Some(
-                "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+                "ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484",
             ),
         },
         ModelEntry {
@@ -202,10 +202,10 @@ pub fn catalog_provenance() -> &'static [ModelProvenance] {
     &[
         ModelProvenance {
             name: "qwen2.5-0.5b-q4_k_m",
-            url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/9217f5db79a29953eb74d5343926648285ec7e67/qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            hf_repo_commit: "9217f5db79a29953eb74d5343926648285ec7e67",
+            url: "https://huggingface.co/Brianpuz/Qwen2.5-0.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2.5-0.5b-q4_k_m.gguf",
+            hf_repo_commit: "2188f0ce52503bd130dee9abf56f36f610784c0e",
             hf_x_linked_etag:
-                "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+                "ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484",
         },
         ModelProvenance {
             name: "llama-3.2-1b-q4_k_m",
@@ -552,8 +552,15 @@ mod tests {
     fn model_backed_release_gate_uses_catalog_recommended_artifact() {
         let script = include_str!("../../../tools/release/run-model-gates.sh");
         let recommended = recommended().expect("catalog has a recommended model");
+        let model_path = shell_assignment(script, "model").expect("model assignment");
+        let url = shell_assignment(script, "url").expect("url assignment");
         assert_eq!(
-            shell_assignment(script, "url"),
+            model_path.rsplit('/').next(),
+            url.rsplit('/').next(),
+            "release model path basename must match the downloaded GGUF basename"
+        );
+        assert_eq!(
+            Some(url),
             Some(recommended.url),
             "release model gate must download the catalog recommended artifact"
         );

@@ -20,8 +20,8 @@ use objc2_foundation::{
     NSArray, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString, NSValue,
 };
 use platform::{
-    ux_mode, FieldHandle, InsertStrategy, Inserted, PlatformAdapter, PlatformError, TextContext,
-    UxMode,
+    ux_mode, FieldHandle, InsertStrategy, Inserted, PlatformAdapter, PlatformError, ScreenRect,
+    TextContext, UxMode,
 };
 use platform_macos::MacosPlatformAdapter;
 
@@ -311,12 +311,15 @@ fn validate_popup(pid: u32, duration: Duration) -> bool {
         let read = adapter.read_context(&field);
         let rect = adapter.caret_rect(&field);
         let caps = adapter.capabilities(&field);
+        let anchor = adapter.popup_anchor(&field);
         println!("READ {read:?}");
         println!("RECT {rect:?}");
         println!("CAPS {caps:?}");
+        println!("ANCHOR {anchor:?}");
         if read.is_ok()
             && matches!(rect, Ok(None))
             && matches!(caps, Ok(ref caps) if ux_mode(caps) == UxMode::Popup)
+            && popup_anchor_accepted(&anchor)
         {
             let inserted = adapter.insert(&field, INSERT_TEXT, InsertStrategy::AxSet);
             println!("INSERT {inserted:?}");
@@ -335,6 +338,10 @@ fn validate_popup(pid: u32, duration: Duration) -> bool {
         thread::sleep(Duration::from_millis(100));
     }
     accepted
+}
+
+fn popup_anchor_accepted(anchor: &Result<Option<ScreenRect>, PlatformError>) -> bool {
+    matches!(anchor, Ok(Some(rect)) if rect.w > 0.0 && rect.h > 0.0)
 }
 
 fn popup_insert_readback_accepted(
@@ -400,6 +407,30 @@ mod tests {
             &text_context("popup fixture value inserted", ""),
             "popup fixture value inserted"
         ));
+    }
+
+    #[test]
+    fn popup_acceptance_requires_positive_popup_anchor() {
+        assert!(popup_anchor_accepted(&Ok(Some(ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 300.0,
+            h: 80.0,
+        }))));
+        assert!(!popup_anchor_accepted(&Ok(None)));
+        assert!(!popup_anchor_accepted(&Err(PlatformError::Timeout)));
+        assert!(!popup_anchor_accepted(&Ok(Some(ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 0.0,
+            h: 80.0,
+        }))));
+        assert!(!popup_anchor_accepted(&Ok(Some(ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 300.0,
+            h: 0.0,
+        }))));
     }
 
     #[test]
