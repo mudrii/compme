@@ -552,9 +552,18 @@ quietly disappear from the acceptance surface.
   file-backed AllMonitored redacted inserted-delta persistence with a raw DB
   scan proving neither the original email nor `[redacted-email]` is present on
   disk, plus store-effect checks that disabled and excluded-app policies create
-  no encrypted rows. This remains manual/live blocked only for the product-loop
-  GUI proof: a disposable GUI target/db/key must be driven and the encrypted
-  store inspected after allowed typing and runtime policy transitions.
+  no encrypted rows. **[2026-06-17 live partial]:** a disposable TextEdit
+  `AXTextArea` product-loop run with `COMPME_MEMORY=all`, a temp SQLite DB, and
+  an explicit temp key stored one row for `com.apple.TextEdit`; decrypt-readback
+  was exactly ` typed [redacted-email] ` after a baseline containing
+  `alice@example.com`, and a raw DB scan found neither the raw emails nor the
+  redacted marker. Four additional disposable TextEdit product-loop runs
+  confirmed `rows=0` for global disabled (`COMPME_ENABLED=false`), per-app
+  disabled (`COMPME_DISABLED_APPS=com.apple.TextEdit`), hard app exclude
+  (`COMPME_EXCLUDED_APPS=com.apple.TextEdit`), and per-app collection-off
+  (`COMPME_NO_COLLECT_APPS=com.apple.TextEdit`). The remaining manual/live
+  residual is secure input, snoozed/runtime policy transition, browser-domain
+  exclusion, and volatile `pid:N` confirmation in a GUI session.
 - **Input Monitoring revoked spot-check (pending/conditional):** with
   Accessibility still granted, revoke Input Monitoring and confirm the transient
   Carbon accept path keeps working. `run-a1b-live-gates.sh` uses

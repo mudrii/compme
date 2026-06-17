@@ -246,7 +246,7 @@ person at a granted macOS desktop, not new code. Sources:
 | Browser mirror-window | `set_mirror_mode` ✅ | live Firefox/Zen ghost-in-mirror confirmation |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅ | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅ | OCR quality/perf on a granted desktop + multi-display caret confirm |
-| Encrypted memory — AllMonitored | core ✅ (AcceptedOnly live-validated) | AllMonitored live privacy gate (redacted typed runs, secure/disabled/snoozed/excluded blocks) |
+| Encrypted memory — AllMonitored | core ✅; positive TextEdit product-loop privacy proof ✅ | remaining live residual: secure input, snoozed/runtime transition, browser-domain exclusion, volatile `pid:N` |
 | Per-app memory inspect/delete UI | count/delete_app ✅ | completed live in Apps pane; remaining global delete_all/mode controls tie to Personalization |
 | Trailing-space toggle | accept-path ✅ | live evidence for exact inserted text |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
