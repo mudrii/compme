@@ -1203,15 +1203,20 @@ fn blocked_request_log_line(
     domain: Option<&str>,
     prefs: &Prefs,
     now_ms: u64,
+    acceptance_prompt_marker: Option<&str>,
 ) -> String {
     let app_allows = app_allows_suggestions(app_key);
     let terminal_ok =
         app_key.is_none_or(|app| compat::terminal_prompt_activates(app, &request.prompt));
     let domain_ready = browser_domain_fresh_enough_for_rules(app_key, domain, prefs);
     let prefs_ok = prefs.should_suggest(app_key, domain, now_ms);
+    let prompt_marker = match acceptance_prompt_marker {
+        Some(marker) => request.prompt.contains(marker),
+        None => false,
+    };
     format!(
         "compme: request blocked gen={} prompt_chars={} app={} app_allows={} \
-         terminal_ok={} domain_ready={} prefs_ok={}",
+         terminal_ok={} domain_ready={} prefs_ok={} prompt_marker={}",
         request.generation,
         request.prompt.chars().count(),
         app_key.unwrap_or("unknown"),
@@ -1219,6 +1224,7 @@ fn blocked_request_log_line(
         terminal_ok,
         domain_ready,
         prefs_ok,
+        prompt_marker,
     )
 }
 
@@ -2222,7 +2228,7 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
 /// must be added here or its shadow goes unwarned (review-c111/c127; the
 /// len-pinned test below backstops this). Deliberately conservative: a key
 /// set to "" still warns — it parses falsy but still occupies the env layer.
-const SWITCH_KEYS: [&str; 16] = [
+const SWITCH_KEYS: [&str; 17] = [
     "COMPME_ENABLED",
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
@@ -2231,6 +2237,7 @@ const SWITCH_KEYS: [&str; 16] = [
     "COMPME_SCREEN_CONTEXT",
     "COMPME_EMOJI",
     "COMPME_EMOJI_SKIN_TONE",
+    "COMPME_EMOJI_GENDER",
     "COMPME_NO_COLLECT_APPS",
     "COMPME_EXCLUDED_APPS",
     "COMPME_EXCLUDED_DOMAINS",
@@ -4156,6 +4163,7 @@ pub fn run() -> Result<(), String> {
                             cached_domain(&last_domain, app_key.as_deref()),
                             &prefs,
                             now_ms,
+                            config.acceptance_prompt_marker.as_deref(),
                         )
                     );
                 }
@@ -5129,6 +5137,7 @@ mod tests {
             "COMPME_SCREEN_CONTEXT",
             "COMPME_EMOJI",
             "COMPME_EMOJI_SKIN_TONE",
+            "COMPME_EMOJI_GENDER",
             "COMPME_NO_COLLECT_APPS",
             "COMPME_EXCLUDED_APPS",
             "COMPME_EXCLUDED_DOMAINS",
@@ -5143,7 +5152,20 @@ mod tests {
                 "{key} must warn when env shadows persisted config"
             );
         }
-        assert_eq!(every_warning.len(), 16);
+        assert_eq!(every_warning.len(), 17);
+    }
+
+    #[test]
+    fn env_shadow_warns_when_emoji_gender_env_shadows_persisted_setting() {
+        let warnings = env_shadow_warnings(|key| key == "COMPME_EMOJI_GENDER");
+        assert_eq!(
+            warnings,
+            vec![
+                "COMPME_EMOJI_GENDER is set in the environment \u{2014} Settings changes \
+                 persist to config.env but the environment wins at relaunch"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]
@@ -5833,13 +5855,20 @@ mod tests {
     fn blocked_request_log_line_reports_gate_metadata_without_prompt_text() {
         let prefs = Prefs::default();
         let request = req_with_prompt("git status && print-secret");
-        let line =
-            blocked_request_log_line(&request, Some("com.apple.Terminal"), None, &prefs, 1_000);
+        let line = blocked_request_log_line(
+            &request,
+            Some("com.apple.Terminal"),
+            None,
+            &prefs,
+            1_000,
+            Some("print-secret"),
+        );
 
         assert!(line.contains("request blocked"));
         assert!(line.contains("prompt_chars=26"));
         assert!(line.contains("app=com.apple.Terminal"));
         assert!(line.contains("terminal_ok=false"));
+        assert!(line.contains("prompt_marker=true"));
         assert!(!line.contains("git status"));
         assert!(!line.contains("print-secret"));
     }

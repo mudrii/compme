@@ -46,6 +46,17 @@ check_non_macos_target() {
   echo "model_client feature check passed: $label"
 }
 
+check_spike_macos_features() {
+  tree="$(cd tools/spike && cargo tree -e features)"
+  assert_contains "spike macOS" "$tree" 'llama-cpp-2 feature "metal"'
+  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "dynamic-backends"'
+  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "vulkan"'
+  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "default"'
+  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "openmp"'
+  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "android"'
+  echo "model_client feature check passed: spike macOS"
+}
+
 host_triple="$(rustc -vV | awk '/^host:/ { print $2 }')"
 if [[ "$host_triple" == *apple-darwin ]]; then
   host_tree="$(tree_for host)"
@@ -54,6 +65,7 @@ if [[ "$host_triple" == *apple-darwin ]]; then
   assert_not_contains "host macOS" "$host_tree" 'llama-cpp-2 feature "vulkan"'
   assert_not_contains "host macOS" "$host_tree" 'llama-cpp-2 feature "default"'
   echo "model_client feature check passed: host macOS"
+  check_spike_macos_features
 else
   echo "model_client feature check skipped: host is $host_triple, not macOS"
 fi

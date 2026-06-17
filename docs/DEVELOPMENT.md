@@ -175,12 +175,14 @@ cargo build --workspace --all-targets
 
 bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 tools/bundle/check-bundle-metadata.sh
+tools/bundle/make-app.sh --self-test
 tools/acceptance/e2e-complete-me.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-a2-compat-gates.sh --self-test
 tools/release/check-model-client-features.sh
 bash tools/release/check-model-gates.sh
 tools/release/update-cask.sh --self-test
+bash tools/release/run-model-gates.sh
 
 cd tools/spike
 cargo fmt -- --check

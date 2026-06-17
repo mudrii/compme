@@ -46,6 +46,9 @@ jobs:
       - name: Bundle metadata
         run: tools/bundle/check-bundle-metadata.sh
 
+      - name: Bundle assembler self-test
+        run: tools/bundle/make-app.sh --self-test
+
       - name: A1b runner self-test
         run: tools/acceptance/run-a1b-live-gates.sh --self-test
 

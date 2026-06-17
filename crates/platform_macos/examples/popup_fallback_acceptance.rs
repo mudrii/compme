@@ -342,8 +342,20 @@ fn popup_insert_readback_accepted(
     after_read: &Result<TextContext, PlatformError>,
     expected_left: &str,
 ) -> bool {
-    matches!(inserted, Ok(inserted) if inserted.strategy == InsertStrategy::AxSet)
-        && matches!(after_read, Ok(context) if context.left == expected_left && context.right.is_empty())
+    matches!(
+        inserted,
+        Ok(inserted)
+            if inserted.strategy == InsertStrategy::AxSet
+                && inserted.bytes == INSERT_TEXT.len()
+                && inserted.chars == INSERT_TEXT.chars().count()
+    ) && matches!(
+        after_read,
+        Ok(context)
+            if context.left == expected_left
+                && context.right.is_empty()
+                && context.selection.is_none()
+                && context.caret == expected_left.encode_utf16().count()
+    )
 }
 
 fn shutdown_fixture(child: &mut Child) {
@@ -420,6 +432,50 @@ mod tests {
         assert!(!popup_insert_readback_accepted(
             &inserted(InsertStrategy::AxSet),
             &Err(PlatformError::Timeout),
+            "popup fixture value inserted"
+        ));
+    }
+
+    #[test]
+    fn popup_acceptance_rejects_mutated_text_with_stale_selection_or_caret() {
+        let mut selected = text_context("popup fixture value inserted", "").unwrap();
+        selected.selection = Some(platform::TextRange { start: 0, end: 1 });
+        assert!(!popup_insert_readback_accepted(
+            &inserted(InsertStrategy::AxSet),
+            &Ok(selected),
+            "popup fixture value inserted"
+        ));
+
+        let mut stale_caret = text_context("popup fixture value inserted", "").unwrap();
+        stale_caret.caret = "popup fixture value".encode_utf16().count();
+        assert!(!popup_insert_readback_accepted(
+            &inserted(InsertStrategy::AxSet),
+            &Ok(stale_caret),
+            "popup fixture value inserted"
+        ));
+    }
+
+    #[test]
+    fn popup_acceptance_rejects_wrong_insert_receipt_counts() {
+        let wrong_bytes = Ok(Inserted {
+            bytes: INSERT_TEXT.len() - 1,
+            chars: INSERT_TEXT.chars().count(),
+            strategy: InsertStrategy::AxSet,
+        });
+        assert!(!popup_insert_readback_accepted(
+            &wrong_bytes,
+            &text_context("popup fixture value inserted", ""),
+            "popup fixture value inserted"
+        ));
+
+        let wrong_chars = Ok(Inserted {
+            bytes: INSERT_TEXT.len(),
+            chars: INSERT_TEXT.chars().count() - 1,
+            strategy: InsertStrategy::AxSet,
+        });
+        assert!(!popup_insert_readback_accepted(
+            &wrong_chars,
+            &text_context("popup fixture value inserted", ""),
             "popup fixture value inserted"
         ));
     }

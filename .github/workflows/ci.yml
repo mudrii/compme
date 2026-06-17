@@ -56,6 +56,9 @@ jobs:
       - name: Bundle metadata
         run: tools/bundle/check-bundle-metadata.sh
 
+      - name: Bundle assembler self-test
+        run: tools/bundle/make-app.sh --self-test
+
       - name: E2E runner self-test
         run: tools/acceptance/e2e-complete-me.sh --self-test
 

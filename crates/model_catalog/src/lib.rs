@@ -280,6 +280,14 @@ pub fn bytes_to_whole_gb(bytes: u64) -> u32 {
 mod tests {
     use super::*;
 
+    fn shell_assignment<'a>(script: &'a str, name: &str) -> Option<&'a str> {
+        let prefix = format!("{name}=\"");
+        script
+            .lines()
+            .map(str::trim)
+            .find_map(|line| line.strip_prefix(&prefix)?.strip_suffix('"'))
+    }
+
     #[test]
     fn recommended_is_the_smallest_unencumbered_entry() {
         // The one-click download target (D14 wiring): smallest model whose
@@ -538,6 +546,22 @@ mod tests {
                 entry.name
             );
         }
+    }
+
+    #[test]
+    fn model_backed_release_gate_uses_catalog_recommended_artifact() {
+        let script = include_str!("../../../tools/release/run-model-gates.sh");
+        let recommended = recommended().expect("catalog has a recommended model");
+        assert_eq!(
+            shell_assignment(script, "url"),
+            Some(recommended.url),
+            "release model gate must download the catalog recommended artifact"
+        );
+        assert_eq!(
+            shell_assignment(script, "expected"),
+            recommended.expected_sha256,
+            "release model gate hash must match the catalog recommended artifact"
+        );
     }
 
     #[test]

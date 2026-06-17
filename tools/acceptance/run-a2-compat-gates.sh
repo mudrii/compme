@@ -80,11 +80,11 @@ has_no_raw_prompt_context_payload() {
 }
 
 has_unsupported_block_evidence() {
-  grep -Eq 'compme: request blocked .*prompt_chars=[1-9][0-9]* .*app_allows=false' "$1"
+  grep -Eq 'compme: request blocked .*prompt_chars=[1-9][0-9]* .*app_allows=false .*prompt_marker=true$' "$1"
 }
 
 has_terminal_cmd_block_evidence() {
-  grep -Eq 'compme: request blocked .*prompt_chars=[1-9][0-9]* .*terminal_ok=false' "$1"
+  grep -Eq 'compme: request blocked .*prompt_chars=[1-9][0-9]* .*terminal_ok=false .*prompt_marker=true$' "$1"
 }
 
 wait_for_product_status() {
@@ -126,6 +126,8 @@ run_self_tests() {
   producer_only="$tmp_dir/producer-only.log"
   unsupported_block="$tmp_dir/unsupported-block.log"
   terminal_block="$tmp_dir/terminal-block.log"
+  unsupported_block_marker_false="$tmp_dir/unsupported-block-marker-false.log"
+  terminal_block_marker_missing="$tmp_dir/terminal-block-marker-missing.log"
   bare_request="$tmp_dir/bare-request.log"
   custom_app_request="$tmp_dir/custom-app-request.log"
   mixed_unknown_request="$tmp_dir/mixed-unknown-request.log"
@@ -174,9 +176,17 @@ compme: screen_context=Some(12)
 LOG
   cat >"$unsupported_block" <<'LOG'
 compme: focus ax:1
-compme: request blocked gen=7 prompt_chars=28 app=com.mitchellh.ghostty app_allows=false terminal_ok=true domain_ready=true prefs_ok=true
+compme: request blocked gen=7 prompt_chars=28 app=com.mitchellh.ghostty app_allows=false terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
 LOG
   cat >"$terminal_block" <<'LOG'
+compme: focus ax:1
+compme: request blocked gen=8 prompt_chars=20 app=com.apple.Terminal app_allows=true terminal_ok=false domain_ready=true prefs_ok=true prompt_marker=true
+LOG
+  cat >"$unsupported_block_marker_false" <<'LOG'
+compme: focus ax:1
+compme: request blocked gen=7 prompt_chars=28 app=com.mitchellh.ghostty app_allows=false terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=false
+LOG
+  cat >"$terminal_block_marker_missing" <<'LOG'
 compme: focus ax:1
 compme: request blocked gen=8 prompt_chars=20 app=com.apple.Terminal app_allows=true terminal_ok=false domain_ready=true prefs_ok=true
 LOG
@@ -242,6 +252,8 @@ LOG
   self_test_assert "screen-producer-alone-is-not-submit-context" 0 has_screen_prompt_context "$producer_only" || failures=$((failures + 1))
   self_test_assert "unsupported-block-evidence" 1 has_unsupported_block_evidence "$unsupported_block" || failures=$((failures + 1))
   self_test_assert "terminal-block-evidence" 1 has_terminal_cmd_block_evidence "$terminal_block" || failures=$((failures + 1))
+  self_test_assert "unsupported-block-without-prompt-marker-is-not-evidence" 0 has_unsupported_block_evidence "$unsupported_block_marker_false" || failures=$((failures + 1))
+  self_test_assert "terminal-block-without-prompt-marker-is-not-evidence" 0 has_terminal_cmd_block_evidence "$terminal_block_marker_missing" || failures=$((failures + 1))
   self_test_assert "focus-only-is-not-baseline" 0 has_unsupported_block_evidence "$focus_only" || failures=$((failures + 1))
   self_test_assert "baseline-missing" 0 has_terminal_cmd_block_evidence "$empty" || failures=$((failures + 1))
   hostile_prefix=$'quote " backslash \\ dollar $PREFIX\nline two'

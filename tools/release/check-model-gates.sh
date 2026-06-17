@@ -7,7 +7,9 @@ ci_workflow="$repo_root/.github/workflows/ci.yml"
 gate_script="$repo_root/tools/release/run-model-gates.sh"
 feature_script="$repo_root/tools/release/check-model-client-features.sh"
 bundle_metadata_script="$repo_root/tools/bundle/check-bundle-metadata.sh"
+make_app_script="$repo_root/tools/bundle/make-app.sh"
 acceptance_doc="$repo_root/docs/ACCEPTANCE.md"
+development_doc="$repo_root/docs/DEVELOPMENT.md"
 releasing_doc="$repo_root/docs/RELEASING.md"
 readme_doc="$repo_root/README.md"
 
@@ -34,6 +36,19 @@ require_readme_gate_line() {
   fi
 }
 
+require_development_gate_line() {
+  pattern="$1"
+  label="$2"
+  if ! awk '
+    /^## Full Local Gate$/ { in_section = 1; next }
+    in_section && /^## / { in_section = 0 }
+    in_section { print }
+  ' "$development_doc" | grep -Eq "$pattern"; then
+    echo "missing release gate: $label" >&2
+    return 1
+  fi
+}
+
 ruby -ryaml -e '
   def step?(steps, name, run)
     steps.any? do |step|
@@ -50,6 +65,7 @@ ruby -ryaml -e '
   {
     "CI script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
     "CI bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
+    "CI bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
     "CI E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
     "CI A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
     "CI A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
@@ -69,6 +85,7 @@ ruby -ryaml -e '
     "release workflow invokes model gate script" => ["Model-backed release gates", "bash tools/release/run-model-gates.sh"],
     "release script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
     "release bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
+    "release bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
     "release A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
     "release A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
     "release E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
@@ -86,28 +103,39 @@ ruby -ryaml -e '
 bash -n "$gate_script"
 bash -n "$feature_script"
 bash -n "$bundle_metadata_script"
+bash -n "$make_app_script"
 "$bundle_metadata_script" >/dev/null
+"$make_app_script" --self-test >/dev/null
 
 require_line "$feature_script" 'llama-cpp-2 feature "metal"' "model_client macOS Metal feature assertion"
 require_line "$feature_script" 'llama-cpp-2 feature "dynamic-backends"' "model_client non-macOS dynamic backend assertion"
 require_line "$feature_script" 'llama-cpp-2 feature "vulkan"' "model_client non-macOS Vulkan feature assertion"
 require_line "$feature_script" 'llama-cpp-2 feature "default"' "model_client default feature denial"
-require_line "$gate_script" '^url="https://huggingface\.co/Brianpuz/Qwen2\.5-0\.5B-Q4_K_M-GGUF/resolve/main/qwen2\.5-0\.5b-q4_k_m\.gguf\?download=true"[[:space:]]*$' "pinned GGUF download URL"
-require_line "$gate_script" '^expected="ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484"[[:space:]]*$' "pinned GGUF sha256"
+require_line "$feature_script" 'spike macOS' "spike feature policy assertion"
+require_line "$gate_script" '^url="https://huggingface\.co/Qwen/Qwen2\.5-0\.5B-Instruct-GGUF/resolve/9217f5db79a29953eb74d5343926648285ec7e67/qwen2\.5-0\.5b-instruct-q4_k_m\.gguf"[[:space:]]*$' "pinned catalog GGUF download URL"
+require_line "$gate_script" '^expected="74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"[[:space:]]*$' "pinned catalog GGUF sha256"
 require_line "$gate_script" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
 require_line "$gate_script" '^  COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"
 require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized root ignored model tests"
 require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized spike ignored model tests"
 require_line "$acceptance_doc" '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "acceptance docs bundle metadata check"
+require_line "$acceptance_doc" '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "acceptance docs bundle assembler self-test"
 require_line "$acceptance_doc" '^tools/release/check-model-client-features\.sh[[:space:]]*$' "acceptance docs model client feature policy"
 require_line "$acceptance_doc" '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "acceptance docs cask updater self-test"
 require_line "$releasing_doc" '^[[:space:]]*COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized root ignored model tests"
 require_line "$releasing_doc" '^[[:space:]]*COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized spike ignored model tests"
 require_line "$releasing_doc" 'tools/bundle/check-bundle-metadata\.sh' "release docs bundle metadata check"
+require_line "$releasing_doc" 'tools/bundle/make-app\.sh --self-test' "release docs bundle assembler self-test"
 require_line "$releasing_doc" 'tools/release/check-model-client-features\.sh' "release docs model client feature policy"
 require_line "$releasing_doc" 'tools/release/update-cask\.sh --self-test' "release docs cask updater self-test"
 require_readme_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "README bundle metadata check"
+require_readme_gate_line '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "README bundle assembler self-test"
 require_readme_gate_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "README model client feature policy"
 require_readme_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "README release gate policy check"
 require_readme_gate_line '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "README cask updater self-test"
 require_readme_gate_line '^bash tools/release/run-model-gates\.sh[[:space:]]*$' "README model-backed release gate"
+require_development_gate_line '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "DEVELOPMENT bundle assembler self-test"
+require_development_gate_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "DEVELOPMENT model client feature policy"
+require_development_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "DEVELOPMENT release gate policy check"
+require_development_gate_line '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "DEVELOPMENT cask updater self-test"
+require_development_gate_line '^bash tools/release/run-model-gates\.sh[[:space:]]*$' "DEVELOPMENT model-backed release gate"
