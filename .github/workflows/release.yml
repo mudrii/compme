@@ -43,6 +43,9 @@ jobs:
       - name: Script syntax
         run: bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 
+      - name: Bundle metadata
+        run: tools/bundle/check-bundle-metadata.sh
+
       - name: A1b runner self-test
         run: tools/acceptance/run-a1b-live-gates.sh --self-test
 

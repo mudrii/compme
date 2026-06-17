@@ -18,6 +18,7 @@ Acceptance harness syntax and deterministic self-tests:
 
 ```sh
 bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
+tools/bundle/check-bundle-metadata.sh
 tools/acceptance/e2e-complete-me.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-a2-compat-gates.sh --self-test

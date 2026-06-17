@@ -8,8 +8,8 @@ on GitHub Actions (Apple Silicon `macos-14` runners).
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | branch push / PR / tag `v*` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets -- --test-threads=1`, `cargo build --workspace --all-targets`, plus acceptance/bundle/release script syntax, A1b/A2/E2E self-tests, release model-gate policy, and cask-updater self-test. Spike gates: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --bins` in `tools/spike`. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | tag `v*` | Runs release validation first: serialized root fmt/clippy/test/build, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), acceptance/bundle/release script syntax + self-tests, release model-gate policy, cask-updater self-test, and spike fmt/clippy/test/build. Only after validation passes, builds `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh), zips it with `ditto`, computes the sha256, and publishes a GitHub Release with the zip + `.sha256`. |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | branch push / PR / tag `v*` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets -- --test-threads=1`, `cargo build --workspace --all-targets`, plus acceptance/bundle/release script syntax, bundle metadata/version check, A1b/A2/E2E self-tests, release model-gate policy, and cask-updater self-test (`tools/release/update-cask.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --bins` in `tools/spike`. |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | tag `v*` | Runs release validation first: serialized root fmt/clippy/test/build, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), acceptance/bundle/release script syntax + self-tests, bundle metadata/version check (`tools/bundle/check-bundle-metadata.sh`), release model-gate policy, cask-updater self-test (`tools/release/update-cask.sh --self-test`), and spike fmt/clippy/test/build. Only after validation passes, builds `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh), zips it with `ditto`, computes the sha256, and publishes a GitHub Release with the zip + `.sha256`. |
 
 Model-inference tests (`crates/model_client/tests/latency.rs` and the spike model
 integration test) are `#[ignore]`d because they need a local GGUF and a Metal GPU,
@@ -21,8 +21,9 @@ macOS runner.
 
 ## Cutting a release
 
-1. Bump the version in `crates/app/Cargo.toml` and `Casks/compme.rb` (`version`),
-   commit, and push.
+1. Bump the version in `crates/app/Cargo.toml`, `tools/bundle/Info.plist`
+   (`CFBundleShortVersionString`), and `Casks/compme.rb` (`version`), then run
+   `tools/bundle/check-bundle-metadata.sh`, commit, and push.
 2. On a model-capable Mac with the local GGUF installed, run the ignored
    model-backed gates before tagging. The Release workflow runs
    `tools/release/run-model-gates.sh`, which downloads and hash-verifies the

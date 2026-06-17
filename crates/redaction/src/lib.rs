@@ -384,4 +384,14 @@ mod tests {
         assert!(!luhn_valid("4242424242424241"));
         assert!(!luhn_valid(""));
     }
+
+    #[test]
+    fn luhn_valid_accepts_ascii_digits_only() {
+        assert!(!luhn_valid("4242 4242 4242 4242"));
+        assert!(!luhn_valid("4242-4242-4242-4242"));
+        assert!(!luhn_valid("4242424242424242\n"));
+        assert!(!luhn_valid(
+            "\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}"
+        ));
+    }
 }

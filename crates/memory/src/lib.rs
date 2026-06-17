@@ -319,6 +319,24 @@ mod tests {
     }
 
     #[test]
+    fn file_backed_store_reopens_with_recent_records_newest_first() {
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(22), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "first").unwrap();
+            store.remember("app", "second ada@example.com").unwrap();
+        }
+
+        let reopened = MemoryStore::open(&path, &key(22), StorageMode::AcceptedOnly).unwrap();
+        assert_eq!(reopened.count().unwrap(), 2);
+        assert_eq!(
+            reopened.recent("app", 10).unwrap(),
+            vec!["second [redacted-email]", "first"]
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn redacts_before_storing() {
         let store = MemoryStore::open_in_memory(&key(3), StorageMode::AcceptedOnly).unwrap();
         store.remember("app", "mail ada@example.com now").unwrap();
@@ -386,6 +404,39 @@ mod tests {
         assert_eq!(store.count().unwrap(), 1);
         assert_eq!(store.recent("keep", 10).unwrap(), vec!["stay"]);
         assert!(store.recent("drop", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_app_erases_that_apps_ciphertext_from_disk() {
+        let path = temp_db_path();
+        let drop_blob: Vec<u8> = {
+            let store = MemoryStore::open(&path, &key(23), StorageMode::AcceptedOnly).unwrap();
+            store.remember("keep", "stay encrypted").unwrap();
+            store.remember("drop", "erase this app").unwrap();
+            let conn = Connection::open(&path).unwrap();
+            conn.query_row(
+                "SELECT blob FROM memories WHERE app = 'drop' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert!(drop_blob.len() >= 16, "sanity: a real ciphertext blob");
+
+        {
+            let store = MemoryStore::open(&path, &key(23), StorageMode::AcceptedOnly).unwrap();
+            assert_eq!(store.delete_app("drop").unwrap(), 1);
+            assert_eq!(store.count().unwrap(), 1);
+            assert_eq!(store.recent("keep", 10).unwrap(), vec!["stay encrypted"]);
+        }
+
+        let raw = std::fs::read(&path).unwrap();
+        let found = raw.windows(16).any(|w| w == &drop_blob[..16]);
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            !found,
+            "per-app deleted ciphertext must be zeroed on disk (secure_delete)"
+        );
     }
 
     #[test]

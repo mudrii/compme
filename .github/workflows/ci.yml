@@ -53,6 +53,9 @@ jobs:
       - name: Script syntax
         run: bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 
+      - name: Bundle metadata
+        run: tools/bundle/check-bundle-metadata.sh
+
       - name: E2E runner self-test
         run: tools/acceptance/e2e-complete-me.sh --self-test
 
