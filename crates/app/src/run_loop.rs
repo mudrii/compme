@@ -7053,7 +7053,7 @@ mod tests {
         }
     }
 
-    fn assert_cleared_monitored_buffer_does_not_replay_partial_text() {
+    fn assert_policy_transition_clears_buffered_monitored_text() {
         let store = memory::MemoryStore::open_in_memory(
             &memory::StaticKey([13u8; 32]),
             memory::StorageMode::AllMonitored,
@@ -7631,13 +7631,8 @@ mod tests {
     }
 
     #[test]
-    fn focus_change_drops_partial_monitored_buffer_before_reuse() {
-        assert_cleared_monitored_buffer_does_not_replay_partial_text();
-    }
-
-    #[test]
-    fn secure_entry_drops_partial_monitored_buffer_before_reuse() {
-        assert_cleared_monitored_buffer_does_not_replay_partial_text();
+    fn policy_transition_drops_partial_monitored_buffer_before_reuse() {
+        assert_policy_transition_clears_buffered_monitored_text();
     }
 
     #[test]
