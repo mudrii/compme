@@ -4,11 +4,13 @@
 > (Setup/General/Apps/Context/Emoji/Shortcuts/Statistics/About) via NSTabView;
 > the Context tab exposes clipboard + screen-OCR context switches, and the Emoji
 > tab exposes the live `COMPME_EMOJI` enable switch plus the
-> `COMPME_EMOJI_SKIN_TONE` popup.
+> `COMPME_EMOJI_SKIN_TONE` and `COMPME_EMOJI_GENDER` popups. The Statistics
+> tab exposes the shipped range/grouping controls; metric-picker design and live
+> LOOK confirmation remain tracked in the Roadmap.
 >
 > **Live pending status (re-verified 2026-06-15): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
-> — the per-pane residuals (Apps editing rows, Personalization controls, Emoji
-> gender control, Context appearance sub-toggle, Statistics controls,
+> — the per-pane residuals (Apps editing rows, Personalization controls,
+> Context appearance sub-toggle, Statistics metric-picker/LOOK follow-up,
 > force-activate/toggle hotkeys) are tracked there
 > as Tier 3. Inline per-line annotations below remain accurate except where a
 > dated correction supersedes them.

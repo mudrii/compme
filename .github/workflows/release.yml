@@ -40,8 +40,8 @@ jobs:
       - name: Root build
         run: cargo build --workspace --all-targets
 
-      - name: Acceptance script syntax
-        run: bash -n tools/acceptance/*.sh
+      - name: Script syntax
+        run: bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 
       - name: A1b runner self-test
         run: tools/acceptance/run-a1b-live-gates.sh --self-test
@@ -54,6 +54,9 @@ jobs:
 
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh
+
+      - name: Release cask updater self-test
+        run: tools/release/update-cask.sh --self-test
 
       - name: Spike gates
         working-directory: tools/spike

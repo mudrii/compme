@@ -9,11 +9,11 @@ surfaced and fixed four real integration bugs: Carbon hotkey events were never
 dispatched (no NSApp event drain — `pump_app_events`), `SharedAdapter` silently
 dropped `replace_left` (trait default removed, method now required), and the
 overlay placement needed live calibration (AX caret rect bottom edge = line
-top; box/font hug the line). The final residual — SyntheticKeys/Clipboard
-backspace-synthesis — was built (backspace poster seam) and then LIVE-VALIDATED
-2026-06-10 as the fallback for silently-ignored AxSet writes (iTerm2: settable
-AXValue that changes nothing; readback detection → backspaces + synthetic
-typing; the prompt held the emoji alone afterwards). No open residuals.
+top; box/font hug the line). The backspace poster seam exists, and a plain
+insert fallback for silently ignored AxSet writes was LIVE-VALIDATED 2026-06-10
+in iTerm2. Non-AxSet replacements remain fail-closed residual work because the
+global input channels cannot atomically delete `replace_left` and insert the
+replacement.
 
 ## Why this exists
 
@@ -134,9 +134,9 @@ the corresponding crate in the `TextChanged` replacement-detection step.
 6. **[DONE, 2026-06-10] Live validation (manual, §16):** physical-key accept of an
    emoji/typo replacement in TextEdit (AxSet) deletes the typed token and inserts
    the replacement — PASSED (`:smile`→😄, `teh`→`the`; `colour` offered + placed;
-   Esc-dismiss verified; ACCEPTANCE.md). The SyntheticKeys/Clipboard
-   backspace-synthesis follow-on was subsequently built and live-validated
-   (iTerm2 readback-fallback, 2026-06-10).
+   Esc-dismiss verified; ACCEPTANCE.md). The iTerm2 readback-fallback validation
+   covered a silently ignored AxSet plain insert, not a non-AxSet replacement;
+   SyntheticKeys/Clipboard replacements remain fail-closed residual work.
 
 Steps 1–6 are done; step 6 passed live (mirrors the existing Carbon-accept manual
 gates). Emoji was the first consumer wired; autocorrect/localize reuse the same

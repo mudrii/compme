@@ -368,13 +368,14 @@ zero ghosts or model requests — the unified prefs gate blocks local
 replacements and model completions alike. (The ghost-dismiss-on-snooze
 edge ran with no ghost visible, so it stays unit-covered only.)
 
-**Backspace-synthesis VALIDATED LIVE 2026-06-10** via the AxSet
-readback fallback in iTerm2 (a scripted, fully autonomous run): typed
-`:smile`, synthetic Tab accepted, the log shows `AxSet write silently
-ignored — falling back to synthetic input`, and reading the iTerm
-session contents back showed the prompt holding `😄` alone — the typed
-token was backspaced away and the emoji synthetically typed. The
-cycle-47 machinery's live residual is closed.
+**AxSet readback fallback VALIDATED LIVE 2026-06-10** in iTerm2 (a scripted,
+fully autonomous run) for a plain insert after a silently ignored AX write: the
+log showed `AxSet write silently ignored — falling back to synthetic input`, and
+the follow-on synthetic insertion landed in the target. This does **not** close
+non-AxSet replacement support: local replacements remain AxSet-only because
+SyntheticKeys/Clipboard cannot atomically delete `replace_left` and insert the
+replacement. The shared non-AxSet backspace-synthesis replacement residual above
+therefore remains open.
 
 ## Live UI LOOK Gates (Settings window / tray)
 

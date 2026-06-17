@@ -690,9 +690,8 @@ impl SuggestionMachine {
     ///
     /// Only offered on an `AxSet` field: the accept must *delete* `replace_left`
     /// chars, which only the AX range-replace path honors. SyntheticKeys/Clipboard
-    /// can't (backspace-synthesis is a later live-validated step), so offering there
-    /// would both leave the typed token (`:smile😄`) and desync the host's diff
-    /// baseline — so we don't.
+    /// cannot do that atomically, so offering there would both leave the typed
+    /// token (`:smile😄`) and desync the host's diff baseline — so we don't.
     pub fn offer_replacement(
         &mut self,
         field: &FieldHandle,

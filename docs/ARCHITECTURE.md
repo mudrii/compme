@@ -198,11 +198,12 @@ crate is the pure classifier that drives gating.
 host prepends to the completion prompt: custom instructions (global + per-app +
 per-domain instruction maps), a 6-stop strength slider, and sender identity.
 The app config parser fills the maps from target-list keys plus sanitized
-per-target instruction keys; request-time app steering is live, while
-request-time domain steering still needs the browser domain threaded into the
-inference request. Pure and dependency-free — no ML, no I/O. The 6 strength
-stops have full reach for every user; Cotypist's Free/Plus/Pro caps are paywall
-artifacts deliberately not cloned.
+per-target instruction keys; request-time app and domain steering are live, with
+browser domains copied onto completion requests before inference builds the
+preamble. The remaining personalization work is the settings editor surface for
+mode/instructions/strength, not runtime steering. Pure and dependency-free —
+no ML, no I/O. The 6 strength stops have full reach for every user; Cotypist's
+Free/Plus/Pro caps are paywall artifacts deliberately not cloned.
 
 ### `redaction`
 
