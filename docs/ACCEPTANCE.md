@@ -550,8 +550,10 @@ quietly disappear from the acceptance surface.
   granted, revoke Input Monitoring and confirm the transient Carbon accept path
   keeps working. This is a manual permission-state confirmation, not a
   requirement for the production accept path.
-- **Lifetime stats gate (pending) [updated 2026-06-12, c128]:** `stats.env` is
-  written by a 5-minute periodic flush during the run (quit = final flush);
-  gate: accept ≥1 suggestion, quit, relaunch shows Lifetime row including the
-  prior session. This remains manual/live blocked until a runner can drive a
-  suggestion accept, terminate the app, relaunch, and read the UI.
+- **Lifetime stats relaunch gate (completed 2026-06-17):** a disposable
+  `COMPME_CONFIG` run with `COMPME_STUB_COMPLETION=' world'` drove TextEdit
+  through the production Carbon Tab accept path (`accept Word`), quit via the
+  status menu, and wrote `stats.env` with `STATS_ACCEPTED=1` and
+  `STATS_WORDS=1`. Relaunching against the same temp config and opening
+  Settings → **Statistics** showed `Lifetime 1 words · 1 accepted`, proving the
+  prior-session baseline is loaded into the UI.
