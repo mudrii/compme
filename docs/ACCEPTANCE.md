@@ -561,9 +561,11 @@ quietly disappear from the acceptance surface.
   confirmed `rows=0` for global disabled (`COMPME_ENABLED=false`), per-app
   disabled (`COMPME_DISABLED_APPS=com.apple.TextEdit`), hard app exclude
   (`COMPME_EXCLUDED_APPS=com.apple.TextEdit`), and per-app collection-off
-  (`COMPME_NO_COLLECT_APPS=com.apple.TextEdit`). The remaining manual/live
-  residual is secure input, snoozed/runtime policy transition, browser-domain
-  exclusion, and volatile `pid:N` confirmation in a GUI session.
+  (`COMPME_NO_COLLECT_APPS=com.apple.TextEdit`). A fifth disposable run typed a
+  no-whitespace monitored buffer, toggled disabled via `SIGUSR1` before the
+  boundary, then typed the boundary and confirmed `rows=0`. The remaining
+  manual/live residual is secure input, snoozed policy transition,
+  browser-domain exclusion, and volatile `pid:N` confirmation in a GUI session.
 - **Input Monitoring revoked spot-check (pending/conditional):** with
   Accessibility still granted, revoke Input Monitoring and confirm the transient
   Carbon accept path keeps working. `run-a1b-live-gates.sh` uses

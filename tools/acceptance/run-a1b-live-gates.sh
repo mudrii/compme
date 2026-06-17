@@ -642,7 +642,7 @@ run_self_tests() {
       || self_failures=$((self_failures + 1))
   done
   assert_log_contains "default-dry-run-manual-all-monitored-residuals" "$dry_run_log" \
-    '^MANUAL encrypted-memory-all-monitored-live: .*secure-input.*snoozed/runtime.*browser-domain-excluded.*volatile-pid' \
+    '^MANUAL encrypted-memory-all-monitored-live: .*secure-input.*snoozed.*browser-domain-excluded.*volatile-pid' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-optional-browser-skip" "$dry_run_log" \
     '^SKIP caret-marker-browser-marker: pass --browser-pid after focusing a Chrome/Safari text field$' \
@@ -795,7 +795,7 @@ run_accept_tap_gate "accept-tap-delayed-hide" env COMPME_ACCEPTANCE_HIDE_AFTER_M
 
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
 
-manual_gate "encrypted-memory-all-monitored-live" "remaining residual after 2026-06-17 TextEdit product-loop proof: confirm secure-input, snoozed/runtime policy transition, browser-domain-excluded, and volatile-pid cases add no rows"
+manual_gate "encrypted-memory-all-monitored-live" "remaining residual after 2026-06-17 TextEdit product-loop proof: confirm secure-input, snoozed policy transition, browser-domain-excluded, and volatile-pid cases add no rows"
 run_input_monitoring_revoked_carbon_gate
 
 echo
