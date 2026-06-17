@@ -309,10 +309,11 @@ below `REPETITION_PENALTY_FLOOR` shows it repeats nearby text, or when
 
 - `LocalModel`: synchronous local completion trait.
 - `LocalModelError`: structured failure stage plus message.
-- `LlamaModel`: `llama-cpp-2` implementation using Metal via
-  `with_n_gpu_layers(999)`. Overrides `warm_up` (a throwaway decode that
-  triggers Metal shader compile up front) and `shutdown` (drops the model
-  before the backend, in order, to avoid the ggml exit-abort).
+- `LlamaModel`: `llama-cpp-2` implementation. macOS builds enable Metal via
+  `with_n_gpu_layers(999)`; non-macOS builds use dynamic/Vulkan-capable
+  backends. Overrides `warm_up` (a throwaway decode that triggers first-backend
+  setup up front) and `shutdown` (drops the model before the backend, in order,
+  to avoid the ggml exit-abort).
 - `terse_continuation_prompt`: the current development prompt shape.
 
 **[Updated 2026-06-08 — G3 closed]** `LlamaModel` now runs on a dedicated worker

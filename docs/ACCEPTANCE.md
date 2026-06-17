@@ -516,7 +516,7 @@ cargo build -p platform_macos --examples
 Those records are historical evidence. New production acceptance should prefer
 the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
 
-## Pending Manual Gates [added 2026-06-10]
+## Manual/Live Gate Ledger [added 2026-06-10]
 
 `tools/acceptance/run-a1b-live-gates.sh` now emits each remaining manual/live
 gate as a `MANUAL ...` checklist line after the deterministic gates. The

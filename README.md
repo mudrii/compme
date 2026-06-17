@@ -154,7 +154,7 @@ from `tools/spike/`.
 | `context` | Pure text-context helpers around a caret (left/right context, left-tail extraction, prompt-prefix trimming). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
-| `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2` with Metal. |
+| `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2`; macOS enables Metal, while non-macOS targets use dynamic/Vulkan-capable backends. |
 | `model_catalog` | Pure, static catalog of which local models the General/Setup pane offers, their download sources, and a `fits` / `tight` / `exceeds` RAM-fit verdict for the host. |
 | `model_fetch` | Pure SHA-256 integrity + resume planning, plus the blocking network downloader (`.part` → verify → atomic rename) and a `ModelDownloader` worker thread. |
 | `ranker` | Candidate shaping helpers: word capping, first-word extraction, and repetition penalty. |

@@ -39,7 +39,7 @@ input-collection submenu, Settings (⌘,), support links, updates, Quit.
 | Item | Backing | Status |
 |---|---|---|
 | Disable Completions in <frontmost app> ▸ (1h / until relaunch / always) | `prefs` per-app exclude + snooze-style timer keyed by app | shipped for current-frontmost app arms (1h / until relaunch / always); remaining polish is stateful submenu text/dynamic app-name LOOK validation |
-| Disable Completions Globally ▸ (1h / until relaunch / always) | snooze (c54) = the 1h arm; "always" = enable toggle (c50) | submenu wiring only |
+| Disable Completions Globally ▸ (1h / until relaunch / always) | snooze (c54) = the 1h arm; "always" = enable toggle (c50) | shipped for 1h / until relaunch / always via `apply_global_disable`; remaining polish is stateful submenu text/dynamic app-name LOOK validation |
 | Input Collection in <app> ▸ | `memory` per-app collection override in `prefs` | shipped as a current-app toggle with persistence and run-loop gates; remaining polish is submenu state/dynamic app-name LOOK validation |
 | Settings… ⌘, | opens the S2 window | done |
 | Visit Website / Contact Support | repo URLs, `NSWorkspace.open` | trivial |
