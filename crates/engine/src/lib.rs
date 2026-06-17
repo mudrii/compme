@@ -361,7 +361,16 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                         }
                     };
                     if let Some(rect) = rect {
-                        self.overlay.show_ghost(rect, &text)?;
+                        if let Err(err) = self.overlay.show_ghost(rect, &text) {
+                            // The machine has already transitioned to showing,
+                            // but the UI never painted. Reconcile before returning
+                            // so a later accept cannot insert an invisible ghost.
+                            let _ = self.overlay.hide();
+                            let _ = self.set_tap_visible(false, None);
+                            self.machine.cancel_last_shown();
+                            let _ = self.machine.on_event(Event::Dismiss);
+                            return Err(err);
+                        }
                         if let Err(err) = self.set_tap_visible(true, Some(AcceptAction::Full)) {
                             // The ghost was painted but cannot be accepted. Reconcile
                             // immediately so a visible-but-unarmed suggestion does not
@@ -1738,7 +1747,9 @@ mod tests {
             }
         }
 
-        let mut engine = Engine::new(FakeAdapter::new(), ErroringOverlay, 200, 4, 32);
+        let adapter = FakeAdapter::new();
+        let inserts = Arc::clone(&adapter.inserts);
+        let mut engine = Engine::new(adapter, ErroringOverlay, 200, 4, 32);
         engine.on_focus(field()).unwrap();
         engine.on_text_changed(typed("x", 1, 0)).unwrap();
         let requests = engine.on_tick(500).unwrap();
@@ -1746,6 +1757,16 @@ mod tests {
         let result = engine.on_completion(&requests[0], "hello".into());
 
         assert_eq!(result, Err(PlatformError::Timeout));
+        assert_eq!(
+            engine.take_stat_events(),
+            vec![],
+            "a ghost that never painted must not count as shown"
+        );
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert!(
+            inserts.lock().unwrap().is_empty(),
+            "accept after a failed overlay show must be a no-op"
+        );
     }
 
     #[test]

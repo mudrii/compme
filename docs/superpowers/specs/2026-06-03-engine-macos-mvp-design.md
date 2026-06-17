@@ -113,6 +113,8 @@ crates/model_catalog    # model catalog and integrity metadata
 crates/model_fetch      # model download and sha verification
 crates/model_client     # LocalModel trait + llama.cpp impl (warm-up, prefix cache, N-sample)
 crates/platform_macos   # AX read, Carbon accept hotkeys, NSPanel overlay, front-app, NSStatusItem tray (objc2)
+crates/platform_windows # fail-closed Windows adapter scaffold behind the PlatformAdapter contract
+crates/platform_linux   # fail-closed Linux adapter scaffold behind the PlatformAdapter contract
 crates/engine           # wires SuggestionMachine → adapter + overlay + accept subscription
 crates/app              # [CORR 06-07] native compme binary: run loop, inference thread, config.env, tray
 tools/spike             # throwaway A0 PoC (excluded from workspace; retained under tools/spike)
@@ -359,7 +361,7 @@ First-suggestion perceived latency <100–150 ms (warm); **<500 ms p95 is the ha
 
 **What we adopt:** prompt-based personalization (global+per-app/per-domain, **6-stop strength slider Off↔Max, full reach for all users — no tier caps**; §15 D2 + Project Scope), configurable shortcut matrix, word-capped length, pasteboard + previous-input context, optional screen-aware context, selectable model catalog (base+instruct), backdrop/mirror overlay, disable-native-inline-prediction where possible, pause/snooze, per-app overrides (incl. tab-key/smart-quotes/size-threshold/display), encrypted local stats/training data, compatibility guidance, quality/reuse thresholds.
 **What we change:** **[CORR 06-07]** native Rust shell (`crates/app` + objc2/AppKit tray), **not Tauri**; updater + codesign/notarize is an open A3 decision (Tauri dropped — **Sparkle is the leading candidate, as Cotypist ships it**); Rust instead of Swift; `engine_core`/`model_client` built by hand (Cotypist's completion is Swift `CompletionManagerActor` + llama.cpp; `RepliesSDK` is unrelated feedback tooling). **[CORR 06-09]** Our input layer now matches Cotypist's no-CGEventTap accept-key architecture: AX + CGEvent synthesis + transient Carbon hotkeys; model fetch from HF or self-host TBD; telemetry disabled unless explicitly designed later.
-**Deferred features (sequenced later, still in scope):** emoji completion, thesaurus, full autocorrect, cross-app previous inputs, web-driven config. Domain/website overrides are no longer optional for personalization/privacy parity; they are A2/A3 requirements for browser use. **Dropped (out of scope — no monetization):** subscription, paid tiers, multi-device seat licensing, completion quotas. (Cotypist's `cotypist://subscription` route and seat flags have no analogue here.)
+**Feature status:** emoji completion, full autocorrect, spelling localization, thesaurus lookup, and signed web-driven config are shipped in the local replacement / `compme://` paths. Still-sequenced parity work includes cross-app previous inputs and thesaurus selection-trigger UX. Domain/website overrides are no longer optional for personalization/privacy parity; they are A2/A3 requirements for browser use. **Dropped (out of scope — no monetization):** subscription, paid tiers, multi-device seat licensing, completion quotas. (Cotypist's `cotypist://subscription` route and seat flags have no analogue here.)
 
 ---
 

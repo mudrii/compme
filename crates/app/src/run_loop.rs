@@ -1491,6 +1491,8 @@ fn enqueue_monitored_change(
     if inserted.is_empty() {
         return;
     }
+    let app_key = app_key
+        .or_else(|| (!change.field.app.starts_with("pid:")).then(|| change.field.app.clone()));
     let oversized = inserted.chars().count() > MAX_MONITORED_BUFFER_CHARS;
     pending.push(PendingMonitoredText {
         field: change.field.clone(),
@@ -1703,6 +1705,9 @@ fn resolve_app_key(pid: Option<u32>, resolver: impl Fn(i32) -> Option<String>) -
     pid.and_then(|p| i32::try_from(p).ok()).and_then(resolver)
 }
 
+/// Prefer a fresh pid resolution but preserve an already-canonical field app when
+/// the resolver transiently misses. Volatile `pid:N` fallback keys still fail
+/// open because they are not stable preference keys.
 fn effective_app_key(
     field: &FieldHandle,
     resolver: impl Fn(i32) -> Option<String>,
@@ -1715,8 +1720,11 @@ fn canonicalize_field_app(
     mut field: FieldHandle,
     resolver: impl Fn(i32) -> Option<String>,
 ) -> (FieldHandle, Option<String>) {
-    let app_key = resolve_app_key(field.pid, resolver);
-    if let Some(app) = &app_key {
+    let resolved = resolve_app_key(field.pid, resolver);
+    let app_key = resolved
+        .clone()
+        .or_else(|| (!field.app.starts_with("pid:")).then(|| field.app.clone()));
+    if let Some(app) = &resolved {
         field.app = app.clone();
     }
     (field, app_key)
@@ -7497,6 +7505,48 @@ mod tests {
     }
 
     #[test]
+    fn monitored_typing_uses_field_app_fallback_when_app_key_missing() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([28u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+
+        let mut excluded = Prefs::default();
+        excluded.excluded_apps.insert("com.apple.TextEdit".into());
+        let mut pending = Vec::new();
+        enqueue_monitored_change(&mut pending, &change, None, None);
+        assert_eq!(
+            pending[0].app_key.as_deref(),
+            Some("com.apple.TextEdit"),
+            "stable field app must be used when pid resolution missed"
+        );
+        flush_monitored_changes(
+            &mut pending,
+            &mut HashMap::new(),
+            Some(&store),
+            &excluded,
+            monitored_policy(true, false, true, 1_000),
+        );
+        assert_eq!(store.count().unwrap(), 0);
+
+        let mut snoozed = Prefs::default();
+        snoozed.snooze_app("com.apple.TextEdit", 1_000, 60);
+        let mut pending = Vec::new();
+        enqueue_monitored_change(&mut pending, &change, None, None);
+        flush_monitored_changes(
+            &mut pending,
+            &mut HashMap::new(),
+            Some(&store),
+            &snoozed,
+            monitored_policy(true, false, true, 1_001),
+        );
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
     fn collection_off_drops_partial_monitored_buffer_before_reenable() {
         let store = memory::MemoryStore::open_in_memory(
             &memory::StaticKey([12u8; 32]),
@@ -8281,6 +8331,33 @@ mod tests {
     }
 
     #[test]
+    fn queued_monitored_typing_uses_field_app_for_terminal_policy_when_app_key_missing() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([29u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.googlecode.iterm2");
+        let change = typed_change_after_baseline(&field, "", "git status && ls -la ");
+        let mut pending = Vec::new();
+        enqueue_monitored_change(&mut pending, &change, None, None);
+        assert_eq!(pending[0].app_key.as_deref(), Some("com.googlecode.iterm2"));
+        assert!(
+            !pending[0].terminal_ok,
+            "terminal command text must not fail open when pid resolution misses"
+        );
+
+        flush_monitored_changes(
+            &mut pending,
+            &mut HashMap::new(),
+            Some(&store),
+            &Prefs::default(),
+            monitored_policy(true, false, true, 1_000),
+        );
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
     fn accept_word_count_is_at_least_one() {
         assert_eq!(accept_word_count("the quick brown fox"), 4);
         assert_eq!(accept_word_count("solo"), 1);
@@ -8323,6 +8400,20 @@ mod tests {
         assert_eq!(canonical.app, "com.apple.TextEdit");
         assert_eq!(canonical.pid, Some(42));
         assert_eq!(canonical.element_id, "ax:field");
+    }
+
+    #[test]
+    fn canonicalize_field_app_returns_stable_fallback_key_on_resolver_miss() {
+        let field = FieldHandle {
+            app: "com.apple.TextEdit".into(),
+            pid: Some(42),
+            element_id: "ax:field".into(),
+            generation: 7,
+        };
+        let (canonical, app_key) = canonicalize_field_app(field, |_| None);
+
+        assert_eq!(app_key.as_deref(), Some("com.apple.TextEdit"));
+        assert_eq!(canonical.app, "com.apple.TextEdit");
     }
 
     #[test]
@@ -8577,6 +8668,35 @@ mod tests {
         let after = 1_000 + 60 * 60_000;
         assert!(
             replacement_decision("hi :smile", &config, &prefs, app, None, true, after).is_some()
+        );
+    }
+
+    #[test]
+    fn replacement_decision_uses_canonical_fallback_on_resolver_miss() {
+        let config = Config::from_lookup(lookup(&[("COMPME_EMOJI", "1")]));
+        let mut prefs = Prefs::default();
+        prefs.excluded_apps.insert("com.apple.TextEdit".into());
+        let field = FieldHandle {
+            app: "com.apple.TextEdit".into(),
+            pid: Some(42),
+            element_id: "ax:field".into(),
+            generation: 7,
+        };
+        let (_, app_key) = canonicalize_field_app(field, |_| None);
+
+        assert_eq!(app_key.as_deref(), Some("com.apple.TextEdit"));
+        assert!(
+            replacement_decision(
+                "hi :smile",
+                &config,
+                &prefs,
+                app_key.as_deref(),
+                None,
+                true,
+                0
+            )
+            .is_none(),
+            "local replacements must not fail open when pid resolution misses"
         );
     }
 

@@ -6,7 +6,7 @@
 //! data, not a TOML file — same in-repo content, no parser dependency, and
 //! invalid entries become compile errors instead of runtime parse failures.
 //!
-//! Everything here is pure. Download/IO and the RAM probe (`sysctl`) are
+//! Everything here is pure. Download/IO and the platform RAM probe are
 //! later slices in other crates.
 
 /// Per-model license class. `GemmaTerms`/`LlamaCommunity` require a

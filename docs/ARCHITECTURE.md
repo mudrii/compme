@@ -46,10 +46,10 @@ platform_macos
         ▼
 Focused app text field
 
-side stores (all opt-in / off by default):
-  memory  — encrypted accepted-completion log (redaction → AES-256-GCM)
-  stats   — rolling 30-day acceptance counters + sparkline (menu bar)
-  prefs / compat / webconfig — per-app + per-domain gating and overrides
+side stores:
+  memory  — opt-in encrypted accepted/all-monitored log (redaction → AES-256-GCM)
+  stats   — always-local rolling acceptance counters + sparkline (menu bar)
+  prefs / compat / webconfig — local per-app + per-domain gating and overrides
 ```
 
 Two suggestion paths share the gate. The **model path** runs left-context
@@ -328,7 +328,7 @@ see design spec §15 G3.)
 `model_catalog` is the pure catalog (§15 D14) of which local GGUF models the
 host offers: display name, download URL, byte size, license, and a
 `RamVerdict`. `bytes_to_whole_gb` and `ram_verdict` turn a model size plus the
-machine's RAM (probed via `sysctl` in the host, not here) into a fit verdict:
+machine's RAM (probed by the platform host, not here) into a fit verdict:
 `Fits` and `Tight` are offerable labels, while `Exceeds` is a hard download
 gate answered by `offerable_by_ram`. The catalog is static Rust data, not a TOML file: the same
 in-repo content, no parser dependency, and invalid entries become compile
@@ -546,8 +546,8 @@ recorder.
 ### Model Catalog, Fetch, and Picker
 
 `model_catalog` supplies the offered models and the pure RAM-fit verdict; the
-host probes machine RAM via `sysctl`, renders the label, and blocks `Exceeds`
-downloads before the license/fetch edge. When the user picks an offerable model
+host probes machine RAM through the platform adapter, renders the label, and
+blocks `Exceeds` downloads before the license/fetch edge. When the user picks an offerable model
 and accepts its license, the run loop spawns the `model_fetch`
 `ModelDownloader` worker, which downloads to a `.part` file, verifies the
 SHA-256, and atomically renames it into place. The chosen model then feeds

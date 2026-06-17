@@ -13,7 +13,7 @@ encoding_rs = "0.8"
 # scoped: Metal on macOS, dynamic/Vulkan-capable backends elsewhere.
 
 [target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = "=0.1.146", features = ["metal"] }
+llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-llama-cpp-2 = { version = "=0.1.146", features = ["dynamic-backends", "vulkan"] }
+llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["dynamic-backends", "vulkan"] }
