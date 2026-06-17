@@ -6604,7 +6604,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_all_monitored_store_persists_inserted_deltas_only() {
+    fn configured_all_monitored_store_persists_redacted_inserted_deltas_only() {
         let path = std::env::temp_dir().join(format!(
             "compme-all-monitored-configured-{}.db",
             std::process::id()
@@ -6621,12 +6621,16 @@ mod tests {
         let store = open_memory_store(&cfg, || panic!("keychain consulted despite env key"))
             .expect("configured all-monitored store opens");
         let field = field_with_app("com.apple.TextEdit");
-        let change = typed_change_after_baseline(&field, "pre-existing", "pre-existing typed ");
+        let change = typed_change_after_baseline(
+            &field,
+            "pre-existing alice@example.com",
+            "pre-existing alice@example.com typed bob@example.com ",
+        );
         let prefs = Prefs::default();
         queue_and_flush_monitored(&change, &store, &prefs, true, false);
         assert_eq!(
             store.recent("com.apple.TextEdit", 10).unwrap(),
-            vec![" typed "]
+            vec![" typed [redacted-email] "]
         );
         drop(store);
 
@@ -6634,9 +6638,19 @@ mod tests {
             .expect("configured all-monitored store reopens");
         assert_eq!(
             reopened.recent("com.apple.TextEdit", 10).unwrap(),
-            vec![" typed "]
+            vec![" typed [redacted-email] "]
         );
         drop(reopened);
+        let raw = std::fs::read(&path).expect("memory db is readable");
+        for needle in [
+            b"bob@example.com".as_slice(),
+            b"[redacted-email]".as_slice(),
+        ] {
+            assert!(
+                !raw.windows(needle.len()).any(|window| window == needle),
+                "monitored text must be encrypted on disk, including redacted form"
+            );
+        }
         let _ = std::fs::remove_file(&path);
     }
 
@@ -7361,6 +7375,31 @@ mod tests {
         let change = typed_change_after_baseline(&volatile, "", "ordinary typed text ");
         let prefs = Prefs::default();
         queue_and_flush_monitored(&change, &store, &prefs, true, false);
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn monitored_typing_honors_disabled_and_excluded_app_blocks() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([18u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+
+        let mut disabled = Prefs::default();
+        disabled
+            .per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .enabled = Some(false);
+        queue_and_flush_monitored(&change, &store, &disabled, true, false);
+        assert_eq!(store.count().unwrap(), 0);
+
+        let mut excluded = Prefs::default();
+        excluded.excluded_apps.insert("com.apple.TextEdit".into());
+        queue_and_flush_monitored(&change, &store, &excluded, true, false);
         assert_eq!(store.count().unwrap(), 0);
     }
 

@@ -544,8 +544,13 @@ quietly disappear from the acceptance surface.
   `COMPME_MEMORY=all` run that validates redactable monitored typed runs
   assembled from inserted deltas without storing pre-existing field text, plus
   secure input, disabled/snoozed, app/domain excluded, volatile `pid:N`, and
-  per-app collection-off blocks. This remains manual/live blocked until a
-  dedicated runner can create a GUI target and inspect the encrypted store.
+  per-app collection-off blocks. **[2026-06-17]** unit coverage now includes
+  file-backed AllMonitored redacted inserted-delta persistence with a raw DB
+  scan proving neither the original email nor `[redacted-email]` is present on
+  disk, plus store-effect checks that disabled and excluded-app policies create
+  no encrypted rows. This remains manual/live blocked only for the product-loop
+  GUI proof: a disposable GUI target/db/key must be driven and the encrypted
+  store inspected after allowed typing and runtime policy transitions.
 - **Input Monitoring revoked spot-check (pending):** with Accessibility still
   granted, revoke Input Monitoring and confirm the transient Carbon accept path
   keeps working. This is a manual permission-state confirmation, not a

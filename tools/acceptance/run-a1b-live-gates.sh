@@ -661,7 +661,7 @@ run_accept_tap_gate "accept-tap-delayed-hide" env COMPME_ACCEPTANCE_HIDE_AFTER_M
 
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
 
-manual_gate "encrypted-memory-all-monitored-live" "run COMPME_MEMORY=all against a GUI target and inspect the encrypted store for redacted deltas plus secure/disabled/snoozed/excluded/volatile-app blocks"
+manual_gate "encrypted-memory-all-monitored-live" "run COMPME_MEMORY=all against a disposable GUI target/db/key, decrypt-inspect the store for redacted inserted deltas only, scan raw bytes for plaintext absence, and confirm disabled/snoozed/excluded/collection-off transitions add no rows"
 manual_gate "input-monitoring-revoked-carbon-accept" "with Accessibility still granted, revoke Input Monitoring and confirm transient Carbon accept still works"
 
 echo
