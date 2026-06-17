@@ -33,10 +33,10 @@ pub fn selected_catalog_entry(index: usize) -> Option<&'static ModelEntry> {
 
 /// The popup's item titles: one per catalog row (same order, so the selected
 /// index still addresses [`catalog`]), each suffixed with its RAM verdict for
-/// `available_gb` — e.g. `"qwen2.5-0.5b-q4_k_m · fits"`. ADVISORY only: the
-/// suffix never blocks a download, it just tells the user how the model fits
-/// this machine. `model_catalog` is app-side, so the run loop composes these
-/// and passes the finished strings to the (model_catalog-blind) settings window.
+/// `available_gb` — e.g. `"qwen2.5-0.5b-q4_k_m · fits"`. `Exceeds` is also
+/// enforced at download time; the suffix tells the user why a row cannot be
+/// downloaded on this machine. `model_catalog` is app-side, so the run loop
+/// composes these and passes the finished strings to the settings window.
 pub fn model_menu_titles(available_gb: u32) -> Vec<String> {
     catalog()
         .iter()

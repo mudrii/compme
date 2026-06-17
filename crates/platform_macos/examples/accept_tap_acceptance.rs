@@ -9,6 +9,11 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use platform::{AcceptAction, PlatformAdapter, TapControl};
 use platform_macos::MacosPlatformAdapter;
 
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightListenEventAccess() -> bool;
+}
+
 /// Grave/backtick (key above Tab). Must match the engine's accept binding:
 /// Tab accepts the next word, grave accepts the full completion.
 const KEYCODE_GRAVE: u16 = 50;
@@ -22,6 +27,15 @@ fn main() {
         .map(Duration::from_millis)
         .unwrap_or_else(|| Duration::from_secs(4));
     let requirement = env::args().nth(2).unwrap_or_else(|| "full".into());
+
+    if env_truthy("COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED") {
+        let granted = unsafe { CGPreflightListenEventAccess() };
+        println!("INPUT_MONITORING granted={granted}");
+        if granted {
+            eprintln!("Input Monitoring is granted; revoke it before running this gate");
+            process::exit(1);
+        }
+    }
 
     let adapter = match MacosPlatformAdapter::new() {
         Ok(adapter) => adapter,
@@ -127,6 +141,17 @@ fn main() {
     }
 }
 
+fn env_truthy(key: &str) -> bool {
+    env::var(key).ok().is_some_and(|raw| truthy_value(&raw))
+}
+
+fn truthy_value(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 fn key_to_post_for_requirement(requirement: &str) -> (u16, &'static str, bool) {
     match requirement {
         "full" => (KEYCODE_GRAVE, "GRAVE", false),
@@ -194,6 +219,15 @@ mod tests {
             key_to_post_for_requirement("inactive"),
             (KeyCode::TAB, "TAB", false)
         );
+    }
+
+    #[test]
+    fn env_truthy_accepts_only_explicit_truthy_values() {
+        assert!(truthy_value("true"));
+        assert!(truthy_value(" YES "));
+        assert!(truthy_value("on"));
+        assert!(!truthy_value("0"));
+        assert!(!truthy_value(""));
     }
 
     #[test]

@@ -1786,7 +1786,7 @@ pub fn request_screen_recording_permission() -> bool {
 }
 
 /// Physical RAM in bytes (`NSProcessInfo.physicalMemory`), for the model
-/// picker's RAM-fit advisory. Thread-safe (no main-thread requirement); the
+/// picker's RAM-fit label/gate. Thread-safe (no main-thread requirement); the
 /// caller floors it to whole GiB via `model_catalog::bytes_to_whole_gb`.
 pub fn physical_memory_bytes() -> u64 {
     objc2_foundation::NSProcessInfo::processInfo().physicalMemory()

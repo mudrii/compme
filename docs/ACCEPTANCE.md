@@ -73,7 +73,9 @@ Before running:
 
 - unlock the macOS session
 - grant Accessibility permission to the terminal
-- open TextEdit and focus an editable document
+- open TextEdit and focus a plain editable document; for the Option-Tab
+  passthrough gate, use a normal text insertion point where a literal Tab inserts
+  exactly `\t`
 - avoid password fields and apps that enable global Secure Input
 
 The runner preflights:
@@ -437,24 +439,27 @@ Record the box label, the two log lines, and the live accept for each rebind.
 
 The Setup tab carries a **"Model to download:"** popup whose items are the
 catalog rows in order (`model_menu_titles`), each suffixed with a RAM-fit
-advisory for this machine's available memory (`ram_verdict`):
+label for this machine's available memory (`ram_verdict`):
 
 - `· fits`
 - `· tight — may swap under load`
 - `· exceeds available memory`
 
-The advisory is **advisory only** — it never blocks a download. To exercise:
+`fits` and `tight` entries may download; `exceeds available memory` is a hard
+download block. To exercise:
 
 1. Open the popup and confirm one row per catalog entry
    (`qwen2.5-0.5b-q4_k_m`, `llama-3.2-1b-q4_k_m`, `qwen2.5-1.5b-q4_k_m`,
    `gemma-2-2b-q4_k_m`), each carrying a fit suffix.
-2. Pick a **non-recommended** model and click Download → that model downloads
-   (log: `downloading <model> (<MB> MB) — progress in this log`), proving the
-   picker index drives the target, not just `recommended()`.
-3. Re-click Download on a model already on disk → the dest-exists guard logs
+2. Pick a **non-recommended** model that fits or is tight and click Download →
+   that model downloads (log: `downloading <model> (<MB> MB) — progress in this
+   log`), proving the picker index drives the target, not just `recommended()`.
+3. On a machine below a model's minimum RAM, picking that row and clicking
+   Download logs a blocked message and does not enqueue a fetch.
+4. Re-click Download on a model already on disk → the dest-exists guard logs
    `<model> already downloaded at <path> — delete it to re-download` (no
    re-fetch / clobber).
-4. Pick an **encumbered** model (`llama-3.2-1b-q4_k_m` /
+5. Pick an **encumbered** model (`llama-3.2-1b-q4_k_m` /
    `gemma-2-2b-q4_k_m`) with no prior acceptance → the **license click-through
    prompt** appears (the `download_gate` `NeedsLicense` path) before any fetch.
    Today's recommended default is unencumbered, so a plain run never prompts.
@@ -487,6 +492,7 @@ The live runner uses `platform_macos` examples:
 - `caret_marker_acceptance`
 - `accept_tap_acceptance`
 - `accept_insert_acceptance`
+- `input_monitoring_preflight_acceptance`
 - `popup_fallback_acceptance`
 - `overlay_presenter_acceptance`
 

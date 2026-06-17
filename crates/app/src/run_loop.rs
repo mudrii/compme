@@ -1189,7 +1189,7 @@ fn monitored_collection_gates_pass(
         && terminal_ok
         && browser_domain_fresh_enough_for_rules(app_key, domain, prefs)
         && app_allows_suggestions(app_key)
-        && prefs.should_suggest(app_key, domain, policy.now_ms)
+        && prefs.monitored_collection_allowed(app_key, domain, policy.now_ms)
 }
 
 /// The cached browser host for `app_key`, but ONLY when it is the app the
@@ -1703,6 +1703,14 @@ fn resolve_app_key(pid: Option<u32>, resolver: impl Fn(i32) -> Option<String>) -
     pid.and_then(|p| i32::try_from(p).ok()).and_then(resolver)
 }
 
+fn effective_app_key(
+    field: &FieldHandle,
+    resolver: impl Fn(i32) -> Option<String>,
+) -> Option<String> {
+    resolve_app_key(field.pid, resolver)
+        .or_else(|| (!field.app.starts_with("pid:")).then(|| field.app.clone()))
+}
+
 fn canonicalize_field_app(
     mut field: FieldHandle,
     resolver: impl Fn(i32) -> Option<String>,
@@ -2031,6 +2039,8 @@ fn build_settings_flags(
     config: &Config,
     tray_enabled: Arc<AtomicBool>,
 ) -> platform_macos::SettingsFlags {
+    let available_ram_gb =
+        model_catalog::bytes_to_whole_gb(platform_macos::physical_memory_bytes());
     platform_macos::SettingsFlags {
         general_enabled: tray_enabled,
         labs_midline: Arc::new(AtomicBool::new(config.allow_mid_word)),
@@ -2057,11 +2067,9 @@ fn build_settings_flags(
         // the same row). The names cross the crate boundary here because
         // platform_macos can't see model_catalog (the about_text pattern).
         setup_model_index: Arc::new(AtomicUsize::new(crate::model_picker::recommended_index())),
-        // Item titles carry a RAM-fit advisory ("name · fits/tight/exceeds")
+        // Item titles carry a RAM-fit label ("name · fits/tight/exceeds")
         // computed against this machine's physical memory, read once here.
-        setup_model_menu_titles: crate::model_picker::model_menu_titles(
-            model_catalog::bytes_to_whole_gb(platform_macos::physical_memory_bytes()),
-        ),
+        setup_model_menu_titles: crate::model_picker::model_menu_titles(available_ram_gb),
         // Statistics range picker. Default index 0 = StatRange::ALL[0]
         // (Last 7 days), so the rendered span is byte-identical to the
         // pre-picker `daily_buckets(.., 7)`. Titles cross the seam here because
@@ -2645,6 +2653,18 @@ fn model_download_dest_present(
     Ok(actual == expected.to_ascii_lowercase())
 }
 
+fn model_download_ram_block_message(
+    entry: &model_catalog::ModelEntry,
+    available_ram_gb: u32,
+) -> Option<String> {
+    (!model_catalog::offerable_by_ram(entry, available_ram_gb)).then(|| {
+        format!(
+            "download of {} blocked — requires at least {} GiB RAM (available: {} GiB)",
+            entry.name, entry.min_ram_gb, available_ram_gb
+        )
+    })
+}
+
 /// Build the whole stack, run until a signal (or the run-ms deadline), then tear
 /// down in order.
 pub fn run() -> Result<(), String> {
@@ -2956,6 +2976,8 @@ pub fn run() -> Result<(), String> {
     let mut emoji_prefs = config.emoji_prefs;
     let mut emoji_skin_tone_index = emoji_skin_tone_index(emoji_prefs.skin_tone);
     let mut emoji_gender_index = emoji_gender_index(emoji_prefs.gender);
+    let available_ram_gb =
+        model_catalog::bytes_to_whole_gb(platform_macos::physical_memory_bytes());
     let settings_flags = build_settings_flags(&config, Arc::clone(&flags.enabled));
     // The app ids behind the Apps rows as last rendered (index == row).
     let mut apps_ids: Vec<String> = Vec::new();
@@ -3577,6 +3599,10 @@ pub fn run() -> Result<(), String> {
                 ),
                 std::env::var_os("HOME"),
             ) {
+                if let Some(message) = model_download_ram_block_message(entry, available_ram_gb) {
+                    eprintln!("compme: {message}");
+                    continue;
+                }
                 // License click-through gate (D14, c95 "once per model"):
                 // inert for today's unencumbered recommended() target; bites
                 // when a future picker selects a GemmaTerms/LlamaCommunity
@@ -3839,7 +3865,7 @@ pub fn run() -> Result<(), String> {
             );
             match current_field
                 .as_ref()
-                .and_then(|f| resolve_app_key(f.pid, bundle_id_for_pid))
+                .and_then(|f| effective_app_key(f, bundle_id_for_pid))
             {
                 Some(app) => {
                     let allowed = toggle_app_collection(&mut prefs, &app);
@@ -3879,7 +3905,7 @@ pub fn run() -> Result<(), String> {
             );
             match current_field
                 .as_ref()
-                .and_then(|f| resolve_app_key(f.pid, bundle_id_for_pid))
+                .and_then(|f| effective_app_key(f, bundle_id_for_pid))
             {
                 Some(app) => {
                     apply_app_disable(arm, &app, &mut prefs, now_ms);
@@ -4021,13 +4047,12 @@ pub fn run() -> Result<(), String> {
         if status.suggestions_allowed() {
             if let Some(request) = latest.take() {
                 // Per-app/domain gating + pause/snooze (A2 §8). The exclude list
-                // is keyed on bundle ids. `request.field.app` is already the
-                // canonical bundle id (rewritten by `canonicalize_field_app` in
-                // the Focus/Caret arms before the request was built), so this is a
-                // defensive re-resolution from the pid for the gating/logging key;
-                // fail-open if it can't be resolved. The domain comes from the
-                // Focus arm's cache, guarded on the same app key (c131).
-                let app_key = resolve_app_key(request.field.pid, bundle_id_for_pid);
+                // is keyed on bundle ids. Prefer a fresh pid resolution, but keep
+                // the already-canonical request field app as the stable fallback;
+                // a transient lookup miss must not fail-open per-app privacy gates.
+                // The domain comes from the Focus arm's cache, guarded on the same
+                // app key (c131).
+                let app_key = effective_app_key(&request.field, bundle_id_for_pid);
                 if request_passes_submit_gates(
                     &request,
                     app_key.as_deref(),
@@ -6500,6 +6525,74 @@ mod tests {
     }
 
     #[test]
+    fn effective_app_key_falls_back_to_canonical_field_app() {
+        let stable = FieldHandle {
+            app: "com.apple.TextEdit".into(),
+            pid: Some(42),
+            element_id: "f".into(),
+            generation: 1,
+        };
+        assert_eq!(
+            effective_app_key(&stable, |_| None),
+            Some("com.apple.TextEdit".into()),
+            "a transient pid lookup miss must keep the already-canonical app key"
+        );
+
+        let volatile = FieldHandle {
+            app: "pid:42".into(),
+            ..stable
+        };
+        assert_eq!(
+            effective_app_key(&volatile, |_| None),
+            None,
+            "a volatile pid:N app still fails open when no resolver can identify it"
+        );
+    }
+
+    #[test]
+    fn effective_app_key_blocks_submit_with_canonical_fallback() {
+        let field = FieldHandle {
+            app: "com.apple.TextEdit".into(),
+            pid: Some(42),
+            element_id: "f".into(),
+            generation: 1,
+        };
+        let request = CompletionRequest {
+            field: field.clone(),
+            ..req_with_prompt("Dear team")
+        };
+        let mut prefs = Prefs::default();
+        prefs.excluded_apps.insert("com.apple.TextEdit".into());
+        let app_key = effective_app_key(&field, |_| None);
+
+        assert!(!request_passes_submit_gates(
+            &request,
+            app_key.as_deref(),
+            None,
+            &prefs,
+            1_000
+        ));
+    }
+
+    #[test]
+    fn current_app_actions_use_canonical_fallback_when_pid_lookup_fails() {
+        let field = FieldHandle {
+            app: "com.apple.TextEdit".into(),
+            pid: Some(42),
+            element_id: "f".into(),
+            generation: 1,
+        };
+        let app = effective_app_key(&field, |_| None).expect("canonical fallback");
+
+        let mut prefs = Prefs::default();
+        assert!(!toggle_app_collection(&mut prefs, &app));
+        assert_eq!(no_collect_apps_value(&prefs), "com.apple.TextEdit");
+
+        apply_app_disable(DisableArm::Always, &app, &mut prefs, 1_000);
+        assert_eq!(excluded_apps_value(&prefs), "com.apple.TextEdit");
+    }
+
+    #[test]
     fn memory_storage_mode_defaults_off_and_parses_modes() {
         use memory::StorageMode;
         // Unset, falsy, and unknown all stay Off (opt-in §16 default).
@@ -8817,6 +8910,21 @@ mod tests {
             "dropped requests must not expose a fresh idle status"
         );
         assert_eq!(logged, 2);
+    }
+
+    #[test]
+    fn model_download_ram_block_message_blocks_only_below_minimum() {
+        let entry = model_catalog::recommended().expect("catalog has a recommended model");
+        assert!(
+            model_download_ram_block_message(entry, entry.min_ram_gb.saturating_sub(1))
+                .expect("below minimum is blocked")
+                .contains(entry.name)
+        );
+        assert_eq!(
+            model_download_ram_block_message(entry, entry.min_ram_gb),
+            None,
+            "tight-at-minimum models are allowed with a picker warning"
+        );
     }
 
     #[test]

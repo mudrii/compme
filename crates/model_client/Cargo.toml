@@ -9,5 +9,11 @@ license.workspace = true
 # encoding_rs UTF-8 decoder) — not an independent choice.
 encoding_rs = "0.8"
 # ABI-sensitive FFI bindings to llama.cpp — pinned exact because even patch
-# bumps can change the vendored C ABI/behavior.
+# bumps can change the vendored C ABI/behavior. Backend features are target
+# scoped: Metal on macOS, dynamic/Vulkan-capable backends elsewhere.
+
+[target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-2 = { version = "=0.1.146", features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+llama-cpp-2 = { version = "=0.1.146", features = ["dynamic-backends", "vulkan"] }

@@ -315,9 +315,10 @@ pub struct SettingsFlags {
     pub setup_model_index: Arc<AtomicUsize>,
     /// Picker: the popup's item titles, one per catalog row in catalog order
     /// (so the selected index still addresses the catalog), each suffixed with
-    /// its RAM-fit advisory (e.g. "qwen2.5-0.5b · fits"). Composed once by the
+    /// its RAM-fit label (e.g. "qwen2.5-0.5b · fits"). Composed once by the
     /// run loop (model_catalog + the RAM probe are app-side; the window only
-    /// renders the finished strings). Advisory — never blocks a download.
+    /// renders the finished strings). `Exceeds` rows are blocked by the download
+    /// edge.
     pub setup_model_menu_titles: Vec<String>,
     /// Apps rows (per-app recorded-input counts), composed by the run loop
     /// right before each show; refreshed like stats.

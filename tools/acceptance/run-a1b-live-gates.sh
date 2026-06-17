@@ -364,8 +364,8 @@ run_input_monitoring_revoked_carbon_gate() {
   echo
   echo "== $name =="
   print_cmd "$INPUT_MONITORING_BIN" revoked
-  print_cmd env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" full
-  print_cmd env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" word
+  print_cmd env COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED=1 COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" full
+  print_cmd env COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED=1 COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" word
 
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "MANUAL $name: if read-only preflight reports Input Monitoring is granted, revoke it and rerun to confirm transient Carbon accept still works"
@@ -401,7 +401,7 @@ run_input_monitoring_revoked_carbon_gate() {
         log_file="$LOG_DIR/$name-$mode.log"
       fi
 
-      env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" "$mode" >"$log_file" 2>&1
+      env COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED=1 COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" "$mode" >"$log_file" 2>&1
       status=$?
       cat "$log_file"
 
@@ -646,6 +646,12 @@ run_self_tests() {
     || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-optional-browser-skip" "$dry_run_log" \
     '^SKIP caret-marker-browser-marker: pass --browser-pid after focusing a Chrome/Safari text field$' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-input-monitoring-revoked-full-harness" "$dry_run_log" \
+    'COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED=1 .*accept_tap_acceptance .* full' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-input-monitoring-revoked-word-harness" "$dry_run_log" \
+    'COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED=1 .*accept_tap_acceptance .* word' \
     || self_failures=$((self_failures + 1))
 
   skip_textedit_log="$self_test_dir/skip-textedit-dry-run.log"

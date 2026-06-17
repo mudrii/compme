@@ -140,12 +140,27 @@ impl Prefs {
             .unwrap_or(global_default)
     }
 
-    /// Whether typing-history collection (previous-inputs context + encrypted
-    /// memory) may record from this app. Default allowed; per-app opt-out.
+    /// Whether typing-history collection is explicitly allowed for this app.
+    /// Default allowed; per-app opt-out. This is only the collection toggle:
+    /// callers that record broad monitored typing must also apply suggestion
+    /// privacy gates through [`Self::monitored_collection_allowed`].
     pub fn collection_allowed(&self, app: Option<&str>) -> bool {
         app.and_then(|app| self.per_app.get(app))
             .and_then(|policy| policy.collect_inputs)
             .unwrap_or(true)
+    }
+
+    /// Whether broad monitored typing may be durably recorded for this app/domain
+    /// at `now_ms`. This intentionally combines the explicit collection toggle
+    /// with suggestion privacy gates so snoozed, disabled, excluded app, and
+    /// excluded-domain contexts do not keep collecting background typing.
+    pub fn monitored_collection_allowed(
+        &self,
+        app: Option<&str>,
+        domain: Option<&str>,
+        now_ms: u64,
+    ) -> bool {
+        self.collection_allowed(app) && self.should_suggest(app, domain, now_ms)
     }
 
     /// Whether Tab should pass through literally (not map to Word-accept) for the
@@ -292,32 +307,34 @@ mod tests {
     }
 
     #[test]
-    fn collection_continues_while_suggestions_are_gated_by_snooze_or_exclusion() {
-        // Pins the recording/suggestion seam: `collection_allowed` is governed
-        // ONLY by per-app `collect_inputs` (opt-out model), while snooze and
-        // exclusion gate `should_suggest`. So a snoozed or excluded app keeps
-        // recording typing history even though suggestions stop firing — the two
-        // gates are deliberately independent (collection opt-out is the privacy
-        // control for recording; snooze/exclude only silence suggestions).
+    fn monitored_collection_stops_when_suggestions_are_gated_by_snooze_or_exclusion() {
+        // Pins the recording/suggestion seam: `collection_allowed` is the
+        // explicit per-app opt-out, while `monitored_collection_allowed` is the
+        // privacy policy for broad AllMonitored writes. A snoozed or excluded app
+        // can still have collection toggled on, but durable monitored recording
+        // must stop together with suggestions.
         let mut p = Prefs::default();
 
-        // Snoozed app: suggestions off, collection still on.
+        // Snoozed app: explicit collection toggle remains on, monitored writes off.
         p.snooze_app("com.apple.TextEdit", 1_000, 60);
         assert!(!p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
         assert!(p.collection_allowed(Some("com.apple.TextEdit")));
+        assert!(!p.monitored_collection_allowed(Some("com.apple.TextEdit"), None, 1_000));
 
-        // Excluded app: suggestions hard-blocked, collection still on.
+        // Excluded app: explicit collection toggle remains on, monitored writes off.
         p.excluded_apps.insert("com.apple.Safari".into());
         assert!(!p.should_suggest(Some("com.apple.Safari"), None, 1_000));
         assert!(p.collection_allowed(Some("com.apple.Safari")));
+        assert!(!p.monitored_collection_allowed(Some("com.apple.Safari"), None, 1_000));
 
-        // Only the per-app collect_inputs opt-out stops recording — and it does
+        // The per-app collect_inputs opt-out also stops monitored writes and does
         // NOT re-enable suggestions for the excluded app.
         p.per_app
             .entry("com.apple.Safari".into())
             .or_default()
             .collect_inputs = Some(false);
         assert!(!p.collection_allowed(Some("com.apple.Safari")));
+        assert!(!p.monitored_collection_allowed(Some("com.apple.Safari"), None, 1_000));
         assert!(!p.should_suggest(Some("com.apple.Safari"), None, 1_000));
     }
 

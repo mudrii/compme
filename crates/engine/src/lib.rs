@@ -362,7 +362,16 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     };
                     if let Some(rect) = rect {
                         self.overlay.show_ghost(rect, &text)?;
-                        self.set_tap_visible(true, Some(AcceptAction::Full))?;
+                        if let Err(err) = self.set_tap_visible(true, Some(AcceptAction::Full)) {
+                            // The ghost was painted but cannot be accepted. Reconcile
+                            // immediately so a visible-but-unarmed suggestion does not
+                            // remain in the UI or machine state.
+                            let _ = self.overlay.hide();
+                            let _ = self.set_tap_visible(false, None);
+                            self.machine.cancel_last_shown();
+                            let _ = self.machine.on_event(Event::Dismiss);
+                            return Err(err);
+                        }
                     } else {
                         // No caret rect and no popup anchor: we cannot place the
                         // ghost. The machine already marked itself showing, so
@@ -758,7 +767,8 @@ mod tests {
         // error-propagation contract already pinned for the overlay and adapter
         // sinks. A swallowed arm error would silently leave the user unable to
         // Tab-accept a ghost they can see.
-        let (mut engine, _adapter, _overlay) = engine();
+        let (mut engine, adapter, overlay) = engine();
+        let inserts = Arc::clone(&adapter.inserts);
         engine.set_accept_subscription(AcceptSubscription::new(
             Subscription::new(0),
             // Fail only while ARMING (visible=true) so an incidental disarm
@@ -780,6 +790,21 @@ mod tests {
             engine.on_completion(&requests[0], "hello world".into()),
             Err(platform::PlatformError::Timeout),
             "a failed accept-tap arm surfaces through dispatch"
+        );
+        assert!(
+            overlay
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| matches!(call, OverlayCall::Hide)),
+            "a painted-but-unarmed ghost must be hidden immediately"
+        );
+
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert!(
+            inserts.lock().unwrap().is_empty(),
+            "accept after a failed accept-tap arm must not insert"
         );
     }
 

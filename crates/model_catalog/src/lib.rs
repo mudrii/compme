@@ -1,6 +1,6 @@
 //! The model catalog (engine-macos §15 D14, designed c95): which local
 //! models the General pane offers, where they download from, and whether
-//! they plausibly fit this machine.
+//! this machine can offer them for download.
 //!
 //! Deliberate deviation from the c95 sketch: the catalog is static Rust
 //! data, not a TOML file — same in-repo content, no parser dependency, and
@@ -104,7 +104,7 @@ pub struct ModelEntry {
     pub url: &'static str,
     /// Approximate download size, for the picker label.
     pub size_mb: u32,
-    /// Advisory minimum unified memory for comfortable inference.
+    /// Minimum unified memory required before the download is offered.
     pub min_ram_gb: u32,
     pub license: License,
     /// Pinned SHA-256 of the model file (64 hex chars; the runtime
@@ -127,8 +127,8 @@ pub struct ModelProvenance {
     pub hf_x_linked_etag: &'static str,
 }
 
-/// How an entry relates to the machine's available memory. ADVISORY only
-/// (D14): the picker labels `Tight`/`Exceeds`, it never blocks a download.
+/// How an entry relates to the machine's available memory. `Exceeds` is a hard
+/// download gate; `Tight`/`Fits` are user-facing picker labels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RamVerdict {
     /// Comfortable headroom.
@@ -140,9 +140,8 @@ pub enum RamVerdict {
 }
 
 impl RamVerdict {
-    /// Short user-facing advisory word for the picker label (the suffix on a
-    /// catalog row, e.g. "… · tight — may swap under load"). Advisory only —
-    /// never blocks a download (D14).
+    /// Short user-facing word for the picker label (the suffix on a catalog row,
+    /// e.g. "… · tight — may swap under load").
     pub fn advice(self) -> &'static str {
         match self {
             RamVerdict::Fits => "fits",
@@ -250,7 +249,7 @@ fn recommended_in(entries: &[ModelEntry]) -> Option<&ModelEntry> {
         .min_by_key(|entry| entry.size_mb)
 }
 
-/// Advisory RAM fit: `Exceeds` below the minimum, `Tight` with less than
+/// RAM fit label: `Exceeds` below the minimum, `Tight` with less than
 /// 2 GB of headroom over it, `Fits` otherwise.
 pub fn ram_verdict(entry: &ModelEntry, available_gb: u32) -> RamVerdict {
     if available_gb < entry.min_ram_gb {
@@ -260,6 +259,12 @@ pub fn ram_verdict(entry: &ModelEntry, available_gb: u32) -> RamVerdict {
     } else {
         RamVerdict::Fits
     }
+}
+
+/// Hardware gate for model downloads. Tight models are allowed with a warning;
+/// models below their minimum are not offered for download on this machine.
+pub fn offerable_by_ram(entry: &ModelEntry, available_gb: u32) -> bool {
+    ram_verdict(entry, available_gb) != RamVerdict::Exceeds
 }
 
 /// Whole gibibytes of physical memory, floored, from a raw byte count (what the
@@ -379,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn ram_verdict_is_advisory_with_a_2gb_tight_band() {
+    fn ram_verdict_uses_a_2gb_tight_band() {
         let entry = ModelEntry {
             name: "test",
             url: "https://example.invalid/m.gguf",
@@ -392,6 +397,21 @@ mod tests {
         assert_eq!(ram_verdict(&entry, 8), RamVerdict::Tight);
         assert_eq!(ram_verdict(&entry, 9), RamVerdict::Tight);
         assert_eq!(ram_verdict(&entry, 10), RamVerdict::Fits);
+    }
+
+    #[test]
+    fn offerable_by_ram_blocks_only_models_below_their_minimum() {
+        let entry = ModelEntry {
+            name: "test",
+            url: "https://example.invalid/m.gguf",
+            size_mb: 1000,
+            min_ram_gb: 8,
+            license: License::Apache2,
+            expected_sha256: None,
+        };
+        assert!(!offerable_by_ram(&entry, 7));
+        assert!(offerable_by_ram(&entry, 8), "tight is allowed");
+        assert!(offerable_by_ram(&entry, 10), "fits is allowed");
     }
 
     #[test]
@@ -428,7 +448,7 @@ mod tests {
             "tight \u{2014} may swap under load"
         );
         assert_eq!(RamVerdict::Exceeds.advice(), "exceeds available memory");
-        // The three advisories must be distinct (a label collision would make
+        // The three labels must be distinct (a collision would make
         // Tight and Exceeds indistinguishable in the picker).
         let all = [
             RamVerdict::Fits.advice(),
@@ -436,7 +456,7 @@ mod tests {
             RamVerdict::Exceeds.advice(),
         ];
         let unique: std::collections::HashSet<_> = all.iter().collect();
-        assert_eq!(unique.len(), 3, "each verdict needs a distinct advisory");
+        assert_eq!(unique.len(), 3, "each verdict needs a distinct label");
     }
 
     #[test]

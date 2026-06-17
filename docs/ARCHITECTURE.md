@@ -328,9 +328,9 @@ see design spec §15 G3.)
 `model_catalog` is the pure catalog (§15 D14) of which local GGUF models the
 host offers: display name, download URL, byte size, license, and a
 `RamVerdict`. `bytes_to_whole_gb` and `ram_verdict` turn a model size plus the
-machine's RAM (probed via `sysctl` in the host, not here) into a fit advisory —
-fits / tight / won't-fit — and a `download_gate` answers whether a download
-should be offered. The catalog is static Rust data, not a TOML file: the same
+machine's RAM (probed via `sysctl` in the host, not here) into a fit verdict:
+`Fits` and `Tight` are offerable labels, while `Exceeds` is a hard download
+gate answered by `offerable_by_ram`. The catalog is static Rust data, not a TOML file: the same
 in-repo content, no parser dependency, and invalid entries become compile
 errors. Everything here is pure; the RAM probe and IO are later slices.
 
@@ -385,7 +385,7 @@ Major responsibilities:
 - compose the settings window panes (Setup checklist, General switches, Apps
   recorded-input counts, Context/Emoji controls, Shortcuts bindings, Statistics
   sparklines, About) and apply tray/window flags each heartbeat
-- pick the download target from `model_catalog` with a RAM-fit advisory,
+- pick the download target from `model_catalog` with a RAM-fit verdict,
   enforce the click-through license gate, and spawn the `model_fetch` worker
 - apply parked accept-key rebinds in the PINNED order (set keymap → re-arm →
   persist only on success), reverting on failure
@@ -535,8 +535,8 @@ including the red button — and demotes back to `Accessory`, so no Dock icon is
 stranded.
 
 The Setup tab carries a **model picker** (`NSPopUpButton`) that selects the
-download target from `model_catalog`, shown with a RAM-fit advisory; a
-click-through **license gate** must be accepted before a download starts, and a
+download target from `model_catalog`, shown with a RAM-fit label; `Exceeds`
+models are blocked before the click-through **license gate**, and a
 dest-exists guard avoids redundant downloads. The Statistics tab renders the
 `stats` sparkline rows; the Apps tab lists per-app recorded-input counts with
 per-row delete; General carries feature toggles (autocorrect, trailing-space,
@@ -546,8 +546,9 @@ recorder.
 ### Model Catalog, Fetch, and Picker
 
 `model_catalog` supplies the offered models and the pure RAM-fit verdict; the
-host probes machine RAM via `sysctl` and renders the advisory. When the user
-picks a model and accepts its license, the run loop spawns the `model_fetch`
+host probes machine RAM via `sysctl`, renders the label, and blocks `Exceeds`
+downloads before the license/fetch edge. When the user picks an offerable model
+and accepts its license, the run loop spawns the `model_fetch`
 `ModelDownloader` worker, which downloads to a `.part` file, verifies the
 SHA-256, and atomically renames it into place. The chosen model then feeds
 `LlamaModel` on the inference worker thread.

@@ -99,9 +99,10 @@ catalog model on click into
 `$HOME/Library/Application Support/compme/models/<name>.gguf`. Three behaviors
 are wired (D14):
 
-- **RAM-fit advisory** — each popup row is suffixed with its `ram_verdict` for
+- **RAM-fit gate** — each popup row is suffixed with its `ram_verdict` for
   the machine's available memory (`fits` / `tight — may swap under load` /
-  `exceeds available memory`). Advisory only; it never blocks a download.
+  `exceeds available memory`). `Exceeds` blocks download before license prompts
+  or fetch work; `Tight` remains allowed with a warning.
 - **License click-through** — every download path routes through
   `model_catalog::download_gate`. Unencumbered (Apache-2.0) entries proceed
   silently; gated entries (Llama Community, Gemma Terms) prompt a terms

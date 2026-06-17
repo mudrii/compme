@@ -5,12 +5,12 @@
 > the Context tab exposes clipboard + screen-OCR context switches, and the Emoji
 > tab exposes the live `COMPME_EMOJI` enable switch plus the
 > `COMPME_EMOJI_SKIN_TONE` and `COMPME_EMOJI_GENDER` popups. The Statistics
-> tab exposes the shipped range/grouping controls; metric-picker design and live
-> LOOK confirmation remain tracked in the Roadmap.
+> tab exposes the shipped range/grouping controls; their LOOK gate was completed
+> 2026-06-17. Metric-picker design remains tracked in the Roadmap.
 >
 > **Live pending status (re-verified 2026-06-15): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
 > — the per-pane residuals (Apps editing rows, Personalization controls,
-> Context appearance sub-toggle, Statistics metric-picker/LOOK follow-up,
+> Context appearance sub-toggle, Statistics metric-picker follow-up,
 > force-activate/toggle hotkeys) are tracked there
 > as Tier 3. Inline per-line annotations below remain accurate except where a
 > dated correction supersedes them.
@@ -61,7 +61,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 | Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; `KeyRecorderField` rows persist live rebinds through `COMPME_ACCEPT_*` config | recorder UI + live rebind shipped; force-activate + the two toggle shortcuts remain new hotkeys — **[2026-06-15] PARTIAL** |
 | App Settings | per-app list (usage counts) with enable/mid-line/autocorrect/Tab-disable, compat mode, per-app instructions, per-app history | `prefs` overrides + `tab_disabled` tap suppression; `memory` per-app counts; personalization per-app maps (config-wired; editor missing) | per-app mid-line/autocorrect overrides are new prefs fields; pane is the largest — **[2026-06-15] PARTIAL** (Apps tab: per-app counts + confirmed per-row Delete; Tab-disable consumption, per-app override fields, and config-backed personalization maps are live, but per-app UI rows and personalization editors are deferred) |
 | Labs | mid-line toggle | `COMPME_MIDLINE` | pane only — **[2026-06-10] DONE** (shipped as a switch in the General tab — the Labs pane content moved to General) |
-| Statistics | today + 30-day charts (range/group/metric) | `stats` crate (counts/words/latency) — menu line shipped c51 | chart view; longer retention than 30d if ranges grow — **[2026-06-10] DONE-MVP** (sparkline rows + lifetime row + stats.env persistence; chart view = sparklines, range/group/metric controls deferred) |
+| Statistics | today + 30-day charts (range/group/metric) | `stats` crate (counts/words/latency) — menu line shipped c51 | chart view; longer retention than 30d if ranges grow — **[2026-06-17 PARTIAL]** sparkline rows + lifetime row + stats.env persistence + range/grouping popups and LOOK evidence shipped; metric-picker design remains deferred |
 | About | version, acks, links | LICENSE, deps | pane only; states the no-telemetry guarantee — **[2026-06-10] DONE** |
 
 ## Build order (each loop-tick-sized unless noted)
