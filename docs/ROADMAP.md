@@ -170,7 +170,8 @@ Shortcuts hotkeys.
   screen submissions by the current config). General
   carries 4 switches —
   `general_enabled`, `labs_midline` (mid-line, moved here from Labs),
-  `general_autocorrect`, `general_trailing_space` (`settings_window.rs:926-1045`).
+  `general_autocorrect`, `general_trailing_space` (the General pane block,
+  `settings_window.rs:1020-1142`).
   Emoji now exists as a dedicated tab with a live `COMPME_EMOJI` enable switch
   `COMPME_EMOJI_SKIN_TONE` popup:
   `pane_titles` includes `Emoji`; `settings_window.rs` renders the rows and
@@ -225,8 +226,8 @@ Shortcuts hotkeys.
 
 > **Corrected 2026-06-15:** the global disable submenu (For 1 Hour / Until
 > Relaunch / Always) is **✅ DONE** (`crates/platform_macos/src/tray.rs:238-246`,
-> `DisableArm` `:53-59`; mapped in `run_loop.rs:3357-3370` through
-> `apply_global_disable`). The older "NOT built — only flat Snooze-1h" note is
+> `DisableArm` `:53-59`; mapped through `apply_global_disable`
+> (`run_loop.rs:1826`, dispatched at `:3463`)). The older "NOT built — only flat Snooze-1h" note is
 > superseded by the current corrected A3 status.
 
 ---

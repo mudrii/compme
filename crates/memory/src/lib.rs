@@ -19,6 +19,7 @@ use std::path::Path;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use rusqlite::{params, Connection};
+use zeroize::Zeroize;
 
 const NONCE_LEN: usize = 12;
 
@@ -35,6 +36,17 @@ pub struct StaticKey(pub [u8; 32]);
 impl KeyProvider for StaticKey {
     fn key(&self) -> [u8; 32] {
         self.0
+    }
+}
+
+impl Drop for StaticKey {
+    // Scrub the long-lived key copy on drop so the raw AES-256 key does not
+    // linger in process memory for a core dump / swap / live inspection to
+    // recover. The cipher's internal key schedule is separately zeroized via
+    // aes-gcm's `zeroize` feature; the construction temporary is scrubbed in
+    // `from_connection`.
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 
@@ -107,7 +119,12 @@ impl MemoryStore {
              )",
             [],
         )?;
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key.key()));
+        // Scrub the key copy returned by the provider once the cipher has
+        // absorbed it; the cipher itself zeroizes its key schedule on drop
+        // (aes-gcm `zeroize` feature).
+        let mut key_bytes = key.key();
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+        key_bytes.zeroize();
         Ok(Self { conn, cipher, mode })
     }
 
