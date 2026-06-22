@@ -529,6 +529,16 @@ mod tests {
     }
 
     #[test]
+    fn atomic_write_rejects_a_parentless_path() {
+        // An empty path has no parent component (`Path::parent` → None; a
+        // single-component relative path like "config" yields Some("") instead),
+        // so it must error InvalidInput rather than write to the cwd. Pins the
+        // no-parent guard atomic_write shares with persist_setting/remove_setting.
+        let err = atomic_write(Path::new(""), "K=v\n").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
     fn clamped_uses_default_when_absent() {
         assert_eq!(parse_clamped::<u64>(None, 120, 0, 5000), 120);
     }

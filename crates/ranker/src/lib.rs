@@ -434,6 +434,10 @@ mod tests {
     #[test]
     fn strip_suffix_overlap_empty_right_keeps_candidate() {
         assert_eq!(strip_suffix_overlap("hello world", ""), "hello world");
+        // The mirror side: an empty candidate against a non-empty right yields
+        // "" (max_overlap is 0, the loop never runs). Distinguishes the
+        // empty-side guard from a broken overlap loop that might fabricate text.
+        assert_eq!(strip_suffix_overlap("", "x y"), "");
     }
 
     #[test]
@@ -464,6 +468,10 @@ mod tests {
     fn is_degenerate_repetition_ignores_short_text() {
         assert!(!is_degenerate_repetition("hello"));
         assert!(!is_degenerate_repetition("hello world"));
+        // Three distinct words DO enter the detection loop (range 1..=len/3 is
+        // 1..=1), so this pins the short-text guard threshold: the loop runs but
+        // finds no repeat, rather than the len<3 early return short-circuiting.
+        assert!(!is_degenerate_repetition("hello there friend"));
     }
 
     #[test]

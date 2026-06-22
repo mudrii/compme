@@ -350,6 +350,19 @@ mod tests {
         assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
         assert!(p.collection_allowed(Some("com.apple.TextEdit")));
         assert!(p.monitored_collection_allowed(Some("com.apple.TextEdit"), None, 1_000));
+
+        // Make the Some(true) override load-bearing: flipping ONLY collect_inputs
+        // to Some(false) — same enabled/unsnoozed/non-excluded context, so
+        // should_suggest stays true — must flip monitored_collection_allowed to
+        // false. This pins that the collection toggle (not the suggestion gate)
+        // is the deciding term here.
+        p.per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .collect_inputs = Some(false);
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        assert!(!p.collection_allowed(Some("com.apple.TextEdit")));
+        assert!(!p.monitored_collection_allowed(Some("com.apple.TextEdit"), None, 1_000));
     }
 
     #[test]
