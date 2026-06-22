@@ -777,11 +777,35 @@ mod tests {
         adapter.fail_insert = true;
         let overlay = FakeOverlay::default();
         let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let actions: Arc<Mutex<Vec<Option<AcceptAction>>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        let a = Arc::clone(&actions);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            |_| Ok(()),
+            move |action| {
+                a.lock().unwrap().push(action);
+                Ok(())
+            },
+        ));
+
         engine.on_focus(field()).unwrap();
         engine
             .on_replacement(&field(), vec!["😄".into()], 5)
             .unwrap();
         overlay.calls.lock().unwrap().clear();
+        visible.lock().unwrap().clear();
+        actions.lock().unwrap().clear();
+
+        // The Replace dispatch branch fails mid-batch (insert_replacing errors
+        // before the trailing Hide), so reconcile_visible_failure must run its
+        // FULL effect: hide the ghost, disarm the accept tap, and dismiss the
+        // machine so the engine is not left wedged.
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
             Err(PlatformError::StaleField),
@@ -791,6 +815,33 @@ mod tests {
             *overlay.calls.lock().unwrap(),
             vec![OverlayCall::Hide],
             "a failed replacement accept must hide the stale replacement ghost"
+        );
+        assert_eq!(
+            *visible.lock().unwrap(),
+            vec![false],
+            "a failed replacement accept must disarm the accept tap"
+        );
+        assert_eq!(
+            *actions.lock().unwrap(),
+            vec![None],
+            "a failed replacement accept must clear the accept action"
+        );
+
+        // Not wedged: the Dismiss reset means a fresh focus cycle still produces
+        // a request, and a follow-up accept with no pending suggestion is a
+        // no-op (no insert, no error).
+        overlay.calls.lock().unwrap().clear();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("y", 1, 1000)).unwrap();
+        assert_eq!(
+            engine.on_tick(1500).unwrap().len(),
+            1,
+            "engine must remain usable after a failed replacement accept"
+        );
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Ok(vec![]),
+            "a follow-up accept with nothing pending must be a no-op, not wedged"
         );
     }
 

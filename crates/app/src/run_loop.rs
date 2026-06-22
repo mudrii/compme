@@ -2688,6 +2688,10 @@ fn subscription_error_action(trusted: bool, err: &PlatformError) -> Subscription
     }
 }
 
+fn should_request_screen_recording(screen_context: bool, already_granted: bool) -> bool {
+    screen_context && !already_granted
+}
+
 fn noop_accept_subscription() -> AcceptSubscription {
     AcceptSubscription::new(Subscription::new(0), |_| Ok(()), |_| Ok(()), |_| Ok(()))
 }
@@ -3643,7 +3647,8 @@ pub fn run() -> Result<(), String> {
             .setup_request_screen
             .swap(false, Ordering::Relaxed)
         {
-            if config.screen_context && !screen_recording_permission() {
+            if should_request_screen_recording(config.screen_context, screen_recording_permission())
+            {
                 request_screen_recording_permission();
             } else {
                 eprintln!("compme: screen recording request ignored; screen context is off or already granted");
@@ -9729,6 +9734,14 @@ mod tests {
             subscription_error_action(true, &PlatformError::Timeout),
             SubscriptionErrorAction::Fatal(_)
         ));
+    }
+
+    #[test]
+    fn screen_recording_requested_only_when_context_on_and_permission_missing() {
+        assert!(should_request_screen_recording(true, false));
+        assert!(!should_request_screen_recording(true, true));
+        assert!(!should_request_screen_recording(false, false));
+        assert!(!should_request_screen_recording(false, true));
     }
 
     #[test]
