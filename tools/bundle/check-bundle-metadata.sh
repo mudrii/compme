@@ -11,6 +11,7 @@ run_self_test() {
   printf 'version = "1.2.3"\n' >"$cargo"
 
   write_plist() {
+    min_version="${3:-14.0}"
     cat >"$1" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
@@ -18,7 +19,7 @@ run_self_test() {
   <key>CFBundleIdentifier</key><string>com.compme.app</string>
   <key>CFBundleExecutable</key><string>compme</string>
   <key>CFBundleShortVersionString</key><string>1.2.3</string>
-  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSMinimumSystemVersion</key><string>${min_version}</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleURLTypes</key>
   <array>
@@ -47,6 +48,8 @@ CASK
   write_plist "$good_plist" compme
   bad_scheme_plist="$tmp/bad-scheme.plist"
   write_plist "$bad_scheme_plist" notcompme
+  bad_min_plist="$tmp/bad-min-version.plist"
+  write_plist "$bad_min_plist" compme 13.0
   good_cask="$tmp/good.rb"
   write_cask "$good_cask" 1.2.3
   drift_cask="$tmp/drift.rb"
@@ -89,7 +92,18 @@ CASK
     *) echo "self-test FAILED: expected missing-scheme error, got: $out" >&2; exit 1 ;;
   esac
 
-  # (d) stale cask macOS floor -> non-zero.
+  # (d) stale bundle macOS floor -> non-zero.
+  if out="$("$0" "$bad_min_plist" "$cargo" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: bundle macOS floor should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"LSMinimumSystemVersion"*) ;;
+    *) echo "self-test FAILED: expected bundle macOS-floor error, got: $out" >&2; exit 1 ;;
+  esac
+
+  # (e) stale cask macOS floor -> non-zero.
   if out="$("$0" "$good_plist" "$cargo" "$ventura_cask" 2>&1)"; then
     echo "self-test FAILED: Ventura cask floor should have failed" >&2
     echo "$out" >&2
@@ -100,7 +114,7 @@ CASK
     *) echo "self-test FAILED: expected macOS-floor error, got: $out" >&2; exit 1 ;;
   esac
 
-  # (e) all-consistent fixtures -> exits 0 with OK message.
+  # (f) all-consistent fixtures -> exits 0 with OK message.
   if ! out="$("$0" "$good_plist" "$cargo" "$good_cask" 2>&1)"; then
     echo "self-test FAILED: consistent fixtures should pass, got: $out" >&2
     exit 1

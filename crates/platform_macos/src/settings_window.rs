@@ -1642,6 +1642,16 @@ mod tests {
         let exact_ready = vec!["\u{2713} Model file".to_string()];
         assert!(setup_action_available(&exact_ready, "Model file", true));
         assert!(!setup_action_available(&exact_ready, "Model", true));
+
+        let ready_permission = vec!["\u{2713} Accessibility".to_string()];
+        assert!(!setup_action_available(
+            &ready_permission,
+            "Accessibility",
+            false
+        ));
+
+        let missing_model = vec!["\u{2717} Model file".to_string()];
+        assert!(!setup_action_available(&missing_model, "Model file", true));
     }
 
     #[test]

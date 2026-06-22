@@ -9717,6 +9717,15 @@ mod tests {
             SubscriptionErrorAction::NoopUntilPermission
         );
         assert!(matches!(
+            subscription_error_action(
+                true,
+                &PlatformError::CannotComplete {
+                    reason: "AX down".into()
+                }
+            ),
+            SubscriptionErrorAction::Fatal(_)
+        ));
+        assert!(matches!(
             subscription_error_action(true, &PlatformError::Timeout),
             SubscriptionErrorAction::Fatal(_)
         ));

@@ -26,6 +26,8 @@ validate_log() {
     || fail "missing setup recovery log (log: $log_file)"
   grep -q '^compme: setup: Model file not ready$' "$log_file" \
     || fail "missing setup model-not-ready log (log: $log_file)"
+  grep -q '^compme: status=Blocked(ModelUnavailable)' "$log_file" \
+    || fail "missing model-unavailable status log (log: $log_file)"
   if grep -Eq '^compme: request gen=' "$log_file"; then
     fail "completion request was submitted without a model (log: $log_file)"
   fi
@@ -37,12 +39,12 @@ run_self_test() {
   fake_bin="$tmp_dir/fake-compme"
   cat >"$fake_bin" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' \
-  'compme: model unavailable at startup: model file not found: /tmp/missing.gguf' \
-  'compme: setup remains available; download or select a model, then relaunch' \
-  'compme: setup: Model file not ready' \
-  'compme: status=Blocked(ModelUnavailable) enabled=false snoozed=false'
-case "${COMPME_FAKE_MODE:-ok}" in
+mode="${COMPME_FAKE_MODE:-ok}"
+[ "$mode" = omit-startup ] || printf '%s\n' 'compme: model unavailable at startup: model file not found: /tmp/missing.gguf'
+[ "$mode" = omit-recovery ] || printf '%s\n' 'compme: setup remains available; download or select a model, then relaunch'
+[ "$mode" = omit-setup ] || printf '%s\n' 'compme: setup: Model file not ready'
+[ "$mode" = omit-status ] || printf '%s\n' 'compme: status=Blocked(ModelUnavailable) enabled=false snoozed=false'
+case "$mode" in
   request) printf '%s\n' 'compme: request gen=1 prompt_chars=10' ;;
   bad-exit) exit 7 ;;
 esac
@@ -77,6 +79,27 @@ SH
     cat "$tmp_dir/bad-exit.out" >&2
     exit 1
   fi
+
+  assert_missing_line_rejected() {
+    mode="$1"
+    expected="$2"
+    label="$3"
+    if COMPME_FAKE_MODE="$mode" COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/$mode.log" "$0" >"$tmp_dir/$mode.out" 2>&1; then
+      echo "FAIL self-test-missing-model-startup-$label: missing line passed" >&2
+      exit 1
+    elif grep -q "$expected" "$tmp_dir/$mode.out"; then
+      echo "PASS self-test-missing-model-startup-$label"
+    else
+      echo "FAIL self-test-missing-model-startup-$label: expected error missing" >&2
+      cat "$tmp_dir/$mode.out" >&2
+      exit 1
+    fi
+  }
+
+  assert_missing_line_rejected omit-startup 'missing startup-unavailable log' startup-log-required
+  assert_missing_line_rejected omit-recovery 'missing setup recovery log' recovery-log-required
+  assert_missing_line_rejected omit-setup 'missing setup model-not-ready log' setup-log-required
+  assert_missing_line_rejected omit-status 'missing model-unavailable status log' status-log-required
 
   echo "Missing-model startup self-tests passed"
 }
