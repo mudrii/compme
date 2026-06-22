@@ -35,6 +35,7 @@ use platform_macos::{
     secure_input_enabled, MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
 };
 use prefs::Prefs;
+use zeroize::Zeroize;
 
 use crate::adapter::SharedAdapter;
 use crate::config::{self, parse_clamped};
@@ -234,6 +235,18 @@ struct MemoryConfig {
     mode: memory::StorageMode,
     path: Option<PathBuf>,
     key: Option<[u8; 32]>,
+}
+
+impl Drop for MemoryConfig {
+    // The explicit AES key lives on the long-lived Config for the whole run;
+    // scrub it on drop so it does not linger in process memory (matching the
+    // `memory` crate's StaticKey/cipher zeroization). `open_memory_store`
+    // separately scrubs the transient copy it hands to the store.
+    fn drop(&mut self) {
+        if let Some(key) = self.key.as_mut() {
+            key.zeroize();
+        }
+    }
 }
 
 impl Config {
@@ -934,14 +947,18 @@ fn open_memory_store(
         );
         return None;
     };
-    let Some(key) = config.key.or_else(&keychain_key) else {
+    let Some(mut key) = config.key.or_else(&keychain_key) else {
         eprintln!(
             "compme: COMPME_MEMORY set but no key available (no \
              COMPME_MEMORY_KEY and the keychain provided none) — memory disabled"
         );
         return None;
     };
-    match MemoryStore::open(path, &StaticKey(key), config.mode) {
+    // StaticKey scrubs its own copy on drop; scrub this transient copy too so
+    // no un-zeroized key byte is left on the stack after the store is opened.
+    let opened = MemoryStore::open(path, &StaticKey(key), config.mode);
+    key.zeroize();
+    match opened {
         Ok(store) => {
             eprintln!("compme: encrypted memory enabled (mode={:?})", config.mode);
             Some(store)

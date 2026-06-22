@@ -29,3 +29,4 @@ localize = { path = "../localize" }
 thesaurus = { path = "../thesaurus" }
 core-foundation = "=0.10.1"
 libc = "0.2"
+zeroize = "1"
