@@ -355,11 +355,10 @@ impl MacosTray {
             reason: "tray set_status must run on the main thread".into(),
         })?;
         if let Some(button) = self.status_item.button(mtm) {
-            if self.button_title_fallback {
-                button.setTitle(&NSString::from_str(title));
-            } else {
-                button.setTitle(&NSString::from_str(""));
-            }
+            button.setTitle(&NSString::from_str(tray_button_title(
+                self.button_title_fallback,
+                title,
+            )));
         }
         self.status_line_item
             .setTitle(&NSString::from_str(status_line));
@@ -386,4 +385,23 @@ impl MacosTray {
 /// Borrow a `TrayTarget` as a plain `&AnyObject` for `setTarget:`.
 fn target_as_any(target: &TrayTarget) -> &AnyObject {
     target.as_ref()
+}
+
+fn tray_button_title(button_title_fallback: bool, status_title: &str) -> &str {
+    if button_title_fallback {
+        status_title
+    } else {
+        ""
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_button_title_uses_status_text_only_when_icon_is_unavailable() {
+        assert_eq!(tray_button_title(true, "CM\u{26a0}"), "CM\u{26a0}");
+        assert_eq!(tray_button_title(false, "CM\u{26a0}"), "");
+    }
 }

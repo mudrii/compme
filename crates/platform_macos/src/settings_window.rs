@@ -692,9 +692,8 @@ fn apps_row_is_deletable(line: &str) -> bool {
 
 fn setup_action_available(lines: &[String], label: &str, ready: bool) -> bool {
     let glyph = if ready { '\u{2713}' } else { '\u{2717}' };
-    lines
-        .iter()
-        .any(|line| line.starts_with(glyph) && line.contains(label))
+    let expected = format!("{glyph} {label}");
+    lines.iter().any(|line| line.as_str() == expected.as_str())
 }
 
 fn refresh_setup_action_buttons(buttons: &[Retained<NSButton>], lines: &[String]) {
@@ -1626,6 +1625,23 @@ mod tests {
         assert!(!apps_row_is_deletable("Input collection is off"));
         assert!(!apps_row_is_deletable("No recorded inputs yet"));
         assert!(!apps_row_is_deletable(""));
+    }
+
+    #[test]
+    fn setup_action_available_matches_exact_setup_row_label() {
+        let lines = vec!["\u{2717} Accessibility helper".to_string()];
+        assert!(!setup_action_available(&lines, "Accessibility", false));
+
+        let exact_missing = vec!["\u{2717} Accessibility".to_string()];
+        assert!(setup_action_available(
+            &exact_missing,
+            "Accessibility",
+            false
+        ));
+
+        let exact_ready = vec!["\u{2713} Model file".to_string()];
+        assert!(setup_action_available(&exact_ready, "Model file", true));
+        assert!(!setup_action_available(&exact_ready, "Model", true));
     }
 
     #[test]

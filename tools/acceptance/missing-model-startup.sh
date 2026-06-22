@@ -16,6 +16,76 @@ fail() {
   exit 1
 }
 
+validate_log() {
+  status="$1"
+  log_file="$2"
+  [ "$status" -eq 0 ] || fail "compme exited with status $status (log: $log_file)"
+  grep -q '^compme: model unavailable at startup:' "$log_file" \
+    || fail "missing startup-unavailable log (log: $log_file)"
+  grep -q '^compme: setup remains available; download or select a model, then relaunch$' "$log_file" \
+    || fail "missing setup recovery log (log: $log_file)"
+  grep -q '^compme: setup: Model file not ready$' "$log_file" \
+    || fail "missing setup model-not-ready log (log: $log_file)"
+  if grep -Eq '^compme: request gen=' "$log_file"; then
+    fail "completion request was submitted without a model (log: $log_file)"
+  fi
+}
+
+run_self_test() {
+  tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t compme-missing-model-self-test)"
+  trap 'rm -rf "$tmp_dir"' EXIT
+  fake_bin="$tmp_dir/fake-compme"
+  cat >"$fake_bin" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' \
+  'compme: model unavailable at startup: model file not found: /tmp/missing.gguf' \
+  'compme: setup remains available; download or select a model, then relaunch' \
+  'compme: setup: Model file not ready' \
+  'compme: status=Blocked(ModelUnavailable) enabled=false snoozed=false'
+case "${COMPME_FAKE_MODE:-ok}" in
+  request) printf '%s\n' 'compme: request gen=1 prompt_chars=10' ;;
+  bad-exit) exit 7 ;;
+esac
+SH
+  chmod +x "$fake_bin"
+
+  if COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/ok.log" "$0" >/dev/null; then
+    echo "PASS self-test-missing-model-startup-success"
+  else
+    echo "FAIL self-test-missing-model-startup-success" >&2
+    exit 1
+  fi
+
+  if COMPME_FAKE_MODE=request COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/request.log" "$0" >"$tmp_dir/request.out" 2>&1; then
+    echo "FAIL self-test-missing-model-startup-request-rejected: request passed" >&2
+    exit 1
+  elif grep -q 'completion request was submitted without a model' "$tmp_dir/request.out"; then
+    echo "PASS self-test-missing-model-startup-request-rejected"
+  else
+    echo "FAIL self-test-missing-model-startup-request-rejected: expected error missing" >&2
+    cat "$tmp_dir/request.out" >&2
+    exit 1
+  fi
+
+  if COMPME_FAKE_MODE=bad-exit COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/bad-exit.log" "$0" >"$tmp_dir/bad-exit.out" 2>&1; then
+    echo "FAIL self-test-missing-model-startup-exit-status: bad exit passed" >&2
+    exit 1
+  elif grep -q 'compme exited with status 7' "$tmp_dir/bad-exit.out"; then
+    echo "PASS self-test-missing-model-startup-exit-status"
+  else
+    echo "FAIL self-test-missing-model-startup-exit-status: expected error missing" >&2
+    cat "$tmp_dir/bad-exit.out" >&2
+    exit 1
+  fi
+
+  echo "Missing-model startup self-tests passed"
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  run_self_test
+  exit 0
+fi
+
 [ -x "$BIN" ] || fail "binary not built: $BIN (run: cargo build -p app)"
 
 tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t compme-missing-model)"
@@ -34,16 +104,7 @@ env -u COMPME_STUB_COMPLETION \
   COMPME_ENABLED=false \
   "$BIN" >"$LOG" 2>&1 || status=$?
 
-[ "$status" -eq 0 ] || fail "compme exited with status $status (log: $LOG)"
-grep -q '^compme: model unavailable at startup:' "$LOG" \
-  || fail "missing startup-unavailable log (log: $LOG)"
-grep -q '^compme: setup remains available; download or select a model, then relaunch$' "$LOG" \
-  || fail "missing setup recovery log (log: $LOG)"
-grep -q '^compme: setup: Model file not ready$' "$LOG" \
-  || fail "missing setup model-not-ready log (log: $LOG)"
-if grep -Eq '^compme: request gen=' "$LOG"; then
-  fail "completion request was submitted without a model (log: $LOG)"
-fi
+validate_log "$status" "$LOG"
 
 log_lines="$(wc -l <"$LOG" | tr -d '[:space:]')"
 log_bytes="$(wc -c <"$LOG" | tr -d '[:space:]')"

@@ -33,11 +33,12 @@ PLIST
   }
 
   write_cask() {
+    floor="${3:-sonoma}"
     cat >"$1" <<CASK
 cask "compme" do
   version "${2}"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-  depends_on macos: ">= :sonoma"
+  depends_on macos: ">= :${floor}"
 end
 CASK
   }
@@ -52,6 +53,8 @@ CASK
   write_cask "$drift_cask" 9.9.9
   tag_drift_cask="$tmp/tag-good.rb"
   write_cask "$tag_drift_cask" 1.2.3
+  ventura_cask="$tmp/ventura.rb"
+  write_cask "$ventura_cask" 1.2.3 ventura
 
   # (a) version drift: cask version != Cargo.toml version -> non-zero + drift error.
   if out="$("$0" "$good_plist" "$cargo" "$drift_cask" 2>&1)"; then
@@ -86,7 +89,18 @@ CASK
     *) echo "self-test FAILED: expected missing-scheme error, got: $out" >&2; exit 1 ;;
   esac
 
-  # (d) all-consistent fixtures -> exits 0 with OK message.
+  # (d) stale cask macOS floor -> non-zero.
+  if out="$("$0" "$good_plist" "$cargo" "$ventura_cask" 2>&1)"; then
+    echo "self-test FAILED: Ventura cask floor should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"macOS floor must be >= :sonoma"*) ;;
+    *) echo "self-test FAILED: expected macOS-floor error, got: $out" >&2; exit 1 ;;
+  esac
+
+  # (e) all-consistent fixtures -> exits 0 with OK message.
   if ! out="$("$0" "$good_plist" "$cargo" "$good_cask" 2>&1)"; then
     echo "self-test FAILED: consistent fixtures should pass, got: $out" >&2
     exit 1

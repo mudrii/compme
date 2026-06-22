@@ -62,6 +62,9 @@ jobs:
       - name: E2E runner self-test
         run: tools/acceptance/e2e-complete-me.sh --self-test
 
+      - name: Missing-model startup self-test
+        run: tools/acceptance/missing-model-startup.sh --self-test
+
       - name: A1b runner self-test
         run: tools/acceptance/run-a1b-live-gates.sh --self-test
 

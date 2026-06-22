@@ -2674,6 +2674,24 @@ fn status_drops_pending_requests(status: AppStatus) -> bool {
     )
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum SubscriptionErrorAction {
+    NoopUntilPermission,
+    Fatal(String),
+}
+
+fn subscription_error_action(trusted: bool, err: &PlatformError) -> SubscriptionErrorAction {
+    match err {
+        PlatformError::PermissionMissing { .. } => SubscriptionErrorAction::NoopUntilPermission,
+        _ if !trusted => SubscriptionErrorAction::NoopUntilPermission,
+        _ => SubscriptionErrorAction::Fatal(format!("{err:?}")),
+    }
+}
+
+fn noop_accept_subscription() -> AcceptSubscription {
+    AcceptSubscription::new(Subscription::new(0), |_| Ok(()), |_| Ok(()), |_| Ok(()))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum InstanceStartupDecision {
     ExitOk(String),
@@ -2853,19 +2871,17 @@ pub fn run() -> Result<(), String> {
         }
     })) {
         Ok(sub) => sub,
-        Err(err @ PlatformError::PermissionMissing { .. }) => {
-            eprintln!(
-                "compme: focus subscription unavailable until Accessibility is granted: {err:?}"
-            );
-            Subscription::new(0)
-        }
-        Err(err) if !trusted => {
-            eprintln!(
-                "compme: focus subscription unavailable until Accessibility is granted: {err:?}"
-            );
-            Subscription::new(0)
-        }
-        Err(err) => return Err(format!("subscribe focus: {err:?}")),
+        Err(err) => match subscription_error_action(trusted, &err) {
+            SubscriptionErrorAction::NoopUntilPermission => {
+                eprintln!(
+                    "compme: focus subscription unavailable until Accessibility is granted: {err:?}"
+                );
+                Subscription::new(0)
+            }
+            SubscriptionErrorAction::Fatal(message) => {
+                return Err(format!("subscribe focus: {message}"));
+            }
+        },
     };
 
     let caret_tx = Arc::clone(&tx);
@@ -2875,19 +2891,17 @@ pub fn run() -> Result<(), String> {
         }
     })) {
         Ok(sub) => sub,
-        Err(err @ PlatformError::PermissionMissing { .. }) => {
-            eprintln!(
-                "compme: caret subscription unavailable until Accessibility is granted: {err:?}"
-            );
-            Subscription::new(0)
-        }
-        Err(err) if !trusted => {
-            eprintln!(
-                "compme: caret subscription unavailable until Accessibility is granted: {err:?}"
-            );
-            Subscription::new(0)
-        }
-        Err(err) => return Err(format!("subscribe caret: {err:?}")),
+        Err(err) => match subscription_error_action(trusted, &err) {
+            SubscriptionErrorAction::NoopUntilPermission => {
+                eprintln!(
+                    "compme: caret subscription unavailable until Accessibility is granted: {err:?}"
+                );
+                Subscription::new(0)
+            }
+            SubscriptionErrorAction::Fatal(message) => {
+                return Err(format!("subscribe caret: {message}"));
+            }
+        },
     };
 
     let accept_tx = Arc::clone(&tx);
@@ -2902,19 +2916,17 @@ pub fn run() -> Result<(), String> {
         }
     })) {
         Ok(sub) => sub,
-        Err(err @ PlatformError::PermissionMissing { .. }) => {
-            eprintln!(
-                "compme: accept subscription unavailable until Accessibility is granted: {err:?}"
-            );
-            AcceptSubscription::new(Subscription::new(0), |_| Ok(()), |_| Ok(()), |_| Ok(()))
-        }
-        Err(err) if !trusted => {
-            eprintln!(
-                "compme: accept subscription unavailable until Accessibility is granted: {err:?}"
-            );
-            AcceptSubscription::new(Subscription::new(0), |_| Ok(()), |_| Ok(()), |_| Ok(()))
-        }
-        Err(err) => return Err(format!("subscribe accept: {err:?}")),
+        Err(err) => match subscription_error_action(trusted, &err) {
+            SubscriptionErrorAction::NoopUntilPermission => {
+                eprintln!(
+                    "compme: accept subscription unavailable until Accessibility is granted: {err:?}"
+                );
+                noop_accept_subscription()
+            }
+            SubscriptionErrorAction::Fatal(message) => {
+                return Err(format!("subscribe accept: {message}"));
+            }
+        },
     };
     engine.set_accept_subscription(accept_sub);
 
@@ -9682,6 +9694,32 @@ mod tests {
         assert!(status_drops_pending_requests(AppStatus::Blocked(
             BlockReason::ModelUnavailable
         )));
+    }
+
+    #[test]
+    fn subscription_error_degrades_only_for_missing_accessibility_or_untrusted_startup() {
+        assert_eq!(
+            subscription_error_action(
+                false,
+                &PlatformError::CannotComplete {
+                    reason: "AX down".into()
+                }
+            ),
+            SubscriptionErrorAction::NoopUntilPermission
+        );
+        assert_eq!(
+            subscription_error_action(
+                true,
+                &PlatformError::PermissionMissing {
+                    permission: "Accessibility".into()
+                }
+            ),
+            SubscriptionErrorAction::NoopUntilPermission
+        );
+        assert!(matches!(
+            subscription_error_action(true, &PlatformError::Timeout),
+            SubscriptionErrorAction::Fatal(_)
+        ));
     }
 
     #[test]
