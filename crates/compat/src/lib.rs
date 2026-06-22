@@ -373,6 +373,7 @@ mod tests {
             "com.brave.Browser",
             "com.brave.Browser.nightly",
             "com.vivaldi.Vivaldi",
+            "com.vivaldi.Vivaldi.snapshot",
             "company.thebrowser.Browser",
             "company.thebrowser.dia",
             "org.mozilla.firefox",

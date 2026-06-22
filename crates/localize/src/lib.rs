@@ -242,11 +242,14 @@ mod tests {
 
     #[test]
     fn multibyte_first_char_query_is_handled_without_panic() {
-        // `to_british` lowercases the query and looks it up, then re-applies the
-        // query's CasePattern (which reads the first char) to the British value.
-        // Every table key is ASCII, so a word whose first character is multibyte
-        // can never match — it must return None, never panic on the non-ASCII
-        // first-char path (no byte slicing into the codepoint).
+        // `to_british` lowercases the query and looks it up; on a miss it
+        // short-circuits (`?`) BEFORE the CasePattern re-application line. Every
+        // table key is ASCII, so a word with a multibyte char can never match —
+        // it must be a clean lookup miss (None) in both to_british and
+        // is_americanism, with no panic on the non-ASCII path (lowercasing must
+        // not byte-slice into a codepoint). This does NOT exercise CasePattern
+        // re-application on a multibyte value — that path is unreachable here
+        // (no key matches) and is covered by textcase's own CasePattern tests.
         assert_eq!(to_british("Élan"), None);
         assert_eq!(to_british("élan"), None);
         assert_eq!(to_british("Ünder"), None);

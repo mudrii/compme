@@ -391,6 +391,17 @@ mod tests {
             instance_lock_error_from(std::io::Error::from_raw_os_error(libc::EWOULDBLOCK)),
             InstanceLockError::Held
         );
+        // The kind-based WouldBlock variant (no raw os errno) is also Held.
+        assert_eq!(
+            instance_lock_error_from(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
+            InstanceLockError::Held
+        );
+        // EAGAIN aliases EWOULDBLOCK on Linux but is a distinct errno on some
+        // platforms; it must also classify as Held.
+        assert_eq!(
+            instance_lock_error_from(std::io::Error::from_raw_os_error(libc::EAGAIN)),
+            InstanceLockError::Held
+        );
         assert!(matches!(
             instance_lock_error_from(std::io::Error::from_raw_os_error(libc::EACCES)),
             InstanceLockError::Io(_)

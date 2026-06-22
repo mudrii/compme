@@ -209,6 +209,15 @@ mod tests {
             InsertStrategy::ImeCommit,
             InsertStrategy::None,
         ] {
+            // Exhaustive, wildcard-free: a new InsertStrategy variant breaks
+            // compilation here and forces the array above to be updated too.
+            match strategy {
+                InsertStrategy::AxSet
+                | InsertStrategy::SyntheticKeys
+                | InsertStrategy::Clipboard
+                | InsertStrategy::ImeCommit
+                | InsertStrategy::None => {}
+            }
             assert!(
                 matches!(
                     adapter.insert(&field, "x", strategy),
