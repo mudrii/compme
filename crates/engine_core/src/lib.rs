@@ -2799,6 +2799,167 @@ mod tests {
     }
 
     #[test]
+    fn offer_replacement_multi_blocked_when_suppressed_or_empty() {
+        // Production entry point (Engine::on_replacement calls this): the multi
+        // path must honor the same suppression/empty guards as the single path.
+        let f = field("field-a");
+        // Post-Esc suppression blocks a local multi offer.
+        let mut suppressed = focused_machine();
+        suppressed.on_event(Event::DismissSuppress);
+        assert_eq!(
+            suppressed.offer_replacement_multi(&f, vec!["😄".into()], 5),
+            vec![]
+        );
+        assert!(suppressed.showing.is_none());
+        assert!(!suppressed.take_stat_events().contains(&StatEvent::Shown));
+        // An empty candidate vec never offers (no spurious ghost).
+        let mut machine = focused_machine();
+        assert_eq!(machine.offer_replacement_multi(&f, vec![], 3), vec![]);
+        assert!(machine.showing.is_none());
+    }
+
+    #[test]
+    fn offer_replacement_multi_rejects_zero_delete_count() {
+        // A replacement with replace_left == 0 is malformed (nothing to delete);
+        // the multi seed rejects it exactly like the single path.
+        let f = field("field-a");
+        let mut machine = focused_machine();
+        assert_eq!(
+            machine.offer_replacement_multi(&f, vec!["the".into()], 0),
+            vec![]
+        );
+        assert!(machine.showing.is_none());
+        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
+        assert!(!machine.take_stat_events().contains(&StatEvent::Shown));
+        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
+    }
+
+    #[test]
+    fn offer_replacement_multi_blocked_in_secure_or_unsupported_field() {
+        // Security-critical gate: a secure field (password) is `UxMode::Blocked`,
+        // so `enabled()` is false and no replacement ghost may be offered via the
+        // multi path either — a synonym/glyph must never surface in a password
+        // field. This is the `!self.enabled()` branch of `offer_replacement_multi`.
+        let mut secure = machine();
+        secure.on_event(Event::Focus {
+            field: field("field-a"),
+            caps: secure_caps(),
+        });
+        assert_eq!(
+            secure.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5),
+            vec![]
+        );
+        assert!(secure.showing.is_none());
+        assert!(!secure.take_stat_events().contains(&StatEvent::Shown));
+    }
+
+    #[test]
+    fn offer_replacement_multi_only_on_axset_fields() {
+        // A non-range-replace field (SyntheticKeys/Clipboard) can't honor the
+        // deletion, so no multi replacement is offered there — same guard as the
+        // single path (`insert_strategy != AxSet`).
+        let mut caps = inline_caps();
+        caps.insert_strategy = InsertStrategy::SyntheticKeys;
+        let mut machine = SuggestionMachine::new(caps.clone(), 200, 4);
+        machine.on_event(Event::Focus {
+            field: field("field-a"),
+            caps,
+        });
+        assert_eq!(
+            machine.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5),
+            vec![]
+        );
+        assert!(machine.showing.is_none());
+        assert!(!machine.take_stat_events().contains(&StatEvent::Shown));
+    }
+
+    #[test]
+    fn offer_replacement_multi_blocked_when_field_is_not_focused() {
+        // Focus-race guard: a multi offer for a field other than the focused one
+        // (or when nothing is focused) is dropped — no ghost tagged to a stale
+        // field.
+        let mut focused = focused_machine(); // field-a focused
+        assert_eq!(
+            focused.offer_replacement_multi(&field("other-field"), vec!["😄".into()], 5),
+            vec![]
+        );
+        assert!(focused.showing.is_none());
+        let mut unfocused = machine();
+        assert_eq!(
+            unfocused.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5),
+            vec![]
+        );
+        assert!(unfocused.showing.is_none());
+    }
+
+    #[test]
+    fn offer_replacement_multi_disarms_pending_model_request_so_it_cannot_supersede() {
+        // Mirrors the single-candidate disarm test for the multi production path:
+        // an edit arms the debounce, then a multi replacement offer preempts it.
+        let mut machine = focused_machine();
+        machine.on_event(text_changed("color", 5, 0));
+        machine.offer_replacement_multi(&field("field-a"), vec!["😄".into(), "🙂".into()], 5);
+        let _ = machine.take_stat_events();
+        // The debounce tick must NOT fire a model request — the offer preempted it.
+        let tick = machine.on_event(Event::Tick { now_ms: 10_000 });
+        assert!(
+            !tick
+                .iter()
+                .any(|c| matches!(c, Command::RequestCompletion { .. })),
+            "model request armed despite a local replacement offer: {tick:?}"
+        );
+        // The replacement ghost is still the one showing (not superseded).
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "😄".into(), 5))
+        );
+    }
+
+    #[test]
+    fn offer_replacement_multi_drops_a_prior_in_flight_completion_that_returns_after() {
+        // The in-flight half of the disarm guarantee for the multi production
+        // path: a model request already in-flight when the multi offer is made
+        // must not match-and-supersede the replacement ghost when its completion
+        // finally returns. `offer_replacement_multi` clears `requested`, so the
+        // late completion fails the `matches_request` guard and is dropped.
+        let mut machine = focused_machine();
+        machine.on_event(text_changed("color", 5, 0));
+        let issued = machine.on_event(Event::Tick { now_ms: 10_000 });
+        let req = issued
+            .iter()
+            .find_map(|c| match c {
+                Command::RequestCompletion {
+                    generation,
+                    snapshot,
+                    ..
+                } => Some((*generation, *snapshot)),
+                _ => None,
+            })
+            .expect("a model request must have been issued");
+        // The host detects an emoji/synonym on the same snapshot and offers a
+        // multi replacement — this disarms the in-flight request.
+        machine.offer_replacement_multi(&field("field-a"), vec!["😄".into(), "🙂".into()], 5);
+        let _ = machine.take_stat_events();
+        // The previously-issued completion now returns (same generation+snapshot).
+        // It must be ignored — no ghost command at all.
+        let late = machine.on_event(Event::CompletionReady {
+            generation: req.0,
+            field: field("field-a"),
+            snapshot: req.1,
+            text: "colorful".into(),
+        });
+        assert!(
+            late.is_empty(),
+            "a disarmed in-flight completion produced commands: {late:?}"
+        );
+        // The replacement ghost is untouched — still the one showing.
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "😄".into(), 5))
+        );
+    }
+
+    #[test]
     fn offer_replacement_supersedes_a_showing_completion() {
         let mut machine = showing_three_words(); // TextChanged focuses field-a
         let _ = machine.take_stat_events(); // drop the completion's Shown

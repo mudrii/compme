@@ -812,4 +812,51 @@ mod tests {
         assert!(hooked.rearm_accept_tap().is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
+
+    #[test]
+    fn platform_error_display_renders_each_variant() {
+        // Pin the user-facing Display string per variant so a swapped text,
+        // dropped placeholder, or wrong interpolation is caught. Field-carrying
+        // variants must surface their payload; unit variants their fixed text.
+        assert_eq!(
+            PlatformError::PermissionMissing {
+                permission: "accessibility".to_string(),
+            }
+            .to_string(),
+            "required permission missing: accessibility"
+        );
+        assert_eq!(
+            PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            }
+            .to_string(),
+            "secure input active: SecureField"
+        );
+        assert_eq!(
+            PlatformError::CannotComplete {
+                reason: "no caret".to_string(),
+            }
+            .to_string(),
+            "cannot complete: no caret"
+        );
+        assert_eq!(
+            PlatformError::UnsupportedField {
+                reason: "read-only".to_string(),
+            }
+            .to_string(),
+            "unsupported field: read-only"
+        );
+        assert_eq!(
+            PlatformError::AppExited {
+                app: "com.apple.Mail".to_string(),
+            }
+            .to_string(),
+            "app exited: com.apple.Mail"
+        );
+        assert_eq!(
+            PlatformError::Timeout.to_string(),
+            "platform operation timed out"
+        );
+        assert_eq!(PlatformError::StaleField.to_string(), "field is stale");
+    }
 }

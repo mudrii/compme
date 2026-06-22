@@ -11048,4 +11048,33 @@ mod tests {
 
         assert!(schedule.should_poll(1001));
     }
+
+    #[test]
+    fn overlay_diagnostics_report_all_false_when_no_panel_present() {
+        // A presenter that has never shown a ghost has no live NSPanel, so the
+        // diagnostics must report the deterministic all-absent baseline rather
+        // than reading a panel. Built via struct literal to bypass `new()`'s
+        // MainThreadMarker requirement (this branch never touches AppKit).
+        let presenter = MacosOverlayPresenter {
+            panel: None,
+            label: None,
+            last_rect: None,
+        };
+
+        let diagnostics = presenter.diagnostics_for_acceptance();
+
+        assert_eq!(
+            diagnostics,
+            MacosOverlayDiagnostics {
+                has_panel: false,
+                visible: false,
+                ignores_mouse_events: false,
+                nonactivating_panel: false,
+                can_become_key_window: false,
+                level: 0,
+                joins_all_spaces: false,
+                fullscreen_auxiliary: false,
+            }
+        );
+    }
 }

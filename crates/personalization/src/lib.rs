@@ -494,6 +494,18 @@ mod tests {
     }
 
     #[test]
+    fn sender_with_only_email_still_renders() {
+        let sender = SenderIdentity {
+            name: "  ".into(),
+            email: "grace@example.com".into(),
+        };
+        assert_eq!(
+            sender.line(),
+            Some("The writer's email grace@example.com.".into())
+        );
+    }
+
+    #[test]
     fn sender_only_preamble_has_no_dangling_preferences_directive() {
         // No instructions, only a sender → the preamble must not promise
         // "preferences" that aren't there (review finding A).

@@ -704,6 +704,29 @@ mod tests {
     }
 
     #[test]
+    fn on_replacement_gated_after_suppress_records_no_show() {
+        // Engine-layer gate: after Esc-suppress in the focused field, a
+        // replacement offer must be swallowed by the machine guard — the overlay
+        // never gets a Show and no Shown stat is recorded.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_dismiss_suppress().unwrap();
+        overlay.calls.lock().unwrap().clear();
+        let _ = engine.take_stat_events();
+
+        engine
+            .on_replacement(&field(), vec!["😄".into(), "🙂".into()], 5)
+            .unwrap();
+
+        let calls = overlay.calls.lock().unwrap();
+        assert!(
+            !calls.iter().any(|c| matches!(c, OverlayCall::Show(_, _))),
+            "a suppressed replacement must not show a ghost: {calls:?}"
+        );
+        assert!(!engine.take_stat_events().contains(&StatEvent::Shown));
+    }
+
+    #[test]
     fn on_replacement_multi_cycles_then_accepts_the_cycled_candidate_via_insert_replacing() {
         // A MULTI-candidate replacement must cycle at the engine layer and the
         // ACCEPTED cycled candidate ("huge") must reach the adapter via

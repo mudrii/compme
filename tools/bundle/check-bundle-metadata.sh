@@ -2,6 +2,93 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+run_self_test() {
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-bundle-meta-test.XXXXXX")"
+  trap 'rm -rf "$tmp"' EXIT
+
+  cargo="$tmp/Cargo.toml"
+  printf 'version = "1.2.3"\n' >"$cargo"
+
+  write_plist() {
+    cat >"$1" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.compme.app</string>
+  <key>CFBundleExecutable</key><string>compme</string>
+  <key>CFBundleShortVersionString</key><string>1.2.3</string>
+  <key>LSUIElement</key><true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLSchemes</key>
+      <array><string>${2}</string></array>
+    </dict>
+  </array>
+</dict>
+</plist>
+PLIST
+  }
+
+  write_cask() {
+    cat >"$1" <<CASK
+cask "compme" do
+  version "${2}"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+end
+CASK
+  }
+
+  good_plist="$tmp/good.plist"
+  write_plist "$good_plist" compme
+  bad_scheme_plist="$tmp/bad-scheme.plist"
+  write_plist "$bad_scheme_plist" notcompme
+  good_cask="$tmp/good.rb"
+  write_cask "$good_cask" 1.2.3
+  drift_cask="$tmp/drift.rb"
+  write_cask "$drift_cask" 9.9.9
+
+  # (a) version drift: cask version != Cargo.toml version -> non-zero + drift error.
+  if out="$("$0" "$good_plist" "$cargo" "$drift_cask" 2>&1)"; then
+    echo "self-test FAILED: drift cask should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"version drift"*) ;;
+    *) echo "self-test FAILED: expected version-drift error, got: $out" >&2; exit 1 ;;
+  esac
+
+  # (b) missing 'compme' CFBundleURLScheme -> non-zero.
+  if out="$("$0" "$bad_scheme_plist" "$cargo" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: missing scheme should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"CFBundleURLSchemes: missing compme"*) ;;
+    *) echo "self-test FAILED: expected missing-scheme error, got: $out" >&2; exit 1 ;;
+  esac
+
+  # (c) all-consistent fixtures -> exits 0 with OK message.
+  if ! out="$("$0" "$good_plist" "$cargo" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: consistent fixtures should pass, got: $out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"Bundle metadata OK"*) ;;
+    *) echo "self-test FAILED: expected OK message, got: $out" >&2; exit 1 ;;
+  esac
+
+  echo "Self-test passed"
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  run_self_test
+  exit 0
+fi
+
 info_plist="${1:-"$repo_root/tools/bundle/Info.plist"}"
 app_manifest="${2:-"$repo_root/crates/app/Cargo.toml"}"
 cask_file="${3:-"$repo_root/Casks/compme.rb"}"

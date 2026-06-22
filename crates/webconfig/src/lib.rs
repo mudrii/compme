@@ -685,6 +685,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prompt_decision_names_domain_scope_command() {
+        // Mirrors the App-scope prompt test for the Domain arm of
+        // prompt_decision_for_link: the domain string must flow through to the
+        // prompt's scope field, and action/trust must render the same way.
+        let command = OverrideCommand {
+            scope: Scope::Domain("docs.google.com".into()),
+            action: OverrideAction::Disable,
+        };
+        let decision = prompt_decision_for_link(&command, LinkTrust::Unsigned);
+        let PromptDecision::PromptRequired {
+            scope,
+            action,
+            trust,
+        } = decision
+        else {
+            panic!("unsigned links must prompt");
+        };
+        assert_eq!(scope, "docs.google.com");
+        assert!(action.contains("Disable"), "{action}");
+        assert!(trust.contains("unsigned"), "{trust}");
+        // Signed domain links ALSO prompt today (silent path still unreachable).
+        let signed = prompt_decision_for_link(&command, LinkTrust::Signed);
+        assert!(matches!(
+            signed,
+            PromptDecision::PromptRequired { scope, trust, .. }
+                if scope == "docs.google.com" && trust.contains("signed")
+        ));
+    }
+
     // ---- signed links ----
 
     /// Deterministic test keypair: the signer the host trusts.

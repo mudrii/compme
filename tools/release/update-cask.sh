@@ -46,6 +46,52 @@ CASK
   grep -q 'version "9.8.7"' "$fixture"
   grep -q "sha256 \"$expected_sha\"" "$fixture"
   grep -q "version=9.8.7 sha256=$expected_sha" "$tmp/out.log"
+
+  # Assert the constructed artifact URL: fake curl on PATH captures its -o source
+  # URL so we pin the v-prefixed tag + compme-<version>-macos.zip filename.
+  fake_bin="$tmp/bin"
+  mkdir -p "$fake_bin"
+  cat >"$fake_bin/curl" <<'SH'
+#!/usr/bin/env bash
+out=""
+url=""
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+    -o) out="$arg" ;;
+  esac
+  case "$arg" in
+    https://*) url="$arg" ;;
+  esac
+  prev="$arg"
+done
+printf '%s\n' "$url" >"$COMPME_CASK_TEST_URL_LOG"
+printf 'fixture artifact\n' >"$out"
+SH
+  chmod +x "$fake_bin/curl"
+
+  url_fixture="$tmp/url.rb"
+  cat >"$url_fixture" <<'CASK'
+cask "compme" do
+  version "0.0.0"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+end
+CASK
+
+  PATH="$fake_bin:$PATH" \
+    COMPME_CASK_PATH="$url_fixture" \
+    COMPME_CASK_TEST_URL_LOG="$tmp/url.log" \
+    "$0" v9.8.7 >"$tmp/url-out.log"
+
+  expected_url="https://github.com/mudrii/compme/releases/download/v9.8.7/compme-9.8.7-macos.zip"
+  actual_url="$(cat "$tmp/url.log")"
+  if [ "$actual_url" != "$expected_url" ]; then
+    echo "self-test FAILED: artifact URL mismatch" >&2
+    echo "  expected: $expected_url" >&2
+    echo "  actual:   $actual_url" >&2
+    exit 1
+  fi
+
   echo "Self-test passed"
 }
 
