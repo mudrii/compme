@@ -891,11 +891,28 @@ impl OverlayPresenter for MacosOverlayPresenter {
     }
 }
 
-/// True when `COMPME_DEBUG` is set — gates verbose live diagnostics
-/// (overlay placement, Carbon hotkey registration/fires). Off by default (no
-/// env var) → zero production output.
+/// True when `COMPME_DEBUG` is enabled — gates verbose live diagnostics
+/// (overlay placement, Carbon hotkey registration/fires). Off by default and
+/// when set to an explicit off-value (`0`/`false`/`off`/`no`/empty), matching
+/// the project's other boolean env vars — so `COMPME_DEBUG=0` silences it.
 fn debug_enabled() -> bool {
-    std::env::var_os("COMPME_DEBUG").is_some()
+    env_flag_on(std::env::var_os("COMPME_DEBUG").as_deref())
+}
+
+/// A boolean env var is ON when present and not an explicit off-value
+/// (`0`/`false`/`off`/`no`/empty, case-insensitive). A present non-UTF-8 value
+/// counts as on. Mirrors the off-set used by the app crate's config parsing.
+fn env_flag_on(value: Option<&std::ffi::OsStr>) -> bool {
+    match value {
+        None => false,
+        Some(v) => match v.to_str() {
+            None => true,
+            Some(s) => !matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false" | "off" | "no"
+            ),
+        },
+    }
 }
 
 fn overlay_main_thread_marker() -> Result<MainThreadMarker, PlatformError> {
@@ -5591,6 +5608,18 @@ mod tests {
     use objc2::{define_class, msg_send, AnyThread, DefinedClass};
     use objc2_app_kit::NSPasteboardItemDataProvider;
     use objc2_foundation::{NSObject, NSObjectProtocol};
+
+    #[test]
+    fn env_flag_on_treats_off_values_as_disabled() {
+        use std::ffi::OsStr;
+        assert!(!env_flag_on(None));
+        for off in ["0", "false", "FALSE", "off", "no", "", " no "] {
+            assert!(!env_flag_on(Some(OsStr::new(off))), "{off:?} should be off");
+        }
+        for on in ["1", "true", "yes", "verbose"] {
+            assert!(env_flag_on(Some(OsStr::new(on))), "{on:?} should be on");
+        }
+    }
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicUsize;
     use std::thread;

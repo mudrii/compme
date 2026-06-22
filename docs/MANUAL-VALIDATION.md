@@ -47,6 +47,23 @@ _Live evidence: the dropdown exposed Neutral/Female/Male, persisted
 `COMPME_EMOJI_GENDER=female`, and reopened with Female selected. Stale-ghost
 invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visible_suggestion`._
 
+## Caret-rect calibration — Chromium forks (pending live evidence)
+
+> The `RECT_IS_LINE_BUNDLE_PREFIXES` list (platform_macos `normalize_caret_rect`)
+> is **evidence-only** ("extend per app on evidence, never by guess") — Chrome,
+> Chromium, iTerm2 and Safari's WebKit search fields were each added from live
+> screenshots. Brave/Edge/Vivaldi use the same Blink engine as Chrome, so the
+> ghost likely lands one line low for them too, but no live evidence exists yet
+> and the Safari-omnibox exception shows within-engine surprises are real — so
+> they were deliberately NOT added by inference.
+
+- [ ] On a granted desktop, type in **Brave** (`com.brave.Browser`), **Edge**
+      (`com.microsoft.edgemac`) and **Vivaldi** (`com.vivaldi.Vivaldi`); confirm
+      whether the ghost lands one line low (as Chrome did pre-calibration).
+- [ ] If confirmed, add the three bundle prefixes to `RECT_IS_LINE_BUNDLE_PREFIXES`
+      and extend the `normalize_caret_rect` test — promoting them from guess to
+      evidence, exactly as Chrome/Safari were.
+
 <!-- Future Tier-3 FFI items (group/metric pickers, Personalization controls,
 Apps editing rows, the 3.4 hotkey recorder rows + Carbon registration) append
 their LOOK gates below as they land. -->

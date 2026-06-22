@@ -256,9 +256,15 @@ fn is_path_token(token: &str) -> bool {
 /// Classify a macOS application bundle id into a compatibility tier.
 pub fn compatibility_tier(bundle_id: &str) -> CompatTier {
     match bundle_id {
-        // Works — a representative set across families.
+        // Works — a representative set across families. The curated Chromium
+        // browsers (Brave/Edge/Vivaldi) classify like Chrome — they share its
+        // Blink engine and were previously fail-open Unknown despite being
+        // listed in `is_browser`, so they emitted no compat guidance.
         "com.apple.Safari"
         | "com.google.Chrome"
+        | "com.brave.Browser"
+        | "com.microsoft.edgemac"
+        | "com.vivaldi.Vivaldi"
         | "com.apple.mail"
         | "com.microsoft.Word"
         | "com.apple.TextEdit"
@@ -322,6 +328,9 @@ mod tests {
             ("com.apple.MobileSMS", CompatTier::Works),
             ("com.apple.Terminal", CompatTier::Works),
             ("com.googlecode.iterm2", CompatTier::Works),
+            ("com.brave.Browser", CompatTier::Works),
+            ("com.microsoft.edgemac", CompatTier::Works),
+            ("com.vivaldi.Vivaldi", CompatTier::Works),
             ("company.thebrowser.Browser", CompatTier::SetupNeeded),
             ("company.thebrowser.dia", CompatTier::SetupNeeded),
             ("org.mozilla.firefox", CompatTier::MirrorOnly),

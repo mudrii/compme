@@ -438,10 +438,28 @@ fn emoji_gender_value(gender: Gender) -> &'static str {
 /// A local emoji *replacement* for the typed left-context, when emoji completion
 /// is enabled: `Some((glyph, replace_chars))` to offer, else `None`. Pure wrapper
 /// over `emoji::suggest` behind the enable flag so the run-loop wiring is testable.
-/// True when `COMPME_DEBUG` is set — gates verbose run-loop diagnostics
-/// (replacement decision, etc.). Off by default → zero production output.
+/// True when `COMPME_DEBUG` is enabled — gates verbose run-loop diagnostics
+/// (replacement decision, etc.). Off by default and when set to an explicit
+/// off-value (`0`/`false`/`off`/`no`/empty), matching the project's other
+/// boolean env vars — so `COMPME_DEBUG=0` silences it instead of enabling it.
 fn debug_enabled() -> bool {
-    std::env::var_os("COMPME_DEBUG").is_some()
+    env_flag_on(std::env::var_os("COMPME_DEBUG").as_deref())
+}
+
+/// A boolean env var is ON when present and not an explicit off-value
+/// (`0`/`false`/`off`/`no`/empty, case-insensitive). A present non-UTF-8 value
+/// counts as on. Same off-set the config parsing uses for its boolean vars.
+fn env_flag_on(value: Option<&std::ffi::OsStr>) -> bool {
+    match value {
+        None => false,
+        Some(v) => match v.to_str() {
+            None => true,
+            Some(s) => !matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false" | "off" | "no"
+            ),
+        },
+    }
 }
 
 fn emoji_offer(left: &str, cfg: &Option<EmojiPrefs>) -> Option<(String, usize)> {
@@ -4274,6 +4292,22 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn env_flag_on_treats_off_values_as_disabled() {
+        // Unset → off.
+        assert!(!env_flag_on(None));
+        // Explicit off-values (case-insensitive, trimmed) → off, so
+        // COMPME_DEBUG=0 silences debug instead of enabling it.
+        for off in ["0", "false", "FALSE", "off", "no", "", " no "] {
+            assert!(!env_flag_on(Some(OsStr::new(off))), "{off:?} should be off");
+        }
+        // Any other present value → on.
+        for on in ["1", "true", "yes", "verbose"] {
+            assert!(env_flag_on(Some(OsStr::new(on))), "{on:?} should be on");
+        }
+    }
 
     /// Build a lookup closure from a list of key/value pairs.
     fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
