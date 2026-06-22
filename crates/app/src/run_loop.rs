@@ -9721,19 +9721,24 @@ mod tests {
             ),
             SubscriptionErrorAction::NoopUntilPermission
         );
-        assert!(matches!(
-            subscription_error_action(
-                true,
-                &PlatformError::CannotComplete {
-                    reason: "AX down".into()
-                }
-            ),
-            SubscriptionErrorAction::Fatal(_)
-        ));
-        assert!(matches!(
-            subscription_error_action(true, &PlatformError::Timeout),
-            SubscriptionErrorAction::Fatal(_)
-        ));
+        // Fatal must carry the underlying error context — run() interpolates
+        // this message verbatim into the operator-facing startup failure, so a
+        // blank/constant payload would silently strip the diagnostic.
+        match subscription_error_action(
+            true,
+            &PlatformError::CannotComplete {
+                reason: "AX down".into(),
+            },
+        ) {
+            SubscriptionErrorAction::Fatal(m) => {
+                assert!(m.contains("CannotComplete") && m.contains("AX down"), "{m}")
+            }
+            other => panic!("expected Fatal, got {other:?}"),
+        }
+        match subscription_error_action(true, &PlatformError::Timeout) {
+            SubscriptionErrorAction::Fatal(m) => assert!(m.contains("Timeout"), "{m}"),
+            other => panic!("expected Fatal, got {other:?}"),
+        }
     }
 
     #[test]
