@@ -3674,82 +3674,93 @@ pub fn run() -> Result<(), String> {
                             .unwrap_or(false)
                     },
                 );
-                let (entry, accepted_license) = match decision {
+                let ready = match decision {
                     Some(ModelDownloadClickDecision::Ready {
                         entry,
                         accepted_license,
-                    }) => (entry, accepted_license),
+                    }) => Some((entry, accepted_license)),
                     Some(ModelDownloadClickDecision::BlockedByRam(message)) => {
                         eprintln!("compme: {message}");
-                        continue;
+                        None
                     }
                     Some(ModelDownloadClickDecision::LicenseDeclined { model }) => {
                         eprintln!("compme: download of {model} cancelled (license not accepted)");
-                        continue;
+                        None
                     }
-                    None => continue,
+                    None => None,
                 };
-                if let Some(accepted) = accepted_license {
-                    // In-memory FIRST (same-session re-prompt guard), then
-                    // persist; a failed write only logs — the user DID accept,
-                    // so the download proceeds.
-                    if let Some(path) = config::config_file_path() {
-                        if let Err(err) = config::persist_setting(
-                            &path,
-                            "COMPME_LICENSE_ACCEPTED",
-                            &accepted.value,
-                        ) {
-                            eprintln!("compme: failed to persist COMPME_LICENSE_ACCEPTED: {err}");
+                // Only the Ready decision runs the download body; blocked/
+                // declined/empty cases log above and fall through to the loop
+                // tail (event-pump + CFRunLoop pace) like every other heartbeat
+                // branch. A `continue` here would skip that mandatory Carbon
+                // accept-event drain for one tick.
+                if let Some((entry, accepted_license)) = ready {
+                    if let Some(accepted) = accepted_license {
+                        // In-memory FIRST (same-session re-prompt guard), then
+                        // persist; a failed write only logs — the user DID accept,
+                        // so the download proceeds.
+                        if let Some(path) = config::config_file_path() {
+                            if let Err(err) = config::persist_setting(
+                                &path,
+                                "COMPME_LICENSE_ACCEPTED",
+                                &accepted.value,
+                            ) {
+                                eprintln!(
+                                    "compme: failed to persist COMPME_LICENSE_ACCEPTED: {err}"
+                                );
+                            }
                         }
+                        eprintln!(
+                            "compme: {} accepted for {}",
+                            accepted.license_name, accepted.model
+                        );
                     }
-                    eprintln!(
-                        "compme: {} accepted for {}",
-                        accepted.license_name, accepted.model
-                    );
-                }
-                let dest = std::path::PathBuf::from(home)
-                    .join("Library/Application Support/compme/models")
-                    .join(format!("{}.gguf", entry.name));
-                // Skip the fetch when the model is already on disk — a
-                // repeat "Download" click on a present model would otherwise
-                // re-fetch and clobber a good file. An interrupted 0-byte
-                // stub is NOT present, so it still re-downloads. This check
-                // sits AFTER the license gate on purpose: keeping every
-                // download-triggering path behind the gate is the simpler
-                // invariant, and accepted licenses are remembered, so a
-                // normal re-click on a present encumbered model never
-                // re-prompts (the prompt-then-skip is an unaccepted-yet
-                // edge case, inert for today's unencumbered catalog).
-                match start_model_download_edge(ModelDownloadEdge {
-                    entry,
-                    dest: &dest,
-                    downloader: &mut model_downloader,
-                    model_download_status: &mut model_download_status,
-                    model_download_logged: &mut model_download_logged,
-                    prepare: prepare_model_download_dest,
-                    existing_model: model_download_dest_present,
-                    spawn: || model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string()),
-                    request: |downloader: &model_fetch::ModelDownloader, request| {
-                        downloader.request(request)
-                    },
-                }) {
-                    DownloadStartResult::PreparedFailed(err) => {
-                        eprintln!("compme: {err}");
-                    }
-                    DownloadStartResult::AlreadyPresent => eprintln!(
-                        "compme: {} already downloaded at {} \u{2014} delete it to re-download",
-                        entry.name,
-                        dest.display()
-                    ),
-                    DownloadStartResult::SpawnFailed(err) => {
-                        eprintln!("compme: failed to start model downloader \u{2014} {err}");
-                    }
-                    DownloadStartResult::Queued => eprintln!(
-                        "compme: downloading {} ({} MB) \u{2014} progress in this log",
-                        entry.name, entry.size_mb
-                    ),
-                    DownloadStartResult::Busy => {
-                        eprintln!("compme: model download queue busy \u{2014} try again");
+                    let dest = std::path::PathBuf::from(home)
+                        .join("Library/Application Support/compme/models")
+                        .join(format!("{}.gguf", entry.name));
+                    // Skip the fetch when the model is already on disk — a
+                    // repeat "Download" click on a present model would otherwise
+                    // re-fetch and clobber a good file. An interrupted 0-byte
+                    // stub is NOT present, so it still re-downloads. This check
+                    // sits AFTER the license gate on purpose: keeping every
+                    // download-triggering path behind the gate is the simpler
+                    // invariant, and accepted licenses are remembered, so a
+                    // normal re-click on a present encumbered model never
+                    // re-prompts (the prompt-then-skip is an unaccepted-yet
+                    // edge case, inert for today's unencumbered catalog).
+                    match start_model_download_edge(ModelDownloadEdge {
+                        entry,
+                        dest: &dest,
+                        downloader: &mut model_downloader,
+                        model_download_status: &mut model_download_status,
+                        model_download_logged: &mut model_download_logged,
+                        prepare: prepare_model_download_dest,
+                        existing_model: model_download_dest_present,
+                        spawn: || {
+                            model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string())
+                        },
+                        request: |downloader: &model_fetch::ModelDownloader, request| {
+                            downloader.request(request)
+                        },
+                    }) {
+                        DownloadStartResult::PreparedFailed(err) => {
+                            eprintln!("compme: {err}");
+                        }
+                        DownloadStartResult::AlreadyPresent => eprintln!(
+                            "compme: {} already downloaded at {} \u{2014} delete it to re-download",
+                            entry.name,
+                            dest.display()
+                        ),
+                        DownloadStartResult::SpawnFailed(err) => {
+                            eprintln!("compme: failed to start model downloader \u{2014} {err}");
+                        }
+                        DownloadStartResult::Queued => eprintln!(
+                            "compme: downloading {} ({} MB) \u{2014} progress in this log",
+                            entry.name, entry.size_mb
+                        ),
+                        DownloadStartResult::Busy => {
+                            eprintln!("compme: model download queue busy \u{2014} try again");
+                        }
                     }
                 }
             }

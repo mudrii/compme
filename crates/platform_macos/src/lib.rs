@@ -42,7 +42,8 @@ use objc2::{class, msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEventMask, NSFont,
     NSPanel, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting,
-    NSRunningApplication, NSScreen, NSTextField, NSWindowStyleMask, NSWorkspace,
+    NSRunningApplication, NSScreen, NSTextField, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSWorkspace,
 };
 use objc2_foundation::{
     NSArray, NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
@@ -350,6 +351,10 @@ pub struct MacosOverlayDiagnostics {
     pub nonactivating_panel: bool,
     pub can_become_key_window: bool,
     pub level: isize,
+    /// §12 collection behavior: the ghost must join all Spaces and act as a
+    /// full-screen auxiliary so it survives Space switches / full-screen apps.
+    pub joins_all_spaces: bool,
+    pub fullscreen_auxiliary: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -761,6 +766,15 @@ impl MacosOverlayPresenter {
         panel.setLevel(101);
         panel.setIgnoresMouseEvents(true);
         panel.setHidesOnDeactivate(false);
+        // §12: the ghost overlay must follow the user across Spaces and render
+        // over full-screen apps. A high window level only controls z-order
+        // within the current Space, so CanJoinAllSpaces|FullScreenAuxiliary is
+        // required — without it the ghost vanishes on a Space switch and never
+        // shows over a full-screen Space.
+        panel.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        );
 
         let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
         configure_overlay_label(&label, frame, text);
@@ -786,8 +800,11 @@ impl MacosOverlayPresenter {
                 nonactivating_panel: false,
                 can_become_key_window: false,
                 level: 0,
+                joins_all_spaces: false,
+                fullscreen_auxiliary: false,
             };
         };
+        let behavior = panel.collectionBehavior();
 
         MacosOverlayDiagnostics {
             has_panel: true,
@@ -798,6 +815,9 @@ impl MacosOverlayPresenter {
                 .contains(NSWindowStyleMask::NonactivatingPanel),
             can_become_key_window: panel.canBecomeKeyWindow(),
             level: panel.level(),
+            joins_all_spaces: behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces),
+            fullscreen_auxiliary: behavior
+                .contains(NSWindowCollectionBehavior::FullScreenAuxiliary),
         }
     }
 }
