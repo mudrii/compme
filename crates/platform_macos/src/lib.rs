@@ -901,7 +901,8 @@ fn debug_enabled() -> bool {
 
 /// A boolean env var is ON when present and not an explicit off-value
 /// (`0`/`false`/`off`/`no`/empty, case-insensitive). A present non-UTF-8 value
-/// counts as on. Mirrors the off-set used by the app crate's config parsing.
+/// counts as on. Mirrors the app crate's fail-safe-on env vars
+/// (`parse_enabled_default`/`parse_tri_state`).
 fn env_flag_on(value: Option<&std::ffi::OsStr>) -> bool {
     match value {
         None => false,

@@ -448,7 +448,9 @@ fn debug_enabled() -> bool {
 
 /// A boolean env var is ON when present and not an explicit off-value
 /// (`0`/`false`/`off`/`no`/empty, case-insensitive). A present non-UTF-8 value
-/// counts as on. Same off-set the config parsing uses for its boolean vars.
+/// counts as on. Same off-set as the fail-safe-on env vars (`COMPME_ENABLED`
+/// via `parse_enabled_default`/`parse_tri_state`) — note the feature-flag vars
+/// (autocorrect/emoji/…) instead use an ON-allow-list, a separate convention.
 fn env_flag_on(value: Option<&std::ffi::OsStr>) -> bool {
     match value {
         None => false,

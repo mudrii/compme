@@ -443,6 +443,14 @@ impl SuggestionMachine {
                 if moved {
                     self.hide_if_showing(&mut out);
                     self.advance_snapshot();
+                    // Cancel any armed-but-unfired debounce: the trigger gates
+                    // (mid-word/min-context) were evaluated at the pre-move
+                    // caret, and Tick does not re-check them. Without this, a
+                    // caret move into a gate-rejecting position (e.g. mid-word)
+                    // would still fire a RequestCompletion the gates would have
+                    // blocked. Every other context-invalidating event (Focus,
+                    // SecureStateChanged, Dismiss*) clears it the same way.
+                    self.pending_since = None;
                 }
                 self.field = Some(field);
                 self.caret = caret;
@@ -1493,6 +1501,25 @@ mod tests {
             }),
             vec![]
         );
+    }
+
+    #[test]
+    fn caret_move_cancels_an_armed_but_unfired_debounce() {
+        // Typing arms a debounce, with the trigger gates checked at the TYPED
+        // caret. A caret move before the debounce elapses must CANCEL it: the
+        // gates aren't re-checked at Tick, so without the cancel a move into a
+        // gate-rejecting position (mid-word) would still fire a RequestCompletion
+        // the gates would have blocked.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello world", 11, 1000));
+        // Move mid-word, before the debounce window elapses.
+        machine.on_event(Event::CaretMoved {
+            field: field("field-a"),
+            caret: 3,
+        });
+        // Debounce elapsed — but the armed request was cancelled by the move,
+        // so nothing fires.
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 1200 }), vec![]);
     }
 
     #[test]
