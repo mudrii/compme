@@ -86,9 +86,14 @@ pub fn resolve_source(stub_completion: Option<String>, model_path: PathBuf) -> M
 pub fn load_model(source: ModelSource) -> Result<Box<dyn LocalModel>, String> {
     match source {
         ModelSource::Stub(text) => Ok(Box::new(StubModel::new(text))),
-        ModelSource::Llama(path) => LlamaModel::load(&path)
-            .map(|model| Box::new(model) as Box<dyn LocalModel>)
-            .map_err(|err| format!("load model {}: {err}", path.display())),
+        ModelSource::Llama(path) => {
+            if !path.is_file() {
+                return Err(format!("model file not found: {}", path.display()));
+            }
+            LlamaModel::load(&path)
+                .map(|model| Box::new(model) as Box<dyn LocalModel>)
+                .map_err(|err| format!("load model {}: {err}", path.display()))
+        }
     }
 }
 
@@ -128,6 +133,16 @@ mod tests {
     fn load_model_builds_working_stub() {
         let model = load_model(ModelSource::Stub("done".into())).unwrap();
         assert_eq!(model.complete("p", 4).unwrap(), "done");
+    }
+
+    #[test]
+    fn load_model_rejects_missing_llama_path_before_backend_spawn() {
+        let missing = PathBuf::from("/definitely/not/a/compme/model.gguf");
+        let err = match load_model(ModelSource::Llama(missing.clone())) {
+            Ok(_) => panic!("missing model path should fail before backend spawn"),
+            Err(err) => err,
+        };
+        assert_eq!(err, format!("model file not found: {}", missing.display()));
     }
 
     #[test]

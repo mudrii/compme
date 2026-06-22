@@ -50,6 +50,8 @@ CASK
   write_cask "$good_cask" 1.2.3
   drift_cask="$tmp/drift.rb"
   write_cask "$drift_cask" 9.9.9
+  tag_drift_cask="$tmp/tag-good.rb"
+  write_cask "$tag_drift_cask" 1.2.3
 
   # (a) version drift: cask version != Cargo.toml version -> non-zero + drift error.
   if out="$("$0" "$good_plist" "$cargo" "$drift_cask" 2>&1)"; then
@@ -62,7 +64,18 @@ CASK
     *) echo "self-test FAILED: expected version-drift error, got: $out" >&2; exit 1 ;;
   esac
 
-  # (b) missing 'compme' CFBundleURLScheme -> non-zero.
+  # (b) release tag drift: expected version != bundle metadata -> non-zero.
+  if out="$(COMPME_EXPECTED_VERSION=9.9.9 "$0" "$good_plist" "$cargo" "$tag_drift_cask" 2>&1)"; then
+    echo "self-test FAILED: tag drift should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"release tag version drift"*) ;;
+    *) echo "self-test FAILED: expected release-tag drift error, got: $out" >&2; exit 1 ;;
+  esac
+
+  # (c) missing 'compme' CFBundleURLScheme -> non-zero.
   if out="$("$0" "$bad_scheme_plist" "$cargo" "$good_cask" 2>&1)"; then
     echo "self-test FAILED: missing scheme should have failed" >&2
     echo "$out" >&2
@@ -73,7 +86,7 @@ CASK
     *) echo "self-test FAILED: expected missing-scheme error, got: $out" >&2; exit 1 ;;
   esac
 
-  # (c) all-consistent fixtures -> exits 0 with OK message.
+  # (d) all-consistent fixtures -> exits 0 with OK message.
   if ! out="$("$0" "$good_plist" "$cargo" "$good_cask" 2>&1)"; then
     echo "self-test FAILED: consistent fixtures should pass, got: $out" >&2
     exit 1
@@ -150,6 +163,10 @@ ruby -rrexml/document -e '
   if cargo_version && cask_version
     expect.call("CFBundleShortVersionString", plist_version, cargo_version)
     errors << "version drift: cask #{cask_version.inspect} != app #{cargo_version.inspect}" unless cask_version == cargo_version
+  end
+  expected_version = ENV["COMPME_EXPECTED_VERSION"]
+  if expected_version && !expected_version.empty? && plist_version != expected_version
+    errors << "release tag version drift: expected #{expected_version.inspect}, got #{plist_version.inspect}"
   end
 
   unless errors.empty?

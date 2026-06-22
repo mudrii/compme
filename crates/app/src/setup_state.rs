@@ -17,8 +17,9 @@ pub struct SetupChecks {
     pub screen_context_enabled: bool,
     /// `CGPreflightScreenCaptureAccess()` — Screen Recording permission.
     pub screen_recording: bool,
-    /// The resolved model file exists on disk.
-    pub model_exists: bool,
+    /// The resolved model source loaded successfully, or the acceptance stub is
+    /// configured.
+    pub model_ready: bool,
 }
 
 /// The button a row offers, if any. The window maps these to the
@@ -41,7 +42,8 @@ pub struct SetupRow {
 
 /// The Setup pane's rows for a set of probe results, top to bottom.
 /// Permission rows offer their prompt only while missing; the model row
-/// offers Reveal-in-Finder only while present (nothing to reveal otherwise).
+/// offers Reveal-in-Finder only while usable (nothing useful to reveal
+/// otherwise).
 pub fn setup_rows(checks: SetupChecks) -> Vec<SetupRow> {
     let mut rows = vec![SetupRow {
         label: "Accessibility",
@@ -57,8 +59,8 @@ pub fn setup_rows(checks: SetupChecks) -> Vec<SetupRow> {
     }
     rows.push(SetupRow {
         label: "Model file",
-        ready: checks.model_exists,
-        action: checks.model_exists.then_some(SetupAction::RevealModel),
+        ready: checks.model_ready,
+        action: checks.model_ready.then_some(SetupAction::RevealModel),
     });
     rows
 }
@@ -75,7 +77,7 @@ mod tests {
             ax_trusted: true,
             screen_context_enabled: false,
             screen_recording: false,
-            model_exists: true,
+            model_ready: true,
         });
         assert!(rows.iter().all(|r| r.label != "Screen Recording"));
         assert_eq!(rows.len(), 2);
@@ -88,7 +90,7 @@ mod tests {
             ax_trusted: true,
             screen_context_enabled: true,
             screen_recording: true,
-            model_exists: true,
+            model_ready: true,
         });
         assert_eq!(
             ready,
@@ -116,7 +118,7 @@ mod tests {
             ax_trusted: false,
             screen_context_enabled: true,
             screen_recording: false,
-            model_exists: false,
+            model_ready: false,
         });
         assert_eq!(
             missing,

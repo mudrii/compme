@@ -69,8 +69,8 @@ comments — the scaffold doubles as the implementation guide.
 signing + hardened runtime + notarization + a native updater.
 
 **Status:**
-- Signing is **ad-hoc only**: `tools/bundle/make-app.sh:29` runs
-  `codesign --force --sign -` (ad-hoc), `:30` verifies. No `notarytool`,
+- Signing is **ad-hoc only**: `tools/bundle/make-app.sh:87` runs
+  `codesign --force --sign -` (ad-hoc), `:88` verifies. No `notarytool`,
   `stapler`, or Developer-ID identity anywhere.
 - **No Sparkle / auto-updater** in code (only mentioned as a future candidate in
   design docs; `2026-06-10-a3-settings-ui-design.md:19` defers it explicitly).

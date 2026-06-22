@@ -11,6 +11,8 @@ pub enum BlockReason {
     Permission,
     /// Secure input is active (password field / global secure input).
     SecureInput,
+    /// The configured model source failed permanently at startup.
+    ModelUnavailable,
 }
 
 /// The app's current state, in priority order of severity.
@@ -26,13 +28,22 @@ pub enum AppStatus {
 ///
 /// A missing permission outranks everything (nothing works without it); secure
 /// input outranks readiness (we must not suggest into a password field); an
-/// unwarmed model outranks the user toggle (there is nothing to offer yet); a
-/// disabled toggle outranks `Ready`.
-pub fn derive_status(trusted: bool, secure: bool, ready: bool, enabled: bool) -> AppStatus {
+/// unavailable model outranks warm-up/toggle state; an unwarmed model outranks
+/// the user toggle (there is nothing to offer yet); a disabled toggle outranks
+/// `Ready`.
+pub fn derive_status(
+    trusted: bool,
+    secure: bool,
+    model_available: bool,
+    ready: bool,
+    enabled: bool,
+) -> AppStatus {
     if !trusted {
         AppStatus::Blocked(BlockReason::Permission)
     } else if secure {
         AppStatus::Blocked(BlockReason::SecureInput)
+    } else if !model_available {
+        AppStatus::Blocked(BlockReason::ModelUnavailable)
     } else if !ready {
         AppStatus::Loading
     } else if !enabled {
@@ -71,6 +82,7 @@ impl AppStatus {
             AppStatus::Disabled => "Disabled",
             AppStatus::Blocked(BlockReason::Permission) => "Blocked: grant Accessibility",
             AppStatus::Blocked(BlockReason::SecureInput) => "Paused: secure input active",
+            AppStatus::Blocked(BlockReason::ModelUnavailable) => "Blocked: model unavailable",
         }
     }
 
@@ -102,12 +114,12 @@ mod tests {
     fn missing_permission_outranks_everything() {
         // Even ready + enabled + not-secure: no trust → Blocked(Permission).
         assert_eq!(
-            derive_status(false, false, true, true),
+            derive_status(false, false, true, true, true),
             AppStatus::Blocked(BlockReason::Permission)
         );
         // Trust missing wins over secure too.
         assert_eq!(
-            derive_status(false, true, false, false),
+            derive_status(false, true, false, false, false),
             AppStatus::Blocked(BlockReason::Permission)
         );
     }
@@ -115,7 +127,7 @@ mod tests {
     #[test]
     fn secure_input_outranks_readiness_and_toggle() {
         assert_eq!(
-            derive_status(true, true, true, true),
+            derive_status(true, true, true, true, true),
             AppStatus::Blocked(BlockReason::SecureInput)
         );
     }
@@ -129,28 +141,49 @@ mod tests {
         // silently surface "Loading model…" while focus sits in a password
         // field, hiding the secure-input pause. The toggle is irrelevant here.
         assert_eq!(
-            derive_status(true, true, false, true),
+            derive_status(true, true, true, false, true),
             AppStatus::Blocked(BlockReason::SecureInput)
         );
         assert_eq!(
-            derive_status(true, true, false, false),
+            derive_status(true, true, true, false, false),
             AppStatus::Blocked(BlockReason::SecureInput)
+        );
+    }
+
+    #[test]
+    fn unavailable_model_is_blocked_not_loading() {
+        assert_eq!(
+            derive_status(true, false, false, false, true),
+            AppStatus::Blocked(BlockReason::ModelUnavailable)
+        );
+        assert_eq!(
+            AppStatus::Blocked(BlockReason::ModelUnavailable).status_line(),
+            "Blocked: model unavailable"
         );
     }
 
     #[test]
     fn not_ready_is_loading_when_trusted_and_unsecured() {
-        assert_eq!(derive_status(true, false, false, true), AppStatus::Loading);
+        assert_eq!(
+            derive_status(true, false, true, false, true),
+            AppStatus::Loading
+        );
     }
 
     #[test]
     fn ready_but_disabled_is_disabled() {
-        assert_eq!(derive_status(true, false, true, false), AppStatus::Disabled);
+        assert_eq!(
+            derive_status(true, false, true, true, false),
+            AppStatus::Disabled
+        );
     }
 
     #[test]
     fn all_clear_is_ready() {
-        assert_eq!(derive_status(true, false, true, true), AppStatus::Ready);
+        assert_eq!(
+            derive_status(true, false, true, true, true),
+            AppStatus::Ready
+        );
     }
 
     #[test]
@@ -161,6 +194,7 @@ mod tests {
             AppStatus::Disabled,
             AppStatus::Blocked(BlockReason::Permission),
             AppStatus::Blocked(BlockReason::SecureInput),
+            AppStatus::Blocked(BlockReason::ModelUnavailable),
         ] {
             assert!(!s.suggestions_allowed(), "{s:?} must not allow suggestions");
         }
@@ -170,6 +204,7 @@ mod tests {
     fn only_permission_block_needs_accessibility_affordance() {
         assert!(AppStatus::Blocked(BlockReason::Permission).needs_accessibility());
         assert!(!AppStatus::Blocked(BlockReason::SecureInput).needs_accessibility());
+        assert!(!AppStatus::Blocked(BlockReason::ModelUnavailable).needs_accessibility());
         assert!(!AppStatus::Ready.needs_accessibility());
     }
 
@@ -191,6 +226,7 @@ mod tests {
             AppStatus::Disabled,
             AppStatus::Blocked(BlockReason::Permission),
             AppStatus::Blocked(BlockReason::SecureInput),
+            AppStatus::Blocked(BlockReason::ModelUnavailable),
         ] {
             assert_eq!(s.render_title(true), s.menu_title(), "{s:?}");
             assert_eq!(s.render_line(true), s.status_line(), "{s:?}");
@@ -205,6 +241,7 @@ mod tests {
             AppStatus::Disabled,
             AppStatus::Blocked(BlockReason::Permission),
             AppStatus::Blocked(BlockReason::SecureInput),
+            AppStatus::Blocked(BlockReason::ModelUnavailable),
         ];
         for s in statuses {
             assert!(!s.menu_title().is_empty());

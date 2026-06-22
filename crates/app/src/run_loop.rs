@@ -25,8 +25,9 @@ use emoji::{EmojiPrefs, Gender, SkinTone};
 use engine::{CompletionRequest, Engine, TriggerPolicy};
 use personalization::{PersonalizationProfile, SenderIdentity, Strength};
 use platform::{
-    AcceptAction, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode, OverlayPlacement,
-    PlatformAdapter, PlatformError, ScreenRect, SecurityState, TapControl, Toolkit,
+    AcceptAction, AcceptSubscription, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode,
+    OverlayPlacement, PlatformAdapter, PlatformError, ScreenRect, SecurityState, Subscription,
+    TapControl, Toolkit,
 };
 use platform_macos::DisableArm;
 use platform_macos::{
@@ -546,14 +547,6 @@ fn replacement_decision(
     let autocorrect = prefs.autocorrect_enabled(app_key, config.autocorrect);
     let thesaurus = prefs.thesaurus_enabled(app_key, config.thesaurus);
     replacement_offer(left, config, autocorrect, thesaurus)
-}
-
-/// Whether completion inference has a usable model source: a stub completion
-/// (acceptance harness) counts as ready — a stub-driven run must not show
-/// "✗ Model file" in Setup. Single source for the startup diagnostic AND the
-/// Setup pane (duplicated inline before, which invited divergence).
-fn model_ready(config: &Config) -> bool {
-    config.stub_completion.is_some() || config.model_path.exists()
 }
 
 /// The completion worker's context char bound. Clipboard/screen context need
@@ -2205,14 +2198,14 @@ fn build_settings_flags(
 
 /// The Setup tab's current rows as display lines: probe permissions and the
 /// model file NOW (cheap queries) and render through `setup_row_line`.
-fn compose_setup_lines(config: &Config) -> Vec<String> {
+fn compose_setup_lines(config: &Config, model_ready: bool) -> Vec<String> {
     crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
         // Probed fresh here (cheap), not the loop's 480ms-stale copy —
         // review-c107: rows must not flip at different cadences.
         ax_trusted: accessibility_trusted(),
         screen_context_enabled: config.screen_context,
         screen_recording: screen_recording_permission(),
-        model_exists: model_ready(config),
+        model_ready,
     })
     .iter()
     .map(setup_row_line)
@@ -2675,7 +2668,9 @@ fn status_drops_pending_requests(status: AppStatus) -> bool {
     matches!(
         status,
         AppStatus::Disabled
-            | AppStatus::Blocked(BlockReason::Permission | BlockReason::SecureInput)
+            | AppStatus::Blocked(
+                BlockReason::Permission | BlockReason::SecureInput | BlockReason::ModelUnavailable,
+            )
     )
 }
 
@@ -2823,20 +2818,6 @@ pub fn run() -> Result<(), String> {
         eprintln!("compme: {warning}");
     }
 
-    // Setup status (the Setup pane's row model doubles as the startup
-    // diagnostic): one line per not-ready item, so a log alone explains why
-    // ghosts won't appear (missing permission, missing model file).
-    for row in crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
-        ax_trusted: trusted,
-        screen_context_enabled: config.screen_context,
-        screen_recording: screen_recording_permission(),
-        model_exists: model_ready(&config),
-    }) {
-        if !row.ready {
-            eprintln!("compme: setup: {} not ready", row.label);
-        }
-    }
-
     if config.diag_coords {
         eprintln!("compme: diag display_scales={:?}", display_scales());
     }
@@ -2866,36 +2847,75 @@ pub fn run() -> Result<(), String> {
     let tx: Arc<Mutex<Sender<HostEvent>>> = Arc::new(Mutex::new(tx));
 
     let focus_tx = Arc::clone(&tx);
-    let focus_sub = adapter
-        .subscribe_focus(Arc::new(move |field| {
-            if let Ok(tx) = focus_tx.lock() {
-                let _ = tx.send(HostEvent::Focus(field));
-            }
-        }))
-        .map_err(|err| format!("subscribe focus: {err:?}"))?;
+    let focus_sub = match adapter.subscribe_focus(Arc::new(move |field| {
+        if let Ok(tx) = focus_tx.lock() {
+            let _ = tx.send(HostEvent::Focus(field));
+        }
+    })) {
+        Ok(sub) => sub,
+        Err(err @ PlatformError::PermissionMissing { .. }) => {
+            eprintln!(
+                "compme: focus subscription unavailable until Accessibility is granted: {err:?}"
+            );
+            Subscription::new(0)
+        }
+        Err(err) if !trusted => {
+            eprintln!(
+                "compme: focus subscription unavailable until Accessibility is granted: {err:?}"
+            );
+            Subscription::new(0)
+        }
+        Err(err) => return Err(format!("subscribe focus: {err:?}")),
+    };
 
     let caret_tx = Arc::clone(&tx);
-    let caret_sub = adapter
-        .subscribe_caret(Arc::new(move |field, rect| {
-            if let Ok(tx) = caret_tx.lock() {
-                let _ = tx.send(HostEvent::Caret(field, rect));
-            }
-        }))
-        .map_err(|err| format!("subscribe caret: {err:?}"))?;
+    let caret_sub = match adapter.subscribe_caret(Arc::new(move |field, rect| {
+        if let Ok(tx) = caret_tx.lock() {
+            let _ = tx.send(HostEvent::Caret(field, rect));
+        }
+    })) {
+        Ok(sub) => sub,
+        Err(err @ PlatformError::PermissionMissing { .. }) => {
+            eprintln!(
+                "compme: caret subscription unavailable until Accessibility is granted: {err:?}"
+            );
+            Subscription::new(0)
+        }
+        Err(err) if !trusted => {
+            eprintln!(
+                "compme: caret subscription unavailable until Accessibility is granted: {err:?}"
+            );
+            Subscription::new(0)
+        }
+        Err(err) => return Err(format!("subscribe caret: {err:?}")),
+    };
 
     let accept_tx = Arc::clone(&tx);
-    let accept_sub = adapter
-        .subscribe_accept(Arc::new(move |control| {
-            let event = match control {
-                TapControl::Accept(action) => HostEvent::Accept(action),
-                TapControl::Dismiss => HostEvent::Dismiss,
-                TapControl::Cycle => HostEvent::Cycle,
-            };
-            if let Ok(tx) = accept_tx.lock() {
-                let _ = tx.send(event);
-            }
-        }))
-        .map_err(|err| format!("subscribe accept: {err:?}"))?;
+    let accept_sub = match adapter.subscribe_accept(Arc::new(move |control| {
+        let event = match control {
+            TapControl::Accept(action) => HostEvent::Accept(action),
+            TapControl::Dismiss => HostEvent::Dismiss,
+            TapControl::Cycle => HostEvent::Cycle,
+        };
+        if let Ok(tx) = accept_tx.lock() {
+            let _ = tx.send(event);
+        }
+    })) {
+        Ok(sub) => sub,
+        Err(err @ PlatformError::PermissionMissing { .. }) => {
+            eprintln!(
+                "compme: accept subscription unavailable until Accessibility is granted: {err:?}"
+            );
+            AcceptSubscription::new(Subscription::new(0), |_| Ok(()), |_| Ok(()), |_| Ok(()))
+        }
+        Err(err) if !trusted => {
+            eprintln!(
+                "compme: accept subscription unavailable until Accessibility is granted: {err:?}"
+            );
+            AcceptSubscription::new(Subscription::new(0), |_| Ok(()), |_| Ok(()), |_| Ok(()))
+        }
+        Err(err) => return Err(format!("subscribe accept: {err:?}")),
+    };
     engine.set_accept_subscription(accept_sub);
 
     let model = match load_model(resolve_source(
@@ -2909,6 +2929,20 @@ pub fn run() -> Result<(), String> {
             None
         }
     };
+    let model_available = model.is_some();
+    // Setup status (the Setup pane's row model doubles as the startup
+    // diagnostic): one line per not-ready item, so a log alone explains why
+    // ghosts won't appear (missing permission, missing model file).
+    for row in crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
+        ax_trusted: trusted,
+        screen_context_enabled: config.screen_context,
+        screen_recording: screen_recording_permission(),
+        model_ready: model_available,
+    }) {
+        if !row.ready {
+            eprintln!("compme: setup: {} not ready", row.label);
+        }
+    }
     // Screen-recording context (optional, A2 §16): request the permission once if
     // the user opted in. The app continues with field-only context if denied
     // (the "works without it" requirement); local OCR enrichment rides on this
@@ -3564,7 +3598,7 @@ pub fn run() -> Result<(), String> {
             // Setup tab: re-probe permissions/model at every open (cheap
             // queries; the visible-only poll below covers stays-open).
             if let Ok(mut lines) = settings_flags.setup_lines.lock() {
-                *lines = compose_setup_lines(&config);
+                *lines = compose_setup_lines(&config, model_available);
             }
             last_setup_poll_ms = Some(now_ms);
             // Apps tab: per-app counts straight from the store (plaintext
@@ -3843,7 +3877,7 @@ pub fn run() -> Result<(), String> {
         if setup_poll_due(settings_visible, last_setup_poll_ms, now_ms) {
             last_setup_poll_ms = Some(now_ms);
             if let Ok(mut lines) = settings_flags.setup_lines.lock() {
-                *lines = compose_setup_lines(&config);
+                *lines = compose_setup_lines(&config, model_available);
             }
             settings_window.refresh_setup_labels();
         }
@@ -3895,7 +3929,7 @@ pub fn run() -> Result<(), String> {
             }
             persist_and_log_switch("COMPME_SCREEN_CONTEXT", "screen context", on);
             if let Ok(mut lines) = settings_flags.setup_lines.lock() {
-                *lines = compose_setup_lines(&config);
+                *lines = compose_setup_lines(&config, model_available);
             }
             settings_window.refresh_setup_labels();
         }
@@ -4066,7 +4100,13 @@ pub fn run() -> Result<(), String> {
             },
             secure_input_enabled,
         );
-        let status = derive_status(trusted, secure, inference.is_ready(), enabled);
+        let status = derive_status(
+            trusted,
+            secure,
+            model_available,
+            inference.is_ready(),
+            enabled,
+        );
         // Secure input is a true engine-state transition, not only a UI state:
         // clear queued work and invalidate the machine so held requests cannot
         // submit after the secure block clears.
@@ -5114,7 +5154,7 @@ mod tests {
             ax_trusted: true,
             screen_context_enabled: true,
             screen_recording: true,
-            model_exists: true,
+            model_ready: true,
         });
         assert!(rows.len() <= platform_macos::SETUP_ROWS);
     }
@@ -8883,17 +8923,6 @@ mod tests {
     }
 
     #[test]
-    fn model_ready_counts_a_stub_as_a_model_source() {
-        let stub = Config::from_lookup(lookup(&[
-            ("COMPME_STUB_COMPLETION", "x"),
-            ("COMPME_MODEL_PATH", "/no/such/file.gguf"),
-        ]));
-        assert!(model_ready(&stub), "stub-driven runs must not flag Setup");
-        let missing = Config::from_lookup(lookup(&[("COMPME_MODEL_PATH", "/no/such/file.gguf")]));
-        assert!(!model_ready(&missing));
-    }
-
-    #[test]
     fn context_bound_lifts_zero_only_when_an_auxiliary_source_is_active() {
         // clipboard/screen context with max_chars == 0 would be a silent
         // no-op (the worker's block builder returns "" at bound 0).
@@ -9649,6 +9678,9 @@ mod tests {
         )));
         assert!(status_drops_pending_requests(AppStatus::Blocked(
             BlockReason::SecureInput
+        )));
+        assert!(status_drops_pending_requests(AppStatus::Blocked(
+            BlockReason::ModelUnavailable
         )));
     }
 
