@@ -339,6 +339,20 @@ mod tests {
     }
 
     #[test]
+    fn monitored_collection_allowed_for_enabled_unsnoozed_app_with_collection_on() {
+        // Positive direction: an enabled, un-snoozed, non-excluded app whose
+        // collection toggle is on may durably record monitored typing.
+        let mut p = Prefs::default();
+        p.per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .collect_inputs = Some(true);
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        assert!(p.collection_allowed(Some("com.apple.TextEdit")));
+        assert!(p.monitored_collection_allowed(Some("com.apple.TextEdit"), None, 1_000));
+    }
+
+    #[test]
     fn app_snooze_until_relaunch_saturates_and_clear_reenables() {
         let mut p = Prefs::default();
         // u64::MAX minutes saturates: effectively "until relaunch".

@@ -1151,6 +1151,33 @@ mod tests {
         assert_eq!(engine.take_stat_events(), vec![StatEvent::Shown]);
     }
 
+    #[test]
+    fn completion_filtered_to_nothing_shows_no_ghost_and_no_stat() {
+        // A completion whose every candidate the ranker drops (here: empty text)
+        // leaves nothing to show — the machine emits no ShowGhost, so the overlay
+        // is never asked to present and no Shown stat is buffered. on_completion
+        // still returns Ok with an empty dispatch (no reconcile, no requests).
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        overlay.calls.lock().unwrap().clear();
+        let _ = engine.take_stat_events();
+
+        let followups = engine.on_completion(&requests[0], "".into()).unwrap();
+
+        assert!(followups.is_empty(), "no follow-up requests dispatched");
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "the overlay must never be asked to show a filtered-out completion"
+        );
+        assert_eq!(
+            engine.take_stat_events(),
+            vec![],
+            "a completion that shows nothing must not record a Shown stat"
+        );
+    }
+
     fn other_field() -> FieldHandle {
         FieldHandle {
             app: "TextEdit".into(),

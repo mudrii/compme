@@ -5620,6 +5620,25 @@ mod tests {
         for on in ["1", "true", "yes", "verbose"] {
             assert!(env_flag_on(Some(OsStr::new(on))), "{on:?} should be on");
         }
+        // A non-UTF-8 value is present and not an off-token, so it reads as on.
+        use std::os::unix::ffi::OsStrExt;
+        let non_utf8 = OsStr::from_bytes(&[0xff]);
+        assert!(env_flag_on(Some(non_utf8)), "non-UTF-8 value should be on");
+    }
+
+    #[test]
+    fn screen_context_text_with_zero_max_chars_returns_none_before_any_ffi() {
+        // The max_chars==0 guard short-circuits before any permission check or
+        // screen-capture FFI, so it is safe to call without a screen-recording
+        // entitlement and must yield None for both caret-rect shapes.
+        assert!(screen_context_text(None, 0).is_none());
+        let rect = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 20.0,
+        };
+        assert!(screen_context_text(Some(rect), 0).is_none());
     }
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicUsize;

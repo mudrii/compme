@@ -578,6 +578,42 @@ mod tests {
     }
 
     #[test]
+    fn connect_timeout_aborts_a_stalled_connection_instead_of_hanging() {
+        // Sibling to the read-timeout test: timeout_read only fires once bytes
+        // start flowing — a connection that never COMPLETES the TCP handshake
+        // (a black-holed host, the SYN dropped) would hang the download (and
+        // the worker thread's shutdown) forever without timeout_connect.
+        // 192.0.2.1 is RFC 5737 TEST-NET-1: guaranteed non-routable, so the
+        // connect stalls deterministically and a short timeout_connect must
+        // surface it as a typed Network error rather than blocking. The
+        // production agent in `download_url` carries a 10s timeout_connect; a
+        // millisecond one here proves the abort without a long test.
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_millis(200))
+            .build();
+        let dest = temp_dest("connect-stall");
+        let start = std::time::Instant::now();
+        let err = download_with_agent(
+            &agent,
+            "http://192.0.2.1:8080/model.bin",
+            &dest,
+            None,
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, FetchError::Network(_)), "got: {err}");
+        // The timeout actually aborted the connect rather than the test
+        // hanging on a real network round-trip: well under a second.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "connect should abort on the timeout, not hang: {:?}",
+            start.elapsed()
+        );
+        // A failed connect never opens the part file.
+        assert!(!dest.with_extension("part").exists());
+    }
+
+    #[test]
     fn sha_mismatch_errors_and_keeps_the_part_file_for_inspection() {
         let url = serve(b"corrupted bytes", RangeMode::Honor);
         let dest = temp_dest("badsha");

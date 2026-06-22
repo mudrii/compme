@@ -204,6 +204,22 @@ Recent: recent\n"
     }
 
     #[test]
+    fn context_block_tail_cuts_through_a_combining_mark_grapheme_on_a_char_boundary() {
+        // tail_chars counts Unicode scalars, not graphemes. "e" + U+0301 (combining
+        // acute) is ONE grapheme but TWO scalars; "abe\u{0301}" is 4 scalars. Keeping
+        // the last 2 scalars must cut between "b" and "e" (NOT mid-grapheme between
+        // "e" and the combining mark, and never mid-codepoint): the tail is
+        // "e\u{0301}". The byte-offset slice in tail_chars must land on a char
+        // boundary or this panics rather than asserting.
+        let block = build_context_block(Some("abe\u{0301}"), None, &[], 2);
+        assert!(block.contains("Clipboard: e\u{0301}"), "got {block:?}");
+        // And cutting AT the combining mark (keep last 1 scalar) keeps the bare mark,
+        // still on a boundary — char-count semantics, no codepoint split.
+        let one = build_context_block(Some("abe\u{0301}"), None, &[], 1);
+        assert!(one.contains("Clipboard: \u{0301}"), "got {one:?}");
+    }
+
+    #[test]
     fn context_block_bounds_after_whitespace_collapse_per_source() {
         let block = build_context_block(
             Some("clip\none two three"),

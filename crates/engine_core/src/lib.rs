@@ -1505,21 +1505,95 @@ mod tests {
 
     #[test]
     fn caret_move_cancels_an_armed_but_unfired_debounce() {
-        // Typing arms a debounce, with the trigger gates checked at the TYPED
-        // caret. A caret move before the debounce elapses must CANCEL it: the
-        // gates aren't re-checked at Tick, so without the cancel a move into a
-        // gate-rejecting position (mid-word) would still fire a RequestCompletion
-        // the gates would have blocked.
-        let mut machine = machine();
-        machine.on_event(text_changed("hello world", 11, 1000));
-        // Move mid-word, before the debounce window elapses.
+        // Mid-word gating DISABLED at arm time, so the gate is load-bearing: type
+        // at a word boundary (passes the gate, arms a debounce), then move the
+        // caret mid-word before the debounce elapses. The trigger gates were
+        // evaluated at the TYPED (boundary) caret and are NOT re-checked at Tick,
+        // so the only thing stopping a request at the now-gate-rejecting mid-word
+        // caret is the move's cancel of the armed debounce. Tick must fire nothing.
+        let mut machine = machine().with_trigger_gates(0, false);
+        // Caret at 5 (after "hello", before the space) is a word boundary → arms.
+        machine.on_event(text_changed("hello world", 5, 1000));
+        // Move to caret 3, inside "hello" → a genuine mid-word position the gate
+        // would reject, reached before the debounce window elapses.
         machine.on_event(Event::CaretMoved {
             field: field("field-a"),
             caret: 3,
         });
-        // Debounce elapsed — but the armed request was cancelled by the move,
-        // so nothing fires.
+        // Debounce elapsed — but the armed request was cancelled by the move into
+        // the gate-rejecting spot, so nothing fires.
         assert_eq!(machine.on_event(Event::Tick { now_ms: 1200 }), vec![]);
+    }
+
+    #[test]
+    fn noop_caret_move_keeps_an_armed_debounce() {
+        // A CaretMoved that reports the SAME field+caret as the machine already
+        // tracks is a no-op (`moved == false`): it must NOT clear an armed
+        // pending_since. Guards the `moved` guard added in the round-3 fix — a
+        // spurious caret echo at the current position must not cancel a pending
+        // request. Arm at the end of "hello " (caret 6, a word boundary), echo a
+        // CaretMoved at the same spot, then Tick past the debounce → still fires.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello ", 6, 1000));
+        machine.on_event(Event::CaretMoved {
+            field: field("field-a"),
+            caret: 6,
+        });
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 1300 }),
+            vec![Command::RequestCompletion {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                prompt: "hello".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn text_change_rearms_while_a_request_is_in_flight() {
+        // A second edit while a request is still in flight re-arms a fresh
+        // debounce and advances the snapshot/generation boundary. The newer
+        // request fires; the older request's completion, tagged with the now-stale
+        // generation/snapshot, is dropped (no commands).
+        let mut machine = machine();
+
+        // First edit → request gen 1 / snap 1.
+        machine.on_event(text_changed("hello ", 6, 1000));
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 1200 }),
+            vec![Command::RequestCompletion {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                prompt: "hello".into(),
+            }]
+        );
+
+        // Second edit while gen 1 is in flight → re-arms, advancing to gen 2 /
+        // snap 2; the next Tick fires the newer request.
+        machine.on_event(text_changed("hello there ", 12, 2000));
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 2200 }),
+            vec![Command::RequestCompletion {
+                generation: 2,
+                field: field("field-a"),
+                snapshot: 2,
+                prompt: "hello there".into(),
+            }]
+        );
+
+        // The stale gen-1/snap-1 completion arriving late is discarded — nothing
+        // is shown, the in-flight gen-2 request is untouched.
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "world".into(),
+            }),
+            vec![]
+        );
     }
 
     #[test]

@@ -336,6 +336,24 @@ mod tests {
     }
 
     #[test]
+    fn every_table_shortcode_resolves_to_a_glyph_by_exact_lookup() {
+        // Whole-table parity: every TABLE entry's shortcode must resolve via an
+        // exact `suggest(":<shortcode>")` to its own canonical shortcode and a
+        // non-empty glyph. A typo'd key (or one shadowed by a shorter prefix
+        // sibling) would pass the narrower spot-checks but fail here.
+        for entry in TABLE.iter() {
+            let s = suggest_default(&format!(":{}", entry.shortcode))
+                .unwrap_or_else(|| panic!("shortcode {:?} did not resolve", entry.shortcode));
+            assert_eq!(s.shortcode, entry.shortcode, "{:?}", entry.shortcode);
+            assert!(
+                !s.glyph.is_empty(),
+                "{:?} resolved to empty glyph",
+                entry.shortcode
+            );
+        }
+    }
+
+    #[test]
     fn exact_shortcode_suggests_its_emoji() {
         let s = suggest_default("nice work :tada").unwrap();
         assert_eq!(s.shortcode, "tada");

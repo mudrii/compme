@@ -693,6 +693,62 @@ mod tests {
     }
 
     #[test]
+    fn daily_buckets_day_boundary_is_exact_at_the_slice_edge() {
+        // The slice index is `(at - cutoff) / DAY_MS`. Pin the boundary
+        // precisely: the last millisecond of day 0 (cutoff + DAY_MS - 1) stays
+        // in bucket 0, and the first millisecond of day 1 (cutoff + DAY_MS)
+        // crosses into bucket 1. cutoff = now - days*DAY_MS.
+        let mut s = Stats::new();
+        let days = 3;
+        let now = T0 + days as u64 * DAY_MS;
+        let cutoff = now - days as u64 * DAY_MS; // == T0
+        s.record(cutoff + DAY_MS - 1, Outcome::Shown); // last ms of bucket 0
+        s.record(cutoff + DAY_MS, Outcome::Dismissed); // first ms of bucket 1
+        let buckets = s.daily_buckets(now, days);
+        assert_eq!(buckets.len(), days);
+        assert_eq!(
+            buckets[0].counts.shown, 1,
+            "cutoff+DAY_MS-1 lands in bucket 0"
+        );
+        assert_eq!(buckets[0].counts.dismissed, 0);
+        assert_eq!(
+            buckets[1].counts.dismissed, 1,
+            "cutoff+DAY_MS lands in bucket 1"
+        );
+        assert_eq!(buckets[1].counts.shown, 0);
+    }
+
+    #[test]
+    fn cutoff_saturates_when_now_is_inside_the_first_window() {
+        // When `now_ms < WINDOW_MS`, `now - WINDOW_MS` would underflow; the
+        // saturating cutoff clamps to 0 so every recorded entry is retained
+        // and queryable rather than wrapping to a huge cutoff that hides them.
+        let mut s = Stats::new();
+        let now = 5_000; // far below WINDOW_MS (~2.6 billion ms)
+        s.record(0, Outcome::Shown); // at epoch 0
+        s.record(1, Outcome::Accepted { words: 4 });
+        s.record(now, Outcome::Shown);
+        s.record_latency(2, 80);
+
+        // No underflow: all in-window entries counted, none dropped.
+        assert_eq!(
+            s.counts(now),
+            Counts {
+                shown: 2,
+                accepted: 1,
+                dismissed: 0,
+                superseded: 0,
+            }
+        );
+        assert_eq!(s.words_completed(now), 4);
+        assert_eq!(s.latency_avg_ms(now), Some(80));
+        // daily_buckets shares the same saturating-cutoff guard.
+        let buckets = s.daily_buckets(now, 30);
+        let total_shown: usize = buckets.iter().map(|b| b.counts.shown).sum();
+        assert_eq!(total_shown, 2, "no entry lost to an underflowed cutoff");
+    }
+
+    #[test]
     fn summary_line_formats_words_accepts_and_rate() {
         let mut s = Stats::new();
         s.record(T0, Outcome::Shown);
@@ -900,6 +956,18 @@ mod tests {
         assert_eq!(s.latency_percentile_ms(T0, 50), Some(20));
         assert_eq!(s.latency_percentile_ms(T0, 100), Some(30));
         assert_eq!(s.latency_percentile_ms(T0, 1), Some(10));
+    }
+
+    #[test]
+    fn percentile_even_n_two_nearest_rank() {
+        // n=2 nearest-rank: sorted [a,b]. p50 → rank ceil(0.5*2)=1 → idx0=a;
+        // p100 → rank ceil(1.0*2)=2 → idx1=b. Pins the even-n boundary between
+        // the odd-n (n=3) and single-sample (n=1) cases.
+        let mut s = Stats::new();
+        s.record_latency(T0, 70); // out of order to prove sorting
+        s.record_latency(T0, 30);
+        assert_eq!(s.latency_percentile_ms(T0, 50), Some(30)); // idx 0
+        assert_eq!(s.latency_percentile_ms(T0, 100), Some(70)); // idx 1
     }
 
     #[test]

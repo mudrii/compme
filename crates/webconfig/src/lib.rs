@@ -563,6 +563,56 @@ mod tests {
     }
 
     #[test]
+    fn scope_rejects_query_fragment_metacharacters_and_control_chars() {
+        // The lexical allow-list (alphanumeric + `.` `-` `_`) must reject URL
+        // structural metacharacters that could smuggle a second command or
+        // parameter, and any control/whitespace characters. `&`/`=` are query
+        // separators consumed before scope validation, so they're exercised at
+        // the parser level (a trailing fragment, an extra `=`); the rest are
+        // tested directly against the scope value.
+        for bad in [
+            "?",      // query start
+            "#",      // fragment start
+            ";",      // path/param separator
+            ":",      // scheme/port separator
+            "@",      // userinfo
+            "/",      // path separator (regression with the existing case)
+            "\\",     // backslash
+            "*",      // glob
+            "<",      // angle brackets
+            ">",      //
+            "\u{0}",  // NUL control char
+            "\n",     // newline control char
+            "\t",     // tab control char
+            "\u{7f}", // DEL control char
+            " ",      // space
+        ] {
+            let url = format!("compme://setOverride?app=com.foo{bad}bar&enabled=true");
+            assert_eq!(
+                parse_deep_link(&url),
+                Err(ParseError::InvalidScope),
+                "scope containing {bad:?} must be rejected"
+            );
+        }
+        // `=` inside the value is consumed as the param separator: `app=a=b`
+        // splits to key `app`, value `a=b` — `=` is then an illegal scope char.
+        assert_eq!(
+            parse_deep_link("compme://setOverride?app=a=b&enabled=true"),
+            Err(ParseError::InvalidScope),
+            "an `=` smuggled into the scope value must be rejected"
+        );
+        // A trailing `#fragment` rides on the last value and is rejected as an
+        // illegal action value (not silently dropped).
+        assert!(
+            matches!(
+                parse_deep_link("compme://setOverride?app=com.foo.bar&enabled=true#x"),
+                Err(ParseError::InvalidValue(_))
+            ),
+            "a trailing fragment must not be silently accepted"
+        );
+    }
+
+    #[test]
     fn duplicate_param_is_rejected_with_its_name() {
         assert_eq!(
             parse_deep_link("compme://setOverride?app=x&app=y&enabled=true"),
@@ -715,6 +765,47 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn prompt_decision_names_every_action_across_both_scopes() {
+        // Extends the single-case prompt tests: the action label must render
+        // distinctly for ALL FOUR actions, and the scope string must flow
+        // through for BOTH scope kinds (App and Domain). A bug that mislabeled
+        // one action (e.g. Enable→Disable) or dropped one scope arm would pass
+        // the existing one-case tests but fail here.
+        let scopes = [
+            ("com.apple.Mail", Scope::App("com.apple.Mail".into())),
+            ("docs.google.com", Scope::Domain("docs.google.com".into())),
+        ];
+        let actions = [
+            (OverrideAction::Enable, "Enable"),
+            (OverrideAction::Disable, "Disable"),
+            (OverrideAction::Exclude, "Exclude"),
+            (OverrideAction::Include, "Include"),
+        ];
+        for (scope_str, scope) in scopes {
+            for (action, action_label) in actions {
+                let command = OverrideCommand {
+                    scope: scope.clone(),
+                    action,
+                };
+                let PromptDecision::PromptRequired {
+                    scope: got_scope,
+                    action: got_action,
+                    trust,
+                } = prompt_decision_for_link(&command, LinkTrust::Unsigned)
+                else {
+                    panic!("{scope_str}/{action_label} must prompt");
+                };
+                assert_eq!(got_scope, scope_str, "scope for {action_label}");
+                assert_eq!(
+                    got_action, action_label,
+                    "action label for {scope_str}/{action_label}"
+                );
+                assert!(trust.contains("unsigned"), "{trust}");
+            }
+        }
+    }
+
     // ---- signed links ----
 
     /// Deterministic test keypair: the signer the host trusts.
@@ -788,6 +879,55 @@ mod tests {
             parse_deep_link_with_trust(&tampered, Some(&test_trusted_key())),
             Err(ParseError::InvalidSignature)
         );
+    }
+
+    #[test]
+    fn a_tampered_scope_fails_verification() {
+        // Companion to the action-tamper test above: flipping the *scope*
+        // (the targeted app/domain) after signing must also fail closed. The
+        // signature covers the whole byte prefix, so swapping which app a
+        // signed link targets — or switching an App scope to a Domain — has to
+        // require a fresh signature, never silently re-target.
+        let url = signed_url("compme://setOverride?app=com.apple.TextEdit&enabled=true");
+        // (a) same scope kind, different target app.
+        let retargeted = url.replace("com.apple.TextEdit", "com.evil.Keylogger");
+        assert_eq!(
+            parse_deep_link_with_trust(&retargeted, Some(&test_trusted_key())),
+            Err(ParseError::InvalidSignature),
+            "retargeting the signed app must fail verification"
+        );
+        // (b) flip the scope key itself: app → domain (valid domain so the
+        // failure is the signature, not a parse error masking it).
+        let domain = signed_url("compme://setOverride?app=example.com&enabled=true");
+        let flipped = domain.replace("app=example.com", "domain=example.com");
+        assert_eq!(
+            parse_deep_link_with_trust(&flipped, Some(&test_trusted_key())),
+            Err(ParseError::InvalidSignature),
+            "flipping the scope kind (app→domain) must fail verification"
+        );
+    }
+
+    #[test]
+    fn split_trailing_signature_hands_the_verifier_the_exact_payload_prefix() {
+        // The split point is security-critical: the verifier must receive
+        // exactly the bytes before `&sig=` (everything signed) and nothing
+        // after. Assert the boundary precisely against the private splitter.
+        let payload = "compme://setOverride?app=com.apple.TextEdit&enabled=true";
+        let url = signed_url(payload);
+        let split = url.find("&sig=").expect("signed url has a sig param");
+        let (got_payload, signature) = split_trailing_signature(&url)
+            .expect("well-formed sig splits cleanly")
+            .expect("a sig param is present");
+        // The payload is the byte prefix up to (not including) `&sig=`.
+        assert_eq!(got_payload, payload);
+        assert_eq!(got_payload, &url[..split]);
+        assert_eq!(got_payload.len(), split);
+        // And the recovered signature is the one we appended (round-trips).
+        use ed25519_dalek::Signer;
+        let expected = test_signer().sign(payload.as_bytes());
+        assert_eq!(signature, expected);
+        // No `&sig=` at all → no split (the unsigned path).
+        assert_eq!(split_trailing_signature(payload), Ok(None));
     }
 
     #[test]

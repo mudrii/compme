@@ -4309,6 +4309,11 @@ mod tests {
         for on in ["1", "true", "yes", "verbose"] {
             assert!(env_flag_on(Some(OsStr::new(on))), "{on:?} should be on");
         }
+        // A non-UTF-8 value is present and not an off-token, so it reads as on
+        // (lossy decode cannot match "0"/"false"/etc.).
+        use std::os::unix::ffi::OsStrExt;
+        let non_utf8 = OsStr::from_bytes(&[0xff]);
+        assert!(env_flag_on(Some(non_utf8)), "non-UTF-8 value should be on");
     }
 
     /// Build a lookup closure from a list of key/value pairs.
@@ -9281,6 +9286,36 @@ mod tests {
             }
             other => panic!("expected accepted license ready decision, got {other:?}"),
         }
+        assert!(accepted.contains(encumbered.name));
+    }
+
+    #[test]
+    fn model_download_click_skips_prompt_for_already_accepted_license() {
+        let encumbered_index = model_catalog::catalog()
+            .iter()
+            .position(|entry| entry.license.needs_acceptance())
+            .expect("catalog has an encumbered entry");
+        let encumbered = &model_catalog::catalog()[encumbered_index];
+        // Seed the accepted set so the download gate proceeds without prompting.
+        let mut accepted = std::collections::BTreeSet::new();
+        accepted.insert(encumbered.name.to_string());
+
+        let decision = model_download_click_decision(
+            encumbered_index,
+            encumbered.min_ram_gb,
+            &mut accepted,
+            |_, _, _| panic!("already-accepted license must not re-prompt"),
+        )
+        .expect("catalog has an entry");
+
+        match decision {
+            ModelDownloadClickDecision::Ready {
+                entry,
+                accepted_license: None,
+            } => assert_eq!(entry.name, encumbered.name),
+            other => panic!("expected ready decision without new acceptance, got {other:?}"),
+        }
+        // Re-download of an already-licensed model leaves the set unchanged.
         assert!(accepted.contains(encumbered.name));
     }
 

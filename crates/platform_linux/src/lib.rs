@@ -187,4 +187,43 @@ mod tests {
             Err(PlatformError::UnsupportedField { .. })
         ));
     }
+
+    #[test]
+    fn insert_fails_closed_for_every_strategy_variant() {
+        // The prior tests only exercised InsertStrategy::None. A real adapter that
+        // half-landed (e.g. an EditableText/XTEST branch returning Ok before the
+        // others) must not slip past the scaffold gate, so pin BOTH insert and
+        // insert_replacing as UnsupportedField across ALL strategies. If a variant
+        // is added to InsertStrategy, this match goes non-exhaustive and forces an
+        // update.
+        let adapter = LinuxAdapter::new();
+        let field = FieldHandle {
+            app: "test".to_string(),
+            pid: None,
+            element_id: "scaffold".to_string(),
+            generation: 0,
+        };
+        for strategy in [
+            InsertStrategy::AxSet,
+            InsertStrategy::SyntheticKeys,
+            InsertStrategy::Clipboard,
+            InsertStrategy::ImeCommit,
+            InsertStrategy::None,
+        ] {
+            assert!(
+                matches!(
+                    adapter.insert(&field, "x", strategy),
+                    Err(PlatformError::UnsupportedField { .. })
+                ),
+                "insert {strategy:?}"
+            );
+            assert!(
+                matches!(
+                    adapter.insert_replacing(&field, "x", 1, strategy),
+                    Err(PlatformError::UnsupportedField { .. })
+                ),
+                "insert_replacing {strategy:?}"
+            );
+        }
+    }
 }

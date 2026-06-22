@@ -241,6 +241,22 @@ mod tests {
     }
 
     #[test]
+    fn multibyte_first_char_query_is_handled_without_panic() {
+        // `to_british` lowercases the query and looks it up, then re-applies the
+        // query's CasePattern (which reads the first char) to the British value.
+        // Every table key is ASCII, so a word whose first character is multibyte
+        // can never match — it must return None, never panic on the non-ASCII
+        // first-char path (no byte slicing into the codepoint).
+        assert_eq!(to_british("Élan"), None);
+        assert_eq!(to_british("élan"), None);
+        assert_eq!(to_british("Ünder"), None);
+        assert!(!is_americanism("Élan"));
+        // A trailing-multibyte query is likewise a clean miss (lowercasing keeps
+        // the multibyte tail, so it never equals an ASCII key).
+        assert_eq!(to_british("coloré"), None);
+    }
+
+    #[test]
     fn empty_input_is_none() {
         assert_eq!(to_british(""), None);
         assert_eq!(to_british("   "), None);

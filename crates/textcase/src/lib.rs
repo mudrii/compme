@@ -98,6 +98,21 @@ mod tests {
     }
 
     #[test]
+    fn classifies_multibyte_accented_strings() {
+        // `of` reasons over Unicode scalars, not bytes. An accented all-caps word
+        // ("ÉLAN", É is 2 UTF-8 bytes) must classify as Upper (all letters
+        // uppercase, >1 letter), and a multibyte mixed string by its first letter.
+        assert_eq!(CasePattern::of("ÉLAN"), CasePattern::Upper);
+        assert_eq!(CasePattern::of("Élan"), CasePattern::Title); // first upper, rest lower
+        assert_eq!(CasePattern::of("élan"), CasePattern::Lower);
+        // A single accented capital is Title, not Upper (the >1-letter rule),
+        // mirroring the ASCII `"I"` case.
+        assert_eq!(CasePattern::of("É"), CasePattern::Title);
+        // CJK has no case → no cased letters → Lower (matches the "42" rule).
+        assert_eq!(CasePattern::of("日本"), CasePattern::Lower);
+    }
+
+    #[test]
     fn apply_each_pattern() {
         assert_eq!(CasePattern::Lower.apply("Enormous"), "Enormous");
         assert_eq!(CasePattern::Title.apply("enormous"), "Enormous");
