@@ -2874,7 +2874,7 @@ pub fn run() -> Result<(), String> {
         Err(err) => match subscription_error_action(trusted, &err) {
             SubscriptionErrorAction::NoopUntilPermission => {
                 eprintln!(
-                    "compme: focus subscription unavailable until Accessibility is granted: {err:?}"
+                    "compme: focus subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
                 );
                 Subscription::new(0)
             }
@@ -2894,7 +2894,7 @@ pub fn run() -> Result<(), String> {
         Err(err) => match subscription_error_action(trusted, &err) {
             SubscriptionErrorAction::NoopUntilPermission => {
                 eprintln!(
-                    "compme: caret subscription unavailable until Accessibility is granted: {err:?}"
+                    "compme: caret subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
                 );
                 Subscription::new(0)
             }
@@ -2919,7 +2919,7 @@ pub fn run() -> Result<(), String> {
         Err(err) => match subscription_error_action(trusted, &err) {
             SubscriptionErrorAction::NoopUntilPermission => {
                 eprintln!(
-                    "compme: accept subscription unavailable until Accessibility is granted: {err:?}"
+                    "compme: accept subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
                 );
                 noop_accept_subscription()
             }

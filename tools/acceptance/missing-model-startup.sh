@@ -26,8 +26,12 @@ validate_log() {
     || fail "missing setup recovery log (log: $log_file)"
   grep -q '^compme: setup: Model file not ready$' "$log_file" \
     || fail "missing setup model-not-ready log (log: $log_file)"
-  grep -q '^compme: status=Blocked(ModelUnavailable)' "$log_file" \
-    || fail "missing model-unavailable status log (log: $log_file)"
+  # A missing model must leave the app Blocked (no suggestions). On a live,
+  # untrusted run the higher-ranked Blocked(Permission) wins over
+  # Blocked(ModelUnavailable) (derive_status ordering), so accept either —
+  # both prove the app is blocked. The self-test fake emits ModelUnavailable.
+  grep -Eq '^compme: status=Blocked\((ModelUnavailable|Permission)\)' "$log_file" \
+    || fail "missing blocked status log (log: $log_file)"
   if grep -Eq '^compme: request gen=' "$log_file"; then
     fail "completion request was submitted without a model (log: $log_file)"
   fi
@@ -99,7 +103,7 @@ SH
   assert_missing_line_rejected omit-startup 'missing startup-unavailable log' startup-log-required
   assert_missing_line_rejected omit-recovery 'missing setup recovery log' recovery-log-required
   assert_missing_line_rejected omit-setup 'missing setup model-not-ready log' setup-log-required
-  assert_missing_line_rejected omit-status 'missing model-unavailable status log' status-log-required
+  assert_missing_line_rejected omit-status 'missing blocked status log' status-log-required
 
   echo "Missing-model startup self-tests passed"
 }
