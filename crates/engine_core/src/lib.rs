@@ -2325,10 +2325,43 @@ mod tests {
     #[test]
     fn cancel_last_shown_removes_only_the_trailing_shown() {
         // The host calls this when an overlay placement failed: the emitted-but-
-        // never-presented ghost must not be counted as shown.
-        let mut machine = machine_showing();
+        // never-presented ghost must not be counted as shown. (Scoped so the
+        // local `machine` binding doesn't shadow the `machine()` constructor
+        // used below.)
+        {
+            let mut machine = machine_showing();
+            machine.cancel_last_shown();
+            assert_eq!(machine.take_stat_events(), vec![]);
+        }
+
+        // With an interleaved buffer [Shown, Superseded, Shown] (two show cycles,
+        // the first superseded), only the TRAILING Shown — the one whose
+        // placement just failed — is retracted; the earlier, successfully-
+        // presented Shown and the Superseded between them are preserved. This
+        // pins the `rposition` choice: a regression to `position` would drop the
+        // first Shown and corrupt shown-count stats.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello", 5, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "world".into(),
+        });
+        machine.on_event(text_changed("hello world ", 12, 1000));
+        machine.on_event(Event::Tick { now_ms: 1500 });
+        machine.on_event(Event::CompletionReady {
+            generation: 2,
+            field: field("field-a"),
+            snapshot: 2,
+            text: "again".into(),
+        });
         machine.cancel_last_shown();
-        assert_eq!(machine.take_stat_events(), vec![]);
+        assert_eq!(
+            machine.take_stat_events(),
+            vec![StatEvent::Shown, StatEvent::Superseded]
+        );
     }
 
     fn showing_three_words() -> SuggestionMachine {
