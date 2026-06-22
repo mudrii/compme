@@ -18,6 +18,7 @@ run_self_test() {
   <key>CFBundleIdentifier</key><string>com.compme.app</string>
   <key>CFBundleExecutable</key><string>compme</string>
   <key>CFBundleShortVersionString</key><string>1.2.3</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleURLTypes</key>
   <array>
@@ -36,6 +37,7 @@ PLIST
 cask "compme" do
   version "${2}"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  depends_on macos: ">= :sonoma"
 end
 CASK
   }
@@ -119,6 +121,7 @@ ruby -rrexml/document -e '
 
   expect.call("CFBundleIdentifier", value_after.call("CFBundleIdentifier"), "com.compme.app")
   expect.call("CFBundleExecutable", value_after.call("CFBundleExecutable"), "compme")
+  expect.call("LSMinimumSystemVersion", value_after.call("LSMinimumSystemVersion"), "14.0")
   expect.call("LSUIElement", value_after.call("LSUIElement"), true)
 
   schemes = []
@@ -137,10 +140,13 @@ ruby -rrexml/document -e '
   errors << "CFBundleURLSchemes: missing compme" unless schemes.include?("compme")
 
   cargo_version = File.read(cargo_path)[/^version\s*=\s*"([^"]+)"/, 1]
-  cask_version = File.read(cask_path)[/^\s*version\s+"([^"]+)"/, 1]
+  cask_text = File.read(cask_path)
+  cask_version = cask_text[/^\s*version\s+"([^"]+)"/, 1]
+  cask_macos = cask_text[/^\s*depends_on\s+macos:\s+">=\s*:(\w+)"/, 1]
   plist_version = value_after.call("CFBundleShortVersionString")
   errors << "crates/app Cargo.toml: missing package version" unless cargo_version
   errors << "Casks/compme.rb: missing cask version" unless cask_version
+  errors << "Casks/compme.rb: macOS floor must be >= :sonoma" unless cask_macos == "sonoma"
   if cargo_version && cask_version
     expect.call("CFBundleShortVersionString", plist_version, cargo_version)
     errors << "version drift: cask #{cask_version.inspect} != app #{cargo_version.inspect}" unless cask_version == cargo_version
@@ -152,5 +158,5 @@ ruby -rrexml/document -e '
     exit 1
   end
 
-  puts "Bundle metadata OK: version=#{plist_version} id=com.compme.app executable=compme scheme=compme"
+  puts "Bundle metadata OK: version=#{plist_version} id=com.compme.app executable=compme scheme=compme macos_min=14.0"
 ' "$info_plist" "$app_manifest" "$cask_file"

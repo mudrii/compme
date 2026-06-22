@@ -41,6 +41,10 @@ REQUEST_LINE_SUFFIX=' app_allows=true terminal_ok=true domain_ready=true prefs_o
 WORKS_APP_PATTERN='(com\.apple\.Safari|com\.google\.Chrome|com\.apple\.mail|com\.microsoft\.Word|com\.apple\.TextEdit|com\.apple\.Notes|notion\.id|md\.obsidian|com\.apple\.MobileSMS)'
 TERMINAL_APP_PATTERN='(com\.apple\.Terminal|com\.googlecode\.iterm2)'
 
+terminal_cmd_prefix() {
+  printf 'git status # %s ' "$PROMPT_MARKER"
+}
+
 has_request_for_app_pattern() {
   grep -Eq "${REQUEST_LINE_PREFIX}$2${REQUEST_LINE_SUFFIX}" "$1"
 }
@@ -281,6 +285,14 @@ OSA
   else
     echo "PASS self-test-applescript-prefix-argv"
   fi
+  terminal_cmd_prefix_value="$(terminal_cmd_prefix)"
+  if [[ "$terminal_cmd_prefix_value" == *"$PROMPT_MARKER"* ]] \
+    && [[ "$terminal_cmd_prefix_value" == git\ status\ \#* ]]; then
+    echo "PASS self-test-terminal-cmd-prefix-carries-marker"
+  else
+    echo "FAIL self-test-terminal-cmd-prefix-carries-marker: $terminal_cmd_prefix_value" >&2
+    failures=$((failures + 1))
+  fi
   ( exit 7 ) &
   fake_pid=$!
   wait_for_product_status "$fake_pid"
@@ -323,7 +335,7 @@ fi
 
 # Terminal NL-prompt vs shell-command prefixes drive the terminal heuristic.
 case "$KIND" in
-  terminal-cmd) PREFIX="git status && ls -la " ;;
+  terminal-cmd) PREFIX="$(terminal_cmd_prefix)" ;;
   terminal-nlp) PREFIX="please summarize the recent changes in " ;;
 esac
 

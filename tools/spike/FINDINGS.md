@@ -50,13 +50,10 @@ requirement — Accessibility-only, Cotypist parity). Rationale:
    Accessibility-only and ships **no** CGEventTap (D1/F1), so cross-app consume is
    established by precedent for the exact mechanism.
 
-**Residual (manual, environment-bound):** live cross-app *consume* + Input-Monitoring-
-revoked confirmation in our own binary (focus TextEdit while `p8_carbon_hotkey` runs,
-press Tab → expect `HOTKEY_FIRED` AND no tab inserted in TextEdit). This cannot be
-auto-driven headlessly. **Until that manual confirm + the production migration land,
-the live-validated consuming `CGEventTap` remains the shipping accept mechanism**, and
-Input Monitoring stays a documented, onboarded divergence with the exit path now
-identified. The migration (register/unregister Carbon hotkeys on suggestion show/hide,
-retire `consumer_tap` + the `PermissionMissing{"Input Monitoring"}` path, keep or fold
-the listen-only observer for front-run dismissal) is tracked as the consequent A1b
-step gated on that one manual confirmation — not an open question.
+**Historical residual (superseded by A1b):** at the time of this spike, live
+cross-app *consume* + Input-Monitoring-revoked confirmation in our own binary was
+still pending. That production migration has since landed: the shipping accept
+path uses transient Carbon hotkeys for Tab/grave/Esc/Down and does not require
+Input Monitoring for accept behavior. Keep the old two-tap `CGEventTap` probes as
+prior-art evidence only; the current source of truth is `docs/ACCEPTANCE.md` and
+the macOS MVP design spec's F1/D1 closure notes.

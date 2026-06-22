@@ -2898,10 +2898,17 @@ pub fn run() -> Result<(), String> {
         .map_err(|err| format!("subscribe accept: {err:?}"))?;
     engine.set_accept_subscription(accept_sub);
 
-    let model = load_model(resolve_source(
+    let model = match load_model(resolve_source(
         config.stub_completion.clone(),
         config.model_path.clone(),
-    ))?;
+    )) {
+        Ok(model) => Some(model),
+        Err(err) => {
+            eprintln!("compme: model unavailable at startup: {err}");
+            eprintln!("compme: setup remains available; download or select a model, then relaunch");
+            None
+        }
+    };
     // Screen-recording context (optional, A2 §16): request the permission once if
     // the user opted in. The app continues with field-only context if denied
     // (the "works without it" requirement); local OCR enrichment rides on this
@@ -3021,13 +3028,16 @@ pub fn run() -> Result<(), String> {
         max_chars: context_bound,
         diag_context: config.diag_context,
     };
-    let inference = InferenceHandle::spawn(
-        model,
-        config.prompt_mode,
-        config.personalization.clone(),
-        config.candidates,
-        worker_context,
-    )?;
+    let inference = match model {
+        Some(model) => InferenceHandle::spawn(
+            model,
+            config.prompt_mode,
+            config.personalization.clone(),
+            config.candidates,
+            worker_context,
+        )?,
+        None => InferenceHandle::unavailable(),
+    };
 
     // Shared state for the tray; flipped by menu actions, observed by this loop.
     let flags = TrayFlags {
@@ -3587,7 +3597,11 @@ pub fn run() -> Result<(), String> {
             .setup_request_screen
             .swap(false, Ordering::Relaxed)
         {
-            request_screen_recording_permission();
+            if config.screen_context && !screen_recording_permission() {
+                request_screen_recording_permission();
+            } else {
+                eprintln!("compme: screen recording request ignored; screen context is off or already granted");
+            }
         }
         if settings_flags
             .setup_reveal_model
@@ -3880,6 +3894,10 @@ pub fn run() -> Result<(), String> {
                 *screen_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
             persist_and_log_switch("COMPME_SCREEN_CONTEXT", "screen context", on);
+            if let Ok(mut lines) = settings_flags.setup_lines.lock() {
+                *lines = compose_setup_lines(&config);
+            }
+            settings_window.refresh_setup_labels();
         }
         // Emoji-pane watcher: the replacement path reads config.emoji on each
         // observation, so changing the Option is the live apply. Keep the parsed

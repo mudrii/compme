@@ -11,7 +11,8 @@
 #        tools/bundle/make-app.sh --self-test
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+script_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+repo_root="${COMPME_BUNDLE_REPO_ROOT:-$script_repo_root}"
 
 run_self_test() {
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/compme-make-app-self-test.XXXXXX")"
@@ -21,9 +22,12 @@ run_self_test() {
   trap cleanup EXIT
 
   fake_bin="$tmp_dir/bin"
+  fixture_root="$tmp_dir/repo"
   out_dir="$tmp_dir/out"
   log="$tmp_dir/commands.log"
   mkdir -p "$fake_bin"
+  mkdir -p "$fixture_root/tools/bundle"
+  cp "$repo_root/tools/bundle/Info.plist" "$fixture_root/tools/bundle/Info.plist"
 
   cat >"$fake_bin/cargo" <<'SH'
 #!/usr/bin/env bash
@@ -44,16 +48,16 @@ SH
 
   PATH="$fake_bin:$PATH" \
     COMPME_BUNDLE_SELF_TEST_LOG="$log" \
-    COMPME_BUNDLE_REPO_ROOT="$repo_root" \
+    COMPME_BUNDLE_REPO_ROOT="$fixture_root" \
     COMPME_BUNDLE_SKIP_LSREGISTER=1 \
     "$0" "$out_dir" >"$tmp_dir/stdout"
 
   app="$out_dir/Compme.app"
   test -d "$app/Contents/MacOS"
   test -d "$app/Contents/Resources"
-  cmp "$repo_root/tools/bundle/Info.plist" "$app/Contents/Info.plist" >/dev/null
+  cmp "$fixture_root/tools/bundle/Info.plist" "$app/Contents/Info.plist" >/dev/null
   test -x "$app/Contents/MacOS/compme"
-  grep -Fq "cargo build --release -p app --manifest-path $repo_root/Cargo.toml" "$log"
+  grep -Fq "cargo build --release -p app --manifest-path $fixture_root/Cargo.toml" "$log"
   grep -Fq "plutil -lint $app/Contents/Info.plist" "$log"
   grep -Fq "codesign --force --sign - $app" "$log"
   grep -Fq "codesign --verify $app" "$log"

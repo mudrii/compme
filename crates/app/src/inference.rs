@@ -384,6 +384,20 @@ impl InferenceHandle {
         })
     }
 
+    /// Construct a permanently-not-ready handle for startup states where no
+    /// model can be loaded yet. This keeps tray/settings reachable while
+    /// inference submissions fail closed until the user downloads/selects a
+    /// model and restarts.
+    pub fn unavailable() -> Self {
+        let (_outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
+        Self {
+            request_tx: None,
+            outcome_rx,
+            ready: Arc::new(AtomicBool::new(false)),
+            handle: None,
+        }
+    }
+
     /// True once warm-up has finished. The run loop withholds suggestions until
     /// then (the P0 "loading" state, surfaced via logs — no tray yet).
     pub fn is_ready(&self) -> bool {
@@ -1141,6 +1155,16 @@ mod tests {
         };
 
         assert!(!inference.submit(request("lost worker", 1)));
+    }
+
+    #[test]
+    fn unavailable_inference_is_not_ready_and_rejects_submissions() {
+        let inference = InferenceHandle::unavailable();
+
+        assert!(!inference.is_ready());
+        assert!(!inference.submit(request("missing model", 1)));
+        assert!(inference.drain_outcomes().is_empty());
+        inference.shutdown();
     }
 
     #[test]

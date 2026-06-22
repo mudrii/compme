@@ -690,6 +690,26 @@ fn apps_row_is_deletable(line: &str) -> bool {
     line.contains(" \u{2014} ")
 }
 
+fn setup_action_available(lines: &[String], label: &str, ready: bool) -> bool {
+    let glyph = if ready { '\u{2713}' } else { '\u{2717}' };
+    lines
+        .iter()
+        .any(|line| line.starts_with(glyph) && line.contains(label))
+}
+
+fn refresh_setup_action_buttons(buttons: &[Retained<NSButton>], lines: &[String]) {
+    let available = [
+        setup_action_available(lines, "Accessibility", false),
+        setup_action_available(lines, "Screen Recording", false),
+        setup_action_available(lines, "Model file", true),
+        true,
+    ];
+    for (button, available) in buttons.iter().zip(available) {
+        button.setHidden(!available);
+        button.setEnabled(available);
+    }
+}
+
 pub struct MacosSettingsWindow {
     window: Option<Retained<NSWindow>>,
     flags: SettingsFlags,
@@ -700,6 +720,10 @@ pub struct MacosSettingsWindow {
     stats_labels: Vec<Retained<NSTextField>>,
     // Setup row labels, refreshed from `flags.setup_lines` the same way.
     setup_labels: Vec<Retained<NSTextField>>,
+    // Setup action buttons, hidden/disabled from the same row actions as the
+    // labels so unavailable prompts (notably Screen Recording when OCR is off)
+    // cannot be clicked.
+    setup_action_buttons: Vec<Retained<NSButton>>,
     // Apps row labels, refreshed from `flags.apps_lines` the same way.
     apps_labels: Vec<Retained<NSTextField>>,
     // Per-row Apps Delete buttons, hidden on every refresh for rows that are
@@ -728,6 +752,7 @@ impl MacosSettingsWindow {
             target: None,
             stats_labels: Vec::new(),
             setup_labels: Vec::new(),
+            setup_action_buttons: Vec::new(),
             apps_labels: Vec::new(),
             apps_delete_buttons: Vec::new(),
             switches: Vec::new(),
@@ -746,6 +771,7 @@ impl MacosSettingsWindow {
             self.window = Some(built.window);
             self.stats_labels = built.stats_labels;
             self.setup_labels = built.setup_labels;
+            self.setup_action_buttons = built.setup_action_buttons;
             self.apps_labels = built.apps_labels;
             self.apps_delete_buttons = built.apps_delete_buttons;
             self.switches = built.switches;
@@ -764,6 +790,7 @@ impl MacosSettingsWindow {
             for (label, line) in self.setup_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
+            refresh_setup_action_buttons(&self.setup_action_buttons, &lines);
         }
         if let Ok(lines) = self.flags.apps_lines.lock() {
             for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
@@ -823,6 +850,7 @@ impl MacosSettingsWindow {
             for (label, line) in self.setup_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
+            refresh_setup_action_buttons(&self.setup_action_buttons, &lines);
         }
     }
 
@@ -897,6 +925,7 @@ fn build_window(
     window.center();
     let mut stats_labels: Vec<Retained<NSTextField>> = Vec::new();
     let mut setup_labels: Vec<Retained<NSTextField>> = Vec::new();
+    let mut setup_action_buttons: Vec<Retained<NSButton>> = Vec::new();
     let mut apps_labels: Vec<Retained<NSTextField>> = Vec::new();
     let mut apps_delete_buttons: Vec<Retained<NSButton>> = Vec::new();
     let mut switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)> = Vec::new();
@@ -1012,7 +1041,9 @@ fn build_window(
                 NSSize::new(230.0, 28.0),
             ));
             setup.addSubview(&button);
+            setup_action_buttons.push(button);
         }
+        refresh_setup_action_buttons(&setup_action_buttons, &initial);
     }
 
     // General tab: the Labs switch (global mid-line toggle), initialized
@@ -1525,6 +1556,7 @@ fn build_window(
         window,
         stats_labels,
         setup_labels,
+        setup_action_buttons,
         apps_labels,
         apps_delete_buttons,
         switches,
@@ -1539,6 +1571,7 @@ struct BuiltWindow {
     window: Retained<NSWindow>,
     stats_labels: Vec<Retained<NSTextField>>,
     setup_labels: Vec<Retained<NSTextField>>,
+    setup_action_buttons: Vec<Retained<NSButton>>,
     apps_labels: Vec<Retained<NSTextField>>,
     apps_delete_buttons: Vec<Retained<NSButton>>,
     switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,

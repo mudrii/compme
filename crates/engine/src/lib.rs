@@ -169,6 +169,12 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         Ok(())
     }
 
+    fn reconcile_visible_failure(&mut self) {
+        let _ = self.overlay.hide();
+        let _ = self.set_tap_visible(false, None);
+        let _ = self.machine.on_event(Event::Dismiss);
+    }
+
     pub fn on_focus(
         &mut self,
         field: FieldHandle,
@@ -395,7 +401,10 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // fed back to the engine as a TextChanged event. Failure breaks the
                     // show→accept→hide cycle.
                     let strategy = self.caps.insert_strategy;
-                    self.adapter.insert(&field, &text, strategy)?;
+                    if let Err(err) = self.adapter.insert(&field, &text, strategy) {
+                        self.reconcile_visible_failure();
+                        return Err(err);
+                    }
                     // Cross-crate invariant: this flag is consumed by the *next*
                     // `Hide` to delay the synthetic-keys tap teardown. Correct only
                     // because `engine_core` always emits an `Insert`/`Replace`
@@ -413,11 +422,21 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // contract as `Insert`. Adapters that cannot range-replace fall
                     // back to a plain insert (the deletion is the FFI/live residual).
                     let strategy = self.caps.insert_strategy;
-                    self.adapter
-                        .insert_replacing(&field, &text, replace_left, strategy)?;
+                    if let Err(err) =
+                        self.adapter
+                            .insert_replacing(&field, &text, replace_left, strategy)
+                    {
+                        self.reconcile_visible_failure();
+                        return Err(err);
+                    }
                     delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
                 }
-                Command::UpdateGhost { text, .. } => self.overlay.update_ghost(&text)?,
+                Command::UpdateGhost { text, .. } => {
+                    if let Err(err) = self.overlay.update_ghost(&text) {
+                        self.reconcile_visible_failure();
+                        return Err(err);
+                    }
+                }
                 Command::Hide => {
                     self.overlay.hide()?;
                     if delay_next_hide {
@@ -756,15 +775,22 @@ mod tests {
         // exercised against the plain insert path.
         let mut adapter = FakeAdapter::new();
         adapter.fail_insert = true;
-        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
         engine.on_focus(field()).unwrap();
         engine
             .on_replacement(&field(), vec!["😄".into()], 5)
             .unwrap();
+        overlay.calls.lock().unwrap().clear();
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
             Err(PlatformError::StaleField),
             "a failing insert_replacing must surface, not be swallowed"
+        );
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Hide],
+            "a failed replacement accept must hide the stale replacement ghost"
         );
     }
 
@@ -1303,32 +1329,58 @@ mod tests {
     }
 
     #[test]
-    fn insert_failure_skips_trailing_hide_but_engine_stays_usable() {
-        // Mid-batch partial application (documented dispatch contract): a Full
-        // accept emits [Insert, Hide] in one batch. When Insert fails, dispatch
-        // bails via `?` BEFORE the Hide, so the overlay is left showing. This
-        // pins three things: the error surfaces, the trailing Hide is genuinely
-        // skipped (not swallowed into a clean hide), and the engine is not
-        // wedged — a fresh focus cycle still arms a completion request.
+    fn insert_failure_hides_stale_ui_and_engine_stays_usable() {
+        // A Full accept emits [Insert, Hide]. When Insert fails, dispatch still
+        // returns the original adapter error, but it must best-effort reconcile
+        // visible state because the batch's trailing Hide is not reached.
         let mut adapter = FakeAdapter::new();
         adapter.fail_insert = true;
         let overlay = FakeOverlay::default();
         let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let actions: Arc<Mutex<Vec<Option<AcceptAction>>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        let a = Arc::clone(&actions);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            |_| Ok(()),
+            move |action| {
+                a.lock().unwrap().push(action);
+                Ok(())
+            },
+        ));
 
         engine.on_focus(field()).unwrap();
         engine.on_text_changed(typed("x", 1, 0)).unwrap();
         let requests = engine.on_tick(500).unwrap();
         engine.on_completion(&requests[0], "hello".into()).unwrap();
         overlay.calls.lock().unwrap().clear();
+        visible.lock().unwrap().clear();
+        actions.lock().unwrap().clear();
 
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
             Err(PlatformError::StaleField),
             "the Insert error must surface to the caller"
         );
-        assert!(
-            !overlay.calls.lock().unwrap().contains(&OverlayCall::Hide),
-            "Insert failure must bail before the batch's Hide (partial application)"
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Hide],
+            "Insert failure must hide the stale ghost before surfacing the error"
+        );
+        assert_eq!(
+            *visible.lock().unwrap(),
+            vec![false],
+            "Insert failure must disarm the accept tap"
+        );
+        assert_eq!(
+            *actions.lock().unwrap(),
+            vec![None],
+            "Insert failure must clear the accept action"
         );
 
         // Not wedged: a fresh focus cycle still produces a request.
@@ -1820,23 +1872,39 @@ mod tests {
     }
 
     #[test]
-    fn update_ghost_error_propagates_on_word_accept() {
+    fn update_ghost_error_hides_stale_ui_and_propagates() {
         // Accepting a word emits UpdateGhost for the remaining suggestion; a
-        // failing update must surface, not be swallowed.
-        struct UpdateFailsOverlay;
+        // failing update must surface and clear the already-stale visible ghost.
+        #[derive(Clone)]
+        struct UpdateFailsOverlay {
+            calls: Arc<Mutex<Vec<OverlayCall>>>,
+        }
         impl OverlayPresenter for UpdateFailsOverlay {
-            fn show_ghost(&mut self, _rect: ScreenRect, _text: &str) -> Result<(), PlatformError> {
+            fn show_ghost(&mut self, rect: ScreenRect, text: &str) -> Result<(), PlatformError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(OverlayCall::Show(rect, text.into()));
                 Ok(())
             }
-            fn update_ghost(&mut self, _text: &str) -> Result<(), PlatformError> {
+            fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(OverlayCall::Update(text.into()));
                 Err(PlatformError::Timeout)
             }
             fn hide(&mut self) -> Result<(), PlatformError> {
+                self.calls.lock().unwrap().push(OverlayCall::Hide);
                 Ok(())
             }
         }
 
-        let mut engine = Engine::new(FakeAdapter::new(), UpdateFailsOverlay, 200, 4, 32);
+        let overlay = UpdateFailsOverlay {
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let calls = Arc::clone(&overlay.calls);
+        let mut engine = Engine::new(FakeAdapter::new(), overlay, 200, 4, 32);
         engine.on_focus(field()).unwrap();
         engine.on_text_changed(typed("x", 1, 0)).unwrap();
         let requests = engine.on_tick(500).unwrap();
@@ -1844,10 +1912,20 @@ mod tests {
         engine
             .on_completion(&requests[0], "alpha beta gamma".into())
             .unwrap();
+        calls.lock().unwrap().clear();
 
         assert_eq!(
             engine.on_accept(AcceptAction::Word),
             Err(PlatformError::Timeout)
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![OverlayCall::Update("beta gamma".into()), OverlayCall::Hide],
+            "a failed ghost update must clear the stale visible ghost"
+        );
+        assert!(
+            engine.on_accept(AcceptAction::Full).unwrap().is_empty(),
+            "accept after a failed update must be a no-op"
         );
     }
 

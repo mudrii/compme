@@ -4,10 +4,11 @@
 //! consuming tap. The observer toggles a precomputed `suggestion_visible` state
 //! with F8. The consuming tap drops Tab only while that state is true.
 //!
-//! Production still needs A1b lifecycle work: create/enable the consuming tap
-//! only while a real suggestion is visible, re-enable after disabled events,
-//! and defer teardown after synthetic insertion. This probe intentionally keeps
-//! both taps installed so the pinned `core-graphics` safe wrapper is enough.
+//! This is historical prior art. Production accept interception moved to
+//! transient Carbon hotkeys in A1b, so the consuming tap and Input Monitoring
+//! lifecycle are no longer part of the shipping accept path. This probe
+//! intentionally keeps both taps installed so the pinned `core-graphics` safe
+//! wrapper remains documented for comparison/debugging.
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

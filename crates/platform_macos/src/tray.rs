@@ -156,6 +156,7 @@ pub struct MacosTray {
     stats_line_item: Retained<NSMenuItem>,
     enabled_item: Retained<NSMenuItem>,
     settings_item: Retained<NSMenuItem>,
+    button_title_fallback: bool,
     // The menu item's `target` is a weak reference; keep the target alive here.
     _target: Retained<TrayTarget>,
     _menu: Retained<NSMenu>,
@@ -306,6 +307,7 @@ impl MacosTray {
         menu.addItem(&quit_item);
 
         status_item.setMenu(Some(&menu));
+        let mut button_title_fallback = true;
         if let Some(button) = status_item.button(mtm) {
             // Menu-bar mark: a caret + double chevron ("auto-complete forward").
             // Embedded so it ships with the unbundled binary; a template image
@@ -318,6 +320,8 @@ impl MacosTray {
                     // 36px bitmap shown at 18pt → crisp 2x on Retina menu bars.
                     image.setSize(NSSize::new(18.0, 18.0));
                     button.setImage(Some(&image));
+                    button.setTitle(&NSString::from_str(""));
+                    button_title_fallback = false;
                 }
                 None => button.setTitle(&NSString::from_str("CM\u{2026}")),
             }
@@ -329,6 +333,7 @@ impl MacosTray {
             stats_line_item,
             enabled_item,
             settings_item,
+            button_title_fallback,
             _target: target,
             _menu: menu,
         })
@@ -350,7 +355,11 @@ impl MacosTray {
             reason: "tray set_status must run on the main thread".into(),
         })?;
         if let Some(button) = self.status_item.button(mtm) {
-            button.setTitle(&NSString::from_str(title));
+            if self.button_title_fallback {
+                button.setTitle(&NSString::from_str(title));
+            } else {
+                button.setTitle(&NSString::from_str(""));
+            }
         }
         self.status_line_item
             .setTitle(&NSString::from_str(status_line));
