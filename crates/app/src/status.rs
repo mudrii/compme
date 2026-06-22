@@ -24,7 +24,7 @@ pub enum AppStatus {
     Blocked(BlockReason),
 }
 
-/// Derive the status from the four inputs, most-severe first.
+/// Derive the status from the five inputs, most-severe first.
 ///
 /// A missing permission outranks everything (nothing works without it); secure
 /// input outranks readiness (we must not suggest into a password field); an
