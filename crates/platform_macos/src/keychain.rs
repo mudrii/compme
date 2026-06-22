@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use platform::PlatformError;
+use zeroize::Zeroize;
 
 /// Keychain service name for the memory-store key entry.
 pub const MEMORY_KEY_SERVICE: &str = "com.compme.memory";
@@ -50,16 +51,23 @@ impl KeychainKeyStore {
     /// use. See the module docs for the fail-closed contract.
     pub fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
         match (self.read_secret)(&self.service, &self.account)? {
-            Some(secret) => {
-                <[u8; 32]>::try_from(secret.as_slice()).map_err(|_| PlatformError::CannotComplete {
-                    reason: format!(
-                        "keychain entry {}/{} holds {} bytes, expected 32 — refusing to \
-                             overwrite a foreign or corrupt secret",
-                        self.service,
-                        self.account,
-                        secret.len()
-                    ),
-                })
+            Some(mut secret) => {
+                // Copy into the fixed array, then scrub the raw keychain bytes
+                // so the AES key does not linger in the heap Vec after this
+                // returns (matches the `memory` crate's key zeroization).
+                let result = <[u8; 32]>::try_from(secret.as_slice()).map_err(|_| {
+                    PlatformError::CannotComplete {
+                        reason: format!(
+                            "keychain entry {}/{} holds {} bytes, expected 32 — refusing to \
+                                 overwrite a foreign or corrupt secret",
+                            self.service,
+                            self.account,
+                            secret.len()
+                        ),
+                    }
+                });
+                secret.zeroize();
+                result
             }
             None => {
                 let key = (self.generate_key)()?;

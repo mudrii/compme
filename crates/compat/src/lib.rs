@@ -272,8 +272,14 @@ pub fn compatibility_tier(bundle_id: &str) -> CompatTier {
         // Setup needed — Arc/Dia need Text Metrics / a launch flag for inline.
         "company.thebrowser.Browser" | "company.thebrowser.dia" => CompatTier::SetupNeeded,
 
-        // Mirror-window only.
-        "org.mozilla.firefox" | "app.zen-browser.zen" => CompatTier::MirrorOnly,
+        // Mirror-window only. All Gecko/Firefox-family builds share the same
+        // lack of inline caret geometry, so the Developer Edition and Nightly
+        // variants must classify like the stable build (they were fail-open
+        // Unknown before — `is_browser` lists them but the tier arm didn't).
+        "org.mozilla.firefox"
+        | "org.mozilla.firefoxdeveloperedition"
+        | "org.mozilla.nightly"
+        | "app.zen-browser.zen" => CompatTier::MirrorOnly,
 
         // Partial.
         "com.tinyspeck.slackmacgap" => CompatTier::Partial,
@@ -319,6 +325,11 @@ mod tests {
             ("company.thebrowser.Browser", CompatTier::SetupNeeded),
             ("company.thebrowser.dia", CompatTier::SetupNeeded),
             ("org.mozilla.firefox", CompatTier::MirrorOnly),
+            (
+                "org.mozilla.firefoxdeveloperedition",
+                CompatTier::MirrorOnly,
+            ),
+            ("org.mozilla.nightly", CompatTier::MirrorOnly),
             ("app.zen-browser.zen", CompatTier::MirrorOnly),
             ("com.tinyspeck.slackmacgap", CompatTier::Partial),
             ("com.microsoft.VSCode", CompatTier::SidebarOnly),

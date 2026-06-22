@@ -14,3 +14,4 @@ objc2-foundation = { version = "=0.3.2", features = ["NSValue", "NSAppleEventMan
 platform = { path = "../platform" }
 objc2-service-management = { version = "=0.3.2", features = ["SMAppService"] }
 security-framework = "=3.7.0"
+zeroize = "1"
