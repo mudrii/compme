@@ -606,7 +606,6 @@ mod tests {
             Environment {
                 os: OperatingSystem::Macos,
                 version: "test".into(),
-                display_topology: None,
             }
         }
         fn subscribe_focus(&self, _cb: FocusCallback) -> Result<Subscription, PlatformError> {

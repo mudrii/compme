@@ -935,23 +935,6 @@ fn macos_version_string() -> String {
     format!("{}.{}.{}", v.majorVersion, v.minorVersion, v.patchVersion)
 }
 
-/// Active-display geometry summary for diagnostics, e.g. "2 display(s):
-/// 1920x1080, 2560x1440". Uses CoreGraphics (thread-safe), not NSScreen.
-fn display_topology_string() -> Option<String> {
-    let ids = CGDisplay::active_displays().ok()?;
-    if ids.is_empty() {
-        return None;
-    }
-    let sizes: Vec<String> = ids
-        .iter()
-        .map(|id| {
-            let bounds = CGDisplay::new(*id).bounds();
-            format!("{}x{}", bounds.size.width as i64, bounds.size.height as i64)
-        })
-        .collect();
-    Some(format!("{} display(s): {}", sizes.len(), sizes.join(", ")))
-}
-
 /// Height of the primary (menu-bar) screen — the shared origin both the AX
 /// (top-left) and Cocoa (bottom-left) global coordinate systems are measured
 /// from. Used to flip the caret rect into Cocoa window coordinates.
@@ -1421,7 +1404,6 @@ impl PlatformAdapter for MacosPlatformAdapter {
         Environment {
             os: OperatingSystem::Macos,
             version: macos_version_string(),
-            display_topology: display_topology_string(),
         }
     }
 

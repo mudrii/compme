@@ -215,13 +215,12 @@ pub enum UxMode {
     Blocked,
 }
 
-/// Static description of the host (OS, version, display layout) — diagnostics
-/// and strategy selection only; per-field decisions belong in [`Capabilities`].
+/// Static description of the host (OS, version) — diagnostics and strategy
+/// selection only; per-field decisions belong in [`Capabilities`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Environment {
     pub os: OperatingSystem,
     pub version: String,
-    pub display_topology: Option<String>,
 }
 
 /// Host operating system; `Unknown` carries the raw name so adapters never
