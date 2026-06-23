@@ -282,6 +282,10 @@ impl ModelDownloader {
                             status
                                 .downloaded
                                 .store(written, std::sync::atomic::Ordering::Relaxed);
+                            // total==0 is the "unknown total" sentinel (server sent
+                            // no Content-Length): a polling consumer computing a
+                            // percentage must treat 0 as indeterminate, not as a
+                            // known-zero/known-small total.
                             status
                                 .total
                                 .store(total.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);

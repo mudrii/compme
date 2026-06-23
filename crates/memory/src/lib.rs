@@ -149,8 +149,13 @@ impl MemoryStore {
     }
 
     fn store(&self, app: &str, text: &str) -> Result<()> {
-        let redacted = redaction::redact(text);
-        let blob = self.encrypt(&redacted, app.as_bytes())?;
+        // Hold the redacted plaintext in a zeroizing buffer so it is scrubbed from
+        // the heap after encryption — matching the key-zeroization rigor under the
+        // same core-dump/swap/live-inspection threat model the module guards. The
+        // redacted text can still carry private (non-PII) prose. Best-effort: the
+        // caller's `text` is its own and is not scrubbed here.
+        let redacted = zeroize::Zeroizing::new(redaction::redact(text));
+        let blob = self.encrypt(redacted.as_str(), app.as_bytes())?;
         self.conn.execute(
             "INSERT INTO memories (app, blob) VALUES (?1, ?2)",
             params![app, blob],
@@ -163,7 +168,10 @@ impl MemoryStore {
         let n: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
-        Ok(n.max(0) as usize)
+        // Explicit clamp instead of `as usize`: SQLite COUNT is i64; on a 32-bit
+        // target a raw cast would silently truncate. try_from makes the (only on
+        // an implausibly huge table) saturation explicit.
+        Ok(usize::try_from(n.max(0)).unwrap_or(usize::MAX))
     }
 
     /// The most recent `limit` decryptable records for `app`, newest first.
@@ -205,7 +213,9 @@ impl MemoryStore {
         let mut out = Vec::new();
         for row in rows {
             let (app, n) = row?;
-            out.push((app, n.max(0) as u64));
+            // Explicit clamp over `as u64` — COUNT is i64; try_from keeps the
+            // conversion lossless and saturates only on an implausibly huge count.
+            out.push((app, u64::try_from(n.max(0)).unwrap_or(u64::MAX)));
         }
         Ok(out)
     }

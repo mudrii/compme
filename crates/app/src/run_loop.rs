@@ -4290,6 +4290,12 @@ pub fn run() -> Result<(), String> {
                             screen_enabled,
                         },
                         read_pasteboard_text,
+                        // A fresh AX caret_rect read on the AppKit thread. Bounded:
+                        // submits are debounced (not per-keystroke) and the heavy
+                        // OCR is offloaded to ScreenOcr's own thread — only this
+                        // rect read is inline. If a sluggish AX server ever makes it
+                        // stall the heartbeat, reuse the rect from the Caret host
+                        // event instead of reading afresh here.
                         |request| adapter.caret_rect(&request.field).ok().flatten(),
                         |submission| {
                             if let Some(ocr) = &screen_ocr {
