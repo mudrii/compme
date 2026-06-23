@@ -6472,6 +6472,32 @@ mod tests {
     }
 
     #[test]
+    fn map_ax_error_covers_illegal_argument_failure_and_unknown() {
+        assert_eq!(
+            map_ax_error(accessibility_sys::kAXErrorIllegalArgument),
+            PlatformError::CannotComplete {
+                reason: "AX illegal argument".into(),
+            }
+        );
+        assert_eq!(
+            map_ax_error(accessibility_sys::kAXErrorFailure),
+            PlatformError::CannotComplete {
+                reason: "AX request failed".into(),
+            }
+        );
+
+        // Any AX code not explicitly matched falls through to the generic
+        // CannotComplete reason that embeds the raw error code.
+        let unknown: AXError = -25299;
+        assert_eq!(
+            map_ax_error(unknown),
+            PlatformError::CannotComplete {
+                reason: format!("AX error {unknown}"),
+            }
+        );
+    }
+
+    #[test]
     fn focus_token_factory_assigns_new_generation_for_each_focus_event() {
         let mut factory = FocusTokenFactory::new();
 

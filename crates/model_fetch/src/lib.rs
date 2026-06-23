@@ -1153,4 +1153,79 @@ mod tests {
             Some("bytes=398000000-".to_string())
         );
     }
+
+    #[test]
+    fn worker_stores_zero_total_when_content_length_unknown() {
+        // The download_url callback reports total=None when the server omits
+        // Content-Length (covered by no_content_length_reports_unknown_total).
+        // This pins the WORKER's translation of that None into the shared
+        // DownloadStatus: total.unwrap_or(0), so a polling consumer reads 0 as
+        // the "unknown total" sentinel. Drive the real worker against a
+        // no-Content-Length server and assert status.total == 0 after success.
+        let url = serve(b"unsized worker bytes", RangeMode::NoContentLength);
+        let dest = temp_dest("worker-no-content-length");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let worker = ModelDownloader::spawn().unwrap();
+        let status = std::sync::Arc::new(DownloadStatus::default());
+        assert!(worker.request(DownloadRequest {
+            url,
+            dest: dest.clone(),
+            expected_sha256: None,
+            status: std::sync::Arc::clone(&status),
+        }));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let state = status.state.lock().unwrap();
+                match &*state {
+                    DownloadState::Done(path) => {
+                        assert_eq!(std::fs::read(path).unwrap(), b"unsized worker bytes");
+                        break;
+                    }
+                    DownloadState::Failed(err) => panic!("worker failed: {err}"),
+                    _ => {}
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "worker timed out");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // The bytes all transferred, but the total stays the unknown-total
+        // sentinel (0) — the worker never learned a Content-Length.
+        assert_eq!(
+            status.downloaded.load(std::sync::atomic::Ordering::Relaxed),
+            b"unsized worker bytes".len() as u64
+        );
+        assert_eq!(
+            status.total.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "no Content-Length must leave status.total at the 0 sentinel"
+        );
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn fetch_error_display_is_stable_per_variant() {
+        // These strings land in telemetry and the picker UI's Failed(msg)
+        // text, so they're matched by users/tooling — pin the exact stable
+        // form of every variant against accidental rewording.
+        assert_eq!(
+            FetchError::Network("connection reset".into()).to_string(),
+            "network error: connection reset"
+        );
+        assert_eq!(FetchError::Http(404).to_string(), "http error: status 404");
+        assert_eq!(
+            FetchError::Io("disk full".into()).to_string(),
+            "io error: disk full"
+        );
+        assert_eq!(
+            FetchError::HashMismatch {
+                expected: "abc".into(),
+                actual: "def".into(),
+            }
+            .to_string(),
+            "sha256 mismatch: expected abc, got def"
+        );
+    }
 }

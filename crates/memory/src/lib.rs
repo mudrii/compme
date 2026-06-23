@@ -735,6 +735,60 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_treats_blob_shorter_than_nonce_as_absent() {
+        // A truncated/corrupt row whose blob is shorter than NONCE_LEN (12) bytes
+        // cannot carry a nonce. decrypt() must reject it (return None) without
+        // panicking on the split_at, so recent() skips it as best-effort while
+        // count() still sees the stored row.
+        let store = MemoryStore::open_in_memory(&key(18), StorageMode::AcceptedOnly).unwrap();
+        // Insert a deliberately too-short blob (< NONCE_LEN) via the store's own
+        // connection, bypassing encryption.
+        let short: Vec<u8> = vec![0u8; NONCE_LEN - 1];
+        store
+            .conn
+            .execute(
+                "INSERT INTO memories (app, blob) VALUES (?1, ?2)",
+                params!["app", short],
+            )
+            .unwrap();
+        // count() counts the stored row; recent() skips the undecryptable short
+        // blob, all without panicking.
+        assert_eq!(store.count().unwrap(), 1);
+        assert!(store.recent("app", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn memory_error_display_is_stable() {
+        // The documented diagnostic text for each variant, plus the
+        // From<rusqlite::Error> conversion mapping into Db(..).
+        assert_eq!(
+            MemoryError::Db("boom".to_string()).to_string(),
+            "memory db error: boom"
+        );
+        assert_eq!(MemoryError::Crypto.to_string(), "memory crypto error");
+
+        // A rusqlite error converts into the Db variant carrying its message.
+        let sqlite_err = rusqlite::Error::QueryReturnedNoRows;
+        let mapped: MemoryError = sqlite_err.into();
+        match mapped {
+            MemoryError::Db(msg) => assert_eq!(
+                msg,
+                rusqlite::Error::QueryReturnedNoRows.to_string(),
+                "From<rusqlite::Error> preserves the underlying message"
+            ),
+            MemoryError::Crypto => panic!("rusqlite errors must map to Db(..), not Crypto"),
+        }
+    }
+
+    #[test]
+    fn delete_app_returns_zero_when_no_rows_match() {
+        // delete_app reports how many rows were removed; deleting an app with no
+        // stored rows removes nothing and returns Ok(0).
+        let store = MemoryStore::open_in_memory(&key(19), StorageMode::AcceptedOnly).unwrap();
+        assert_eq!(store.delete_app("absent.app").unwrap(), 0);
+    }
+
+    #[test]
     fn recent_truncates_to_limit_newest_first() {
         // With MORE decryptable rows than `limit`, recent() returns exactly the
         // newest `limit` of them, newest first — the per-app history-window cap.

@@ -233,6 +233,35 @@ mod tests {
     }
 
     #[test]
+    fn next_word_pieces_concatenate_to_the_normalized_whole() {
+        // next_word's contract (lib.rs L28-32): the emitted word carries one
+        // trailing space iff a remainder follows, so successive word-by-word
+        // accepts concatenate back to the whitespace-normalized whole (the
+        // engine's caret advance depends on that exact spacing). Drive the full
+        // word-by-word loop over irregular whitespace and assert the accumulation
+        // equals the normalized full completion (single-spaced words).
+        let raw = "  the\tquick   brown\nfox ";
+        let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        let mut accumulated = String::new();
+        let mut remainder = raw.to_string();
+        loop {
+            let (word, rest) = next_word(&remainder);
+            if word.is_empty() {
+                break; // exhausted: empty/whitespace-only remainder
+            }
+            accumulated.push_str(&word);
+            if rest.is_empty() {
+                break; // last word carries no trailing space
+            }
+            remainder = rest;
+        }
+
+        assert_eq!(accumulated, normalized);
+        assert_eq!(accumulated, "the quick brown fox");
+    }
+
+    #[test]
     fn repetition_penalty_is_full_for_new_text() {
         assert_eq!(repetition_penalty("new phrase", "old phrase"), 1.0);
     }

@@ -588,6 +588,25 @@ mod tests {
     }
 
     #[test]
+    fn terminal_does_not_activate_for_prompt_without_lowercase() {
+        // The final gate (line ~169) requires at least one ASCII-lowercase letter
+        // for the line to count as natural-language prose. A >=3-token line that
+        // clears the leader/go/path checks but contains NO ascii-lowercase letter
+        // therefore returns false. Covers the all-uppercase prose case (distinct
+        // from RUN BUILD NOW above) and the no-letter-at-all (digit/punct) case the
+        // existing tests never exercise.
+        let term = "com.googlecode.iterm2";
+        assert!(
+            !terminal_prompt_activates(term, "PLEASE REFACTOR PARSER"),
+            "an all-uppercase >=3-token line has no lowercase prose"
+        );
+        assert!(
+            !terminal_prompt_activates(term, "123 456 789"),
+            "a digit-only >=3-token line has no lowercase prose"
+        );
+    }
+
+    #[test]
     fn terminal_skips_uppercase_or_pathy_lines_with_no_prose() {
         let term = "com.googlecode.iterm2";
         // >=3 tokens, leader not a known shell command, and no lowercase prose at

@@ -1269,6 +1269,37 @@ mod tests {
     }
 
     #[test]
+    fn worker_breaks_out_of_serve_loop_when_outcome_receiver_is_dropped() {
+        // At shutdown the main loop drops the outcome receiver. The worker must
+        // notice the failed `outcomes.send` and break out of its serve loop
+        // (returning from `run`) rather than panicking or looping forever — even
+        // while the request sender is still open and a request is queued.
+        //
+        // Driving `run` on the test thread makes this deterministic: if the
+        // send-failure break did not fire, `run` would loop back, block on the
+        // still-open request channel, and this call would never return.
+        let (request_tx, request_rx) = channel::<CompletionRequest>();
+        let (outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
+        request_tx.send(request("typing", 1)).unwrap();
+        drop(outcome_rx); // receiver gone → the first send fails
+
+        run(
+            Box::new(StubModel::new("x")),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+            request_rx,
+            outcome_tx,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        // Reaching here proves `run` returned: the keep-alive sender below shows
+        // the loop did not exit merely because the request channel closed.
+        drop(request_tx);
+    }
+
+    #[test]
     fn shutdown_without_work_joins_cleanly() {
         let inference = InferenceHandle::spawn(
             Box::new(StubModel::new("x")),

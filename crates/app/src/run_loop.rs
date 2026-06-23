@@ -4445,6 +4445,23 @@ mod tests {
     }
 
     #[test]
+    fn sender_email_is_parsed_into_profile_and_templated_into_preamble() {
+        // COMPME_SENDER_EMAIL flows into profile.sender.email and is templated
+        // into the steering preamble (the sender line) so the model can address
+        // the writer correctly.
+        let profile = build_personalization(&lookup(&[
+            ("COMPME_INSTRUCTIONS", "Be terse."),
+            ("COMPME_SENDER_EMAIL", "ada@example.com"),
+        ]));
+        assert_eq!(profile.sender.email, "ada@example.com");
+        let preamble = profile.build_preamble(Some("com.apple.TextEdit"), None);
+        assert!(
+            preamble.contains("ada@example.com"),
+            "sender email must appear in the built preamble: {preamble:?}"
+        );
+    }
+
+    #[test]
     fn strength_falls_back_to_default_when_compme_strength_is_unparseable() {
         // COMPME_STRENGTH is present but cannot parse as u8: a non-numeric value
         // and a numeric value that overflows u8 both leave the default stop in
@@ -6983,6 +7000,22 @@ mod tests {
             DEFAULT_CONTEXT_MAX_CHARS
         );
         assert_eq!(parse_context_max_chars(Some("99999".into())), 2000); // clamped
+    }
+
+    #[test]
+    fn context_max_chars_treats_falsy_words_and_blank_values_as_off() {
+        // Explicit falsy words and an empty/whitespace-only value all mean off
+        // (0); a plain number is taken verbatim; non-numeric junk falls back to
+        // the default bound rather than disabling context.
+        assert_eq!(parse_context_max_chars(Some("false".into())), 0);
+        assert_eq!(parse_context_max_chars(Some("no".into())), 0);
+        assert_eq!(parse_context_max_chars(Some("".into())), 0);
+        assert_eq!(parse_context_max_chars(Some("   ".into())), 0);
+        assert_eq!(parse_context_max_chars(Some("200".into())), 200);
+        assert_eq!(
+            parse_context_max_chars(Some("junk".into())),
+            DEFAULT_CONTEXT_MAX_CHARS
+        );
     }
 
     #[test]

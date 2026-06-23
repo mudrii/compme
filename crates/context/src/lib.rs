@@ -220,6 +220,24 @@ Recent: recent\n"
     }
 
     #[test]
+    fn context_block_truncates_each_source_identically() {
+        // build_context_block bounds pasteboard/screen/previous_inputs symmetrically:
+        // each source is independently whitespace-collapsed and tail-truncated to the
+        // SAME max_chars rule. Feed the identical over-long value into all three and
+        // assert each is cut to the same tail. The bounds tests above only pin the
+        // clipboard arm; this pins that screen and Recent share the rule.
+        let long = "0123456789abcdef"; // 16 chars, no whitespace
+        let block = build_context_block(Some(long), Some(long), &[long], 4);
+        assert_eq!(
+            block,
+            "Context (for reference only):\n\
+Clipboard: cdef\n\
+On screen: cdef\n\
+Recent: cdef\n"
+        );
+    }
+
+    #[test]
     fn context_block_bounds_after_whitespace_collapse_per_source() {
         let block = build_context_block(
             Some("clip\none two three"),

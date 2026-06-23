@@ -1075,6 +1075,30 @@ mod tests {
     }
 
     #[test]
+    fn latency_avg_does_not_overflow_on_many_large_samples() {
+        // latency_avg_ms accumulates the sample sum in a u64 (lib.rs L411), so
+        // summing several near-u32::MAX samples never overflows. A naive u32 sum
+        // would wrap: 5 × ~4.29e9 ≈ 2.1e10 ≫ u32::MAX. Feed five fixed large
+        // samples whose true mean is exactly representable as a u32 and assert it.
+        let mut s = Stats::new();
+        let samples = [
+            u32::MAX,
+            u32::MAX - 4,
+            u32::MAX - 6,
+            u32::MAX - 10,
+            u32::MAX - 5,
+        ];
+        for &ms in &samples {
+            s.record_latency(T0, ms);
+        }
+        // sum = 5*u32::MAX - (0+4+6+10+5) = 5*4_294_967_295 - 25 = 21_474_836_450.
+        // mean = 21_474_836_450 / 5 = 4_294_967_290 = u32::MAX - 5, in u32 range.
+        let expected: u64 = samples.iter().map(|&ms| ms as u64).sum::<u64>() / samples.len() as u64;
+        assert_eq!(expected, (u32::MAX - 5) as u64); // sanity-pin the arithmetic
+        assert_eq!(s.latency_avg_ms(T0), Some(u32::MAX - 5));
+    }
+
+    #[test]
     fn latency_window_boundary_is_inclusive() {
         let mut s = Stats::new();
         s.record_latency(T0, 42);
@@ -1331,5 +1355,25 @@ mod tests {
 
         // Empty input → empty (no panic on chunks of 0).
         assert!(group_buckets(&[], StatGrouping::Weekly).is_empty());
+    }
+
+    #[test]
+    fn weekly_grouping_also_sums_dismissed_and_superseded() {
+        // The sibling group_buckets test pins shown/accepted/words but leaves
+        // dismissed/superseded at zero. group_buckets sums EVERY outcome count
+        // across a 7-day chunk (lib.rs L128-129), so place non-zero dismissed
+        // and superseded values in distinct days of one week and assert both are
+        // summed into the single weekly bucket — a regression that dropped either
+        // field from the chunk loop would slip past the existing coverage.
+        let mut daily = vec![DayBucket::default(); 7];
+        daily[0].counts.dismissed = 2;
+        daily[3].counts.dismissed = 1;
+        daily[1].counts.superseded = 5;
+        daily[6].counts.superseded = 4;
+
+        let weekly = group_buckets(&daily, StatGrouping::Weekly);
+        assert_eq!(weekly.len(), 1);
+        assert_eq!(weekly[0].counts.dismissed, 3); // 2 + 1 across the chunk
+        assert_eq!(weekly[0].counts.superseded, 9); // 5 + 4 across the chunk
     }
 }

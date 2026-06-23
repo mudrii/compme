@@ -307,6 +307,29 @@ mod tests {
     }
 
     #[test]
+    fn redaction_is_idempotent_for_card_secret_and_mixed() {
+        // The docstring promises idempotence on ALREADY-redacted text broadly, but
+        // only the email path was pinned. The run loop / diagnostics can re-redact
+        // stored or logged strings, so a second pass over [redacted-secret] /
+        // [redacted-card] must be a no-op. A future regex change that re-matched or
+        // mangled a placeholder (e.g. broadening the token charset to include
+        // brackets, or a card re-window over placeholder-adjacent digits) would
+        // silently break this and leak on the second pass.
+        let mixed = redact(
+            "mail ada@example.com key sk-abcdEFGH0123456789abcdEFGH0123 card 4242 4242 4242 4242 end",
+        );
+        assert_eq!(
+            redact(&mixed),
+            mixed,
+            "second pass over mixed PII is a no-op"
+        );
+        // The placeholders themselves survive a redact pass unchanged.
+        assert_eq!(redact("[redacted-card]"), "[redacted-card]");
+        assert_eq!(redact("[redacted-secret]"), "[redacted-secret]");
+        assert_eq!(redact("[redacted-email]"), "[redacted-email]");
+    }
+
+    #[test]
     fn redacts_email_secret_and_card_together_in_one_pass() {
         // Existing tests isolate one PII class each; this pins the staged
         // email→secret→card interaction when all three are present in a single

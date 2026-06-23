@@ -1374,6 +1374,119 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_accept_hide_suggestion_after_error_propagates_through_dispatch() {
+        // Synthetic-keys accept emits [Insert, Hide]; the Hide arm takes the
+        // delayed-teardown branch and calls hide_suggestion_after (the delay
+        // hook). A failure there must surface out of on_accept, not be
+        // swallowed — otherwise the accept-tap teardown is silently skipped and
+        // the tap can fire against an already-dismissed suggestion. Companion to
+        // accept_tap_arm_error_propagates_through_dispatch, which only pins the
+        // arming (visible=true) hook on the show path.
+        let mut adapter = FakeAdapter::new();
+        adapter.caps = Capabilities {
+            insert_strategy: InsertStrategy::SyntheticKeys,
+            ..inline_caps()
+        };
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            // Arming/disarming via set_suggestion_visible stays Ok so the error
+            // is attributable solely to the delayed hide_suggestion_after hook.
+            |_visible| Ok(()),
+            |_delay| Err(platform::PlatformError::Timeout),
+            |_action| Ok(()),
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion(&requests[0], "hello world".into())
+            .unwrap();
+        overlay.calls.lock().unwrap().clear();
+
+        // The Hide arm runs overlay.hide() first (succeeds), then the failing
+        // hide_suggestion_after surfaces via `?`.
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Err(PlatformError::Timeout),
+            "a failing delayed-tap teardown must surface, not be swallowed"
+        );
+        // The overlay was still hidden before the teardown hook errored.
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Hide],
+            "the ghost is hidden before the delayed teardown failsafe runs"
+        );
+
+        // Not wedged: a fresh focus cycle still produces a request and a
+        // follow-up accept with nothing pending is a no-op.
+        overlay.calls.lock().unwrap().clear();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("y", 1, 1000)).unwrap();
+        assert_eq!(
+            engine.on_tick(1500).unwrap().len(),
+            1,
+            "engine remains usable after a failed delayed-tap teardown"
+        );
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Ok(vec![]),
+            "a follow-up accept with nothing pending must be a no-op"
+        );
+    }
+
+    #[test]
+    fn non_synthetic_hide_disarm_error_propagates_through_dispatch() {
+        // Companion to the synthetic delayed-teardown test for the ordinary
+        // (non-synthetic) Hide arm. A Full accept under AxSet emits
+        // [Insert, Hide]; the Hide arm disarms the accept tap immediately via
+        // set_tap_visible(false) -> set_suggestion_visible(false). A failure in
+        // that disarm must surface out of on_accept, not be swallowed — a
+        // swallowed disarm error would leave the accept tap live against a
+        // dismissed suggestion.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            // Fail only while DISARMING (visible=false) so the show-path arm
+            // (visible=true) succeeds and the error is attributable to the Hide
+            // arm's disarm, not the ShowGhost arm.
+            |visible| {
+                if visible {
+                    Ok(())
+                } else {
+                    Err(platform::PlatformError::Timeout)
+                }
+            },
+            |_delay| Ok(()),
+            |_action| Ok(()),
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion(&requests[0], "hello world".into())
+            .unwrap();
+        overlay.calls.lock().unwrap().clear();
+
+        // The Hide arm runs overlay.hide() first (succeeds), then the failing
+        // set_suggestion_visible(false) disarm surfaces via `?`.
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Err(PlatformError::Timeout),
+            "a failing non-synthetic accept-tap disarm must surface, not be swallowed"
+        );
+        // The overlay was still hidden before the disarm hook errored.
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Hide],
+            "the ghost is hidden before the immediate disarm runs"
+        );
+    }
+
+    #[test]
     fn caret_rect_error_propagates_when_showing() {
         let mut adapter = FakeAdapter::new();
         adapter.fail_caret_rect = true;

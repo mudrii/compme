@@ -593,6 +593,32 @@ mod tests {
     }
 
     #[test]
+    fn secure_blocks_even_when_otherwise_unsupported() {
+        // The secure gate is checked BEFORE the unsupported gate, so a field
+        // that is both secure AND otherwise unsupported (no insert strategy,
+        // not readable) must resolve to Blocked — never Unsupported.
+        let mut c = caps();
+        c.secure = true;
+        c.security_state = SecurityState::SecureField;
+        c.insert_strategy = InsertStrategy::None;
+        c.readable_text = false;
+
+        assert_eq!(ux_mode(&c), UxMode::Blocked);
+    }
+
+    #[test]
+    fn secure_input_enabled_blocks_even_when_otherwise_unsupported() {
+        // Same precedence via the global SecureInputEnabled signal: the secure
+        // gate wins over the unsupported gate.
+        let mut c = caps();
+        c.security_state = SecurityState::SecureInputEnabled;
+        c.insert_strategy = InsertStrategy::None;
+        c.readable_text = false;
+
+        assert_eq!(ux_mode(&c), UxMode::Blocked);
+    }
+
+    #[test]
     fn full_caps_is_inline() {
         assert_eq!(ux_mode(&caps()), UxMode::Inline);
     }
