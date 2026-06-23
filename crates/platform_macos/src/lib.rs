@@ -49,8 +49,8 @@ use objc2_foundation::{
     NSArray, NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
 };
 use platform::{
-    AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback,
-    ContextSource, Environment, FieldHandle, FocusCallback, InsertStrategy, Inserted,
+    env_flag_on, AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities,
+    CaretCallback, ContextSource, Environment, FieldHandle, FocusCallback, InsertStrategy, Inserted,
     KeyInterceptMode, OffsetEncoding, OperatingSystem, OverlayPlacement, OverlayPresenter,
     PlatformAdapter, PlatformError, ScreenRect, SecurityState, Subscription, TapControl,
     TextContext, TextRange, Toolkit,
@@ -904,23 +904,6 @@ impl OverlayPresenter for MacosOverlayPresenter {
 /// the project's other boolean env vars — so `COMPME_DEBUG=0` silences it.
 fn debug_enabled() -> bool {
     env_flag_on(std::env::var_os("COMPME_DEBUG").as_deref())
-}
-
-/// A boolean env var is ON when present and not an explicit off-value
-/// (`0`/`false`/`off`/`no`/empty, case-insensitive). A present non-UTF-8 value
-/// counts as on. Mirrors the app crate's fail-safe-on env vars
-/// (`parse_enabled_default`/`parse_tri_state`).
-fn env_flag_on(value: Option<&std::ffi::OsStr>) -> bool {
-    match value {
-        None => false,
-        Some(v) => match v.to_str() {
-            None => true,
-            Some(s) => !matches!(
-                s.trim().to_ascii_lowercase().as_str(),
-                "" | "0" | "false" | "off" | "no"
-            ),
-        },
-    }
 }
 
 fn overlay_main_thread_marker() -> Result<MainThreadMarker, PlatformError> {
@@ -5632,22 +5615,6 @@ mod tests {
     use objc2::{define_class, msg_send, AnyThread, DefinedClass};
     use objc2_app_kit::NSPasteboardItemDataProvider;
     use objc2_foundation::{NSObject, NSObjectProtocol};
-
-    #[test]
-    fn env_flag_on_treats_off_values_as_disabled() {
-        use std::ffi::OsStr;
-        assert!(!env_flag_on(None));
-        for off in ["0", "false", "FALSE", "off", "no", "", " no "] {
-            assert!(!env_flag_on(Some(OsStr::new(off))), "{off:?} should be off");
-        }
-        for on in ["1", "true", "yes", "verbose"] {
-            assert!(env_flag_on(Some(OsStr::new(on))), "{on:?} should be on");
-        }
-        // A non-UTF-8 value is present and not an off-token, so it reads as on.
-        use std::os::unix::ffi::OsStrExt;
-        let non_utf8 = OsStr::from_bytes(&[0xff]);
-        assert!(env_flag_on(Some(non_utf8)), "non-UTF-8 value should be on");
-    }
 
     #[test]
     fn screen_context_text_with_zero_max_chars_returns_none_before_any_ffi() {

@@ -552,11 +552,51 @@ pub fn ux_mode(capabilities: &Capabilities) -> UxMode {
     }
 }
 
+/// A boolean env var is ON when present and not an explicit off-value
+/// (`0`/`false`/`off`/`no`/empty, case-insensitive). A present non-UTF-8 value
+/// counts as on. The project's fail-safe-on convention: `COMPME_DEBUG=0`
+/// silences instead of enabling. (Feature-flag vars use an ON-allow-list — a
+/// separate convention.)
+pub fn env_flag_on(value: Option<&std::ffi::OsStr>) -> bool {
+    match value {
+        None => false,
+        Some(v) => match v.to_str() {
+            None => true,
+            Some(s) => !matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false" | "off" | "no"
+            ),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn env_flag_on_treats_off_values_as_disabled() {
+        use std::ffi::OsStr;
+        // Unset → off. Explicit off-values (case-insensitive, trimmed) → off, so
+        // COMPME_DEBUG=0 silences instead of enabling.
+        assert!(!env_flag_on(None));
+        for off in ["0", "false", "FALSE", "off", "no", "", " no "] {
+            assert!(!env_flag_on(Some(OsStr::new(off))), "{off:?} should be off");
+        }
+        // Any other present value → on.
+        for on in ["1", "true", "yes", "verbose"] {
+            assert!(env_flag_on(Some(OsStr::new(on))), "{on:?} should be on");
+        }
+        // A non-UTF-8 value is present and not an off-token, so it reads as on.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let non_utf8 = OsStr::from_bytes(&[0xff]);
+            assert!(env_flag_on(Some(non_utf8)), "non-UTF-8 value should be on");
+        }
+    }
 
     fn caps() -> Capabilities {
         Capabilities {
