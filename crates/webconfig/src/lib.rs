@@ -563,6 +563,25 @@ mod tests {
     }
 
     #[test]
+    fn oversized_domain_scope_is_rejected() {
+        // A domain host that is structurally valid (multiple non-empty labels,
+        // no `_`, no leading/trailing `-`, alphabetic 2+ char TLD) but whose total
+        // length exceeds MAX_SCOPE_LEN is rejected with InvalidScope — the same
+        // length cap (in valid_scope_lexical, applied before the domain structural
+        // checks) that bounds app scopes also bounds domain scopes.
+        let long_label = "a".repeat(MAX_SCOPE_LEN);
+        let host = format!("{long_label}.example.com");
+        assert!(
+            host.len() > MAX_SCOPE_LEN,
+            "host must exceed the length cap"
+        );
+        assert_eq!(
+            parse_deep_link(&format!("compme://setOverride?domain={host}&excluded=true")),
+            Err(ParseError::InvalidScope)
+        );
+    }
+
+    #[test]
     fn scope_rejects_query_fragment_metacharacters_and_control_chars() {
         // The lexical allow-list (alphanumeric + `.` `-` `_`) must reject URL
         // structural metacharacters that could smuggle a second command or

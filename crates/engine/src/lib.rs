@@ -2057,6 +2057,173 @@ mod tests {
     }
 
     #[test]
+    fn replacement_accept_under_axset_disarms_tap_immediately_not_delayed() {
+        // The Replace dispatch branch sets `delay_next_hide` from the focus
+        // caps' insert strategy exactly like Insert (L432): it defers the
+        // accept-tap teardown ONLY under SyntheticKeys, otherwise the trailing
+        // Hide disarms immediately. Replacement offers are gated to AxSet fields
+        // by the machine (`offer_replacement_multi` requires
+        // insert_strategy == AxSet), so the reachable replacement-accept path is
+        // the AxSet/immediate-disarm direction: assert the Hide disarms the tap
+        // (visible=false) rather than scheduling a delay. This is the Replace
+        // counterpart to the Insert delay test and pins that Replace does NOT
+        // spuriously defer teardown on the non-synthetic strategy.
+        let (mut engine, adapter, overlay) = engine(); // inline_caps() => AxSet
+        let replacing = Arc::clone(&adapter.replacing_inserts);
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let delays: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
+        let actions: Arc<Mutex<Vec<Option<AcceptAction>>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        let d = Arc::clone(&delays);
+        let a = Arc::clone(&actions);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            move |delay| {
+                d.lock().unwrap().push(delay);
+                Ok(())
+            },
+            move |action| {
+                a.lock().unwrap().push(action);
+                Ok(())
+            },
+        ));
+
+        engine.on_focus(field()).unwrap();
+        // Drive to a state offering a replacement (replace_left > 0).
+        engine
+            .on_replacement(&field(), vec!["😄".into()], 5)
+            .unwrap();
+        overlay.calls.lock().unwrap().clear();
+        visible.lock().unwrap().clear();
+        actions.lock().unwrap().clear();
+
+        engine.on_accept(AcceptAction::Full).unwrap();
+
+        // The accepted replacement reached the adapter via insert_replacing
+        // carrying the field's AxSet strategy...
+        assert_eq!(
+            *replacing.lock().unwrap(),
+            vec![(field(), "😄".to_string(), 5, InsertStrategy::AxSet)]
+        );
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+        // ...and the trailing Hide disarmed the tap immediately (visible=false,
+        // action cleared) — NO synthetic-keys teardown delay was scheduled.
+        assert_eq!(*visible.lock().unwrap(), vec![false]);
+        assert_eq!(*actions.lock().unwrap(), vec![None]);
+        assert_eq!(*delays.lock().unwrap(), Vec::<Duration>::new());
+    }
+
+    #[test]
+    fn mirror_mode_with_no_geometry_reconciles_and_shows_nothing() {
+        // Mirror mode with NEITHER a popup anchor NOR a caret rect (both
+        // Ok(None)) hits the same show_failed reconcile path as the non-mirror
+        // no-geometry case (L358-397): cancel_last_shown + Dismiss, and the
+        // overlay shows nothing. The non-mirror direction is pinned by
+        // `no_overlay_when_neither_caret_nor_popup_anchor`; the mirror-mode
+        // branch (popup_anchor first) was unpinned.
+        let mut adapter = FakeAdapter::new();
+        adapter.rect = None;
+        adapter.popup = None;
+        let inserts = Arc::clone(&adapter.inserts);
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        engine.set_mirror_mode(true);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "nope".into()).unwrap();
+
+        // No Show ever; the reconcile emits a single idempotent Hide.
+        let calls = overlay.calls.lock().unwrap();
+        assert!(
+            !calls.iter().any(|c| matches!(c, OverlayCall::Show(_, _))),
+            "mirror mode without geometry must never show a ghost: {calls:?}"
+        );
+        assert_eq!(*calls, vec![OverlayCall::Hide]);
+        drop(calls);
+
+        // State reconciled: the machine is no longer showing, so a later accept
+        // inserts nothing (the user never saw a ghost) and the buffered Shown
+        // stat was retracted.
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert!(
+            inserts.lock().unwrap().is_empty(),
+            "accept after a failed mirror-mode show must not phantom-insert"
+        );
+        assert_eq!(engine.take_stat_events(), vec![]);
+    }
+
+    #[test]
+    fn cycle_update_ghost_error_propagates_and_reconciles() {
+        // A Cycle event rotates the visible ghost via UpdateGhost (L434-439). A
+        // failing update must surface the error AND reconcile the stale visible
+        // ghost (hide + disarm + Dismiss). The UpdateGhost-error path is pinned
+        // only via AcceptWord; the Cycle entry into it was unpinned.
+        #[derive(Clone)]
+        struct UpdateFailsOverlay {
+            calls: Arc<Mutex<Vec<OverlayCall>>>,
+        }
+        impl OverlayPresenter for UpdateFailsOverlay {
+            fn show_ghost(&mut self, rect: ScreenRect, text: &str) -> Result<(), PlatformError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(OverlayCall::Show(rect, text.into()));
+                Ok(())
+            }
+            fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(OverlayCall::Update(text.into()));
+                Err(PlatformError::Timeout)
+            }
+            fn hide(&mut self) -> Result<(), PlatformError> {
+                self.calls.lock().unwrap().push(OverlayCall::Hide);
+                Ok(())
+            }
+        }
+
+        let overlay = UpdateFailsOverlay {
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let calls = Arc::clone(&overlay.calls);
+        let adapter = FakeAdapter::new();
+        let inserts = Arc::clone(&adapter.inserts);
+        let mut engine = Engine::new(adapter, overlay, 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        // Multi-candidate so a Cycle rotates the ghost → UpdateGhost.
+        engine
+            .on_completion_multi(&requests[0], vec!["alpha".into(), "beta".into()])
+            .unwrap();
+        calls.lock().unwrap().clear();
+
+        assert_eq!(
+            engine.on_cycle(),
+            Err(PlatformError::Timeout),
+            "a failed ghost update on Cycle must surface, not be swallowed"
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![OverlayCall::Update("beta".into()), OverlayCall::Hide],
+            "a failed Cycle update must clear the stale visible ghost"
+        );
+        // Reconciled: the machine is dismissed, so a follow-up accept is a no-op.
+        assert!(
+            engine.on_accept(AcceptAction::Full).unwrap().is_empty(),
+            "accept after a failed Cycle update must be a no-op"
+        );
+        assert!(inserts.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn show_ghost_is_safe_without_an_accept_subscription() {
         // The engine is shown a completion before any accept subscription was
         // installed. The tap arming must no-op rather than panic.

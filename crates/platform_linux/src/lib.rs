@@ -240,4 +240,62 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn unsupported_reason_names_the_failing_method() {
+        // Fail-closed isn't enough: when a stub rejects, its diagnostic must name
+        // BOTH the crate and the exact method, so an operator reading a log can
+        // tell *which* unimplemented call fired. Pin the real reason format
+        // ("platform_linux::<method> not yet implemented (Tier 1.1 scaffold)")
+        // across a representative spread — a subscribe, a capability probe, and an
+        // insert — so a future refactor of `unsupported()` can't drop the method
+        // name (or the crate prefix) without breaking a test.
+        let adapter = LinuxAdapter::new();
+        let field = FieldHandle {
+            app: "test".to_string(),
+            pid: None,
+            element_id: "scaffold".to_string(),
+            generation: 0,
+        };
+
+        let Err(PlatformError::UnsupportedField { reason }) = adapter.capabilities(&field) else {
+            panic!("capabilities should fail closed with UnsupportedField");
+        };
+        assert!(
+            reason.contains("platform_linux::"),
+            "reason should carry the crate prefix: {reason:?}"
+        );
+        assert!(
+            reason.contains("capabilities"),
+            "reason should name the failing method `capabilities`: {reason:?}"
+        );
+        assert!(
+            reason.contains("not yet implemented (Tier 1.1 scaffold)"),
+            "reason should explain the stub is a scaffold: {reason:?}"
+        );
+        assert_eq!(
+            reason, "platform_linux::capabilities not yet implemented (Tier 1.1 scaffold)",
+            "full reason string format pinned"
+        );
+
+        let caret_cb: CaretCallback = Arc::new(|_field, _rect| {});
+        let Err(PlatformError::UnsupportedField { reason }) = adapter.subscribe_caret(caret_cb)
+        else {
+            panic!("subscribe_caret should fail closed with UnsupportedField");
+        };
+        assert!(
+            reason.contains("platform_linux::") && reason.contains("subscribe_caret"),
+            "reason should name crate + `subscribe_caret`: {reason:?}"
+        );
+
+        let Err(PlatformError::UnsupportedField { reason }) =
+            adapter.insert_replacing(&field, "x", 1, InsertStrategy::None)
+        else {
+            panic!("insert_replacing should fail closed with UnsupportedField");
+        };
+        assert!(
+            reason.contains("platform_linux::") && reason.contains("insert_replacing"),
+            "reason should name crate + `insert_replacing`: {reason:?}"
+        );
+    }
 }

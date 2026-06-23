@@ -5630,6 +5630,30 @@ mod tests {
     }
 
     #[test]
+    fn skin_tone_index_round_trips_all_variants_and_clamps_oob() {
+        // The skin-tone popup addresses `EMOJI_SKIN_TONE_VALUES` by index, so
+        // `emoji_skin_tone_from_index` must invert `emoji_skin_tone_index` for
+        // every variant. An out-of-range index clamps to the documented default
+        // (`SkinTone::default()` == `SkinTone::Default`), mirroring the gender
+        // round-trip above.
+        for tone in [
+            SkinTone::Default,
+            SkinTone::Light,
+            SkinTone::MediumLight,
+            SkinTone::Medium,
+            SkinTone::MediumDark,
+            SkinTone::Dark,
+        ] {
+            assert_eq!(
+                emoji_skin_tone_from_index(emoji_skin_tone_index(tone)),
+                tone,
+                "index round-trip must be lossless for {tone:?}"
+            );
+        }
+        assert_eq!(emoji_skin_tone_from_index(99), SkinTone::Default);
+    }
+
+    #[test]
     fn emoji_gender_edge_invalidates_stale_visible_suggestion() {
         let index = AtomicUsize::new(emoji_gender_index(Gender::Male));
         let mut current = emoji_gender_index(Gender::Neutral);
@@ -6010,6 +6034,68 @@ mod tests {
         let totals = usage.session_totals();
         assert_eq!(totals.counts.accepted, 1);
         assert_eq!(totals.words, 2);
+    }
+
+    #[test]
+    fn replacement_accept_absorbs_the_delete_then_insert_echo() {
+        // A REPLACEMENT accept (`replace_left > 0`, e.g. an emoji `:smile`→😄
+        // swap) routes to `apply_self_replace`, which deletes the typed token
+        // before inserting. The tracker baseline must end delete-then-inserted so
+        // the field's own AX readback is absorbed as a caret move — not mistaken
+        // for fresh typing. The two existing accept tests use `replace_left == 0`
+        // (append-only), leaving this branch unexercised.
+        let previous = PreviousInputs::default();
+        let store = accepted_store();
+        let mut tracker = FieldTracker::new();
+        let mut usage = stats::Stats::new();
+        let prefs = Prefs::default();
+        let field = field_with_app("com.apple.TextEdit");
+
+        // Seed a baseline of "x:smile" (caret at 7) so the replace branch has a
+        // baseline to delete-then-insert against.
+        tracker.observe(
+            &field,
+            &text_context(&field, "x:smile"),
+            TriggerPolicy::Automatic,
+            0,
+        );
+
+        let preview = (field.clone(), "😄".to_string(), 6usize);
+        apply_accept_side_effects(
+            true,
+            AcceptSideEffects {
+                action: AcceptAction::Full,
+                preview: Some(&preview),
+                wall_ms: 10_000,
+                context_max_chars: 160,
+                previous_inputs: &previous,
+                memory: Some(&store),
+                prefs: &prefs,
+                tracker: &mut tracker,
+                usage: &mut usage,
+            },
+        );
+
+        // The replace deleted ":smile" and inserted "😄": the baseline now reads
+        // "x😄" (caret at 2). The field's matching readback must absorb as a pure
+        // caret move with no spurious echo armed.
+        let observed = tracker.observe(
+            &field,
+            &text_context(&field, "x😄"),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field.clone(),
+                caret: 2,
+            },
+            "replacement accept must leave the baseline delete-then-inserted"
+        );
+        // Sanity: the accept still recorded its stats and sinks.
+        assert_eq!(store.count().unwrap(), 1);
+        assert_eq!(usage.session_totals().counts.accepted, 1);
     }
 
     #[test]
@@ -7181,6 +7267,30 @@ mod tests {
     }
 
     #[test]
+    fn submit_tracking_does_not_overwrite_a_domain_already_on_the_request() {
+        // `submit_request_and_track` only fills `request.domain` from
+        // `log_context.domain` when the request's own domain is None. A domain
+        // already resolved onto the request (e.g. the active tab's host) must win
+        // over the log context's — never get clobbered.
+        let mut submit_times = HashMap::new();
+        let request = CompletionRequest {
+            domain: Some("a.com".into()),
+            ..request_for_submit_tracking(7)
+        };
+        let mut log_context = request_log_context_for_submit_tracking();
+        log_context.domain = Some("b.com".into());
+
+        submit_request_and_track(&mut submit_times, request, 123, log_context, |request| {
+            assert_eq!(
+                request.domain.as_deref(),
+                Some("a.com"),
+                "the request's pre-existing domain must be preserved"
+            );
+            true
+        });
+    }
+
+    #[test]
     fn auxiliary_context_is_prepared_before_submitting_the_request() {
         let clipboard_cell = Arc::new(Mutex::new(None));
         let order = RefCell::new(Vec::new());
@@ -7277,6 +7387,49 @@ mod tests {
         assert_eq!(*clipboard_cell.lock().unwrap(), None);
         assert!(submit_line.contains("request gen=18"));
         assert_eq!(submit_times.get(&18), Some(&444));
+    }
+
+    #[test]
+    fn clipboard_enabled_but_empty_clears_the_stale_cell() {
+        // Clipboard context is ENABLED but the OS read returns None (empty
+        // clipboard). The cell must be CLEARED to None — never left holding a
+        // prior value, which would leak a stale secret into the next prompt. The
+        // `*_off_*` test above covers the disabled branch; this pins the
+        // enabled-but-empty path.
+        let clipboard_cell = Arc::new(Mutex::new(Some("old secret".into())));
+        let mut submit_times = HashMap::new();
+
+        let (clipboard_diag, submit_line) = submit_request_with_auxiliary_context(
+            request_for_submit_tracking(19),
+            SubmitRequestContext {
+                submit_times: &mut submit_times,
+                now_ms: 555,
+                log_context: request_log_context_for_submit_tracking(),
+            },
+            AuxiliarySubmitContext {
+                clipboard_enabled: true,
+                diag_context: false,
+                diag_clipboard_marker: None,
+                clipboard_cell: &clipboard_cell,
+                screen_enabled: false,
+            },
+            || None,
+            |_| panic!("screen disabled"),
+            |_| panic!("screen disabled"),
+            |request| {
+                assert_eq!(request.generation, 19);
+                true
+            },
+        );
+
+        assert_eq!(clipboard_diag, None);
+        assert_eq!(
+            *clipboard_cell.lock().unwrap(),
+            None,
+            "an empty clipboard read must clear the stale cell"
+        );
+        assert!(submit_line.contains("request gen=19"));
+        assert_eq!(submit_times.get(&19), Some(&555));
     }
 
     #[test]

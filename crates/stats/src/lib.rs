@@ -652,6 +652,19 @@ mod tests {
     }
 
     #[test]
+    fn sparkline_keeps_a_small_nonzero_day_above_the_idle_baseline() {
+        // Invariant guard (lib.rs §sparkline): any nonzero value must render at
+        // least one bar ABOVE the idle baseline (bar index >= 1) even when the
+        // series max dwarfs it — a sparse day stays visibly different from an
+        // idle one. The ceiling division (`div_ceil`) is what enforces this; a
+        // ceil→round regression would flatten v=1 against a max of 100/1000 back
+        // down to the baseline glyph ▁. BARS = ['▁','▂',...,'█'], so index 0 is
+        // ▁ (idle) and index 1 is ▂ (the smallest nonzero rendering).
+        assert_eq!(sparkline(&[0, 1, 100]), "▁▂█");
+        assert_eq!(sparkline(&[1, 1000]), "▂█");
+    }
+
+    #[test]
     fn sparkline_handles_usize_max_without_overflow() {
         assert_eq!(sparkline(&[0, usize::MAX]), "▁█");
         assert_eq!(sparkline(&[usize::MAX, usize::MAX]), "██");

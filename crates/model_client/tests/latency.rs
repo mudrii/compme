@@ -154,5 +154,18 @@ fn complete_n_returns_real_model_candidates() {
         );
     }
 
+    // The whole point of multi-candidate generation is *divergence*: candidate 0 is
+    // greedy/deterministic while later candidates use temperature + a per-candidate
+    // seed (see `sampler_for_candidate`). If they all came back identical the
+    // sampler wiring would be silently broken, so prove at least two candidates
+    // genuinely differ — not merely that three were returned. The deterministic
+    // *config* divergence is pinned by the unit tests in `src/lib.rs`; this is the
+    // end-to-end token-level proof that the config actually produces divergence.
+    let distinct: std::collections::HashSet<&str> = candidates.iter().map(String::as_str).collect();
+    assert!(
+        distinct.len() > 1,
+        "expected diverging candidates but all were identical: {candidates:?}"
+    );
+
     Box::new(model).shutdown();
 }

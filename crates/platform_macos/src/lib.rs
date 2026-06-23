@@ -7481,6 +7481,112 @@ mod tests {
         );
     }
 
+    #[test]
+    fn insert_clipboard_rechecks_secure_input_before_posting() {
+        // TOCTOU on the Clipboard strategy (sibling of the SyntheticKeys recheck
+        // test): secure input is OFF at the entry guard but ON before the paste.
+        // The recheck must refuse so no Cmd+V lands in a now-secure field.
+        use std::sync::atomic::AtomicUsize;
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let posted_in_hook = Arc::clone(&posted);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_in_hook = Arc::clone(&calls);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.secure_input_enabled =
+            Arc::new(move || calls_in_hook.fetch_add(1, Ordering::Relaxed) > 0);
+        config.pasteboard_poster = Arc::new(move |pid, text| {
+            posted_in_hook.lock().unwrap().push((pid, text.to_string()));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert(&field, "x", InsertStrategy::Clipboard),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
+        assert!(
+            posted.lock().unwrap().is_empty(),
+            "no clipboard paste into a field that became secure mid-insert"
+        );
+    }
+
+    #[test]
+    fn finish_axset_insert_silent_fallback_refuses_synthetic_post_when_secure_input_on() {
+        // TOCTOU on the AxSet silent-fallback path: the entry guard passed, the
+        // AX write was silently ignored, and secure input turned on before the
+        // synthetic fallback post. The recheck inside finish_axset_insert must
+        // refuse — the third recheck site, sibling to the SyntheticKeys/Clipboard
+        // ones. Both other finish_axset_insert tests use the default (secure=false)
+        // config, so this branch was otherwise unexercised.
+        let touched = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.secure_input_enabled = Arc::new(|| true);
+        let t1 = Arc::clone(&touched);
+        config.synthetic_key_poster = Arc::new(move |_, _| {
+            t1.lock().unwrap().push("text");
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+
+        assert_eq!(
+            adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "x", 0),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            }),
+            "synthetic fallback must not post into a field that became secure"
+        );
+        assert!(touched.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn insert_replacing_with_zero_replace_left_is_pure_append_like_insert() {
+        // Contract: insert_replacing(.., replace_left=0, ..) == insert (pure
+        // append, NO deletion). Pins that the backspace poster is never invoked
+        // on the zero path, so a regression that always deleted would fail.
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let backspaced = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        let p = Arc::clone(&posted);
+        config.synthetic_key_poster = Arc::new(move |_, text| {
+            p.lock().unwrap().push(text.to_string());
+            Ok(())
+        });
+        let b = Arc::clone(&backspaced);
+        config.backspace_poster = Arc::new(move |_, _| {
+            b.lock().unwrap().push("bs");
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert_replacing(&field, "hi", 0, InsertStrategy::SyntheticKeys),
+            Ok(Inserted {
+                bytes: 2,
+                chars: 2,
+                strategy: InsertStrategy::SyntheticKeys,
+            })
+        );
+        assert_eq!(*posted.lock().unwrap(), vec!["hi".to_string()]);
+        assert!(
+            backspaced.lock().unwrap().is_empty(),
+            "replace_left==0 must delete nothing"
+        );
+    }
+
     fn keep_handler(log: Arc<Mutex<Vec<i64>>>) -> Arc<AcceptTapHandler> {
         Arc::new(move |event: AcceptTapEvent| {
             log.lock().unwrap().push(event.keycode);

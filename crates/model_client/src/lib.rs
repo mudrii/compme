@@ -647,6 +647,57 @@ mod tests {
         assert_eq!(model.complete_n("x", 8, 2).unwrap(), vec!["cand0", "cand1"]);
     }
 
+    // Pins the multi-candidate *divergence contract* without a model: candidate 0
+    // is greedy/deterministic (no random seed), while candidates 1..n each carry a
+    // distinct per-candidate seed via `dist(index)`. `LlamaSampler::get_seed`
+    // returns 0xFFFFFFFF for seedless samplers (e.g. greedy) and, for a chain, the
+    // first non-default seed found in reverse order — here the `dist(index)` seed.
+    // End-to-end token divergence is proven separately by the real-model
+    // `complete_n_returns_real_model_candidates` test (#[ignore]'d, needs a GGUF).
+    #[test]
+    fn sampler_for_candidate_zero_is_greedy_seedless() {
+        // Greedy/deterministic: no random seed (sentinel 0xFFFF_FFFF).
+        assert_eq!(
+            sampler_for_candidate(0).get_seed(),
+            0xFFFF_FFFF,
+            "candidate 0 must be greedy (seedless/deterministic)"
+        );
+    }
+
+    #[test]
+    fn sampler_for_candidate_nonzero_seeds_diverge() {
+        // Each later candidate gets a distinct seed equal to its index, so the
+        // candidates genuinely diverge from one another rather than repeating.
+        let seeds: Vec<u32> = (1..=4)
+            .map(|i| sampler_for_candidate(i).get_seed())
+            .collect();
+
+        // Every divergent candidate carries an actual random seed (not the greedy
+        // sentinel) — i.e. it is NOT the deterministic candidate 0.
+        for (offset, seed) in seeds.iter().enumerate() {
+            let index = offset + 1;
+            assert_eq!(
+                *seed, index as u32,
+                "candidate {index} must seed `dist` with its own index"
+            );
+            assert_ne!(
+                *seed, 0xFFFF_FFFF,
+                "candidate {index} must NOT be seedless/greedy"
+            );
+        }
+
+        // And the seeds are pairwise distinct, so no two divergent candidates
+        // share an identical sampler configuration.
+        let mut unique = seeds.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            seeds.len(),
+            "candidate seeds must be distinct: {seeds:?}"
+        );
+    }
+
     #[test]
     fn trait_object_can_report_completion_errors() {
         struct Failing;

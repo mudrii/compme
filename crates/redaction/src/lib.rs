@@ -333,6 +333,26 @@ mod tests {
     }
 
     #[test]
+    fn redacts_all_lowercase_token_with_only_base64_punct() {
+        // looks_high_entropy's base64-punct arm (+,/,=) ALONE marks a long token
+        // as a secret even with no digit and no uppercase — base64/base64url
+        // payloads are often all-lowercase. A regression dropping has_b64_punct
+        // would leak exactly this class while the digit/mixed-case arms still pass.
+        let token = "abcdefghijklmnopqrstuvwxyzabcd+/="; // 33 chars: lowercase + b64 punct, no digit/upper
+        let out = redact(&format!("blob {token} end"));
+        assert!(out.contains("[redacted-secret]"), "got {out:?}");
+        assert!(!out.contains("abcdefghij"), "secret scrubbed: {out:?}");
+        // Control: same shape with NO base64 punct (pure lowercase letters) is
+        // low-entropy and must survive — proving it was the punct that tripped it.
+        let plain = "abcdefghijklmnopqrstuvwxyzabcdefg"; // 33 lowercase letters
+        let kept = redact(&format!("blob {plain} end"));
+        assert!(
+            kept.contains(plain),
+            "all-letter low-entropy run survives: {kept:?}"
+        );
+    }
+
+    #[test]
     fn redacts_jwt_including_payload() {
         // JWT segments are dot-separated; the payload must not leak (review 2).
         let jwt =

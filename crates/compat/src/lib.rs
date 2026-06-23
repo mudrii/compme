@@ -660,6 +660,29 @@ mod tests {
     }
 
     #[test]
+    fn terminal_path_arg_tail_marks_line_as_shell_input() {
+        // looks_like_shell_path_invocation: when the FIRST token is a path token
+        // but NOT an executable path (`./foo/bar` strips to `foo/bar`, which
+        // contains `/` and is not under bin/ or scripts/ → not executable), the
+        // function falls through to the tail heuristic
+        // `rest.iter().any(|t| t.starts_with('-') || is_path_token(t))`. A later
+        // path-token arg (`/tmp/out`) therefore activates that branch → the line
+        // is classified as shell input, so it does NOT activate as a prompt.
+        let term = "com.googlecode.iterm2";
+        assert!(
+            !terminal_prompt_activates(term, "./foo/bar input /tmp/out"),
+            "a non-executable leading path with a later path-token arg is shell input"
+        );
+        // Contrast: identical leading path, but a prose-only tail (no flag, no
+        // path token) leaves the tail heuristic false → not shell input, so
+        // classification rests on the lowercase-prose rule and the line activates.
+        assert!(
+            terminal_prompt_activates(term, "./foo/bar input output"),
+            "the same leading path with a prose-only tail is not shell input"
+        );
+    }
+
+    #[test]
     fn applications_path_without_contents_macos_is_not_an_executable_invocation() {
         // is_executable_path_token's /Applications/ arm requires /Contents/MacOS/
         // — a /Applications/Foo.app/bar path WITHOUT it is not executable. With a
