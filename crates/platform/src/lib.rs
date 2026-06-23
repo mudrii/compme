@@ -619,6 +619,23 @@ mod tests {
     }
 
     #[test]
+    fn ux_mode_overlay_without_readable_caret_is_popup() {
+        // Isolates the readable_caret half of the inline AND-gate: a
+        // caret-anchored overlay placement IS present, but the caret is not
+        // readable, so we fall through to Popup rather than Inline. Pins the
+        // complement of `caret_readable_but_no_overlay_placement_is_popup`; a
+        // mutation that flipped the inline `&&` to `||` (or dropped the
+        // readable_caret term) would wrongly return Inline here and fail.
+        let mut c = caps();
+        c.readable_caret = false;
+        c.overlay_at_caret = OverlayPlacement::NativePanel;
+        c.secure = false;
+        c.security_state = SecurityState::Normal;
+
+        assert_eq!(ux_mode(&c), UxMode::Popup);
+    }
+
+    #[test]
     fn secure_flag_alone_with_normal_state_is_blocked() {
         // Isolates the left side of the secure `||`: the secure flag is set even
         // though the security_state is Normal, so the field is Blocked.

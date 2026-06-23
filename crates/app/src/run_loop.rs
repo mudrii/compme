@@ -4589,6 +4589,41 @@ mod tests {
     }
 
     #[test]
+    fn personalization_skips_blank_per_target_instruction_values() {
+        // A listed target whose value KEY is present but blank/whitespace-only
+        // is a present-but-empty instruction: `instruction_map_from_config`
+        // trims it, sees it empty, and skips it — no empty entry is stored.
+        // (`com.missing.App` confirms the absent-key path still skips too.)
+        let profile = build_personalization(&lookup(&[
+            (
+                "COMPME_INSTRUCTIONS_APPS",
+                "com.apple.TextEdit, com.apple.Notes, com.missing.App",
+            ),
+            // Present but whitespace-only → must be skipped.
+            ("COMPME_INSTRUCTIONS_APP_COM_APPLE_TEXTEDIT", "   "),
+            // A real value confirms the non-blank path still stores.
+            (
+                "COMPME_INSTRUCTIONS_APP_COM_APPLE_NOTES",
+                "Prefer note bullets.",
+            ),
+        ]));
+
+        assert!(
+            !profile.per_app.contains_key("com.apple.TextEdit"),
+            "a whitespace-only instruction value must not be stored as an empty instruction"
+        );
+        assert!(
+            !profile.per_app.contains_key("com.missing.App"),
+            "a listed target with no value key stays absent"
+        );
+        assert_eq!(
+            profile.per_app.get("com.apple.Notes"),
+            Some(&"Prefer note bullets.".to_string()),
+            "a non-blank value is still stored alongside the skipped blank one"
+        );
+    }
+
+    #[test]
     fn personalization_defaults_to_no_steer_when_keys_absent() {
         let profile = build_personalization(&lookup(&[]));
         assert_eq!(profile.build_preamble(Some("com.apple.TextEdit"), None), "");
@@ -5704,6 +5739,97 @@ mod tests {
             Some(SkinTone::Dark)
         );
         assert_eq!(persisted, vec!["dark"]);
+        assert_eq!(invalidations, 1);
+    }
+
+    #[test]
+    fn emoji_edges_with_unchanged_index_never_invalidate_the_visible_suggestion() {
+        // A no-op popup edit (same index as `current`) must NOT clear the
+        // showing suggestion: `handle_*_change` short-circuits to `None`, so the
+        // `_with_invalidation` wrapper never runs `invalidate_visible_suggestion`.
+        // A changed index proves the invalidation path is still wired. Mirrors
+        // `emoji_{gender,skin_tone}_edge_invalidates_stale_visible_suggestion`.
+
+        // --- Skin tone: same index → no invalidation, no persist, None. ---
+        let index = AtomicUsize::new(emoji_skin_tone_index(SkinTone::Medium));
+        let mut current = emoji_skin_tone_index(SkinTone::Medium);
+        let mut config_emoji = Some(EmojiPrefs::default());
+        let mut saved = EmojiPrefs::default();
+        let mut persisted = Vec::new();
+        let mut invalidations = 0;
+
+        assert_eq!(
+            handle_emoji_skin_tone_change_with_invalidation(
+                &index,
+                &mut current,
+                &mut config_emoji,
+                &mut saved,
+                |value| persisted.push(value.to_string()),
+                || invalidations += 1,
+            ),
+            None,
+            "unchanged skin-tone index is a no-op edit"
+        );
+        assert_eq!(persisted, Vec::<String>::new());
+        assert_eq!(
+            invalidations, 0,
+            "a no-op skin-tone edit must not clear the showing suggestion"
+        );
+
+        // A genuine change DOES invalidate, proving the path is still wired.
+        index.store(emoji_skin_tone_index(SkinTone::Dark), Ordering::Relaxed);
+        assert_eq!(
+            handle_emoji_skin_tone_change_with_invalidation(
+                &index,
+                &mut current,
+                &mut config_emoji,
+                &mut saved,
+                |value| persisted.push(value.to_string()),
+                || invalidations += 1,
+            ),
+            Some(SkinTone::Dark)
+        );
+        assert_eq!(invalidations, 1);
+
+        // --- Gender: same index → no invalidation, no persist, None. ---
+        let index = AtomicUsize::new(emoji_gender_index(Gender::Female));
+        let mut current = emoji_gender_index(Gender::Female);
+        let mut config_emoji = Some(EmojiPrefs::default());
+        let mut saved = EmojiPrefs::default();
+        let mut persisted = Vec::new();
+        let mut invalidations = 0;
+
+        assert_eq!(
+            handle_emoji_gender_change_with_invalidation(
+                &index,
+                &mut current,
+                &mut config_emoji,
+                &mut saved,
+                |value| persisted.push(value.to_string()),
+                || invalidations += 1,
+            ),
+            None,
+            "unchanged gender index is a no-op edit"
+        );
+        assert_eq!(persisted, Vec::<String>::new());
+        assert_eq!(
+            invalidations, 0,
+            "a no-op gender edit must not clear the showing suggestion"
+        );
+
+        // A genuine change DOES invalidate.
+        index.store(emoji_gender_index(Gender::Male), Ordering::Relaxed);
+        assert_eq!(
+            handle_emoji_gender_change_with_invalidation(
+                &index,
+                &mut current,
+                &mut config_emoji,
+                &mut saved,
+                |value| persisted.push(value.to_string()),
+                || invalidations += 1,
+            ),
+            Some(Gender::Male)
+        );
         assert_eq!(invalidations, 1);
     }
 

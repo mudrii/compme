@@ -310,16 +310,46 @@ impl LlamaModel {
         let guard = self
             .job_tx
             .lock()
-            .map_err(|_| LocalModelError::new(stage, "model worker lock poisoned"))?;
+            .map_err(|_| dispatch_error(stage, DispatchFailure::LockPoisoned))?;
         let tx = guard
             .as_ref()
-            .ok_or_else(|| LocalModelError::new(stage, "model worker already shut down"))?;
+            .ok_or_else(|| dispatch_error(stage, DispatchFailure::AlreadyShutDown))?;
         tx.send(make_job(reply_tx))
-            .map_err(|_| LocalModelError::new(stage, "model worker is gone"))?;
+            .map_err(|_| dispatch_error(stage, DispatchFailure::SendFailed))?;
         reply_rx
             .recv()
-            .map_err(|_| LocalModelError::new(stage, "model worker dropped the reply"))
+            .map_err(|_| dispatch_error(stage, DispatchFailure::ReplyDropped))
     }
+}
+
+/// Why a [`LlamaModel::dispatch`] round-trip failed before producing a reply.
+/// Each variant maps to exactly one failure arm so the (otherwise FFI-coupled)
+/// error wording can be unit-tested without a real worker/GGUF.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DispatchFailure {
+    /// The `job_tx` mutex was poisoned by a panicked holder.
+    LockPoisoned,
+    /// `shutdown`/`drop` already took the sender (worker gone).
+    AlreadyShutDown,
+    /// The worker's receiver hung up, so the job could not be sent.
+    SendFailed,
+    /// The worker dropped the one-shot reply sender before answering.
+    ReplyDropped,
+}
+
+/// Map a [`DispatchFailure`] to its typed [`LocalModelError`]. Pure: no FFI, no
+/// channels — just the `stage` tag and the stable diagnostic message for the
+/// arm. Keeping this out of `dispatch` lets the message wording be asserted
+/// directly (the live path needs a real GGUF). The messages are matched by
+/// callers/telemetry — treat them as stable API.
+fn dispatch_error(stage: &'static str, failure: DispatchFailure) -> LocalModelError {
+    let message = match failure {
+        DispatchFailure::LockPoisoned => "model worker lock poisoned",
+        DispatchFailure::AlreadyShutDown => "model worker already shut down",
+        DispatchFailure::SendFailed => "model worker is gone",
+        DispatchFailure::ReplyDropped => "model worker dropped the reply",
+    };
+    LocalModelError::new(stage, message)
 }
 
 /// Run one completion on the worker thread against the persistent context,
@@ -666,8 +696,13 @@ mod tests {
 
     #[test]
     fn sampler_for_candidate_nonzero_seeds_diverge() {
-        // Each later candidate gets a distinct seed equal to its index, so the
-        // candidates genuinely diverge from one another rather than repeating.
+        // The divergence CONTRACT (not the exact seed formula): each later
+        // candidate is non-greedy (carries an actual random seed) and the seeds
+        // are pairwise distinct, so no two divergent candidates share an
+        // identical sampler configuration. We deliberately do NOT pin
+        // `seed == index` — that the seed happens to equal `dist(index)` is an
+        // implementation detail of how distinctness is achieved, and the
+        // contract holds for any distinct non-greedy seeding scheme.
         let seeds: Vec<u32> = (1..=4)
             .map(|i| sampler_for_candidate(i).get_seed())
             .collect();
@@ -676,10 +711,6 @@ mod tests {
         // sentinel) — i.e. it is NOT the deterministic candidate 0.
         for (offset, seed) in seeds.iter().enumerate() {
             let index = offset + 1;
-            assert_eq!(
-                *seed, index as u32,
-                "candidate {index} must seed `dist` with its own index"
-            );
             assert_ne!(
                 *seed, 0xFFFF_FFFF,
                 "candidate {index} must NOT be seedless/greedy"
@@ -695,6 +726,116 @@ mod tests {
             unique.len(),
             seeds.len(),
             "candidate seeds must be distinct: {seeds:?}"
+        );
+    }
+
+    // Task 1: the dispatch error-mapping is a pure helper so the post-shutdown /
+    // worker-gone paths can be asserted without a real GGUF. Each arm must carry
+    // stage=="complete" (or whatever the caller passes) and the documented,
+    // stable diagnostic substring — never panic/hang. The live `dispatch` routes
+    // every arm through this same helper, so these pin its observable contract.
+    #[test]
+    fn dispatch_error_lock_poisoned_is_typed() {
+        let err = dispatch_error("complete", DispatchFailure::LockPoisoned);
+        assert_eq!(err.stage(), "complete");
+        assert!(
+            err.message().contains("lock poisoned"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn dispatch_error_after_shutdown_says_already_shut_down() {
+        // The arm hit when `complete`/`complete_n`/`warm_up` run AFTER shutdown()
+        // took the sender: a typed error, not a panic/hang.
+        let err = dispatch_error("complete", DispatchFailure::AlreadyShutDown);
+        assert_eq!(err.stage(), "complete");
+        assert!(
+            err.message().contains("already shut down"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn dispatch_error_send_failed_says_worker_is_gone() {
+        let err = dispatch_error("complete", DispatchFailure::SendFailed);
+        assert_eq!(err.stage(), "complete");
+        assert!(
+            err.message().contains("worker is gone"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn dispatch_error_reply_dropped_says_dropped_the_reply() {
+        let err = dispatch_error("complete", DispatchFailure::ReplyDropped);
+        assert_eq!(err.stage(), "complete");
+        assert!(
+            err.message().contains("dropped the reply"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn dispatch_error_carries_the_callers_stage() {
+        // The stage is the caller's pipeline label, not hard-coded — warm_up and
+        // complete_n use their own. Pin that the helper forwards it verbatim.
+        for stage in ["complete", "complete_n", "warm up"] {
+            assert_eq!(
+                dispatch_error(stage, DispatchFailure::AlreadyShutDown).stage(),
+                stage
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_failures_have_distinct_messages() {
+        // Each arm must be diagnosable on its own — no two failures collapse to
+        // the same wording (telemetry/callers disambiguate on the message).
+        let messages: Vec<String> = [
+            DispatchFailure::LockPoisoned,
+            DispatchFailure::AlreadyShutDown,
+            DispatchFailure::SendFailed,
+            DispatchFailure::ReplyDropped,
+        ]
+        .into_iter()
+        .map(|f| dispatch_error("complete", f).message().to_string())
+        .collect();
+        let mut unique = messages.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), messages.len(), "messages: {messages:?}");
+    }
+
+    // Task 2: complete_n short-circuits n==0 to Ok(vec![]) WITHOUT dispatching to
+    // the worker. Testable on the trait DEFAULT impl with a counting fake — no
+    // GGUF needed. The LlamaModel-specific short-circuit (lib.rs ~L476) is the
+    // same `if n == 0 { return Ok(Vec::new()) }` guard placed BEFORE `dispatch`,
+    // but exercising it needs a real worker (a GGUF), so it stays GGUF-gated; the
+    // default-impl test pins the observable "no completion happens" contract.
+    #[test]
+    fn complete_n_zero_returns_empty_without_dispatch() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counting(AtomicUsize);
+        impl LocalModel for Counting {
+            fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("x".into())
+            }
+        }
+
+        let model = Counting(AtomicUsize::new(0));
+        let out = model.complete_n("prompt", 8, 0).expect("n==0 is Ok");
+        assert!(out.is_empty(), "n==0 must return an empty vec");
+        assert_eq!(
+            model.0.load(Ordering::SeqCst),
+            0,
+            "n==0 must short-circuit BEFORE any complete()/dispatch call"
         );
     }
 

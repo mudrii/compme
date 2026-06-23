@@ -613,6 +613,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_stats_tolerates_whitespace_around_key_and_value() {
+        // parse_stats_file trims both the key (`key.trim()`) and the value
+        // (`value.trim().parse()`), so a dotenv line with spaces around `=`
+        // parses identically to the canonical no-space form. A hand-edited
+        // stats.env must not silently reset a counter just because someone
+        // added a space.
+        let spaced = parse_stats_file("STATS_SHOWN = 5");
+        assert_eq!(spaced.shown, 5);
+        assert_eq!(spaced, parse_stats_file("STATS_SHOWN=5"));
+
+        // Tolerance holds across every key, with assorted surrounding/tab/CR
+        // whitespace, and the trailing carriage return `lines()` leaves on a
+        // CRLF file.
+        let messy = "  STATS_SHOWN =  5\n\
+                     STATS_ACCEPTED\t=\t2 \n\
+                     STATS_DISMISSED = 1\r\n\
+                     STATS_SUPERSEDED =3\n\
+                     STATS_WORDS= 9 \n";
+        assert_eq!(
+            parse_stats_file(messy),
+            PersistedStats {
+                shown: 5,
+                accepted: 2,
+                dismissed: 1,
+                superseded: 3,
+                words: 9,
+            }
+        );
+    }
+
+    #[test]
     fn persisted_stats_merge_saturates_huge_lifetime_counters() {
         let lifetime = PersistedStats {
             shown: u64::MAX,

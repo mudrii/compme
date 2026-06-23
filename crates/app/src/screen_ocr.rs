@@ -153,21 +153,35 @@ fn run(
         return;
     }
     while let Some(request) = queue.recv() {
-        let text =
-            screen_context_text(request.caret_rect, max_chars).map(|t| redaction::redact(&t));
-        if diag {
-            eprintln!(
-                "compme: screen_context={:?}",
-                text.as_ref().map(|s| s.chars().count())
-            );
-        }
-        *screen.lock().unwrap_or_else(|e| e.into_inner()) = text.map(|text| ScreenContext {
-            field: request.field,
-            generation: request.generation,
-            snapshot: request.snapshot,
-            text,
-        });
+        let raw = screen_context_text(request.caret_rect, max_chars);
+        publish_screen_context(&screen, &request, raw, diag);
     }
+}
+
+/// Redact `raw` OCR text and publish it into the shared `screen` cell under the
+/// request's stamp. This `redaction::redact` call is the SOLE redaction point for
+/// captured on-screen content (which routinely shows passwords/tokens/PII), so it
+/// is split out as a pure seam and pinned by test — a regression dropping the
+/// redact here would leak raw screen secrets into the model prompt.
+fn publish_screen_context(
+    screen: &Mutex<Option<ScreenContext>>,
+    request: &ScreenOcrRequest,
+    raw: Option<String>,
+    diag: bool,
+) {
+    let text = raw.map(|t| redaction::redact(&t));
+    if diag {
+        eprintln!(
+            "compme: screen_context={:?}",
+            text.as_ref().map(|s| s.chars().count())
+        );
+    }
+    *screen.lock().unwrap_or_else(|e| e.into_inner()) = text.map(|text| ScreenContext {
+        field: request.field.clone(),
+        generation: request.generation,
+        snapshot: request.snapshot,
+        text,
+    });
 }
 
 #[cfg(test)]
@@ -190,6 +204,81 @@ mod tests {
             element_id: "field".into(),
             generation,
         }
+    }
+
+    #[test]
+    fn publish_screen_context_redacts_before_publishing() {
+        // The sole redaction point for captured on-screen content. A regression
+        // dropping the redact here would leak raw screen secrets into the prompt.
+        let screen: Mutex<Option<ScreenContext>> = Mutex::new(None);
+        let req = ScreenOcrRequest {
+            field: field(7),
+            generation: 7,
+            snapshot: 7,
+            caret_rect: rect(1.0),
+        };
+        publish_screen_context(
+            &screen,
+            &req,
+            Some("login sk-abcdEFGH0123456789abcdEFGH0123 now".into()),
+            false,
+        );
+        let guard = screen.lock().unwrap();
+        let ctx = guard.as_ref().expect("published a screen context");
+        assert!(
+            ctx.text.contains("[redacted-secret]"),
+            "redacted: {:?}",
+            ctx.text
+        );
+        assert!(
+            !ctx.text.contains("sk-abcdEFGH"),
+            "raw screen secret must not reach the prompt cell: {:?}",
+            ctx.text
+        );
+        assert_eq!(ctx.generation, 7);
+        assert_eq!(ctx.snapshot, 7);
+    }
+
+    #[test]
+    fn publish_screen_context_with_no_ocr_text_clears_the_cell() {
+        // A None OCR result publishes None, clearing any stale prior context
+        // rather than leaving a previous request's visible text in the cell.
+        let screen: Mutex<Option<ScreenContext>> = Mutex::new(Some(ScreenContext {
+            field: field(1),
+            generation: 1,
+            snapshot: 1,
+            text: "stale visible text".into(),
+        }));
+        let req = ScreenOcrRequest {
+            field: field(2),
+            generation: 2,
+            snapshot: 2,
+            caret_rect: rect(2.0),
+        };
+        publish_screen_context(&screen, &req, None, false);
+        assert!(
+            screen.lock().unwrap().is_none(),
+            "no OCR text clears the cell"
+        );
+    }
+
+    #[test]
+    fn worker_exits_immediately_when_screen_context_disabled() {
+        // max_chars == 0 (screen context disabled): run() returns before the loop,
+        // touching neither the Vision FFI nor the screen cell.
+        let queue = Arc::new(LatestRequestQueue::default());
+        queue.submit(ScreenOcrRequest {
+            field: field(1),
+            generation: 1,
+            snapshot: 1,
+            caret_rect: rect(1.0),
+        });
+        let screen = Arc::new(Mutex::new(None));
+        run(Arc::clone(&queue), Arc::clone(&screen), 0, false);
+        assert!(
+            screen.lock().unwrap().is_none(),
+            "disabled worker publishes nothing"
+        );
     }
 
     #[test]

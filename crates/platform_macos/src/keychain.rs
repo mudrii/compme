@@ -167,6 +167,39 @@ mod tests {
     }
 
     #[test]
+    fn load_copies_every_byte_of_the_stored_key_before_zeroizing_the_source() {
+        // The load path copies the raw keychain Vec into the fixed [u8; 32]
+        // array and then zeroizes the source. A distinctive per-position
+        // pattern pins that the copy is faithful (no truncation/offset) AND
+        // that scrubbing the source Vec does not corrupt the already-copied
+        // result. (The source Vec is owned by the function and freed on return,
+        // so reading it post-zeroize would be use-after-free UB; we pin the
+        // observable returned key instead, which only the zeroizing branch
+        // produces.)
+        let stored: [u8; 32] = std::array::from_fn(|i| i as u8);
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let writes_in_hook = Arc::clone(&writes);
+        let store = store_with_hooks(
+            Arc::new(move |_, _| Ok(Some(stored.to_vec()))),
+            Arc::new(move |_, _, secret: &[u8]| {
+                writes_in_hook.lock().unwrap().push(secret.to_vec());
+                Ok(())
+            }),
+            Arc::new(|| Ok([0u8; 32])),
+        );
+
+        assert_eq!(
+            store.load_or_create_memory_key(),
+            Ok(stored),
+            "every byte of the stored key must survive the copy + source zeroization"
+        );
+        assert!(
+            writes.lock().unwrap().is_empty(),
+            "loading an existing key must never write"
+        );
+    }
+
+    #[test]
     fn first_use_generates_persists_and_returns_the_same_key() {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let writes_in_hook = Arc::clone(&writes);

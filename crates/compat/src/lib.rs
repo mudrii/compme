@@ -727,4 +727,31 @@ mod tests {
         assert!(is_browser("org.mozilla.firefox"));
         assert!(!is_browser("com.apple.TextEdit"));
     }
+
+    #[test]
+    fn accessibility_setup_not_needed_for_unknown_non_browser() {
+        // An Unknown-tier, non-browser bundle id exercises the false arm of the
+        // is_browser gate in needs_accessibility_setup (line ~91): even with
+        // unreadable field text, the result is false because it is neither a
+        // browser nor a SetupNeeded app. Existing coverage uses TextEdit (a known
+        // Works non-browser) at line ~721, not an Unknown-tier id.
+        assert_eq!(
+            compatibility_tier("com.example.SomethingNew"),
+            CompatTier::Unknown
+        );
+        assert!(!is_browser("com.example.SomethingNew"));
+        assert!(!needs_accessibility_setup(
+            "com.example.SomethingNew",
+            false
+        ));
+    }
+
+    #[test]
+    fn is_browser_false_for_empty_bundle_id() {
+        // The empty bundle id is neither an exact match nor a non-empty family
+        // suffix: strip_prefix(family) on "" yields None for every family, so the
+        // any(...) is false (line ~47). Guards against an empty id slipping
+        // through the dot-bounded family check.
+        assert!(!is_browser(""));
+    }
 }

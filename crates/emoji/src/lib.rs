@@ -582,6 +582,23 @@ mod tests {
     }
 
     #[test]
+    fn emoji_suggest_prefix_completes_short_and_digit_tokens() {
+        // A two-char prefix and a digit-leading two-char prefix both meet
+        // MIN_PREFIX_LEN (2) and complete to the shortest matching shortcode
+        // (lookup, line ~226). ":10" is a prefix of "100" (💯) — the only digit
+        // shortcode — and ":ok" is a prefix of "ok_hand" (👌).
+        let ten = suggest_default(":10").unwrap();
+        assert_eq!(ten.shortcode, "100");
+        assert_eq!(ten.glyph, "💯");
+        assert_eq!(ten.replace_chars, 3); // ":10"
+
+        let ok = suggest_default(":ok").unwrap();
+        assert_eq!(ok.shortcode, "ok_hand");
+        assert_eq!(ok.glyph, "👌");
+        assert_eq!(ok.replace_chars, 3); // ":ok"
+    }
+
+    #[test]
     fn gendered_entry_skin_tone_field_gates_the_neutral_modifier() {
         // raising_hand has skin_tone:true, so neutral + a tone applies the modifier
         // (the field is now meaningful on the gendered path, not dead code).

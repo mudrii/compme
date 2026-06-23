@@ -5729,6 +5729,47 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TestNoopPasteboardProviderIvars {
+        provided_count: Arc<AtomicUsize>,
+    }
+
+    define_class!(
+        // SAFETY: NSObject has no subclassing requirements relevant to this
+        // test-only data provider.
+        #[unsafe(super = NSObject)]
+        #[thread_kind = AnyThread]
+        #[ivars = TestNoopPasteboardProviderIvars]
+        struct TestNoopPasteboardProvider;
+
+        // SAFETY: NSObjectProtocol has no additional safety requirements.
+        unsafe impl NSObjectProtocol for TestNoopPasteboardProvider {}
+
+        // SAFETY: The method signature matches NSPasteboardItemDataProvider.
+        unsafe impl NSPasteboardItemDataProvider for TestNoopPasteboardProvider {
+            #[allow(non_snake_case)]
+            #[unsafe(method(pasteboard:item:provideDataForType:))]
+            fn pasteboard_item_provideDataForType(
+                &self,
+                _pasteboard: Option<&NSPasteboard>,
+                _item: &NSPasteboardItem,
+                _pasteboard_type: &objc2_app_kit::NSPasteboardType,
+            ) {
+                // Deliberately set no data: the item advertises the type but the
+                // provider yields nothing for it.
+                self.ivars().provided_count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    );
+
+    impl TestNoopPasteboardProvider {
+        fn new(provided_count: Arc<AtomicUsize>) -> Retained<Self> {
+            let this = Self::alloc().set_ivars(TestNoopPasteboardProviderIvars { provided_count });
+            // SAFETY: The signature of NSObject's init method is correct.
+            unsafe { msg_send![super(this), init] }
+        }
+    }
+
     struct FakeObserverBackend {
         log: Arc<Mutex<Vec<String>>>,
         fail_on: Option<ObserverNotification>,
@@ -8040,6 +8081,89 @@ mod tests {
                 .stringForType(pasteboard_string_type())
                 .map(|value| value.to_string()),
             Some("second".into())
+        );
+    }
+
+    #[test]
+    fn snapshot_drops_item_that_advertises_a_type_but_yields_no_data() {
+        // A pasteboard item can advertise a type via a lazy data provider yet
+        // produce no data when asked (the provider sets nothing). The
+        // `(!types.is_empty())` guard in `snapshot_pasteboard_items` keys off
+        // the materialized type/data pairs, not the advertised types, so such
+        // an item is dropped from the snapshot rather than captured empty.
+        let provider_type = NSString::from_str("com.compme.test.empty");
+        let provided_count = Arc::new(AtomicUsize::new(0));
+        let provider = TestNoopPasteboardProvider::new(Arc::clone(&provided_count));
+
+        let item = NSPasteboardItem::new();
+        let provider_ref: &ProtocolObject<dyn NSPasteboardItemDataProvider> =
+            ProtocolObject::from_ref(&*provider);
+        let types = NSArray::from_slice(&[&*provider_type]);
+        assert!(item.setDataProvider_forTypes(provider_ref, &types));
+        // The item DOES advertise a type — so the drop is driven by the
+        // missing data, not by an absent type.
+        assert_eq!(item.types().len(), 1);
+
+        let snapshot = snapshot_pasteboard_items(&NSArray::from_slice(&[&*item]));
+
+        assert!(
+            snapshot.is_empty(),
+            "an item that advertises a type but yields no data must be dropped"
+        );
+        assert!(
+            provided_count.load(Ordering::SeqCst) >= 1,
+            "the data provider must have been asked for its (absent) data"
+        );
+    }
+
+    #[test]
+    fn restore_falls_back_to_clear_when_items_fail_to_write() {
+        // `restore_pasteboard` clears, attempts the item restore, and on
+        // failure falls through to `restore_pasteboard_string`. With no
+        // fallback string the net effect is a cleared pasteboard. We force the
+        // item restore to fail deterministically with an empty type name, which
+        // makes `populate_pasteboard_item`'s `setData:forType:` reject the item
+        // (so `restore_pasteboard_items` returns false) — no flaky FFI needed.
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        pasteboard.clearContents();
+        assert!(
+            pasteboard.setString_forType(&NSString::from_str("stale"), pasteboard_string_type(),)
+        );
+
+        // Sanity: the item snapshot really does fail to write on its own.
+        let failing_items = vec![PasteboardItemSnapshot {
+            types: vec![PasteboardTypeSnapshot {
+                type_name: String::new(),
+                data: vec![1, 2, 3],
+            }],
+        }];
+        assert!(
+            !restore_pasteboard_items(&pasteboard, &failing_items),
+            "an empty type name must make the item restore fail"
+        );
+
+        let snapshot = PasteboardSnapshot {
+            items: failing_items,
+            fallback_string: None,
+        };
+        restore_pasteboard(&pasteboard, &snapshot);
+
+        // The failed restore fell back to clearing: no string survives and the
+        // pasteboard holds nothing from the snapshot.
+        assert_eq!(
+            pasteboard
+                .stringForType(pasteboard_string_type())
+                .map(|value| value.to_string()),
+            None,
+            "a failed item restore with no fallback string must leave the pasteboard cleared"
+        );
+        assert!(
+            pasteboard
+                .pasteboardItems()
+                .map(|items| items.len())
+                .unwrap_or(0)
+                == 0,
+            "no snapshot items should have been written after the restore failure"
         );
     }
 

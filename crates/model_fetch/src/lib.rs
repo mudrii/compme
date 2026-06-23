@@ -956,11 +956,31 @@ mod tests {
         // The first request always queues; the return value tells callers
         // whether to track the status (a dropped request stays Idle forever).
         assert!(queued[0], "first request queues");
+        // Exact overflow capacity: with `sync_channel(1)` (depth-1 buffer) plus
+        // at most one in-flight slot once the worker has consumed, the most this
+        // burst can accept is TWO — never all three. Whether the worker pulled
+        // request 0 into flight before the burst finished is the only race, so
+        // the accepted count is exactly 1 or 2, and the dropped count is exactly
+        // `3 - accepted` (>=1, the overflow guarantee).
+        let accepted = queued.iter().filter(|&&q| q).count();
         assert!(
-            !queued.iter().all(|&q| q),
-            "with one in flight and depth-1 buffering, at least one of three \
-             burst requests must be dropped and report false"
+            (1..=2).contains(&accepted),
+            "overflow must accept exactly 1 or 2 of three burst requests \
+             (never all three); got {accepted} accepted: {queued:?}"
         );
+        // Every request that reported `false` was dropped, so per the
+        // must_use contract its status must stay Idle (untracked) — the
+        // boolean and the observable state must agree exactly.
+        for (i, &q) in queued.iter().enumerate() {
+            if !q {
+                let state = statuses[i].state.lock().unwrap();
+                assert!(
+                    matches!(&*state, DownloadState::Idle),
+                    "dropped request {i} (returned false) must stay Idle, got {:?}",
+                    &*state
+                );
+            }
+        }
         // Request 0 reaches Running (the stalled body holds it there);
         // request 2 must have been dropped: still Idle after the worker has
         // demonstrably started consuming.

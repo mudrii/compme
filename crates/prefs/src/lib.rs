@@ -366,6 +366,25 @@ mod tests {
     }
 
     #[test]
+    fn monitored_collection_blocked_for_excluded_domain() {
+        // The domain hard-block flows through should_suggest into
+        // monitored_collection_allowed: an excluded focus domain must stop durable
+        // monitored recording, while a non-excluded domain (same app, collection
+        // on) still allows it. Pins the domain term distinct from the app gates.
+        let mut p = Prefs::default();
+        p.excluded_domains.insert("secret.example.com".into());
+
+        // Excluded domain → monitored recording blocked even though the app side
+        // is fully permissive (collection on by default, not snoozed/excluded).
+        assert!(!p.should_suggest(None, Some("secret.example.com"), 1_000));
+        assert!(!p.monitored_collection_allowed(None, Some("secret.example.com"), 1_000));
+
+        // A different, non-excluded domain in the same context is still allowed.
+        assert!(p.should_suggest(None, Some("public.example.com"), 1_000));
+        assert!(p.monitored_collection_allowed(None, Some("public.example.com"), 1_000));
+    }
+
+    #[test]
     fn app_snooze_until_relaunch_saturates_and_clear_reenables() {
         let mut p = Prefs::default();
         // u64::MAX minutes saturates: effectively "until relaunch".

@@ -1681,6 +1681,66 @@ mod tests {
     }
 
     #[test]
+    fn on_cycle_with_nothing_showing_is_a_noop() {
+        // Cycle (Down arrow) with no ghost up must do nothing: the machine has no
+        // `showing` to rotate, so it emits no commands. The engine therefore never
+        // asks the overlay to update/show anything and dispatches no follow-up
+        // requests. (Mirrors `dismiss_with_nothing_showing_is_noop` for the rotate
+        // path.)
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+
+        let follow = engine.on_cycle().unwrap();
+
+        assert!(follow.is_empty(), "no follow-up requests on an empty cycle");
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "the overlay must not be touched when there is nothing to cycle"
+        );
+    }
+
+    #[test]
+    fn completion_for_wrong_field_is_dropped() {
+        // Staleness at the dispatch boundary: a completion stamped for a field
+        // OTHER than the one the in-flight request was issued for must be dropped.
+        // The machine's request-match guard (`on_completion_ready`) requires the
+        // completion's field to equal the requested field, so a mismatch shows no
+        // ghost — even though generation/snapshot line up.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        overlay.calls.lock().unwrap().clear();
+        let _ = engine.take_stat_events();
+
+        // Re-stamp the in-flight request for a different field, keeping the same
+        // generation/snapshot, then deliver a completion for it.
+        let mut wrong = requests[0].clone();
+        wrong.field = FieldHandle {
+            app: "TextEdit".into(),
+            pid: Some(42),
+            element_id: "field-OTHER".into(),
+            generation: 1,
+        };
+
+        let followups = engine.on_completion(&wrong, "ghost".into()).unwrap();
+
+        assert!(
+            followups.is_empty(),
+            "a wrong-field completion dispatches no follow-up requests"
+        );
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "a completion for a non-focused field must never show a ghost"
+        );
+        assert_eq!(
+            engine.take_stat_events(),
+            vec![],
+            "a dropped completion records no Shown stat"
+        );
+    }
+
+    #[test]
     fn arms_accept_tap_via_popup_anchor_path() {
         let mut adapter = FakeAdapter::new();
         adapter.rect = None;

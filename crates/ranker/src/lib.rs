@@ -254,6 +254,19 @@ mod tests {
     }
 
     #[test]
+    fn repetition_penalty_is_case_insensitive_on_recent_context() {
+        // The sibling case-insensitivity test folds the CANDIDATE; this pins
+        // that the RECENT context is lowercased too (the `recent.to_lowercase()`
+        // at the top of the fn). An uppercase recent context still penalizes a
+        // lowercase candidate echoing it, exactly as the all-lowercase recent
+        // does — so casing of the surrounding text never leaks a degenerate echo.
+        let upper_recent = repetition_penalty("repeat me", "PLEASE REPEAT ME NOW");
+        let lower_recent = repetition_penalty("repeat me", "please repeat me now");
+        assert_eq!(upper_recent, lower_recent);
+        assert_eq!(upper_recent, 0.25); // a match, not the 1.0 no-match floor
+    }
+
+    #[test]
     fn repetition_penalty_ignores_empty_candidate() {
         assert_eq!(repetition_penalty("", "anything"), 1.0);
     }

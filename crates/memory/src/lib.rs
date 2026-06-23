@@ -498,6 +498,29 @@ mod tests {
     }
 
     #[test]
+    fn monitor_redacts_before_storing() {
+        // The monitored-typing path (AllMonitored mode) must scrub secrets before
+        // encrypting, exactly like the accepted path (`redacts_before_storing`):
+        // broad background capture must never persist a raw token.
+        let store = MemoryStore::open_in_memory(&key(11), StorageMode::AllMonitored).unwrap();
+        store
+            .monitor("app", "type sk-abcdEFGH0123456789abcdEFGH0123")
+            .unwrap();
+        let recent = store.recent("app", 1).unwrap();
+        assert_eq!(recent.len(), 1, "the monitored row is stored");
+        assert!(
+            recent[0].contains("[redacted-secret]"),
+            "monitored secret must be redacted: {:?}",
+            recent[0]
+        );
+        assert!(
+            !recent[0].contains("sk-abcd"),
+            "raw token must not be stored: {:?}",
+            recent[0]
+        );
+    }
+
+    #[test]
     fn all_monitored_rows_count_and_delete_by_app() {
         let store = MemoryStore::open_in_memory(&key(13), StorageMode::AllMonitored).unwrap();
         store.remember("com.apple.TextEdit", "accepted").unwrap();
@@ -709,5 +732,25 @@ mod tests {
             "a corrupt newest row must not consume the caller's decryptable limit"
         );
         assert_eq!(store.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn recent_truncates_to_limit_newest_first() {
+        // With MORE decryptable rows than `limit`, recent() returns exactly the
+        // newest `limit` of them, newest first — the per-app history-window cap.
+        let store = MemoryStore::open_in_memory(&key(17), StorageMode::AcceptedOnly).unwrap();
+        for i in 0..5 {
+            store.remember("app", &format!("row {i}")).unwrap();
+        }
+        let recent = store.recent("app", 3).unwrap();
+        assert_eq!(
+            recent,
+            vec![
+                "row 4".to_string(),
+                "row 3".to_string(),
+                "row 2".to_string()
+            ],
+            "the newest 3 rows, newest first"
+        );
     }
 }

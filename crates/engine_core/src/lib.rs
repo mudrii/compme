@@ -2414,6 +2414,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn on_completion_ready_supersedes_showing_ghost_records_superseded() {
+        // The `if self.showing.is_some()` branch inside `on_completion_ready`
+        // (the model-completion replacement site): a fresh inference result that
+        // matches the in-flight request arrives while a ghost is STILL showing for
+        // the same snapshot. The central `on_event` supersede guard does not cover
+        // this — `CompletionReady` is not a "non-user" hide event — so the branch
+        // accounts for it explicitly. The new ghost is shown and a Superseded stat
+        // is recorded for the replaced one.
+        //
+        // This state (a matching `requested` AND a live `showing` on the same
+        // snapshot) is unreachable through the ordinary public event sequence: the
+        // request marker is one-shot (the first matching completion clears
+        // `requested`), and every show-path that sets `showing` either clears
+        // `requested` (`offer_replacement`) or re-arming a request first hides the
+        // prior ghost (`TextChanged` -> `advance_snapshot`). The branch is therefore
+        // exercised white-box, by seeding the guarded state directly (same-module
+        // test access), which is the only way to cover this defensive accounting.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello", 5, 0));
+        machine.on_event(Event::Tick { now_ms: 500 }); // arms req gen=1, snap=1
+                                                       // Seed a still-showing ghost for the same snapshot without disturbing the
+                                                       // armed request (offer_replacement / a real show would clear `requested`).
+        machine.showing = Some(Showing {
+            field: field("field-a"),
+            snapshot: machine.snapshot,
+            candidates: vec!["old ghost".into()],
+            index: 0,
+            caret: machine.caret,
+            replace_left: 0,
+        });
+        let _ = machine.take_stat_events(); // anchor: drain any pre-existing events
+
+        let cmds = machine.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: "world".into(),
+        });
+
+        // The new completion replaces the old ghost: a single fresh ShowGhost.
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [Command::ShowGhost { text, .. }] if text == "world"
+            ),
+            "expected one ShowGhost for the new candidate, got {cmds:?}"
+        );
+        // The replaced ghost is accounted as Superseded, and the new one as Shown.
+        assert_eq!(
+            machine.take_stat_events(),
+            vec![StatEvent::Superseded, StatEvent::Shown]
+        );
+    }
+
     fn showing_three_words() -> SuggestionMachine {
         let mut machine = machine();
         machine.on_event(text_changed("x", 1, 0));
