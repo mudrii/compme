@@ -56,12 +56,75 @@ fn looks_high_entropy(token: &str) -> bool {
     has_digit || (has_upper && has_lower) || has_b64_punct
 }
 
-/// Matches a run of 13–19 digits, optionally separated by whitespace runs,
-/// dashes, or no-break spaces (a candidate card number; Luhn-checked before
-/// redacting).
-fn card_re() -> &'static Regex {
+/// Matches a *maximal* run of ASCII digits optionally interleaved with the card
+/// separators (whitespace, dash, no-break space). The 13–19-digit Luhn windowing
+/// happens inside the run (`redact_card_run`) so two cards separated only by a
+/// separator are each detected, rather than a greedy span straddling the card
+/// boundary and failing Luhn over the merged digits (which leaked both PANs).
+fn card_run_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\d(?:[\s\u{00a0}-]*\d){12,18}").expect("card regex"))
+    RE.get_or_init(|| Regex::new(r"\d(?:[\s\u{00a0}-]*\d)*").expect("card run regex"))
+}
+
+/// Redact every boundary-aligned, Luhn-valid 13–19-digit window inside one
+/// digit/separator run. A window may start only at the run start or immediately
+/// after a separator, and end only at the run end or immediately before a
+/// separator — so a solid digit block has exactly one candidate (matching the
+/// old single-check, i.e. no new false positives on non-card order ids), while
+/// separator-delimited adjacent cards yield one candidate each. Longest window
+/// first preserves the over-redaction bias.
+fn redact_card_run(run: &str) -> String {
+    // Byte offset of each ASCII digit (digits are 1 byte; separators may be
+    // multi-byte, e.g. NBSP — so a gap > 1 between consecutive offsets means a
+    // separator sits between those two digits).
+    let digit_pos: Vec<usize> = run
+        .char_indices()
+        .filter(|(_, c)| c.is_ascii_digit())
+        .map(|(i, _)| i)
+        .collect();
+    if digit_pos.len() < 13 {
+        return run.to_string();
+    }
+    let digits: Vec<u8> = digit_pos.iter().map(|&i| run.as_bytes()[i]).collect();
+    let at_group_start = |i: usize| i == 0 || digit_pos[i] - digit_pos[i - 1] > 1;
+    let at_group_end = |j: usize| j + 1 == digits.len() || digit_pos[j + 1] - digit_pos[j] > 1;
+
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < digits.len() {
+        if at_group_start(i) {
+            let max_k = (digits.len() - i).min(19);
+            let mut hit = None;
+            for k in (13..=max_k).rev() {
+                let j = i + k - 1;
+                if at_group_end(j) {
+                    let window: String = digits[i..i + k].iter().map(|&b| b as char).collect();
+                    if luhn_valid(&window) {
+                        hit = Some(k);
+                        break;
+                    }
+                }
+            }
+            if let Some(k) = hit {
+                spans.push((digit_pos[i], digit_pos[i + k - 1] + 1));
+                i += k;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if spans.is_empty() {
+        return run.to_string();
+    }
+    let mut out = String::with_capacity(run.len());
+    let mut cursor = 0;
+    for (start, end) in spans {
+        out.push_str(&run[cursor..start]);
+        out.push_str("[redacted-card]");
+        cursor = end;
+    }
+    out.push_str(&run[cursor..]);
+    out
 }
 
 fn email_re() -> &'static Regex {
@@ -92,17 +155,10 @@ pub fn redact(input: &str) -> String {
         }
     });
 
-    // 3. Card numbers (Luhn-validated).
-    card_re()
-        .replace_all(&stage2, |caps: &regex::Captures| {
-            let m = &caps[0];
-            let digits: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
-            if luhn_valid(&digits) {
-                "[redacted-card]".to_string()
-            } else {
-                m.to_string()
-            }
-        })
+    // 3. Card numbers (Luhn-validated). Each maximal digit/separator run is
+    //    windowed internally so adjacent cards are each caught.
+    card_run_re()
+        .replace_all(&stage2, |caps: &regex::Captures| redact_card_run(&caps[0]))
         .into_owned()
 }
 
@@ -376,6 +432,59 @@ mod tests {
         // the secret pass into a partial-leak tail (review finding 6).
         let out = redact("verylonglocalpartoverthirtytwochars@example.com");
         assert_eq!(out, "[redacted-email]");
+    }
+
+    #[test]
+    fn redacts_two_adjacent_cards_separated_only_by_a_separator() {
+        // Review finding (privacy MEDIUM): a greedy 13–19 digit span used to
+        // straddle the boundary between two back-to-back PANs, fail Luhn over the
+        // merged digits, and leak BOTH. Each card (4242… and 4000…0002 are both
+        // Luhn-valid) must now be redacted independently.
+        // Whitespace/NBSP separators don't merge into one token, so they reach
+        // the card stage and yield one [redacted-card] per PAN.
+        for sep in [" ", "\u{00a0}", "\t"] {
+            let input = format!("pay 4242424242424242{sep}4000000000000002 now");
+            let out = redact(&input);
+            assert!(
+                !out.contains("4242"),
+                "first card leaked ({sep:?}): {out:?}"
+            );
+            assert!(
+                !out.contains("4000"),
+                "second card leaked ({sep:?}): {out:?}"
+            );
+            assert_eq!(
+                out.matches("[redacted-card]").count(),
+                2,
+                "both cards redacted ({sep:?}): {out:?}"
+            );
+        }
+        // A dash joins the two PANs into one 33-char run that the *secret* pass
+        // catches first — different placeholder, same privacy outcome: no leak.
+        let dashed = redact("pay 4242424242424242-4000000000000002 now");
+        assert!(
+            !dashed.contains("4242"),
+            "dash: first card leaked: {dashed:?}"
+        );
+        assert!(
+            !dashed.contains("4000"),
+            "dash: second card leaked: {dashed:?}"
+        );
+        // Grouped-then-grouped form leaks the same way without the fix.
+        let grouped = redact("pay 4242 4242 4242 4242 4000 0000 0000 0002 now");
+        assert!(!grouped.contains("4242"), "got {grouped:?}");
+        assert!(!grouped.contains("4000"), "got {grouped:?}");
+    }
+
+    #[test]
+    fn redacts_card_followed_immediately_by_trailing_digits() {
+        // A PAN trailed by a CVV-like run (separated by a separator) used to make
+        // the greedy span grab 19 digits, fail Luhn, and leak the card. The card
+        // is now scrubbed; the short (<13-digit) tail is harmless and survives.
+        let out = redact("card 4242 4242 4242 4242 123 ok");
+        assert!(out.contains("[redacted-card]"), "got {out:?}");
+        assert!(!out.contains("4242"), "card leaked: {out:?}");
+        assert!(out.contains("123"), "short tail survives: {out:?}");
     }
 
     #[test]

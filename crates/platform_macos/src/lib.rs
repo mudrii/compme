@@ -1108,7 +1108,8 @@ impl MacosPlatformAdapter {
                 self.ensure_global_insert_target(pid)?;
                 Self::refuse_non_atomic_replacement(replace_left, strategy)?;
                 let result = self
-                    .delete_left_via_backspaces(pid, replace_left)
+                    .recheck_secure_input()
+                    .and_then(|()| self.delete_left_via_backspaces(pid, replace_left))
                     .and_then(|()| (self.synthetic_key_poster)(pid, &text))
                     .map(|()| Inserted {
                         bytes: text.len(),
@@ -1121,7 +1122,8 @@ impl MacosPlatformAdapter {
                 self.ensure_global_insert_target(pid)?;
                 Self::refuse_non_atomic_replacement(replace_left, strategy)?;
                 let result = self
-                    .delete_left_via_backspaces(pid, replace_left)
+                    .recheck_secure_input()
+                    .and_then(|()| self.delete_left_via_backspaces(pid, replace_left))
                     .and_then(|()| (self.pasteboard_poster)(pid, &text))
                     .map(|()| Inserted {
                         bytes: text.len(),
@@ -1265,6 +1267,20 @@ impl MacosPlatformAdapter {
     /// successful set, content untouched) can fall back to synthetic input. A
     /// replacement cannot: without the original token, deleting first on a
     /// global input channel is not all-or-nothing.
+    /// Re-query secure-input state immediately before a synthetic key/clipboard
+    /// post. The entry guard in `insert_impl` is sampled once; secure input can
+    /// turn on in the window between that check and the actual post (a password
+    /// prompt focuses mid-insert). Re-checking at the post site keeps the TOCTOU
+    /// window as narrow as possible, matching the crate's fail-closed posture.
+    fn recheck_secure_input(&self) -> Result<(), PlatformError> {
+        if (self.secure_input_enabled)() {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            });
+        }
+        Ok(())
+    }
+
     fn finish_axset_insert(
         &self,
         pid: i32,
@@ -1285,6 +1301,7 @@ impl MacosPlatformAdapter {
                         "compme: AxSet write silently ignored — falling back to synthetic input"
                     );
                 }
+                self.recheck_secure_input()?;
                 self.ensure_global_insert_target(pid)?;
                 (self.synthetic_key_poster)(pid, text).map(|()| Inserted {
                     bytes: text.len(),
@@ -7375,6 +7392,45 @@ mod tests {
             Err(PlatformError::StaleField)
         );
         assert!(posted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn insert_synthetic_keys_rechecks_secure_input_before_posting() {
+        // TOCTOU (review finding): secure input is OFF at the entry guard but
+        // turns ON before the synthetic post (a password prompt focuses
+        // mid-insert). The re-check must refuse the post so no synthetic keys
+        // reach the now-secure field.
+        use std::sync::atomic::AtomicUsize;
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let posted_in_hook = Arc::clone(&posted);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_in_hook = Arc::clone(&calls);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        // false on the first call (entry guard), true on every later re-check.
+        config.secure_input_enabled =
+            Arc::new(move || calls_in_hook.fetch_add(1, Ordering::Relaxed) > 0);
+        config.synthetic_key_poster = Arc::new(move |pid, text| {
+            posted_in_hook.lock().unwrap().push((pid, text.to_string()));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert(&field, "x", InsertStrategy::SyntheticKeys),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
+        assert!(
+            posted.lock().unwrap().is_empty(),
+            "no synthetic post into a field that became secure mid-insert"
+        );
     }
 
     fn keep_handler(log: Arc<Mutex<Vec<i64>>>) -> Arc<AcceptTapHandler> {

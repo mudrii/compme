@@ -421,7 +421,13 @@ fn complete_on_worker(
     *prev_tokens = tokens.clone();
 
     let first_generated_pos = tokens.len() as i32;
-    for position in first_generated_pos..first_generated_pos + max_tokens as i32 {
+    // Clamp the budget into i32 with saturating arithmetic so a pathological
+    // max_tokens (> i32::MAX, or one that would overflow the position) can't wrap
+    // to a negative end and silently produce an empty generation range. llama.cpp
+    // positions are i32; a budget at the ceiling is bounded by n_ctx in practice.
+    let last_generated_pos =
+        first_generated_pos.saturating_add(i32::try_from(max_tokens).unwrap_or(i32::MAX));
+    for position in first_generated_pos..last_generated_pos {
         let token = sampler.sample(context, batch.n_tokens() - 1);
         if model.is_eog_token(token) {
             break;

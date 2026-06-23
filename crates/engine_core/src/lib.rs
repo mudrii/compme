@@ -608,7 +608,12 @@ impl SuggestionMachine {
             let sentence = truncate_at_sentence_end(line);
             let de_overlapped = strip_suffix_overlap(sentence, &right);
             let capped = cap_words(&de_overlapped, self.max_words);
+            // Degeneracy is checked on the PRE-cap text: `is_degenerate_repetition`
+            // needs >=3 words, but `cap_words` may have truncated a degenerate loop
+            // below that floor (e.g. max_words=2), letting it slip through if checked
+            // on `capped`. The repetition penalty stays on the shown (`capped`) text.
             let fresh = repetition_penalty(&capped, &recent) >= REPETITION_PENALTY_FLOOR
+                && !is_degenerate_repetition(&de_overlapped)
                 && !is_degenerate_repetition(&capped);
             // Dedup on a normalized key (trim + case-fold) so near-duplicates
             // (trailing space, case) don't show as separate cycle options.

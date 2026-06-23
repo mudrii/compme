@@ -1615,6 +1615,19 @@ fn buffered_monitored_text(
     field: &FieldHandle,
     inserted: &str,
 ) -> Option<String> {
+    if !buffers.contains_key(field) {
+        // Fresh handle for this field: if the adapter bumped `generation` (the
+        // element was replaced) without an intervening Focus event clearing the
+        // map, the prior generation's Collecting buffer is orphaned — it never
+        // receives another pending item, so it would linger until the next
+        // Focus/policy clear. Drop those same-logical-field stale buffers here so
+        // monitored_buffers can't accumulate dead keys within one session. Runs
+        // only on a key-miss (first keystroke of a new field-generation), so it
+        // stays off the per-keystroke hot path.
+        buffers.retain(|k, _| {
+            !(k.app == field.app && k.pid == field.pid && k.element_id == field.element_id)
+        });
+    }
     match buffers
         .entry(field.clone())
         .or_insert_with(|| MonitoredBuffer::Collecting(String::new()))
@@ -4046,12 +4059,24 @@ pub fn run() -> Result<(), String> {
                         if allowed { "ENABLED" } else { "DISABLED" }
                     );
                     if let Some(path) = config::config_file_path() {
-                        if let Err(err) = config::persist_setting(
-                            &path,
-                            "COMPME_NO_COLLECT_APPS",
-                            &no_collect_apps_value(&prefs),
-                        ) {
-                            eprintln!("compme: could not persist no-collect apps: {err}");
+                        // Mirror persist_web_override_prefs: an emptied list is
+                        // REMOVED, not written as a blank `KEY=` line (which would
+                        // shadow the env-over-file layer). Re-enabling the last
+                        // no-collect app clears the key entirely.
+                        let value = no_collect_apps_value(&prefs);
+                        if value.is_empty() {
+                            remove_setting_or_log(
+                                &path,
+                                "COMPME_NO_COLLECT_APPS",
+                                "no-collect apps",
+                            );
+                        } else {
+                            persist_setting_or_log(
+                                &path,
+                                "COMPME_NO_COLLECT_APPS",
+                                &value,
+                                "no-collect apps",
+                            );
                         }
                     }
                 }
@@ -7254,6 +7279,35 @@ mod tests {
             element_id: "ax:field".into(),
             generation: 1,
         }
+    }
+
+    #[test]
+    fn buffered_monitored_text_drops_orphaned_prior_generation_buffer() {
+        // A field's generation bumps (element replaced) without a Focus event
+        // clearing the map. The old-generation Collecting buffer must not linger:
+        // the fresh handle prunes its same-logical-field stale sibling so
+        // monitored_buffers can't accumulate dead keys within one session.
+        let mut buffers: HashMap<FieldHandle, MonitoredBuffer> = HashMap::new();
+        let gen1 = field_with_app("com.apple.TextEdit");
+        let mut gen2 = field_with_app("com.apple.TextEdit");
+        gen2.generation = 2; // same app/pid/element_id, replaced element
+
+        // Mid-word collection on gen1 leaves a Collecting buffer (no boundary).
+        assert_eq!(buffered_monitored_text(&mut buffers, &gen1, "ab"), None);
+        assert_eq!(buffers.len(), 1);
+
+        // First keystroke on gen2 evicts the orphaned gen1 buffer.
+        assert_eq!(buffered_monitored_text(&mut buffers, &gen2, "cd"), None);
+        assert_eq!(buffers.len(), 1, "stale gen1 buffer pruned: {buffers:?}");
+        assert!(buffers.contains_key(&gen2));
+        assert!(!buffers.contains_key(&gen1));
+
+        // An UNRELATED field is left untouched by the prune.
+        let other = field_with_app("com.apple.Notes");
+        assert_eq!(buffered_monitored_text(&mut buffers, &other, "ef"), None);
+        assert_eq!(buffers.len(), 2);
+        assert!(buffers.contains_key(&gen2));
+        assert!(buffers.contains_key(&other));
     }
 
     fn text_context(field: &FieldHandle, left: &str) -> platform::TextContext {
