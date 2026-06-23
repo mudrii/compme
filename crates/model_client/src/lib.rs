@@ -530,8 +530,16 @@ impl LocalModel for LlamaModel {
     /// Spec §"ggml-Metal aborts on exit unless model/context freed via explicit
     /// `shutdown()` before teardown (guard double-free)".
     fn shutdown(mut self: Box<Self>) {
-        // Drop the sender so the worker's `recv` returns and it runs its ordered
-        // teardown.
+        self.close_worker();
+    }
+}
+
+impl LlamaModel {
+    /// Drop the sender so the worker's `recv` returns and it runs its ordered
+    /// teardown, then join the thread. Idempotent: a second call (e.g. `Drop`
+    /// after an explicit `shutdown`) finds the channel already closed and the
+    /// handle already taken, so it is a harmless no-op.
+    fn close_worker(&mut self) {
         if let Ok(mut guard) = self.job_tx.lock() {
             guard.take();
         }
@@ -545,12 +553,7 @@ impl Drop for LlamaModel {
     fn drop(&mut self) {
         // If `shutdown` was not called (e.g. the model is dropped directly), still
         // close the channel and join so the worker frees resources in order.
-        if let Ok(mut guard) = self.job_tx.lock() {
-            guard.take();
-        }
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        self.close_worker();
     }
 }
 
