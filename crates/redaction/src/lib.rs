@@ -66,17 +66,20 @@ fn card_run_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\d(?:[\s\u{00a0}-]*\d)*").expect("card run regex"))
 }
 
-/// Redact every boundary-aligned, Luhn-valid 13–19-digit window inside one
-/// digit/separator run. A window may start only at the run start or immediately
-/// after a separator, and end only at the run end or immediately before a
-/// separator — so a solid digit block has exactly one candidate (matching the
-/// old single-check, i.e. no new false positives on non-card order ids), while
-/// separator-delimited adjacent cards yield one candidate each. Longest window
-/// first preserves the over-redaction bias.
+/// Redact every Luhn-valid 13–19-digit window inside one digit/separator run by
+/// sliding a longest-first window across the run's digits. This catches both
+/// cards separated only by a separator (the greedy span used to straddle the
+/// boundary and fail Luhn over the merged digits) AND a PAN abutted by extra
+/// digits with no separator (e.g. PAN+CVV or PAN glued to an order id), where a
+/// single boundary-aligned span would exceed 19 digits and miss the embedded
+/// card. Longest window first, then skip past it, keeps the over-redaction bias
+/// (privacy > fidelity) without shredding a number into overlapping fragments.
+/// A run with no embedded Luhn window (e.g. a non-card 16-digit order id)
+/// survives untouched.
 fn redact_card_run(run: &str) -> String {
     // Byte offset of each ASCII digit (digits are 1 byte; separators may be
-    // multi-byte, e.g. NBSP — so a gap > 1 between consecutive offsets means a
-    // separator sits between those two digits).
+    // multi-byte, e.g. NBSP — but every redaction boundary lands on a digit
+    // offset, so the span slices are always valid UTF-8 boundaries).
     let digit_pos: Vec<usize> = run
         .char_indices()
         .filter(|(_, c)| c.is_ascii_digit())
@@ -86,32 +89,25 @@ fn redact_card_run(run: &str) -> String {
         return run.to_string();
     }
     let digits: Vec<u8> = digit_pos.iter().map(|&i| run.as_bytes()[i]).collect();
-    let at_group_start = |i: usize| i == 0 || digit_pos[i] - digit_pos[i - 1] > 1;
-    let at_group_end = |j: usize| j + 1 == digits.len() || digit_pos[j + 1] - digit_pos[j] > 1;
 
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while i < digits.len() {
-        if at_group_start(i) {
-            let max_k = (digits.len() - i).min(19);
-            let mut hit = None;
-            for k in (13..=max_k).rev() {
-                let j = i + k - 1;
-                if at_group_end(j) {
-                    let window: String = digits[i..i + k].iter().map(|&b| b as char).collect();
-                    if luhn_valid(&window) {
-                        hit = Some(k);
-                        break;
-                    }
-                }
-            }
-            if let Some(k) = hit {
-                spans.push((digit_pos[i], digit_pos[i + k - 1] + 1));
-                i += k;
-                continue;
+        let max_k = (digits.len() - i).min(19);
+        let mut hit = None;
+        for k in (13..=max_k).rev() {
+            let window: String = digits[i..i + k].iter().map(|&b| b as char).collect();
+            if luhn_valid(&window) {
+                hit = Some(k);
+                break;
             }
         }
-        i += 1;
+        if let Some(k) = hit {
+            spans.push((digit_pos[i], digit_pos[i + k - 1] + 1));
+            i += k;
+        } else {
+            i += 1;
+        }
     }
     if spans.is_empty() {
         return run.to_string();
@@ -474,6 +470,24 @@ mod tests {
         let grouped = redact("pay 4242 4242 4242 4242 4000 0000 0000 0002 now");
         assert!(!grouped.contains("4242"), "got {grouped:?}");
         assert!(!grouped.contains("4000"), "got {grouped:?}");
+    }
+
+    #[test]
+    fn redacts_card_abutted_by_extra_digits_with_no_separator() {
+        // Review round-2 finding: a Luhn-valid PAN glued to extra digits with NO
+        // separator forms a solid >19 (or exactly-19) digit block whose only
+        // boundary-aligned span overshoots 19 / fails Luhn — the embedded PAN
+        // leaked. The sliding window now catches the embedded 16-digit card.
+        // 20-digit block: PAN + 4 trailing digits.
+        let glued = redact("ref 42424242424242421234 end");
+        assert!(glued.contains("[redacted-card]"), "got {glued:?}");
+        assert!(
+            !glued.contains("4242424242424242"),
+            "embedded PAN leaked: {glued:?}"
+        );
+        // 19-digit block: PAN + 3-digit CVV, no separator.
+        let cvv = redact("x 4242424242424242123 y");
+        assert!(!cvv.contains("4242424242424242"), "PAN+CVV leaked: {cvv:?}");
     }
 
     #[test]

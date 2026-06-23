@@ -2102,6 +2102,13 @@ fn post_clipboard_text(pid: i32, text: &str) -> Result<(), PlatformError> {
     let completion_change_count = pasteboard.changeCount();
 
     let post_result = post_command_v(pid);
+    // The Clipboard strategy runs on the AppKit main thread (NSPasteboard is
+    // main-thread-only), so this blocking sleep stalls the heartbeat run loop for
+    // CLIPBOARD_RESTORE_DELAY. It is the price of a synchronous "paste then
+    // restore the user's clipboard" on the only insert strategy left for apps
+    // with no settable AXValue/range. ponytail: accepted limitation for that
+    // fallback path — upgrade to a deferred run-loop/timer restore (keeping the
+    // heartbeat responsive) if a real app makes the 1s stall on accept felt.
     thread::sleep(CLIPBOARD_RESTORE_DELAY);
     restore_pasteboard_if_unchanged(&pasteboard, &previous_snapshot, completion_change_count);
     post_result
@@ -5557,6 +5564,16 @@ unsafe extern "C" fn ax_observer_callback(
         callback_tx: state.callback_tx.clone(),
     };
 
+    // Ownership of the CFRetain in `retained_element` is balanced manually: the
+    // worker releases it via `resolve_retained_observer_element` (create rule)
+    // when it processes the message, and the send-failure path below releases it
+    // here. One bounded gap remains and is accepted: if the worker has already
+    // stopped, a still-queued ObserverEvent is dropped without processing, so its
+    // CFRetain leaks. This is shutdown-only (the worker stops exactly once) and
+    // touches at most the messages in flight at that instant — negligible.
+    // ponytail: bounded shutdown leak; upgrade to a Send Drop-guard around the
+    // retained element (releasing on drop, `forget` on the create-rule handoff)
+    // if the worker's drain/shutdown logic ever changes to risk per-event leaks.
     if state.tx.send(message).is_err() {
         release_retained_observer_element(retained_element);
     }
