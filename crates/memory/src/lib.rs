@@ -5,9 +5,8 @@
 //! the SQLite database — text plaintext never touches disk. The app identifier is
 //! kept as plaintext metadata for per-app counts and deletion, and is also bound
 //! into the AEAD as AAD so rows cannot be relabeled and decrypted under another
-//! app. The 32-byte key comes from a [`KeyProvider`]; production supplies it from
-//! the OS keystore (Keychain on macOS — A3 live integration), tests supply a
-//! fixed key.
+//! app. The 32-byte key is a [`StaticKey`]; production fills it from the OS
+//! keystore (Keychain on macOS — A3 live integration), tests supply a fixed key.
 //!
 //! Storage is **opt-in**: with [`StorageMode::Off`] (the default) nothing is
 //! recorded. `AcceptedOnly` stores accepted completions; `AllMonitored` is the
@@ -23,17 +22,12 @@ use zeroize::Zeroize;
 
 const NONCE_LEN: usize = 12;
 
-/// Where the 32-byte AES-256 key comes from. Production binds this to the OS
-/// keystore (Keychain); tests use [`StaticKey`].
-pub trait KeyProvider {
-    fn key(&self) -> [u8; 32];
-}
-
-/// A fixed key — for tests and headless use. The real Keychain-backed provider
-/// is an A3 live integration.
+/// The 32-byte AES-256 key. Production fills it from the OS keystore (Keychain);
+/// tests/headless use a fixed key. (A `KeyProvider` trait was inlined here once it
+/// had a single implementation — reintroduce a trait if a second key source lands.)
 pub struct StaticKey(pub [u8; 32]);
 
-impl KeyProvider for StaticKey {
+impl StaticKey {
     fn key(&self) -> [u8; 32] {
         self.0
     }
@@ -94,20 +88,16 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     /// Open (creating if needed) a file-backed store.
-    pub fn open(path: &Path, key: &impl KeyProvider, mode: StorageMode) -> Result<Self> {
+    pub fn open(path: &Path, key: &StaticKey, mode: StorageMode) -> Result<Self> {
         Self::from_connection(Connection::open(path)?, key, mode)
     }
 
     /// Open an in-memory store (tests / ephemeral use).
-    pub fn open_in_memory(key: &impl KeyProvider, mode: StorageMode) -> Result<Self> {
+    pub fn open_in_memory(key: &StaticKey, mode: StorageMode) -> Result<Self> {
         Self::from_connection(Connection::open_in_memory()?, key, mode)
     }
 
-    fn from_connection(
-        conn: Connection,
-        key: &impl KeyProvider,
-        mode: StorageMode,
-    ) -> Result<Self> {
+    fn from_connection(conn: Connection, key: &StaticKey, mode: StorageMode) -> Result<Self> {
         // secure_delete zeroes freed content so delete_all/delete_app actually
         // erase ciphertext from disk (freelist pages), not just unlink rows.
         conn.pragma_update(None, "secure_delete", true)?;
