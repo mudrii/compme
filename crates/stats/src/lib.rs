@@ -399,17 +399,16 @@ impl Stats {
     /// Mean first-suggestion latency (ms) over the window, `None` when no samples.
     pub fn latency_avg_ms(&self, now_ms: u64) -> Option<u32> {
         let cutoff = Self::cutoff(now_ms);
-        let samples: Vec<u32> = self
+        // Single pass, no intermediate Vec: accumulate (sum, count) in u64 so a
+        // window of large samples never overflows.
+        let (sum, count) = self
             .latencies
             .iter()
             .filter(|&&(at, _)| at >= cutoff && at <= now_ms)
-            .map(|&(_, ms)| ms)
-            .collect();
-        if samples.is_empty() {
-            return None;
-        }
-        let sum: u64 = samples.iter().map(|&ms| ms as u64).sum();
-        Some((sum / samples.len() as u64) as u32)
+            .fold((0u64, 0u64), |(sum, count), &(_, ms)| {
+                (sum + u64::from(ms), count + 1)
+            });
+        (count > 0).then(|| (sum / count) as u32)
     }
 
     /// 95th-percentile latency (ms, nearest-rank) over the window — the §11 hard

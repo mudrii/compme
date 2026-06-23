@@ -144,10 +144,9 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
     /// must NOT persist a rebind when this returns `Err` — the registered
     /// keys and the persisted config would desync.
     pub fn rearm_accept_keys(&self) -> Result<(), platform::PlatformError> {
-        match &self.accept {
-            Some(accept) => accept.rearm_accept_tap(),
-            None => Ok(()),
-        }
+        self.accept
+            .as_ref()
+            .map_or(Ok(()), |accept| accept.rearm_accept_tap())
     }
 
     fn set_tap_visible(

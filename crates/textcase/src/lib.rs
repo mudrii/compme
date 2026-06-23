@@ -21,11 +21,13 @@ impl CasePattern {
         let Some(first) = letters.next() else {
             return CasePattern::Lower;
         };
-        let all_upper = word
-            .chars()
-            .filter(|c| c.is_alphabetic())
-            .all(char::is_uppercase);
-        let letter_count = word.chars().filter(|c| c.is_alphabetic()).count();
+        // Single pass over the remaining letters (first already consumed).
+        let mut letter_count = 1usize;
+        let mut all_upper = first.is_uppercase();
+        for c in letters {
+            letter_count += 1;
+            all_upper &= c.is_uppercase();
+        }
         if all_upper && letter_count > 1 {
             return CasePattern::Upper;
         }
