@@ -7412,6 +7412,37 @@ mod tests {
     }
 
     #[test]
+    fn insert_synthetic_keys_errors_when_no_app_is_frontmost() {
+        // No frontmost app at all (the desktop has focus): a global synthetic
+        // insert cannot target a window, so it must fail honestly rather than
+        // post keys into the void. The field still carries a pid (so the pid
+        // resolution succeeds), but `ensure_global_insert_target` sees a `None`
+        // frontmost and refuses with CannotComplete.
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let posted_in_hook = Arc::clone(&posted);
+        let mut config = TestAdapterConfig::new(None, Arc::new(Mutex::new(Vec::new())), None);
+        config.synthetic_key_poster = Arc::new(move |pid, text| {
+            posted_in_hook.lock().unwrap().push((pid, text.to_string()));
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert(&field, "x", InsertStrategy::SyntheticKeys),
+            Err(PlatformError::CannotComplete {
+                reason: "no frontmost application pid for global insert".into(),
+            })
+        );
+        assert!(posted.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn insert_synthetic_keys_rechecks_secure_input_before_posting() {
         // TOCTOU (review finding): secure input is OFF at the entry guard but
         // turns ON before the synthetic post (a password prompt focuses
@@ -8312,6 +8343,31 @@ mod tests {
     }
 
     #[test]
+    fn option_word_bypass_applies_to_resolved_binding() {
+        // The Option+Tab bypass must trigger off the resolved/fired Word role,
+        // not only the keycode-fallback path: when the producer hands us the
+        // Word binding directly (id-resolved) and Option is held, the key still
+        // passes through literally (Keep) rather than accepting the word.
+        let opt_word = AcceptTapEvent {
+            event_type: CGEventType::KeyDown,
+            keycode: KEYCODE_TAB,
+            source_user_data: 0,
+            option_down: true,
+            binding: Some(AcceptBinding::Word),
+        };
+
+        assert_eq!(
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                opt_word,
+                Some(AcceptAction::Word)
+            ),
+            AcceptTapDecision::Keep
+        );
+    }
+
+    #[test]
     fn escape_while_armed_dismisses_and_suppresses() {
         let esc = accept_tap_event(CGEventType::KeyDown, KEYCODE_ESCAPE, 0);
 
@@ -8680,6 +8736,10 @@ mod tests {
         assert_eq!(parse_accept_key("shift+"), None); // missing keycode
         assert_eq!(parse_accept_key("-3"), None); // negative keycode
         assert_eq!(parse_accept_key("shift+ctrl"), None); // no numeric tail
+                                                          // The integer keycode must be terminal: any token AFTER it is rejected,
+                                                          // whether a modifier word or a second integer.
+        assert_eq!(parse_accept_key("96+shift"), None); // modifier after keycode
+        assert_eq!(parse_accept_key("96+97"), None); // second keycode after keycode
 
         // format → parse round-trips the (keycode, mask) pair exactly.
         for (keycode, mask) in [
@@ -9124,6 +9184,24 @@ mod tests {
     #[test]
     fn accept_tap_decision_reenables_disabled_taps() {
         let event = accept_tap_event(CGEventType::TapDisabledByTimeout, KEYCODE_TAB, 0);
+
+        assert_eq!(
+            accept_tap_decision(
+                &AcceptKeymap::default(),
+                AcceptTapKind::Consumer,
+                event,
+                None
+            ),
+            AcceptTapDecision::ReenableAndKeep
+        );
+    }
+
+    #[test]
+    fn accept_tap_decision_reenables_a_user_input_disabled_tap() {
+        // A tap can be disabled by the OS for *user input* as well as timeout
+        // (e.g. the run loop fell behind). The decision must re-enable in BOTH
+        // cases or the accept tap silently goes dead after the first stall.
+        let event = accept_tap_event(CGEventType::TapDisabledByUserInput, KEYCODE_TAB, 0);
 
         assert_eq!(
             accept_tap_decision(

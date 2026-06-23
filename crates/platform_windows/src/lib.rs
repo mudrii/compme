@@ -116,6 +116,11 @@ mod tests {
         let adapter = WindowsAdapter::new();
         // environment() is the one cheap, infallible method the scaffold answers.
         assert_eq!(adapter.environment().os, OperatingSystem::Windows);
+        // The scaffold has no real version/topology probe yet: it reports the
+        // fixed "unknown" version and no display topology. Pin these so the real
+        // version/topology impl visibly replaces the placeholders.
+        assert_eq!(adapter.environment().version, "unknown");
+        assert!(adapter.environment().display_topology.is_none());
         // No frontmost app until the real impl lands.
         assert_eq!(adapter.front_app(), None);
         // Subscribe/IO methods fail closed (UnsupportedField), never panic — the

@@ -810,6 +810,62 @@ mod tests {
     }
 
     #[test]
+    fn screen_wait_coalesces_a_prequeued_burst_to_newest() {
+        // A burst of newer requests is already queued before the wait begins; the
+        // try_recv drain loop must keep only the NEWEST (gen 3) before building
+        // context, so the matching screen ctx for gen 3 is the one that applies.
+        let old = request("old typing", 1);
+        let newest = request("newest typing", 3);
+        let screen = Arc::new(Mutex::new(Some(ScreenContext {
+            field: newest.field.clone(),
+            generation: 3,
+            snapshot: 3,
+            text: "newest visible text".to_string(),
+        })));
+        let (request_tx, request_rx) = channel();
+        request_tx.send(request("burst typing", 1)).unwrap();
+        request_tx.send(request("burst typing", 2)).unwrap();
+        request_tx.send(newest).unwrap();
+        let worker_context = WorkerContext {
+            screen,
+            screen_wait: Duration::from_millis(80),
+            max_chars: 160,
+            ..Default::default()
+        };
+
+        let (selected, screen_text) = worker_context.wait_for_screen_or_newer(old, &request_rx);
+
+        assert_eq!(selected.generation, 3);
+        assert_eq!(screen_text.as_deref(), Some("newest visible text"));
+    }
+
+    #[test]
+    fn screen_wait_returns_none_on_channel_disconnect() {
+        // Shutdown while waiting for OCR: with a positive screen_wait and no
+        // matching screen ctx, dropping the request sender must disconnect the
+        // wait and return the original request with no screen text — never hang.
+        let req = request("typing", 1);
+        let screen = Arc::new(Mutex::new(None));
+        let (request_tx, request_rx) = channel();
+        let dropper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            drop(request_tx);
+        });
+        let worker_context = WorkerContext {
+            screen,
+            screen_wait: Duration::from_secs(10),
+            max_chars: 160,
+            ..Default::default()
+        };
+
+        let (selected, screen_text) = worker_context.wait_for_screen_or_newer(req, &request_rx);
+
+        assert_eq!(selected.generation, 1);
+        assert_eq!(screen_text, None);
+        dropper.join().unwrap();
+    }
+
+    #[test]
     fn screen_context_wait_is_bounded_when_matching_ocr_is_late() {
         let req = request("typing", 1);
         let screen = Arc::new(Mutex::new(None));

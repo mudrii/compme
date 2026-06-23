@@ -1255,6 +1255,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn on_completion_multi_filtered_to_nothing_shows_no_ghost_and_no_stat() {
+        // The multi-candidate path mirrors the single path: when every candidate
+        // the model returns is shaped away (here both trip degenerate-repetition
+        // detection), the machine emits no ShowGhost, so the overlay is never
+        // asked to present and no Shown stat is buffered. on_completion_multi
+        // still returns Ok with an empty dispatch (no reconcile, no requests).
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        overlay.calls.lock().unwrap().clear();
+        let _ = engine.take_stat_events();
+
+        let followups = engine
+            .on_completion_multi(&requests[0], vec!["ha ha ha".into(), "the the the".into()])
+            .unwrap();
+
+        assert!(followups.is_empty(), "no follow-up requests dispatched");
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "the overlay must never be asked to show a multi completion that filtered to nothing"
+        );
+        assert_eq!(
+            engine.take_stat_events(),
+            vec![],
+            "a multi completion that shows nothing must not record a Shown stat"
+        );
+    }
+
     fn other_field() -> FieldHandle {
         FieldHandle {
             app: "TextEdit".into(),

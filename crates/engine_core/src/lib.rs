@@ -921,6 +921,29 @@ mod tests {
     }
 
     #[test]
+    fn backwards_clock_tick_does_not_fire_or_panic() {
+        // The debounce arms at the TextChanged now_ms and Tick compares against
+        // it with `now_ms.saturating_sub(since)`. A monotonic clock that goes
+        // backwards (or is equal) — `since=1000`, then a `Tick{now_ms:500}` —
+        // would underflow a plain subtraction; the saturating math floors at 0,
+        // which is `< debounce_ms`, so the request must NOT fire early and the
+        // machine must not panic.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello", 5, 1000));
+        let out = machine.on_event(Event::Tick { now_ms: 500 });
+        assert_eq!(
+            out,
+            vec![],
+            "a backwards-clock tick must not fire a completion early (or panic): {out:?}"
+        );
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, Command::RequestCompletion { .. })),
+            "no RequestCompletion may be emitted when now_ms <= the arming timestamp"
+        );
+    }
+
+    #[test]
     fn requests_when_context_meets_min() {
         // "hey " trims to "hey" (3 chars) == min → arms and fires.
         let mut machine = machine().with_trigger_gates(3, false);
@@ -2703,10 +2726,16 @@ mod tests {
         let mut suppressed = focused_machine();
         suppressed.on_event(Event::DismissSuppress);
         assert_eq!(suppressed.offer_replacement(&f, "😄".into(), 5), vec![]);
-        assert!(suppressed.showing.is_none());
+        // Observable: nothing is offered, so there is nothing to preview or
+        // accept — a later Accept inserts nothing (refactor-survivable vs. a
+        // private `showing.is_none()` probe).
+        assert_eq!(suppressed.preview_accept_insert(AcceptAction::Full), None);
+        assert_eq!(suppressed.on_event(Event::AcceptFull), vec![]);
         // Empty text never offers (no spurious ghost).
         let mut machine = focused_machine();
         assert_eq!(machine.offer_replacement(&f, String::new(), 3), vec![]);
+        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
+        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
     }
 
     #[test]
@@ -2934,7 +2963,10 @@ mod tests {
             machine.offer_replacement(&field("field-a"), "😄".into(), 5),
             vec![]
         );
-        assert!(machine.showing.is_none());
+        // Observable: no ghost was offered, so there is nothing to preview or
+        // accept (refactor-survivable vs. a private `showing.is_none()` probe).
+        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
+        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
     }
 
     #[test]
@@ -3008,7 +3040,11 @@ mod tests {
             machine.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5),
             vec![]
         );
-        assert!(machine.showing.is_none());
+        // Observable: no ghost was offered, so there is nothing to preview or
+        // accept, and no Shown stat is buffered (refactor-survivable vs. a
+        // private `showing.is_none()` probe).
+        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
+        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
         assert!(!machine.take_stat_events().contains(&StatEvent::Shown));
     }
 

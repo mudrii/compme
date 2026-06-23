@@ -401,7 +401,11 @@ mod tests {
             store.delete_all().unwrap();
         }
         let raw = std::fs::read(&path).unwrap();
-        let found = raw.windows(16).any(|w| w == &blob[..16]);
+        // Scan for the ciphertext body PAST the nonce (the secret-bearing bytes),
+        // not just a 16-byte prefix, so this pins that the actual ciphertext is
+        // gone — a zeroed prefix alone would not prove the secret was erased.
+        let body = &blob[NONCE_LEN..];
+        let found = raw.windows(body.len()).any(|w| w == body);
         let _ = std::fs::remove_file(&path);
         assert!(
             !found,
@@ -454,7 +458,11 @@ mod tests {
         }
 
         let raw = std::fs::read(&path).unwrap();
-        let found = raw.windows(16).any(|w| w == &drop_blob[..16]);
+        // Scan for the ciphertext body PAST the nonce (the secret-bearing bytes),
+        // not just a 16-byte prefix, so this pins that the actual ciphertext is
+        // gone — a zeroed prefix alone would not prove the secret was erased.
+        let body = &drop_blob[NONCE_LEN..];
+        let found = raw.windows(body.len()).any(|w| w == body);
         let _ = std::fs::remove_file(&path);
         assert!(
             !found,
@@ -586,6 +594,39 @@ mod tests {
         let other = MemoryStore::open(&path, &key(8), StorageMode::AcceptedOnly).unwrap();
         assert_eq!(other.count().unwrap(), 1);
         assert!(other.recent("app", 10).unwrap().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn count_by_app_counts_undecryptable_rows_after_key_change() {
+        // count()/count_by_app() count STORED rows straight from the plaintext app
+        // column (no decryption), whereas recent() skips rows that fail to decrypt.
+        // After a key change every row becomes undecryptable, so recent() goes
+        // empty for each app while the counts still report the stored rows — the
+        // counts can EXCEED what recent() returns. Spans two apps to pin the
+        // per-app aggregate too.
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(31), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app.one", "first one").unwrap();
+            store.remember("app.one", "second one").unwrap();
+            store.remember("app.two", "only two").unwrap();
+        }
+
+        // Reopen with a DIFFERENT key: rows persist but none decrypt.
+        let reopened = MemoryStore::open(&path, &key(32), StorageMode::AcceptedOnly).unwrap();
+        assert!(
+            reopened.recent("app.one", 10).unwrap().is_empty(),
+            "recent() skips undecryptable rows under the new key"
+        );
+        assert!(reopened.recent("app.two", 10).unwrap().is_empty());
+
+        // But the stored-row counts are unchanged — they exceed recent()'s output.
+        assert_eq!(reopened.count().unwrap(), 3);
+        assert_eq!(
+            reopened.count_by_app().unwrap(),
+            vec![("app.one".to_string(), 2), ("app.two".to_string(), 1)]
+        );
         let _ = std::fs::remove_file(&path);
     }
 

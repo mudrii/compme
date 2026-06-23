@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn multibyte_first_char_query_is_handled_without_panic() {
+    fn multibyte_query_is_a_clean_lookup_miss() {
         // `to_british` lowercases the query and looks it up; on a miss it
         // short-circuits (`?`) BEFORE the CasePattern re-application line. Every
         // table key is ASCII, so a word with a multibyte char can never match —

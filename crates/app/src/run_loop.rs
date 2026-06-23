@@ -4439,6 +4439,28 @@ mod tests {
     }
 
     #[test]
+    fn strength_falls_back_to_default_when_compme_strength_is_unparseable() {
+        // COMPME_STRENGTH is present but cannot parse as u8: a non-numeric value
+        // and a numeric value that overflows u8 both leave the default stop in
+        // place (parse fails => the `if let Some` branch is skipped).
+        let default_strength = PersonalizationProfile::default().strength;
+
+        let non_numeric = build_personalization(&lookup(&[("COMPME_STRENGTH", "abc")]));
+        assert_eq!(non_numeric.strength, default_strength);
+
+        let overflows_u8 = build_personalization(&lookup(&[("COMPME_STRENGTH", "999")]));
+        assert_eq!(overflows_u8.strength, default_strength);
+    }
+
+    #[test]
+    fn instruction_suffix_folds_non_ascii_to_underscore() {
+        // Every non-ASCII-alphanumeric char (including a multi-byte unicode char)
+        // folds to a single '_'; ASCII alphanumerics are uppercased. For "café"
+        // the 'é' becomes '_', yielding "CAF_".
+        assert_eq!(config_target_key_suffix("café"), "CAF_");
+    }
+
+    #[test]
     fn personalization_built_from_per_app_and_domain_config_keys() {
         let profile = build_personalization(&lookup(&[
             ("COMPME_INSTRUCTIONS", "Be terse."),
@@ -7255,6 +7277,49 @@ mod tests {
         assert_eq!(*clipboard_cell.lock().unwrap(), None);
         assert!(submit_line.contains("request gen=18"));
         assert_eq!(submit_times.get(&18), Some(&444));
+    }
+
+    #[test]
+    fn submit_path_redacts_clipboard_before_storing_in_cell() {
+        // The submit path (submit_request_with_auxiliary_context) is the ONLY
+        // place clipboard text is redacted before it lands in the cell the
+        // inference worker reads into the model prompt. The clipboard routinely
+        // holds passwords/cards/emails, so a regression dropping redaction::redact
+        // here would silently leak raw secrets into the prompt. Pin it: a
+        // secret-bearing clipboard must be stored already redacted.
+        let clipboard_cell = Arc::new(Mutex::new(None));
+        let mut submit_times = HashMap::new();
+        let raw_secret = "sk-abcdEFGH0123456789abcdEFGH0123";
+
+        submit_request_with_auxiliary_context(
+            request_for_submit_tracking(21),
+            SubmitRequestContext {
+                submit_times: &mut submit_times,
+                now_ms: 500,
+                log_context: request_log_context_for_submit_tracking(),
+            },
+            AuxiliarySubmitContext {
+                clipboard_enabled: true,
+                diag_context: false,
+                diag_clipboard_marker: None,
+                clipboard_cell: &clipboard_cell,
+                screen_enabled: false,
+            },
+            || Some(format!("paste {raw_secret} now")),
+            |_| panic!("screen disabled"),
+            |_| panic!("screen disabled"),
+            |_| true,
+        );
+
+        let stored = clipboard_cell.lock().unwrap().clone().expect("cell set");
+        assert!(
+            stored.contains("[redacted-secret]"),
+            "clipboard stored redacted: {stored:?}"
+        );
+        assert!(
+            !stored.contains(raw_secret),
+            "raw secret must not reach the prompt cell: {stored:?}"
+        );
     }
 
     #[test]

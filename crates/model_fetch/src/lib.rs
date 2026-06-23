@@ -394,6 +394,10 @@ mod tests {
         HonorNoHeader,
         /// Always 200 with the full body (server ignores Range).
         Ignore,
+        /// 200 with the full body but NO Content-Length header — the body is
+        /// terminated by closing the connection (HTTP/1.0-style). The download
+        /// loop can't know the total, so every progress event carries None.
+        NoContentLength,
         /// LIE: reply 206 but serve the FULL body from offset 0 with a
         /// Content-Range that contradicts the request (corruption trap).
         Lie,
@@ -444,11 +448,17 @@ mod tests {
                 if let Some(cr) = content_range {
                     let _ = write!(stream, "Content-Range: {cr}\r\n");
                 }
-                let _ = write!(
-                    stream,
-                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    slice.len()
-                );
+                if matches!(mode, RangeMode::NoContentLength) {
+                    // No Content-Length: the body length is signalled by the
+                    // connection closing at the end of this loop iteration.
+                    let _ = write!(stream, "Connection: close\r\n\r\n");
+                } else {
+                    let _ = write!(
+                        stream,
+                        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        slice.len()
+                    );
+                }
                 let _ = stream.write_all(slice);
             }
         });
@@ -753,6 +763,39 @@ mod tests {
         assert_eq!(std::fs::read(&got).unwrap(), b"0123456789");
         assert_eq!(resumed_events.borrow().last(), Some(&(10, Some(10))));
         let _ = std::fs::remove_file(&resumed_dest);
+    }
+
+    #[test]
+    fn no_content_length_reports_unknown_total() {
+        // A server that omits Content-Length (terminating the body by closing
+        // the connection) gives the download loop no way to know the total.
+        // Content-Length parsing yields None, so every progress event must
+        // carry None for the total — and the worker stores total=0.
+        let url = serve(b"unsized model bytes", RangeMode::NoContentLength);
+        let dest = temp_dest("no-content-length");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let events = std::cell::RefCell::new(Vec::new());
+        let got = download_url(&url, &dest, None, |written, total| {
+            events.borrow_mut().push((written, total));
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"unsized model bytes");
+        // The body still transferred fully, but with an unknown total.
+        assert_eq!(
+            events.borrow().last(),
+            Some(&(b"unsized model bytes".len() as u64, None)),
+            "the final progress event reports the bytes written and an unknown total"
+        );
+        // EVERY event carries None — not just the last — since the total is
+        // never learned mid-stream.
+        assert!(
+            events.borrow().iter().all(|&(_, total)| total.is_none()),
+            "no progress event should ever report a known total: {:?}",
+            events.borrow()
+        );
+        let _ = std::fs::remove_file(&dest);
     }
 
     #[test]

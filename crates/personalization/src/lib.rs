@@ -450,6 +450,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_skips_whitespace_only_per_app_and_per_domain_sections() {
+        // The inner trim-to-empty guard drops a per-app or per-domain section whose
+        // text is whitespace-only, so a blank section is never pushed and never
+        // joined in — the resolved output is exactly the non-empty global, with no
+        // dangling blank line or duplicated separator.
+        let mut p = profile();
+        p.per_app.insert("app".into(), "   ".into());
+        p.per_domain.insert("ex.com".into(), "\n\t".into());
+
+        let resolved = p.resolve_instructions(Some("app"), Some("ex.com"));
+        assert_eq!(
+            resolved, "Write concisely.",
+            "whitespace-only sections are skipped, leaving only the global: {resolved:?}"
+        );
+        // No blank/duplicated section leaked in via the join separator.
+        assert!(!resolved.contains("\n\n"));
+        assert!(!resolved.ends_with('\n'));
+    }
+
+    #[test]
     fn per_app_supplements_rather_than_replaces_global() {
         let mut p = profile();
         p.per_app

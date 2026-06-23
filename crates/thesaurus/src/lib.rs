@@ -188,6 +188,28 @@ mod tests {
     }
 
     #[test]
+    fn multi_sense_query_sharp_merges_both_groups() {
+        // "sharp" is the OTHER multi-sense word (alongside "bright"): it lives
+        // in [smart, clever, intelligent, bright, sharp] AND [bright, luminous,
+        // radiant, vivid, sharp]. The merge walks the table in order, excludes
+        // the query ("sharp"), and dedupes "bright" (it heads the second group
+        // but was already taken from the first), so the second group only
+        // contributes its three remaining members.
+        assert_eq!(
+            synonyms("sharp"),
+            vec![
+                "smart",
+                "clever",
+                "intelligent",
+                "bright",
+                "luminous",
+                "radiant",
+                "vivid",
+            ]
+        );
+    }
+
+    #[test]
     fn every_table_word_has_at_least_one_synonym() {
         // Guards against introducing a degenerate <2-member group, which would
         // make has_synonyms() true but synonyms() empty.

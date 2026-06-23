@@ -630,6 +630,19 @@ mod tests {
     }
 
     #[test]
+    fn unknown_security_state_alone_is_not_blocked() {
+        // Pins the Unknown→non-blocking boundary: the secure guard only fires for
+        // SecureField | SecureInputEnabled, so with secure=false and an Unknown
+        // security_state the field stays fully usable (Inline, like Normal). A
+        // regression that started treating Unknown as Blocked would fail here.
+        let mut c = caps();
+        c.secure = false;
+        c.security_state = SecurityState::Unknown;
+
+        assert_eq!(ux_mode(&c), UxMode::Inline);
+    }
+
+    #[test]
     fn hotkey_only_intercept_is_hotkey_mode() {
         let mut c = caps();
         c.accept_intercept = KeyInterceptMode::HotkeyOnly;

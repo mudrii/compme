@@ -466,6 +466,67 @@ mod tests {
     }
 
     #[test]
+    fn terminal_skips_shell_leaders_case_insensitively() {
+        // The shell-leader gate lowercases tokens[0] before matching SHELL_LEADERS
+        // (line ~157), so a mixed/upper-case leader is still recognized as shell
+        // input and does NOT activate. Existing leader tests only use lowercase or
+        // sigil-prefixed leaders, leaving the case-folding path uncovered.
+        let term = "com.googlecode.iterm2";
+        assert!(
+            !terminal_prompt_activates(term, "Git push origin main"),
+            "a mixed-case shell leader is still shell input"
+        );
+        assert!(
+            !terminal_prompt_activates(term, "GIT commit -m wip"),
+            "an upper-case shell leader is still shell input"
+        );
+    }
+
+    #[test]
+    fn terminal_skips_go_commands_case_insensitively() {
+        // is_go_command compares the `go` leader with eq_ignore_ascii_case and
+        // lowercases the subcommand (lines ~227-230), so case variants of `go`
+        // and its subcommands are still treated as shell input. Existing go
+        // coverage only uses all-lowercase forms.
+        let term = "com.googlecode.iterm2";
+        assert!(
+            !terminal_prompt_activates(term, "GO test ./..."),
+            "an upper-case `go` leader is still a go command"
+        );
+        assert!(
+            !terminal_prompt_activates(term, "go FIX ./..."),
+            "an upper-case go subcommand is still a go command"
+        );
+    }
+
+    #[test]
+    fn apple_terminal_is_gated_like_iterm() {
+        // is_terminal classifies com.apple.Terminal alongside iTerm2 (line ~130),
+        // so the same prompt heuristic applies: shell input is skipped, but a
+        // natural-language prompt activates. Existing terminal tests only exercise
+        // iTerm2's bundle id.
+        let term = "com.apple.Terminal";
+        assert!(
+            !terminal_prompt_activates(term, "git commit -m wip"),
+            "a shell command does not activate in Apple Terminal"
+        );
+        assert!(
+            terminal_prompt_activates(term, "please refactor the parser to"),
+            "a natural-language prompt activates in Apple Terminal"
+        );
+    }
+
+    #[test]
+    fn accessibility_setup_for_unreadable_mirror_only_browser() {
+        // Firefox is a MirrorOnly browser and is listed in is_browser, so
+        // needs_accessibility_setup keys purely on browser+unreadable: true when
+        // the field text is not readable, false once it is. Existing coverage uses
+        // Chrome (Works) and Arc (SetupNeeded), not a MirrorOnly/Firefox-family id.
+        assert!(needs_accessibility_setup("org.mozilla.firefox", false));
+        assert!(!needs_accessibility_setup("org.mozilla.firefox", true));
+    }
+
+    #[test]
     fn terminal_skips_common_lowercase_shell_commands() {
         let term = "com.googlecode.iterm2";
         for command in [
