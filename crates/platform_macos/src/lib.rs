@@ -614,6 +614,13 @@ impl AcceptTapController {
             return controller.deactivate_if_generation(generation);
         }
 
+        // ponytail: one detached sleeper thread per non-zero-delay hide. This is
+        // the failsafe teardown after an accept (a terminal action — not a
+        // per-keystroke path), so the spawn rate is low and each thread exits
+        // after `delay`; superseded ones no-op via the generation guard. If a
+        // future caller ever invokes this per keystroke, replace the spawn with a
+        // single reusable timer thread / CFRunLoop timer keyed on
+        // teardown_generation.
         thread::spawn(move || {
             thread::sleep(delay);
             let _ = controller.deactivate_if_generation(generation);

@@ -96,8 +96,9 @@ fn redact_card_run(run: &str) -> String {
         let max_k = (digits.len() - i).min(19);
         let mut hit = None;
         for k in (13..=max_k).rev() {
-            let window: String = digits[i..i + k].iter().map(|&b| b as char).collect();
-            if luhn_valid(&window) {
+            // luhn over the byte slice directly — no per-window String allocation
+            // (the card stage runs on every stored/diagnostic string).
+            if luhn_valid_bytes(&digits[i..i + k]) {
                 hit = Some(k);
                 break;
             }
@@ -160,12 +161,19 @@ pub fn redact(input: &str) -> String {
 
 /// Whether `digits` (ASCII digits only) satisfies the Luhn checksum.
 pub fn luhn_valid(digits: &str) -> bool {
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    luhn_valid_bytes(digits.as_bytes())
+}
+
+/// Luhn over raw ASCII-digit bytes. Any non-ASCII-digit byte makes it `false`
+/// (mirrors the `&str` contract — a multibyte char's UTF-8 bytes aren't digits).
+/// Operating on bytes lets the card-run windowing avoid a String alloc per window.
+fn luhn_valid_bytes(digits: &[u8]) -> bool {
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
         return false;
     }
     let mut sum = 0u32;
     let mut double = false;
-    for byte in digits.bytes().rev() {
+    for &byte in digits.iter().rev() {
         let mut d = u32::from(byte - b'0');
         if double {
             d *= 2;

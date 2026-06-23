@@ -18,6 +18,12 @@ pub type SnapshotId = u64;
 /// text already to the left of the caret) are dropped rather than shown.
 const REPETITION_PENALTY_FLOOR: f64 = 0.5;
 
+/// Hard cap on the buffered stat-event queue. The host drains it every loop turn
+/// (`take_stat_events`), so normal use never approaches this — the cap only bounds
+/// memory if a host stops draining (e.g. a stats sink errors and the loop keeps
+/// running). Stats are advisory, so dropping events beyond the cap is benign.
+const STAT_EVENTS_CAP: usize = 4096;
+
 /// What kind of edit produced a `TextChanged`. Only the Delete/non-Delete
 /// split is load-bearing: `Delete` never arms a completion request, everything
 /// else (including `Unknown`) does — so hosts unsure of the edit kind must
@@ -213,7 +219,9 @@ pub struct SuggestionMachine {
     /// completion inserts one trailing space. Default off → accept text is
     /// byte-identical to before this flag existed.
     trailing_space_single_word: bool,
-    /// Buffered Shown/Superseded events drained by the host into usage stats.
+    /// Buffered Shown/Superseded events drained by the host into usage stats
+    /// every loop turn. Appended only via `record_stat`, which caps the queue at
+    /// [`STAT_EVENTS_CAP`] so a non-draining host can't grow it without bound.
     stat_events: Vec<StatEvent>,
 }
 
@@ -252,6 +260,15 @@ impl SuggestionMachine {
     /// host calls this each loop turn and records them into local usage stats.
     pub fn take_stat_events(&mut self) -> Vec<StatEvent> {
         std::mem::take(&mut self.stat_events)
+    }
+
+    /// Buffer a Shown/Superseded stat event, bounded by [`STAT_EVENTS_CAP`] so a
+    /// host that stops draining can't grow the queue without limit. Stats are
+    /// advisory, so silently dropping past the cap is the right trade.
+    fn record_stat(&mut self, event: StatEvent) {
+        if self.stat_events.len() < STAT_EVENTS_CAP {
+            self.stat_events.push(event);
+        }
     }
 
     /// Configure conservative trigger gating (spec §4, "protect first-run"):
@@ -563,7 +580,7 @@ impl SuggestionMachine {
         }
 
         if was_showing && non_user_event && self.showing.is_none() {
-            self.stat_events.push(StatEvent::Superseded);
+            self.record_stat(StatEvent::Superseded);
         }
 
         out
@@ -630,7 +647,7 @@ impl SuggestionMachine {
             // does not see this — CompletionReady isn't a "non-user" hide event —
             // so account for it explicitly at the replacement site.
             if self.showing.is_some() {
-                self.stat_events.push(StatEvent::Superseded);
+                self.record_stat(StatEvent::Superseded);
             }
             self.showing = Some(Showing {
                 field: field.clone(),
@@ -645,7 +662,7 @@ impl SuggestionMachine {
                 snapshot,
                 text: first,
             });
-            self.stat_events.push(StatEvent::Shown);
+            self.record_stat(StatEvent::Shown);
         }
         self.requested = None;
     }
@@ -720,6 +737,11 @@ impl SuggestionMachine {
         {
             return out;
         }
+        // `replace_left` is deliberately NOT bounded by `self.caret`: the host
+        // (emoji::suggest) computes the deletion count against the LIVE field and
+        // is authoritative — the machine's value/caret snapshot can legitimately
+        // lag the field at offer time (a fresh-focused machine with no typed value
+        // still accepts a valid replace_left). The AX range-replace honors it.
         // Offer only into the currently focused field. The host detects the
         // opportunity on a `TextChanged` and calls this synchronously, but a
         // focus transition in between would otherwise let a ghost be tagged to a
@@ -732,7 +754,7 @@ impl SuggestionMachine {
         // accounting as the model-completion replacement site in
         // `on_completion_ready`): the user never acted on the old one.
         if self.showing.is_some() {
-            self.stat_events.push(StatEvent::Superseded);
+            self.record_stat(StatEvent::Superseded);
         }
         self.showing = Some(Showing {
             field: field.clone(),
@@ -752,7 +774,7 @@ impl SuggestionMachine {
             snapshot: self.snapshot,
             text,
         });
-        self.stat_events.push(StatEvent::Shown);
+        self.record_stat(StatEvent::Shown);
         out
     }
 
@@ -791,7 +813,7 @@ impl SuggestionMachine {
             return out;
         }
         if self.showing.is_some() {
-            self.stat_events.push(StatEvent::Superseded);
+            self.record_stat(StatEvent::Superseded);
         }
         let text = candidates[0].clone();
         self.showing = Some(Showing {
@@ -809,7 +831,7 @@ impl SuggestionMachine {
             snapshot: self.snapshot,
             text,
         });
-        self.stat_events.push(StatEvent::Shown);
+        self.record_stat(StatEvent::Shown);
         out
     }
 }
@@ -2748,6 +2770,20 @@ mod tests {
         assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
         assert!(!machine.take_stat_events().contains(&StatEvent::Shown));
         assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
+    }
+
+    #[test]
+    fn stat_events_buffer_is_capped_when_host_never_drains() {
+        // A host that stops draining must not grow the buffer without bound.
+        // record_stat caps at STAT_EVENTS_CAP; past that, advisory stats drop.
+        let mut machine = focused_machine();
+        for _ in 0..(STAT_EVENTS_CAP + 50) {
+            machine.record_stat(StatEvent::Shown);
+        }
+        assert_eq!(machine.take_stat_events().len(), STAT_EVENTS_CAP);
+        // After draining, the buffer is empty and accepts events again.
+        machine.record_stat(StatEvent::Superseded);
+        assert_eq!(machine.take_stat_events().len(), 1);
     }
 
     #[test]

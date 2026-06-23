@@ -163,7 +163,11 @@ fn download_with_agent(
     let total = response
         .header("Content-Length")
         .and_then(|h| h.parse::<u64>().ok())
-        .map(|body_len| body_len + if resumed { existing } else { 0 });
+        // saturating: Content-Length is attacker-controlled; a value near u64::MAX
+        // plus the resume offset would overflow (a debug-build panic) for a number
+        // that only ever feeds the progress bar. The SHA-256 verify-before-rename
+        // is the real integrity gate, so a clamped total is harmless.
+        .map(|body_len| body_len.saturating_add(if resumed { existing } else { 0 }));
 
     // 206 → append to the part; anything else → truncate (fresh or the
     // server-ignored-Range restart).
