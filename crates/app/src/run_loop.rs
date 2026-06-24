@@ -9858,6 +9858,19 @@ mod tests {
     }
 
     #[test]
+    fn download_log_transition_emits_path_hint_on_running_to_done() {
+        // The normal sequence is Running (logged 0->1) then Done (logged 1->2).
+        // The Done guard is `logged < 2`, so reaching Done with logged == 1 must
+        // still emit the COMPME_MODEL_PATH hint — the only signal of where the
+        // model landed. A mutant narrowing the guard to `logged == 0` would drop
+        // the hint on this real path, leaving the user with no destination.
+        let done = model_fetch::DownloadState::Done("/tmp/m.gguf".into());
+        let (logged, line) = download_log_transition(&done, 1);
+        assert_eq!(logged, 2);
+        assert!(line.unwrap().contains("COMPME_MODEL_PATH=/tmp/m.gguf"));
+    }
+
+    #[test]
     fn model_download_prepare_failure_does_not_spawn_or_enqueue() {
         let entry = model_catalog::recommended().expect("catalog has a recommended model");
         let dest = std::path::PathBuf::from("/tmp/compme-model.gguf");

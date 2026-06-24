@@ -805,6 +805,36 @@ mod tests {
     }
 
     #[test]
+    fn summary_line_shows_counts_when_shown_but_zero_words() {
+        // The idle placeholder guard is `counts == Counts::default() && words == 0`
+        // (AND, not OR). Two Shown events make counts non-default while words stays
+        // 0, so the AND is false and the real formatted line renders — NOT the
+        // "No completions" placeholder. A `||` mutant would wrongly short-circuit
+        // to the placeholder here. acceptance_rate is 0/2 = Some(0.0) → "(0%)".
+        let mut s = Stats::new();
+        s.record(T0, Outcome::Shown);
+        s.record(T0, Outcome::Shown);
+        assert_eq!(s.summary_line(T0), "0 words · 0 accepted (0%)");
+    }
+
+    #[test]
+    fn daily_buckets_exclude_strictly_future_entries() {
+        // daily_buckets filters `e.at_ms >= cutoff && e.at_ms <= now_ms`. A
+        // strictly-future entry (clock skew, at_ms > now_ms) must NOT land in the
+        // newest bucket — the `<= now_ms` upper bound excludes it.
+        let mut s = Stats::new();
+        let now = T0 + 5 * DAY_MS;
+        s.record(now + DAY_MS, Outcome::Shown); // strictly future
+        let buckets = s.daily_buckets(now, 2);
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(
+            buckets[1].counts.shown, 0,
+            "future entry must not land in the newest bucket"
+        );
+        assert_eq!(buckets[0].counts.shown, 0);
+    }
+
+    #[test]
     fn summary_line_reads_as_placeholder_when_idle() {
         assert_eq!(
             Stats::new().summary_line(T0),

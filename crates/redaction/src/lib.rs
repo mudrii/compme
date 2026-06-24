@@ -384,6 +384,24 @@ mod tests {
     }
 
     #[test]
+    fn redacts_base64_token_whose_only_punct_is_padding_equals() {
+        // looks_high_entropy's base64-punct arm lists ('+','/','='). A standard
+        // base64 token whose ONLY special char is '=' padding (no '+'/'/', no
+        // digit, no uppercase) relies solely on '=' to be flagged. A regression
+        // dropping '=' from the punct set would leak exactly this token while the
+        // other arms still pass, so pin it explicitly.
+        let out = redact("blob abcdefghijklmnopqrstuvwxyzabcdefg== end");
+        assert!(
+            out.contains("[redacted-secret]"),
+            "=-only base64 padding redacted: {out:?}"
+        );
+        assert!(
+            !out.contains("abcdefghij"),
+            "=-padded secret scrubbed: {out:?}"
+        );
+    }
+
+    #[test]
     fn redacts_jwt_including_payload() {
         // JWT segments are dot-separated; the payload must not leak (review 2).
         let jwt =

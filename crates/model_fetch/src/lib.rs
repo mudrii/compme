@@ -416,6 +416,12 @@ mod tests {
         /// LIE: reply 206 but serve the FULL body from offset 0 with a
         /// Content-Range that contradicts the request (corruption trap).
         Lie,
+        /// LIE: reply 206 with a Content-Range whose start is a DIGIT-PREFIX
+        /// of the requested offset (e.g. `bytes 40-` for a `bytes=4-`
+        /// request) and the matching wrong-offset body slice. Pins that the
+        /// trailing `-` in the offset check defeats a digit-prefix collision
+        /// (`bytes 4` is a prefix of `bytes 40`).
+        LieWrongOffset,
         /// Reply 416 to ANY ranged request (shrunk-file scenario).
         Unsatisfiable,
     }
@@ -456,6 +462,15 @@ mod tests {
                         "206 Partial Content",
                         body,
                         Some(format!("bytes 0-{}/{}", body.len() - 1, body.len())),
+                    ),
+                    // Ranged request at offset s, but reply as if it were
+                    // offset 40: `bytes 40-{end}/{total}` + body[40..]. When
+                    // s==4 the wrong start `40` has `4` as a digit-prefix, so
+                    // an offset check missing the trailing `-` would accept it.
+                    (RangeMode::LieWrongOffset, Some(_)) => (
+                        "206 Partial Content",
+                        &body[40..],
+                        Some(format!("bytes 40-{}/{}", body.len() - 1, body.len())),
                     ),
                     _ => ("200 OK", body, None),
                 };
@@ -663,6 +678,39 @@ mod tests {
         let expected = sha256_hex(b"good bytes");
         let got = download_url(&url, &dest, Some(&expected), |_, _| {}).unwrap();
         assert_eq!(std::fs::read(&got).unwrap(), b"good bytes");
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn uppercase_expected_sha_still_verifies() {
+        // Hashes get pasted from release notes in either case — an UPPERCASE
+        // expected digest must still verify (the compare lowercases `expected`
+        // before matching against the lowercase `actual`).
+        let url = serve(b"good bytes", RangeMode::Honor);
+        let dest = temp_dest("uppersha");
+        let _ = std::fs::remove_file(&dest);
+        let expected = sha256_hex(b"good bytes").to_uppercase();
+        let got = download_url(&url, &dest, Some(&expected), |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"good bytes");
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn wrong_offset_206_is_rejected_and_restarts() {
+        // A 4-byte part sends `Range: bytes=4-`. The server lies with
+        // `Content-Range: bytes 40-.../...` — a digit-prefix collision the
+        // trailing `-` in the offset check defeats (`bytes 4` is NOT a prefix
+        // of `bytes 40-`; the char after `bytes 4` is `0`, not `-`). The
+        // wrong-offset 206 is rejected, the part dropped, and the unranged
+        // retry returns the FULL correct body.
+        let body: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDE"; // len 41
+        let url = serve(body, RangeMode::LieWrongOffset);
+        let dest = temp_dest("wrongoff");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&part, b"0123").unwrap();
+        let got = download_url(&url, &dest, None, |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), body);
         let _ = std::fs::remove_file(&dest);
     }
 

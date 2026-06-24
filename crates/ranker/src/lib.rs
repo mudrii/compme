@@ -483,6 +483,18 @@ mod tests {
     }
 
     #[test]
+    fn strip_suffix_overlap_prefers_longest_overlap() {
+        // The overlap search runs longest-first (`(1..=max_overlap).rev()`), so
+        // when both a 2-word ("go go") and a 1-word ("go") tail match the right
+        // context's head, the longer one wins and more of the candidate is
+        // stripped. candidate "go go go" vs right "go go now": the 2-word tail
+        // "go go" equals the right head "go go", leaving just "go". A
+        // shortest-first search would match the 1-word "go" first and wrongly
+        // leave "go go", so this pins the `.rev()` ordering.
+        assert_eq!(strip_suffix_overlap("go go go", "go go now"), "go");
+    }
+
+    #[test]
     fn is_degenerate_repetition_flags_single_word_loop() {
         assert!(is_degenerate_repetition("the the the"));
     }

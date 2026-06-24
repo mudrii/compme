@@ -8416,6 +8416,56 @@ mod tests {
     }
 
     #[test]
+    fn overlay_frame_treats_narrow_but_tall_rect_as_degenerate() {
+        // The degenerate guard ORs both dimensions
+        // (rect.w > CARET_MAX_W || rect.h > CARET_MAX_H), so a narrow-but-tall
+        // rect (w=2 ≤ 4, but h=200 > 160) is element bounds, not a caret. It
+        // takes the degenerate branch: default 18pt box hugging the rect's top
+        // (y = primary_height - rect.y - h = 1600 - 168 - 18 = 1414), staying
+        // onscreen instead of flipping off-screen.
+        assert_eq!(
+            overlay_frame_for_text(
+                ScreenRect {
+                    x: 835.0,
+                    y: 168.0,
+                    w: 2.0,
+                    h: 200.0,
+                },
+                "x",
+                1600.0
+            ),
+            OverlayFrame {
+                x: 835.0,
+                y: 1414.0,
+                w: 240.0,
+                h: 18.0,
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_caret_rect_does_not_shift_narrow_but_tall_rect() {
+        // The plausible-caret check ANDs both dimensions
+        // (rect.w <= CARET_MAX_W && rect.h <= CARET_MAX_H), so a narrow-but-tall
+        // rect (w=2 ≤ 4, but h=200 > 160) is NOT a plausible caret. Even for a
+        // rect-is-line bundle (Chrome), it is returned unshifted — y stays 300.
+        assert_eq!(
+            normalize_caret_rect(
+                ScreenRect {
+                    x: 100.0,
+                    y: 300.0,
+                    w: 2.0,
+                    h: 200.0,
+                },
+                Some("com.google.Chrome"),
+                false
+            )
+            .y,
+            300.0
+        );
+    }
+
+    #[test]
     fn overlay_font_size_tracks_the_box_height() {
         // A 14pt line → 18pt box → 12pt font (TextEdit's default body size),
         // so the ghost glyphs match the typed text scale instead of the fixed
