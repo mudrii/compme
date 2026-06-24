@@ -174,6 +174,16 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         let _ = self.machine.on_event(Event::Dismiss);
     }
 
+    /// Like `reconcile_visible_failure`, but for a failure DURING a ghost show:
+    /// the machine has already transitioned to showing, so also rewind its
+    /// last-shown bookkeeping (`cancel_last_shown`) before dismissing.
+    fn reconcile_failed_show(&mut self) {
+        let _ = self.overlay.hide();
+        let _ = self.set_tap_visible(false, None);
+        self.machine.cancel_last_shown();
+        let _ = self.machine.on_event(Event::Dismiss);
+    }
+
     pub fn on_focus(
         &mut self,
         field: FieldHandle,
@@ -370,20 +380,14 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                             // The machine has already transitioned to showing,
                             // but the UI never painted. Reconcile before returning
                             // so a later accept cannot insert an invisible ghost.
-                            let _ = self.overlay.hide();
-                            let _ = self.set_tap_visible(false, None);
-                            self.machine.cancel_last_shown();
-                            let _ = self.machine.on_event(Event::Dismiss);
+                            self.reconcile_failed_show();
                             return Err(err);
                         }
                         if let Err(err) = self.set_tap_visible(true, Some(AcceptAction::Full)) {
                             // The ghost was painted but cannot be accepted. Reconcile
                             // immediately so a visible-but-unarmed suggestion does not
                             // remain in the UI or machine state.
-                            let _ = self.overlay.hide();
-                            let _ = self.set_tap_visible(false, None);
-                            self.machine.cancel_last_shown();
-                            let _ = self.machine.on_event(Event::Dismiss);
+                            self.reconcile_failed_show();
                             return Err(err);
                         }
                     } else {
