@@ -1328,9 +1328,12 @@ impl MacosPlatformAdapter {
         let subscriptions = Arc::downgrade(&self.subscriptions);
         Subscription::with_cancel(id, move || {
             active.store(false, Ordering::Release);
-            let removed = subscriptions
-                .upgrade()
-                .and_then(|subscriptions| subscriptions.lock().ok()?.remove(&id));
+            let removed = subscriptions.upgrade().and_then(|subscriptions| {
+                subscriptions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&id)
+            });
             drop(removed);
         })
     }

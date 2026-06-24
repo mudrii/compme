@@ -3456,20 +3456,7 @@ pub fn run() -> Result<(), String> {
                             offer_all(&mut latest, requests);
                         }
                         Err(err) => {
-                            apply_accept_side_effects(
-                                false,
-                                AcceptSideEffects {
-                                    action,
-                                    preview: preview.as_ref(),
-                                    wall_ms,
-                                    context_max_chars: config.context_max_chars,
-                                    previous_inputs: &previous_inputs,
-                                    memory: memory.as_ref(),
-                                    prefs: &prefs,
-                                    tracker: &mut tracker,
-                                    usage: &mut usage,
-                                },
-                            );
+                            // no side effects on failed accept (see apply_accept_side_effects)
                             eprintln!("compme: on_accept error: {err:?}");
                         }
                     }

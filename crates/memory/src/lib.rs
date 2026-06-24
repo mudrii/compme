@@ -164,22 +164,41 @@ impl MemoryStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let mut stmt = self
-            .conn
-            .prepare("SELECT blob FROM memories WHERE app = ?1 ORDER BY id DESC")?;
-        let blobs = stmt.query_map(params![app], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut stmt = self.conn.prepare(
+            "SELECT blob FROM memories WHERE app = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+        )?;
+        // Fetch (and decrypt) a page at a time instead of every row up front, so
+        // the common all-decryptable case touches only `limit` ciphertexts. We
+        // cannot use a single `LIMIT limit`: skipped rows (wrong key after a key
+        // change, or a tampered blob) would make us return fewer than `limit`
+        // valid records even when more decryptable ones exist further back — a
+        // contract this function and its tests rely on. So we page on until the
+        // page itself comes up short, meaning the app's rows are exhausted.
+        let page = limit as i64;
         let mut out = Vec::new();
-        for blob in blobs {
-            // Best-effort read: a row that fails to decrypt (wrong key, or app
-            // column tampered so the AAD no longer matches) is treated as absent.
-            if let Some(text) = self.decrypt(&blob?, app.as_bytes()) {
-                out.push(text);
-                if out.len() == limit {
-                    break;
+        let mut offset: i64 = 0;
+        loop {
+            let blobs = stmt.query_map(params![app, page, offset], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?;
+            let mut fetched = 0usize;
+            for blob in blobs {
+                fetched += 1;
+                // Best-effort read: a row that fails to decrypt (wrong key, or
+                // app column tampered so the AAD no longer matches) is absent.
+                if let Some(text) = self.decrypt(&blob?, app.as_bytes()) {
+                    out.push(text);
+                    if out.len() == limit {
+                        return Ok(out);
+                    }
                 }
             }
+            // A short page means no older rows remain for this app.
+            if fetched < limit {
+                return Ok(out);
+            }
+            offset += page;
         }
-        Ok(out)
     }
 
     /// Per-app record counts, most-used first (the App-Settings pane list).

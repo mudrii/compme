@@ -960,8 +960,8 @@ fn build_window(
         let initial: Vec<String> = flags
             .setup_lines
             .lock()
-            .map(|l| l.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for row in 0..SETUP_ROWS {
             let text = initial.get(row).map(String::as_str).unwrap_or("");
             let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
@@ -1187,8 +1187,8 @@ fn build_window(
         let initial: Vec<String> = flags
             .apps_lines
             .lock()
-            .map(|l| l.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for row in 0..APPS_ROWS {
             let text = initial.get(row).map(String::as_str).unwrap_or("");
             let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
@@ -1509,8 +1509,8 @@ fn build_window(
         let initial: Vec<String> = flags
             .stats_lines
             .lock()
-            .map(|l| l.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         // SAFETY: NSFontWeightRegular is a constant extern static.
         let mono = NSFont::monospacedSystemFontOfSize_weight(12.0, unsafe {
             objc2_app_kit::NSFontWeightRegular
