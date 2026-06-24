@@ -2064,7 +2064,9 @@ fn persist_lifetime_stats(
     let Some(path) = path else { return Ok(()) };
     let merged = base.merged(session.counts, session.words);
     let tmp = path.with_extension("env.tmp");
-    std::fs::create_dir_all(path.parent().unwrap_or(path))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     {
         use std::io::Write as _;
         let mut file = std::fs::File::create(&tmp)?;
@@ -3189,7 +3191,7 @@ pub fn run() -> Result<(), String> {
     );
 
     while !STOP.load(Ordering::Relaxed) {
-        let now_ms = start.elapsed().as_millis() as u64;
+        let now_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         // Wall-clock stamp for usage stats only (its 30-day window needs an
         // absolute clock); `now_ms` stays monotonic for latency/debounce deltas.
         let wall_ms = wall_now_ms();
