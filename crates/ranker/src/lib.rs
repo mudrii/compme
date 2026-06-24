@@ -334,6 +334,31 @@ mod tests {
     }
 
     #[test]
+    fn repetition_penalty_full_for_substring_not_word() {
+        // "cat" is a substring of "category" but not a whole-word run, so the
+        // word-level matcher must NOT penalize it — the full (no-match) 1.0.
+        assert_eq!(repetition_penalty("cat", "category list"), 1.0);
+    }
+
+    #[test]
+    fn repetition_penalty_full_for_reordered_words() {
+        // The same words in a different (non-contiguous) order are not a
+        // contiguous run, so no penalty: "repeat now" never appears as an
+        // adjacent pair inside "repeat me now". Full (no-match) 1.0.
+        assert_eq!(repetition_penalty("repeat now", "repeat me now"), 1.0);
+    }
+
+    #[test]
+    fn repetition_penalty_full_when_candidate_longer_than_recent() {
+        // A candidate with MORE words than the recent context can never be a
+        // contiguous run inside it — `recent.windows(candidate.len())` yields no
+        // windows when the candidate is longer (windows(n) on a shorter slice is
+        // empty; windows(0) would panic, but an empty candidate is short-circuited
+        // earlier). Pins the operand order: full (no-match) 1.0, never a panic.
+        assert_eq!(repetition_penalty("a b c d", "a b"), 1.0);
+    }
+
+    #[test]
     fn cap_words_empty_string_is_empty() {
         assert_eq!(cap_words("", 4), "");
     }
@@ -357,6 +382,13 @@ mod tests {
             truncate_at_sentence_end("Hello there. More text here"),
             "Hello there."
         );
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_keeps_decimal() {
+        // A period embedded in a decimal ("3.14") is followed by a digit, not
+        // whitespace, so it is not a sentence terminator — the text is kept whole.
+        assert_eq!(truncate_at_sentence_end("pi is 3.14 ish"), "pi is 3.14 ish");
     }
 
     #[test]

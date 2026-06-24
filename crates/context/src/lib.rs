@@ -187,6 +187,38 @@ Recent: recent\n"
     }
 
     #[test]
+    fn context_block_keeps_source_whole_when_len_equals_max() {
+        // tail_chars returns the source unchanged when its scalar count is <= max
+        // (the `count <= max` early return). Pin the exact boundary: a 4-char
+        // clipboard source with max_chars == 4 is kept WHOLE — not truncated by an
+        // off-by-one to its 3-char tail. The bounds tests cover len > max; this is
+        // the len == max edge.
+        let block = build_context_block(Some("wxyz"), None, &[], 4); // 4 chars == max
+        assert_eq!(
+            block,
+            "Context (for reference only):\n\
+Clipboard: wxyz\n",
+            "a source whose length equals max_chars is kept whole"
+        );
+    }
+
+    #[test]
+    fn context_block_keeps_multibyte_source_whole_when_len_equals_max() {
+        // The same len == max boundary, but with a multibyte source: "a日本" is 3
+        // scalars, and max_chars == 3 returns it whole via the `count <= max`
+        // early return — never reaching the byte-offset tail slice. Guards that the
+        // boundary is scalar-counted (a byte-length comparison would see 7 bytes >
+        // 3 and wrongly truncate).
+        let block = build_context_block(Some("a日本"), None, &[], 3); // 3 scalars == max
+        assert_eq!(
+            block,
+            "Context (for reference only):\n\
+Clipboard: a日本\n",
+            "a multibyte source whose scalar count equals max_chars is kept whole"
+        );
+    }
+
+    #[test]
     fn context_block_truncates_a_multibyte_tail_on_a_char_boundary() {
         // tail_chars is the crate's ONLY byte-offset slice (`&s[byte_idx..]`
         // after `char_indices().nth()`); that indirection is what keeps the cut

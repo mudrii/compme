@@ -8878,6 +8878,17 @@ mod tests {
             monitored_policy(true, false, true, 1_000),
             true,
         ));
+        // Every gate open EXCEPT terminal_ok: a shell-history-style field in a
+        // terminal must block monitored collection on its own, pinning the
+        // `&& terminal_ok` conjunct. Same inputs as the passing case above but
+        // with terminal_ok=false.
+        assert!(!monitored_collection_gates_pass(
+            Some("com.apple.Safari"),
+            Some("other.example"),
+            &prefs,
+            monitored_policy(true, false, true, 1_000),
+            false,
+        ));
         prefs.excluded_domains.clear();
 
         prefs.snooze(1_000, 5);
@@ -10150,6 +10161,26 @@ mod tests {
             SubscriptionErrorAction::Fatal(m) => assert!(m.contains("Timeout"), "{m}"),
             other => panic!("expected Fatal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn secure_input_subscription_error_is_fatal_when_trusted() {
+        // A SecureInput error at subscription time is NOT the missing-permission
+        // degrade path: when the app is already trusted it is a fatal startup
+        // condition, and the Fatal payload must carry the variant so run()'s
+        // operator-facing message names what failed. (Untrusted still degrades
+        // to NoopUntilPermission, like every non-permission error.)
+        let secure = PlatformError::SecureInput {
+            state: SecurityState::SecureInputEnabled,
+        };
+        match subscription_error_action(true, &secure) {
+            SubscriptionErrorAction::Fatal(m) => assert!(m.contains("SecureInput"), "{m}"),
+            other => panic!("expected Fatal, got {other:?}"),
+        }
+        assert_eq!(
+            subscription_error_action(false, &secure),
+            SubscriptionErrorAction::NoopUntilPermission
+        );
     }
 
     #[test]

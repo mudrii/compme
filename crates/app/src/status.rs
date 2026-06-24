@@ -163,6 +163,33 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_model_outranks_loading_and_disabled() {
+        // Trusted + unsecured, but the model failed permanently (model_available
+        // = false) WHILE the lower-priority conditions also hold: not-ready
+        // (would otherwise be Loading) and disabled (would otherwise be
+        // Disabled). The docstring promises the unavailable-model block outranks
+        // both warm-up and toggle state, so ModelUnavailable must win — a branch
+        // reorder that checked readiness/enabled first would surface "Loading…"
+        // or "Disabled" and hide the permanent failure.
+        assert_eq!(
+            derive_status(true, false, false, false, false),
+            AppStatus::Blocked(BlockReason::ModelUnavailable)
+        );
+    }
+
+    #[test]
+    fn loading_outranks_disabled() {
+        // Trusted, unsecured, model available, but not yet warmed (ready = false)
+        // WHILE the toggle is also off (enabled = false). The docstring promises
+        // an unwarmed model outranks the user toggle (nothing to offer yet), so
+        // Loading must win over Disabled.
+        assert_eq!(
+            derive_status(true, false, true, false, false),
+            AppStatus::Loading
+        );
+    }
+
+    #[test]
     fn not_ready_is_loading_when_trusted_and_unsecured() {
         assert_eq!(
             derive_status(true, false, true, false, true),

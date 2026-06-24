@@ -766,6 +766,17 @@ mod tests {
     }
 
     #[test]
+    fn is_browser_false_for_bare_family_prefix_with_empty_suffix() {
+        // The dot-bounded family check (is_browser, line ~83) requires a NON-empty
+        // suffix after the family prefix: strip_prefix succeeds but yields "", so
+        // the `!rest.is_empty()` guard rejects it. A bundle id that is exactly a
+        // family prefix is therefore not a browser (it is neither an exact-id match
+        // nor a real variant build).
+        assert!(!is_browser("org.chromium."));
+        assert!(!is_browser("com.brave.Browser."));
+    }
+
+    #[test]
     fn is_browser_false_for_empty_bundle_id() {
         // The empty bundle id is neither an exact match nor a non-empty family
         // suffix: strip_prefix(family) on "" yields None for every family, so the

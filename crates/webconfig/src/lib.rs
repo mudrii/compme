@@ -998,6 +998,7 @@ mod tests {
             &"z".repeat(128), // non-hex
             &"ab".repeat(63), // wrong length (126 chars)
             &"ab".repeat(65), // wrong length (130 chars)
+            &"a".repeat(127), // odd length (parse_hex odd-length guard)
         ] {
             assert_eq!(
                 parse_deep_link_with_trust(
@@ -1054,5 +1055,35 @@ mod tests {
                                                                    // A valid key round-trips.
         let hex = encode_hex(test_signer().verifying_key().as_bytes());
         assert!(TrustedKey::from_hex(&hex).is_some());
+    }
+
+    #[test]
+    fn display_messages_carry_the_offending_token() {
+        // The host surfaces these Display strings to the user, so each
+        // value-carrying variant must echo the offending token verbatim. Pins the
+        // Display arms against a refactor that drops the interpolated value.
+        assert!(ParseError::UnknownParam("instructions".into())
+            .to_string()
+            .contains("instructions"));
+        assert!(ParseError::InvalidValue("maybe".into())
+            .to_string()
+            .contains("maybe"));
+        assert!(ParseError::UnknownCommand("setPreference".into())
+            .to_string()
+            .contains("setPreference"));
+    }
+
+    #[test]
+    fn from_hex_rejects_well_formed_hex_that_is_not_a_valid_point() {
+        // 64 hex chars decode cleanly to 32 bytes (parse_hex + try_into both
+        // succeed), but these bytes encode a compressed point whose y-coordinate
+        // does not decompress to a curve point — VerifyingKey::from_bytes rejects
+        // it, so from_hex fails closed despite lexically well-formed hex of the
+        // right length. (NB: the all-zero point IS accepted by ed25519-dalek
+        // 2.x's from_bytes — a small-order point only verify_strict rejects — so
+        // this pins the from_bytes decompression failure, not a small-order one.)
+        let well_formed_but_not_a_point = format!("{}ff", "00".repeat(31));
+        assert_eq!(well_formed_but_not_a_point.len(), 64);
+        assert!(TrustedKey::from_hex(&well_formed_but_not_a_point).is_none());
     }
 }

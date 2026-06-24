@@ -835,6 +835,27 @@ mod tests {
     }
 
     #[test]
+    fn daily_buckets_place_a_now_aligned_entry_in_the_newest_bucket() {
+        // An entry recorded at exactly `now_ms` sits at `(now - cutoff)/DAY_MS`
+        // = `days*DAY_MS/DAY_MS` = `days`, which is one past the last index.
+        // The `.min(days - 1)` guard clamps it into the newest bucket instead of
+        // panicking on an out-of-bounds index. Pin both the length and placement.
+        let mut s = Stats::new();
+        let now = T0 + 30 * DAY_MS;
+        s.record(now, Outcome::Accepted { words: 7 });
+        let buckets = s.daily_buckets(now, 7);
+        assert_eq!(buckets.len(), 7);
+        assert_eq!(
+            buckets[6].counts.accepted, 1,
+            "now-aligned entry clamps into the newest (last) bucket"
+        );
+        assert_eq!(buckets[6].words, 7);
+        // It must not double-count into any earlier bucket.
+        let earlier_accepted: usize = buckets[..6].iter().map(|b| b.counts.accepted).sum();
+        assert_eq!(earlier_accepted, 0);
+    }
+
+    #[test]
     fn summary_line_reads_as_placeholder_when_idle() {
         assert_eq!(
             Stats::new().summary_line(T0),

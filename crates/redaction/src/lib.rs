@@ -293,6 +293,41 @@ mod tests {
     }
 
     #[test]
+    fn email_requires_a_two_char_tld_and_a_dot() {
+        // The email regex ends `\.[A-Za-z]{2,}` — a dotted TLD of >=2 letters is
+        // mandatory. A bare host with no dot-TLD (`user@localhost`) does not match
+        // and survives unredacted, while a minimal real domain (`a@b.io`) becomes
+        // the email placeholder. Pins the TLD anchor against a regression that
+        // dropped the `\.[A-Za-z]{2,}` tail (which would over-match local hosts).
+        assert_eq!(
+            redact("login user@localhost now"),
+            "login user@localhost now",
+            "no dot-TLD => not an email match"
+        );
+        assert_eq!(redact("mail a@b.io ok"), "mail [redacted-email] ok");
+    }
+
+    #[test]
+    fn dot_and_comma_are_not_card_separators() {
+        // card_run_re only treats whitespace, NBSP, and dash as digit separators
+        // (`\d(?:[\s\u{00a0}-]*\d)*`). A PAN written with `.` separators is parsed
+        // as four independent <13-digit runs, none of which reaches the 13-digit
+        // Luhn floor, so it is NOT redacted as a card. (4242 4242 4242 4242 IS a
+        // Luhn-valid PAN when space-separated — proven elsewhere — so the only
+        // thing sparing it here is the separator class.)
+        let dotted = redact("card 4242.4242.4242.4242 end");
+        assert!(
+            !dotted.contains("[redacted-card]"),
+            "dot-separated groups are each <13 digits: {dotted:?}"
+        );
+        assert!(dotted.contains("4242.4242.4242.4242"), "got {dotted:?}");
+        // Comma separators behave the same way.
+        let comma = redact("card 4242,4242,4242,4242 end");
+        assert!(!comma.contains("[redacted-card]"), "got {comma:?}");
+        assert!(comma.contains("4242,4242,4242,4242"), "got {comma:?}");
+    }
+
+    #[test]
     fn long_uppercase_letter_runs_survive_redaction() {
         // The documented entropy contract says an all-ONE-case all-letter
         // 32+ run is left alone; only the lowercase direction was pinned.

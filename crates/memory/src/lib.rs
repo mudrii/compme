@@ -328,6 +328,31 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_rejects_a_blob_that_is_exactly_nonce_len_with_no_tag() {
+        // A blob of exactly NONCE_LEN (12) bytes passes the `< NONCE_LEN` length
+        // guard, so split_at yields a 12-byte nonce and an EMPTY ciphertext. AES-
+        // GCM still has no authentication tag to verify, so decrypt() returns None
+        // and recent() treats the row as absent — count() still sees the raw row.
+        // Pins the best-effort read path: a malformed/tag-less row must be skipped,
+        // never panic.
+        assert_eq!(NONCE_LEN, 12, "test assumes a 12-byte GCM nonce");
+        let store = MemoryStore::open_in_memory(&key(33), StorageMode::AcceptedOnly).unwrap();
+        let bogus = vec![0u8; NONCE_LEN]; // nonce-length, zero ciphertext + no tag
+        store
+            .conn
+            .execute(
+                "INSERT INTO memories (app, blob) VALUES (?1, ?2)",
+                params!["app", bogus],
+            )
+            .unwrap();
+        assert_eq!(store.count().unwrap(), 1, "the raw row is present");
+        assert!(
+            store.recent("app", 10).unwrap().is_empty(),
+            "GCM rejects the tag-less ciphertext, so recent() yields nothing"
+        );
+    }
+
+    #[test]
     fn remembers_and_retrieves_recent_newest_first() {
         let store = MemoryStore::open_in_memory(&key(2), StorageMode::AcceptedOnly).unwrap();
         store.remember("app", "first").unwrap();

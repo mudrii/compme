@@ -267,6 +267,17 @@ mod tests {
     }
 
     #[test]
+    fn interior_whitespace_is_a_whole_word_miss() {
+        // Lookup is whole-word: the query is trimmed and lowercased, then compared
+        // for equality against single-word table keys. A two-word phrase like
+        // "color organize" — though each word alone is an americanism — never
+        // equals any key, so it is a clean miss in both entry points. Splitting on
+        // interior whitespace is the host's job, not this crate's.
+        assert_eq!(to_british("color organize"), None);
+        assert!(!is_americanism("color organize"));
+    }
+
+    #[test]
     fn trailing_punctuation_is_not_a_known_form() {
         // `to_british` matches a bare word; punctuation stripping is the host's
         // job. Pin the contract so a future change is deliberate.

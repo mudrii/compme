@@ -9909,6 +9909,26 @@ mod tests {
     }
 
     #[test]
+    fn extend_range_left_preserves_astral_selection() {
+        // Multibyte variant of the selection-preservation fix: "😀bc" with 😀 a
+        // 2-UTF-16-unit astral char. Caret/selection start at UTF-16 3 (after
+        // "😀b"), selecting "c" (loc 3, len 1). replace_left 1 must cover exactly
+        // the one-char prefix "b" → utf16 [2,3), leaving "c" selected. The length
+        // (1) must NOT be swept into the returned range, or the splice would
+        // delete the user's selected "c" along with the typed token.
+        let range = extend_range_left(
+            "😀bc",
+            CFRange {
+                location: 3,
+                length: 1,
+            },
+            1,
+        );
+        assert_eq!(range.location, 2); // immediately after 😀 (2 UTF-16 units)
+        assert_eq!(range.length, 1); // only "b"; "c" selection untouched
+    }
+
+    #[test]
     fn splice_text_replaces_selected_utf16_range() {
         let (value, caret) = splice_text_at_utf16_range(
             "Hello world",

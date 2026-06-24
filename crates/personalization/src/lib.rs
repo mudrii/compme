@@ -253,6 +253,65 @@ mod tests {
     }
 
     #[test]
+    fn each_stop_maps_to_its_exact_directive_phrase() {
+        // Pin the EXACT directive literal for every stop. Off has no directive;
+        // the five active stops scale forcefulness. A reworded phrase (or two
+        // stops collapsing to the same wording) would break the steer contract
+        // these literals encode, so assert each verbatim.
+        assert_eq!(Strength::Off.directive(), "");
+        assert_eq!(
+            Strength::Stop1.directive(),
+            "You may consider the following preferences"
+        );
+        assert_eq!(
+            Strength::Stop2.directive(),
+            "Take the following preferences into account"
+        );
+        assert_eq!(
+            Strength::Stop3.directive(),
+            "Follow the following preferences"
+        );
+        assert_eq!(
+            Strength::Stop4.directive(),
+            "Closely follow the following preferences"
+        );
+        assert_eq!(
+            Strength::Max.directive(),
+            "Strictly follow the following preferences above all else"
+        );
+    }
+
+    #[test]
+    fn per_app_lookup_is_case_sensitive_unlike_domain() {
+        // per_app is a plain HashMap::get keyed by bundle id — an exact,
+        // case-SENSITIVE match. per_domain, by contrast, folds the host to
+        // lowercase before matching. Pin both halves of that contrast so the
+        // two lookups never drift into the same casing policy.
+        let mut p = profile();
+        p.per_app
+            .insert("com.apple.Mail".into(), "Be formal.".into());
+        p.per_domain.insert("google.com".into(), "Be terse.".into());
+
+        // Exact-case per-app key matches and supplements the global.
+        let exact = p.resolve_instructions(Some("com.apple.Mail"), None);
+        assert!(exact.contains("Be formal."), "exact-case app key matches");
+
+        // Wrong-case per-app key does NOT match → falls back to global only.
+        assert_eq!(
+            p.resolve_instructions(Some("com.apple.mail"), None),
+            "Write concisely.",
+            "case-folded app key misses, leaving only the global"
+        );
+
+        // Contrast: a wrong-case domain still matches because the host is folded.
+        assert!(
+            p.resolve_instructions(None, Some("GOOGLE.COM"))
+                .contains("Be terse."),
+            "domain lookup is case-insensitive, unlike per-app"
+        );
+    }
+
+    #[test]
     fn from_stop_clamps_out_of_range() {
         assert_eq!(Strength::from_stop(0), Strength::Off);
         assert_eq!(Strength::from_stop(5), Strength::Max);

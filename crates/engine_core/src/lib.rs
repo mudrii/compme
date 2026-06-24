@@ -2182,6 +2182,58 @@ mod tests {
     }
 
     #[test]
+    fn dismiss_discard_cancels_an_armed_unfired_debounce() {
+        // text_changed ARMS a debounce (pending_since set) but no Tick has fired
+        // the request yet. DismissDiscard clears pending_since (and advances the
+        // snapshot), so a later Tick past the debounce window finds nothing armed
+        // and emits no RequestCompletion. Distinct from the in-flight tests above,
+        // which arm AND fire before dismissing.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello ", 6, 1000)); // arms, but not yet fired
+        machine.on_event(Event::DismissDiscard);
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 2000 }),
+            vec![],
+            "DismissDiscard must cancel an armed-but-unfired debounce"
+        );
+    }
+
+    #[test]
+    fn dismiss_suppress_cancels_an_armed_unfired_debounce() {
+        // Same as the DismissDiscard case but via Esc: an armed-but-unfired
+        // debounce is cancelled, so a later Tick emits no RequestCompletion.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello ", 6, 1000)); // arms, but not yet fired
+        machine.on_event(Event::DismissSuppress);
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 2000 }),
+            vec![],
+            "DismissSuppress must cancel an armed-but-unfired debounce"
+        );
+    }
+
+    #[test]
+    fn dismiss_keeps_an_armed_debounce_so_the_request_still_fires() {
+        // Plain Dismiss is snapshot-neutral and leaves pending_since intact (it
+        // only hides a ghost). So an armed-but-unfired debounce survives a Dismiss
+        // and a later Tick past the window still fires the RequestCompletion —
+        // the contrast to the two cancelling dismiss variants above.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello ", 6, 1000)); // arms, but not yet fired
+        machine.on_event(Event::Dismiss);
+        assert_eq!(
+            machine.on_event(Event::Tick { now_ms: 1300 }),
+            vec![Command::RequestCompletion {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                prompt: "hello".into(),
+            }],
+            "plain Dismiss must not cancel an armed debounce"
+        );
+    }
+
+    #[test]
     fn dismiss_is_snapshot_neutral_and_keeps_an_inflight_completion() {
         // Plain `Event::Dismiss` is the idempotent show-failed reconciliation: it
         // hides without advancing the snapshot, so a completion already requested

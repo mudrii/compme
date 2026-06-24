@@ -366,6 +366,43 @@ mod tests {
     }
 
     #[test]
+    fn active_snooze_overrides_a_per_app_force_enable() {
+        // Order pin: should_suggest checks the global snooze BEFORE consulting the
+        // per-app `enabled` override. So even an explicit per-app force-enable
+        // (Some(true)) cannot punch through an active snooze window.
+        let mut p = Prefs::default();
+        p.per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .enabled = Some(true);
+        // Without a snooze the force-enable suggests.
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        // Activate the global snooze; the per-app force-enable must NOT override it.
+        p.snooze(1_000, 60);
+        assert!(!p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        // Auto-resume past the deadline re-honors the force-enable.
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000 + 60 * 60_000));
+    }
+
+    #[test]
+    fn per_app_collect_inputs_false_blocks_collection_but_not_suggestions() {
+        // The collection toggle is independent of the suggestion gate: a per-app
+        // collect_inputs = Some(false) stops durable monitored recording
+        // (monitored_collection_allowed) while leaving should_suggest true, since
+        // the app is enabled, un-snoozed, and non-excluded.
+        let mut p = Prefs::default();
+        p.per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .collect_inputs = Some(false);
+        // Suggestions still fire…
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        // …but the monitored-collection resolver returns false.
+        assert!(!p.collection_allowed(Some("com.apple.TextEdit")));
+        assert!(!p.monitored_collection_allowed(Some("com.apple.TextEdit"), None, 1_000));
+    }
+
+    #[test]
     fn monitored_collection_blocked_for_excluded_domain() {
         // The domain hard-block flows through should_suggest into
         // monitored_collection_allowed: an excluded focus domain must stop durable

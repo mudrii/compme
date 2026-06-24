@@ -1224,6 +1224,21 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_handle_fails_closed_and_drops_cleanly() {
+        // The startup fallback handle (no model loadable) must fail closed on
+        // every entry point AND drop without hanging: `unavailable()` holds no
+        // worker thread (handle: None) and a dead request sender (None), so
+        // submissions are rejected, it is never ready, no outcomes ever arrive,
+        // and dropping it joins nothing. Distinct from the shutdown() path —
+        // this pins that a plain `drop` is also non-blocking.
+        let inference = InferenceHandle::unavailable();
+        assert!(!inference.submit(request("missing model", 1)));
+        assert!(!inference.is_ready());
+        assert!(inference.drain_outcomes().is_empty());
+        drop(inference); // must not hang: no worker thread to join
+    }
+
+    #[test]
     fn warm_up_failure_is_non_fatal() {
         // A failing warm-up must not block readiness or completions.
         let inference = InferenceHandle::spawn(

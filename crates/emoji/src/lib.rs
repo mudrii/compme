@@ -570,6 +570,17 @@ mod tests {
     }
 
     #[test]
+    fn hyphen_token_is_valid_shape_but_clean_miss() {
+        // '-' is a valid shortcode character (is_shortcode_char), so ":a-b" is a
+        // well-shaped trailing shortcode token and has_emoji_trigger fires. But no
+        // shortcode equals or is prefixed by "a-b", so the table lookup (suggest's
+        // job) is a clean miss — the trigger shape and the table match are
+        // independent.
+        assert!(has_emoji_trigger(":a-b"));
+        assert_eq!(suggest_default(":a-b"), None);
+    }
+
+    #[test]
     fn has_emoji_trigger_detects_a_shortcode_token_cheaply() {
         // A trailing :token (even a single char or unknown word) is a trigger;
         // it does not require a table match (that is `suggest`'s job).

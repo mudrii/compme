@@ -871,6 +871,72 @@ mod tests {
     }
 
     #[test]
+    fn surfaced_request_has_no_domain_at_engine_layer() {
+        // dispatch builds CompletionRequest from a RequestCompletion command with
+        // `domain: None` (the engine layer does not resolve a domain — the host
+        // loop attaches one downstream). Pin that the surfaced request carries no
+        // domain so a regression that smuggled one in here would be caught.
+        let (mut engine, _adapter, _overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("hello ", 6, 1000)).unwrap();
+        let requests = engine.on_tick(1200).unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].domain, None,
+            "the engine layer surfaces a request with no domain"
+        );
+    }
+
+    #[test]
+    fn completion_multi_with_empty_candidates_shows_nothing() {
+        // An empty candidate vec has nothing to shape, so the machine emits no
+        // ShowGhost: the overlay is never asked to present and no Shown stat is
+        // buffered. on_completion_multi returns Ok with an empty dispatch.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        overlay.calls.lock().unwrap().clear();
+        let _ = engine.take_stat_events();
+
+        let followups = engine.on_completion_multi(&requests[0], vec![]).unwrap();
+
+        assert!(followups.is_empty(), "no follow-up requests dispatched");
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "an empty-candidate completion must never show a ghost"
+        );
+        assert_eq!(
+            engine.take_stat_events(),
+            vec![],
+            "an empty-candidate completion records no Shown stat"
+        );
+    }
+
+    #[test]
+    fn rearm_accept_keys_forwards_ok_when_subscribed() {
+        // With a subscription whose rearm closure returns Ok, rearm_accept_keys
+        // forwards to it and surfaces the Ok — and the closure is actually invoked
+        // (the companion test pins the Err direction and the no-subscription Ok).
+        let (mut engine, _adapter, _overlay) = engine();
+        let calls = Arc::new(Mutex::new(0usize));
+        let c = Arc::clone(&calls);
+        let sub = AcceptSubscription::new(Subscription::new(0), |_| Ok(()), |_| Ok(()), |_| Ok(()))
+            .with_rearm(move || {
+                *c.lock().unwrap() += 1;
+                Ok(())
+            });
+        engine.set_accept_subscription(sub);
+
+        assert!(engine.rearm_accept_keys().is_ok());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            1,
+            "the rearm closure is invoked exactly once"
+        );
+    }
+
+    #[test]
     fn accept_tap_arm_error_propagates_through_dispatch() {
         // The ShowGhost dispatch arms the accept tap via set_tap_visible(true);
         // a failure in the subscription's set_suggestion_visible must surface
