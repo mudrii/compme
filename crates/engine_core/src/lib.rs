@@ -2216,6 +2216,18 @@ mod tests {
     }
 
     #[test]
+    fn mutverify_dismiss_discard_does_not_suppress_field() {
+        let mut machine = focused_machine();
+        machine.on_event(Event::DismissDiscard);
+        assert!(
+            !machine
+                .offer_replacement(&field("field-a"), "\u{1F604}".into(), 5)
+                .is_empty(),
+            "DismissDiscard must not suppress the field"
+        );
+    }
+
+    #[test]
     fn dismiss_is_snapshot_neutral_and_keeps_an_inflight_completion() {
         // Plain `Event::Dismiss` is the idempotent show-failed reconciliation: it
         // hides without advancing the snapshot, so a completion already requested

@@ -288,6 +288,17 @@ mod tests {
             .find_map(|line| line.strip_prefix(&prefix)?.strip_suffix('"'))
     }
 
+    fn make(name: &'static str, size_mb: u32, license: License) -> ModelEntry {
+        ModelEntry {
+            name,
+            url: "https://example.invalid/m.gguf",
+            size_mb,
+            min_ram_gb: 8,
+            license,
+            expected_sha256: None,
+        }
+    }
+
     #[test]
     fn recommended_is_the_smallest_unencumbered_entry() {
         // The one-click download target (D14 wiring): smallest model whose
@@ -337,16 +348,6 @@ mod tests {
         // be correct here only by luck of ordering — but a smaller gated entry
         // placed first must NOT win, and the smallest UNENCUMBERED entry must,
         // wherever it sits in the list.
-        fn make(name: &'static str, size_mb: u32, license: License) -> ModelEntry {
-            ModelEntry {
-                name,
-                url: "https://example.invalid/m.gguf",
-                size_mb,
-                min_ram_gb: 8,
-                license,
-                expected_sha256: None,
-            }
-        }
         let entries = [
             make("tiny-but-gated", 100, License::LlamaCommunity),
             make("big-open", 900, License::Apache2),
@@ -373,16 +374,6 @@ mod tests {
         // which model becomes the one-click default download; an unstable
         // selection picking the LAST equal entry would silently change the
         // default yet pass the all-distinct-size selection test above.
-        fn make(name: &'static str, size_mb: u32, license: License) -> ModelEntry {
-            ModelEntry {
-                name,
-                url: "https://example.invalid/m.gguf",
-                size_mb,
-                min_ram_gb: 8,
-                license,
-                expected_sha256: None,
-            }
-        }
         let entries = [
             make("first-open", 300, License::Apache2),
             make("second-open", 300, License::Mit),
