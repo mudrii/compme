@@ -425,6 +425,19 @@ mod tests {
     }
 
     #[test]
+    fn domain_with_two_char_tld_is_accepted() {
+        // A two-character TLD is the shortest legal TLD: pins the `tld.len() < 2`
+        // lower bound so a `<= 2` mutant (which would reject `example.io`) fails.
+        assert_eq!(
+            parse_deep_link("compme://setOverride?domain=example.io&enabled=true"),
+            Ok(OverrideCommand {
+                scope: Scope::Domain("example.io".into()),
+                action: OverrideAction::Enable,
+            })
+        );
+    }
+
+    #[test]
     fn domain_scope_rejects_overly_broad_or_malformed_hosts() {
         for bad in [
             "com",
@@ -622,13 +635,13 @@ mod tests {
         );
         // A trailing `#fragment` rides on the last value and is rejected as an
         // illegal action value (not silently dropped).
-        assert!(
-            matches!(
-                parse_deep_link("compme://setOverride?app=com.foo.bar&enabled=true#x"),
-                Err(ParseError::InvalidValue(_))
+        match parse_deep_link("compme://setOverride?app=com.foo.bar&enabled=true#x") {
+            Err(ParseError::InvalidValue(v)) => assert_eq!(
+                v, "true#x",
+                "the fragment must ride on the echoed value, not be silently dropped"
             ),
-            "a trailing fragment must not be silently accepted"
-        );
+            other => panic!("a trailing fragment must not be silently accepted, got {other:?}"),
+        }
     }
 
     #[test]
@@ -670,10 +683,15 @@ mod tests {
             "enabled=",
         ] {
             let url = format!("compme://setOverride?app=x&{bad}");
-            assert!(
-                matches!(parse_deep_link(&url), Err(ParseError::InvalidValue(_))),
-                "{bad} must be rejected"
-            );
+            let expected = bad
+                .strip_prefix("enabled=")
+                .expect("test inputs start with enabled=");
+            match parse_deep_link(&url) {
+                Err(ParseError::InvalidValue(v)) => {
+                    assert_eq!(v, expected, "{bad} must be rejected with its echoed value")
+                }
+                other => panic!("{bad} must be rejected, got {other:?}"),
+            }
         }
     }
 

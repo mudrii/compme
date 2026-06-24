@@ -466,6 +466,17 @@ mod tests {
     }
 
     #[test]
+    fn terminal_activates_for_minimal_three_word_prompt() {
+        // Exactly three lowercase-prose tokens with a non-shell leader is the
+        // smallest accepted prompt: pins the `tokens.len() < 3` lower bound so a
+        // `<= 3` mutant (which would reject this legit prompt) is caught.
+        assert!(terminal_prompt_activates(
+            "com.googlecode.iterm2",
+            "summarize the diff"
+        ));
+    }
+
+    #[test]
     fn terminal_skips_shell_leaders_case_insensitively() {
         // The shell-leader gate lowercases tokens[0] before matching SHELL_LEADERS
         // (line ~157), so a mixed/upper-case leader is still recognized as shell

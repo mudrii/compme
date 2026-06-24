@@ -5673,6 +5673,54 @@ mod tests {
     }
 
     #[test]
+    fn handle_emoji_skin_tone_change_clamps_out_of_range_atomic_to_last_tone() {
+        // A bogus atomic index (e.g. 99) must clamp to the last addressable tone
+        // via `.min(EMOJI_SKIN_TONE_VALUES.len() - 1)` — not panic or fall back to
+        // the default. The last entry is `SkinTone::Dark` ("dark").
+        let index = AtomicUsize::new(99);
+        let mut current = emoji_skin_tone_index(SkinTone::Default);
+        let mut config_emoji = Some(EmojiPrefs::default());
+        let mut saved_prefs = EmojiPrefs::default();
+        let mut persisted: Option<&'static str> = None;
+        let result = handle_emoji_skin_tone_change(
+            &index,
+            &mut current,
+            &mut config_emoji,
+            &mut saved_prefs,
+            |value| persisted = Some(value),
+        );
+        assert_eq!(result, Some(SkinTone::Dark));
+        assert_eq!(current, emoji_skin_tone_index(SkinTone::Dark));
+        assert_eq!(saved_prefs.skin_tone, SkinTone::Dark);
+        assert_eq!(config_emoji.unwrap().skin_tone, SkinTone::Dark);
+        assert_eq!(persisted, Some("dark"));
+    }
+
+    #[test]
+    fn handle_emoji_gender_change_clamps_out_of_range_atomic_to_last_gender() {
+        // Gender twin of the skin-tone clamp test: a bogus atomic index clamps to
+        // the last gender via `.min(EMOJI_GENDER_VALUES.len() - 1)`. The last entry
+        // is `Gender::Male` ("male").
+        let index = AtomicUsize::new(99);
+        let mut current = emoji_gender_index(Gender::Neutral);
+        let mut config_emoji = Some(EmojiPrefs::default());
+        let mut saved_prefs = EmojiPrefs::default();
+        let mut persisted: Option<&'static str> = None;
+        let result = handle_emoji_gender_change(
+            &index,
+            &mut current,
+            &mut config_emoji,
+            &mut saved_prefs,
+            |value| persisted = Some(value),
+        );
+        assert_eq!(result, Some(Gender::Male));
+        assert_eq!(current, emoji_gender_index(Gender::Male));
+        assert_eq!(saved_prefs.gender, Gender::Male);
+        assert_eq!(config_emoji.unwrap().gender, Gender::Male);
+        assert_eq!(persisted, Some("male"));
+    }
+
+    #[test]
     fn emoji_gender_edge_invalidates_stale_visible_suggestion() {
         let index = AtomicUsize::new(emoji_gender_index(Gender::Male));
         let mut current = emoji_gender_index(Gender::Neutral);

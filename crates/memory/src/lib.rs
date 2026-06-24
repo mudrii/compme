@@ -528,6 +528,14 @@ mod tests {
         store.remember("app", "accepted").unwrap();
         store.monitor("app", "monitored").unwrap();
         assert_eq!(store.count().unwrap(), 2);
+        // Both paths persist retrievable plaintext, not just bump the row count.
+        // Neither string carries a secret, so redaction leaves them verbatim;
+        // `recent` is newest-first (ORDER BY id DESC), so the later `monitor`
+        // insert comes before the earlier `remember`.
+        assert_eq!(
+            store.recent("app", 10).unwrap(),
+            vec!["monitored".to_string(), "accepted".to_string()],
+        );
     }
 
     #[test]

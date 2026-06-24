@@ -786,11 +786,16 @@ mod tests {
     #[test]
     fn dispatch_error_carries_the_callers_stage() {
         // The stage is the caller's pipeline label, not hard-coded — warm_up and
-        // complete_n use their own. Pin that the helper forwards it verbatim.
+        // complete_n use their own. Pin that the helper forwards it verbatim AND
+        // that the failure-specific message is independent of the stage (the
+        // stage label must not leak into / overwrite the diagnostic wording).
         for stage in ["complete", "complete_n", "warm up"] {
-            assert_eq!(
-                dispatch_error(stage, DispatchFailure::AlreadyShutDown).stage(),
-                stage
+            let err = dispatch_error(stage, DispatchFailure::AlreadyShutDown);
+            assert_eq!(err.stage(), stage);
+            assert!(
+                err.message().contains("already shut down"),
+                "stage {stage} got message: {}",
+                err.message()
             );
         }
     }
@@ -864,9 +869,26 @@ mod tests {
 
     #[test]
     fn default_warm_up_is_ok_noop() {
-        let model: Box<dyn LocalModel> = Box::new(Fixed("ok"));
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
+        // A counting fake proves the default warm_up is a true NO-OP: it returns
+        // Ok without invoking complete() (no dummy inference). A default that
+        // routed through complete() would bump the counter.
+        struct Counting(AtomicUsize);
+        impl LocalModel for Counting {
+            fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("x".into())
+            }
+        }
+
+        let model = Counting(AtomicUsize::new(0));
         assert_eq!(model.warm_up(), Ok(()));
+        assert_eq!(
+            model.0.load(Ordering::SeqCst),
+            0,
+            "default warm_up must not invoke complete()"
+        );
     }
 
     #[test]

@@ -454,6 +454,20 @@ mod tests {
         assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1000));
     }
 
+    #[test]
+    fn default_blocks_suggestions_when_disabled() {
+        // Privacy DENY path: with default_enabled=false and NO per-app/domain
+        // override, NO exclusion, and NO snooze, should_suggest must fall through
+        // to the global default (false) for both an app-scoped and a
+        // domain-scoped call. Pins the off-by-default global gate.
+        let p = Prefs {
+            default_enabled: false,
+            ..Default::default()
+        };
+        assert!(!p.should_suggest(Some("com.apple.TextEdit"), None, 1000));
+        assert!(!p.should_suggest(None, Some("docs.example.com"), 1000));
+    }
+
     /// Parse a deep link and apply it — the end-to-end web-config path (§16).
     fn apply(prefs: &mut Prefs, url: &str) {
         let cmd = webconfig::parse_deep_link(url).expect("valid deep link");

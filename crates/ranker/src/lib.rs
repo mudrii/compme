@@ -579,4 +579,14 @@ mod tests {
         // Two repeats is a real phrase ("bye bye"), not a degenerate loop.
         assert!(!is_degenerate_repetition("bye bye"));
     }
+
+    #[test]
+    fn is_degenerate_repetition_ignores_phrase_repeated_only_twice() {
+        // A multi-word phrase tiled exactly twice ("a b a b", "one two one two")
+        // is NOT degenerate: the `1..=len/3` divisor demands 3+ tilings, so for
+        // len 4 the loop runs only phrase_len 1 and finds no single-word loop. A
+        // `/2` mutant would let phrase_len reach 2 and wrongly flag these.
+        assert!(!is_degenerate_repetition("a b a b"));
+        assert!(!is_degenerate_repetition("one two one two"));
+    }
 }

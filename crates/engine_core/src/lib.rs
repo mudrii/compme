@@ -974,10 +974,14 @@ mod tests {
         // with a non-word char → not mid-word → arms.
         let mut machine = machine().with_trigger_gates(0, false);
         machine.on_event(text_changed("hello world", 5, 1000));
-        assert!(machine
-            .on_event(Event::Tick { now_ms: 1300 })
-            .iter()
-            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+        // The prompt is the left context (everything before the caret) with
+        // trailing whitespace trimmed: caret 5 sits right after "hello", so the
+        // request must carry exactly "hello" — pins the caret-split point.
+        let commands = machine.on_event(Event::Tick { now_ms: 1300 });
+        assert!(commands.iter().any(|c| matches!(
+            c,
+            Command::RequestCompletion { prompt, .. } if prompt == "hello"
+        )));
     }
 
     #[test]
@@ -985,10 +989,13 @@ mod tests {
         // Caret at end → right context empty → not mid-word → arms.
         let mut machine = machine().with_trigger_gates(0, false);
         machine.on_event(text_changed("hello", 5, 1000));
-        assert!(machine
-            .on_event(Event::Tick { now_ms: 1300 })
-            .iter()
-            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+        // Caret at end → left context is the whole value → prompt is exactly
+        // "hello" (no trailing space to trim).
+        let commands = machine.on_event(Event::Tick { now_ms: 1300 });
+        assert!(commands.iter().any(|c| matches!(
+            c,
+            Command::RequestCompletion { prompt, .. } if prompt == "hello"
+        )));
     }
 
     #[test]
@@ -998,10 +1005,14 @@ mod tests {
         // splitting a word, so it must arm even with mid-word suppression on.
         let mut machine = machine().with_trigger_gates(0, false);
         machine.on_event(text_changed("foo bar", 4, 1000));
-        assert!(machine
-            .on_event(Event::Tick { now_ms: 1300 })
-            .iter()
-            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+        // Left context "foo " is trimmed to "foo": the request prompt is exactly
+        // "foo", confirming the caret split fell at the start of "bar" (not
+        // mid-word) AND that trailing-space trimming applies.
+        let commands = machine.on_event(Event::Tick { now_ms: 1300 });
+        assert!(commands.iter().any(|c| matches!(
+            c,
+            Command::RequestCompletion { prompt, .. } if prompt == "foo"
+        )));
     }
 
     #[test]
@@ -1634,6 +1645,20 @@ mod tests {
         machine.on_event(text_changed("password", 8, 1000));
 
         assert_eq!(machine.on_event(Event::Tick { now_ms: 9999 }), vec![]);
+
+        // Now leave secure mode (caps flip back to inline) and retype: a request
+        // must fire on the next tick past debounce. This proves the secure caps
+        // were the *sole* suppressor above — without it, the empty-vec assertion
+        // could pass for an unrelated reason (e.g. a stale debounce or no caret).
+        machine.on_event(Event::SecureStateChanged {
+            caps: inline_caps(),
+        });
+        machine.on_event(text_changed("password", 8, 10_000));
+        let commands = machine.on_event(Event::Tick { now_ms: 10_300 });
+        assert!(commands.iter().any(|c| matches!(
+            c,
+            Command::RequestCompletion { prompt, .. } if prompt == "password"
+        )));
     }
 
     #[test]

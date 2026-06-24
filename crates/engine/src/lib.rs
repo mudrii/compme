@@ -1945,14 +1945,15 @@ mod tests {
     fn arms_accept_tap_via_popup_anchor_path() {
         let mut adapter = FakeAdapter::new();
         adapter.rect = None;
-        adapter.popup = Some(ScreenRect {
+        let popup = ScreenRect {
             x: 1.0,
             y: 2.0,
             w: 200.0,
             h: 24.0,
-        });
+        };
+        adapter.popup = Some(popup);
         let overlay = FakeOverlay::default();
-        let mut engine = Engine::new(adapter, overlay, 200, 4, 32);
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
 
         let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
         let v = Arc::clone(&visible);
@@ -1972,6 +1973,49 @@ mod tests {
         engine.on_completion(&requests[0], "popup".into()).unwrap();
 
         assert_eq!(*visible.lock().unwrap(), vec![true]);
+        // With no caret rect, inline placement falls back to the popup anchor:
+        // the ghost must paint AT that exact popup rect (not the caret rect, which
+        // is None here) with the completion text — pins the fallback branch.
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Show(popup, "popup".into())]
+        );
+    }
+
+    #[test]
+    fn inline_mode_prefers_caret_rect_over_popup_anchor() {
+        // Inline mode (mirror_mode FALSE, the default). With BOTH a caret rect
+        // and a popup anchor available, the ghost must paint at the CARET rect —
+        // the popup anchor is only the fallback when caret geometry is absent.
+        // Pins the non-mirror branch ordering in dispatch (caret first, popup as
+        // `None` fallback): a swapped branch would render at the popup rect.
+        let mut adapter = FakeAdapter::new();
+        let caret = ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 1.0,
+            h: 14.0,
+        };
+        adapter.rect = Some(caret);
+        adapter.popup = Some(ScreenRect {
+            x: 500.0,
+            y: 600.0,
+            w: 200.0,
+            h: 24.0,
+        });
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "hello".into()).unwrap();
+
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Show(caret, "hello".into())],
+            "inline placement uses the caret rect, not the popup anchor"
+        );
     }
 
     #[test]
@@ -2495,10 +2539,21 @@ mod tests {
 
         let result = engine.on_completion(&requests[0], "hello".into());
 
-        assert!(result.is_ok());
-        assert!(matches!(
-            overlay.calls.lock().unwrap().last(),
-            Some(OverlayCall::Show(_, _))
-        ));
+        // Showing a ghost yields no follow-up completion requests, and with no
+        // subscription installed the tap-arm no-ops — so the only effect is the
+        // ghost painted at the default caret rect with the exact text.
+        assert_eq!(result, Ok(vec![]));
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Show(
+                ScreenRect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 1.0,
+                    h: 14.0,
+                },
+                "hello".into()
+            )]
+        );
     }
 }

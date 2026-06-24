@@ -350,6 +350,16 @@ mod tests {
                 "{:?} resolved to empty glyph",
                 entry.shortcode
             );
+            // For plain entries (no gender variants, no skin-tone modifier),
+            // `render` returns `entry.base` verbatim, so the resolved glyph must
+            // equal the canonical base exactly — not merely be non-empty.
+            if entry.gendered.is_none() && !entry.skin_tone {
+                assert_eq!(
+                    s.glyph, entry.base,
+                    "plain entry {:?} must resolve to its base glyph",
+                    entry.shortcode
+                );
+            }
         }
     }
 

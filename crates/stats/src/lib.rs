@@ -762,6 +762,31 @@ mod tests {
     }
 
     #[test]
+    fn daily_buckets_coalesce_same_window_events_into_one_slice() {
+        // Two events inside the SAME 24h slice must land in the SAME bucket
+        // index (slice = (at - cutoff) / DAY_MS), while a third event in a
+        // different 24h window lands in a DIFFERENT index. cutoff = now -
+        // days*DAY_MS == T0 here, so the newest slice is bucket `days-1`.
+        let mut s = Stats::new();
+        let days = 3;
+        let now = T0 + days as u64 * DAY_MS;
+        s.record(now, Outcome::Shown); // newest slice (bucket 2)
+        s.record(now - 1, Outcome::Shown); // same 24h slice -> same bucket 2
+        s.record(now - DAY_MS - 1, Outcome::Shown); // previous slice -> bucket 1
+        let buckets = s.daily_buckets(now, days);
+        assert_eq!(buckets.len(), days);
+        assert_eq!(
+            buckets[2].counts.shown, 2,
+            "two same-window events coalesce into the newest slice"
+        );
+        assert_eq!(
+            buckets[1].counts.shown, 1,
+            "the third event falls in a distinct, older slice"
+        );
+        assert_eq!(buckets[0].counts.shown, 0);
+    }
+
+    #[test]
     fn cutoff_saturates_when_now_is_inside_the_first_window() {
         // When `now_ms < WINDOW_MS`, `now - WINDOW_MS` would underflow; the
         // saturating cutoff clamps to 0 so every recorded entry is retained
@@ -1241,12 +1266,20 @@ mod tests {
     #[test]
     fn metric_series_weekly_sums_each_seven_day_group_oldest_first() {
         // Weekly grouping sums every 7 trailing daily slices into one bar,
-        // oldest group first; a trailing partial group is summed as-is.
+        // oldest group first; a trailing partial group is summed as-is. Use
+        // NON-uniform per-week counts plus events straddling the week boundary
+        // (slice 6 = last of week 0, slice 7 = first of week 1) so a chunk
+        // off-by-one would shift counts across bars and fail. cutoff = now -
+        // 14*DAY_MS == T0; slice index = (at - cutoff) / DAY_MS.
         let mut s = Stats::new();
         let now = T0 + 14 * DAY_MS;
-        s.record(now - 10 * DAY_MS, Outcome::Accepted { words: 1 }); // older week
-        s.record(now - 2 * DAY_MS, Outcome::Accepted { words: 1 }); // newer week
-        s.record(now, Outcome::Accepted { words: 1 }); // newer week
+        // Week 0 = slices 0..=6 -> 3 accepts (distinct from week 1's count).
+        s.record(now - 14 * DAY_MS, Outcome::Accepted { words: 1 }); // slice 0
+        s.record(now - 10 * DAY_MS, Outcome::Accepted { words: 1 }); // slice 4
+        s.record(now - 8 * DAY_MS, Outcome::Accepted { words: 1 }); // slice 6 (last of week 0)
+                                                                    // Week 1 = slices 7..=13 -> 2 accepts; first lands exactly on slice 7.
+        s.record(now - 7 * DAY_MS, Outcome::Accepted { words: 1 }); // slice 7 (first of week 1)
+        s.record(now, Outcome::Accepted { words: 1 }); // slice 13
 
         assert_eq!(
             s.metric_series(
@@ -1255,7 +1288,7 @@ mod tests {
                 StatGrouping::Weekly,
                 StatMetric::Accepted
             ),
-            vec![1, 2],
+            vec![3, 2],
         );
     }
 
