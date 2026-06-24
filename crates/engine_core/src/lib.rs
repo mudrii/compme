@@ -728,54 +728,13 @@ impl SuggestionMachine {
         text: String,
         replace_left: usize,
     ) -> Vec<Command> {
-        let mut out = Vec::new();
-        if !self.enabled()
-            || self.suppressed
-            || text.is_empty()
-            || replace_left == 0
-            || self.caps.insert_strategy != InsertStrategy::AxSet
-        {
-            return out;
-        }
-        // `replace_left` is deliberately NOT bounded by `self.caret`: the host
-        // (emoji::suggest) computes the deletion count against the LIVE field and
-        // is authoritative — the machine's value/caret snapshot can legitimately
-        // lag the field at offer time (a fresh-focused machine with no typed value
-        // still accepts a valid replace_left). The AX range-replace honors it.
-        // Offer only into the currently focused field. The host detects the
-        // opportunity on a `TextChanged` and calls this synchronously, but a
-        // focus transition in between would otherwise let a ghost be tagged to a
-        // stale field (the model path gets this guard implicitly via the request
-        // match in `on_completion_ready`).
-        if self.field.as_ref() != Some(field) {
-            return out;
-        }
-        // A fresh offer replacing a still-showing ghost supersedes it (same
-        // accounting as the model-completion replacement site in
-        // `on_completion_ready`): the user never acted on the old one.
-        if self.showing.is_some() {
-            self.record_stat(StatEvent::Superseded);
-        }
-        self.showing = Some(Showing {
-            field: field.clone(),
-            snapshot: self.snapshot,
-            candidates: vec![text.clone()],
-            index: 0,
-            caret: self.caret,
-            replace_left,
-        });
-        // Disarm the model path for this snapshot: cancel the pending debounce so
-        // no `RequestCompletion` is issued, and drop any `requested` marker so a
-        // returning completion can't match-and-supersede this replacement ghost.
-        self.pending_since = None;
-        self.requested = None;
-        out.push(Command::ShowGhost {
-            field: field.clone(),
-            snapshot: self.snapshot,
-            text,
-        });
-        self.record_stat(StatEvent::Shown);
-        out
+        // Single-candidate convenience: identical to the multi path with one
+        // candidate (multi's empty-filter + exact-dedup is a no-op on one
+        // non-empty element, and its empty-after-filter guard matches this
+        // path's `text.is_empty()` gate). Delegating keeps the offer logic —
+        // the gating, supersede accounting, model-path disarm, and ShowGhost —
+        // in exactly one place (`offer_replacement_multi`) rather than two.
+        self.offer_replacement_multi(field, vec![text], replace_left)
     }
 
     /// Offer a local replacement (emoji/thesaurus/typo) with multiple candidates.

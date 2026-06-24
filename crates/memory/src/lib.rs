@@ -27,12 +27,6 @@ const NONCE_LEN: usize = 12;
 /// had a single implementation — reintroduce a trait if a second key source lands.)
 pub struct StaticKey(pub [u8; 32]);
 
-impl StaticKey {
-    fn key(&self) -> [u8; 32] {
-        self.0
-    }
-}
-
 impl Drop for StaticKey {
     // Scrub the long-lived key copy on drop so the raw AES-256 key does not
     // linger in process memory for a core dump / swap / live inspection to
@@ -112,7 +106,7 @@ impl MemoryStore {
         // Scrub the key copy returned by the provider once the cipher has
         // absorbed it; the cipher itself zeroizes its key schedule on drop
         // (aes-gcm `zeroize` feature).
-        let mut key_bytes = key.key();
+        let mut key_bytes = key.0;
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
         key_bytes.zeroize();
         Ok(Self { conn, cipher, mode })

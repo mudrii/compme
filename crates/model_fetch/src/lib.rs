@@ -21,12 +21,6 @@ fn hex(digest: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Whether `bytes` hash to `expected_hex` (case-insensitive comparison —
-/// hashes get pasted from release notes in either case).
-pub fn sha256_matches(bytes: &[u8], expected_hex: &str) -> bool {
-    sha256_hex(bytes) == expected_hex.to_ascii_lowercase()
-}
-
 /// The `Range` header value to resume a partial download of `existing_len`
 /// bytes, or `None` to start from scratch (nothing on disk yet).
 pub fn resume_range_header(existing_len: u64) -> Option<String> {
@@ -1217,16 +1211,6 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-    }
-
-    #[test]
-    fn sha256_matches_is_case_insensitive_and_rejects_wrong_hashes() {
-        assert!(sha256_matches(
-            b"abc",
-            "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
-        ));
-        assert!(!sha256_matches(b"abc", "deadbeef"));
-        assert!(!sha256_matches(b"abcd", &sha256_hex(b"abc")));
     }
 
     #[test]
