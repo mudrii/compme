@@ -511,11 +511,21 @@ impl SuggestionMachine {
                     } else {
                         self.finalize_accept_text(raw)
                     };
-                    out.push(accept_insert_command(
-                        showing.field,
-                        text,
-                        showing.replace_left,
-                    ));
+                    // Append-only completion → Insert; replacement (emoji/typo/
+                    // spelling, replace_left > 0) → Replace that first deletes
+                    // replace_left chars. Same shape the AcceptWord arm inlines.
+                    out.push(if showing.replace_left > 0 {
+                        Command::Replace {
+                            field: showing.field,
+                            text,
+                            replace_left: showing.replace_left,
+                        }
+                    } else {
+                        Command::Insert {
+                            field: showing.field,
+                            text,
+                        }
+                    });
                     out.push(Command::Hide);
                     self.advance_snapshot();
                 }
@@ -792,21 +802,6 @@ impl SuggestionMachine {
         });
         self.record_stat(StatEvent::Shown);
         out
-    }
-}
-
-/// Build the accept-time insertion command: a plain `Insert` for an append-only
-/// completion (`replace_left == 0`), or a `Replace` that first deletes
-/// `replace_left` chars for a replacement suggestion (emoji/typo/spelling).
-fn accept_insert_command(field: FieldHandle, text: String, replace_left: usize) -> Command {
-    if replace_left > 0 {
-        Command::Replace {
-            field,
-            text,
-            replace_left,
-        }
-    } else {
-        Command::Insert { field, text }
     }
 }
 

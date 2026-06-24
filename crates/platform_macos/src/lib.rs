@@ -4873,14 +4873,6 @@ impl CaretCoalescer {
     }
 }
 
-pub fn focus_notifications() -> [&'static str; 1] {
-    [kAXFocusedUIElementChangedNotification]
-}
-
-pub fn caret_notifications() -> [&'static str; 1] {
-    [kAXSelectedTextChangedNotification]
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObserverNotification {
     FocusChanged,
