@@ -854,8 +854,10 @@ impl OverlayPresenter for MacosOverlayPresenter {
                 frame.h
             );
         }
-        self.last_rect = Some(rect);
+        // Only record last_rect once the panel exists: on an ensure_panel error
+        // a stale Some(rect) would claim the overlay is shown when it isn't.
         self.ensure_panel(mtm, frame, text)?;
+        self.last_rect = Some(rect);
         if let Some(panel) = &self.panel {
             panel.setFrame_display(ns_rect(frame), true);
             panel.orderFrontRegardless();
