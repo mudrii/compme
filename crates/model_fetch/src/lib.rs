@@ -132,10 +132,14 @@ fn download_with_agent(
         // 416 with a part on disk = the server's file is smaller than our
         // resume offset (it shrank/changed). Keeping the part would 416 on
         // every retry forever (review-c119) — drop it and restart unranged.
-        // Recursion is bounded: the retry sends no Range, so it cannot 416
-        // down this arm again (the `existing > 0` guard).
+        // Recursion is bounded ONLY because removal succeeds: the retry then
+        // recomputes existing==0 and sends no Range, so it cannot 416 down
+        // this arm again. If the part can't be removed (immutable flag,
+        // read-only parent, transient EIO), surface Io rather than recurse —
+        // a surviving part re-sends a Range and 416s back into this arm,
+        // overflowing the stack instead of failing.
         Err(ureq::Error::Status(416, _)) if existing > 0 => {
-            let _ = std::fs::remove_file(&part);
+            std::fs::remove_file(&part).map_err(|e| FetchError::Io(e.to_string()))?;
             return download_with_agent(agent, url, dest, expected_sha256, progress);
         }
         Err(ureq::Error::Status(code, _)) => return Err(FetchError::Http(code)),
@@ -157,7 +161,10 @@ fn download_with_agent(
     // 416 arm: drop the part and re-request unranged — bounded the same way
     // (the retry sends no Range, so this arm cannot recurse).
     if status == 206 && !resumed && existing > 0 {
-        let _ = std::fs::remove_file(&part);
+        // Same bound as the 416 arm: removal must succeed for the retry to
+        // recompute existing==0 and drop the Range. Propagate Io on failure
+        // rather than recursing into an unbounded re-request.
+        std::fs::remove_file(&part).map_err(|e| FetchError::Io(e.to_string()))?;
         return download_with_agent(agent, url, dest, expected_sha256, progress);
     }
     let total = response
@@ -918,6 +925,36 @@ mod tests {
         let err = download_url(&url, &dest, None, |_, _| {}).unwrap_err();
         assert!(matches!(err, FetchError::Http(416)), "got: {err}");
         assert!(!part.exists(), "the stale part was dropped by the retry");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn http_416_with_unremovable_part_surfaces_io_instead_of_recursing() {
+        // The 416 restart's recursion bound holds ONLY if remove_file succeeds
+        // (the retry then recomputes existing==0 and drops the Range). If the
+        // part survives removal it re-sends a Range and 416s back into the same
+        // arm — unbounded recursion → stack overflow. Here a read-only parent
+        // dir blocks unlink(part); pin that this surfaces a typed Io error
+        // instead of looping. ponytail: skipped when run as root (root ignores
+        // dir perms so unlink succeeds) — the assertion still holds either way
+        // since success just yields the normal Http(416) terminal error.
+        use std::os::unix::fs::PermissionsExt;
+        let url = serve_always_416();
+        let dir = std::env::temp_dir().join(format!("compme_ro_part_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("model.bin");
+        let part = dest.with_extension("part");
+        std::fs::write(&part, b"stale but unremovable").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = download_url(&url, &dest, None, |_, _| {}).unwrap_err();
+        // Restore write so the temp dir and its part can be cleaned up.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(err, FetchError::Io(_) | FetchError::Http(416)),
+            "got: {err}"
+        );
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]
