@@ -919,6 +919,30 @@ mod tests {
     }
 
     #[test]
+    fn a_tampered_signature_value_fails_verification() {
+        // Companion to the tampered-PAYLOAD test: keep the signed payload byte
+        // for byte, but flip a byte INSIDE a still-well-formed (128-hex, 64-byte)
+        // signature. It is the right length and lexically valid hex, so it sails
+        // past the MalformedSignature guard and reaches verify_strict — which
+        // must reject it as InvalidSignature, never accept it. Pins the actual
+        // cryptographic check, distinct from the length/charset rejection.
+        use ed25519_dalek::Signer;
+        let payload = "compme://setOverride?app=com.apple.TextEdit&enabled=true";
+        let sig = test_signer().sign(payload.as_bytes());
+        let mut bytes = sig.to_bytes();
+        bytes[0] ^= 0x01; // flip one bit; length and hex-validity unchanged.
+        let url = format!("{payload}&sig={}", encode_hex(&bytes));
+        // Sanity: the tampered sig is still a well-formed 128-hex value, so the
+        // failure below is the crypto check, not the malformed-value guard.
+        assert_eq!(url[url.find("&sig=").unwrap() + 5..].len(), 128);
+        assert_eq!(
+            parse_deep_link_with_trust(&url, Some(&test_trusted_key())),
+            Err(ParseError::InvalidSignature),
+            "a well-formed but bit-flipped signature must fail verification"
+        );
+    }
+
+    #[test]
     fn a_tampered_scope_fails_verification() {
         // Companion to the action-tamper test above: flipping the *scope*
         // (the targeted app/domain) after signing must also fail closed. The

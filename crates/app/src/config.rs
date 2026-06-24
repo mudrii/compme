@@ -543,6 +543,41 @@ mod tests {
     }
 
     #[test]
+    fn temp_name_derives_from_target_so_stats_and_config_never_share_a_scratch() {
+        // The scratch file is `.{target_file_name}.tmp.{pid}`, derived from the
+        // TARGET — so config.env and stats.env in one dir get DIFFERENT scratch
+        // paths and a write to one can never collide with the other's temp. We
+        // observe the scratch name directly: pointing atomic_write at a target
+        // that is itself a directory makes the final rename fail (file-over-dir),
+        // stranding the scratch so its name is inspectable. A shared/fixed temp
+        // name (the pre-fix behavior) would strand `.config.tmp.*` for both.
+        let dir = std::env::temp_dir().join(format!("cm-cfg-temp-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        // Make each target a directory so the rename-over fails and the scratch
+        // is left behind for inspection.
+        std::fs::create_dir(dir.join("stats.env")).expect("stats.env dir");
+
+        assert!(
+            atomic_write(&dir.join("stats.env"), "STATS=v\n").is_err(),
+            "rename over a directory must fail, stranding the scratch"
+        );
+
+        let scratch: Vec<String> = std::fs::read_dir(&dir)
+            .expect("dir readable")
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with('.') && n.contains(".tmp."))
+            .collect();
+        assert_eq!(scratch.len(), 1, "exactly one scratch left");
+        assert!(
+            scratch[0].starts_with(".stats.env.tmp."),
+            "scratch must derive from the target name `stats.env`, got {:?}",
+            scratch[0]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn clamped_uses_default_when_absent() {
         assert_eq!(parse_clamped::<u64>(None, 120, 0, 5000), 120);
     }

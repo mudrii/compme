@@ -538,6 +538,34 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_setup_is_false_for_non_browser_non_setup_app() {
+        // needs_accessibility_setup only fires for browsers or SetupNeeded apps. A
+        // plain editor (Works) or an Unknown app never needs it, even with
+        // unreadable field text — the `&&` short-circuits on the second term. Pins
+        // that the gate is not just `!readable_text`. Existing coverage only shows
+        // the true side (browser/Arc) and the browser readable=true flip.
+        assert!(!needs_accessibility_setup("com.apple.TextEdit", false));
+        assert!(!needs_accessibility_setup("com.example.unknown", false));
+        // ...and a SetupNeeded app flips back to false once its text is readable,
+        // proving the readable_text term still gates the SetupNeeded branch.
+        assert!(needs_accessibility_setup("company.thebrowser.Browser", false));
+        assert!(!needs_accessibility_setup("company.thebrowser.Browser", true));
+    }
+
+    #[test]
+    fn non_terminal_app_always_activates_regardless_of_line() {
+        // terminal_prompt_activates is a no-op outside terminals: a non-terminal
+        // bundle id returns true even for input that WOULD be rejected as shell
+        // command in a terminal (a known shell leader, too few words, empty). Pins
+        // the early `!is_terminal` true-return so the heuristic never leaks into
+        // non-terminal apps.
+        let editor = "com.apple.TextEdit";
+        assert!(terminal_prompt_activates(editor, "git commit -m wip"));
+        assert!(terminal_prompt_activates(editor, "hi"));
+        assert!(terminal_prompt_activates(editor, ""));
+    }
+
+    #[test]
     fn terminal_skips_common_lowercase_shell_commands() {
         let term = "com.googlecode.iterm2";
         for command in [

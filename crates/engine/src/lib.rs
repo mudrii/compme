@@ -1031,7 +1031,7 @@ mod tests {
 
     #[test]
     fn accept_word_keeps_tap_armed_for_remaining_words() {
-        let (mut engine, _adapter, _overlay) = engine();
+        let (mut engine, adapter, overlay) = engine();
         let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
         let v = Arc::clone(&visible);
         engine.set_accept_subscription(AcceptSubscription::new(
@@ -1055,6 +1055,27 @@ mod tests {
         // A word accept inserts the first word and emits UpdateGhost (no Hide),
         // so the tap must stay armed — no `false` — for accepting the remainder.
         engine.on_accept(AcceptAction::Word).unwrap();
+        assert_eq!(
+            *adapter.inserts.lock().unwrap(),
+            vec![(field(), "alpha ".into(), InsertStrategy::AxSet)],
+            "the first word is inserted on a partial accept"
+        );
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![
+                OverlayCall::Show(
+                    ScreenRect {
+                        x: 10.0,
+                        y: 20.0,
+                        w: 1.0,
+                        h: 14.0,
+                    },
+                    "alpha beta".into()
+                ),
+                OverlayCall::Update("beta".into()),
+            ],
+            "the ghost shows the full suggestion then updates to the remainder — no Hide"
+        );
         assert_eq!(
             *visible.lock().unwrap(),
             vec![true],
@@ -1314,6 +1335,8 @@ mod tests {
         engine.on_completion(&requests[0], "nope".into()).unwrap();
 
         assert_eq!(engine.take_stat_events(), vec![StatEvent::Shown]);
+        // take_stat_events DRAINS: a second call sees nothing, not a re-emitted Shown.
+        assert_eq!(engine.take_stat_events(), vec![]);
     }
 
     #[test]
@@ -1412,7 +1435,11 @@ mod tests {
             .unwrap();
         engine.on_accept(AcceptAction::Full).unwrap();
 
-        assert_eq!(inserts.lock().unwrap()[0].2, InsertStrategy::SyntheticKeys);
+        assert_eq!(
+            *inserts.lock().unwrap(),
+            vec![(field(), "hello world".into(), InsertStrategy::SyntheticKeys)],
+            "exactly one insert of the completion into the focused field, using the focus-derived strategy"
+        );
     }
 
     #[test]
@@ -2029,7 +2056,24 @@ mod tests {
             })
             .unwrap();
 
-        assert!(engine.on_tick(2000).unwrap().is_empty());
+        assert!(
+            engine.on_tick(2000).unwrap().is_empty(),
+            "a Manual trigger must not auto-surface a request on tick"
+        );
+
+        // Proof the trigger field is actually read and routed (not ignored):
+        // the SAME text under an Automatic trigger DOES surface a request.
+        let mut auto_engine =
+            Engine::new(FakeAdapter::new(), FakeOverlay::default(), 200, 4, 32);
+        auto_engine.on_focus(field()).unwrap();
+        auto_engine
+            .on_text_changed(typed("hello ", 6, 1000))
+            .unwrap();
+        assert_eq!(
+            auto_engine.on_tick(2000).unwrap().len(),
+            1,
+            "an Automatic trigger on identical text surfaces one request, so the Manual suppression above is the trigger's doing"
+        );
     }
 
     #[test]
@@ -2555,5 +2599,63 @@ mod tests {
                 "hello".into()
             )]
         );
+    }
+
+    #[test]
+    fn fresh_engine_shows_nothing_and_requests_nothing_before_focus() {
+        // Cold start: Engine::new defaults to unsupported caps, so text + tick
+        // before any on_focus must neither surface a request nor paint a ghost.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_text_changed(typed("hello ", 6, 1000)).unwrap();
+        assert!(
+            engine.on_tick(2000).unwrap().is_empty(),
+            "no request may be surfaced before a field is focused"
+        );
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "no ghost may be painted before a field is focused"
+        );
+    }
+
+    #[test]
+    fn with_trailing_space_builder_reaches_the_machine() {
+        // Mirror of runtime_trailing_space_setter_reaches_the_machine, but via the
+        // builder: a single-word Full accept inserts the word followed by a space.
+        let adapter = FakeAdapter::new();
+        let mut engine = Engine::new(adapter.clone(), FakeOverlay::default(), 200, 4, 32)
+            .with_trailing_space(true);
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "solo".into()).unwrap();
+
+        engine.on_accept(AcceptAction::Full).unwrap();
+
+        assert_eq!(
+            *adapter.inserts.lock().unwrap(),
+            vec![(field(), "solo ".into(), InsertStrategy::AxSet)],
+            "the builder's trailing-space flag reaches the machine: the word is inserted with a trailing space"
+        );
+    }
+
+    #[test]
+    fn multibyte_completion_inserts_full_text_through_accept() {
+        // A multi-byte completion must be inserted verbatim through the non-replacing
+        // accept path — guards char/byte accounting in the insert plumbing.
+        let (mut engine, adapter, _overlay) = showing("café ☕");
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert_eq!(
+            *adapter.inserts.lock().unwrap(),
+            vec![(field(), "café ☕".into(), InsertStrategy::AxSet)],
+            "the full multi-byte suggestion is inserted verbatim"
+        );
+    }
+
+    #[test]
+    fn preview_accept_insert_with_nothing_showing_is_none() {
+        // No suggestion is showing: preview must not fabricate an insert.
+        let (engine, _adapter, _overlay) = engine();
+        assert_eq!(engine.preview_accept_insert(AcceptAction::Full), None);
+        assert_eq!(engine.preview_accept_insert(AcceptAction::Word), None);
     }
 }

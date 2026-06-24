@@ -1090,6 +1090,43 @@ mod tests {
     }
 
     #[test]
+    fn percentile_exact_rank_division_picks_the_ceiling_index() {
+        // n=4 is where `pct*n` divides 100 exactly, so div_ceil and a plain
+        // floor agree at p25/p50/p75 but DISAGREE one tick below each: p24 of
+        // n=4 → ceil(0.96)=1 (idx 0), whereas a floor regression would give 0 →
+        // clamp to 1 → still idx 0 here, so probe p26 where ceil(1.04)=2 (idx 1)
+        // vs floor(1.04)=1 (idx 0). Sorted [10,20,30,40].
+        let mut s = Stats::new();
+        for ms in [40u32, 10, 30, 20] {
+            s.record_latency(T0, ms);
+        }
+        // Exact divisions: rank = pct*4/100 with no remainder.
+        assert_eq!(s.latency_percentile_ms(T0, 25), Some(10)); // rank 1 → idx 0
+        assert_eq!(s.latency_percentile_ms(T0, 50), Some(20)); // rank 2 → idx 1
+        assert_eq!(s.latency_percentile_ms(T0, 75), Some(30)); // rank 3 → idx 2
+        assert_eq!(s.latency_percentile_ms(T0, 100), Some(40)); // rank 4 → idx 3
+        // Just past an exact boundary the ceiling steps up a rank: ceil(26*4/100)
+        // = ceil(1.04) = 2 → idx 1. A floor would stay at idx 0 (=10) and fail.
+        assert_eq!(s.latency_percentile_ms(T0, 26), Some(20));
+    }
+
+    #[test]
+    fn percentile_of_all_equal_samples_is_that_value_for_every_pct() {
+        // A constant window: every nearest-rank percentile must return the shared
+        // value regardless of which index the rank math lands on. Catches a
+        // sort/index regression that a varied set could mask.
+        let mut s = Stats::new();
+        for _ in 0..5 {
+            s.record_latency(T0, 17);
+        }
+        for pct in [1u8, 25, 50, 95, 100, 200] {
+            assert_eq!(s.latency_percentile_ms(T0, pct), Some(17));
+        }
+        // The mean of a constant window is the same constant.
+        assert_eq!(s.latency_avg_ms(T0), Some(17));
+    }
+
+    #[test]
     fn percentile_zero_is_none_and_above_100_clamps_to_max() {
         let mut s = Stats::new();
         for ms in [10u32, 20, 30] {

@@ -867,4 +867,88 @@ mod tests {
             "the newest 3 rows, newest first"
         );
     }
+
+    #[test]
+    fn recent_pages_past_full_corrupt_pages_to_fill_the_limit() {
+        // Exercises the LIMIT/OFFSET paging loop across MORE than one iteration.
+        // recent() fetches `limit` rows at a time; when an entire page (>= limit
+        // rows) is fetched but enough fail to decrypt, it must advance
+        // `offset += page` and keep reading older pages until it has `limit`
+        // decryptable records or the rows run out. Here the newest THREE rows are
+        // corrupt with limit=2, so the first full page (rows 5,4) is all corrupt,
+        // and the corruption straddles the page boundary (row 3 is corrupt but
+        // sits at the head of page two). recent() must page three times
+        // (offset 0 -> 2 -> 4) to gather the two newest decryptable rows. A naive
+        // single `LIMIT 2` (no paging) would return only "row 2" — or nothing —
+        // instead of the two newest decryptable rows.
+        let store = MemoryStore::open_in_memory(&key(20), StorageMode::AcceptedOnly).unwrap();
+        for i in 0..6 {
+            store.remember("app", &format!("row {i}")).unwrap();
+        }
+        // Corrupt the newest three rows (the three highest ids = "row 5/4/3") so
+        // they fail GCM auth and are skipped, forcing recent() to page back to the
+        // older "row 2" and "row 1".
+        let ids: Vec<i64> = {
+            let mut stmt = store
+                .conn
+                .prepare("SELECT id FROM memories WHERE app = 'app' ORDER BY id DESC LIMIT 3")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(ids.len(), 3, "sanity: corrupting the three newest rows");
+        for id in ids {
+            let mut blob: Vec<u8> = store
+                .conn
+                .query_row(
+                    "SELECT blob FROM memories WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            blob[NONCE_LEN] ^= 0x01;
+            store
+                .conn
+                .execute(
+                    "UPDATE memories SET blob = ?1 WHERE id = ?2",
+                    params![blob, id],
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            store.recent("app", 2).unwrap(),
+            vec!["row 2".to_string(), "row 1".to_string()],
+            "paging skips the corrupt newer pages and returns the two newest \
+             decryptable rows, newest-first"
+        );
+        // count() still sees every stored row regardless of decryptability.
+        assert_eq!(store.count().unwrap(), 6);
+    }
+
+    #[test]
+    fn recent_pages_return_correct_newest_first_order_across_page_boundaries() {
+        // All rows decryptable, but limit is smaller than the row count so the
+        // paging loop still runs more than once internally (page after page) when
+        // limit < total. With limit == total there is exactly one short page; with
+        // limit < total recent() caps at the first `limit`. This pins that the
+        // newest-first ordering is stable right at the limit cutoff (row N-1 down
+        // to row N-limit), independent of how the page math lands.
+        let store = MemoryStore::open_in_memory(&key(21), StorageMode::AcceptedOnly).unwrap();
+        for i in 0..7 {
+            store.remember("app", &format!("row {i}")).unwrap();
+        }
+        assert_eq!(
+            store.recent("app", 4).unwrap(),
+            vec![
+                "row 6".to_string(),
+                "row 5".to_string(),
+                "row 4".to_string(),
+                "row 3".to_string(),
+            ],
+            "the newest 4 rows, newest-first"
+        );
+    }
 }

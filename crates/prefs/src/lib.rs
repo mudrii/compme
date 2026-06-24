@@ -696,6 +696,50 @@ mod tests {
     }
 
     #[test]
+    fn snooze_deadline_is_exclusive_so_zero_minutes_never_snoozes() {
+        // is_snoozed is `now < until` (exclusive). snooze(now, 0) sets
+        // until == now, so the very instant it is set is already past the
+        // window — a zero-minute snooze is a no-op, and the deadline tick
+        // itself auto-resumes. Pins the `<` boundary so a `<=` mutant (which
+        // would keep suggestions gated at and one tick past the deadline) dies.
+        let mut p = Prefs::default();
+        p.snooze(1_000, 0);
+        assert!(!p.is_snoozed(1_000), "until == now must not be snoozed");
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        // A real window is gated strictly before, and resumes exactly at the deadline.
+        p.snooze(1_000, 1); // until = 61_000
+        assert!(p.is_snoozed(60_999));
+        assert!(!p.is_snoozed(61_000), "deadline tick auto-resumes");
+    }
+
+    #[test]
+    fn app_snooze_deadline_tick_auto_resumes_for_that_app() {
+        // is_app_snoozed mirrors the global `now < until` exclusivity: the app is
+        // gated strictly before the deadline and suggestable at the exact deadline
+        // tick. Pins the per-app `<` boundary (the global one is pinned above).
+        let mut p = Prefs::default();
+        p.snooze_app("com.apple.TextEdit", 1_000, 1); // until = 61_000
+        assert!(p.is_app_snoozed("com.apple.TextEdit", 60_999));
+        assert!(!p.is_app_snoozed("com.apple.TextEdit", 61_000));
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 61_000));
+    }
+
+    #[test]
+    fn feature_overrides_with_no_app_key_fall_through_to_the_global_default() {
+        // app=None can never hit a per_app override, so every feature resolver must
+        // return the caller's global default verbatim. Pins the None arm of the
+        // shared inherit pattern for all four feature toggles.
+        let p = Prefs::default();
+        assert!(p.autocorrect_enabled(None, true));
+        assert!(!p.autocorrect_enabled(None, false));
+        assert!(p.thesaurus_enabled(None, true));
+        assert!(!p.thesaurus_enabled(None, false));
+        assert!(p.mid_line_enabled(None, true));
+        assert!(!p.mid_line_enabled(None, false));
+        assert!(p.collection_allowed(None));
+    }
+
+    #[test]
     fn clear_snooze_resumes_immediately() {
         let mut p = Prefs::default();
         p.snooze(0, 10);

@@ -277,6 +277,69 @@ mod tests {
     }
 
     #[test]
+    fn a_too_long_secret_errors_and_is_never_overwritten() {
+        // The short-secret test pins the < 32 case; pin the > 32 case too. Both
+        // are `try_from` failures, but a foreign entry that is too LONG is a
+        // distinct corruption shape (e.g. a different app's larger blob), and it
+        // must fail closed identically — named length, refusal, and no write.
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let writes_in_hook = Arc::clone(&writes);
+        let store = store_with_hooks(
+            Arc::new(|_, _| Ok(Some(vec![2u8; 64]))),
+            Arc::new(move |_, _, secret: &[u8]| {
+                writes_in_hook.lock().unwrap().push(secret.to_vec());
+                Ok(())
+            }),
+            Arc::new(|| Ok([9u8; 32])),
+        );
+
+        let result = store.load_or_create_memory_key();
+        let Err(PlatformError::CannotComplete { reason }) = result else {
+            panic!("expected a fail-closed error, got {result:?}");
+        };
+        assert!(
+            reason.contains("64 bytes") && reason.contains("refusing"),
+            "error must name the bad length and the refusal: {reason}"
+        );
+        assert!(
+            writes.lock().unwrap().is_empty(),
+            "a foreign/corrupt entry must never be overwritten"
+        );
+    }
+
+    #[test]
+    fn a_generator_failure_propagates_without_writing() {
+        // First use generates then persists; if the CSPRNG itself fails
+        // (getentropy returning non-zero), the error must propagate and NO write
+        // may happen — persisting a bad/partial key would be worse than failing.
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let writes_in_hook = Arc::clone(&writes);
+        let store = store_with_hooks(
+            Arc::new(|_, _| Ok(None)),
+            Arc::new(move |_, _, secret: &[u8]| {
+                writes_in_hook.lock().unwrap().push(secret.to_vec());
+                Ok(())
+            }),
+            Arc::new(|| {
+                Err(PlatformError::CannotComplete {
+                    reason: "getentropy failed to generate a memory key".into(),
+                })
+            }),
+        );
+
+        assert_eq!(
+            store.load_or_create_memory_key(),
+            Err(PlatformError::CannotComplete {
+                reason: "getentropy failed to generate a memory key".into(),
+            })
+        );
+        assert!(
+            writes.lock().unwrap().is_empty(),
+            "a failed key generation must never reach the keychain"
+        );
+    }
+
+    #[test]
     fn a_read_error_propagates_without_generating_or_writing() {
         let touched = Arc::new(Mutex::new(Vec::new()));
         let touched_in_write = Arc::clone(&touched);

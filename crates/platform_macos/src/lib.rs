@@ -1231,6 +1231,18 @@ impl MacosPlatformAdapter {
             .len())
     }
 
+    /// Like `subscription_count` but recovers a poisoned registry lock instead of
+    /// reporting it. Lets a test observe whether the cancel path actually removed
+    /// an entry even when the registry mutex is poisoned (the production drop
+    /// closure recovers with `into_inner`, so the live count must still be exact).
+    #[cfg(test)]
+    fn subscription_count_recovering_poison(&self) -> usize {
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
     fn frontmost_pid(&self) -> Result<i32, PlatformError> {
         (self.frontmost_pid)().ok_or_else(|| PlatformError::CannotComplete {
             reason: "no frontmost application pid".into(),
@@ -11191,6 +11203,41 @@ mod tests {
             pointer_identity("ax:late-caret"),
         ));
         assert!(carets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dropping_subscription_with_poisoned_registry_still_removes_only_that_entry() {
+        // The cancel closure recovers a poisoned registry lock with `into_inner`
+        // (a panic on another thread that held the lock must not leak the
+        // subscription forever). Pin that the recovered path removes exactly the
+        // dropped id and leaves the sibling registered — observed through the
+        // poison-recovering count, since the fail-closed `subscription_count`
+        // would itself error on the poisoned lock.
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let adapter = test_adapter(Some(42), Arc::clone(&installs), None);
+
+        let focus = adapter
+            .subscribe_focus(Arc::new(|_| {}))
+            .expect("focus subscription");
+        let _caret = adapter
+            .subscribe_caret(Arc::new(|_, _| {}))
+            .expect("caret subscription");
+        assert_eq!(adapter.subscription_count().expect("count"), 2);
+
+        // Poison the registry mutex: panic while holding the lock.
+        let subscriptions = Arc::clone(&adapter.subscriptions);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = subscriptions.lock().unwrap();
+            panic!("poison the subscription registry");
+        }));
+        assert!(adapter.subscriptions.lock().is_err(), "registry is poisoned");
+
+        // The fail-closed accessor refuses a poisoned lock...
+        assert!(adapter.subscription_count().is_err());
+        // ...but the cancel path recovers it and still removes exactly the
+        // dropped subscription, leaving the caret entry intact.
+        drop(focus);
+        assert_eq!(adapter.subscription_count_recovering_poison(), 1);
     }
 
     #[test]

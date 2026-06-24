@@ -621,4 +621,48 @@ mod tests {
             "\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}"
         ));
     }
+
+    #[test]
+    fn vendor_prefix_too_short_for_keyed_branch_survives() {
+        // NEGATIVE for the keyed-secret category. Every vendor-prefix test pins a
+        // token that DOES redact; this pins the other direction. The keyed branch
+        // requires a `{16,}` suffix (e.g. `(?:sk|ghp|...)[-_][A-Za-z0-9_-]{16,}`),
+        // and the generic branch needs 32+ chars. A benign lookalike that merely
+        // STARTS like a vendor prefix but is too short to reach either floor is
+        // low-risk prose and must survive unchanged. A regression loosening the
+        // suffix length (or anchoring on the bare prefix) would over-redact these.
+        for benign in ["ghp_short", "sk-tiny", "AKIA123", "glpat-nope"] {
+            let text = format!("see {benign} here");
+            assert_eq!(
+                redact(&text),
+                text,
+                "short vendor-prefix lookalike must survive: {benign}"
+            );
+        }
+    }
+
+    #[test]
+    fn pathological_repetitive_input_scrubs_promptly_and_correctly() {
+        // Guards against catastrophic-backtracking regex: a very long, highly
+        // repetitive input must return promptly AND with the correct safe outcome
+        // (no original sensitive span leaks). The generic secret branch matches a
+        // 32+ char `[A-Za-z0-9+/=._-]` run, and `looks_high_entropy` treats a run
+        // containing a digit as a secret — so a 100k-digit run is OVER-redacted to
+        // the secret placeholder (privacy > fidelity). None of the raw digits may
+        // survive.
+        let big_digits = "7".repeat(100_000);
+        let scrubbed = redact(&big_digits);
+        assert_eq!(scrubbed, "[redacted-secret]", "long digit run over-redacts");
+        assert!(!scrubbed.contains('7'), "no raw digits leak from long input");
+        // A 100k-char run of a single lowercase letter is low-entropy (no digit,
+        // no mixed case, no base64 punct) and must survive UNCHANGED.
+        let big_letters = "a".repeat(100_000);
+        assert_eq!(redact(&big_letters), big_letters, "repetitive letters survive");
+        // And a real PAN embedded in a long benign run is still scrubbed (the long
+        // surrounding text does not mask the card or blow up the matcher).
+        let padded = format!("{pad} 4242 4242 4242 4242 {pad}", pad = "word ".repeat(2_000));
+        let out = redact(&padded);
+        assert!(out.contains("[redacted-card]"), "embedded PAN scrubbed");
+        assert!(!out.contains("4242"), "no card digits leak from long input");
+    }
 }

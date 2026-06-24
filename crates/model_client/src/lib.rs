@@ -666,6 +666,27 @@ mod tests {
     }
 
     #[test]
+    fn default_complete_n_propagates_complete_errors() {
+        // The default complete_n is `Ok(vec![self.complete(...)?])`: a backend
+        // that fails the single underlying complete() must surface that typed
+        // error (same stage/message), not swallow it into an empty/partial vec.
+        // Guards the `?` in the default impl — a regression dropping it would
+        // turn a hard failure into a silent success.
+        struct Failing;
+        impl LocalModel for Failing {
+            fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+                Err(LocalModelError::new("decode prompt", "backend unavailable"))
+            }
+        }
+        let model: Box<dyn LocalModel> = Box::new(Failing);
+        let err = model
+            .complete_n("x", 8, 3)
+            .expect_err("default complete_n must surface complete()'s error");
+        assert_eq!(err.stage(), "decode prompt");
+        assert_eq!(err.message(), "backend unavailable");
+    }
+
+    #[test]
     fn complete_n_override_can_return_multiple() {
         struct Multi;
         impl LocalModel for Multi {
@@ -986,6 +1007,21 @@ mod tests {
         assert_eq!(plan.prompt_len, 4);
         // clamped == prev → reuse leaves one to re-decode → 3.
         assert_eq!(plan.reuse, 3);
+    }
+
+    #[test]
+    fn plan_decode_skip_with_divergent_prev_reuses_nothing() {
+        // Over-long prompt (skip>0) whose CLAMPED tail shares no prefix with the
+        // stale cache: reuse must be 0, forcing a full re-decode of the clamped
+        // window. Pins that reuse is computed against the CLAMPED tokens, not the
+        // raw `current` — a bug measuring reuse on raw tokens could match the
+        // dropped front and wrongly skip re-decoding caret-adjacent context.
+        let prev = vec![1, 2, 3, 4]; // matches the DROPPED front, not the tail
+        let current = vec![1, 2, 3, 4, 5, 6];
+        let plan = plan_decode(&prev, &current, 2, 6);
+        assert_eq!(plan.skip, 2);
+        assert_eq!(plan.prompt_len, 4);
+        assert_eq!(plan.reuse, 0, "stale prefix on dropped front must not reuse");
     }
 
     #[test]

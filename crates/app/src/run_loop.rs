@@ -4851,6 +4851,38 @@ mod tests {
     }
 
     #[test]
+    fn lifetime_flush_creates_a_nested_missing_parent_and_leaves_no_temp() {
+        // The stats home may be several levels deep and not yet exist (first run
+        // before any dir is created). `create_dir_all(parent)` must build the
+        // whole chain — `create_dir` alone would error on the missing
+        // grandparent. After a clean flush the only file present is the target:
+        // the `.env.tmp` scratch must have been renamed away, never left behind.
+        let root = flush_temp_path("nested");
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("a").join("b").join("stats.env");
+        assert!(!path.parent().unwrap().exists(), "parent chain absent up front");
+
+        persist_lifetime_stats(
+            Some(&path),
+            &stats::PersistedStats::default(),
+            Default::default(),
+        )
+        .expect("flush into a missing nested parent");
+
+        assert!(path.exists(), "the target file must exist after the flush");
+        let leftovers: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .expect("dir readable")
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec!["stats.env".to_string()],
+            "no `.env.tmp` scratch may linger beside the renamed target"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn setup_poll_fires_only_while_visible_and_spaced() {
         // The Setup tab re-probes permissions on a 480ms cadence, but ONLY
         // while the window is visible — hidden windows must cost nothing.

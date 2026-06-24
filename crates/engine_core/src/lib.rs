@@ -3364,6 +3364,51 @@ mod tests {
     }
 
     #[test]
+    fn long_completion_is_capped_to_max_words_when_shown() {
+        // The `max_words` ceiling (set via `new`) flows through `on_completion_ready`
+        // into `cap_words`: a non-degenerate completion with MORE words than the cap
+        // must be shown truncated to exactly the first `max_words` words — not
+        // suppressed, not shown whole. Pins the end-to-end plumbing of the cap, which
+        // the existing degenerate-repetition tests exercise only as a side effect.
+        let mut machine = SuggestionMachine::new(inline_caps(), 200, 3);
+        machine.on_event(text_changed("x", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "alpha beta gamma delta epsilon".into(),
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "alpha beta gamma".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn plain_dismiss_does_not_suppress_the_field() {
+        // Plain `Event::Dismiss` only hides the ghost (show-failed reconciliation);
+        // unlike Esc (`DismissSuppress`) it must NOT set the suppression gate, so a
+        // subsequent local replacement offer in the same field still shows. The
+        // sibling `mutverify_dismiss_discard_does_not_suppress_field` pins the same
+        // for the tray-Disable path; this pins it for plain Dismiss.
+        let mut machine = focused_machine();
+        machine.on_event(Event::Dismiss);
+        assert_eq!(
+            machine.offer_replacement(&field("field-a"), "\u{1F604}".into(), 5),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "\u{1F604}".into(),
+            }],
+            "plain Dismiss must not suppress the field"
+        );
+    }
+
+    #[test]
     fn model_completion_accept_still_emits_plain_insert_not_replace() {
         // Regression guard: ordinary completions (replace_left == 0) must never
         // emit Replace — only append-only Insert.
