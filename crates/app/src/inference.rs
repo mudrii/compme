@@ -1300,6 +1300,51 @@ mod tests {
     }
 
     #[test]
+    fn worker_calls_model_shutdown_on_graceful_channel_close() {
+        // After the serve loop exits (request channel closed), run() calls
+        // model.shutdown() (the ordered ggml-Metal teardown guard). Every other
+        // test model uses the no-op default shutdown, so a refactor that early-
+        // returned before that call — disabling the guard — would stay green.
+        // Pin that the call actually fires.
+        struct ShutdownTrackingModel {
+            flag: Arc<AtomicBool>,
+        }
+        impl LocalModel for ShutdownTrackingModel {
+            fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+                Ok(String::new())
+            }
+            fn shutdown(self: Box<Self>) {
+                self.flag.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let flag = Arc::new(AtomicBool::new(false));
+        let (request_tx, request_rx) = channel::<CompletionRequest>();
+        let (outcome_tx, _outcome_rx) = channel::<CompletionOutcome>();
+        drop(request_tx); // request channel closed → serve loop exits gracefully
+
+        run(
+            Box::new(ShutdownTrackingModel {
+                flag: Arc::clone(&flag),
+            }),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+            request_rx,
+            outcome_tx,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "worker must call model.shutdown() on graceful channel-close exit"
+        );
+        // _outcome_rx held alive so the exit is driven by the closed request
+        // channel, not a dropped outcome receiver.
+    }
+
+    #[test]
     fn shutdown_without_work_joins_cleanly() {
         let inference = InferenceHandle::spawn(
             Box::new(StubModel::new("x")),

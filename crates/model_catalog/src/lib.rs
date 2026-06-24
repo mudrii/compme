@@ -367,6 +367,33 @@ mod tests {
     }
 
     #[test]
+    fn recommended_in_breaks_size_ties_to_the_first_listed_entry() {
+        // Documented contract (min_by_key is stable): when two unencumbered
+        // entries share the smallest size_mb, the FIRST-listed wins. This fixes
+        // which model becomes the one-click default download; an unstable
+        // selection picking the LAST equal entry would silently change the
+        // default yet pass the all-distinct-size selection test above.
+        fn make(name: &'static str, size_mb: u32, license: License) -> ModelEntry {
+            ModelEntry {
+                name,
+                url: "https://example.invalid/m.gguf",
+                size_mb,
+                min_ram_gb: 8,
+                license,
+                expected_sha256: None,
+            }
+        }
+        let entries = [
+            make("first-open", 300, License::Apache2),
+            make("second-open", 300, License::Mit),
+            make("big-open", 900, License::Apache2),
+        ];
+        let pick = recommended_in(&entries).expect("an unencumbered entry exists");
+        assert_eq!(pick.name, "first-open");
+        assert_eq!(pick.size_mb, 300);
+    }
+
+    #[test]
     fn catalog_entries_are_well_formed_and_ordered() {
         let entries = catalog();
         assert!(!entries.is_empty());
@@ -707,5 +734,26 @@ mod tests {
             assert!(license.terms_url().starts_with("https://"));
             assert!(!license.display_name().is_empty());
         }
+    }
+
+    #[test]
+    fn gated_license_terms_urls_and_names_are_pinned_exactly() {
+        // The https/non-empty invariant above would pass a typo'd-but-still-https
+        // URL pointing at the WRONG license page. These are the exact click-
+        // through targets surfaced verbatim through download_gate's NeedsLicense
+        // before the first gated download — pin them exactly.
+        assert_eq!(
+            License::GemmaTerms.terms_url(),
+            "https://ai.google.dev/gemma/terms"
+        );
+        assert_eq!(
+            License::LlamaCommunity.terms_url(),
+            "https://www.llama.com/llama3_2/license/"
+        );
+        assert_eq!(License::GemmaTerms.display_name(), "Gemma Terms of Use");
+        assert_eq!(
+            License::LlamaCommunity.display_name(),
+            "Llama Community License"
+        );
     }
 }

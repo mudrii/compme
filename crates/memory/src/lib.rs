@@ -342,6 +342,30 @@ mod tests {
     }
 
     #[test]
+    fn recent_isolates_records_across_apps() {
+        // The `WHERE app = ?1` filter in recent() (paired with the per-app AAD
+        // binding) is the cross-app privacy boundary: one app's stored memory
+        // must never surface in another app's history. Both apps hold a live,
+        // decryptable row here so the filter is load-bearing — dropping the
+        // WHERE clause would leak across apps yet pass the single-app recent()
+        // tests, which never hold two decryptable apps at once.
+        let store = MemoryStore::open_in_memory(&key(40), StorageMode::AcceptedOnly).unwrap();
+        store.remember("app.a", "alpha secret").unwrap();
+        store.remember("app.b", "beta secret").unwrap();
+        store.remember("app.a", "alpha two").unwrap();
+        assert_eq!(
+            store.recent("app.a", 10).unwrap(),
+            vec!["alpha two", "alpha secret"]
+        );
+        assert_eq!(store.recent("app.b", 10).unwrap(), vec!["beta secret"]);
+        let a = store.recent("app.a", 10).unwrap();
+        assert!(
+            !a.iter().any(|t| t.contains("beta")),
+            "another app's record must not leak into recent(): {a:?}"
+        );
+    }
+
+    #[test]
     fn file_backed_store_reopens_with_recent_records_newest_first() {
         let path = temp_db_path();
         {

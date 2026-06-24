@@ -1437,6 +1437,29 @@ mod tests {
     }
 
     #[test]
+    fn suppresses_degenerate_repetition_masked_below_the_word_cap() {
+        // Opposite direction to the test above: here the cap MASKS the loop
+        // instead of creating it. "ha ha ha ha" capped to max_words=2 is
+        // "ha ha" — below the 3-word degeneracy floor (ranker), so the POST-cap
+        // check passes it. Only the PRE-cap is_degenerate_repetition(&de_overlapped)
+        // gate suppresses the visible "ha ha" ghost; deleting that gate leaves
+        // every other engine_core test green.
+        let mut machine = SuggestionMachine::new(inline_caps(), 200, 2);
+        machine.on_event(text_changed("z", 1, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "ha ha ha ha".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
     fn suppresses_degenerate_repetition_completion() {
         let mut machine = machine();
         machine.on_event(text_changed("x", 1, 0));

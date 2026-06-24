@@ -1029,6 +1029,26 @@ mod tests {
     }
 
     #[test]
+    fn stale_completion_multi_after_more_typing_shows_no_ghost() {
+        // The single-completion staleness drop is pinned elsewhere; this pins the
+        // MULTI entry point at the engine layer: a batch whose request went stale
+        // (the user typed on before it arrived) is dropped and shows no overlay.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("hello ", 6, 1000)).unwrap();
+        let requests = engine.on_tick(1200).unwrap();
+        engine.on_text_changed(typed("hello w", 7, 1300)).unwrap();
+        let follow = engine
+            .on_completion_multi(&requests[0], vec!["world".into(), "there".into()])
+            .unwrap();
+        assert!(follow.is_empty());
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "a stale multi completion must show no ghost"
+        );
+    }
+
+    #[test]
     fn accept_full_inserts_the_cycled_candidate_and_hides() {
         let (mut engine, adapter, overlay) = engine();
         engine.on_focus(field()).unwrap();
