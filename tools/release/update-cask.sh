@@ -16,6 +16,14 @@ usage() {
   echo "usage: update-cask.sh vX.Y.Z | --self-test" >&2
 }
 
+validate_version() {
+  local version="$1"
+  if [[ ! "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+    echo "invalid version: $version" >&2
+    return 1
+  fi
+}
+
 rewrite_cask() {
   cask_path="$1"
   version="$2"
@@ -92,6 +100,21 @@ CASK
     exit 1
   fi
 
+  malformed="$tmp/malformed.rb"
+  cat >"$malformed" <<'CASK'
+cask "compme" do
+  version "1.2.3"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  url "https://example.invalid/old.zip"
+end
+CASK
+  if COMPME_CASK_PATH="$malformed" "$0" '1.2.3"; system("bad") #' "$artifact" >/tmp/compme-update-cask-invalid.log 2>&1; then
+    echo "malformed version unexpectedly passed" >&2
+    return 1
+  fi
+  grep -q 'version "1.2.3"' "$malformed"
+  grep -q 'example.invalid/old.zip' "$malformed"
+
   echo "Self-test passed"
 }
 
@@ -107,6 +130,7 @@ if [ -z "$raw" ]; then
 fi
 
 version="${raw#v}"
+validate_version "$version"
 cask="${COMPME_CASK_PATH:-"$repo_root/Casks/compme.rb"}"
 zip="compme-${version}-macos.zip"
 url="https://github.com/mudrii/compme/releases/download/v${version}/${zip}"

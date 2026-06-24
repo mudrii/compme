@@ -342,6 +342,26 @@ mod tests {
     }
 
     #[test]
+    fn release_catalog_rows_have_download_and_policy_metadata() {
+        let catalog = catalog();
+        assert!(catalog.len() >= 4);
+        let mut names = std::collections::BTreeSet::new();
+
+        for entry in catalog {
+            assert!(names.insert(entry.name));
+            assert!(!entry.name.trim().is_empty());
+            assert!(entry.url.starts_with("https://"));
+            assert!(entry.size_mb > 0);
+            assert!(entry.min_ram_gb > 0);
+        }
+        let ram_profiles = catalog
+            .iter()
+            .map(|entry| entry.min_ram_gb)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(ram_profiles.len() >= 2);
+    }
+
+    #[test]
     fn recommended_in_skips_a_smaller_gated_entry_and_picks_the_smallest_unencumbered() {
         // Isolated, order-independent proof of the selection logic: a SMALLER
         // gated entry sits FIRST, so a `.find(first unencumbered)` would still

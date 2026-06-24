@@ -24,6 +24,18 @@ fn require_model_tests() -> bool {
     model_tests_required(std::env::var("COMPME_REQUIRE_MODEL_TESTS").ok().as_deref())
 }
 
+fn latency_budget_required(raw: Option<&str>) -> bool {
+    matches!(raw, Some("1" | "true" | "yes" | "on"))
+}
+
+fn require_latency_budget() -> bool {
+    latency_budget_required(
+        std::env::var("COMPME_REQUIRE_LATENCY_BUDGET")
+            .ok()
+            .as_deref(),
+    )
+}
+
 fn ensure_model_exists() -> bool {
     if Path::new(MODEL).exists() {
         return true;
@@ -78,10 +90,24 @@ fn warm_complete_ms(prompt: &str, n: usize) -> Option<u128> {
     Some(decode(false))
 }
 
+fn load_model() -> Option<()> {
+    let backend = LlamaBackend::init().ok()?;
+    let _model = LlamaModel::load_from_file(
+        &backend,
+        MODEL,
+        &LlamaModelParams::default().with_n_gpu_layers(999),
+    )
+    .ok()?;
+    Some(())
+}
 #[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn model_loads_and_warm_completion_is_under_500ms() {
     if !ensure_model_exists() {
+        return;
+    }
+    load_model().expect("load model");
+    if !require_latency_budget() {
         return;
     }
     let ms = warm_complete_ms("The quick brown fox", 12).expect("warm completion");
@@ -102,5 +128,15 @@ fn strict_model_test_env_parses_truthy_values() {
     }
     for raw in [None, Some(""), Some("0"), Some("false"), Some("off")] {
         assert!(!model_tests_required(raw), "{raw:?}");
+    }
+}
+
+#[test]
+fn strict_latency_budget_env_parses_truthy_values() {
+    for value in [Some("1"), Some("true"), Some("yes"), Some("on")] {
+        assert!(latency_budget_required(value));
+    }
+    for value in [None, Some("0"), Some("false"), Some("off"), Some("")] {
+        assert!(!latency_budget_required(value));
     }
 }

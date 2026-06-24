@@ -26,6 +26,7 @@ failures=0
 skips=0
 incomplete_skips=0
 manuals=0
+ALLOW_MANUAL=0
 
 usage() {
   cat <<'USAGE'
@@ -88,6 +89,7 @@ while [ "$#" -gt 0 ]; do
     --skip-textedit) SKIP_TEXTEDIT=1 ;;
     --skip-e2e) SKIP_E2E=1 ;;
     --allow-incomplete) ALLOW_INCOMPLETE=1 ;;
+    --allow-manual) ALLOW_MANUAL=1 ;;
     --self-test) SELF_TEST=1 ;;
     --textedit-pid)
       [ "$#" -ge 2 ] || { echo "--textedit-pid requires a pid" >&2; exit 2; }
@@ -432,6 +434,9 @@ final_status() {
   if [ "$incomplete_skips" -gt 0 ] && [ "$ALLOW_INCOMPLETE" -eq 0 ]; then
     return 1
   fi
+  if [ "$manuals" -gt 0 ] && [ "$ALLOW_MANUAL" -eq 0 ]; then
+    return 1
+  fi
   return 0
 }
 
@@ -671,6 +676,22 @@ run_self_tests() {
     || self_failures=$((self_failures + 1))
 
   rm -rf "$self_test_dir"
+  failures=0
+  incomplete_skips=0
+  manuals=1
+  ALLOW_MANUAL=0
+  if final_status; then
+    echo "ASSERTION FAILED: manual gates should fail without --allow-manual" >&2
+    self_failures=$((self_failures + 1))
+  fi
+  ALLOW_MANUAL=1
+  if ! final_status; then
+    echo "ASSERTION FAILED: manual gates should pass with --allow-manual" >&2
+    self_failures=$((self_failures + 1))
+  fi
+  manuals=0
+  ALLOW_MANUAL=0
+
   if [ "$self_failures" -gt 0 ]; then
     echo "Self-test failures: $self_failures" >&2
     return 1

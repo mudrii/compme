@@ -16,6 +16,9 @@ integration test) are `#[ignore]`d because they need a local GGUF and a Metal GP
 so branch/PR CI remains hermetic. The Release workflow runs
 [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh) with
 `COMPME_REQUIRE_MODEL_TESTS=1`; publishing a tag therefore downloads and
+validates model presence/load/warm-up. Set `COMPME_REQUIRE_LATENCY_BUDGET=1`
+when you also want backend-sensitive completion determinism and the sub-500ms
+latency budget enforced on the current machine.
 hash-verifies the base Qwen2.5 GGUF before running the model-backed gates on the
 macOS runner.
 

@@ -4860,7 +4860,10 @@ mod tests {
         let root = flush_temp_path("nested");
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("a").join("b").join("stats.env");
-        assert!(!path.parent().unwrap().exists(), "parent chain absent up front");
+        assert!(
+            !path.parent().unwrap().exists(),
+            "parent chain absent up front"
+        );
 
         persist_lifetime_stats(
             Some(&path),

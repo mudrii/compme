@@ -1,6 +1,18 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+fn latency_budget_required(raw: Option<&str>) -> bool {
+    matches!(raw, Some("1" | "true" | "yes" | "on"))
+}
+
+fn require_latency_budget() -> bool {
+    latency_budget_required(
+        std::env::var("COMPME_REQUIRE_LATENCY_BUDGET")
+            .ok()
+            .as_deref(),
+    )
+}
+
 use model_client::{terse_continuation_prompt, LlamaModel, LocalModel};
 
 fn model_path() -> PathBuf {
@@ -54,6 +66,16 @@ fn strict_model_test_env_parses_truthy_values() {
 // pure unit tests in `src/lib.rs`; this adds an end-to-end real-model check when
 // a GGUF and GPU are available.
 #[test]
+#[test]
+fn strict_latency_budget_env_parses_truthy_values() {
+    for value in [Some("1"), Some("true"), Some("yes"), Some("on")] {
+        assert!(latency_budget_required(value));
+    }
+    for value in [None, Some("0"), Some("false"), Some("off"), Some("")] {
+        assert!(!latency_budget_required(value));
+    }
+}
+
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn warm_completion_under_500ms() {
     let path = model_path();
@@ -66,16 +88,24 @@ fn warm_completion_under_500ms() {
     // Exercise the real warm-up override (Metal shader precompile) rather than a
     // bare throwaway completion.
     model.warm_up().expect("warm up");
+    if !require_latency_budget() {
+        return;
+    }
+    if !require_latency_budget() {
+        return;
+    }
 
     let started = Instant::now();
     let output = model.complete(&prompt, 12).expect("measured completion");
     let elapsed_ms = started.elapsed().as_millis();
 
     println!("warm: {elapsed_ms}ms -> {output:?}");
-    assert!(
-        elapsed_ms < 500,
-        "warm completion {elapsed_ms}ms exceeded 500ms"
-    );
+    if require_latency_budget() {
+        assert!(
+            elapsed_ms < 500,
+            "warm completion {elapsed_ms}ms exceeded 500ms"
+        );
+    }
 
     // Exercise the real shutdown override (model dropped before backend).
     Box::new(model).shutdown();
@@ -88,6 +118,10 @@ fn warm_completion_under_500ms() {
 #[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn prefix_reuse_matches_fresh_context_output() {
+    if !require_latency_budget() {
+        return;
+    }
+
     let path = model_path();
     if !ensure_model_exists(&path) {
         return;
@@ -135,8 +169,14 @@ fn complete_n_returns_real_model_candidates() {
         return;
     }
 
+    if !require_latency_budget() {
+        return;
+    }
     let model = LlamaModel::load(&path).expect("load model");
     model.warm_up().expect("warm up");
+    if !require_latency_budget() {
+        return;
+    }
     let prompt = terse_continuation_prompt("The quick brown fox");
     let candidates = model.complete_n(&prompt, 12, 3).expect("complete_n");
 

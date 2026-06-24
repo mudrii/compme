@@ -131,6 +131,16 @@ fn email_re() -> &'static Regex {
     })
 }
 
+fn credential_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b((?:password|passwd|secret|token|api[_-]?key|authorization)\b\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|[^\s,;&]+)"#,
+        )
+        .expect("credential assignment regex")
+    })
+}
+
 /// Replace emails, Luhn-valid card numbers, and API-key/secret-like tokens with
 /// stable placeholders. Idempotent on already-redacted text.
 ///
@@ -142,7 +152,8 @@ pub fn redact(input: &str) -> String {
 
     // 2. Secrets. Vendor-prefixed keys always redact; the generic long-token
     //    branch redacts only high-entropy runs so long prose words survive.
-    let stage2 = secret_re().replace_all(&stage1, |caps: &regex::Captures| {
+    let stage2 = credential_re().replace_all(&stage1, "$1[redacted-secret]");
+    let stage3 = secret_re().replace_all(&stage2, |caps: &regex::Captures| {
         let m = &caps[0];
         let is_keyed = KEY_PREFIXES.iter().any(|prefix| m.starts_with(prefix));
         if is_keyed || looks_high_entropy(m) {
@@ -155,7 +166,7 @@ pub fn redact(input: &str) -> String {
     // 3. Card numbers (Luhn-validated). Each maximal digit/separator run is
     //    windowed internally so adjacent cards are each caught.
     card_run_re()
-        .replace_all(&stage2, |caps: &regex::Captures| redact_card_run(&caps[0]))
+        .replace_all(&stage3, |caps: &regex::Captures| redact_card_run(&caps[0]))
         .into_owned()
 }
 
@@ -266,6 +277,26 @@ mod tests {
             prose.contains("abcdefabcdefabcdef"),
             "all-letter run survives: {prose:?}"
         );
+    }
+
+    #[test]
+    fn redacts_short_credential_assignments_and_auth_headers() {
+        let out = redact(
+        "password=hunter2 Authorization: Bearer abc123 token=abc123def456 api_key=short-dev-key password=\"foo bar baz\" api_key='quoted dev key' authorization: Bearer \"space bearer\"",
+    );
+
+        assert!(out.contains("password=[redacted-secret]"));
+        assert!(out.contains("Authorization: Bearer [redacted-secret]"));
+        assert!(out.contains("token=[redacted-secret]"));
+        assert!(out.contains("api_key=[redacted-secret]"));
+        assert!(out.contains("password=[redacted-secret]"));
+        assert!(out.contains("authorization: Bearer [redacted-secret]"));
+        assert!(!out.contains("hunter2"));
+        assert!(!out.contains("abc123def456"));
+        assert!(!out.contains("short-dev-key"));
+        assert!(!out.contains("foo bar baz"));
+        assert!(!out.contains("quoted dev key"));
+        assert!(!out.contains("space bearer"));
     }
 
     #[test]
@@ -653,14 +684,24 @@ mod tests {
         let big_digits = "7".repeat(100_000);
         let scrubbed = redact(&big_digits);
         assert_eq!(scrubbed, "[redacted-secret]", "long digit run over-redacts");
-        assert!(!scrubbed.contains('7'), "no raw digits leak from long input");
+        assert!(
+            !scrubbed.contains('7'),
+            "no raw digits leak from long input"
+        );
         // A 100k-char run of a single lowercase letter is low-entropy (no digit,
         // no mixed case, no base64 punct) and must survive UNCHANGED.
         let big_letters = "a".repeat(100_000);
-        assert_eq!(redact(&big_letters), big_letters, "repetitive letters survive");
+        assert_eq!(
+            redact(&big_letters),
+            big_letters,
+            "repetitive letters survive"
+        );
         // And a real PAN embedded in a long benign run is still scrubbed (the long
         // surrounding text does not mask the card or blow up the matcher).
-        let padded = format!("{pad} 4242 4242 4242 4242 {pad}", pad = "word ".repeat(2_000));
+        let padded = format!(
+            "{pad} 4242 4242 4242 4242 {pad}",
+            pad = "word ".repeat(2_000)
+        );
         let out = redact(&padded);
         assert!(out.contains("[redacted-card]"), "embedded PAN scrubbed");
         assert!(!out.contains("4242"), "no card digits leak from long input");
