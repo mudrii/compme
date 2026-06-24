@@ -4447,9 +4447,13 @@ fn extend_range_left(value: &str, range: CFRange, replace_left: usize) -> CFRang
     let start_char = chars_before_caret.saturating_sub(replace_left);
     let start = boundaries[start_char];
     let delta = caret.saturating_sub(start);
+    // Cover exactly the `replace_left`-char prefix ending at the caret. We do NOT
+    // add `range.length`: if the field has a live selection, sweeping it into the
+    // splice would delete the user's selected text along with the typed token.
+    // For a collapsed caret (range.length == 0, the usual case) this is unchanged.
     CFRange {
         location: start as isize,
-        length: range.length + delta as isize,
+        length: delta as isize,
     }
 }
 
@@ -9886,12 +9890,12 @@ mod tests {
     }
 
     #[test]
-    fn extend_range_left_preserves_an_existing_selection_length() {
-        // Caret-anchored replacements use a collapsed range, but the helper also
-        // handles a non-collapsed selection (e.g. a future selection-triggered
-        // replacement): it extends the left edge by `replace_left` chars and keeps
-        // the original selection length. "abcde", select "de" (loc 3, len 2),
-        // extend left 2 → covers utf16 [1,5] = "bcde".
+    fn extend_range_left_does_not_sweep_in_an_existing_selection() {
+        // Caret-anchored replacements use a collapsed range. If the field instead
+        // has a live selection, the helper must delete ONLY the `replace_left`-char
+        // typed prefix ending at the selection start — never the user's selected
+        // text. "abcde", select "de" (loc 3, len 2), replace_left 2 → covers
+        // utf16 [1,3) = "bc" (the prefix), leaving "de" intact.
         let range = extend_range_left(
             "abcde",
             CFRange {
@@ -9901,7 +9905,7 @@ mod tests {
             2,
         );
         assert_eq!(range.location, 1);
-        assert_eq!(range.length, 4); // original 2 + 2 extended-left
+        assert_eq!(range.length, 2); // only the 2-char prefix, selection untouched
     }
 
     #[test]
