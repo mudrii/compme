@@ -66,7 +66,6 @@ fn strict_model_test_env_parses_truthy_values() {
 // pure unit tests in `src/lib.rs`; this adds an end-to-end real-model check when
 // a GGUF and GPU are available.
 #[test]
-#[test]
 fn strict_latency_budget_env_parses_truthy_values() {
     for value in [Some("1"), Some("true"), Some("yes"), Some("on")] {
         assert!(latency_budget_required(value));
