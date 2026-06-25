@@ -178,9 +178,8 @@ impl MemoryStore {
         let mut out = Vec::new();
         let mut offset: i64 = 0;
         loop {
-            let blobs = stmt.query_map(params![app, page, offset], |row| {
-                row.get::<_, Vec<u8>>(0)
-            })?;
+            let blobs =
+                stmt.query_map(params![app, page, offset], |row| row.get::<_, Vec<u8>>(0))?;
             let mut fetched = 0usize;
             for blob in blobs {
                 fetched += 1;

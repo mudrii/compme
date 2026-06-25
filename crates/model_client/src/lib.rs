@@ -1021,7 +1021,10 @@ mod tests {
         let plan = plan_decode(&prev, &current, 2, 6);
         assert_eq!(plan.skip, 2);
         assert_eq!(plan.prompt_len, 4);
-        assert_eq!(plan.reuse, 0, "stale prefix on dropped front must not reuse");
+        assert_eq!(
+            plan.reuse, 0,
+            "stale prefix on dropped front must not reuse"
+        );
     }
 
     #[test]

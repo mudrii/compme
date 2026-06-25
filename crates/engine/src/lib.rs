@@ -2063,8 +2063,7 @@ mod tests {
 
         // Proof the trigger field is actually read and routed (not ignored):
         // the SAME text under an Automatic trigger DOES surface a request.
-        let mut auto_engine =
-            Engine::new(FakeAdapter::new(), FakeOverlay::default(), 200, 4, 32);
+        let mut auto_engine = Engine::new(FakeAdapter::new(), FakeOverlay::default(), 200, 4, 32);
         auto_engine.on_focus(field()).unwrap();
         auto_engine
             .on_text_changed(typed("hello ", 6, 1000))

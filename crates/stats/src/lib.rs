@@ -1105,8 +1105,8 @@ mod tests {
         assert_eq!(s.latency_percentile_ms(T0, 50), Some(20)); // rank 2 → idx 1
         assert_eq!(s.latency_percentile_ms(T0, 75), Some(30)); // rank 3 → idx 2
         assert_eq!(s.latency_percentile_ms(T0, 100), Some(40)); // rank 4 → idx 3
-        // Just past an exact boundary the ceiling steps up a rank: ceil(26*4/100)
-        // = ceil(1.04) = 2 → idx 1. A floor would stay at idx 0 (=10) and fail.
+                                                                // Just past an exact boundary the ceiling steps up a rank: ceil(26*4/100)
+                                                                // = ceil(1.04) = 2 → idx 1. A floor would stay at idx 0 (=10) and fail.
         assert_eq!(s.latency_percentile_ms(T0, 26), Some(20));
     }
 

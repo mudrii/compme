@@ -548,8 +548,14 @@ mod tests {
         assert!(!needs_accessibility_setup("com.example.unknown", false));
         // ...and a SetupNeeded app flips back to false once its text is readable,
         // proving the readable_text term still gates the SetupNeeded branch.
-        assert!(needs_accessibility_setup("company.thebrowser.Browser", false));
-        assert!(!needs_accessibility_setup("company.thebrowser.Browser", true));
+        assert!(needs_accessibility_setup(
+            "company.thebrowser.Browser",
+            false
+        ));
+        assert!(!needs_accessibility_setup(
+            "company.thebrowser.Browser",
+            true
+        ));
     }
 
     #[test]

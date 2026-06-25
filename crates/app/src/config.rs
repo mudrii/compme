@@ -152,7 +152,9 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let temp = dir.join(format!(
         ".{}.tmp.{}",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("config"),
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("config"),
         std::process::id()
     ));
     std::fs::write(&temp, contents)?;

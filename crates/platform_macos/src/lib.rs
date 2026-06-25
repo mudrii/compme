@@ -11230,7 +11230,10 @@ mod tests {
             let _guard = subscriptions.lock().unwrap();
             panic!("poison the subscription registry");
         }));
-        assert!(adapter.subscriptions.lock().is_err(), "registry is poisoned");
+        assert!(
+            adapter.subscriptions.lock().is_err(),
+            "registry is poisoned"
+        );
 
         // The fail-closed accessor refuses a poisoned lock...
         assert!(adapter.subscription_count().is_err());
