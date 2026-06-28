@@ -287,19 +287,6 @@ pub fn suggest(left_context: &str, prefs: &EmojiPrefs) -> Option<Suggestion> {
     })
 }
 
-/// Whether `left_context` ends with a `:shortcode`-like token — i.e. it detects
-/// the emoji-trigger *token shape* (a trailing `:`-prefixed token), a cheap
-/// (allocation-free) early-exit gate for the host.
-///
-/// This is a SHAPE gate, not a table-match gate: it returns `true` for shapes
-/// like `:s` or `:zzznotreal` where `suggest` ultimately returns `None`. That
-/// makes it weaker than `thesaurus::has_synonyms` / `autocorrect::is_typo`, which
-/// have predicate↔table parity (a `true` from those guarantees a non-empty
-/// lookup). Here `suggest` remains the authoritative call that confirms a match.
-pub fn has_emoji_trigger(left_context: &str) -> bool {
-    trailing_shortcode(left_context).is_some()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,29 +564,6 @@ mod tests {
         // ...but a full exact shortcode still resolves.
         assert_eq!(suggest_default(":+1").unwrap().glyph, "👍");
         assert_eq!(suggest_default(":sm").unwrap().shortcode, "smile");
-    }
-
-    #[test]
-    fn hyphen_token_is_valid_shape_but_clean_miss() {
-        // '-' is a valid shortcode character (is_shortcode_char), so ":a-b" is a
-        // well-shaped trailing shortcode token and has_emoji_trigger fires. But no
-        // shortcode equals or is prefixed by "a-b", so the table lookup (suggest's
-        // job) is a clean miss — the trigger shape and the table match are
-        // independent.
-        assert!(has_emoji_trigger(":a-b"));
-        assert_eq!(suggest_default(":a-b"), None);
-    }
-
-    #[test]
-    fn has_emoji_trigger_detects_a_shortcode_token_cheaply() {
-        // A trailing :token (even a single char or unknown word) is a trigger;
-        // it does not require a table match (that is `suggest`'s job).
-        assert!(has_emoji_trigger(":s"));
-        assert!(has_emoji_trigger("hi :zzznotreal"));
-        // No anchored colon token → no trigger.
-        assert!(!has_emoji_trigger("hello"));
-        assert!(!has_emoji_trigger("word:smile")); // glued to a word
-        assert!(!has_emoji_trigger("trailing :")); // empty token
     }
 
     #[test]

@@ -66,8 +66,6 @@ pub enum Event {
         value: String,
         caret: usize,
         edit: EditKind,
-        previous_caret: Option<usize>,
-        previous_value_hash: Option<u64>,
         trigger: TriggerPolicy,
         now_ms: u64,
     },
@@ -381,8 +379,6 @@ impl SuggestionMachine {
                 value,
                 caret,
                 edit,
-                previous_caret: _,
-                previous_value_hash: _,
                 trigger,
                 now_ms,
             } => {
@@ -881,8 +877,6 @@ mod tests {
             value: value.into(),
             caret,
             edit: EditKind::Insert,
-            previous_caret: None,
-            previous_value_hash: None,
             trigger: TriggerPolicy::Automatic,
             now_ms,
         }
@@ -1133,8 +1127,6 @@ mod tests {
             value: "hell".into(),
             caret: 4,
             edit: EditKind::Delete,
-            previous_caret: Some(5),
-            previous_value_hash: Some(123),
             trigger: TriggerPolicy::Automatic,
             now_ms: 1000,
         });
@@ -1160,8 +1152,6 @@ mod tests {
             value: "pasted text ".into(),
             caret: 12,
             edit: EditKind::Paste,
-            previous_caret: Some(0),
-            previous_value_hash: Some(1),
             trigger: TriggerPolicy::Automatic,
             now_ms: 1000,
         });
@@ -1188,8 +1178,6 @@ mod tests {
             value: "typed ".into(),
             caret: 6,
             edit: EditKind::Unknown,
-            previous_caret: None,
-            previous_value_hash: None,
             trigger: TriggerPolicy::Automatic,
             now_ms: 1000,
         });
@@ -1226,8 +1214,6 @@ mod tests {
             value: "hello ".into(),
             caret: 6,
             edit: EditKind::Insert,
-            previous_caret: Some(5),
-            previous_value_hash: Some(123),
             trigger: TriggerPolicy::Manual,
             now_ms: 1000,
         });
@@ -2141,8 +2127,6 @@ mod tests {
             value: "hello".into(),
             caret: 5,
             edit: EditKind::Insert,
-            previous_caret: None,
-            previous_value_hash: None,
             trigger: TriggerPolicy::Automatic,
             now_ms: 3000,
         });

@@ -9,9 +9,6 @@
 //! 2. Coalesce `CompletionRequest`s latest-wins so the inference thread only ever
 //!    works the newest request.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use engine::{CompletionRequest, EditKind, TextChange, TriggerPolicy};
 use platform::{FieldHandle, TextContext};
 
@@ -25,12 +22,6 @@ fn value_and_caret(ctx: &TextContext) -> (String, usize) {
     let value = format!("{}{}", ctx.left, ctx.right);
     let caret = ctx.left.chars().count();
     (value, caret)
-}
-
-fn hash_value(value: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
 }
 
 /// Compare previous vs new value by char count to classify the edit. The engine
@@ -167,11 +158,9 @@ impl FieldTracker {
             }
         }
 
-        let (edit, previous_caret, previous_value_hash, inserted_text) = match &prev {
-            Some((prev_value, prev_caret)) => (
+        let (edit, inserted_text) = match &prev {
+            Some((prev_value, _)) => (
                 edit_kind(prev_value.chars().count(), new_chars),
-                Some(*prev_caret),
-                Some(hash_value(prev_value)),
                 capture_inserted_text
                     .then(|| inserted_text(prev_value, &value))
                     .flatten(),
@@ -183,8 +172,6 @@ impl FieldTracker {
                     EditKind::Insert
                 },
                 None,
-                None,
-                None,
             ),
         };
 
@@ -193,8 +180,6 @@ impl FieldTracker {
             value,
             caret,
             edit,
-            previous_caret,
-            previous_value_hash,
             inserted_text,
             trigger,
             now_ms,
@@ -361,8 +346,6 @@ mod tests {
         let change =
             typed(tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 0));
         assert_eq!(change.edit, EditKind::Insert);
-        assert_eq!(change.previous_caret, None);
-        assert_eq!(change.previous_value_hash, None);
         assert_eq!(change.inserted_text, None);
     }
 
@@ -380,8 +363,6 @@ mod tests {
         let change =
             typed(tracker.observe(&field("f"), &ctx("hell", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Insert);
-        assert_eq!(change.previous_caret, Some(3));
-        assert_eq!(change.previous_value_hash, Some(hash_value("hel")));
         assert_eq!(change.inserted_text, None);
     }
 
@@ -483,7 +464,6 @@ mod tests {
         let change =
             typed(tracker.observe(&field("b"), &ctx("hi", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Insert);
-        assert_eq!(change.previous_caret, None);
     }
 
     #[test]
@@ -494,7 +474,6 @@ mod tests {
         let change =
             typed(tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(change.edit, EditKind::Insert);
-        assert_eq!(change.previous_caret, None);
     }
 
     #[test]
@@ -647,7 +626,6 @@ mod tests {
         let first =
             typed(tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(first.edit, EditKind::Insert);
-        assert_eq!(first.previous_caret, None);
     }
 
     #[test]
@@ -657,7 +635,6 @@ mod tests {
         let first =
             typed(tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 1));
         assert_eq!(first.edit, EditKind::Insert);
-        assert_eq!(first.previous_caret, None);
 
         tracker.apply_self_insert(&field("other"), "ignored");
         let after_wrong_field =
