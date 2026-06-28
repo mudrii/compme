@@ -2687,6 +2687,14 @@ fn accept_tap_decision(
     event: AcceptTapEvent,
     action: Option<AcceptAction>,
 ) -> AcceptTapDecision {
+    // RESERVED / currently unreachable in production. A `CGEventTap` can be
+    // disabled by the OS on timeout or user-input backlog, and the owner is
+    // expected to re-enable it. This crate's accept path is Carbon-hotkey
+    // based, NOT a `CGEventTap`, so these event types are never delivered here
+    // and the production consumer (`accept_consumer_tap_handler`) folds this
+    // decision into its `_ => None` arm. The branch + variant are kept for a
+    // future real `CGEventTap` integration and are exercised by unit tests
+    // (`accept_tap_decision_reenables_*`) so the re-enable contract is pinned.
     if matches!(
         event.event_type,
         CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
@@ -3031,8 +3039,8 @@ extern "C" fn carbon_accept_hotkey_handler(
         signature: 0,
         id: 0,
     };
-    unsafe {
-        let _ = GetEventParameter(
+    let status = unsafe {
+        GetEventParameter(
             event,
             K_EVENT_PARAM_DIRECT_OBJECT,
             TYPE_EVENT_HOTKEY_ID,
@@ -3040,7 +3048,13 @@ extern "C" fn carbon_accept_hotkey_handler(
             std::mem::size_of::<EventHotKeyID>(),
             ptr::null_mut(),
             (&mut hotkey_id as *mut EventHotKeyID).cast::<c_void>(),
-        );
+        )
+    };
+    // noErr == 0. On any failure `hotkey_id` may be uninitialized garbage, so
+    // bail rather than act on a bogus signature/id (returning noErr lets Carbon
+    // try other handlers).
+    if status != 0 {
+        return 0;
     }
     if debug_enabled() {
         // Live diagnostic: fires on ANY hotkey event Carbon delivers to us,

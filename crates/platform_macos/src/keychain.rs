@@ -103,11 +103,43 @@ fn keychain_read_secret(service: &str, account: &str) -> Result<Option<Vec<u8>>,
     }
 }
 
+// The `kSecAttrAccessible` *key* constant is not re-exported by
+// `security-framework-sys` 2.17, only the accessibility *value* constants are
+// (in `access_control`). Declare the stable Security.framework symbol here so
+// the write can pin the key to this device. (The value constant
+// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` comes from the sys crate.)
+extern "C" {
+    static kSecAttrAccessible: core_foundation::string::CFStringRef;
+}
+
 fn keychain_write_secret(service: &str, account: &str, secret: &[u8]) -> Result<(), PlatformError> {
-    security_framework::passwords::set_generic_password(service, account, secret).map_err(|err| {
-        PlatformError::CannotComplete {
-            reason: format!("keychain write failed: {err}"),
-        }
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use security_framework::passwords::{set_generic_password_options, PasswordOptions};
+    use security_framework_sys::access_control::kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
+
+    let mut options = PasswordOptions::new_generic_password(service, account);
+
+    // Device-pin the AES key (design A3): it must never leave this device.
+    // - `kSecAttrAccessible = kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
+    //   makes the item non-exportable in backups and undecryptable on another
+    //   device (vs the `WhenUnlocked` default, which is migratable).
+    // - `set_access_synchronized(Some(false))` sets
+    //   `kSecAttrSynchronizable = false`, keeping it out of iCloud Keychain.
+    // SAFETY: both `kSecAttr*` symbols are static `CFStringRef`s exported by
+    // Security.framework; `wrap_under_get_rule` is the documented way to adopt
+    // a borrowed (get-rule) Core Foundation string.
+    let accessible_key = unsafe { CFString::wrap_under_get_rule(kSecAttrAccessible) };
+    let accessible_value =
+        unsafe { CFString::wrap_under_get_rule(kSecAttrAccessibleWhenUnlockedThisDeviceOnly) };
+    #[allow(deprecated)]
+    options
+        .query
+        .push((accessible_key, accessible_value.into_CFType()));
+    options.set_access_synchronized(Some(false));
+
+    set_generic_password_options(secret, options).map_err(|err| PlatformError::CannotComplete {
+        reason: format!("keychain write failed: {err}"),
     })
 }
 

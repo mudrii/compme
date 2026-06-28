@@ -22,6 +22,14 @@ use zeroize::Zeroize;
 
 const NONCE_LEN: usize = 12;
 
+/// Upper bound on stored records. After each insert the store trims oldest-first
+/// (lowest id) back down to this cap, so an `AllMonitored` session cannot grow
+/// the database without bound (disk-exhaustion / unbounded retention).
+// ponytail: a single global `MAX_RECORDS` cap. The roadmap specifies no
+// retention policy, so this is a generous fixed bound; per-app and time-based
+// (age) retention are the upgrade path if a roadmap item demands finer control.
+const MAX_RECORDS: i64 = 50_000;
+
 /// The 32-byte AES-256 key. Production fills it from the OS keystore (Keychain);
 /// tests/headless use a fixed key. (A `KeyProvider` trait was inlined here once it
 /// had a single implementation — reintroduce a trait if a second key source lands.)
@@ -50,6 +58,7 @@ pub enum StorageMode {
 #[derive(Debug)]
 pub enum MemoryError {
     Db(String),
+    Io(String),
     Crypto,
 }
 
@@ -57,8 +66,15 @@ impl std::fmt::Display for MemoryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MemoryError::Db(msg) => write!(f, "memory db error: {msg}"),
+            MemoryError::Io(msg) => write!(f, "memory io error: {msg}"),
             MemoryError::Crypto => write!(f, "memory crypto error"),
         }
+    }
+}
+
+impl From<std::io::Error> for MemoryError {
+    fn from(err: std::io::Error) -> Self {
+        MemoryError::Io(err.to_string())
     }
 }
 
@@ -82,8 +98,65 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     /// Open (creating if needed) a file-backed store.
+    ///
+    /// The parent directory is created (0700 on unix) if missing, and the
+    /// database file is created/restricted to owner-only (0600 on unix) so its
+    /// plaintext `app` metadata column is not world/group-readable.
     pub fn open(path: &Path, key: &StaticKey, mode: StorageMode) -> Result<Self> {
-        Self::from_connection(Connection::open(path)?, key, mode)
+        // Ensure the parent directory exists, or SQLite fails to create the file
+        // and the store silently never initializes.
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        parent,
+                        std::fs::Permissions::from_mode(0o700),
+                    );
+                }
+            }
+        }
+
+        // Pre-create the db file at 0600 before SQLite opens it, to shrink the
+        // window in which it could exist at the default world-readable mode.
+        #[cfg(unix)]
+        {
+            use std::fs::OpenOptions;
+            use std::os::unix::fs::OpenOptionsExt;
+            if !path.exists() {
+                OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .mode(0o600)
+                    .open(path)?;
+            }
+        }
+
+        let store = Self::from_connection(Connection::open(path)?, key, mode)?;
+
+        // Belt-and-suspenders: enforce 0600 on the main db and any journal/wal/shm
+        // sidecar that exists alongside it (sidecars are NOT covered by
+        // secure_delete and would otherwise inherit default perms).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let restrict = |p: &Path| {
+                if p.exists() {
+                    let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
+                }
+            };
+            restrict(path);
+            for suffix in ["-journal", "-wal", "-shm"] {
+                let mut sidecar = path.as_os_str().to_owned();
+                sidecar.push(suffix);
+                restrict(Path::new(&sidecar));
+            }
+        }
+
+        Ok(store)
     }
 
     /// Open an in-memory store (tests / ephemeral use).
@@ -95,6 +168,11 @@ impl MemoryStore {
         // secure_delete zeroes freed content so delete_all/delete_app actually
         // erase ciphertext from disk (freelist pages), not just unlink rows.
         conn.pragma_update(None, "secure_delete", true)?;
+        // Pin journal_mode = DELETE so there is no persistent WAL/-shm sidecar
+        // leaking ciphertext/metadata (sidecars are not covered by secure_delete);
+        // the rollback journal is deleted on commit. query_value, not _update:
+        // journal_mode reports the resulting mode back.
+        conn.pragma_update(None, "journal_mode", "DELETE")?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS memories (
                  id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,6 +222,20 @@ impl MemoryStore {
             "INSERT INTO memories (app, blob) VALUES (?1, ?2)",
             params![app, blob],
         )?;
+        Self::trim_to_cap(&self.conn, MAX_RECORDS)?;
+        Ok(())
+    }
+
+    /// Trim the table oldest-first (lowest id) down to at most `cap` rows. A
+    /// no-op once the row count is at or below `cap`. Extracted from `store` so
+    /// the eviction bound can be unit-tested with a small `cap`. secure_delete
+    /// (set in `from_connection`) means the evicted ciphertext is zeroed too.
+    fn trim_to_cap(conn: &Connection, cap: i64) -> Result<()> {
+        conn.execute(
+            "DELETE FROM memories WHERE id NOT IN \
+             (SELECT id FROM memories ORDER BY id DESC LIMIT ?1)",
+            params![cap],
+        )?;
         Ok(())
     }
 
@@ -174,7 +266,10 @@ impl MemoryStore {
         // valid records even when more decryptable ones exist further back — a
         // contract this function and its tests rely on. So we page on until the
         // page itself comes up short, meaning the app's rows are exhausted.
-        let page = limit as i64;
+        // Match count()/count_by_app(): saturate rather than wrap. A `limit`
+        // above i64::MAX would wrap negative, and SQLite reads a negative LIMIT
+        // as "no limit".
+        let page = i64::try_from(limit).unwrap_or(i64::MAX);
         let mut out = Vec::new();
         let mut offset: i64 = 0;
         loop {
@@ -825,6 +920,10 @@ mod tests {
             "memory db error: boom"
         );
         assert_eq!(MemoryError::Crypto.to_string(), "memory crypto error");
+        assert_eq!(
+            MemoryError::Io("boom".to_string()).to_string(),
+            "memory io error: boom"
+        );
 
         // A rusqlite error converts into the Db variant carrying its message.
         let sqlite_err = rusqlite::Error::QueryReturnedNoRows;
@@ -835,7 +934,19 @@ mod tests {
                 rusqlite::Error::QueryReturnedNoRows.to_string(),
                 "From<rusqlite::Error> preserves the underlying message"
             ),
-            MemoryError::Crypto => panic!("rusqlite errors must map to Db(..), not Crypto"),
+            MemoryError::Io(_) | MemoryError::Crypto => {
+                panic!("rusqlite errors must map to Db(..)")
+            }
+        }
+
+        // An io::Error converts into the Io variant carrying its message.
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        let mapped_io: MemoryError = io_err.into();
+        match mapped_io {
+            MemoryError::Io(msg) => assert!(msg.contains("missing")),
+            MemoryError::Db(_) | MemoryError::Crypto => {
+                panic!("io errors must map to Io(..)")
+            }
         }
     }
 
@@ -948,6 +1059,80 @@ mod tests {
                 "row 3".to_string(),
             ],
             "the newest 4 rows, newest-first"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_backed_db_is_mode_0600_after_open() {
+        // The db file carries the plaintext `app` metadata column, so it must be
+        // owner-only (0600), not the default world/group-readable 0644.
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(50), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "secret").unwrap();
+        }
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(mode, 0o600, "db file must be owner-only, got {mode:o}");
+    }
+
+    #[test]
+    fn open_creates_missing_parent_directory() {
+        // open() must create the parent dir; otherwise SQLite errors and the
+        // store silently fails to init.
+        let mut suffix = [0u8; 8];
+        getrandom::getrandom(&mut suffix).unwrap();
+        let hex: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
+        let dir = std::env::temp_dir().join(format!("cm-memory-test-dir-{hex}"));
+        let path = dir.join("nested").join("memory.db");
+        assert!(!dir.exists(), "sanity: parent dir does not pre-exist");
+
+        let store = MemoryStore::open(&path, &key(51), StorageMode::AcceptedOnly).unwrap();
+        store.remember("app", "hello").unwrap();
+        assert_eq!(store.recent("app", 1).unwrap(), vec!["hello"]);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trim_to_cap_holds_row_count_at_the_cap_oldest_first() {
+        // Drive the eviction bound with a tiny cap (the production MAX_RECORDS is
+        // large, so we test the trim SQL directly rather than insert 50k rows).
+        // Inserting past the cap must hold the count at the cap and keep the
+        // NEWEST rows, dropping the oldest.
+        let store = MemoryStore::open_in_memory(&key(52), StorageMode::AcceptedOnly).unwrap();
+        for i in 0..5 {
+            store.remember("app", &format!("row {i}")).unwrap();
+            MemoryStore::trim_to_cap(&store.conn, 3).unwrap();
+            assert!(
+                store.count().unwrap() <= 3,
+                "count must never exceed the cap"
+            );
+        }
+        assert_eq!(store.count().unwrap(), 3, "held at the cap");
+        assert_eq!(
+            store.recent("app", 10).unwrap(),
+            vec!["row 4".to_string(), "row 3".to_string(), "row 2".to_string()],
+            "trim drops the oldest rows, keeping the newest cap rows"
+        );
+    }
+
+    #[test]
+    fn store_enforces_max_records_bound() {
+        // The production insert path trims to MAX_RECORDS. MAX_RECORDS is large,
+        // so this checks an under-cap store is left untouched by the implicit
+        // trim in store().
+        const { assert!(MAX_RECORDS > 0, "the cap must be a positive bound") };
+        let store = MemoryStore::open_in_memory(&key(53), StorageMode::AcceptedOnly).unwrap();
+        for i in 0..10 {
+            store.remember("app", &format!("row {i}")).unwrap();
+        }
+        assert_eq!(
+            store.count().unwrap(),
+            10,
+            "well under MAX_RECORDS: nothing evicted"
         );
     }
 }

@@ -1864,7 +1864,7 @@ fn apply_global_disable(arm: DisableArm, prefs: &mut Prefs, now_ms: u64) -> bool
 
 fn apply_app_disable(arm: DisableArm, app: &str, prefs: &mut Prefs, now_ms: u64) {
     match arm {
-        DisableArm::Hour => prefs.snooze_app(app, now_ms, 60),
+        DisableArm::Hour => prefs.snooze_app(app, now_ms, SNOOZE_MINUTES),
         DisableArm::UntilRelaunch => prefs.snooze_app(app, now_ms, u64::MAX),
         DisableArm::Always => {
             prefs.excluded_apps.insert(app.to_string());

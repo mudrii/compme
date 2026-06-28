@@ -26,7 +26,9 @@ pub fn recommended_index() -> usize {
 
 /// Picker index → catalog entry, falling back to [`recommended`] on any
 /// out-of-range index — total over garbage/truncated selector values, so
-/// the download edge never panics on a bad index.
+/// the download edge never panics on a bad index. The fallback is itself
+/// optional: returns `None` when the index is out of range *and* there is no
+/// recommended entry.
 pub fn selected_catalog_entry(index: usize) -> Option<&'static ModelEntry> {
     catalog().get(index).or_else(recommended)
 }

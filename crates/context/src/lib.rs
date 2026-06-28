@@ -47,10 +47,11 @@ fn tail_chars(s: &str, max: usize) -> &str {
     if count <= max {
         return s;
     }
-    match s.char_indices().nth(count - max) {
-        Some((byte_idx, _)) => &s[byte_idx..],
-        None => s,
-    }
+    let (byte_idx, _) = s
+        .char_indices()
+        .nth(count - max)
+        .expect("count-max is a valid char boundary < count");
+    &s[byte_idx..]
 }
 
 /// Assemble an opt-in context block to prepend to the completion prompt (A2 §16
