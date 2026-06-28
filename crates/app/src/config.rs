@@ -140,8 +140,12 @@ pub fn persist_setting(path: &Path, key: &str, value: &str) -> std::io::Result<(
 }
 
 /// Atomically replace `path` with `contents`: a temp file in the same directory
-/// is renamed over the target, so a crash mid-write can never leave a truncated
-/// config. Parent directories are created on first use.
+/// is renamed over the target, so a crash mid-write prevents a torn/partial
+/// config. This is NOT a full power-loss durability guarantee — there is no
+/// fsync of the temp file before rename nor of the parent directory, so on
+/// power loss the rename can become durable while the data blocks are not.
+/// Acceptable for a settings file toggled a few times a day; the tradeoff is
+/// intentional. Parent directories are created on first use.
 fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     let dir = path.parent().ok_or_else(|| {
         std::io::Error::new(

@@ -2867,6 +2867,9 @@ pub fn run() -> Result<(), String> {
 
     let focus_tx = Arc::clone(&tx);
     let focus_sub = match adapter.subscribe_focus(Arc::new(move |field| {
+        // best-effort: a poisoned send-mutex only happens if a prior sender
+        // panicked while shutting down; the receiver is gone then too, so
+        // dropping this event is the correct shutdown-race behavior.
         if let Ok(tx) = focus_tx.lock() {
             let _ = tx.send(HostEvent::Focus(field));
         }
@@ -2887,6 +2890,8 @@ pub fn run() -> Result<(), String> {
 
     let caret_tx = Arc::clone(&tx);
     let caret_sub = match adapter.subscribe_caret(Arc::new(move |field, rect| {
+        // best-effort: poisoned send-mutex means a sender panicked during
+        // shutdown; the receiver is gone, so dropping the event is correct.
         if let Ok(tx) = caret_tx.lock() {
             let _ = tx.send(HostEvent::Caret(field, rect));
         }
@@ -2912,6 +2917,8 @@ pub fn run() -> Result<(), String> {
             TapControl::Dismiss => HostEvent::Dismiss,
             TapControl::Cycle => HostEvent::Cycle,
         };
+        // best-effort: poisoned send-mutex means a sender panicked during
+        // shutdown; the receiver is gone, so dropping the event is correct.
         if let Ok(tx) = accept_tx.lock() {
             let _ = tx.send(event);
         }
@@ -3575,7 +3582,14 @@ pub fn run() -> Result<(), String> {
         if flags.open_settings_window.swap(false, Ordering::Relaxed) {
             // Compose the Statistics rows right before showing — the window
             // renders strings only; data stays on this side of the seam.
-            if let Ok(mut lines) = settings_flags.stats_lines.lock() {
+            {
+                // Poison-recovery: silently skipping would leave the Statistics
+                // pane stale (subsystem disabled), diverging from the recovery
+                // policy used elsewhere; recover the buffer instead.
+                let mut lines = settings_flags
+                    .stats_lines
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 // Span + bucketing chosen by the Statistics range/group pickers
                 // (defaults: 7 days, Daily → identity bucketing).
                 let days = stats::StatRange::from_index(
@@ -3597,15 +3611,23 @@ pub fn run() -> Result<(), String> {
             }
             // Setup tab: re-probe permissions/model at every open (cheap
             // queries; the visible-only poll below covers stays-open).
-            if let Ok(mut lines) = settings_flags.setup_lines.lock() {
-                *lines = compose_setup_lines(&config, model_available);
-            }
+            // Poison-recovery so a poisoned lock cannot silently disable the
+            // Setup pane refresh (uniform with the recovery policy elsewhere).
+            *settings_flags
+                .setup_lines
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(&config, model_available);
             last_setup_poll_ms = Some(now_ms);
             // Apps tab: per-app counts straight from the store (plaintext
             // GROUP BY, no decryption). Unlike setup_lines these are
             // show-time snapshots, same stance as stats_lines (c99): cheap
             // probes refresh live, data aggregations refresh per open.
-            if let Ok(mut lines) = settings_flags.apps_lines.lock() {
+            {
+                // Poison-recovery: skipping would leave the Apps pane stale.
+                let mut lines = settings_flags
+                    .apps_lines
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 (*lines, apps_ids) = compose_apps_rows(memory.as_ref());
             }
             if let Err(err) = settings_window.show() {
@@ -3729,9 +3751,12 @@ pub fn run() -> Result<(), String> {
                 } else if let Some((lines, ids)) =
                     delete_app_row_and_recompose(store, &apps_ids, row)
                 {
-                    if let Ok(mut shared) = settings_flags.apps_lines.lock() {
-                        *shared = lines;
-                    }
+                    // Poison-recovery: skipping would leave the Apps pane
+                    // showing the just-deleted row (refresh runs below).
+                    *settings_flags
+                        .apps_lines
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = lines;
                     apps_ids = ids;
                     settings_window.refresh_apps_labels();
                 }
@@ -3877,9 +3902,12 @@ pub fn run() -> Result<(), String> {
         // window stays open flips its row within ~480ms.
         if setup_poll_due(settings_visible, last_setup_poll_ms, now_ms) {
             last_setup_poll_ms = Some(now_ms);
-            if let Ok(mut lines) = settings_flags.setup_lines.lock() {
-                *lines = compose_setup_lines(&config, model_available);
-            }
+            // Poison-recovery so a poisoned lock cannot silently disable the
+            // visible Setup re-probe (uniform with the recovery policy).
+            *settings_flags
+                .setup_lines
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(&config, model_available);
             settings_window.refresh_setup_labels();
         }
         // General-tab Autocorrect watcher: persist + apply on the edge. The
@@ -3929,9 +3957,12 @@ pub fn run() -> Result<(), String> {
                 *screen_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
             persist_and_log_switch("COMPME_SCREEN_CONTEXT", "screen context", on);
-            if let Ok(mut lines) = settings_flags.setup_lines.lock() {
-                *lines = compose_setup_lines(&config, model_available);
-            }
+            // Poison-recovery: skipping would leave the Setup pane stale after
+            // the screen-context toggle (refresh runs below).
+            *settings_flags
+                .setup_lines
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(&config, model_available);
             settings_window.refresh_setup_labels();
         }
         // Emoji-pane watcher: the replacement path reads config.emoji on each

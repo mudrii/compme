@@ -104,7 +104,7 @@ fn keychain_read_secret(service: &str, account: &str) -> Result<Option<Vec<u8>>,
 }
 
 // The `kSecAttrAccessible` *key* constant is not re-exported by
-// `security-framework-sys` 2.17, only the accessibility *value* constants are
+// `security-framework-sys` 2.17.0, only the accessibility *value* constants are
 // (in `access_control`). Declare the stable Security.framework symbol here so
 // the write can pin the key to this device. (The value constant
 // `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` comes from the sys crate.)
@@ -115,8 +115,30 @@ extern "C" {
 fn keychain_write_secret(service: &str, account: &str, secret: &[u8]) -> Result<(), PlatformError> {
     use core_foundation::base::TCFType;
     use core_foundation::string::CFString;
-    use security_framework::passwords::{set_generic_password_options, PasswordOptions};
+    use security_framework::passwords::{
+        delete_generic_password, set_generic_password_options, PasswordOptions,
+    };
     use security_framework_sys::access_control::kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
+
+    // Make this a robust create: delete any pre-existing entry first so the
+    // `set_generic_password_options` call below is always a fresh `SecItemAdd`.
+    //
+    // WHY: security-framework's add-or-update routes the `kSecAttrAccessible` /
+    // synchronizable attributes set below into the SecItemAdd dict on the ADD
+    // path, but on the duplicate (update) path it puts them in the MATCH dict
+    // rather than the UPDATE dict — silently dropping the device-pin, or even
+    // returning errSecItemNotFound when an existing item has a different
+    // accessibility. Deleting first guarantees an ADD, so the device-pin
+    // (design A3) is always applied and a key written by older code gets
+    // re-pinned if ever rewritten. A missing entry (errSecItemNotFound) is the
+    // normal first-use case and is ignored; any other delete error propagates.
+    if let Err(err) = delete_generic_password(service, account) {
+        if err.code() != ERR_SEC_ITEM_NOT_FOUND {
+            return Err(PlatformError::CannotComplete {
+                reason: format!("keychain delete (pre-write) failed: {err}"),
+            });
+        }
+    }
 
     let mut options = PasswordOptions::new_generic_password(service, account);
 

@@ -3035,59 +3035,65 @@ extern "C" fn carbon_accept_hotkey_handler(
     event: EventRef,
     _user: *mut c_void,
 ) -> OSStatus {
-    let mut hotkey_id = EventHotKeyID {
-        signature: 0,
-        id: 0,
-    };
-    let status = unsafe {
-        GetEventParameter(
-            event,
-            K_EVENT_PARAM_DIRECT_OBJECT,
-            TYPE_EVENT_HOTKEY_ID,
-            ptr::null_mut(),
-            std::mem::size_of::<EventHotKeyID>(),
-            ptr::null_mut(),
-            (&mut hotkey_id as *mut EventHotKeyID).cast::<c_void>(),
-        )
-    };
-    // noErr == 0. On any failure `hotkey_id` may be uninitialized garbage, so
-    // bail rather than act on a bogus signature/id (returning noErr lets Carbon
-    // try other handlers).
-    if status != 0 {
-        return 0;
-    }
-    if debug_enabled() {
-        // Live diagnostic: fires on ANY hotkey event Carbon delivers to us,
-        // before the signature/id filters — distinguishes "handler never runs"
-        // (registration/dispatch problem) from "handler runs but filters out".
-        eprintln!(
-            "compme: carbon hotkey fired signature=0x{:x} id={} (ours=0x{:x})",
-            hotkey_id.signature, hotkey_id.id, HOTKEY_SIGNATURE
-        );
-    }
-    if hotkey_id.signature != HOTKEY_SIGNATURE {
-        return 0;
-    }
-    let Some(keycode) = carbon_hotkey_keycode(hotkey_id.id) else {
-        return 0;
-    };
-    // R2-5: read the process-lifetime slot; the cloned Arc keeps the handler
-    // alive through this call even if a disarm lands concurrently. Slot empty
-    // (disarmed between dispatch and here) → drop the event safely.
-    let Some(handler) = CARBON_HANDLER_SLOT.current() else {
-        return 0;
-    };
-    let _ = handler(AcceptTapEvent {
-        event_type: CGEventType::KeyDown,
-        keycode,
-        source_user_data: 0,
-        option_down: false,
-        // The id is the authoritative role source — pass it through so a
-        // masked role (e.g. Shift+Tab as Full) resolves to its own action
-        // instead of collapsing onto the keycode's first match.
-        binding: binding_for_hotkey_id(hotkey_id.id),
-    });
-    0
+    // C→Rust FFI boundary: a panic unwinding into Carbon is UB. Shield the whole
+    // body (matching the crate's dispatcher convention) and fall back to noErr
+    // (0) on panic so Carbon can try other handlers.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut hotkey_id = EventHotKeyID {
+            signature: 0,
+            id: 0,
+        };
+        let status = unsafe {
+            GetEventParameter(
+                event,
+                K_EVENT_PARAM_DIRECT_OBJECT,
+                TYPE_EVENT_HOTKEY_ID,
+                ptr::null_mut(),
+                std::mem::size_of::<EventHotKeyID>(),
+                ptr::null_mut(),
+                (&mut hotkey_id as *mut EventHotKeyID).cast::<c_void>(),
+            )
+        };
+        // noErr == 0. On any failure `hotkey_id` may be uninitialized garbage, so
+        // bail rather than act on a bogus signature/id (returning noErr lets Carbon
+        // try other handlers).
+        if status != 0 {
+            return 0;
+        }
+        if debug_enabled() {
+            // Live diagnostic: fires on ANY hotkey event Carbon delivers to us,
+            // before the signature/id filters — distinguishes "handler never runs"
+            // (registration/dispatch problem) from "handler runs but filters out".
+            eprintln!(
+                "compme: carbon hotkey fired signature=0x{:x} id={} (ours=0x{:x})",
+                hotkey_id.signature, hotkey_id.id, HOTKEY_SIGNATURE
+            );
+        }
+        if hotkey_id.signature != HOTKEY_SIGNATURE {
+            return 0;
+        }
+        let Some(keycode) = carbon_hotkey_keycode(hotkey_id.id) else {
+            return 0;
+        };
+        // R2-5: read the process-lifetime slot; the cloned Arc keeps the handler
+        // alive through this call even if a disarm lands concurrently. Slot empty
+        // (disarmed between dispatch and here) → drop the event safely.
+        let Some(handler) = CARBON_HANDLER_SLOT.current() else {
+            return 0;
+        };
+        let _ = handler(AcceptTapEvent {
+            event_type: CGEventType::KeyDown,
+            keycode,
+            source_user_data: 0,
+            option_down: false,
+            // The id is the authoritative role source — pass it through so a
+            // masked role (e.g. Shift+Tab as Full) resolves to its own action
+            // instead of collapsing onto the keycode's first match.
+            binding: binding_for_hotkey_id(hotkey_id.id),
+        });
+        0
+    }))
+    .unwrap_or(0)
 }
 
 fn carbon_hotkey_keycode(id: u32) -> Option<i64> {
@@ -5543,39 +5549,44 @@ unsafe extern "C" fn ax_observer_callback(
     notification: CFStringRef,
     refcon: *mut c_void,
 ) {
-    if refcon.is_null() {
-        return;
-    }
+    // C→Rust FFI boundary: a panic unwinding into the AX run loop is UB. Shield
+    // the whole body (matching the crate's dispatcher convention); the callback
+    // returns (), so a caught panic is simply swallowed.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if refcon.is_null() {
+            return;
+        }
 
-    let Some(notification) = decode_observer_notification(notification) else {
-        return;
-    };
+        let Some(notification) = decode_observer_notification(notification) else {
+            return;
+        };
 
-    let state = unsafe { &*(refcon as *const ObserverCallbackState) };
-    let fallback_element_id = ax_element_id(element);
-    let retained_element = retain_observer_element(element);
-    let message = Message::ObserverEvent {
-        pid: state.pid,
-        notification,
-        retained_element,
-        fallback_element_id,
-        dispatch: Arc::clone(&state.dispatch),
-        callback_tx: state.callback_tx.clone(),
-    };
+        let state = unsafe { &*(refcon as *const ObserverCallbackState) };
+        let fallback_element_id = ax_element_id(element);
+        let retained_element = retain_observer_element(element);
+        let message = Message::ObserverEvent {
+            pid: state.pid,
+            notification,
+            retained_element,
+            fallback_element_id,
+            dispatch: Arc::clone(&state.dispatch),
+            callback_tx: state.callback_tx.clone(),
+        };
 
-    // Ownership of the CFRetain in `retained_element` is balanced manually: the
-    // worker releases it via `resolve_retained_observer_element` (create rule)
-    // when it processes the message, and the send-failure path below releases it
-    // here. One bounded gap remains and is accepted: if the worker has already
-    // stopped, a still-queued ObserverEvent is dropped without processing, so its
-    // CFRetain leaks. This is shutdown-only (the worker stops exactly once) and
-    // touches at most the messages in flight at that instant — negligible.
-    // ponytail: bounded shutdown leak; upgrade to a Send Drop-guard around the
-    // retained element (releasing on drop, `forget` on the create-rule handoff)
-    // if the worker's drain/shutdown logic ever changes to risk per-event leaks.
-    if state.tx.send(message).is_err() {
-        release_retained_observer_element(retained_element);
-    }
+        // Ownership of the CFRetain in `retained_element` is balanced manually: the
+        // worker releases it via `resolve_retained_observer_element` (create rule)
+        // when it processes the message, and the send-failure path below releases it
+        // here. One bounded gap remains and is accepted: if the worker has already
+        // stopped, a still-queued ObserverEvent is dropped without processing, so its
+        // CFRetain leaks. This is shutdown-only (the worker stops exactly once) and
+        // touches at most the messages in flight at that instant — negligible.
+        // ponytail: bounded shutdown leak; upgrade to a Send Drop-guard around the
+        // retained element (releasing on drop, `forget` on the create-rule handoff)
+        // if the worker's drain/shutdown logic ever changes to risk per-event leaks.
+        if state.tx.send(message).is_err() {
+            release_retained_observer_element(retained_element);
+        }
+    }));
 }
 
 fn ax_element_id(element: AXUIElementRef) -> String {
