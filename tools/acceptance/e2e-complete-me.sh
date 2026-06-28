@@ -122,10 +122,18 @@ assert_pipeline_evidence() {
   if [ "$readback_mode" = "real" ]; then
     document_chars="$(printf '%s' "$document_text" | wc -m | tr -d '[:space:]')"
     baseline_chars="$(printf '%s' "$expected_text" | wc -m | tr -d '[:space:]')"
-    if [ "$document_chars" -gt "$baseline_chars" ]; then
-      echo "E2E: document grew after real-model accept [PASS]"
-    else
+    accepted_chars="$(sed -n 's/.*gen=[0-9][0-9]* candidate_lengths=\[\([0-9][0-9]*\).*/\1/p' "$log_file" | tail -n 1)"
+    document_delta=$((document_chars - baseline_chars))
+    if [ "$document_delta" -le 0 ]; then
       echo "E2E: document did not grow after real-model accept [FAIL]"
+      ok=0
+    elif [ -z "$accepted_chars" ]; then
+      echo "E2E: missing accepted completion length evidence [FAIL]"
+      ok=0
+    elif [ "$document_delta" -eq "$accepted_chars" ]; then
+      echo "E2E: document grew by accepted completion length [PASS]"
+    else
+      echo "E2E: document growth did not match accepted completion length [FAIL]"
       ok=0
     fi
   else
@@ -263,6 +271,12 @@ run_self_tests() {
   else
     echo "FAIL self-test-e2e-pipeline-evidence-full-success" >&2
     failures=$((failures + 1))
+  fi
+  if assert_pipeline_evidence 'prefix accepted ok' 'prompt baseline' "$pipeline_log" full 0 real >/dev/null; then
+    echo "FAIL self-test-e2e-pipeline-evidence-real-rejects-unrelated-growth" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-pipeline-evidence-real-rejects-unrelated-growth"
   fi
   if assert_pipeline_evidence 'prefix only' 'STUB-COMPLETE' "$pipeline_log" full 0 >/dev/null; then
     echo "FAIL self-test-e2e-pipeline-evidence-missing-readback: missing stub passed" >&2

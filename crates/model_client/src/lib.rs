@@ -1168,15 +1168,18 @@ mod tests {
         // (one token left to re-decode), so the prompt suffix decodes at position
         // [2, 3), and generation runs at [3, 7).
         let plan = plan_decode(&[1, 2, 3], &[1, 2, 3], 4, 2048);
-        let prompt_positions: Vec<i32> =
-            (plan.reuse as i32..plan.prompt_len as i32).collect();
+        let prompt_positions: Vec<i32> = (plan.reuse as i32..plan.prompt_len as i32).collect();
         let (first_gen, end_gen) = generation_range(plan.prompt_len, 4);
         let gen_positions: Vec<i32> = (first_gen..end_gen).collect();
 
         assert_eq!(prompt_positions, vec![2]);
         assert_eq!(gen_positions, vec![3, 4, 5, 6]);
         // Concatenated, positions are strictly contiguous (each +1, no gaps).
-        let all: Vec<i32> = prompt_positions.iter().chain(&gen_positions).copied().collect();
+        let all: Vec<i32> = prompt_positions
+            .iter()
+            .chain(&gen_positions)
+            .copied()
+            .collect();
         assert!(
             all.windows(2).all(|w| w[1] == w[0] + 1),
             "decode positions must be contiguous across the prompt/generation seam: {all:?}"
@@ -1191,7 +1194,14 @@ mod tests {
         // prompt. Guards the degenerate empty-prompt path (complete_on_worker
         // short-circuits before this, but the plan must still be well-formed).
         let plan = plan_decode::<i32>(&[1, 2, 3], &[], 8, 2048);
-        assert_eq!(plan, DecodePlan { skip: 0, reuse: 0, prompt_len: 0 });
+        assert_eq!(
+            plan,
+            DecodePlan {
+                skip: 0,
+                reuse: 0,
+                prompt_len: 0
+            }
+        );
     }
 
     #[test]
@@ -1215,7 +1225,11 @@ mod tests {
     fn prompt_tokens_to_skip_zero_n_ctx_keeps_at_least_one() {
         // Degenerate window (n_ctx=0): budget saturates to >=1, so a prompt is
         // never clamped to nothing — the caret-adjacent token always survives.
-        assert_eq!(prompt_tokens_to_skip(0, 0, 0), 0, "empty prompt skips nothing");
+        assert_eq!(
+            prompt_tokens_to_skip(0, 0, 0),
+            0,
+            "empty prompt skips nothing"
+        );
         assert_eq!(prompt_tokens_to_skip(1, 0, 0), 0, "single token survives");
         // prompt_len 5 with a zero window keeps exactly the last token (skip 4).
         assert_eq!(prompt_tokens_to_skip(5, 8, 0), 4, "keeps >=1 prompt token");

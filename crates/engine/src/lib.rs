@@ -1214,9 +1214,7 @@ mod tests {
         let _ = engine.take_stat_events();
 
         // The worker's late answer for that exact in-flight request must be dropped.
-        let followups = engine
-            .on_completion(&requests[0], "ghost".into())
-            .unwrap();
+        let followups = engine.on_completion(&requests[0], "ghost".into()).unwrap();
 
         assert!(
             followups.is_empty(),

@@ -550,8 +550,8 @@ mod tests {
         // regression that wrote in place (the non-atomic path this guards against)
         // would corrupt PRECIOUS here.
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir()
-            .join(format!("compme-atomic-intact-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("compme-atomic-intact-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         let path = dir.join("config.env");

@@ -111,10 +111,8 @@ impl MemoryStore {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        parent,
-                        std::fs::Permissions::from_mode(0o700),
-                    );
+                    let _ =
+                        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
                 }
             }
         }
@@ -1130,11 +1128,7 @@ mod tests {
 
         // Reopen: the restrict loop must tighten the existing sidecar to 0600.
         let store = MemoryStore::open(&path, &key(55), StorageMode::AcceptedOnly).unwrap();
-        let mode = std::fs::metadata(&shm_path)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let mode = std::fs::metadata(&shm_path).unwrap().permissions().mode() & 0o777;
         drop(store);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&shm_path);
@@ -1228,7 +1222,11 @@ mod tests {
         assert_eq!(store.count().unwrap(), 3, "held at the cap");
         assert_eq!(
             store.recent("app", 10).unwrap(),
-            vec!["row 4".to_string(), "row 3".to_string(), "row 2".to_string()],
+            vec![
+                "row 4".to_string(),
+                "row 3".to_string(),
+                "row 2".to_string()
+            ],
             "trim drops the oldest rows, keeping the newest cap rows"
         );
     }

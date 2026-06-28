@@ -720,10 +720,7 @@ mod tests {
         // branch, so it passes through unredacted. This pins that accepted gap
         // so a change in EITHER direction is caught.
         assert_eq!(redact("password hunter2"), "password hunter2");
-        assert_eq!(
-            redact("token abc123secretvalue"),
-            "token abc123secretvalue"
-        );
+        assert_eq!(redact("token abc123secretvalue"), "token abc123secretvalue");
     }
 
     #[test]
