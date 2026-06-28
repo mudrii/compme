@@ -1130,31 +1130,48 @@ mod tests {
     }
 
     #[test]
-    fn verify_strict_rejects_small_order_public_key() {
+    fn verify_strict_rejects_low_order_key_that_plain_verify_would_accept() {
         // parse_deep_link_with_trust verifies with `verify_strict` (lib.rs
-        // ~L240), NOT `verify`. The distinction is load-bearing: `verify_strict`
-        // rejects small-order public keys (and non-canonical R), closing the
-        // signature-malleability / weak-key class that plain `verify` admits.
-        // A `verify_strict`→`verify` downgrade would pass the rest of this suite
-        // (every other signed-link test uses a proper key + honest signature),
-        // so this is the ONLY test that pins the strict variant.
+        // ~L240), NOT `verify`. The distinction is load-bearing and this is the
+        // ONLY test that pins it: every other signed-link test uses a proper key
+        // + honest signature, so a silent `verify_strict`→`verify` downgrade
+        // would sail through them. This test FAILS if that downgrade happens.
         //
-        // The all-zero compressed point is the canonical small-order key:
-        // ed25519-dalek 2.x's `from_bytes` ACCEPTS it (see the sibling
-        // from_hex test above), proving we actually reach the verifier rather
-        // than fail at key decode. Any 128-hex signature then drives
-        // verify_strict, which must reject the small-order key up front.
-        let key = TrustedKey::from_hex(&"00".repeat(32))
-            .expect("all-zero compressed point decodes (small-order key reaches the verifier)");
-        let url = format!(
-            "compme://setOverride?app=com.apple.TextEdit&enabled=true&sig={}",
-            "00".repeat(64) // 128 hex chars = a well-formed 64-byte signature
+        // It uses a sourced, behavior-distinguishing CCTV test vector (the same
+        // corpus ed25519-dalek 2.x uses in tests/validation_criteria.rs):
+        //   C2SP/CCTV ed25519vectors @ commit 5ea85644bd03..., vector #3
+        //   flags: low_order_A, low_order_component_A, low_order_component_R
+        //   key  = 00..00 (the all-zero / low-order point A)
+        //   msg  = "ed25519vectors 3"
+        //   sig  = 36684ea9.. (a genuine signature, NOT all-zero)
+        // ed25519-dalek's own criteria allow `low_order_A` for verify() but NOT
+        // for verify_strict() (VERIFY_ALLOWED_EDGECASES vs
+        // VERIFY_STRICT_ALLOWED_EDGECASES). Empirically against the pinned
+        // ed25519-dalek 2.2.0: verify() ACCEPTS this triple, verify_strict()
+        // REJECTS it. So plain `verify` would return Ok(_) here while
+        // `verify_strict` returns Err → InvalidSignature.
+        //
+        // The signed payload must equal the vector's message byte-for-byte, so
+        // the deep-link prefix before `&sig=` IS that message. verify_strict runs
+        // before parse_deep_link, so the verifier sees "ed25519vectors 3" and
+        // rejects it; the payload never needs to be a parseable command.
+        const VECTOR_KEY_HEX: &str =
+            "0000000000000000000000000000000000000000000000000000000000000000";
+        const VECTOR_MSG: &str = "ed25519vectors 3";
+        const VECTOR_SIG_HEX: &str = concat!(
+            "36684ea91032ba5b1dbab2d02f4debc74c3327f2b3802e2e4d371aa42b12b56b",
+            "05ba9a796274d80437afa36f1236563f2f3b0aa84cecddc3d20914615ba4fe02",
         );
+
+        let key = TrustedKey::from_hex(VECTOR_KEY_HEX)
+            .expect("low-order point decodes (it must reach the verifier, not fail at key decode)");
+        let url = format!("{VECTOR_MSG}&sig={VECTOR_SIG_HEX}");
         assert_eq!(url[url.find("&sig=").unwrap() + 5..].len(), 128);
         assert_eq!(
             parse_deep_link_with_trust(&url, Some(&key)),
             Err(ParseError::InvalidSignature),
-            "verify_strict must reject a small-order public key (a `verify` downgrade would not)"
+            "verify_strict must reject this low-order-A vector; plain `verify` would ACCEPT it, \
+             so this assertion fails if the production call is downgraded to verify()"
         );
     }
 }
