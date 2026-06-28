@@ -706,4 +706,38 @@ mod tests {
         assert!(out.contains("[redacted-card]"), "embedded PAN scrubbed");
         assert!(!out.contains("4242"), "no card digits leak from long input");
     }
+
+    #[test]
+    fn space_delimited_credential_is_not_redacted_known_gap() {
+        // ACCEPTED GAP: the credential regex only fires on an explicit `:`/`=`
+        // assignment (`password: x`, `token=x`). A space-delimited credential
+        // (`password hunter2`) is NOT recognized as a key/value pair, and the
+        // bare value is too short / too low-entropy for the generic secret
+        // branch, so it passes through unredacted. This pins that accepted gap
+        // so a change in EITHER direction is caught.
+        assert_eq!(redact("password hunter2"), "password hunter2");
+        assert_eq!(
+            redact("token abc123secretvalue"),
+            "token abc123secretvalue"
+        );
+    }
+
+    #[test]
+    fn all_lowercase_all_letter_long_token_is_not_redacted_known_gap() {
+        // ACCEPTED GAP / entropy-heuristic boundary: a 32+ char token matches
+        // the generic secret regex, but `looks_high_entropy` leaves an
+        // all-one-case, all-letter run alone (no digit, no mixed case, no b64
+        // punctuation) on the theory that it is more likely a long word than a
+        // secret. A 40-char all-lowercase-letter token therefore survives.
+        let token = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn"; // 40 letters
+        assert_eq!(token.len(), 40);
+        assert_eq!(redact(token), token);
+
+        // Contrast: flipping a single character to a digit pushes the same run
+        // over the entropy boundary (`has_digit`), and it IS redacted. This
+        // pins the boundary so neither side can regress silently.
+        let with_digit = "abcdefghijklmnopqrstuvwxyzabcdefghijklm1"; // 39 letters + 1 digit
+        assert_eq!(with_digit.len(), 40);
+        assert_eq!(redact(with_digit), "[redacted-secret]");
+    }
 }

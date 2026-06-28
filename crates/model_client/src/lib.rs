@@ -450,13 +450,10 @@ fn complete_on_worker(
     // it. Generated-token KV (added below) is dropped by the next call's trim.
     *prev_tokens = tokens.clone();
 
-    let first_generated_pos = tokens.len() as i32;
-    // Clamp the budget into i32 with saturating arithmetic so a pathological
-    // max_tokens (> i32::MAX, or one that would overflow the position) can't wrap
-    // to a negative end and silently produce an empty generation range. llama.cpp
-    // positions are i32; a budget at the ceiling is bounded by n_ctx in practice.
-    let last_generated_pos =
-        first_generated_pos.saturating_add(i32::try_from(max_tokens).unwrap_or(i32::MAX));
+    // Position math lives in the pure, unit-tested `generation_range`: the first
+    // generated token sits right after the decoded prompt and the end saturates
+    // so a pathological max_tokens can never wrap to a negative/empty range.
+    let (first_generated_pos, last_generated_pos) = generation_range(tokens.len(), max_tokens);
     for position in first_generated_pos..last_generated_pos {
         let token = sampler.sample(context, batch.n_tokens() - 1);
         if model.is_eog_token(token) {
@@ -614,6 +611,22 @@ pub struct DecodePlan {
     pub reuse: usize,
     /// Clamped prompt length; generation begins at this position.
     pub prompt_len: usize,
+}
+
+/// The half-open llama.cpp position range `[first, end)` for the generation
+/// loop: the first generated token sits at `prompt_len` (right after the
+/// decoded prompt), and generation runs for at most `max_tokens` steps.
+///
+/// Extracted from `complete_on_worker` so the saturating cast — the part a
+/// pathological `max_tokens` (> `i32::MAX`, or one that would overflow the
+/// position) would corrupt — is unit-testable without a model. llama.cpp
+/// positions are `i32`; the cast and add saturate so the end can never wrap to a
+/// negative value and silently yield an empty (or backwards) range. The budget
+/// is bounded by `n_ctx` in practice, so saturation is a guard, not a hot path.
+pub fn generation_range(prompt_len: usize, max_tokens: usize) -> (i32, i32) {
+    let first = i32::try_from(prompt_len).unwrap_or(i32::MAX);
+    let end = first.saturating_add(i32::try_from(max_tokens).unwrap_or(i32::MAX));
+    (first, end)
 }
 
 /// Compute the [`DecodePlan`] for `current` prompt tokens against the `prev`
@@ -1116,6 +1129,117 @@ mod tests {
         assert_eq!(
             terse_continuation_prompt("Dear team"),
             "Complete this text inline. Return only the continuation.\nText: Dear team"
+        );
+    }
+
+    #[test]
+    fn generation_range_starts_after_prompt() {
+        // The first generated token sits at prompt_len (right after the decoded
+        // prompt) and the loop runs for exactly max_tokens steps: a 10-token
+        // prompt with a 12-token budget generates positions [10, 22).
+        assert_eq!(generation_range(10, 12), (10, 22));
+        // A zero budget yields an empty range that begins where the prompt ends.
+        assert_eq!(generation_range(5, 0), (5, 5));
+    }
+
+    #[test]
+    fn generation_range_saturates_on_huge_budget() {
+        // A pathological max_tokens (> i32::MAX) must saturate the END to i32::MAX
+        // rather than wrap to a negative value and silently produce an empty (or
+        // backwards) generation range. llama.cpp positions are i32.
+        let (first, end) = generation_range(4, usize::MAX);
+        assert_eq!(first, 4);
+        assert_eq!(end, i32::MAX, "huge budget must saturate, never wrap");
+        assert!(end >= first, "end must never fall below first");
+        // A prompt_len past i32::MAX also saturates instead of wrapping negative.
+        let (first, end) = generation_range(usize::MAX, 0);
+        assert_eq!(first, i32::MAX);
+        assert_eq!(end, i32::MAX);
+    }
+
+    #[test]
+    fn decode_positions_are_contiguous_through_generation() {
+        // The decode positions must form one unbroken 0-based run from the start
+        // of the re-decoded prompt suffix straight into generation, with no gap or
+        // overlap at the prompt/generation boundary — a discontinuity here is
+        // exactly the "wrong position" bug that corrupts KV-cache reuse.
+        //
+        // For an identical 3-token prompt with a 4-token budget: plan.reuse=2
+        // (one token left to re-decode), so the prompt suffix decodes at position
+        // [2, 3), and generation runs at [3, 7).
+        let plan = plan_decode(&[1, 2, 3], &[1, 2, 3], 4, 2048);
+        let prompt_positions: Vec<i32> =
+            (plan.reuse as i32..plan.prompt_len as i32).collect();
+        let (first_gen, end_gen) = generation_range(plan.prompt_len, 4);
+        let gen_positions: Vec<i32> = (first_gen..end_gen).collect();
+
+        assert_eq!(prompt_positions, vec![2]);
+        assert_eq!(gen_positions, vec![3, 4, 5, 6]);
+        // Concatenated, positions are strictly contiguous (each +1, no gaps).
+        let all: Vec<i32> = prompt_positions.iter().chain(&gen_positions).copied().collect();
+        assert!(
+            all.windows(2).all(|w| w[1] == w[0] + 1),
+            "decode positions must be contiguous across the prompt/generation seam: {all:?}"
+        );
+        // The first generated position picks up exactly where the prompt ended.
+        assert_eq!(first_gen, plan.prompt_len as i32);
+    }
+
+    #[test]
+    fn plan_decode_empty_current_is_all_zero() {
+        // No new prompt tokens: nothing to skip, nothing to reuse, zero-length
+        // prompt. Guards the degenerate empty-prompt path (complete_on_worker
+        // short-circuits before this, but the plan must still be well-formed).
+        let plan = plan_decode::<i32>(&[1, 2, 3], &[], 8, 2048);
+        assert_eq!(plan, DecodePlan { skip: 0, reuse: 0, prompt_len: 0 });
+    }
+
+    #[test]
+    fn plan_decode_skip_with_partial_clamped_reuse() {
+        // Over-long prompt whose CLAMPED tail DOES share a prefix with the cache.
+        // prev=[3,4,5,9], current=[1,2,3,4,5,6], max=2, n_ctx=6:
+        //   budget = 6 - 2 = 4; skip = 6 - 4 = 2 -> clamped tail = [3,4,5,6]
+        //   reuse = shared([3,4,5,9],[3,4,5,6]) = 3 (leaves >=1: min(3, 4-1)=3)
+        let prev = vec![3, 4, 5, 9];
+        let current = vec![1, 2, 3, 4, 5, 6];
+        let plan = plan_decode(&prev, &current, 2, 6);
+        assert_eq!(plan.skip, 2, "drop the over-budget front");
+        assert_eq!(plan.prompt_len, 4, "clamped tail [3,4,5,6]");
+        assert_eq!(
+            plan.reuse, 3,
+            "clamped tail shares [3,4,5] with the cache; re-decode only the last"
+        );
+    }
+
+    #[test]
+    fn prompt_tokens_to_skip_zero_n_ctx_keeps_at_least_one() {
+        // Degenerate window (n_ctx=0): budget saturates to >=1, so a prompt is
+        // never clamped to nothing — the caret-adjacent token always survives.
+        assert_eq!(prompt_tokens_to_skip(0, 0, 0), 0, "empty prompt skips nothing");
+        assert_eq!(prompt_tokens_to_skip(1, 0, 0), 0, "single token survives");
+        // prompt_len 5 with a zero window keeps exactly the last token (skip 4).
+        assert_eq!(prompt_tokens_to_skip(5, 8, 0), 4, "keeps >=1 prompt token");
+    }
+
+    #[test]
+    fn terse_continuation_prompt_empty_prefix_is_well_formed() {
+        // An empty caret-left prefix still produces the fixed instruction with a
+        // trailing "Text: " and nothing after it (no panic, no malformed prompt).
+        assert_eq!(
+            terse_continuation_prompt(""),
+            "Complete this text inline. Return only the continuation.\nText: "
+        );
+    }
+
+    #[test]
+    fn terse_continuation_prompt_does_not_trim_verbatim_prefix() {
+        // The function is explicitly no-trim: callers pre-trim. Surrounding
+        // whitespace and inner newlines in the prefix are preserved verbatim, so a
+        // double-trim regression here would be caught.
+        let prefix = "  leading and trailing  \nsecond line  ";
+        assert_eq!(
+            terse_continuation_prompt(prefix),
+            format!("Complete this text inline. Return only the continuation.\nText: {prefix}")
         );
     }
 }

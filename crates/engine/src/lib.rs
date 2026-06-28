@@ -1197,6 +1197,52 @@ mod tests {
     }
 
     #[test]
+    fn dismiss_suppress_stales_inflight_request() {
+        // Esc-suppress must stale an IN-FLIGHT request at the engine layer: a
+        // request already dispatched to the inference worker but not yet
+        // completed. When its completion finally arrives AFTER the suppress, the
+        // engine must drop it — no ghost — otherwise a result for a request the
+        // user already escaped could pop a suggestion back up. The sibling test
+        // suppresses AFTER the completion shows; this pins the pre-completion
+        // (in-flight) case.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        assert!(
+            !requests.is_empty(),
+            "the tick must dispatch an in-flight completion request"
+        );
+        overlay.calls.lock().unwrap().clear();
+        let _ = engine.take_stat_events();
+
+        // Esc before the worker answers: the in-flight request is staled.
+        engine.on_dismiss_suppress().unwrap();
+        overlay.calls.lock().unwrap().clear();
+        let _ = engine.take_stat_events();
+
+        // The worker's late answer for that exact in-flight request must be dropped.
+        let followups = engine
+            .on_completion(&requests[0], "ghost".into())
+            .unwrap();
+
+        assert!(
+            followups.is_empty(),
+            "a completion for a suppressed in-flight request dispatches nothing"
+        );
+        assert!(
+            !overlay
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, OverlayCall::Show(_, _))),
+            "a suppressed in-flight request must not resurrect a ghost on late completion"
+        );
+        assert!(!engine.take_stat_events().contains(&StatEvent::Shown));
+    }
+
+    #[test]
     fn popup_anchor_used_when_caret_rect_absent() {
         let mut adapter = FakeAdapter::new();
         adapter.rect = None;
@@ -1965,6 +2011,49 @@ mod tests {
             engine.take_stat_events(),
             vec![],
             "a dropped completion records no Shown stat"
+        );
+    }
+
+    #[test]
+    fn multi_completion_for_wrong_field_is_dropped() {
+        // The multi-candidate twin of `completion_for_wrong_field_is_dropped`:
+        // candidates stamped for a field OTHER than the in-flight request's must
+        // be dropped by the same request-match guard — no ghost, no Shown stat.
+        // The single-completion case is pinned; multi had no equivalent, so a
+        // regression that skipped the field check only on the multi path would
+        // stay green.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        overlay.calls.lock().unwrap().clear();
+        let _ = engine.take_stat_events();
+
+        // Same generation/snapshot, different field.
+        let mut wrong = requests[0].clone();
+        wrong.field = FieldHandle {
+            app: "TextEdit".into(),
+            pid: Some(42),
+            element_id: "field-OTHER".into(),
+            generation: 1,
+        };
+
+        let followups = engine
+            .on_completion_multi(&wrong, vec!["one".into(), "two".into()])
+            .unwrap();
+
+        assert!(
+            followups.is_empty(),
+            "a wrong-field multi-completion dispatches no follow-up requests"
+        );
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "multi candidates for a non-focused field must never show a ghost"
+        );
+        assert_eq!(
+            engine.take_stat_events(),
+            vec![],
+            "a dropped multi-completion records no Shown stat"
         );
     }
 

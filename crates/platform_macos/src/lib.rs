@@ -1935,7 +1935,9 @@ unsafe fn screen_ocr_with_image(image_ref: *mut c_void, max_chars: usize) -> Opt
         }
         let count: usize = msg_send![results, count];
 
-        let mut text = String::new();
+        // Collect the top candidate string per observation into owned `String`s,
+        // then delegate the join/skip/truncate to the pure (testable) helper.
+        let mut lines: Vec<String> = Vec::new();
         for index in 0..count {
             let observation: *mut AnyObject = msg_send![results, objectAtIndex: index];
             let candidates: *mut AnyObject = msg_send![observation, topCandidates: 1usize];
@@ -1948,23 +1950,41 @@ unsafe fn screen_ocr_with_image(image_ref: *mut c_void, max_chars: usize) -> Opt
             if string.is_null() {
                 continue;
             }
-            let line = (*string).to_string();
-            if !line.trim().is_empty() {
-                if !text.is_empty() {
-                    text.push(' ');
-                }
-                text.push_str(line.trim());
-            }
-            if text.chars().count() >= max_chars {
-                break;
-            }
+            lines.push((*string).to_string());
         }
-        if text.is_empty() {
-            None
-        } else {
-            Some(text.chars().take(max_chars).collect())
-        }
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        join_and_truncate_lines(&refs, max_chars)
     })
+}
+
+/// Join OCR candidate lines into a single space-separated string, skipping
+/// blank/whitespace-only lines, and truncate to at most `max_chars` Unicode
+/// scalar values. Returns `None` when no non-blank text remains.
+///
+/// Pure split-out of the join/skip/truncate logic that used to live inlined in
+/// the `unsafe` [`screen_ocr_with_image`] loop, so it can be unit-tested without
+/// the Vision FFI. Behaviour-preserving: lines are trimmed before joining, the
+/// accumulation stops early once `>= max_chars` scalars have accrued, and the
+/// final result is truncated on a codepoint boundary (never splitting a scalar).
+fn join_and_truncate_lines(lines: &[&str], max_chars: usize) -> Option<String> {
+    let mut text = String::new();
+    for line in lines {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(trimmed);
+        }
+        if text.chars().count() >= max_chars {
+            break;
+        }
+    }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.chars().take(max_chars).collect())
+    }
 }
 
 /// Active displays as `(bounds, backing scale)` pairs, for the Retina/multi-
@@ -10777,6 +10797,62 @@ mod tests {
     fn process_exists_is_false_for_non_positive_pids() {
         assert!(!process_exists(0));
         assert!(!process_exists(-1));
+    }
+
+    #[test]
+    fn process_exists_true_for_current_process() {
+        // Our own pid is always live: kill(pid, 0) returns 0, so this exercises
+        // the kill==0 success branch (the prior test only hit the pid<=0 guard).
+        assert!(process_exists(std::process::id() as i32));
+    }
+
+    #[test]
+    fn process_exists_false_for_unused_high_pid() {
+        // i32::MAX is far above any plausible live pid, so kill(pid, 0) sets
+        // errno to ESRCH ("no such process") and we report not-alive. This hits
+        // the post-kill ESRCH branch.
+        assert!(!process_exists(i32::MAX));
+    }
+
+    #[test]
+    fn join_and_truncate_lines_returns_none_for_no_lines() {
+        assert_eq!(join_and_truncate_lines(&[], 100), None);
+    }
+
+    #[test]
+    fn join_and_truncate_lines_joins_with_a_single_space() {
+        assert_eq!(
+            join_and_truncate_lines(&["foo", "bar"], 100),
+            Some("foo bar".to_string())
+        );
+    }
+
+    #[test]
+    fn join_and_truncate_lines_skips_blank_and_whitespace_lines() {
+        // Blank / whitespace-only lines are dropped, leaving no double or leading
+        // space in the joined result.
+        assert_eq!(
+            join_and_truncate_lines(&["foo", "  ", "", "bar"], 100),
+            Some("foo bar".to_string())
+        );
+    }
+
+    #[test]
+    fn join_and_truncate_lines_truncates_to_max_chars() {
+        assert_eq!(
+            join_and_truncate_lines(&["hello world"], 5),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn join_and_truncate_lines_truncates_on_codepoint_boundaries() {
+        // Truncation counts Unicode scalar values, never splitting a multi-byte
+        // codepoint: 2 scalars of "a😀b😀c" is "a😀".
+        assert_eq!(
+            join_and_truncate_lines(&["a😀b😀c"], 2),
+            Some("a😀".to_string())
+        );
     }
 
     #[test]

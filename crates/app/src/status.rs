@@ -125,6 +125,18 @@ mod tests {
     }
 
     #[test]
+    fn derive_status_all_false() {
+        // The all-false boundary: with no permission everything else is moot, so
+        // the most-severe branch (`!trusted`) must win even when secure is also
+        // false and the model is unavailable/unwarmed/disabled. Pins that the
+        // permission check sits strictly first.
+        assert_eq!(
+            derive_status(false, false, false, false, false),
+            AppStatus::Blocked(BlockReason::Permission)
+        );
+    }
+
+    #[test]
     fn secure_input_outranks_readiness_and_toggle() {
         assert_eq!(
             derive_status(true, true, true, true, true),

@@ -135,4 +135,40 @@ mod tests {
         assert_eq!(CasePattern::Upper.apply("élan"), "ÉLAN");
         assert_eq!(CasePattern::Lower.apply(""), "");
     }
+
+    #[test]
+    fn lower_apply_is_passthrough_on_cased_input() {
+        // `Lower` intentionally does NOT lowercase — callers already store
+        // replacements lowercase, so `apply` is a pure pass-through. Pin this on
+        // CASED input (the existing tests only feed already-lowercase strings,
+        // which would pass even if `Lower` mistakenly called `to_lowercase`).
+        assert_eq!(CasePattern::Lower.apply("MixedCase"), "MixedCase");
+        assert_eq!(CasePattern::Lower.apply("ÉLAN"), "ÉLAN");
+    }
+
+    #[test]
+    fn title_apply_handles_one_to_many_uppercase() {
+        // `'ß'.to_uppercase()` yields TWO chars ("SS"), so the first-char
+        // uppercasing in `Title` must collect a string, not assume one char.
+        // The `collect::<String>()` in the impl is load-bearing here.
+        assert_eq!(CasePattern::Title.apply("ßeta"), "SSeta");
+    }
+
+    #[test]
+    fn handles_combining_marks_nfd() {
+        // Decomposed (NFD) "élan" = 'e' + U+0301 COMBINING ACUTE ACCENT. The
+        // first scalar is a plain lowercase 'e', so classification is Lower and
+        // Title only uppercases the base 'e', leaving the combining mark intact.
+        assert_eq!(CasePattern::of("e\u{0301}lan"), CasePattern::Lower);
+        assert_eq!(CasePattern::Title.apply("e\u{0301}lan"), "E\u{0301}lan");
+    }
+
+    #[test]
+    fn emoji_is_caseless_and_apply_is_safe() {
+        // An emoji has no cased letters -> Lower (matches the "42"/CJK rule), and
+        // Title.apply must not panic on a non-alphabetic leading scalar: 👍 has no
+        // uppercase mapping, so it passes through unchanged.
+        assert_eq!(CasePattern::of("👍"), CasePattern::Lower);
+        assert_eq!(CasePattern::Title.apply("👍ok"), "👍ok");
+    }
 }

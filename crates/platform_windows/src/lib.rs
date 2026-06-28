@@ -239,6 +239,37 @@ mod tests {
     }
 
     #[test]
+    fn insert_replacing_zero_replace_left_also_fails_closed() {
+        // The trait mandates that `replace_left == 0` behaves as a plain insert
+        // (no backspaces). The prior matrix test only used replace_left == 1, so
+        // pin that the scaffold still fails closed for the insert-like zero case
+        // across every strategy — an adapter that special-cased replace_left == 0
+        // to an Ok append must not slip past the gate.
+        let adapter = WindowsAdapter::new();
+        let field = FieldHandle {
+            app: "test".to_string(),
+            pid: None,
+            element_id: "scaffold".to_string(),
+            generation: 0,
+        };
+        for strategy in [
+            InsertStrategy::AxSet,
+            InsertStrategy::SyntheticKeys,
+            InsertStrategy::Clipboard,
+            InsertStrategy::ImeCommit,
+            InsertStrategy::None,
+        ] {
+            assert!(
+                matches!(
+                    adapter.insert_replacing(&field, "x", 0, strategy),
+                    Err(PlatformError::UnsupportedField { .. })
+                ),
+                "insert_replacing replace_left=0 {strategy:?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_reason_names_the_failing_method() {
         // Fail-closed isn't enough: when a stub rejects, its diagnostic must name
         // BOTH the crate and the exact method, so an operator reading a log can

@@ -8925,6 +8925,87 @@ mod tests {
     }
 
     #[test]
+    fn secure_field_blocks_suggestion_offer() {
+        // Privacy-critical: secure input (password field / global secure input)
+        // must block the collection/suggestion gate BEFORE any other gate gets a
+        // say — even when trusted + enabled + an allowed app + an unexcluded
+        // domain would otherwise all pass. `!policy.secure` is the first
+        // conjunct, so a single secure=true forces false. The edge-detector enum
+        // is tested elsewhere; this pins the GATE behavior.
+        let prefs = Prefs::default();
+        // Everything else green: trusted, enabled, allowed app, no exclusions.
+        assert!(
+            monitored_collection_gates_pass(
+                Some("com.apple.TextEdit"),
+                None,
+                &prefs,
+                monitored_policy(true, false, true, 1_000),
+                true,
+            ),
+            "baseline must pass so the only difference below is `secure`"
+        );
+        // Flip ONLY secure: the gate must now refuse, proving secure short-circuits
+        // ahead of the other (still-green) gates.
+        assert!(
+            !monitored_collection_gates_pass(
+                Some("com.apple.TextEdit"),
+                None,
+                &prefs,
+                monitored_policy(true, true, true, 1_000),
+                true,
+            ),
+            "secure input must block the suggestion/collection gate regardless of \
+             every other gate being green"
+        );
+    }
+
+    #[test]
+    fn excluded_apps_gate_blocks_suggestions() {
+        // The per-app exclude path (App Settings / tray "Disable in this app"):
+        // an excluded app must fail `suggestion_gates_pass` while a sibling app
+        // still passes. Today only the domain-exclusion path has a gate test;
+        // this pins the APP exclusion through the same shared gate.
+        let mut prefs = Prefs::default();
+        prefs.excluded_apps.insert("com.apple.Finder".into());
+        assert!(
+            !suggestion_gates_pass(Some("com.apple.Finder"), "hello there", None, &prefs, 0),
+            "an excluded app must be blocked by the suggestion gate"
+        );
+        assert!(
+            suggestion_gates_pass(Some("com.apple.TextEdit"), "hello there", None, &prefs, 0),
+            "a non-excluded app must still pass"
+        );
+    }
+
+    #[test]
+    fn tray_disabled_blocks_suggestions_regardless_of_prefs() {
+        // The tray Enable toggle is a hard master switch: with `enabled=false`,
+        // the suggestion gate stack must withhold offers even when prefs would
+        // happily allow the app (default prefs: no exclusions, no snooze) AND a
+        // real offer exists. We assert through BOTH seams the run loop uses:
+        // - `suggestion_gates_pass` is prefs-only and STILL passes (proving the
+        //   pref layer would allow it), so the block must come from `enabled`;
+        // - `replacement_decision`, which carries the `enabled` flag, returns
+        //   None once the tray is off and Some when it is on (same inputs).
+        let config = Config::from_lookup(lookup(&[("COMPME_EMOJI", "1")]));
+        let allowed = Some("com.apple.TextEdit");
+        assert!(
+            suggestion_gates_pass(allowed, "hi :smile", None, &config.prefs, 0),
+            "default prefs allow this app — so the block below is the tray switch, not prefs"
+        );
+        assert!(
+            replacement_decision("hi :smile", &config, &config.prefs, allowed, None, true, 0)
+                .is_some(),
+            "baseline: tray enabled + allowed app + a shortcode offers"
+        );
+        assert!(
+            replacement_decision("hi :smile", &config, &config.prefs, allowed, None, false, 0)
+                .is_none(),
+            "the tray master switch (enabled=false) must block offers regardless of prefs"
+        );
+    }
+
+    #[test]
     fn monitored_collection_gates_match_suggestion_privacy_blocks() {
         let mut prefs = Prefs::default();
         assert!(!monitored_collection_gates_pass(
@@ -10467,7 +10548,19 @@ mod tests {
     fn offer_all_keeps_newest_request() {
         let mut latest = LatestRequest::new();
         offer_all(&mut latest, vec![req(1), req(3), req(2)]);
+        // Newest-by-generation wins regardless of arrival order…
         assert_eq!(latest.take().unwrap().generation, 3);
+
+        // …and offering an OLDER generation afterward must NOT re-populate the
+        // slot (the `>=` guard in LatestRequest::offer): a late stale request
+        // can never resurrect a request the loop already moved past.
+        offer_all(&mut latest, vec![req(3)]);
+        offer_all(&mut latest, vec![req(1)]);
+        assert_eq!(
+            latest.take().unwrap().generation,
+            3,
+            "an older generation must not overwrite the retained newest"
+        );
     }
 
     #[test]

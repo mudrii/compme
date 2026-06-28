@@ -1062,6 +1062,120 @@ mod tests {
         );
     }
 
+    #[test]
+    fn journal_mode_is_delete_after_open() {
+        // DELETE journal mode is a security claim: no persistent -wal/-shm
+        // sidecar leaking ciphertext/metadata alongside the db (sidecars are not
+        // covered by secure_delete). Pin both that the pragma resolves to "delete"
+        // and that recording a row leaves no -wal file on disk.
+        let path = temp_db_path();
+        let store = MemoryStore::open(&path, &key(54), StorageMode::AcceptedOnly).unwrap();
+        let mode: String = store
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete", "journal_mode must be DELETE, not WAL");
+
+        store.remember("app", "no wal sidecar please").unwrap();
+
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        let wal_exists = Path::new(&wal).exists();
+        let mut shm = path.as_os_str().to_owned();
+        shm.push("-shm");
+        let shm_exists = Path::new(&shm).exists();
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        assert!(!wal_exists, "DELETE mode must not leave a -wal sidecar");
+        assert!(!shm_exists, "DELETE mode must not leave a -shm sidecar");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_restricts_a_preexisting_sidecar_to_0600() {
+        // The open() restrict loop is belt-and-suspenders: it chmods any
+        // -journal/-wal/-shm sidecar that exists alongside the db down to 0600 so
+        // a sidecar can never expose its contents at the default world/group-
+        // readable mode. Under the pinned DELETE journal mode the -journal sidecar
+        // is *transient* — SQLite deletes a stale journal during open (hot-journal
+        // handling) and removes the live one on commit — so a -journal file
+        // pre-created before a fresh open is gone by the time the loop runs and
+        // cannot be caught persistently. (Verified empirically: the file is
+        // NotFound after open.) Rather than assert an unreachable state, this
+        // exercises the SAME restrict path on a sidecar SQLite does NOT manage in
+        // DELETE mode: pre-create a `<path>-shm` at 0644 alongside an
+        // already-existing db, reopen, and assert open() tightened it to 0600.
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_db_path();
+        // First open creates a real, consistent db file on disk.
+        {
+            let store = MemoryStore::open(&path, &key(55), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "row").unwrap();
+        }
+        assert!(path.exists(), "sanity: db file persisted after first open");
+
+        // Pre-create an -shm sidecar world/group-readable (0644). DELETE mode does
+        // not use -shm, so SQLite leaves this file alone — only the restrict loop
+        // touches it.
+        let mut shm = path.as_os_str().to_owned();
+        shm.push("-shm");
+        let shm_path = std::path::PathBuf::from(&shm);
+        std::fs::write(&shm_path, b"stale sidecar bytes").unwrap();
+        std::fs::set_permissions(&shm_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&shm_path).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "sanity: pre-created the sidecar at 0644"
+        );
+
+        // Reopen: the restrict loop must tighten the existing sidecar to 0600.
+        let store = MemoryStore::open(&path, &key(55), StorageMode::AcceptedOnly).unwrap();
+        let mode = std::fs::metadata(&shm_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&shm_path);
+        assert_eq!(
+            mode, 0o600,
+            "open() must restrict an existing sidecar to 0600, got {mode:o}"
+        );
+    }
+
+    #[test]
+    fn delete_all_erases_ciphertext_without_reopening() {
+        // Real "disable and erase" usage: delete_all() is called on a LIVE store
+        // and the erasure must be visible on disk immediately, without dropping or
+        // reopening the connection. Scan the raw file via a SEPARATE read-only
+        // handle while the original store is still alive to pin that secure_delete
+        // zeroes the freed ciphertext in place (not only after a checkpoint on
+        // close).
+        let path = temp_db_path();
+        let store = MemoryStore::open(&path, &key(56), StorageMode::AcceptedOnly).unwrap();
+        store.remember("app", "erase me while alive").unwrap();
+        let blob: Vec<u8> = store
+            .conn
+            .query_row("SELECT blob FROM memories LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert!(blob.len() >= 16, "sanity: a real ciphertext blob");
+
+        store.delete_all().unwrap();
+
+        // Separate read-only handle: read the file bytes WITHOUT touching the
+        // still-alive `store` connection or reopening it.
+        let raw = std::fs::read(&path).unwrap();
+        let body = &blob[NONCE_LEN..];
+        let found = raw.windows(body.len()).any(|w| w == body);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            !found,
+            "delete_all on a live store must zero the ciphertext on disk (secure_delete)"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn file_backed_db_is_mode_0600_after_open() {

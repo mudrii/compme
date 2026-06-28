@@ -88,6 +88,15 @@ impl Default for KeychainKeyStore {
 /// "no such entry" (first use) rather than a real failure.
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
+/// Whether a delete error from the pre-write delete-then-add path can be safely
+/// ignored. Only `errSecItemNotFound` (no pre-existing entry — the normal
+/// first-use case) is ignorable; any other status code is a real failure that
+/// must propagate. Split out so the create-path branch logic is unit-testable
+/// without a live Keychain.
+fn delete_error_is_ignorable(code: i32) -> bool {
+    code == ERR_SEC_ITEM_NOT_FOUND
+}
+
 extern "C" {
     /// macOS libc CSPRNG (max 256 bytes per call — we need 32).
     fn getentropy(buf: *mut u8, buflen: usize) -> i32;
@@ -133,7 +142,7 @@ fn keychain_write_secret(service: &str, account: &str, secret: &[u8]) -> Result<
     // re-pinned if ever rewritten. A missing entry (errSecItemNotFound) is the
     // normal first-use case and is ignored; any other delete error propagates.
     if let Err(err) = delete_generic_password(service, account) {
-        if err.code() != ERR_SEC_ITEM_NOT_FOUND {
+        if !delete_error_is_ignorable(err.code()) {
             return Err(PlatformError::CannotComplete {
                 reason: format!("keychain delete (pre-write) failed: {err}"),
             });
@@ -195,6 +204,19 @@ mod tests {
             write_secret,
             generate_key,
         }
+    }
+
+    #[test]
+    fn delete_error_is_ignorable_only_for_item_not_found() {
+        // errSecItemNotFound (no pre-existing entry) is the normal first-use case
+        // and must be ignored so the delete-then-add create path proceeds.
+        assert!(delete_error_is_ignorable(ERR_SEC_ITEM_NOT_FOUND));
+        // Any other Security-framework status is a real failure and must NOT be
+        // swallowed (e.g. -25308 errSecInteractionNotAllowed, -34018, success 0).
+        assert!(!delete_error_is_ignorable(0));
+        assert!(!delete_error_is_ignorable(-25308));
+        assert!(!delete_error_is_ignorable(-34018));
+        assert!(!delete_error_is_ignorable(ERR_SEC_ITEM_NOT_FOUND + 1));
     }
 
     #[test]

@@ -1128,4 +1128,33 @@ mod tests {
         assert_eq!(well_formed_but_not_a_point.len(), 64);
         assert!(TrustedKey::from_hex(&well_formed_but_not_a_point).is_none());
     }
+
+    #[test]
+    fn verify_strict_rejects_small_order_public_key() {
+        // parse_deep_link_with_trust verifies with `verify_strict` (lib.rs
+        // ~L240), NOT `verify`. The distinction is load-bearing: `verify_strict`
+        // rejects small-order public keys (and non-canonical R), closing the
+        // signature-malleability / weak-key class that plain `verify` admits.
+        // A `verify_strict`→`verify` downgrade would pass the rest of this suite
+        // (every other signed-link test uses a proper key + honest signature),
+        // so this is the ONLY test that pins the strict variant.
+        //
+        // The all-zero compressed point is the canonical small-order key:
+        // ed25519-dalek 2.x's `from_bytes` ACCEPTS it (see the sibling
+        // from_hex test above), proving we actually reach the verifier rather
+        // than fail at key decode. Any 128-hex signature then drives
+        // verify_strict, which must reject the small-order key up front.
+        let key = TrustedKey::from_hex(&"00".repeat(32))
+            .expect("all-zero compressed point decodes (small-order key reaches the verifier)");
+        let url = format!(
+            "compme://setOverride?app=com.apple.TextEdit&enabled=true&sig={}",
+            "00".repeat(64) // 128 hex chars = a well-formed 64-byte signature
+        );
+        assert_eq!(url[url.find("&sig=").unwrap() + 5..].len(), 128);
+        assert_eq!(
+            parse_deep_link_with_trust(&url, Some(&key)),
+            Err(ParseError::InvalidSignature),
+            "verify_strict must reject a small-order public key (a `verify` downgrade would not)"
+        );
+    }
 }

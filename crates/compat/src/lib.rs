@@ -829,4 +829,68 @@ mod tests {
         // through the dot-bounded family check.
         assert!(!is_browser(""));
     }
+
+    #[test]
+    fn is_browser_rejects_same_segment_lookalike_without_dot_boundary() {
+        // The family match is dot-bounded (is_browser strips a trailing-'.'
+        // family prefix), so a lookalike that shares the SAME bundle SEGMENT but
+        // continues it without a dot boundary must NOT match. These are the
+        // tightest false-positive cases: each begins with a real family/exact id
+        // string but extends the final segment (no dot), so an unbounded
+        // prefix/contains match would wrongly flag them as browsers and trigger
+        // AX URL reads in a non-browser app.
+        assert!(!is_browser("org.chromiumfoo")); // not "org.chromium." (no dot)
+        assert!(!is_browser("com.brave.BrowserX")); // not exact "com.brave.Browser" nor "...Browser."
+        assert!(!is_browser("com.google.Chromewide")); // not exact "com.google.Chrome" nor "...Chrome."
+        assert!(!is_browser("com.microsoft.edgemacfoo")); // not exact "com.microsoft.edgemac" nor "...edgemac."
+    }
+
+    #[test]
+    fn every_curated_browser_has_a_concrete_tier() {
+        // Fail-open invariant the module comments say shipped broken once: a
+        // bundle id that is_browser recognizes must NOT classify as Unknown.
+        // Curated Chromium/Gecko browsers were previously listed in is_browser
+        // yet fell through compatibility_tier to Unknown (fail-open), so they
+        // emitted no compat guidance. Loop every curated browser id (the exact
+        // set from is_browser, plus representative family-variant builds) and
+        // assert is_browser ⇒ tier != Unknown.
+        let curated = [
+            // Exact-id curated set from is_browser.
+            "com.apple.Safari",
+            "com.google.Chrome",
+            "com.microsoft.edgemac",
+            "com.brave.Browser",
+            "com.vivaldi.Vivaldi",
+            "company.thebrowser.Browser",
+            "company.thebrowser.dia",
+            "org.mozilla.firefox",
+            "org.mozilla.firefoxdeveloperedition",
+            "org.mozilla.nightly",
+            "app.zen-browser.zen",
+        ];
+        for b in curated {
+            assert!(is_browser(b), "{b} should be a curated browser");
+            assert_ne!(
+                compatibility_tier(b),
+                CompatTier::Unknown,
+                "{b} is a curated browser but classifies as Unknown (fail-open regression)"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_heuristic_does_not_apply_to_unlisted_terminals() {
+        // terminal_prompt_activates gates on is_terminal, which whitelists ONLY
+        // com.apple.Terminal and com.googlecode.iterm2 (lib.rs ~L130). Ghostty
+        // is NOT whitelisted as a terminal (it is an Unsupported app, blocked
+        // upstream by tier), so the prompt heuristic must treat it like any
+        // non-terminal app: the early `!is_terminal` true-return fires and a
+        // shell-command line that WOULD be rejected inside a real terminal still
+        // returns true here. This pins that the heuristic never leaks to
+        // terminals outside the explicit whitelist.
+        assert!(
+            terminal_prompt_activates("com.mitchellh.ghostty", "git commit -m wip"),
+            "the terminal prompt heuristic must not gate an unlisted terminal (Ghostty)"
+        );
+    }
 }

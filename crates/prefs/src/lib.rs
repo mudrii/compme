@@ -449,6 +449,35 @@ mod tests {
     }
 
     #[test]
+    fn monitored_collection_stops_for_per_app_snoozed_app_only() {
+        // Per-app snooze gate on the monitored-collection seam: only the GLOBAL
+        // snooze arm is otherwise tested. Snoozing app A must stop A's monitored
+        // recording while leaving a different app B (same context, collection on
+        // by default) recording — the per-app snooze must not bleed across apps.
+        let mut p = Prefs::default();
+        p.snooze_app("com.apple.TextEdit", 1_000, 60);
+        // A is per-app snoozed → monitored collection blocked.
+        assert!(p.collection_allowed(Some("com.apple.TextEdit")));
+        assert!(!p.monitored_collection_allowed(Some("com.apple.TextEdit"), None, 1_000));
+        // B is not snoozed → monitored collection still allowed.
+        assert!(p.monitored_collection_allowed(Some("com.apple.Safari"), None, 1_000));
+    }
+
+    #[test]
+    fn excluded_domain_does_not_match_rule_as_non_boundary_suffix() {
+        // Mirrors the personalization sibling's pinned negative so the two
+        // subdomain matchers can't drift: a rule "google.com" must NOT match
+        // "google.com.evil.com" — a different registrable domain that merely
+        // contains the rule text without a dot boundary before it.
+        let mut p = Prefs::default();
+        p.excluded_domains.insert("google.com".into());
+        assert!(
+            p.should_suggest(None, Some("google.com.evil.com"), 0),
+            "a domain that merely contains the rule must not be excluded"
+        );
+    }
+
+    #[test]
     fn default_allows_suggestions() {
         let p = Prefs::default();
         assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1000));

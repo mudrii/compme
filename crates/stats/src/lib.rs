@@ -315,6 +315,14 @@ impl Stats {
             Outcome::Shown => self.session.counts.shown += 1,
             Outcome::Accepted { words } => {
                 self.session.counts.accepted += 1;
+                // ponytail: bare `+=` (no saturating_add) is deliberate. Unlike
+                // the persisted u64 path — which ingests possibly-corrupt
+                // external file values up to u64::MAX and so must saturate —
+                // `session.words` accumulates ONLY in-process from real
+                // `Accepted` word counts. usize is 64-bit on target platforms,
+                // so overflow needs ~1.8e19 cumulative words; at any plausible
+                // human typing rate that is unreachable within a process
+                // lifetime. Bound: realistic completion word counts.
                 self.session.words += words;
             }
             Outcome::Dismissed => self.session.counts.dismissed += 1,
@@ -379,6 +387,13 @@ impl Stats {
     /// figure).
     pub fn words_completed(&self, now_ms: u64) -> usize {
         let cutoff = Self::cutoff(now_ms);
+        // ponytail: a plain `.sum()` (not a saturating fold) is deliberate. This
+        // sums `Accepted` word counts over the 30-day window ONLY — the entries
+        // are pruned on write, so the addends are bounded by realistic
+        // completions within 30 days, an even tighter bound than the grow-only
+        // `session.words` accumulator. usize is 64-bit on target platforms, so
+        // the sum cannot approach usize::MAX at any plausible interaction rate.
+        // Bound: realistic 30-day completion word counts.
         self.entries
             .iter()
             .filter(|e| e.at_ms >= cutoff && e.at_ms <= now_ms)
@@ -1495,5 +1510,89 @@ mod tests {
         assert_eq!(weekly.len(), 1);
         assert_eq!(weekly[0].counts.dismissed, 3); // 2 + 1 across the chunk
         assert_eq!(weekly[0].counts.superseded, 9); // 5 + 4 across the chunk
+    }
+
+    #[test]
+    fn words_completed_sum_at_large_word_counts_does_not_wrap() {
+        // The usize word-accumulation paths (`record`'s `session.words += words`
+        // and `words_completed`'s `.sum()`) use bare arithmetic, NOT
+        // saturating_add — by design (see the `// ponytail:` bound comments):
+        // they accumulate only in-process from real Accepted word counts, which
+        // are bounded by realistic completions and cannot approach usize::MAX.
+        // This pins that a large-but-realistic-for-arithmetic accumulation sums
+        // correctly without wrapping. Two in-window `usize::MAX / 2` accepts sum
+        // to `usize::MAX - 1` (since usize::MAX is odd) — the largest pair that
+        // stays in range — so a correct add yields exactly that, while any
+        // narrowing/wrap regression would not.
+        let mut s = Stats::new();
+        let half = usize::MAX / 2;
+        s.record(T0, Outcome::Accepted { words: half });
+        s.record(T0, Outcome::Accepted { words: half });
+        let expected = usize::MAX - 1; // half + half, no wrap
+        assert_eq!(s.words_completed(T0), expected);
+        // The grow-only session accumulator follows the same contract.
+        assert_eq!(s.session_totals().words, expected);
+    }
+
+    #[test]
+    fn prune_retains_the_entry_exactly_on_the_cutoff_edge() {
+        // prune drops `at_ms < cutoff` (STRICT less-than, lib.rs ~L347), where
+        // cutoff = now - WINDOW_MS. An entry recorded exactly WINDOW_MS ago sits
+        // AT the cutoff, so `at_ms < cutoff` is false and it must survive the
+        // prune triggered by a later write. A `<=` regression would wrongly evict
+        // the boundary entry. record(T0), then record(T0 + WINDOW_MS): the second
+        // write prunes against cutoff == T0, and the T0 entry is retained.
+        let mut s = Stats::new();
+        s.record(T0, Outcome::Shown);
+        s.record(T0 + WINDOW_MS, Outcome::Shown);
+        assert_eq!(
+            s.retained_len(),
+            2,
+            "the entry exactly on the cutoff edge (now - WINDOW_MS) must not be pruned"
+        );
+    }
+
+    #[test]
+    fn percentile_pct_zero_is_none_regardless_of_sample_count() {
+        // pct == 0 has no nearest rank, so latency_percentile_ms returns None via
+        // the EARLY pct==0 guard (lib.rs ~L424) — distinct from the is_empty
+        // guard. Isolate the two: with samples present (n=1, n=3) pct==0 must
+        // still be None, proving the pct==0 return fires BEFORE and INDEPENDENTLY
+        // of the empty check; and the empty case (n=0) is None for the empty
+        // reason. A regression that merged the two guards (e.g. only returning
+        // None when empty) would wrongly return Some for pct==0 with samples.
+        let empty = Stats::new();
+        assert_eq!(empty.latency_percentile_ms(T0, 0), None); // n=0
+
+        let mut one = Stats::new();
+        one.record_latency(T0, 42);
+        assert_eq!(one.latency_percentile_ms(T0, 0), None); // n=1, pct==0 guard
+        assert_eq!(one.latency_percentile_ms(T0, 1), Some(42)); // sanity: samples ARE present
+
+        let mut three = Stats::new();
+        for ms in [10u32, 20, 30] {
+            three.record_latency(T0, ms);
+        }
+        assert_eq!(three.latency_percentile_ms(T0, 0), None); // n=3, pct==0 guard
+        assert_eq!(three.latency_percentile_ms(T0, 50), Some(20)); // sanity: samples ARE present
+    }
+
+    #[test]
+    fn latency_samples_never_touch_session_totals() {
+        // record_latency pushes only onto the latency deque; it must NOT touch
+        // the grow-only session totals (which are the persistence input). One
+        // latency sample and zero outcome records → session_totals stays at its
+        // default. A regression that folded latency into the totals would make
+        // this non-default.
+        let mut s = Stats::new();
+        s.record_latency(T0, 123);
+        assert_eq!(
+            s.session_totals(),
+            SessionTotals::default(),
+            "a latency sample must not mutate the persisted session totals"
+        );
+        // And the latency was actually recorded (so the assertion above is not
+        // vacuously passing on a no-op).
+        assert_eq!(s.latency_avg_ms(T0), Some(123));
     }
 }

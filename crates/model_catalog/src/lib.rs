@@ -668,6 +668,90 @@ mod tests {
         );
     }
 
+    /// The 40-lowercase-hex commit pinned between `/resolve/` and the next `/`
+    /// in a Hugging Face resolve URL, if present.
+    fn resolve_commit_segment(url: &str) -> Option<&str> {
+        let after = url.split_once("/resolve/")?.1;
+        Some(after.split('/').next().unwrap_or(after))
+    }
+
+    #[test]
+    fn catalog_urls_pin_a_full_40_hex_commit() {
+        // Every download/provenance URL must pin a full 40-char lowercase-hex git
+        // commit between `/resolve/` and the next `/`. This generalizes the
+        // single-literal `/resolve/main/` blocklist: ANY mutable ref (a branch, a
+        // tag, a truncated/short SHA) is rejected, not just the literal "main".
+        let is_full_commit = |seg: &str| {
+            seg.len() == 40
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        };
+        for e in catalog() {
+            let seg = resolve_commit_segment(e.url)
+                .unwrap_or_else(|| panic!("{}: url has no /resolve/ commit segment", e.name));
+            assert!(
+                is_full_commit(seg),
+                "{}: catalog url commit segment {seg:?} is not 40 lowercase-hex chars",
+                e.name
+            );
+        }
+        for p in catalog_provenance() {
+            let seg = resolve_commit_segment(p.url)
+                .unwrap_or_else(|| panic!("{}: provenance url has no commit segment", p.name));
+            assert!(
+                is_full_commit(seg),
+                "{}: provenance url commit segment {seg:?} is not 40 lowercase-hex chars",
+                p.name
+            );
+        }
+    }
+
+    #[test]
+    fn gemma_and_llama_named_entries_are_license_gated() {
+        // Guards name-implies-license drift: any entry whose name says "llama"
+        // must carry the Llama gate, and any "gemma" entry the Gemma gate. A
+        // rename or a mis-set license (e.g. a gemma model left Apache2) would
+        // silently bypass the click-through.
+        for e in catalog() {
+            if e.name.contains("llama") {
+                assert_eq!(
+                    e.license,
+                    License::LlamaCommunity,
+                    "{}: a llama-named entry must be LlamaCommunity-gated",
+                    e.name
+                );
+            }
+            if e.name.contains("gemma") {
+                assert_eq!(
+                    e.license,
+                    License::GemmaTerms,
+                    "{}: a gemma-named entry must be GemmaTerms-gated",
+                    e.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_available_ram_blocks_every_catalog_model() {
+        // A machine reporting 0 GB (or a probe failure flooring to 0) must offer
+        // NOTHING: every entry exceeds its minimum, so none is downloadable.
+        for e in catalog() {
+            assert!(
+                !offerable_by_ram(e, 0),
+                "{}: must not be offerable on a 0 GB machine",
+                e.name
+            );
+            assert_eq!(
+                ram_verdict(e, 0),
+                RamVerdict::Exceeds,
+                "{}: 0 GB must read as Exceeds",
+                e.name
+            );
+        }
+    }
+
     #[test]
     fn gated_licenses_need_acceptance() {
         assert!(License::GemmaTerms.needs_acceptance());

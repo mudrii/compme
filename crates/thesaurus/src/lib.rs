@@ -252,4 +252,57 @@ mod tests {
         assert!(!syns.contains(&"big".to_string()));
         assert_eq!(syns[0], "LARGE");
     }
+
+    #[test]
+    fn merge_takes_new_member_after_a_mid_group_duplicate() {
+        // Pins the `[A, dup, B]` merge branch: querying "bright" pulls
+        // [smart, clever, intelligent, sharp] from the first sense, then the
+        // second sense [bright(=query, skipped), luminous, radiant, vivid,
+        // sharp(dup, skipped)]. "sharp" is the mid-group duplicate; the words
+        // AFTER it on the first pass (none) and the FRESH words that follow the
+        // already-seen "bright"/"sharp" in the second group (luminous, radiant,
+        // vivid) must still be appended exactly once, in table order.
+        let merged = synonyms("bright");
+        assert_eq!(
+            merged,
+            vec![
+                "smart",
+                "clever",
+                "intelligent",
+                "sharp",
+                "luminous",
+                "radiant",
+                "vivid",
+            ]
+        );
+        // The tail after the cross-group duplicate "sharp" is the fresh second-
+        // sense members — proves the dup did not truncate the merge.
+        assert_eq!(&merged[4..], &["luminous", "radiant", "vivid"]);
+    }
+
+    #[test]
+    fn case_applied_across_merged_senses() {
+        // The query's case must be applied to EVERY merged synonym, spanning
+        // both senses of a multi-sense word — not just the first group. (Earlier
+        // case tests use single-sense words; this exercises case + merge/dedup
+        // together.) Every returned synonym for an UPPERCASE multi-sense query
+        // is itself all-uppercase, across both senses.
+        let syns = synonyms("BRIGHT");
+        assert_eq!(
+            syns,
+            vec![
+                "SMART",
+                "CLEVER",
+                "INTELLIGENT",
+                "SHARP",
+                "LUMINOUS",
+                "RADIANT",
+                "VIVID",
+            ]
+        );
+        assert!(
+            syns.iter().all(|s| s.chars().all(|c| !c.is_lowercase())),
+            "every merged synonym is uppercased: {syns:?}"
+        );
+    }
 }

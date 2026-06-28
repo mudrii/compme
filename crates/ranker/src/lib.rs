@@ -589,4 +589,40 @@ mod tests {
         assert!(!is_degenerate_repetition("a b a b"));
         assert!(!is_degenerate_repetition("one two one two"));
     }
+
+    #[test]
+    fn strip_suffix_overlap_folds_unicode_case() {
+        // The overlap match normalizes with full Unicode case folding, so the
+        // accented "café" suffix of the candidate overlaps the accented "café"
+        // head of the recent context regardless of case ("CAFÉ" == "café").
+        assert_eq!(strip_suffix_overlap("café CAFÉ", "café more"), "café");
+    }
+
+    #[test]
+    fn repetition_penalty_folds_unicode_case() {
+        // A candidate word that differs from the recent run only by Unicode case
+        // ("CAFÉ" vs "café") is still a whole-word repeat -> penalized (0.25).
+        assert_eq!(repetition_penalty("CAFÉ", "a café here"), 0.25);
+        // Sanity contrast: a genuinely different word is not penalized.
+        assert_eq!(repetition_penalty("CAFÉ", "a tea here"), 1.0);
+    }
+
+    #[test]
+    fn is_degenerate_repetition_flags_emoji_loop() {
+        // Word splitting is whitespace-based and codepoint-agnostic, so a single
+        // emoji tiled 3x is a degenerate single-word loop just like ASCII.
+        assert!(is_degenerate_repetition("👍 👍 👍"));
+        // CJK negative: three distinct CJK words are not a loop.
+        assert!(!is_degenerate_repetition("世界 你好 世界"));
+    }
+
+    #[test]
+    fn next_word_splits_unicode_word_with_trailing_space() {
+        // The first word (a CJK token) is returned with its trailing space; the
+        // remainder is everything after. Splitting is on whitespace, not bytes.
+        assert_eq!(
+            next_word("世界 foo"),
+            ("世界 ".to_string(), "foo".to_string())
+        );
+    }
 }

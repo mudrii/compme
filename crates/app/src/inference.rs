@@ -1182,6 +1182,50 @@ mod tests {
     }
 
     #[test]
+    fn per_domain_missing_domain_falls_back_to_global() {
+        // A request whose domain is PRESENT but absent from `per_domain` must
+        // steer with the GLOBAL instructions only — never another domain's text.
+        // The existing per-domain test drives the matching domain and a None
+        // domain; this pins the third case (a known-but-unconfigured domain) so a
+        // resolver that leaked the wrong domain's preamble would be caught.
+        let mut profile = PersonalizationProfile {
+            global_instructions: "Use short completions.".into(),
+            ..Default::default()
+        };
+        profile.per_domain.insert(
+            "docs.google.com".into(),
+            "Prefer spreadsheet language.".into(),
+        );
+
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            profile,
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        assert!(inference.submit(CompletionRequest {
+            domain: Some("news.example.com".into()),
+            ..request("Other draft", 1)
+        }));
+        let outcome = inference.recv_outcome().expect("outcome");
+
+        assert!(
+            outcome.candidates[0].contains("Use short completions."),
+            "an unconfigured domain must still get the global preamble: {:?}",
+            outcome.candidates[0]
+        );
+        assert!(
+            !outcome.candidates[0].contains("Prefer spreadsheet language."),
+            "an unconfigured domain must not leak another domain's preamble: {:?}",
+            outcome.candidates[0]
+        );
+        assert!(outcome.candidates[0].contains("Other draft"));
+        inference.shutdown();
+    }
+
+    #[test]
     fn ready_flips_after_warm_up() {
         let inference = InferenceHandle::spawn(
             Box::new(StubModel::new("x")),
@@ -1381,6 +1425,26 @@ mod tests {
         let latest = recv_latest(&rx).unwrap();
         assert_eq!(latest.generation, 3);
         assert_eq!(latest.prompt, "c");
+    }
+
+    #[test]
+    fn recv_latest_drains_superseded_requests() {
+        // Coalescing must CONSUME the superseded requests, not just peek the
+        // newest: after returning gen 3 from a 3-deep channel, gens 1 & 2 must be
+        // gone so a later recv blocks (channel empty) rather than re-serving the
+        // stale gen 1. The winner-only test does not pin that the drain emptied
+        // the queue.
+        let (tx, rx) = channel::<CompletionRequest>();
+        tx.send(request("a", 1)).unwrap();
+        tx.send(request("b", 2)).unwrap();
+        tx.send(request("c", 3)).unwrap();
+        let latest = recv_latest(&rx).unwrap();
+        assert_eq!(latest.generation, 3);
+        // The superseded gens were consumed by the drain — nothing left queued.
+        assert!(
+            rx.try_recv().is_err(),
+            "superseded requests must be drained, not left queued behind the winner"
+        );
     }
 
     #[test]

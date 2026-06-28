@@ -539,6 +539,42 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn atomic_write_leaves_target_intact_on_failed_rename() {
+        // Core crash-safety contract: atomic_write never truncates or partially
+        // writes the live target. A pre-existing config must be BYTE-IDENTICAL
+        // after a write that fails before the rename lands — the temp file is the
+        // only thing that can be left behind, never a torn target. We force the
+        // failure by making the parent directory read-only so the scratch-file
+        // write cannot happen; the target is opened/renamed only AFTER that, so a
+        // regression that wrote in place (the non-atomic path this guards against)
+        // would corrupt PRECIOUS here.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir()
+            .join(format!("compme-atomic-intact-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.env");
+        let original = "PRECIOUS=keep\nCOMPME_MAX_WORDS=12\n";
+        std::fs::write(&path, original).expect("seed target");
+
+        // Read-only parent: create_dir_all on the existing dir is a no-op, but the
+        // scratch write (and thus the rename) cannot proceed.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).expect("chmod ro");
+
+        let result = atomic_write(&path, "ONLY=one\n");
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod rw");
+        assert!(result.is_err(), "a write that cannot complete must error");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            original,
+            "the pre-existing target must survive byte-identical — no truncation/partial write"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn atomic_write_rejects_a_parentless_path() {
         // An empty path has no parent component (`Path::parent` → None; a
         // single-component relative path like "config" yields Some("") instead),

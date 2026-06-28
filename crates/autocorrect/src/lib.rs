@@ -169,4 +169,44 @@ mod tests {
         keys.dedup();
         assert_eq!(keys.len(), count, "duplicate typo key in table");
     }
+
+    #[test]
+    fn correcting_twice_equals_correcting_once() {
+        // True idempotence: feed every correction OUTPUT back into `correct` and
+        // require `None` — across the lower/Title/UPPER case variants of each
+        // typo, so a correction that is itself a typo key (or whose cased form
+        // is) is caught. The existing idempotency test only checked the raw
+        // (lowercase) correction values, never the actual round-tripped output.
+        for (typo, _) in TYPOS {
+            for variant in [
+                typo.to_string(),
+                CasePattern::Title.apply(typo),
+                typo.to_uppercase(),
+            ] {
+                let once = correct(&variant);
+                assert!(once.is_some(), "{variant} should correct once");
+                assert_eq!(
+                    once.as_deref().and_then(correct),
+                    None,
+                    "correcting the output of {variant:?} ({once:?}) must be a no-op"
+                );
+            }
+        }
+        // Spot checks called out explicitly: a Title typo and the multi-word
+        // "a lot" correction (which is itself never a typo key).
+        assert_eq!(correct("Teh").and_then(|s| correct(&s)), None);
+        assert_eq!(correct("a lot"), None);
+    }
+
+    #[test]
+    fn mixed_case_query_is_handled_deterministically() {
+        // Mixed-case path: `CasePattern::of` keys on the FIRST cased letter, so a
+        // first-lower mixed query is Lower (pass-through correction) and a
+        // first-upper mixed query is Title. Pin this on length-changing
+        // corrections ("recieve"->"receive", "alot"->"a lot") where the case
+        // reapplication interacts with the value length.
+        assert_eq!(correct("tEh").as_deref(), Some("the")); // first lower -> Lower
+        assert_eq!(correct("ReCieve").as_deref(), Some("Receive")); // first upper -> Title
+        assert_eq!(correct("aLot").as_deref(), Some("a lot")); // first lower -> Lower
+    }
 }

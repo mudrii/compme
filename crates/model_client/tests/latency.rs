@@ -75,6 +75,7 @@ fn strict_latency_budget_env_parses_truthy_values() {
     }
 }
 
+#[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn warm_completion_under_500ms() {
     let path = model_path();
@@ -87,9 +88,6 @@ fn warm_completion_under_500ms() {
     // Exercise the real warm-up override (Metal shader precompile) rather than a
     // bare throwaway completion.
     model.warm_up().expect("warm up");
-    if !require_latency_budget() {
-        return;
-    }
     if !require_latency_budget() {
         return;
     }
