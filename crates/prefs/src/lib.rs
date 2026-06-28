@@ -184,21 +184,11 @@ impl Prefs {
         );
     }
 
-    /// Cancel a per-app snooze (re-enable before the deadline).
-    pub fn clear_app_snooze(&mut self, app: &str) {
-        self.app_snooze_until_ms.remove(app);
-    }
-
     /// Whether `app` is per-app snoozed at `now_ms` (auto-resumes after).
     pub fn is_app_snoozed(&self, app: &str, now_ms: u64) -> bool {
         self.app_snooze_until_ms
             .get(app)
             .is_some_and(|until| now_ms < *until)
-    }
-
-    /// Cancel any active snooze.
-    pub fn clear_snooze(&mut self) {
-        self.snooze_until_ms = None;
     }
 
     /// Whether a snooze is currently active at `now_ms` (auto-resumes after).
@@ -422,14 +412,11 @@ mod tests {
     }
 
     #[test]
-    fn app_snooze_until_relaunch_saturates_and_clear_reenables() {
+    fn app_snooze_until_relaunch_saturates() {
         let mut p = Prefs::default();
         // u64::MAX minutes saturates: effectively "until relaunch".
         p.snooze_app("com.googlecode.iterm2", 5_000, u64::MAX);
         assert!(!p.should_suggest(Some("com.googlecode.iterm2"), None, u64::MAX - 1));
-        // Clearing re-enables before any deadline.
-        p.clear_app_snooze("com.googlecode.iterm2");
-        assert!(p.should_suggest(Some("com.googlecode.iterm2"), None, 5_000));
         // A hard exclude still dominates regardless of snooze state.
         p.excluded_apps.insert("com.googlecode.iterm2".into());
         assert!(!p.should_suggest(Some("com.googlecode.iterm2"), None, 5_000));
@@ -766,15 +753,6 @@ mod tests {
         assert!(p.mid_line_enabled(None, true));
         assert!(!p.mid_line_enabled(None, false));
         assert!(p.collection_allowed(None));
-    }
-
-    #[test]
-    fn clear_snooze_resumes_immediately() {
-        let mut p = Prefs::default();
-        p.snooze(0, 10);
-        p.clear_snooze();
-        assert!(!p.is_snoozed(1000));
-        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1000));
     }
 
     #[test]

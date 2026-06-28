@@ -171,6 +171,10 @@ pub fn redact(input: &str) -> String {
 }
 
 /// Whether `digits` (ASCII digits only) satisfies the Luhn checksum.
+///
+/// Test-only `&str` convenience wrapper over [`luhn_valid_bytes`]; the
+/// production card-redaction path validates raw bytes directly.
+#[cfg(test)]
 pub fn luhn_valid(digits: &str) -> bool {
     luhn_valid_bytes(digits.as_bytes())
 }
