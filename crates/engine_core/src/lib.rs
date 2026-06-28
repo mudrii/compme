@@ -728,6 +728,10 @@ impl SuggestionMachine {
     /// chars, which only the AX range-replace path honors. SyntheticKeys/Clipboard
     /// cannot do that atomically, so offering there would both leave the typed
     /// token (`:smile😄`) and desync the host's diff baseline — so we don't.
+    ///
+    /// Test-only: production code calls [`Self::offer_replacement_multi`]
+    /// directly. This single-candidate wrapper survives only for test call sites.
+    #[cfg(test)]
     pub fn offer_replacement(
         &mut self,
         field: &FieldHandle,

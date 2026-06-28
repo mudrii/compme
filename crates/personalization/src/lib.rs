@@ -68,18 +68,6 @@ impl Strength {
         Strength::STOPS[index]
     }
 
-    /// The slider position `0..=5`.
-    pub fn stop(self) -> u8 {
-        match self {
-            Strength::Off => 0,
-            Strength::Stop1 => 1,
-            Strength::Stop2 => 2,
-            Strength::Stop3 => 3,
-            Strength::Stop4 => 4,
-            Strength::Max => 5,
-        }
-    }
-
     /// The directive phrase whose forcefulness scales with the stop. `Off` has
     /// no directive (personalization disabled).
     fn directive(self) -> &'static str {
@@ -320,8 +308,8 @@ mod tests {
 
     #[test]
     fn all_six_stops_are_distinct() {
-        let stops: Vec<u8> = Strength::STOPS.iter().map(|s| s.stop()).collect();
-        assert_eq!(stops, vec![0, 1, 2, 3, 4, 5]);
+        let stops: Vec<Strength> = (0u8..6).map(Strength::from_stop).collect();
+        assert_eq!(stops, Strength::STOPS.to_vec());
     }
 
     #[test]
@@ -362,11 +350,8 @@ mod tests {
         // The slider is a strictly-increasing 6-stop scale 0..=5 with no tier cap
         // (§6 / §16: full reach for every user). Pin the ordering contract and the
         // tick↔stop round-trip so an intermediate stop can't silently reorder.
-        let indices: Vec<u8> = Strength::STOPS.iter().map(|s| s.stop()).collect();
-        assert_eq!(indices, vec![0, 1, 2, 3, 4, 5]);
         for (i, stop) in Strength::STOPS.iter().enumerate() {
             assert_eq!(Strength::from_stop(i as u8), *stop);
-            assert_eq!(stop.stop() as usize, i);
         }
         // Every stop above Off yields a non-empty, distinct directive (the steer
         // is observable and never collapses two stops to the same forcefulness).

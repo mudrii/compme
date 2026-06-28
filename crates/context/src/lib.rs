@@ -17,18 +17,6 @@ pub fn right_context(value: &str, caret: usize) -> String {
     value.chars().skip(caret).collect()
 }
 
-/// The last `n` scalars of the text before the caret. `caret` is a
-/// Unicode-scalar offset (see [`left_context`] for the conversion obligation);
-/// both `caret` and `n` are clamped to what exists — never panics.
-pub fn left_tail(value: &str, caret: usize, n: usize) -> String {
-    if n == 0 {
-        return String::new();
-    }
-
-    let left: Vec<char> = value.chars().take(caret).collect();
-    left[left.len().saturating_sub(n)..].iter().collect()
-}
-
 /// Strip trailing whitespace from a left-context prompt (the model should not
 /// see a dangling space/newline after the caret). Leading whitespace is kept —
 /// it is part of the user's text. Named for what it does: trims the *trailing*
@@ -330,7 +318,6 @@ Recent: green blue\n"
         // is a scalar index, so caret 2 lands just after "a😀".
         assert_eq!(left_context("a😀b", 2), "a😀");
         assert_eq!(right_context("a😀b", 2), "b");
-        assert_eq!(left_tail("a😀b", 2, 1), "😀");
     }
 
     #[test]
@@ -344,35 +331,10 @@ Recent: green blue\n"
     }
 
     #[test]
-    fn left_tail_caret_zero_is_empty() {
-        assert_eq!(left_tail("abc", 0, 2), "");
-    }
-
-    #[test]
     fn left_context_at_exact_len_returns_all() {
         // Caret exactly at the scalar count (not past-end) is the boundary case.
         assert_eq!(left_context("hé日", 3), "hé日");
         assert_eq!(right_context("hé日", 3), "");
-    }
-
-    #[test]
-    fn left_tail_last_n() {
-        assert_eq!(left_tail("abcdefgh", 8, 3), "fgh");
-    }
-
-    #[test]
-    fn left_tail_before_caret() {
-        assert_eq!(left_tail("abcdefgh", 5, 3), "cde");
-    }
-
-    #[test]
-    fn left_tail_zero_is_empty() {
-        assert_eq!(left_tail("abc", 3, 0), "");
-    }
-
-    #[test]
-    fn left_tail_char_safe() {
-        assert_eq!(left_tail("aé日b", 3, 2), "é日");
     }
 
     #[test]
@@ -383,21 +345,6 @@ Recent: green blue\n"
     #[test]
     fn trim_trailing_preserves_leading_whitespace() {
         assert_eq!(trim_trailing("  hi "), "  hi");
-    }
-
-    #[test]
-    fn left_tail_n_exceeds_available_returns_all() {
-        assert_eq!(left_tail("abc", 1, 5), "a");
-    }
-
-    #[test]
-    fn left_tail_caret_past_end_returns_all_left() {
-        assert_eq!(left_tail("abc", 99, 2), "bc");
-    }
-
-    #[test]
-    fn left_tail_empty_string_is_empty() {
-        assert_eq!(left_tail("", 3, 4), "");
     }
 
     #[test]
