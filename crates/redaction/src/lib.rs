@@ -769,6 +769,33 @@ mod tests {
     }
 
     #[test]
+    fn token_secret_keys_respect_word_boundary() {
+        // The higher-frequency credential keys (`token`, `secret`, …) anchor their
+        // key NAME with `\b`, same as the `code` key pinned separately. Only `code`
+        // had a word-boundary pin; this covers the common keys that otherwise ride
+        // on inference. Two directions:
+        //
+        // NEGATIVE — the leading `\b` must NOT fire mid-word, so a benign token
+        // whose substring happens to be a credential key name survives verbatim.
+        // A regression dropping the leading `\b` would start redacting these
+        // (`subtokenvalue=` contains `token`, `passwordless=` contains `password`).
+        assert_eq!(redact("subtokenvalue=x"), "subtokenvalue=x");
+        assert_eq!(redact("passwordless=true"), "passwordless=true");
+
+        // POSITIVE — legitimate `_`-compound credential keys ARE in the
+        // alternation (`refresh[_-]?token`, `client[_-]?secret`) and their values
+        // must be scrubbed regardless of value entropy.
+        assert_eq!(
+            redact("refresh_token=abc123secret"),
+            "refresh_token=[redacted-secret]"
+        );
+        assert_eq!(
+            redact("client_secret=abc123secret"),
+            "client_secret=[redacted-secret]"
+        );
+    }
+
+    #[test]
     fn code_key_requires_word_boundary_so_compound_keys_survive() {
         // NEGATIVE direction: the `code` key alternation is `\bcode\b`, so the
         // leading `\b` must NOT fire mid-word. Compound keys whose suffix is

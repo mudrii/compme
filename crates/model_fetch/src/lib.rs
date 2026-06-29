@@ -1000,6 +1000,75 @@ mod tests {
     }
 
     #[test]
+    fn oversized_part_against_honoring_server_restarts_and_verifies() {
+        // A range-HONORING server (not the 416 path) still replies 200 with the
+        // FULL body when the requested offset is past EOF: the part is longer
+        // than the server's file (the file shrank). `Range: bytes=20-` against a
+        // 10-byte body is unsatisfiable, so the Honor server falls through to a
+        // plain 200 + full body. The download must TRUNCATE-restart (not append
+        // the new body onto the stale 20 bytes) so the final file is exactly the
+        // 10-byte body and the overlong part is gone — the append-vs-truncate +
+        // saturating_add(total) math on the honoring-200 branch, pinned.
+        let body = b"shrunk2bk-"; // exactly 10 bytes
+        assert_eq!(body.len(), 10);
+        let url = serve(body, RangeMode::Honor);
+        let dest = temp_dest("oversize200");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&part, b"01234567890123456789").unwrap(); // 20 bytes > body
+        let expected = sha256_hex(body);
+        let got = download_url(&url, &dest, Some(&expected), |_, _| {}).unwrap();
+        assert_eq!(
+            std::fs::read(&got).unwrap(),
+            body,
+            "overlong part must be discarded via truncate-restart, not appended"
+        );
+        assert!(!part.exists(), "the part is renamed into dest, not left behind");
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_failure_surfaces_io_and_keeps_part() {
+        // The verify-then-rename tail: write_all + sync_all succeed, the sha
+        // matches, but `rename(part, dest)` fails because the dest's PARENT dir
+        // is read-only (creating the new `dest` entry needs write on the dir).
+        // The part is pre-created so the truncate-write reopens an EXISTING file
+        // (allowed under a 0o555 dir) — the failure lands on the rename arm, not
+        // an earlier create. Pin: the error is the crate's Io variant AND the
+        // part survives as the resume base. Skipped under root (root ignores dir
+        // perms, so rename succeeds and the download just completes normally).
+        use std::os::unix::fs::PermissionsExt;
+        let body = b"rename-arm-body";
+        let url = serve(body, RangeMode::Ignore);
+        let dir = std::env::temp_dir().join(format!("compme_ro_rename_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("model.bin");
+        let part = dest.with_extension("part");
+        // Pre-create the part so opening it for write+truncate works under the
+        // read-only dir (creating a NEW file there would fail at the create arm).
+        std::fs::write(&part, b"stale").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let expected = sha256_hex(body);
+        let res = download_url(&url, &dest, Some(&expected), |_, _| {});
+        // Restore write so the temp dir can be cleaned up.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        match res {
+            Err(FetchError::Io(_)) => {
+                assert!(part.exists(), "part kept as the resume base when rename fails");
+                assert!(!dest.exists(), "dest never appears when the rename fails");
+            }
+            // Root ignores dir perms: rename succeeds, the download completes.
+            Ok(_) => assert!(dest.exists()),
+            other => panic!("expected Io or success, got: {other:?}"),
+        }
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
     fn worker_queue_overflow_drops_the_request_and_leaves_it_idle() {
         // The depth-1 sync_channel contract: with one download in flight and
         // one queued, a third request is DROPPED (try_send), its status

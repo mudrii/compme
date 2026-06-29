@@ -161,6 +161,13 @@ impl PersonalizationProfile {
     /// `prefs`, it does not depend on every caller pre-lowercasing. Keys are
     /// expected to be lowercased at insertion (the run loop does this for
     /// config-sourced domains).
+    ///
+    /// The `max_by_key(rule.len())` tie-break over an unordered `HashMap` is
+    /// deterministic because the matching rules can never collide on length: every
+    /// rule that matches `host` is one of its dot-boundary suffixes (or `host`
+    /// itself), and two distinct suffixes of the same string always have distinct
+    /// lengths. So the maximum is unique — no two equal-length rules can both
+    /// match one host, and the HashMap iteration order is irrelevant.
     fn per_domain_instruction(&self, host: &str) -> Option<&String> {
         let host = host.to_ascii_lowercase();
         self.per_domain
@@ -219,6 +226,42 @@ fn host_matches_domain_rule(host: &str, rule: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The single shared decision table for the two independent
+    /// `host_matches_domain_rule` matchers (`personalization` here, `prefs` in its
+    /// own crate). Both modules document that they "must never drift apart"; this
+    /// table is duplicated verbatim into `prefs::tests` so an edit to EITHER
+    /// matcher that changes any decision fails one crate's test. The expected
+    /// column is the decision BOTH matchers currently make (verified empirically),
+    /// so the table is the contract, not either implementation.
+    ///
+    /// NOTE: these matchers take ALREADY-lowercased input (callers fold case
+    /// upstream — `per_domain_instruction` / `should_suggest`). So a mixed-case
+    /// host like `GOOGLE.COM` does NOT match here: that is the raw-matcher
+    /// contract, and both agree on it.
+    pub(crate) const DOMAIN_MATCHER_SHARED_CASES: &[(&str, &str, bool)] = &[
+        ("www.google.com", "google.com", true),
+        ("evilgoogle.com", "google.com", false),
+        ("google.com.evil.com", "google.com", false),
+        ("google.com", "google.com", true),
+        // Case: raw matcher does not fold case (callers do), so this misses.
+        ("GOOGLE.COM", "google.com", false),
+        // Empty host never matches a non-empty rule.
+        ("", "google.com", false),
+        // Empty rule: both agree it does not match a non-empty host.
+        ("google.com", "", false),
+    ];
+
+    #[test]
+    fn domain_matcher_agrees_on_shared_case_table() {
+        for &(host, rule, expected) in DOMAIN_MATCHER_SHARED_CASES {
+            assert_eq!(
+                host_matches_domain_rule(host, rule),
+                expected,
+                "personalization matcher disagrees on ({host:?}, {rule:?})"
+            );
+        }
+    }
 
     #[test]
     fn truncate_chars_keeps_exactly_max_and_cuts_on_a_char_boundary() {

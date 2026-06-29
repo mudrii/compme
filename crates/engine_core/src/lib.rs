@@ -1990,6 +1990,29 @@ mod tests {
     }
 
     #[test]
+    fn preview_reports_the_cycled_candidate_not_the_first() {
+        // preview_accept_insert reads showing.current(), so after a Cycle the
+        // host's self-insert-echo absorption must preview the CYCLED candidate
+        // ("beta"), not candidates[0] ("alpha"). A regression reading the first
+        // candidate would still pass every accept test (which exercise the
+        // accept path) yet desync the echo absorption on the cycled path —
+        // pinned here for both Full and Word (single-word "beta" is its own
+        // whole word, and the default machine() appends no trailing space).
+        let mut machine = showing_candidates(&["alpha", "beta"]);
+        machine.on_event(Event::Cycle); // now showing "beta"
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "beta".into(), 0)),
+            "Full preview must reflect the cycled candidate, not candidates[0]"
+        );
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Word),
+            Some((field("field-a"), "beta".into(), 0)),
+            "Word preview must reflect the cycled candidate, not candidates[0]"
+        );
+    }
+
+    #[test]
     fn accept_word_collapses_to_the_active_candidate() {
         // After a partial (word) accept the sibling candidates are stale — they
         // still begin with the just-accepted word — so cycling must not re-offer

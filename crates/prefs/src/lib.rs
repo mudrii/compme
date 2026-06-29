@@ -242,6 +242,38 @@ impl Prefs {
 mod tests {
     use super::*;
 
+    /// The single shared decision table for the two independent
+    /// `host_matches_domain_rule` matchers (`prefs` here, `personalization` in its
+    /// own crate). The two modules document that they "must never drift apart";
+    /// this table is duplicated verbatim into `personalization::tests`
+    /// (`DOMAIN_MATCHER_SHARED_CASES`) so an edit to EITHER matcher that changes a
+    /// decision fails one crate's test. The expected column is the decision BOTH
+    /// matchers currently make (verified empirically).
+    ///
+    /// NOTE: these matchers take ALREADY-lowercased input (callers fold case
+    /// upstream — `should_suggest` / `per_domain_instruction`). So `GOOGLE.COM`
+    /// does NOT match here; both agree on that raw-matcher contract.
+    const DOMAIN_MATCHER_SHARED_CASES: &[(&str, &str, bool)] = &[
+        ("www.google.com", "google.com", true),
+        ("evilgoogle.com", "google.com", false),
+        ("google.com.evil.com", "google.com", false),
+        ("google.com", "google.com", true),
+        ("GOOGLE.COM", "google.com", false),
+        ("", "google.com", false),
+        ("google.com", "", false),
+    ];
+
+    #[test]
+    fn domain_matcher_agrees_on_shared_case_table() {
+        for &(host, rule, expected) in DOMAIN_MATCHER_SHARED_CASES {
+            assert_eq!(
+                host_matches_domain_rule(host, rule),
+                expected,
+                "prefs matcher disagrees on ({host:?}, {rule:?})"
+            );
+        }
+    }
+
     #[test]
     fn per_app_feature_overrides_inherit_the_global_default() {
         let mut p = Prefs::default();
