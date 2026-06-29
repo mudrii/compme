@@ -135,7 +135,7 @@ fn credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-        r#"(?i)\b((?:password|passwd|secret|token|client[_-]?secret|refresh[_-]?token|api[_-]?key|authorization)\b\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|[^\s,;&]+)"#,
+        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|[^\s,;&]+)"#,
         )
         .expect("credential assignment regex")
     })
@@ -281,6 +281,20 @@ mod tests {
             prose.contains("abcdefabcdefabcdef"),
             "all-letter run survives: {prose:?}"
         );
+    }
+
+    #[test]
+    fn redacts_oauth_callback_params_by_name_regardless_of_entropy() {
+        // `code` and `access_token` are anchored by key name, so even short,
+        // low-entropy values (below the stage-3 {32,} high-entropy floor) are
+        // redacted. Without the key-name arm these would leak.
+        let out = redact("https://x.com/cb?code=abc123&access_token=xyz");
+        assert_eq!(
+            out,
+            "https://x.com/cb?code=[redacted-secret]&access_token=[redacted-secret]"
+        );
+        assert!(!out.contains("abc123"), "code value must be gone");
+        assert!(!out.contains("xyz"), "access_token value must be gone");
     }
 
     #[test]

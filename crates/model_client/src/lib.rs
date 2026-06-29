@@ -448,7 +448,7 @@ fn complete_on_worker(
     // "last" token when empty.
     let last = to_decode.len().saturating_sub(1);
     for (index, token) in to_decode.iter().enumerate() {
-        let position = (reuse + index) as i32;
+        let position = i32::try_from(reuse + index).unwrap_or(i32::MAX);
         if let Err(err) = batch.add(*token, position, &[0], index == last) {
             reset_on_err(context, prev_tokens);
             return Err(LocalModelError::new("add prompt token to batch", err));

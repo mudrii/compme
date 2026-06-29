@@ -40,20 +40,31 @@ impl CompatTier {
     }
 }
 
-/// Whether a bundle id is a web browser. Google Docs and other web editors run
-/// inside one, so a browser field that is not yet readable may need
-/// Accessibility / Text-Metrics setup. (MirrorOnly browsers render via the
-/// engine's existing popup-anchor fallback when inline caret geometry is absent.)
-pub fn is_browser(bundle_id: &str) -> bool {
-    // Exact ids first (the curated set)...
+/// Normalize a macOS bundle id for case-insensitive, boundary-tolerant matching:
+/// trim surrounding whitespace, drop any trailing dots, and lowercase. Reverse-DNS
+/// bundle ids are case-insensitive in practice, so a mis-cased or trailing-dot id
+/// (e.g. `Com.Apple.Terminal.`) must classify identically to its canonical form —
+/// otherwise an `Unsupported` app or terminal could fail open and get suggestions.
+/// Lowercasing is collision-free here: all curated ids are distinct in lowercase.
+fn normalize_bundle_id(bundle_id: &str) -> String {
+    bundle_id.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Whether a (normalized) bundle id belongs to a recognized browser family. The
+/// exact curated ids plus dot-bounded variant families (canary/beta/dev/nightly,
+/// Chromium forks). Shared by `is_browser` and `compatibility_tier` so the
+/// browser-family invariant holds in both: any id this recognizes gets a concrete
+/// (never `Unknown`) tier. Input must already be normalized.
+fn is_browser_family(id: &str) -> bool {
+    // Exact ids first (the curated set, lowercased)...
     if matches!(
-        bundle_id,
-        "com.apple.Safari"
-            | "com.google.Chrome"
+        id,
+        "com.apple.safari"
+            | "com.google.chrome"
             | "com.microsoft.edgemac"
-            | "com.brave.Browser"
-            | "com.vivaldi.Vivaldi"
-            | "company.thebrowser.Browser"
+            | "com.brave.browser"
+            | "com.vivaldi.vivaldi"
+            | "company.thebrowser.browser"
             | "company.thebrowser.dia"
             | "org.mozilla.firefox"
             | "org.mozilla.firefoxdeveloperedition"
@@ -70,18 +81,23 @@ pub fn is_browser(bundle_id: &str) -> bool {
     // process hosts the AX tree), and excluding them would need a deny-list
     // that drifts.
     [
-        "com.google.Chrome.",
+        "com.google.chrome.",
         "org.chromium.",
         "com.vivaldi.",
         "com.microsoft.edgemac.",
-        "com.brave.Browser.",
+        "com.brave.browser.",
     ]
     .iter()
-    .any(|family| {
-        bundle_id
-            .strip_prefix(family)
-            .is_some_and(|rest| !rest.is_empty())
-    })
+    .any(|family| id.strip_prefix(family).is_some_and(|rest| !rest.is_empty()))
+}
+
+/// Whether a bundle id is a web browser. Google Docs and other web editors run
+/// inside one, so a browser field that is not yet readable may need
+/// Accessibility / Text-Metrics setup. (MirrorOnly browsers render via the
+/// engine's existing popup-anchor fallback when inline caret geometry is absent.)
+/// The id is normalized first (case/whitespace/trailing-dot tolerant).
+pub fn is_browser(bundle_id: &str) -> bool {
+    is_browser_family(&normalize_bundle_id(bundle_id))
 }
 
 /// Whether the focused field needs Accessibility/Text-Metrics setup before inline
@@ -127,7 +143,10 @@ const GO_SUBCOMMANDS: &[&str] = &[
 /// Whether a bundle id is a terminal emulator whose suggestions should only
 /// activate for AI-agent natural-language prompts, not arbitrary shell input.
 pub fn is_terminal(bundle_id: &str) -> bool {
-    matches!(bundle_id, "com.apple.Terminal" | "com.googlecode.iterm2")
+    matches!(
+        normalize_bundle_id(bundle_id).as_str(),
+        "com.apple.terminal" | "com.googlecode.iterm2"
+    )
 }
 
 /// Heuristic for terminal AI-agent prompt activation (design spec §16): in a
@@ -253,30 +272,34 @@ fn is_path_token(token: &str) -> bool {
         || token.starts_with("~/")
 }
 
-/// Classify a macOS application bundle id into a compatibility tier.
+/// Classify a macOS application bundle id into a compatibility tier. The id is
+/// normalized first (case/whitespace/trailing-dot tolerant) so a mis-cased or
+/// trailing-dot id for an `Unsupported` app or terminal cannot fail open into the
+/// permissive `Unknown` fallthrough.
 pub fn compatibility_tier(bundle_id: &str) -> CompatTier {
-    match bundle_id {
+    let id = normalize_bundle_id(bundle_id);
+    match id.as_str() {
         // Works — a representative set across families. The curated Chromium
         // browsers (Brave/Edge/Vivaldi) classify like Chrome — they share its
         // Blink engine and were previously fail-open Unknown despite being
         // listed in `is_browser`, so they emitted no compat guidance.
-        "com.apple.Safari"
-        | "com.google.Chrome"
-        | "com.brave.Browser"
+        "com.apple.safari"
+        | "com.google.chrome"
+        | "com.brave.browser"
         | "com.microsoft.edgemac"
-        | "com.vivaldi.Vivaldi"
+        | "com.vivaldi.vivaldi"
         | "com.apple.mail"
-        | "com.microsoft.Word"
-        | "com.apple.TextEdit"
-        | "com.apple.Notes"
+        | "com.microsoft.word"
+        | "com.apple.textedit"
+        | "com.apple.notes"
         | "notion.id"
         | "md.obsidian"
-        | "com.apple.MobileSMS"
-        | "com.apple.Terminal"
+        | "com.apple.mobilesms"
+        | "com.apple.terminal"
         | "com.googlecode.iterm2" => CompatTier::Works,
 
         // Setup needed — Arc/Dia need Text Metrics / a launch flag for inline.
-        "company.thebrowser.Browser" | "company.thebrowser.dia" => CompatTier::SetupNeeded,
+        "company.thebrowser.browser" | "company.thebrowser.dia" => CompatTier::SetupNeeded,
 
         // Mirror-window only. All Gecko/Firefox-family builds share the same
         // lack of inline caret geometry, so the Developer Edition and Nightly
@@ -291,20 +314,28 @@ pub fn compatibility_tier(bundle_id: &str) -> CompatTier {
         "com.tinyspeck.slackmacgap" => CompatTier::Partial,
 
         // Sidebar/AI-chat only (code editors — editor pane stays disabled).
-        "com.microsoft.VSCode" | "com.todesktop.230313mzl4w4u92" | "com.exafunction.windsurf" => {
+        "com.microsoft.vscode" | "com.todesktop.230313mzl4w4u92" | "com.exafunction.windsurf" => {
             CompatTier::SidebarOnly
         }
 
         // Explicitly unsupported.
         "org.mozilla.thunderbird"
-        | "com.apple.iWork.Pages"
+        | "com.apple.iwork.pages"
         | "com.literatureandlatte.scrivener3"
         | "com.microsoft.onenote.mac"
         | "com.barebones.bbedit"
         | "com.sublimetext.3"
         | "com.sublimetext.4"
         | "com.mitchellh.ghostty"
-        | "dev.warp.Warp-Stable" => CompatTier::Unsupported,
+        | "dev.warp.warp-stable" => CompatTier::Unsupported,
+
+        // Browser-family variant/helper builds (Chrome canary, Edge Beta,
+        // Vivaldi snapshot, Chromium forks, in-family helpers). `is_browser`
+        // recognizes these, so the stated invariant — recognized browsers are
+        // compatible and never fall through to Unknown — must hold here too.
+        // They classify Works (the Chromium/Blink default): a concrete tier
+        // rather than the fail-open Unknown the comment claimed was fixed.
+        _ if is_browser_family(&id) => CompatTier::Works,
 
         _ => CompatTier::Unknown,
     }
@@ -812,13 +843,16 @@ mod tests {
 
     #[test]
     fn is_browser_false_for_bare_family_prefix_with_empty_suffix() {
-        // The dot-bounded family check (is_browser, line ~83) requires a NON-empty
-        // suffix after the family prefix: strip_prefix succeeds but yields "", so
-        // the `!rest.is_empty()` guard rejects it. A bundle id that is exactly a
-        // family prefix is therefore not a browser (it is neither an exact-id match
-        // nor a real variant build).
+        // The dot-bounded family check requires a NON-empty suffix after the
+        // family prefix: strip_prefix succeeds but yields "", so the
+        // `!rest.is_empty()` guard rejects it. `org.chromium.` normalizes (trailing
+        // dot trimmed) to the bare prefix `org.chromium`, which is neither an
+        // exact-id match nor a real variant build → not a browser.
         assert!(!is_browser("org.chromium."));
-        assert!(!is_browser("com.brave.Browser."));
+        assert!(!is_browser("org.chromium"));
+        // Note: `com.brave.Browser.` normalizes to the EXACT curated id
+        // `com.brave.browser`, so it IS a browser — see
+        // trailing_dot_and_whitespace_id_classifies_like_canonical.
     }
 
     #[test]
@@ -867,6 +901,16 @@ mod tests {
             "org.mozilla.firefoxdeveloperedition",
             "org.mozilla.nightly",
             "app.zen-browser.zen",
+            // Family-variant / helper builds is_browser also recognizes —
+            // the invariant must now hold for these too (L5), they were
+            // Unknown before.
+            "com.google.Chrome.canary",
+            "com.google.Chrome.beta",
+            "com.google.Chrome.helper",
+            "org.chromium.Chromium",
+            "com.microsoft.edgemac.Beta",
+            "com.brave.Browser.nightly",
+            "com.vivaldi.Vivaldi.snapshot",
         ];
         for b in curated {
             assert!(is_browser(b), "{b} should be a curated browser");
@@ -892,5 +936,77 @@ mod tests {
             terminal_prompt_activates("com.mitchellh.ghostty", "git commit -m wip"),
             "the terminal prompt heuristic must not gate an unlisted terminal (Ghostty)"
         );
+    }
+
+    #[test]
+    fn miscased_unsupported_app_is_not_fail_open() {
+        // Reverse-DNS bundle ids are case-insensitive in practice. A mis-cased
+        // Unsupported id must still classify Unsupported (suppress suggestions),
+        // not fall through the permissive Unknown arm and silently fail open.
+        for id in [
+            "COM.MITCHELLH.GHOSTTY",
+            "Com.Mitchellh.Ghostty",
+            "com.apple.iwork.pages", // canonical is com.apple.iWork.Pages
+            "DEV.WARP.WARP-STABLE",  // canonical is dev.warp.Warp-Stable
+        ] {
+            assert_eq!(
+                compatibility_tier(id),
+                CompatTier::Unsupported,
+                "{id} must classify Unsupported, not fail open to Unknown"
+            );
+            assert!(
+                !compatibility_tier(id).allows_suggestions(),
+                "{id} must suppress suggestions"
+            );
+        }
+    }
+
+    #[test]
+    fn miscased_terminal_is_still_a_terminal() {
+        // A mis-cased terminal id must still be gated by the prompt heuristic
+        // (is_terminal true), otherwise the terminal would fail open and suggest
+        // for arbitrary shell input.
+        for id in ["COM.APPLE.TERMINAL", "Com.Googlecode.Iterm2"] {
+            assert!(is_terminal(id), "{id} must classify as a terminal");
+            assert!(
+                !terminal_prompt_activates(id, "git commit -m wip"),
+                "{id} must gate shell input like a canonical terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_dot_and_whitespace_id_classifies_like_canonical() {
+        // A trailing-dot or whitespace-padded id (as can arrive from some AX
+        // sources) must normalize to the canonical id rather than fail open.
+        assert!(is_terminal("com.apple.Terminal."));
+        assert_eq!(compatibility_tier("com.apple.Terminal."), CompatTier::Works);
+        assert_eq!(
+            compatibility_tier("  com.mitchellh.ghostty  "),
+            CompatTier::Unsupported
+        );
+        assert!(is_browser("  com.google.Chrome.  "));
+    }
+
+    #[test]
+    fn browser_variant_and_helper_ids_get_concrete_tier() {
+        // L5: is_browser recognizes Chromium-family variant/helper builds, so
+        // compatibility_tier must give them a concrete (non-Unknown) tier — the
+        // stated browser-family invariant. They classify Works (Blink default).
+        for id in [
+            "com.google.Chrome.canary",
+            "com.google.Chrome.helper",
+            "org.chromium.Chromium",
+            "com.microsoft.edgemac.Beta",
+            "com.brave.Browser.nightly",
+            "com.vivaldi.Vivaldi.snapshot",
+        ] {
+            assert!(is_browser(id), "{id} should be a browser");
+            assert_eq!(
+                compatibility_tier(id),
+                CompatTier::Works,
+                "{id} is a recognized browser, must not be Unknown"
+            );
+        }
     }
 }
