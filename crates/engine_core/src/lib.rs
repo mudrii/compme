@@ -2161,6 +2161,31 @@ mod tests {
     }
 
     #[test]
+    fn caret_move_does_not_clear_suppression() {
+        // Esc-suppression is cleared ONLY by Focus and TextChanged (the two paths
+        // that set `suppressed = false`); a CaretMoved must NOT clear it. This
+        // pins that deliberate non-clear: a no-op caret move (same field+caret)
+        // leaves the field suppressed, so a local replacement offer is still
+        // blocked. The mirror of `focus_to_other_field_clears_suppression`.
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        machine.on_event(Event::DismissSuppress); // suppress the current field
+        machine.on_event(Event::CaretMoved {
+            field: f.clone(),
+            caret: 0, // same field+caret the machine already tracks → no-op move
+        });
+
+        // Suppression survived the caret move: the field is still blocked, so an
+        // offer (gated by `self.suppressed`) produces nothing and shows no ghost.
+        assert_eq!(
+            machine.offer_replacement(&f, "\u{1F604}".into(), 5),
+            vec![],
+            "a no-op CaretMoved must not clear Esc-suppression"
+        );
+        assert!(machine.showing.is_none());
+    }
+
+    #[test]
     fn dismiss_discard_blocks_an_inflight_completion() {
         // The tray Disable path (`Event::DismissDiscard`) must stale an in-flight
         // request: dropping only the queued requests leaves one already submitted
@@ -3453,6 +3478,25 @@ mod tests {
             }),
             vec![]
         );
+    }
+
+    #[test]
+    fn completion_ready_multi_without_request_is_noop() {
+        // The multi-candidate sibling of `completion_ready_without_request_is_noop`:
+        // a CompletionReadyMulti that matches no outstanding request is dropped
+        // (no request was ever armed) — no ShowGhost, nothing showing.
+        let mut machine = machine();
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReadyMulti {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                candidates: vec!["unrequested".into(), "also unrequested".into()],
+            }),
+            vec![]
+        );
+        assert!(machine.showing.is_none());
     }
 
     #[test]

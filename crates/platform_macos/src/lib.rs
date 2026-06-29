@@ -7395,6 +7395,92 @@ mod tests {
     }
 
     #[test]
+    fn popup_anchor_blocks_when_global_secure_input_is_enabled() {
+        let adapter = test_adapter_with_secure_input(true);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.popup_anchor(&field),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
+    }
+
+    #[test]
+    fn popup_anchor_blocks_secure_text_field_handles() {
+        let adapter = test_adapter_with_secure_input(false);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: AxElementIdentity::new(
+                "ax:0x123",
+                Some(42),
+                Some("password".into()),
+                Some("AXTextField".into()),
+                Some(kAXSecureTextFieldSubrole.into()),
+            )
+            .field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.popup_anchor(&field),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            })
+        );
+    }
+
+    #[test]
+    fn caret_diagnostics_blocks_when_global_secure_input_is_enabled() {
+        let adapter = test_adapter_with_secure_input(true);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.caret_diagnostics(&field),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
+    }
+
+    #[test]
+    fn caret_diagnostics_blocks_secure_text_field_handles() {
+        let adapter = test_adapter_with_secure_input(false);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: AxElementIdentity::new(
+                "ax:0x123",
+                Some(42),
+                Some("password".into()),
+                Some("AXTextField".into()),
+                Some(kAXSecureTextFieldSubrole.into()),
+            )
+            .field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.caret_diagnostics(&field),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            })
+        );
+    }
+
+    #[test]
     fn insert_blocks_when_global_secure_input_is_enabled() {
         let adapter = test_adapter_with_secure_input(true);
         let field = FieldHandle {

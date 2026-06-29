@@ -767,4 +767,25 @@ mod tests {
         assert!(!out.contains("abc123def456abc123"), "{out:?}");
         assert!(!out.contains("ref1234567890xyz"), "{out:?}");
     }
+
+    #[test]
+    fn code_key_requires_word_boundary_so_compound_keys_survive() {
+        // NEGATIVE direction: the `code` key alternation is `\bcode\b`, so the
+        // leading `\b` must NOT fire mid-word. Compound keys whose suffix is
+        // `code` (preceded by a word char like `_` or a letter) are legitimate
+        // data and must pass through verbatim — value preserved unchanged.
+        // A regression dropping the `\b` (e.g. `\bcode\b` -> `code`) would
+        // silently start redacting these and corrupt the data.
+        assert_eq!(redact("error_code=500"), "error_code=500");
+        assert_eq!(redact("postal_code=12345"), "postal_code=12345");
+        assert_eq!(redact("status_code=404"), "status_code=404");
+        assert_eq!(redact("barcode=12345"), "barcode=12345");
+
+        // POSITIVE direction: a bare `code` key IS a credential key (OAuth
+        // authorization code) and its value must be redacted regardless of
+        // entropy. The secret value must be gone, replaced by the marker.
+        let out = redact("code=abc123");
+        assert_eq!(out, "code=[redacted-secret]");
+        assert!(!out.contains("abc123"), "secret value leaked: {out:?}");
+    }
 }

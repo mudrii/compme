@@ -448,7 +448,7 @@ fn complete_on_worker(
     // "last" token when empty.
     let last = to_decode.len().saturating_sub(1);
     for (index, token) in to_decode.iter().enumerate() {
-        let position = i32::try_from(reuse + index).unwrap_or(i32::MAX);
+        let position = prompt_suffix_position(reuse, index);
         if let Err(err) = batch.add(*token, position, &[0], index == last) {
             reset_on_err(context, prev_tokens);
             return Err(LocalModelError::new("add prompt token to batch", err));
@@ -643,6 +643,17 @@ pub fn generation_range(prompt_len: usize, max_tokens: usize) -> (i32, i32) {
     let first = i32::try_from(prompt_len).unwrap_or(i32::MAX);
     let end = first.saturating_add(i32::try_from(max_tokens).unwrap_or(i32::MAX));
     (first, end)
+}
+
+/// The llama.cpp position for the prompt-suffix token at `index` within the
+/// re-decoded tail that begins at cache offset `reuse`.
+///
+/// Extracted from `complete_on_worker` so the saturating cast — the part a
+/// pathological `reuse + index` (> `i32::MAX`) would corrupt — is unit-testable
+/// without a real `LlamaContext`. llama.cpp positions are `i32`; the cast
+/// saturates so an overflowing sum can never wrap to a negative position.
+pub fn prompt_suffix_position(reuse: usize, index: usize) -> i32 {
+    i32::try_from(reuse + index).unwrap_or(i32::MAX)
 }
 
 /// Compute the [`DecodePlan`] for `current` prompt tokens against the `prev`
@@ -1174,6 +1185,18 @@ mod tests {
     }
 
     #[test]
+    fn prompt_suffix_position_saturates_past_i32_max() {
+        // Normal contiguous positions: the suffix token at `index` within a tail
+        // starting at cache offset `reuse` decodes at `reuse + index`.
+        assert_eq!(prompt_suffix_position(0, 0), 0);
+        assert_eq!(prompt_suffix_position(2, 1), 3);
+        // A pathological reuse/index whose sum exceeds i32::MAX must saturate to
+        // i32::MAX rather than wrap to a negative llama.cpp position.
+        assert_eq!(prompt_suffix_position(usize::MAX, 0), i32::MAX);
+        assert_eq!(prompt_suffix_position(i32::MAX as usize, 1), i32::MAX);
+    }
+
+    #[test]
     fn decode_positions_are_contiguous_through_generation() {
         // The decode positions must form one unbroken 0-based run from the start
         // of the re-decoded prompt suffix straight into generation, with no gap or
@@ -1184,7 +1207,13 @@ mod tests {
         // (one token left to re-decode), so the prompt suffix decodes at position
         // [2, 3), and generation runs at [3, 7).
         let plan = plan_decode(&[1, 2, 3], &[1, 2, 3], 4, 2048);
-        let prompt_positions: Vec<i32> = (plan.reuse as i32..plan.prompt_len as i32).collect();
+        // Reconstruct the prompt-suffix positions through the REAL production
+        // helper (`prompt_suffix_position`), not a tautological local `as i32`
+        // cast: the suffix re-decodes `to_decode = tokens[reuse..]`, so index `i`
+        // maps to position `prompt_suffix_position(reuse, i)`.
+        let prompt_positions: Vec<i32> = (0..plan.prompt_len - plan.reuse)
+            .map(|index| prompt_suffix_position(plan.reuse, index))
+            .collect();
         let (first_gen, end_gen) = generation_range(plan.prompt_len, 4);
         let gen_positions: Vec<i32> = (first_gen..end_gen).collect();
 
@@ -1200,8 +1229,10 @@ mod tests {
             all.windows(2).all(|w| w[1] == w[0] + 1),
             "decode positions must be contiguous across the prompt/generation seam: {all:?}"
         );
-        // The first generated position picks up exactly where the prompt ended.
-        assert_eq!(first_gen, plan.prompt_len as i32);
+        // The first generated position picks up exactly where the prompt's last
+        // suffix token left off: prompt_suffix_position(reuse, len-reuse-1) + 1.
+        let last_prompt_pos = prompt_suffix_position(plan.reuse, plan.prompt_len - plan.reuse - 1);
+        assert_eq!(first_gen, last_prompt_pos + 1);
     }
 
     #[test]

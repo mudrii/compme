@@ -725,6 +725,39 @@ mod tests {
     }
 
     #[test]
+    fn decrypting_a_blob_under_a_different_app_aad_returns_none() {
+        // The app id is bound as GCM AAD. Decrypting a valid blob under a
+        // DIFFERENT app id must fail authentication and yield None — it must
+        // never leak the original app's plaintext. This pins the actual crypto
+        // boundary (AAD mismatch -> auth fail) rather than only observing that
+        // `recent()` happens to return nothing.
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(15), StorageMode::AcceptedOnly).unwrap();
+            store.remember("real.app", "private note").unwrap();
+        }
+        // Read the raw stored ciphertext blob back via a plain connection.
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        let blob: Vec<u8> = raw
+            .query_row("SELECT blob FROM memories LIMIT 1", [], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .unwrap();
+        drop(raw);
+
+        let store = MemoryStore::open(&path, &key(15), StorageMode::AcceptedOnly).unwrap();
+        // Positive control: under the correct AAD the blob decrypts to the
+        // original plaintext, proving the blob and key are valid.
+        assert_eq!(
+            store.decrypt(&blob, b"real.app").as_deref(),
+            Some("private note")
+        );
+        // Boundary: under a different app's AAD, no plaintext is returned.
+        assert_eq!(store.decrypt(&blob, b"attacker.app"), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn same_plaintext_gets_a_fresh_nonce_each_time() {
         // GCM security rests on a unique nonce per encryption under a given key.
         // Recording the SAME (app, text) twice must produce blobs whose leading

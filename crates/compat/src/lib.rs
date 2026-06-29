@@ -962,6 +962,25 @@ mod tests {
     }
 
     #[test]
+    fn miscased_sidebar_only_editor_keeps_restriction() {
+        // Reverse-DNS bundle ids are case-insensitive in practice. A mis-cased
+        // SidebarOnly editor id (VS Code / Windsurf) must still classify
+        // SidebarOnly — if normalization regressed it would drop to Unknown,
+        // which allows suggestions, leaking them into the editor pane.
+        for id in ["COM.MICROSOFT.VSCODE", "COM.EXAFUNCTION.WINDSURF"] {
+            assert_eq!(
+                compatibility_tier(id),
+                CompatTier::SidebarOnly,
+                "{id} must classify SidebarOnly, not fail open to Unknown"
+            );
+            assert!(
+                compatibility_tier(id).sidebar_only(),
+                "{id} must keep the sidebar-only restriction"
+            );
+        }
+    }
+
+    #[test]
     fn miscased_terminal_is_still_a_terminal() {
         // A mis-cased terminal id must still be gated by the prompt heuristic
         // (is_terminal true), otherwise the terminal would fail open and suggest
