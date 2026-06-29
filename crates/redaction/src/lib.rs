@@ -775,12 +775,17 @@ mod tests {
         // had a word-boundary pin; this covers the common keys that otherwise ride
         // on inference. Two directions:
         //
-        // NEGATIVE — the leading `\b` must NOT fire mid-word, so a benign token
-        // whose substring happens to be a credential key name survives verbatim.
-        // A regression dropping the leading `\b` would start redacting these
-        // (`subtokenvalue=` contains `token`, `passwordless=` contains `password`).
-        assert_eq!(redact("subtokenvalue=x"), "subtokenvalue=x");
-        assert_eq!(redact("passwordless=true"), "passwordless=true");
+        // NEGATIVE — the leading `\b` must NOT fire mid-word. Here the credential
+        // key name is glued to a non-boundary prefix AND sits directly adjacent to
+        // `=`, so the `\s*[:=]` adjacency requirement does NOT save us — only the
+        // leading `\b` does. Dropping it makes `token=`/`password=` match the tail
+        // of `xtoken`/`mypassword` and wrongly redact. These must survive verbatim.
+        assert_eq!(redact("xtoken=secret123value"), "xtoken=secret123value");
+        assert_eq!(redact("mypassword=hunter2value"), "mypassword=hunter2value");
+
+        // POSITIVE control — the SAME bare keys, this time at a word boundary and
+        // adjacent to `=`, DO match and redact their value.
+        assert_eq!(redact("token=secret123value"), "token=[redacted-secret]");
 
         // POSITIVE — legitimate `_`-compound credential keys ARE in the
         // alternation (`refresh[_-]?token`, `client[_-]?secret`) and their values
