@@ -3776,6 +3776,21 @@ fn read_context_for_field(pid: i32, field: FieldHandle) -> Result<TextContext, P
         return Err(PlatformError::StaleField);
     }
 
+    // TOCTOU re-check, mirroring the insert path's `recheck_secure_input`. The
+    // dispatch-site guard in `read_context` samples global secure input once on
+    // the calling thread; secure input can turn on in the window before this
+    // worker thread reads `kAXValueAttribute` (e.g. an out-of-process password
+    // prompt arms secure input mid-read). The `StaleField` guard above only
+    // catches focus moving to a DIFFERENT element, not the same focused element
+    // while global secure input flips on. Re-checking here keeps the window as
+    // narrow as possible. `IsSecureEventInputEnabled()` is a global C call safe
+    // from any thread.
+    if macos_secure_input_enabled() {
+        return Err(PlatformError::SecureInput {
+            state: SecurityState::SecureInputEnabled,
+        });
+    }
+
     let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
     let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
     Ok(text_context_from_value(field, value, selected_range))
@@ -3786,6 +3801,16 @@ fn caret_rect_for_field(pid: i32, field: FieldHandle) -> Result<Option<ScreenRec
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
+    }
+
+    // TOCTOU re-check on the worker thread, mirroring `read_context_for_field`
+    // and the insert path's `recheck_secure_input`. Lower sensitivity than the
+    // value read (geometry, not plaintext), but fixed for consistency so both
+    // field-read workers share the fail-closed posture.
+    if macos_secure_input_enabled() {
+        return Err(PlatformError::SecureInput {
+            state: SecurityState::SecureInputEnabled,
+        });
     }
 
     let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
