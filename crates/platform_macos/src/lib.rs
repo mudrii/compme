@@ -3895,6 +3895,16 @@ fn popup_anchor_for_field(
         return Err(PlatformError::StaleField);
     }
 
+    // TOCTOU re-check on the worker thread, uniform with the other four
+    // `_for_field` workers. Lowest sensitivity of the set (window-chrome
+    // `AXFrame` geometry, never field text/caret), but re-checked anyway so all
+    // five `_for_field` workers share the fail-closed posture with no straggler.
+    if macos_secure_input_enabled() {
+        return Err(PlatformError::SecureInput {
+            state: SecurityState::SecureInputEnabled,
+        });
+    }
+
     unsafe {
         let Some((window, _window_owner)) =
             copy_ax_element_attribute(element, AX_WINDOW_ATTRIBUTE)?
