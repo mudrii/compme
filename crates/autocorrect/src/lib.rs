@@ -59,8 +59,7 @@ pub fn correct(word: &str) -> Option<String> {
     }
     let correction = TYPOS
         .iter()
-        .find(|(typo, _)| *typo == key)
-        .map(|(_, fix)| *fix)?;
+        .find_map(|(typo, fix)| (*typo == key).then_some(*fix))?;
     Some(CasePattern::of(word.trim()).apply(correction))
 }
 
