@@ -135,7 +135,7 @@ fn credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b((?:password|passwd|secret|token|api[_-]?key|authorization)\b\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|[^\s,;&]+)"#,
+        r#"(?i)\b((?:password|passwd|secret|token|client[_-]?secret|refresh[_-]?token|api[_-]?key|authorization)\b\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|[^\s,;&]+)"#,
         )
         .expect("credential assignment regex")
     })
@@ -740,5 +740,17 @@ mod tests {
         let with_digit = "abcdefghijklmnopqrstuvwxyzabcdefghijklm1"; // 39 letters + 1 digit
         assert_eq!(with_digit.len(), 40);
         assert_eq!(redact(with_digit), "[redacted-secret]");
+    }
+    #[test]
+    fn redacts_url_query_client_secret_and_refresh_token() {
+        let out = redact(
+            "open https://example.test/callback?client_secret=abc123def456abc123&refresh_token=ref1234567890xyz&state=ok",
+        );
+
+        assert!(out.contains("client_secret=[redacted-secret]"));
+        assert!(out.contains("refresh_token=[redacted-secret]"));
+        assert!(out.contains("state=ok"));
+        assert!(!out.contains("abc123def456abc123"), "{out:?}");
+        assert!(!out.contains("ref1234567890xyz"), "{out:?}");
     }
 }

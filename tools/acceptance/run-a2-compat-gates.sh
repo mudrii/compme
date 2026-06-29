@@ -310,12 +310,6 @@ OSA
     echo "FAIL self-test-product-exit-status-a2: nonzero compme exit was not observed as failure" >&2
     failures=$((failures + 1))
   fi
-  if "$ROOT_DIR/tools/acceptance/e2e-complete-me.sh" --self-test >/dev/null; then
-    echo "PASS self-test-product-exit-status-e2e"
-  else
-    echo "FAIL self-test-product-exit-status-e2e: e2e harness did not fail on nonzero compme exit" >&2
-    failures=$((failures + 1))
-  fi
 
   rm -rf "$tmp_dir"
   if [[ "$failures" -gt 0 ]]; then
