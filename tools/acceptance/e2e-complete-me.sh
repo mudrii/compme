@@ -120,20 +120,27 @@ assert_pipeline_evidence() {
   fi
 
   if [ "$readback_mode" = "real" ]; then
-    document_chars="$(printf '%s' "$document_text" | wc -m | tr -d '[:space:]')"
-    baseline_chars="$(printf '%s' "$expected_text" | wc -m | tr -d '[:space:]')"
-    accepted_chars="$(sed -n 's/.*gen=[0-9][0-9]* candidate_lengths=\[\([0-9][0-9]*\).*/\1/p' "$log_file" | tail -n 1)"
-    document_delta=$((document_chars - baseline_chars))
+    document_bytes="$(printf '%s' "$document_text" | wc -c | tr -d '[:space:]')"
+    baseline_bytes="$(printf '%s' "$expected_text" | wc -c | tr -d '[:space:]')"
+    candidate_bytes="$(sed -n 's/.*gen=[0-9][0-9]* candidate_lengths=\[\([0-9][0-9]*\).*/\1/p' "$log_file" | tail -n 1)"
+    document_delta=$((document_bytes - baseline_bytes))
     if [ "$document_delta" -le 0 ]; then
       echo "E2E: document did not grow after real-model accept [FAIL]"
       ok=0
-    elif [ -z "$accepted_chars" ]; then
-      echo "E2E: missing accepted completion length evidence [FAIL]"
+    elif [ -z "$candidate_bytes" ]; then
+      echo "E2E: missing completion length evidence [FAIL]"
       ok=0
-    elif [ "$document_delta" -eq "$accepted_chars" ]; then
-      echo "E2E: document grew by accepted completion length [PASS]"
+    elif [ "$accept_mode" = "word" ]; then
+      if [ "$document_delta" -le "$candidate_bytes" ]; then
+        echo "E2E: document grew by bounded word accept length [PASS]"
+      else
+        echo "E2E: document growth exceeded completion length [FAIL]"
+        ok=0
+      fi
+    elif [ "$document_delta" -eq "$candidate_bytes" ]; then
+      echo "E2E: document grew by full completion length [PASS]"
     else
-      echo "E2E: document growth did not match accepted completion length [FAIL]"
+      echo "E2E: document growth did not match full completion length [FAIL]"
       ok=0
     fi
   else
@@ -277,6 +284,24 @@ run_self_tests() {
     failures=$((failures + 1))
   else
     echo "PASS self-test-e2e-pipeline-evidence-real-rejects-unrelated-growth"
+  fi
+  word_pipeline_log="$tmp_dir/word-pipeline.log"
+  printf '%s\n' \
+    'compme: focus TextEdit' \
+    'compme: request gen=7 prompt_chars=32 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true' \
+    'compme: completion gen=7 candidate_count=1 candidate_lengths=[8]' \
+    'compme: accept Word' >"$word_pipeline_log"
+  if assert_pipeline_evidence 'prompt baseline ok' 'prompt baseline' "$word_pipeline_log" word 0 real >/dev/null; then
+    echo "PASS self-test-e2e-pipeline-evidence-real-word-accepts-bounded-growth"
+  else
+    echo "FAIL self-test-e2e-pipeline-evidence-real-word-accepts-bounded-growth" >&2
+    failures=$((failures + 1))
+  fi
+  if assert_pipeline_evidence 'prompt baseline plus too much' 'prompt baseline' "$word_pipeline_log" word 0 real >/dev/null; then
+    echo "FAIL self-test-e2e-pipeline-evidence-real-word-rejects-overgrowth" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-pipeline-evidence-real-word-rejects-overgrowth"
   fi
   if assert_pipeline_evidence 'prefix only' 'STUB-COMPLETE' "$pipeline_log" full 0 >/dev/null; then
     echo "FAIL self-test-e2e-pipeline-evidence-missing-readback: missing stub passed" >&2
