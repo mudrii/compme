@@ -3954,6 +3954,18 @@ fn caret_diagnostics_for_field(
         return Err(PlatformError::StaleField);
     }
 
+    // TOCTOU re-check on the worker thread, mirroring `caret_rect_for_field`.
+    // Geometry-only (no plaintext), but kept uniform across all `_for_field`
+    // worker fns so they share the fail-closed posture: the dispatch-site guard
+    // samples global secure input once on the calling thread, and the
+    // `StaleField` guard above only catches focus moving to a DIFFERENT element,
+    // not the same focused element while global secure input flips on.
+    if macos_secure_input_enabled() {
+        return Err(PlatformError::SecureInput {
+            state: SecurityState::SecureInputEnabled,
+        });
+    }
+
     let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
     let caret = selected_range.location.max(0);
     let marker_rect = unsafe { read_ax_bounds_for_selected_text_marker_range(element) }?;
@@ -4019,6 +4031,19 @@ fn insert_for_field(
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
+    }
+
+    // TOCTOU re-check on the worker thread, mirroring `read_context_for_field`
+    // and `caret_rect_for_field`. The dispatch-site guard samples global secure
+    // input once on the calling thread; secure input can flip on in the window
+    // before this worker reads `kAXValueAttribute` (the full field plaintext)
+    // below. The `StaleField` guard above only catches focus moving to a
+    // DIFFERENT element, not the same focused element while global secure input
+    // arms. Re-checking here keeps the window as narrow as possible.
+    if macos_secure_input_enabled() {
+        return Err(PlatformError::SecureInput {
+            state: SecurityState::SecureInputEnabled,
+        });
     }
 
     let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
