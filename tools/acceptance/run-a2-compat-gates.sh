@@ -67,8 +67,8 @@ has_terminal_nlp_request() {
 }
 
 has_clipboard_prompt_context() {
-  grep -Eq 'prompt_context=Some\("sources=[^"]*clipboard[^"]*clipboard_chars=24([^0-9]|")' "$1" \
-    && grep -q 'clipboard_context=Some(chars=24 marker=true)' "$1"
+  grep -Eq 'prompt_context=Some\("sources=[^"]*clipboard[^"]*clipboard_chars=[1-9][0-9]*([^0-9]|")' "$1" \
+    && grep -Eq 'clipboard_context=Some\(chars=[1-9][0-9]* marker=true\)' "$1"
 }
 
 has_screen_prompt_context() {
@@ -149,6 +149,13 @@ compme: request gen=7 prompt_chars=5 app=com.apple.TextEdit app_allows=true term
 compme: clipboard_context=Some(chars=24 marker=true)
 compme: screen_context=Some(12)
 compme: prompt_context=Some("sources=clipboard,screen chars=36 clipboard_chars=24 screen_chars=12")
+LOG
+  varied_clipboard="$tmp_dir/varied-clipboard.log"
+  cat >"$varied_clipboard" <<'LOG'
+compme: focus ax:1
+compme: request gen=8 prompt_chars=5 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: clipboard_context=Some(chars=17 marker=true)
+compme: prompt_context=Some("sources=clipboard chars=17 clipboard_chars=17")
 LOG
   cat >"$raw_prompt_context" <<'LOG'
 compme: focus ax:1
@@ -321,7 +328,18 @@ OSA
 
 if [[ "$KIND" == "--self-test" ]]; then
   run_self_tests
-  exit $?
+  status=$?
+  tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t compme-a2-clipboard-self-test)"
+  varied_clipboard="$tmp_dir/varied-clipboard.log"
+  cat >"$varied_clipboard" <<'LOG'
+compme: clipboard_context=Some(chars=17 marker=true)
+compme: prompt_context=Some("sources=clipboard chars=17 clipboard_chars=17")
+LOG
+  if ! has_clipboard_prompt_context "$varied_clipboard"; then
+    status=1
+  fi
+  rm -rf "$tmp_dir"
+  exit "$status"
 fi
 
 if [[ -z "$PID" ]]; then

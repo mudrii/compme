@@ -16,6 +16,16 @@ use llama_cpp_2::model::{AddBos, LlamaModel as LlamaCppModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
+fn model_context_tokens_from_env(raw: Option<&str>) -> u32 {
+    raw.and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2048)
+}
+
+fn model_gpu_layers_from_env(raw: Option<&str>) -> u32 {
+    raw.and_then(|raw| raw.parse::<u32>().ok()).unwrap_or(999)
+}
+
 /// Result alias for model-backend operations; the error is always
 /// [`LocalModelError`].
 pub type LocalModelResult<T> = Result<T, LocalModelError>;
@@ -199,7 +209,9 @@ impl LlamaModel {
                 let model = match LlamaCppModel::load_from_file(
                     backend,
                     &path,
-                    &LlamaModelParams::default().with_n_gpu_layers(999),
+                    &LlamaModelParams::default().with_n_gpu_layers(model_gpu_layers_from_env(
+                        std::env::var("COMPME_MODEL_GPU_LAYERS").ok().as_deref(),
+                    )),
                 ) {
                     Ok(model) => model,
                     Err(err) => {
@@ -207,8 +219,12 @@ impl LlamaModel {
                         return;
                     }
                 };
-                let context_params = LlamaContextParams::default()
-                    .with_n_ctx(Some(NonZeroU32::new(2048).expect("2048 is non-zero")));
+                let context_params = LlamaContextParams::default().with_n_ctx(Some(
+                    NonZeroU32::new(model_context_tokens_from_env(
+                        std::env::var("COMPME_MODEL_CONTEXT_TOKENS").ok().as_deref(),
+                    ))
+                    .expect("context tokens are non-zero"),
+                ));
                 let mut context = match model.new_context(backend, context_params) {
                     Ok(context) => context,
                     Err(err) => {
@@ -1255,5 +1271,16 @@ mod tests {
             terse_continuation_prompt(prefix),
             format!("Complete this text inline. Return only the continuation.\nText: {prefix}")
         );
+    }
+    #[test]
+    fn context_tokens_env_override_accepts_positive_values_only() {
+        assert_eq!(model_context_tokens_from_env(None), 2048);
+        assert_eq!(model_context_tokens_from_env(Some("512")), 512);
+        assert_eq!(model_context_tokens_from_env(Some("0")), 2048);
+        assert_eq!(model_context_tokens_from_env(Some("not-a-number")), 2048);
+        assert_eq!(model_gpu_layers_from_env(None), 999);
+        assert_eq!(model_gpu_layers_from_env(Some("0")), 0);
+        assert_eq!(model_gpu_layers_from_env(Some("12")), 12);
+        assert_eq!(model_gpu_layers_from_env(Some("not-a-number")), 999);
     }
 }

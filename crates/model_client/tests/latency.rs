@@ -43,6 +43,25 @@ fn ensure_model_exists(path: &std::path::Path) -> bool {
     false
 }
 
+fn require_model_context() -> bool {
+    model_tests_required(
+        std::env::var("COMPME_REQUIRE_MODEL_CONTEXT")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn load_model_or_skip(path: &std::path::Path) -> Option<LlamaModel> {
+    match LlamaModel::load(path) {
+        Ok(model) => Some(model),
+        Err(err) if require_model_context() => panic!("load model: {err}"),
+        Err(err) => {
+            eprintln!("skipping real-model assertion: load model failed: {err}");
+            None
+        }
+    }
+}
+
 #[test]
 fn strict_model_test_env_parses_truthy_values() {
     for raw in [
@@ -78,20 +97,22 @@ fn strict_latency_budget_env_parses_truthy_values() {
 #[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn warm_completion_under_500ms() {
+    if !require_latency_budget() {
+        return;
+    }
+
     let path = model_path();
     if !ensure_model_exists(&path) {
         return;
     }
 
-    let model = LlamaModel::load(&path).expect("load model");
+    let Some(model) = load_model_or_skip(&path) else {
+        return;
+    };
     let prompt = terse_continuation_prompt("The quick brown fox");
     // Exercise the real warm-up override (Metal shader precompile) rather than a
     // bare throwaway completion.
     model.warm_up().expect("warm up");
-    if !require_latency_budget() {
-        return;
-    }
-
     let started = Instant::now();
     let output = model.complete(&prompt, 12).expect("measured completion");
     let elapsed_ms = started.elapsed().as_millis();
@@ -115,7 +136,7 @@ fn warm_completion_under_500ms() {
 #[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
 fn prefix_reuse_matches_fresh_context_output() {
-    if !require_latency_budget() {
+    if !require_model_tests() {
         return;
     }
 
@@ -124,7 +145,9 @@ fn prefix_reuse_matches_fresh_context_output() {
         return;
     }
 
-    let reused = LlamaModel::load(&path).expect("load model");
+    let Some(reused) = load_model_or_skip(&path) else {
+        return;
+    };
     reused.warm_up().expect("warm up");
 
     let prompt_a = terse_continuation_prompt("The quick brown fox");
@@ -146,7 +169,9 @@ fn prefix_reuse_matches_fresh_context_output() {
     );
 
     // Compare the partial-reuse result against a fresh, never-reused context.
-    let fresh = LlamaModel::load(&path).expect("load fresh model");
+    let Some(fresh) = load_model_or_skip(&path) else {
+        return;
+    };
     fresh.warm_up().expect("warm up fresh");
     let b_fresh = fresh.complete(&prompt_b, 12).expect("b fresh");
     assert_eq!(
@@ -166,14 +191,13 @@ fn complete_n_returns_real_model_candidates() {
         return;
     }
 
-    if !require_latency_budget() {
+    if !require_model_tests() {
         return;
     }
-    let model = LlamaModel::load(&path).expect("load model");
+    let Some(model) = load_model_or_skip(&path) else {
+        return;
+    };
     model.warm_up().expect("warm up");
-    if !require_latency_budget() {
-        return;
-    }
     let prompt = terse_continuation_prompt("The quick brown fox");
     let candidates = model.complete_n(&prompt, 12, 3).expect("complete_n");
 

@@ -1130,6 +1130,23 @@ mod tests {
     }
 
     #[test]
+    fn signed_link_rejects_scope_tampering_after_signature() {
+        let original = signed_url("compme://setOverride?app=com.apple.TextEdit&enabled=true");
+        let cases = [
+            original.replace("app=com.apple.TextEdit", "app=com.apple.Notes"),
+            original.replace("enabled=true", "enabled=false"),
+            original.replace("setOverride?app=", "setOverride?domain="),
+        ];
+
+        for tampered in cases {
+            assert_eq!(
+                parse_deep_link_with_trust(&tampered, Some(&test_trusted_key())),
+                Err(ParseError::InvalidSignature)
+            );
+        }
+    }
+
+    #[test]
     fn verify_strict_rejects_low_order_key_that_plain_verify_would_accept() {
         // parse_deep_link_with_trust verifies with `verify_strict` (lib.rs
         // ~L240), NOT `verify`. The distinction is load-bearing and this is the
