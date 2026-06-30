@@ -1973,6 +1973,77 @@ mod tests {
     }
 
     #[test]
+    fn on_force_show_re_presents_the_held_ghost_and_keeps_the_tap_armed() {
+        // The always-on Force-Show hotkey routes through `Engine::on_force_show`,
+        // not just the core machine. Exercise that engine-level seam: with a ghost
+        // already up, force-show must re-dispatch a `ShowGhost` to the overlay
+        // (re-present verbatim, covering a prior failed placement) and must NOT
+        // disarm the still-valid accept tap — a regression in the dispatch wiring
+        // (forgot to dispatch, or toggled the tap off) would silently break the
+        // hotkey with no other test to catch it.
+        let (mut engine, _adapter, overlay) = engine();
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            |_delay| Ok(()),
+            |_act| Ok(()),
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "hi there".into()).unwrap();
+        // Drop the setup noise so we observe only the force-show effects.
+        overlay.calls.lock().unwrap().clear();
+        visible.lock().unwrap().clear();
+
+        let follow = engine.on_force_show().unwrap();
+
+        assert!(
+            follow.is_empty(),
+            "force-show re-presents the held candidate, never kicks a fresh request"
+        );
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Show(
+                ScreenRect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 1.0,
+                    h: 14.0,
+                },
+                "hi there".into()
+            )],
+            "force-show must re-dispatch the held ghost to the overlay verbatim"
+        );
+        assert!(
+            !visible.lock().unwrap().contains(&false),
+            "the still-valid accept tap must stay armed across a force-show"
+        );
+    }
+
+    #[test]
+    fn on_force_show_with_nothing_showing_is_a_noop() {
+        // No ghost held → the core machine emits no commands, so the engine seam
+        // must touch neither the overlay nor request fresh inference.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+
+        let follow = engine.on_force_show().unwrap();
+
+        assert!(follow.is_empty(), "no follow-up requests on an empty force-show");
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "the overlay must not be touched when there is nothing to force-show"
+        );
+    }
+
+    #[test]
     fn completion_for_wrong_field_is_dropped() {
         // Staleness at the dispatch boundary: a completion stamped for a field
         // OTHER than the one the in-flight request was issued for must be dropped.

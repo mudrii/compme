@@ -858,4 +858,47 @@ mod tests {
         // A single shared entry holds all four edits (not four separate rows).
         assert_eq!(p.per_app.len(), 1);
     }
+
+    #[test]
+    fn set_app_policy_field_tri_state_then_delete_reverts_to_inherit() {
+        // The doc contract: the tri-state Option fields distinguish an explicit
+        // Some(false) (force-off, overriding the default) from None (inherit), and
+        // "revert a field to inherit" is done by DELETING the per-app row — there
+        // is no setter path back to None. Pin both halves so a future change to the
+        // entry/getter inherit math can't silently regress it.
+        // `Prefs::default()` already has `default_enabled = true` (suggestions ON).
+        let mut p = Prefs::default();
+        assert!(p.default_enabled);
+        let app = "com.tinyspeck.slackmacgap";
+
+        // Explicit Some(false) overrides the permissive global default...
+        p.set_app_policy_field(app, AppPolicyField::Enabled, false);
+        assert_eq!(p.per_app[app].enabled, Some(false));
+        assert!(
+            !p.should_suggest(Some(app), None, 0),
+            "Some(false) must force-off even though default_enabled is true"
+        );
+
+        // ...and deleting the whole per-app row reverts the field to inherit, so
+        // the global default governs again (the only revert-to-None path).
+        p.per_app.remove(app);
+        assert!(
+            p.should_suggest(Some(app), None, 0),
+            "after the row is deleted the app inherits default_enabled (true)"
+        );
+
+        // The same revert path applies to the other tri-state knobs: an explicit
+        // Some(true) override differs from inherit, and delete returns to the
+        // caller-supplied global default rather than leaving a stale Some.
+        p.set_app_policy_field(app, AppPolicyField::Autocorrect, true);
+        assert!(
+            p.autocorrect_enabled(Some(app), false),
+            "Some(true) overrides a false global default"
+        );
+        p.per_app.remove(app);
+        assert!(
+            !p.autocorrect_enabled(Some(app), false),
+            "after delete, autocorrect inherits the false global default"
+        );
+    }
 }

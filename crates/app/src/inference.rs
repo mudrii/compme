@@ -1159,6 +1159,48 @@ mod tests {
     }
 
     #[test]
+    fn set_profile_steers_without_triggering_a_request() {
+        // A Personalization-pane edit must be a pure state write: it re-steers the
+        // NEXT submitted request but must never itself enqueue inference. If a
+        // future change made set_profile "refresh" by re-submitting, the worker
+        // would burn a completion (and possibly flash a ghost) on every knob edit.
+        // Pin that no outcome is produced until the caller actually submits.
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+
+        // Several edits in a row, with no submit between them.
+        for tone in ["Write tersely.", "Write formally.", "Write casually."] {
+            inference.set_profile(PersonalizationProfile {
+                global_instructions: tone.into(),
+                ..Default::default()
+            });
+        }
+
+        // Give a (mis)triggered request time to surface, then assert silence.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            inference.drain_outcomes().is_empty(),
+            "set_profile must not enqueue inference — no outcome may appear without a submit"
+        );
+
+        // The last write is what the next real submission is steered by.
+        inference.submit(request("hi", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            outcome.candidates[0].contains("Write casually."),
+            "the surviving (last) profile steers the prompt: {:?}",
+            outcome.candidates[0]
+        );
+        inference.shutdown();
+    }
+
+    #[test]
     fn per_app_personalization_uses_request_app() {
         let mut profile = PersonalizationProfile {
             global_instructions: "Use short completions.".into(),
