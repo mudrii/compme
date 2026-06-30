@@ -198,6 +198,23 @@ mod tests {
     }
 
     #[test]
+    fn multibyte_words_are_safe_and_never_falsely_corrected() {
+        // The typo table is all-ASCII, so a multibyte word's lowercased key can
+        // never match — `correct`/`is_typo` must return None/false without
+        // panicking on the UTF-8 (the `to_lowercase` and `CasePattern::of` paths
+        // both reason over scalars, not bytes). Covers accented words, a German ß
+        // (whose uppercase expands to two chars), and CJK.
+        for word in ["café", "naïve", "Straße", "résumé", "日本語", "Élan"] {
+            assert_eq!(correct(word), None, "{word}");
+            assert!(!is_typo(word), "{word}");
+        }
+        // A multibyte prefix glued onto an ASCII typo also can't match the bare
+        // key, and the surrounding case logic must not panic.
+        assert_eq!(correct("éteh"), None);
+        assert_eq!(correct("tehé"), None);
+    }
+
+    #[test]
     fn mixed_case_query_is_handled_deterministically() {
         // Mixed-case path: `CasePattern::of` keys on the FIRST cased letter, so a
         // first-lower mixed query is Lower (pass-through correction) and a

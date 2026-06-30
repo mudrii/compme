@@ -1152,6 +1152,43 @@ mod tests {
     }
 
     #[test]
+    fn percentile_on_no_samples_is_none_for_every_pct() {
+        // The `samples.is_empty()` early-return: a fresh machine (and one whose
+        // only samples fall outside the window) has no latencies, so *every*
+        // percentile — including the otherwise-valid p1/p50/p100 — is None, not a
+        // panic on an empty slice / out-of-range index.
+        let mut s = Stats::new();
+        for pct in [1u8, 50, 100] {
+            assert_eq!(s.latency_percentile_ms(T0, pct), None, "fresh pct={pct}");
+        }
+        // A sample recorded a full window (WINDOW_MS) in the past falls before the
+        // cutoff, so querying `now` sees an empty in-window sample set → None.
+        s.record_latency(T0, 42);
+        let far_future = T0 + WINDOW_MS + 1; // strictly older than the window
+        assert_eq!(s.latency_percentile_ms(far_future, 50), None);
+    }
+
+    #[test]
+    fn percentile_of_all_zero_samples_is_some_zero_not_none() {
+        // The "max == 0" edge from the spec: samples that are all zero are still
+        // real samples, so the result is `Some(0)` — distinct from the empty case
+        // (`None`). A single zero sample exercises the n==1 rank clamp too:
+        // ceil(pct/100 * 1) clamps to 1 for every pct, yielding the lone value.
+        let mut s = Stats::new();
+        for ms in [0u32, 0, 0] {
+            s.record_latency(T0, ms);
+        }
+        for pct in [1u8, 50, 99, 100] {
+            assert_eq!(s.latency_percentile_ms(T0, pct), Some(0), "zeros pct={pct}");
+        }
+        // Single zero sample: still Some(0), never None and never a panic.
+        let mut one = Stats::new();
+        one.record_latency(T0, 0);
+        assert_eq!(one.latency_percentile_ms(T0, 50), Some(0));
+        assert_eq!(one.latency_percentile_ms(T0, 100), Some(0));
+    }
+
+    #[test]
     fn acceptance_rate_is_none_when_nothing_shown_even_with_accepts() {
         // The guard's actual purpose: no divide-by-zero / Inf when accepts exist
         // but nothing was recorded as Shown.

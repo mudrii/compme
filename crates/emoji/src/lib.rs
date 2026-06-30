@@ -642,4 +642,132 @@ mod tests {
             "\u{1F64B}\u{1F3FF}\u{200D}\u{2642}\u{FE0F}"
         );
     }
+
+    #[test]
+    fn gendered_skin_tone_matrix_is_exhaustive_at_exact_codepoints() {
+        // Full 2 entries × 3 genders × 6 tones matrix, with the expected glyph
+        // built independently of `render`: person scalar, then (for a non-default
+        // tone) the Fitzpatrick modifier spliced in BEFORE the ZWJ, then the rest
+        // of the gendered cluster. The prior tests only spot-check a handful of
+        // cells; this asserts every cell at exact codepoints so a regression in
+        // the splice point or in any single tone/gender pairing is caught.
+        const ZWJ: char = '\u{200D}';
+        const VS16: char = '\u{FE0F}';
+        const FEMALE: char = '\u{2640}';
+        const MALE: char = '\u{2642}';
+        // (shortcode, person scalar for the gendered/neutral base).
+        let entries = [(":raising_hand", '\u{1F64B}'), (":shrug", '\u{1F937}')];
+        let tones = [
+            (SkinTone::Default, None),
+            (SkinTone::Light, Some('\u{1F3FB}')),
+            (SkinTone::MediumLight, Some('\u{1F3FC}')),
+            (SkinTone::Medium, Some('\u{1F3FD}')),
+            (SkinTone::MediumDark, Some('\u{1F3FE}')),
+            (SkinTone::Dark, Some('\u{1F3FF}')),
+        ];
+        for (shortcode, person) in entries {
+            for (tone, modifier) in tones {
+                // Neutral: bare person glyph + optional tone (no ZWJ cluster).
+                let mut neutral = String::new();
+                neutral.push(person);
+                if let Some(m) = modifier {
+                    neutral.push(m);
+                }
+                let prefs = EmojiPrefs {
+                    gender: Gender::Neutral,
+                    skin_tone: tone,
+                };
+                assert_eq!(
+                    suggest(shortcode, &prefs).unwrap().glyph,
+                    neutral,
+                    "{shortcode} Neutral {tone:?}"
+                );
+
+                // Female / male: person [+ tone] + ZWJ + sign + VS-16.
+                for (gender, sign) in [(Gender::Female, FEMALE), (Gender::Male, MALE)] {
+                    let mut expected = String::new();
+                    expected.push(person);
+                    if let Some(m) = modifier {
+                        expected.push(m);
+                    }
+                    expected.push(ZWJ);
+                    expected.push(sign);
+                    expected.push(VS16);
+                    let prefs = EmojiPrefs {
+                        gender,
+                        skin_tone: tone,
+                    };
+                    assert_eq!(
+                        suggest(shortcode, &prefs).unwrap().glyph,
+                        expected,
+                        "{shortcode} {gender:?} {tone:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn skin_tone_false_entries_are_verbatim_across_all_tones() {
+        // Every `skin_tone:false`, non-gendered entry must render its base glyph
+        // byte-for-byte regardless of the requested tone — tone is silently
+        // ignored, never appended. Covers the `render` else-branch for the whole
+        // class of non-people emoji, not just the single 🔥 spot-check.
+        let tones = [
+            SkinTone::Default,
+            SkinTone::Light,
+            SkinTone::MediumLight,
+            SkinTone::Medium,
+            SkinTone::MediumDark,
+            SkinTone::Dark,
+        ];
+        for entry in TABLE.iter().filter(|e| !e.skin_tone && e.gendered.is_none()) {
+            for tone in tones {
+                let prefs = EmojiPrefs {
+                    skin_tone: tone,
+                    ..Default::default()
+                };
+                let s = suggest(&format!(":{}", entry.shortcode), &prefs).unwrap();
+                assert_eq!(
+                    s.glyph, entry.base,
+                    "{:?} must be verbatim for {tone:?}",
+                    entry.shortcode
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_gendered_skin_tone_bases_apply_every_tone() {
+        // The non-gendered `skin_tone:true` bases (thumbsup, wave, clap, …) append
+        // exactly the requested Fitzpatrick modifier and nothing else, for every
+        // tone. This is the people-emoji counterpart to the verbatim test above
+        // and exercises `with_skin_tone` across the whole class, not one glyph.
+        let tones = [
+            (SkinTone::Default, None),
+            (SkinTone::Light, Some('\u{1F3FB}')),
+            (SkinTone::MediumLight, Some('\u{1F3FC}')),
+            (SkinTone::Medium, Some('\u{1F3FD}')),
+            (SkinTone::MediumDark, Some('\u{1F3FE}')),
+            (SkinTone::Dark, Some('\u{1F3FF}')),
+        ];
+        for entry in TABLE.iter().filter(|e| e.skin_tone && e.gendered.is_none()) {
+            for (tone, modifier) in tones {
+                let mut expected = entry.base.to_string();
+                if let Some(m) = modifier {
+                    expected.push(m);
+                }
+                let prefs = EmojiPrefs {
+                    skin_tone: tone,
+                    ..Default::default()
+                };
+                let s = suggest(&format!(":{}", entry.shortcode), &prefs).unwrap();
+                assert_eq!(
+                    s.glyph, expected,
+                    "{:?} tone {tone:?}",
+                    entry.shortcode
+                );
+            }
+        }
+    }
 }

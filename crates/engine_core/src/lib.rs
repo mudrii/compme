@@ -2052,6 +2052,46 @@ mod tests {
     }
 
     #[test]
+    fn force_show_does_not_resurrect_a_suggestion_staled_by_an_edit() {
+        // A snapshot-invalidating edit hides the ghost AND clears `showing`, so
+        // the held candidate (captured at snapshot 1) is gone. ForceShow re-shows
+        // ONLY what is still in `showing`; after the edit there is nothing, so it
+        // must be a no-op — never re-render the stale "world there friend" against
+        // the now-current (snapshot 2) document. A regression that retained the
+        // candidate would emit a ShowGhost at the old snapshot and clobber text.
+        let mut machine = showing_three_words();
+        assert_eq!(
+            machine.on_event(text_changed("xy", 2, 600)),
+            vec![Command::Hide]
+        );
+        assert_eq!(
+            machine.on_event(Event::ForceShow),
+            vec![],
+            "ForceShow must not resurrect a suggestion staled by an edit"
+        );
+    }
+
+    #[test]
+    fn force_show_does_not_resurrect_a_suggestion_staled_by_a_caret_move() {
+        // Same invariant via the caret-move hide path: moving the caret hides the
+        // ghost and clears `showing`, so the subsequent ForceShow has nothing to
+        // re-present and must be a no-op rather than re-rendering the stale ghost.
+        let mut machine = showing_three_words();
+        assert_eq!(
+            machine.on_event(Event::CaretMoved {
+                field: field("field-a"),
+                caret: 9,
+            }),
+            vec![Command::Hide]
+        );
+        assert_eq!(
+            machine.on_event(Event::ForceShow),
+            vec![],
+            "ForceShow must not resurrect a suggestion staled by a caret move"
+        );
+    }
+
+    #[test]
     fn accept_full_inserts_the_cycled_candidate() {
         let mut machine = showing_candidates(&["alpha", "beta"]);
         machine.on_event(Event::Cycle); // now showing "beta"

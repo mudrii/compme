@@ -645,6 +645,43 @@ mod tests {
     }
 
     #[test]
+    fn scope_rejects_non_ascii_confusable_homoglyphs() {
+        // Homograph-attack guard: the charset allow-list is
+        // `is_ascii_alphanumeric()`, NOT Unicode `is_alphanumeric()`, so a scope
+        // carrying a non-ASCII letter that merely LOOKS like an ASCII one (a
+        // confusable / homoglyph) must fail closed as InvalidScope — never be
+        // accepted as a different-bytes look-alike of a legitimate app/domain.
+        // The existing charset test pins ASCII metacharacters and control bytes;
+        // this pins the distinct non-ASCII *alphabetic* direction. A future widen
+        // to `is_alphanumeric()` (which returns true for these) would silently
+        // open homograph spoofing of the scope and is exactly what this kills.
+        for confusable in [
+            "\u{0430}pple",   // Cyrillic 'а' (U+0430) for ASCII 'a' in "apple"
+            "g\u{043e}ogle",  // Cyrillic 'о' (U+043E) for ASCII 'o' in "google"
+            "\u{0440}aypal",  // Cyrillic 'р' (U+0440) for ASCII 'p' in "paypal"
+            "ex\u{0430}mple", // Cyrillic 'а' inside a domain-shaped label
+            "caf\u{e9}",      // Latin-1 'é' — a real letter, still non-ASCII
+            "\u{ff41}pp",     // fullwidth 'ａ' (U+FF41) homoglyph of ASCII 'a'
+        ] {
+            // App scope: any non-ASCII letter is rejected outright.
+            let app_url = format!("compme://setOverride?app={confusable}&enabled=true");
+            assert_eq!(
+                parse_deep_link(&app_url),
+                Err(ParseError::InvalidScope),
+                "non-ASCII confusable app scope {confusable:?} must be rejected"
+            );
+            // Domain scope: the same lexical gate runs first, so a confusable
+            // host is rejected before any structural domain check.
+            let domain_url = format!("compme://setOverride?domain={confusable}.com&excluded=true");
+            assert_eq!(
+                parse_deep_link(&domain_url),
+                Err(ParseError::InvalidScope),
+                "non-ASCII confusable domain scope {confusable:?}.com must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn duplicate_param_is_rejected_with_its_name() {
         assert_eq!(
             parse_deep_link("compme://setOverride?app=x&app=y&enabled=true"),

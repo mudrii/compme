@@ -2099,6 +2099,35 @@ mod tests {
     }
 
     #[test]
+    fn apps_policy_tag_packs_and_unpacks_as_an_exact_inverse() {
+        // Each per-row policy checkbox carries a packed tag
+        // `row * APP_POLICY_FIELDS + field` (editAppPolicy:), which the refresh
+        // helpers and the run loop unpack as `tag / APP_POLICY_FIELDS` (row) and
+        // `tag % APP_POLICY_FIELDS` (field). The two must be exact inverses over
+        // every seeded checkbox, INCLUDING the last row (a base mismatch or a
+        // `/`<->`%` swap would mis-route the highest rows silently).
+        for row in 0..APPS_ROWS {
+            for field in 0..APP_POLICY_FIELDS {
+                let tag = row * APP_POLICY_FIELDS + field;
+                assert_eq!(tag / APP_POLICY_FIELDS, row, "row of tag {tag}");
+                assert_eq!(tag % APP_POLICY_FIELDS, field, "field of tag {tag}");
+            }
+        }
+
+        // The pack is a bijection: the row-major sweep visits 0..ROWS*FIELDS once
+        // each with no gaps or collisions, so two distinct (row, field) cells can
+        // never share a tag (which would alias two checkboxes onto one app slot).
+        let mut tags: Vec<usize> = (0..APPS_ROWS)
+            .flat_map(|row| (0..APP_POLICY_FIELDS).map(move |field| row * APP_POLICY_FIELDS + field))
+            .collect();
+        let count = tags.len();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), count, "tags must be unique across all cells");
+        assert_eq!(tags, (0..APPS_ROWS * APP_POLICY_FIELDS).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn record_decision_esc_cancels_even_over_collision() {
         // Esc is BOTH a fixed key and the cancel gesture — cancel wins, even
         // when Esc would also collide with the other role (impossible today,

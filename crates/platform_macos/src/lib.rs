@@ -9499,6 +9499,47 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_plan_collision_filter_handles_the_boundary_sets() {
+        let accept_chords = [
+            (KEYCODE_TAB, 0u32),
+            (KEYCODE_GRAVE, 0u32),
+            (KEYCODE_ESCAPE, 0u32),
+            (KEYCODE_DOWN, 0u32),
+        ];
+
+        // Empty plan stays empty regardless of the accept chords (the install
+        // loop then registers nothing — no shortcuts were bound).
+        assert!(shortcut_plan_minus_accept_collisions(Vec::new(), &accept_chords).is_empty());
+
+        // Every planned chord collides with an accept key → the whole plan is
+        // dropped to empty (each shortcut would have hit eventHotKeyExistsErr).
+        let all_collide = vec![
+            (CARBON_HOTKEY_FORCE_ACTIVATE, KEYCODE_TAB, 0),
+            (CARBON_HOTKEY_TOGGLE_APP, KEYCODE_GRAVE, 0),
+            (CARBON_HOTKEY_TOGGLE_GLOBAL, KEYCODE_DOWN, 0),
+        ];
+        assert!(shortcut_plan_minus_accept_collisions(all_collide, &accept_chords).is_empty());
+
+        // No chord collides → the plan survives verbatim, in its original order
+        // (a filter that reordered or dropped a free chord would change this).
+        let none_collide = vec![
+            (CARBON_HOTKEY_FORCE_ACTIVATE, 96, 0),
+            (CARBON_HOTKEY_TOGGLE_APP, 50, CARBON_SHIFT_KEY),
+            (CARBON_HOTKEY_TOGGLE_GLOBAL, KEYCODE_TAB, CARBON_CONTROL_KEY),
+        ];
+        assert_eq!(
+            shortcut_plan_minus_accept_collisions(none_collide.clone(), &accept_chords),
+            none_collide
+        );
+
+        // An empty accept-chord set can never collide → identity on any plan.
+        assert_eq!(
+            shortcut_plan_minus_accept_collisions(none_collide.clone(), &[]),
+            none_collide
+        );
+    }
+
+    #[test]
     fn shortcut_action_for_hotkey_id_maps_each_always_on_slot() {
         assert_eq!(
             shortcut_action_for_hotkey_id(CARBON_HOTKEY_FORCE_ACTIVATE),

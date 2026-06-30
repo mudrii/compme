@@ -1882,6 +1882,20 @@ fn effective_app_key(
         .or_else(|| (!field.app.starts_with("pid:")).then(|| field.app.clone()))
 }
 
+/// The per-app suggestion-enabled value the ToggleApp shortcut inverts: the
+/// per-app `enabled` OVERRIDE if present, else the global `default_enabled`
+/// baseline. Deliberately NOT `should_suggest`, which folds in snooze /
+/// app-snooze / `excluded_apps` (all of which outrank `enabled`); inverting the
+/// fully-gated value would write an override the gates still mask, so the toggle
+/// would never converge. Pure so the toggle's invert + convergence are testable.
+fn app_enabled_baseline(prefs: &Prefs, app: &str) -> bool {
+    prefs
+        .per_app
+        .get(app)
+        .and_then(|p| p.enabled)
+        .unwrap_or(prefs.default_enabled)
+}
+
 fn canonicalize_field_app(
     mut field: FieldHandle,
     resolver: impl Fn(i32) -> Option<String>,
@@ -2282,6 +2296,20 @@ fn apps_row_ids(counts: &[(String, u64)]) -> Vec<String> {
         .take(platform_macos::APPS_ROWS)
         .map(|(app, _)| app.clone())
         .collect()
+}
+
+/// Whether an Apps-pane policy edit must retract the suggestion already on the
+/// FOCUSED field. Only an Enabled→off edit (`field == Enabled && !on`) on the
+/// app that owns the focused field qualifies — editing a different app's row, or
+/// any non-Enabled / enabling edit, leaves the focused ghost alone (the submit
+/// gate handles future submits). Pure so the focused-vs-other gate is testable.
+fn apps_edit_dismisses_focused(
+    field: prefs::AppPolicyField,
+    on: bool,
+    focused_app: Option<&str>,
+    edited_app: &str,
+) -> bool {
+    field == prefs::AppPolicyField::Enabled && !on && focused_app == Some(edited_app)
 }
 
 /// Map an Apps-row checkbox field index (the low part of the packed tag, see
@@ -3738,17 +3766,13 @@ pub fn run() -> Result<(), String> {
                             .and_then(|f| effective_app_key(f, bundle_id_for_pid))
                         {
                             Some(app) => {
-                                // Read the per-app `enabled` OVERRIDE directly, not
-                                // `should_suggest`: the latter folds in global snooze,
-                                // app-snooze, and `excluded_apps`, all of which take
-                                // precedence over `enabled`. Inverting the fully-gated
-                                // value would write an override the gates still mask,
-                                // so the toggle would do nothing and never converge.
-                                let current = prefs
-                                    .per_app
-                                    .get(&app)
-                                    .and_then(|p| p.enabled)
-                                    .unwrap_or(prefs.default_enabled);
+                                // Invert the per-app `enabled` baseline (override if
+                                // present, else `default_enabled`) — NOT
+                                // `should_suggest`, which folds in snooze / app-snooze
+                                // / `excluded_apps` that outrank `enabled`. See
+                                // `app_enabled_baseline` for why inverting the gated
+                                // value would never converge.
+                                let current = app_enabled_baseline(&prefs, &app);
                                 prefs.set_app_policy_field(
                                     &app,
                                     prefs::AppPolicyField::Enabled,
@@ -4127,14 +4151,10 @@ pub fn run() -> Result<(), String> {
                 // shortcut/snooze/global-disable edges. Gated on the edited app
                 // being the focused one so editing another app's row never
                 // dismisses the focused field's ghost.
-                if field == prefs::AppPolicyField::Enabled
-                    && !on
-                    && current_field
-                        .as_ref()
-                        .and_then(|f| effective_app_key(f, bundle_id_for_pid))
-                        .as_deref()
-                        == Some(app.as_str())
-                {
+                let focused_app = current_field
+                    .as_ref()
+                    .and_then(|f| effective_app_key(f, bundle_id_for_pid));
+                if apps_edit_dismisses_focused(field, on, focused_app.as_deref(), app) {
                     latest.clear();
                     let _ = log_err("on_dismiss", engine.on_dismiss());
                 }
@@ -5192,6 +5212,71 @@ mod tests {
         assert!(!reloaded.should_suggest(Some("com.foo.disabled"), None, 0));
         assert!(reloaded.should_suggest(Some("com.foo.enabled"), None, 0));
         assert!(!reloaded.should_suggest(Some("com.foo.excluded"), None, 0));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn web_override_persist_round_trips_midline_autocorrect_tab_disabled_per_app() {
+        // r2 HIGH-2: the Apps-pane feature overrides (mid_line / autocorrect /
+        // tab_disabled) must survive persist_web_override_prefs -> build_prefs
+        // EXACTLY and INDEPENDENTLY of the enabled / excluded keys. These three
+        // fields are set via set_app_policy_field (not deep links), so the
+        // existing enabled/excluded round-trip test never exercised them — the
+        // _ON/_OFF/_TAB_DISABLED comma-list serialization was untested end to end.
+        let mut prefs = Prefs::default();
+        // An app carrying ONLY feature overrides (no enabled/excluded override),
+        // so we prove the feature keys round-trip on their own.
+        prefs.set_app_policy_field("com.foo.feat", prefs::AppPolicyField::MidLine, true);
+        prefs.set_app_policy_field("com.foo.feat", prefs::AppPolicyField::Autocorrect, false);
+        prefs.set_app_policy_field("com.foo.feat", prefs::AppPolicyField::TabDisabled, true);
+        // A second app exercising the opposite mid_line/autocorrect polarity so
+        // the _ON vs _OFF list split is pinned, not just "non-default present".
+        prefs.set_app_policy_field("com.bar.feat", prefs::AppPolicyField::MidLine, false);
+        prefs.set_app_policy_field("com.bar.feat", prefs::AppPolicyField::Autocorrect, true);
+
+        let dir = std::env::temp_dir().join(format!(
+            "compme-web-override-feature-persist-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.env");
+        persist_web_override_prefs(&path, &prefs);
+
+        let map = config::load_file_map(&path);
+        // The polarity-split comma lists are written verbatim.
+        assert_eq!(
+            map.get("COMPME_MIDLINE_ON_APPS"),
+            Some(&"com.foo.feat".to_string())
+        );
+        assert_eq!(
+            map.get("COMPME_MIDLINE_OFF_APPS"),
+            Some(&"com.bar.feat".to_string())
+        );
+        assert_eq!(
+            map.get("COMPME_AUTOCORRECT_ON_APPS"),
+            Some(&"com.bar.feat".to_string())
+        );
+        assert_eq!(
+            map.get("COMPME_AUTOCORRECT_OFF_APPS"),
+            Some(&"com.foo.feat".to_string())
+        );
+        assert_eq!(
+            map.get("COMPME_TAB_DISABLED_APPS"),
+            Some(&"com.foo.feat".to_string())
+        );
+
+        let reloaded = build_prefs(&|key| map.get(key).cloned());
+        let foo = &reloaded.per_app["com.foo.feat"];
+        assert_eq!(foo.mid_line, Some(true));
+        assert_eq!(foo.autocorrect, Some(false));
+        assert!(foo.tab_disabled);
+        // Independence: the feature-only app never gained an enabled override.
+        assert_eq!(foo.enabled, None);
+        let bar = &reloaded.per_app["com.bar.feat"];
+        assert_eq!(bar.mid_line, Some(false));
+        assert_eq!(bar.autocorrect, Some(true));
+        assert!(!bar.tab_disabled);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -11090,6 +11175,97 @@ mod tests {
         assert!(!should_dismiss_on_disable(false, false)); // already disabled
         assert!(!should_dismiss_on_disable(false, true)); // re-enabling
         assert!(!should_dismiss_on_disable(true, true)); // still enabled
+    }
+
+    #[test]
+    fn app_enabled_baseline_reads_override_then_default() {
+        // The value ToggleApp inverts: per-app `enabled` override wins; absent an
+        // override it falls back to `default_enabled` (NOT should_suggest, so
+        // snooze/exclude don't enter here).
+        let mut prefs = Prefs {
+            default_enabled: true,
+            ..Default::default()
+        };
+        // No override -> default.
+        assert!(app_enabled_baseline(&prefs, "com.none"));
+        prefs.default_enabled = false;
+        assert!(!app_enabled_baseline(&prefs, "com.none"));
+        // Override beats default in both directions.
+        prefs
+            .per_app
+            .entry("com.on".into())
+            .or_default()
+            .enabled = Some(true);
+        assert!(app_enabled_baseline(&prefs, "com.on")); // override true vs default false
+        prefs.default_enabled = true;
+        prefs
+            .per_app
+            .entry("com.off".into())
+            .or_default()
+            .enabled = Some(false);
+        assert!(!app_enabled_baseline(&prefs, "com.off")); // override false vs default true
+    }
+
+    #[test]
+    fn toggle_app_inverts_override_and_converges_across_baselines() {
+        // review finding E + r1/r2: ToggleApp inverts the PER-APP enabled override
+        // (driven by app_enabled_baseline), writing the inverse as an explicit
+        // override. It must CONVERGE — one toggle flips the live state, a second
+        // restores it — from every starting baseline (None/default true, None/
+        // default false, Some(true), Some(false)). The toggle dispatch reads the
+        // baseline then writes `set_app_policy_field(Enabled, !baseline)`; this
+        // mirrors that core through the same two public helpers.
+        let app = "com.toggle.app";
+        let one_toggle = |prefs: &mut Prefs| {
+            let next = !app_enabled_baseline(prefs, app);
+            prefs.set_app_policy_field(app, prefs::AppPolicyField::Enabled, next);
+            next
+        };
+        for (default_enabled, seed) in [
+            (true, None),
+            (false, None),
+            (true, Some(true)),
+            (false, Some(false)),
+            (true, Some(false)),
+            (false, Some(true)),
+        ] {
+            let mut prefs = Prefs {
+                default_enabled,
+                ..Default::default()
+            };
+            if let Some(v) = seed {
+                prefs.per_app.entry(app.into()).or_default().enabled = Some(v);
+            }
+            let start = app_enabled_baseline(&prefs, app);
+            // One toggle flips the effective enabled state and pins an override.
+            let after_first = one_toggle(&mut prefs);
+            assert_eq!(after_first, !start, "first toggle must flip (seed {seed:?})");
+            assert_eq!(prefs.per_app[app].enabled, Some(!start));
+            assert_eq!(app_enabled_baseline(&prefs, app), !start);
+            // Second toggle converges back — no drift, regardless of baseline.
+            let after_second = one_toggle(&mut prefs);
+            assert_eq!(after_second, start, "second toggle must converge (seed {seed:?})");
+            assert_eq!(app_enabled_baseline(&prefs, app), start);
+        }
+    }
+
+    #[test]
+    fn apps_edit_dismisses_only_focused_app_on_enable_off_edge() {
+        use prefs::AppPolicyField::*;
+        // Gap 3: editing the FOCUSED app's Enabled->off dismisses; editing a
+        // DIFFERENT app's row does not; and only the Enabled->off edge fires.
+        // Focused app == "com.a".
+        assert!(apps_edit_dismisses_focused(Enabled, false, Some("com.a"), "com.a"));
+        // Different app edited while focused on com.a -> no dismiss.
+        assert!(!apps_edit_dismisses_focused(Enabled, false, Some("com.a"), "com.b"));
+        // Enabling (on=true) the focused app does not dismiss.
+        assert!(!apps_edit_dismisses_focused(Enabled, true, Some("com.a"), "com.a"));
+        // A non-Enabled field edit on the focused app does not dismiss.
+        assert!(!apps_edit_dismisses_focused(TabDisabled, false, Some("com.a"), "com.a"));
+        assert!(!apps_edit_dismisses_focused(MidLine, false, Some("com.a"), "com.a"));
+        assert!(!apps_edit_dismisses_focused(Autocorrect, false, Some("com.a"), "com.a"));
+        // No focused app at all -> nothing to dismiss.
+        assert!(!apps_edit_dismisses_focused(Enabled, false, None, "com.a"));
     }
 
     #[test]
