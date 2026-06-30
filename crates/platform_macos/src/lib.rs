@@ -66,7 +66,7 @@ pub use login_item::set_launch_at_login;
 pub use settings_window::{
     keycode_label, keycode_label_with_mods, policy_restore_needed, rebind_request_for,
     record_decision, MacosSettingsWindow, RebindRequest, RecordDecision, RecorderRole,
-    SettingsFlags, APPS_ROWS, SETUP_ROWS, STATS_ROWS,
+    SettingsFlags, APPS_ROWS, APP_POLICY_FIELDS, SETUP_ROWS, STATS_ROWS,
 };
 pub use tray::{DisableArm, MacosTray, TrayFlags};
 pub use ui_prompt::{confirm_deep_link_prompt, confirm_delete_app_prompt, confirm_license_prompt};

@@ -19,7 +19,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSButtonType,
     NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton, NSResponder, NSSwitch, NSTabView,
     NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
@@ -326,6 +326,13 @@ pub struct SettingsFlags {
     /// A clicked Apps-row Delete button: the ROW INDEX (the run loop resolves
     /// it to an app id via apps_row_ids and performs the delete).
     pub apps_delete_row: Arc<Mutex<Option<usize>>>,
+    /// A toggled Apps-row policy checkbox: `(row, field_index, on)`. The field
+    /// is carried as a SMALL INDEX (0=Enabled, 1=TabDisabled, 2=MidLine,
+    /// 3=Autocorrect) so this crate stays free of a `prefs` dependency — the
+    /// run loop maps it to `prefs::AppPolicyField` and calls
+    /// `set_app_policy_field` on the row's app id (apps_delete_row pattern; the
+    /// "index crosses the seam" idiom of setup_model_index/stat_range_index).
+    pub apps_edit: Arc<Mutex<Option<(usize, usize, bool)>>>,
     /// Shortcuts text (current bindings + how to change them). Behind a
     /// Mutex since recorder 5b: a live rebind recomposes it and the window
     /// refreshes the label on every show (stats_lines pattern).
@@ -436,6 +443,29 @@ define_class!(
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 *slot = Some(row);
+            }
+        }
+
+        #[unsafe(method(editAppPolicy:))]
+        fn edit_app_policy(&self, sender: Option<&NSButton>) {
+            if let Some(checkbox) = sender {
+                // The tag packs (row, field): `row * APP_POLICY_FIELDS + field`,
+                // mirroring deleteAppRow's row-in-tag. The run loop unpacks it,
+                // resolves row -> app id via apps_row_ids (the SAME cap/order),
+                // maps the field index -> prefs::AppPolicyField, and writes.
+                let packed = checkbox.tag().max(0) as usize;
+                let row = packed / APP_POLICY_FIELDS;
+                let field = packed % APP_POLICY_FIELDS;
+                let on = checkbox.state() == NSControlStateValueOn;
+                // Poison-recovery, like deleteAppRow: the slot is a plain
+                // Option whose bytes stay valid even if a holder panicked.
+                let mut slot = self
+                    .ivars()
+                    .flags
+                    .apps_edit
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                *slot = Some((row, field, on));
             }
         }
 
@@ -690,6 +720,17 @@ fn apps_row_is_deletable(line: &str) -> bool {
     line.contains(" \u{2014} ")
 }
 
+/// Hide the per-row policy checkboxes on non-deletable (status/empty) rows,
+/// mirroring the Delete-button visibility rule. Checkboxes are stored row-major
+/// (APP_POLICY_FIELDS per row), so checkbox flat-index `idx` belongs to row
+/// `idx / APP_POLICY_FIELDS`.
+fn refresh_apps_policy_checkbox_visibility(checkboxes: &[Retained<NSButton>], lines: &[String]) {
+    for (idx, checkbox) in checkboxes.iter().enumerate() {
+        let row = idx / APP_POLICY_FIELDS;
+        checkbox.setHidden(!lines.get(row).is_some_and(|l| apps_row_is_deletable(l)));
+    }
+}
+
 fn setup_action_available(lines: &[String], label: &str, ready: bool) -> bool {
     let glyph = if ready { '\u{2713}' } else { '\u{2717}' };
     let expected = format!("{glyph} {label}");
@@ -728,6 +769,9 @@ pub struct MacosSettingsWindow {
     // Per-row Apps Delete buttons, hidden on every refresh for rows that are
     // not deletable app rows (status/empty rows) — see `apps_row_is_deletable`.
     apps_delete_buttons: Vec<Retained<NSButton>>,
+    // Per-row Apps policy checkboxes (APP_POLICY_FIELDS per row, row-major),
+    // hidden on the same non-deletable rows as the Delete buttons.
+    apps_policy_checkboxes: Vec<Retained<NSButton>>,
     // General-tab switches, refreshed from their atomics on every show:
     // enabled has EXTERNAL writers (tray, SIGUSR1), so its rendered state
     // can go stale while the window is closed (c95 staleness class). The
@@ -754,6 +798,7 @@ impl MacosSettingsWindow {
             setup_action_buttons: Vec::new(),
             apps_labels: Vec::new(),
             apps_delete_buttons: Vec::new(),
+            apps_policy_checkboxes: Vec::new(),
             switches: Vec::new(),
             shortcuts_label: None,
             recorder_labels: Vec::new(),
@@ -773,6 +818,7 @@ impl MacosSettingsWindow {
             self.setup_action_buttons = built.setup_action_buttons;
             self.apps_labels = built.apps_labels;
             self.apps_delete_buttons = built.apps_delete_buttons;
+            self.apps_policy_checkboxes = built.apps_policy_checkboxes;
             self.switches = built.switches;
             self.shortcuts_label = Some(built.shortcuts_label);
             self.recorder_labels = built.recorder_labels;
@@ -798,6 +844,7 @@ impl MacosSettingsWindow {
             for (i, button) in self.apps_delete_buttons.iter().enumerate() {
                 button.setHidden(!lines.get(i).is_some_and(|l| apps_row_is_deletable(l)));
             }
+            refresh_apps_policy_checkbox_visibility(&self.apps_policy_checkboxes, &lines);
         }
         // Shortcuts text re-reads its mutex — a live rebind (recorder 5b)
         // recomposes it while the window is closed.
@@ -873,6 +920,7 @@ impl MacosSettingsWindow {
             for (i, button) in self.apps_delete_buttons.iter().enumerate() {
                 button.setHidden(!lines.get(i).is_some_and(|l| apps_row_is_deletable(l)));
             }
+            refresh_apps_policy_checkbox_visibility(&self.apps_policy_checkboxes, &lines);
         }
     }
 
@@ -927,6 +975,7 @@ fn build_window(
     let mut setup_action_buttons: Vec<Retained<NSButton>> = Vec::new();
     let mut apps_labels: Vec<Retained<NSTextField>> = Vec::new();
     let mut apps_delete_buttons: Vec<Retained<NSButton>> = Vec::new();
+    let mut apps_policy_checkboxes: Vec<Retained<NSButton>> = Vec::new();
     let mut switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)> = Vec::new();
 
     // Tab layout (c105): one NSTabView as the content view, one tab per
@@ -1224,6 +1273,42 @@ fn build_window(
             delete.setHidden(!apps_row_is_deletable(text));
             apps.addSubview(&delete);
             apps_delete_buttons.push(delete);
+
+            // Per-row policy checkboxes (Enabled / Tab / Mid-line / Autocorrect),
+            // mirroring the Delete button: each carries a packed tag
+            // (row * APP_POLICY_FIELDS + field) and shares ONE action method
+            // (editAppPolicy:). Hidden on non-deletable (status/empty) rows for
+            // the same reason Delete is. The run loop unpacks the tag, resolves
+            // the row to an app id, and writes via prefs::set_app_policy_field.
+            let deletable = apps_row_is_deletable(text);
+            // ponytail: checkbox initial state defaults to OFF here. The
+            // resolved per-app policy lives in `prefs` (run-loop side), which
+            // this crate intentionally cannot see (apps_lines/index-seam
+            // pattern). TODO(LOOK): publish the per-row policy bits the same
+            // way apps_lines are published so the checkboxes open pre-checked.
+            for (field, title) in APP_POLICY_FIELD_TITLES.iter().enumerate() {
+                // SAFETY: target outlives the window (held by MacosSettingsWindow).
+                let checkbox = unsafe {
+                    NSButton::buttonWithTitle_target_action(
+                        &NSString::from_str(title),
+                        Some({
+                            let any: &AnyObject = target.as_ref();
+                            any
+                        }),
+                        Some(sel!(editAppPolicy:)),
+                        mtm,
+                    )
+                };
+                checkbox.setButtonType(NSButtonType::Switch);
+                checkbox.setTag((row * APP_POLICY_FIELDS + field) as isize);
+                checkbox.setFrame(NSRect::new(
+                    NSPoint::new(20.0 + field as f64 * 110.0, 244.0 - row as f64 * 26.0),
+                    NSSize::new(108.0, 18.0),
+                ));
+                checkbox.setHidden(!deletable);
+                apps.addSubview(&checkbox);
+                apps_policy_checkboxes.push(checkbox);
+            }
         }
     }
 
@@ -1558,6 +1643,7 @@ fn build_window(
         setup_action_buttons,
         apps_labels,
         apps_delete_buttons,
+        apps_policy_checkboxes,
         switches,
         shortcuts_label,
         recorder_labels,
@@ -1573,6 +1659,7 @@ struct BuiltWindow {
     setup_action_buttons: Vec<Retained<NSButton>>,
     apps_labels: Vec<Retained<NSTextField>>,
     apps_delete_buttons: Vec<Retained<NSButton>>,
+    apps_policy_checkboxes: Vec<Retained<NSButton>>,
     switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
     shortcuts_label: Retained<NSTextField>,
     recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)>,
@@ -1587,6 +1674,19 @@ pub const SETUP_ROWS: usize = 3;
 /// Public: the run loop's line composer caps to this same number
 /// (review-c108 — a drifting duplicate would silently waste label slots).
 pub const APPS_ROWS: usize = 8;
+
+/// Number of editable per-app policy fields rendered as checkboxes on each
+/// Apps row, in tag-encoding order: 0=Enabled, 1=TabDisabled, 2=MidLine,
+/// 3=Autocorrect. Mirrors `prefs::AppPolicyField`'s variant order; the run
+/// loop maps the index back. A checkbox's tag is `row * APP_POLICY_FIELDS +
+/// field`, so this is the modulus the run loop unpacks against.
+pub const APP_POLICY_FIELDS: usize = 4;
+
+/// Checkbox titles for the per-app policy fields, indexed the same as the tag
+/// encoding (and `prefs::AppPolicyField`'s variant order). `TabDisabled` reads
+/// as "Tab key" so the checked state means "Tab is a literal Tab here".
+const APP_POLICY_FIELD_TITLES: [&str; APP_POLICY_FIELDS] =
+    ["Enabled", "Tab key", "Mid-line", "Autocorrect"];
 
 /// Fixed Statistics row count (shown / accepted / words / lifetime).
 /// Public for the same reason as [`APPS_ROWS`]: the run loop's composer

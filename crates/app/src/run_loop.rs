@@ -2127,6 +2127,21 @@ fn apps_row_ids(counts: &[(String, u64)]) -> Vec<String> {
         .collect()
 }
 
+/// Map an Apps-row checkbox field index (the low part of the packed tag, see
+/// `platform_macos::APP_POLICY_FIELDS`) to a `prefs::AppPolicyField`. Returns
+/// `None` for an out-of-range index (a stale/garbled click no-ops, like an
+/// out-of-range delete row). The order MUST match `APP_POLICY_FIELD_TITLES`.
+fn apps_policy_field_from_index(index: usize) -> Option<prefs::AppPolicyField> {
+    use prefs::AppPolicyField::*;
+    match index {
+        0 => Some(Enabled),
+        1 => Some(TabDisabled),
+        2 => Some(MidLine),
+        3 => Some(Autocorrect),
+        _ => None,
+    }
+}
+
 /// The settings window's shared state. `tray_enabled` is TrayFlags.enabled —
 /// the Enabled switch and the tray checkmark are two views of that one
 /// atomic (identity pinned in tests). Must run AFTER
@@ -2185,6 +2200,7 @@ fn build_settings_flags(
             .collect(),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
+        apps_edit: Arc::new(Mutex::new(None)),
         shortcuts_text: {
             let (word, full) = platform_macos::effective_accept_keys_with_mods();
             Arc::new(Mutex::new(shortcuts_text(word, full)))
@@ -3762,6 +3778,27 @@ pub fn run() -> Result<(), String> {
                 }
             }
         }
+        // Apps-row policy checkbox: resolve the clicked row against the SAME
+        // ids/cap/order as Delete, map the field index to an AppPolicyField,
+        // write the per-app override into the live prefs, and persist (the
+        // web-override persist path serializes per_app). No apps_lines
+        // recompose — the edit changes policy, not recorded-input counts.
+        let edit = settings_flags
+            .apps_edit
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some((row, field_index, on)) = edit {
+            if let (Some(app), Some(field)) =
+                (apps_ids.get(row), apps_policy_field_from_index(field_index))
+            {
+                prefs.set_app_policy_field(app, field, on);
+                eprintln!("compme: app policy {field:?} for {app} set to {on}");
+                if let Some(path) = config::config_file_path() {
+                    persist_web_override_prefs(&path, &prefs);
+                }
+            }
+        }
         // Setup "Download Model": fetch the model the picker has selected
         // (setup_model_index; defaults to the recommended entry) into the
         // app-support models dir. Progress is logged; on Done the log says
@@ -5250,6 +5287,29 @@ mod tests {
         assert_eq!(ids.len(), apps_pane_lines(&many, true).len());
         // Status lines carry no deletable rows.
         assert!(apps_row_ids(&[]).is_empty());
+    }
+
+    #[test]
+    fn apps_policy_field_index_maps_in_checkbox_order() {
+        // The Apps-row checkbox tag packs (row, field); the field index must
+        // map back to the SAME AppPolicyField order the AppKit layer renders
+        // (APP_POLICY_FIELD_TITLES), or a toggle writes the wrong field. The
+        // index count is pinned to platform_macos::APP_POLICY_FIELDS so a
+        // drifting duplicate can't silently desync the two sides.
+        use prefs::AppPolicyField::*;
+        assert_eq!(apps_policy_field_from_index(0), Some(Enabled));
+        assert_eq!(apps_policy_field_from_index(1), Some(TabDisabled));
+        assert_eq!(apps_policy_field_from_index(2), Some(MidLine));
+        assert_eq!(apps_policy_field_from_index(3), Some(Autocorrect));
+        // One past the last field is out of range (stale/garbled click no-ops).
+        assert_eq!(
+            apps_policy_field_from_index(platform_macos::APP_POLICY_FIELDS),
+            None
+        );
+        // Every valid index resolves — the map covers all rendered checkboxes.
+        for i in 0..platform_macos::APP_POLICY_FIELDS {
+            assert!(apps_policy_field_from_index(i).is_some());
+        }
     }
 
     #[test]
