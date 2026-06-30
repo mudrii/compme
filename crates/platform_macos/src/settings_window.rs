@@ -1038,9 +1038,14 @@ fn build_window(
     target: &Retained<SettingsTarget>,
     flags: &SettingsFlags,
 ) -> BuiltWindow {
-    let frame = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(520.0, 420.0));
-    let style =
-        NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable;
+    // 680 wide so all 9 tabs fit without truncating (was 520, which overflowed
+    // once the Personalization pane brought the count to 9). Resizable so the
+    // user can widen further if their tab labels need it.
+    let frame = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(680.0, 420.0));
+    let style = NSWindowStyleMask::Titled
+        | NSWindowStyleMask::Closable
+        | NSWindowStyleMask::Miniaturizable
+        | NSWindowStyleMask::Resizable;
     // SAFETY: standard NSWindow init; releasedWhenClosed defaults are managed
     // by the Retained wrapper (we keep ownership and hide instead of free).
     let window = unsafe {
