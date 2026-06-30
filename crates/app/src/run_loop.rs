@@ -27,7 +27,7 @@ use personalization::{PersonalizationProfile, SenderIdentity, Strength};
 use platform::{
     env_flag_on, AcceptAction, AcceptSubscription, Capabilities, FieldHandle, InsertStrategy,
     KeyInterceptMode, OverlayPlacement, PlatformAdapter, PlatformError, ScreenRect, SecurityState,
-    Subscription, TapControl, Toolkit,
+    ShortcutAction, Subscription, TapControl, Toolkit,
 };
 use platform_macos::DisableArm;
 use platform_macos::{
@@ -104,6 +104,10 @@ enum HostEvent {
     Dismiss,
     /// Down arrow: rotate to the next candidate (multi-candidate cycle).
     Cycle,
+    /// An always-on (global) hotkey fired: re-show the pending suggestion or
+    /// toggle suggestions for the focused app / globally. Acts even when no
+    /// suggestion is showing, unlike the accept variants.
+    Shortcut(ShortcutAction),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -225,6 +229,13 @@ struct Config {
     /// startup with a logged error.
     accept_word_key: Option<(i64, u32)>,
     accept_full_key: Option<(i64, u32)>,
+    /// Always-on (global) shortcut chords, raw config strings parsed by
+    /// `platform_macos::set_shortcut_bindings_from_config` (same grammar as the
+    /// accept keys, e.g. `"96"` or `"ctrl+shift+50"`). `None` → that shortcut is
+    /// unbound. A colliding set is dropped whole at registration with a log.
+    force_activate_key: Option<String>,
+    toggle_app_key: Option<String>,
+    toggle_global_key: Option<String>,
 }
 
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
@@ -279,6 +290,9 @@ impl Config {
                 .and_then(|raw| platform_macos::parse_accept_key(&raw)),
             accept_full_key: lookup("COMPME_ACCEPT_FULL_KEY")
                 .and_then(|raw| platform_macos::parse_accept_key(&raw)),
+            force_activate_key: lookup("COMPME_FORCE_ACTIVATE").filter(|s| !s.is_empty()),
+            toggle_app_key: lookup("COMPME_TOGGLE_APP_KEY").filter(|s| !s.is_empty()),
+            toggle_global_key: lookup("COMPME_TOGGLE_GLOBAL_KEY").filter(|s| !s.is_empty()),
             acceptance_pid: lookup("COMPME_ACCEPTANCE_PID").and_then(|raw| raw.parse::<i32>().ok()),
             stub_completion: lookup("COMPME_STUB_COMPLETION").filter(|s| !s.is_empty()),
             model_path: lookup("COMPME_MODEL_PATH")
@@ -2932,6 +2946,7 @@ pub fn run() -> Result<(), String> {
             TapControl::Accept(action) => HostEvent::Accept(action),
             TapControl::Dismiss => HostEvent::Dismiss,
             TapControl::Cycle => HostEvent::Cycle,
+            TapControl::Shortcut(action) => HostEvent::Shortcut(action),
         };
         // best-effort: poisoned send-mutex means a sender panicked during
         // shutdown; the receiver is gone, so dropping the event is correct.
@@ -3008,6 +3023,22 @@ pub fn run() -> Result<(), String> {
                 eprintln!("compme: accept-key rebind invalid ({err:?}); using defaults")
             }
         }
+    }
+
+    // Always-on (global) shortcuts: land the parsed bindings into the
+    // process-wide static BEFORE accept handling arms, so the same arm cycle
+    // registers them alongside the accept keys (mirrors the accept-key apply
+    // above). A colliding set is dropped whole inside the setter with a log.
+    if config.force_activate_key.is_some()
+        || config.toggle_app_key.is_some()
+        || config.toggle_global_key.is_some()
+    {
+        let bindings = platform_macos::set_shortcut_bindings_from_config(
+            config.force_activate_key.as_deref(),
+            config.toggle_app_key.as_deref(),
+            config.toggle_global_key.as_deref(),
+        );
+        eprintln!("compme: global shortcuts configured ({bindings:?})");
     }
 
     // compme:// deep-link reception (web-driven config §8/§16): Launch
@@ -3498,6 +3529,70 @@ pub fn run() -> Result<(), String> {
                     eprintln!("compme: cycle candidate");
                     offer_all(&mut latest, log_err("on_cycle", engine.on_cycle()));
                 }
+                HostEvent::Shortcut(action) => match action {
+                    ShortcutAction::ForceActivate => {
+                        // Settled semantics: re-show the CURRENT pending suggestion
+                        // without kicking a fresh inference. The engine has no
+                        // re-present event today — `on_cycle` rotates the candidate
+                        // (changes it) and `on_tick` only re-emits on a debounce
+                        // boundary, so neither is a faithful "re-show current".
+                        // TODO(LOOK): add an engine `Event::ForceShow` (or reuse the
+                        // last `offer_all` presentation snapshot) that re-emits the
+                        // current suggestion verbatim, then call it here and
+                        // `offer_all` the result. Verify by physical key-press that
+                        // a dismissed-but-pending suggestion re-appears with no new
+                        // inference request. No-op when nothing is pending.
+                        eprintln!("compme: shortcut force-activate (re-show pending)");
+                    }
+                    ShortcutAction::ToggleApp => {
+                        // Flip per-app Enabled for the focused app, mirroring the
+                        // tray/settings per-app toggle. The focused app key comes
+                        // from the same resolver the app-disable path uses; the
+                        // current effective value is read via `should_suggest` and
+                        // inverted, then persisted.
+                        match current_field
+                            .as_ref()
+                            .and_then(|f| effective_app_key(f, bundle_id_for_pid))
+                        {
+                            Some(app) => {
+                                let current = prefs.should_suggest(Some(&app), None, now_ms);
+                                prefs.set_app_policy_field(
+                                    &app,
+                                    prefs::AppPolicyField::Enabled,
+                                    !current,
+                                );
+                                eprintln!(
+                                    "compme: shortcut toggle-app {app} enabled {current} -> {}",
+                                    !current
+                                );
+                                if let Some(path) = config::config_file_path() {
+                                    persist_web_override_prefs(&path, &prefs);
+                                }
+                                // TODO(LOOK): verify by physical key-press that the
+                                // focused app's suggestions actually stop/resume and
+                                // the change survives a restart (config persisted).
+                            }
+                            // No resolvable focused app (no field / unknown bundle):
+                            // nothing to toggle.
+                            None => eprintln!("compme: shortcut toggle-app: no focused app"),
+                        }
+                    }
+                    ShortcutAction::ToggleGlobal => {
+                        // Invert the runtime global-enabled flag, mirroring the
+                        // SIGUSR1 / tray enable-disable below, including the
+                        // monitored-state reset on the policy transition.
+                        let now = flags.enabled.load(Ordering::Relaxed);
+                        flags.enabled.store(!now, Ordering::Relaxed);
+                        clear_monitored_state_for_policy_transition(
+                            &mut pending_monitored,
+                            &mut monitored_buffers,
+                        );
+                        eprintln!("compme: shortcut toggle-global enabled {now} -> {}", !now);
+                        // TODO(LOOK): verify by physical key-press that suggestions
+                        // globally stop/resume (runtime flag only; this mirrors the
+                        // SIGUSR1 toggle, which is also runtime-only).
+                    }
+                },
             }
         }
 

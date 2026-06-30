@@ -180,13 +180,29 @@ pub enum AcceptAction {
 }
 
 /// A control signal delivered by the accept key-interception tap. Either an
-/// accept (Tab/grave) or a dismiss+suppress (Esc).
+/// accept (Tab/grave), a dismiss+suppress (Esc), a candidate cycle, or one of
+/// the always-on (global) shortcut actions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TapControl {
     Accept(AcceptAction),
     Dismiss,
     /// Rotate to the next candidate (multi-candidate cycle key).
     Cycle,
+    /// An always-on (global) hotkey fired — re-show the pending suggestion or
+    /// toggle suggestions for the focused app / globally. Distinct from the
+    /// accept variants because it acts even when no suggestion is showing.
+    Shortcut(ShortcutAction),
+}
+
+/// The three always-on (global) shortcut actions an adapter can deliver through
+/// [`TapControl::Shortcut`]. `ForceActivate` re-shows the current pending
+/// suggestion (no fresh inference); `ToggleApp` flips suggestions for the
+/// focused app; `ToggleGlobal` flips the global enabled default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShortcutAction {
+    ForceActivate,
+    ToggleApp,
+    ToggleGlobal,
 }
 
 /// How a ghost overlay can be anchored for a field. `None` means no

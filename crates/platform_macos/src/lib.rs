@@ -52,8 +52,8 @@ use platform::{
     env_flag_on, AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities,
     CaretCallback, ContextSource, Environment, FieldHandle, FocusCallback, InsertStrategy,
     Inserted, KeyInterceptMode, OffsetEncoding, OperatingSystem, OverlayPlacement,
-    OverlayPresenter, PlatformAdapter, PlatformError, ScreenRect, SecurityState, Subscription,
-    TapControl, TextContext, TextRange, Toolkit,
+    OverlayPresenter, PlatformAdapter, PlatformError, ScreenRect, SecurityState, ShortcutAction,
+    Subscription, TapControl, TextContext, TextRange, Toolkit,
 };
 
 pub mod keychain;
@@ -691,6 +691,10 @@ struct AcceptTapEvent {
     /// over re-deriving the role by keycode. `None` → fall back to the keycode
     /// map (the keycode-based decision tests, and any non-id producer).
     binding: Option<AcceptBinding>,
+    /// Set when the fired Carbon id is an always-on (global) shortcut, not an
+    /// accept key. `Some(action)` short-circuits the decision straight to
+    /// [`AcceptTapDecision::Shortcut`]; `None` is the accept-key path.
+    shortcut: Option<ShortcutAction>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -702,6 +706,9 @@ enum AcceptTapDecision {
     /// Consume the key and route a candidate-cycle to the engine (Down arrow).
     DropCycle,
     ReenableAndKeep,
+    /// An always-on (global) shortcut fired — deliver the action to the app
+    /// (re-show pending suggestion / toggle). Acts regardless of accept state.
+    Shortcut(ShortcutAction),
 }
 
 impl std::fmt::Debug for MacosPlatformAdapter {
@@ -2334,7 +2341,9 @@ fn accept_consumer_tap_handler(
     accept_action: Arc<Mutex<Option<AcceptAction>>>,
 ) -> Arc<AcceptTapHandler> {
     Arc::new(move |event| {
-        if !active.load(Ordering::Acquire) {
+        // Always-on shortcuts fire even when accept interception is inactive
+        // (no suggestion showing) — gate them BEFORE the `active` early-return.
+        if event.shortcut.is_none() && !active.load(Ordering::Acquire) {
             return AcceptTapDecision::Keep;
         }
 
@@ -2347,6 +2356,7 @@ fn accept_consumer_tap_handler(
             AcceptTapDecision::Drop(action) => Some(TapControl::Accept(action)),
             AcceptTapDecision::DropDismiss => Some(TapControl::Dismiss),
             AcceptTapDecision::DropCycle => Some(TapControl::Cycle),
+            AcceptTapDecision::Shortcut(shortcut) => Some(TapControl::Shortcut(shortcut)),
             _ => None,
         };
         if let Some(control) = control {
@@ -2541,24 +2551,12 @@ impl ShortcutBindings {
     }
 }
 
-/// The three always-on (global) shortcut actions, decoded from a fired Carbon
-/// hotkey id. `ForceActivate` re-shows the current pending suggestion (the
-/// settled semantics — cheap and predictable, no fresh inference). `ToggleApp`
-/// flips suggestions for the focused app; `ToggleGlobal` flips them everywhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShortcutAction {
-    ForceActivate,
-    ToggleApp,
-    ToggleGlobal,
-}
-
-/// Decode a fired Carbon hotkey id into its always-on shortcut action. Returns
-/// `None` for accept-key ids (handled by `binding_for_hotkey_id`) and unknown
-/// ids — the shared handler tries both decoders. Mirrors `binding_for_hotkey_id`.
-// ponytail: unused until the Carbon hotkey handler calls this to dispatch the
-// action (force-show pending suggestion / toggle). That wiring is the FFI shell
-// gated on a live key-press LOOK; the decode + registration_plan are tested now.
-#[allow(dead_code)]
+/// Decode a fired Carbon hotkey id into its always-on shortcut action (the
+/// shared boundary [`platform::ShortcutAction`] — `ForceActivate` re-shows the
+/// current pending suggestion with no fresh inference, `ToggleApp`/`ToggleGlobal`
+/// flip suggestions for the focused app / everywhere). Returns `None` for
+/// accept-key ids (handled by `binding_for_hotkey_id`) and unknown ids — the
+/// shared handler tries both decoders. Mirrors `binding_for_hotkey_id`.
 fn shortcut_action_for_hotkey_id(id: u32) -> Option<ShortcutAction> {
     match id {
         CARBON_HOTKEY_FORCE_ACTIVATE => Some(ShortcutAction::ForceActivate),
@@ -2757,6 +2755,12 @@ fn accept_tap_decision(
     event: AcceptTapEvent,
     action: Option<AcceptAction>,
 ) -> AcceptTapDecision {
+    // Always-on (global) shortcut: the fired Carbon id resolved to a
+    // ShortcutAction, so deliver it straight through — these act regardless of
+    // accept state (`action`) or the per-app suppression that gates accept keys.
+    if let Some(shortcut) = event.shortcut {
+        return AcceptTapDecision::Shortcut(shortcut);
+    }
     // RESERVED / currently unreachable in production. A `CGEventTap` can be
     // disabled by the OS on timeout or user-input backlog, and the owner is
     // expected to re-enable it. This crate's accept path is Carbon-hotkey
@@ -2913,6 +2917,25 @@ fn install_carbon_accept_hotkeys(
         resource.register_hotkey(target, id, keycode, mask)?;
     }
 
+    // Always-on (global) shortcuts ride the same CARBON_HANDLER_SLOT and C
+    // handler: register them in this same arm cycle. A colliding set is already
+    // dropped whole by `set_shortcut_bindings_from_config`, but re-check here so
+    // a directly-mutated static can never register two hotkeys on one chord.
+    // TODO(LOOK): these are re-registered per arm cycle (focus changes), not once
+    // for the process; verify by physical key-press that a global shortcut still
+    // fires during a no-suggestion window — if the arm cycle gaps it, hoist this
+    // to a process-lifetime install like `ensure_carbon_handler_installed`.
+    let shortcuts = shortcut_bindings();
+    if shortcuts.has_internal_collision() {
+        if debug_enabled() {
+            eprintln!("compme: shortcut bindings collide ({shortcuts:?}); skipping registration");
+        }
+    } else {
+        for (id, keycode, mask) in shortcuts.registration_plan() {
+            resource.register_hotkey(target, id, keycode, mask)?;
+        }
+    }
+
     Ok(Box::new(resource) as WorkerResource)
 }
 
@@ -3031,6 +3054,53 @@ pub fn set_accept_keymap_from_config_with_mods(
     Ok(())
 }
 
+/// The active always-on (global) shortcut bindings. Mirrors [`ACCEPT_KEYMAP`]:
+/// a process-wide `RwLock` so the registration loop reads the latest set, the
+/// recorder (a later tick) can rebind, and a never-set read is "no shortcuts".
+/// Read at hotkey arm time — the next arm cycle picks up a config/runtime swap.
+static SHORTCUT_BINDINGS: std::sync::RwLock<ShortcutBindings> =
+    std::sync::RwLock::new(ShortcutBindings {
+        force_activate: None,
+        toggle_app: None,
+        toggle_global: None,
+    });
+
+/// Snapshot the active shortcut bindings (the registration loop's single read).
+fn shortcut_bindings() -> ShortcutBindings {
+    *SHORTCUT_BINDINGS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Install the configured always-on shortcuts. Mirrors
+/// [`set_accept_keymap_from_config_with_mods`]: the run loop parses the three
+/// `COMPME_*` shortcut config strings, then lands them here BEFORE the adapter
+/// arms its accept tap (the same arm cycle registers these). A colliding set is
+/// dropped whole (`has_internal_collision`) — a single chord can't drive two
+/// distinct hotkeys, so registering a partial set would be surprising. Returns
+/// the parsed bindings for the caller to log/inspect.
+pub fn set_shortcut_bindings_from_config(
+    force_activate: Option<&str>,
+    toggle_app: Option<&str>,
+    toggle_global: Option<&str>,
+) -> ShortcutBindings {
+    let bindings = ShortcutBindings::from_config(force_activate, toggle_app, toggle_global);
+    let effective = if bindings.has_internal_collision() {
+        if debug_enabled() {
+            eprintln!(
+                "compme: shortcut bindings collide ({bindings:?}); ignoring all three until distinct"
+            );
+        }
+        ShortcutBindings::default()
+    } else {
+        bindings
+    };
+    *SHORTCUT_BINDINGS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = effective;
+    effective
+}
+
 /// The active accept keymap. Single indirection so the three call sites
 /// (decision, registration, inverse) always agree.
 fn accept_keymap() -> AcceptKeymap {
@@ -3142,8 +3212,19 @@ extern "C" fn carbon_accept_hotkey_handler(
         if hotkey_id.signature != HOTKEY_SIGNATURE {
             return 0;
         }
-        let Some(keycode) = carbon_hotkey_keycode(hotkey_id.id) else {
-            return 0;
+        // An always-on (global) shortcut id (5..=7) resolves here; it has no
+        // accept keycode, so decode it FIRST and deliver a shortcut event. The
+        // keycode is irrelevant for shortcuts (the action carries the meaning),
+        // so a placeholder 0 is fine — the decision keys off `shortcut`.
+        let shortcut = shortcut_action_for_hotkey_id(hotkey_id.id);
+        let keycode = match shortcut {
+            Some(_) => 0,
+            None => {
+                let Some(keycode) = carbon_hotkey_keycode(hotkey_id.id) else {
+                    return 0;
+                };
+                keycode
+            }
         };
         // R2-5: read the process-lifetime slot; the cloned Arc keeps the handler
         // alive through this call even if a disarm lands concurrently. Slot empty
@@ -3158,8 +3239,10 @@ extern "C" fn carbon_accept_hotkey_handler(
             option_down: false,
             // The id is the authoritative role source — pass it through so a
             // masked role (e.g. Shift+Tab as Full) resolves to its own action
-            // instead of collapsing onto the keycode's first match.
+            // instead of collapsing onto the keycode's first match. `None` for
+            // shortcut ids (they carry `shortcut` instead).
             binding: binding_for_hotkey_id(hotkey_id.id),
+            shortcut,
         });
         0
     }))
@@ -7878,6 +7961,7 @@ mod tests {
             source_user_data: 0,
             option_down: false,
             binding: None,
+            shortcut: None,
         }
     }
 
@@ -8828,6 +8912,7 @@ mod tests {
             source_user_data,
             option_down: false,
             binding: None,
+            shortcut: None,
         }
     }
 
@@ -8838,6 +8923,7 @@ mod tests {
             source_user_data: 0,
             option_down: true,
             binding: None,
+            shortcut: None,
         }
     }
 
@@ -8870,6 +8956,7 @@ mod tests {
             source_user_data: 0,
             option_down: true,
             binding: Some(AcceptBinding::Word),
+            shortcut: None,
         };
 
         assert_eq!(
@@ -9266,6 +9353,21 @@ mod tests {
     }
 
     #[test]
+    fn set_shortcut_bindings_from_config_drops_a_colliding_set_whole() {
+        // A distinct set is stored verbatim and returned for the caller to log.
+        let ok = set_shortcut_bindings_from_config(Some("96"), None, Some("shift+96"));
+        assert_eq!(ok.force_activate, Some((96, 0)));
+        assert_eq!(ok.toggle_global, Some((96, CARBON_SHIFT_KEY)));
+        assert_eq!(shortcut_bindings(), ok);
+
+        // A set where two shortcuts share one chord is unregisterable, so the
+        // whole set is dropped to the default (no partial registration).
+        let dropped = set_shortcut_bindings_from_config(Some("ctrl+50"), Some("ctrl+50"), None);
+        assert_eq!(dropped, ShortcutBindings::default());
+        assert_eq!(shortcut_bindings(), ShortcutBindings::default());
+    }
+
+    #[test]
     fn accept_key_strings_parse_and_format_with_modifier_prefixes() {
         // Bare keycode (back-compat with the pre-modifier config format).
         assert_eq!(parse_accept_key("96"), Some((96, 0)));
@@ -9467,6 +9569,7 @@ mod tests {
             source_user_data: 0,
             option_down: false,
             binding: Some(AcceptBinding::Full),
+            shortcut: None,
         };
         assert_eq!(
             accept_tap_decision(
