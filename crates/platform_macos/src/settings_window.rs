@@ -241,6 +241,24 @@ pub fn recorder_outcome(
     }
 }
 
+/// A Personalization-pane edit, carried across the crate seam as PRIMITIVES so
+/// `platform_macos` stays free of a `personalization`/`app` dependency (the
+/// `apps_edit` "index crosses the seam" idiom). The run loop maps each variant
+/// back onto the source `PersonalizationProfile`'s field and calls
+/// `inference.set_profile` live.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PersonalizationEdit {
+    /// Global free-text instructions (`PersonalizationProfile::global_instructions`).
+    GlobalInstructions(String),
+    /// Sender display name (`PersonalizationProfile::sender.name`).
+    SenderName(String),
+    /// Sender email (`PersonalizationProfile::sender.email`).
+    SenderEmail(String),
+    /// Steering-strength stop, the popup row 0..=5 addressing `Strength::from_stop`
+    /// (0 = Off). Carried as a `usize` like `emoji_skin_tone_index`.
+    StrengthStop(usize),
+}
+
 /// Settings-pane toggles, flipped by controls on the main thread and observed
 /// by the run loop (the tray-flags pattern: render-only UI, policy outside).
 #[derive(Clone)]
@@ -342,6 +360,23 @@ pub struct SettingsFlags {
     /// the edge and runs the keymap-first/rearm-second/persist-last sequence
     /// (apps_delete_row pattern).
     pub shortcuts_rebind_request: Arc<Mutex<Option<RebindRequest>>>,
+    /// The latest Personalization-pane edit (text-field commit or strength
+    /// popup). Last-writer-wins per tick: the run loop consumes the edge,
+    /// applies the variant to its source `PersonalizationProfile`, calls
+    /// `inference.set_profile`, and persists (apps_edit pattern).
+    pub personalization_edit: Arc<Mutex<Option<PersonalizationEdit>>>,
+    /// Personalization initial values, composed by the run loop from the source
+    /// profile so the pane's fields/popup reflect the current config on open
+    /// (the about_text / setup_model_index pattern — render-only seed strings).
+    pub personalization_instructions: String,
+    pub personalization_sender_name: String,
+    pub personalization_sender_email: String,
+    /// Strength popup: the pre-selected stop (0..=5, 0 = Off) and one title per
+    /// stop in `Strength::STOPS` order. Titles cross the seam here because
+    /// `platform_macos` can't see the `personalization` crate (the stat-range
+    /// titles pattern); the selected index addresses `Strength::from_stop`.
+    pub personalization_strength_index: Arc<AtomicUsize>,
+    pub personalization_strength_titles: Vec<String>,
 }
 
 struct SettingsTargetIvars {
@@ -561,6 +596,44 @@ define_class!(
                     .store(index, Ordering::Relaxed);
             }
         }
+
+        // Personalization pane: each control records one `PersonalizationEdit`
+        // (last-writer-wins) for the run loop to apply live. Text fields fire on
+        // commit (Enter / focus-loss); the strength popup on selection.
+        #[unsafe(method(editGlobalInstructions:))]
+        fn edit_global_instructions(&self, sender: Option<&NSTextField>) {
+            if let Some(field) = sender {
+                self.record_personalization_edit(PersonalizationEdit::GlobalInstructions(
+                    field.stringValue().to_string(),
+                ));
+            }
+        }
+
+        #[unsafe(method(editSenderName:))]
+        fn edit_sender_name(&self, sender: Option<&NSTextField>) {
+            if let Some(field) = sender {
+                self.record_personalization_edit(PersonalizationEdit::SenderName(
+                    field.stringValue().to_string(),
+                ));
+            }
+        }
+
+        #[unsafe(method(editSenderEmail:))]
+        fn edit_sender_email(&self, sender: Option<&NSTextField>) {
+            if let Some(field) = sender {
+                self.record_personalization_edit(PersonalizationEdit::SenderEmail(
+                    field.stringValue().to_string(),
+                ));
+            }
+        }
+
+        #[unsafe(method(selectStrength:))]
+        fn select_strength(&self, sender: Option<&NSPopUpButton>) {
+            if let Some(popup) = sender {
+                let index = popup.indexOfSelectedItem().max(0) as usize;
+                self.record_personalization_edit(PersonalizationEdit::StrengthStop(index));
+            }
+        }
     }
 );
 
@@ -569,6 +642,17 @@ impl SettingsTarget {
         let this = Self::alloc(mtm).set_ivars(SettingsTargetIvars { flags });
         // SAFETY: NSObject's init signature is correct for this subclass.
         unsafe { objc2::msg_send![super(this), init] }
+    }
+
+    /// Park a Personalization edit for the run loop (last-writer-wins; the loop
+    /// `take()`s it each tick). Poison-tolerant like the other flag writers.
+    fn record_personalization_edit(&self, edit: PersonalizationEdit) {
+        *self
+            .ivars()
+            .flags
+            .personalization_edit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(edit);
     }
 }
 
@@ -1221,11 +1305,132 @@ fn build_window(
         switches.push((ts_switch, Arc::clone(&flags.general_trailing_space)));
     }
 
+    // Personalization tab: the three steering knobs (roadmap item 5) — global
+    // instructions, sender identity (name/email), and steering strength. Each
+    // control records a `PersonalizationEdit` into flags.personalization_edit;
+    // the run loop applies it to its source profile, calls
+    // `inference.set_profile` LIVE, and persists. Initial values come from the
+    // run loop via flags.personalization_* so the pane reflects current config.
+    // Text fields fire their action on Enter / focus-loss; the popup on select.
+    {
+        let pers = &pane_views[2];
+
+        let gi_label = NSTextField::labelWithString(
+            &NSString::from_str("Global instructions (steer every suggestion):"),
+            mtm,
+        );
+        gi_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 300.0),
+            NSSize::new(440.0, 20.0),
+        ));
+        pers.addSubview(&gi_label);
+
+        // Editable NSTextField. labelWithString builds a non-editable label, so
+        // we construct a plain field and turn editing on. A single-line field is
+        // sufficient for the seam; multi-line entry is a later GUI refinement.
+        let gi_field = NSTextField::new(mtm);
+        gi_field.setFrame(NSRect::new(
+            NSPoint::new(20.0, 250.0),
+            NSSize::new(460.0, 44.0),
+        ));
+        gi_field.setStringValue(&NSString::from_str(&flags.personalization_instructions));
+        gi_field.setEditable(true);
+        gi_field.setSelectable(true);
+        // SAFETY: target outlives the window (held by MacosSettingsWindow);
+        // setTarget/setAction are the standard control-wiring calls.
+        unsafe {
+            let any: &AnyObject = target.as_ref();
+            gi_field.setTarget(Some(any));
+            gi_field.setAction(Some(sel!(editGlobalInstructions:)));
+        }
+        pers.addSubview(&gi_field);
+
+        // Sender name + email rows (templated into the prompt as the writer's
+        // identity). Two single-line editable fields, same wiring.
+        let name_label =
+            NSTextField::labelWithString(&NSString::from_str("Your name:"), mtm);
+        name_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 210.0),
+            NSSize::new(120.0, 22.0),
+        ));
+        pers.addSubview(&name_label);
+        let name_field = NSTextField::new(mtm);
+        name_field.setFrame(NSRect::new(
+            NSPoint::new(145.0, 208.0),
+            NSSize::new(335.0, 24.0),
+        ));
+        name_field.setStringValue(&NSString::from_str(&flags.personalization_sender_name));
+        name_field.setEditable(true);
+        name_field.setSelectable(true);
+        // SAFETY: see gi_field above.
+        unsafe {
+            let any: &AnyObject = target.as_ref();
+            name_field.setTarget(Some(any));
+            name_field.setAction(Some(sel!(editSenderName:)));
+        }
+        pers.addSubview(&name_field);
+
+        let email_label =
+            NSTextField::labelWithString(&NSString::from_str("Your email:"), mtm);
+        email_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 175.0),
+            NSSize::new(120.0, 22.0),
+        ));
+        pers.addSubview(&email_label);
+        let email_field = NSTextField::new(mtm);
+        email_field.setFrame(NSRect::new(
+            NSPoint::new(145.0, 173.0),
+            NSSize::new(335.0, 24.0),
+        ));
+        email_field.setStringValue(&NSString::from_str(&flags.personalization_sender_email));
+        email_field.setEditable(true);
+        email_field.setSelectable(true);
+        // SAFETY: see gi_field above.
+        unsafe {
+            let any: &AnyObject = target.as_ref();
+            email_field.setTarget(Some(any));
+            email_field.setAction(Some(sel!(editSenderEmail:)));
+        }
+        pers.addSubview(&email_field);
+
+        // Strength popup: one row per stop, addressed by index 0..=5 (0 = Off),
+        // mapped run-loop-side via Strength::from_stop — the seam carries only
+        // the usize, like the emoji skin-tone popup. Titles cross the seam in
+        // flags.personalization_strength_titles (Strength lives in the
+        // `personalization` crate, invisible here; the stat-range pattern).
+        let strength_label =
+            NSTextField::labelWithString(&NSString::from_str("Steering strength:"), mtm);
+        strength_label.setFrame(NSRect::new(
+            NSPoint::new(20.0, 135.0),
+            NSSize::new(140.0, 22.0),
+        ));
+        pers.addSubview(&strength_label);
+        let strength_popup = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(mtm),
+            NSRect::new(NSPoint::new(165.0, 132.0), NSSize::new(220.0, 26.0)),
+            false,
+        );
+        for title in &flags.personalization_strength_titles {
+            strength_popup.addItemWithTitle(&NSString::from_str(title));
+        }
+        let selected = flags.personalization_strength_index.load(Ordering::Relaxed);
+        if selected < flags.personalization_strength_titles.len() {
+            strength_popup.selectItemAtIndex(selected as isize);
+        }
+        // SAFETY: see gi_field above.
+        unsafe {
+            let any: &AnyObject = target.as_ref();
+            strength_popup.setTarget(Some(any));
+            strength_popup.setAction(Some(sel!(selectStrength:)));
+        }
+        pers.addSubview(&strength_popup);
+    }
+
     // Apps tab: per-app recorded-input counts (encrypted memory store).
     // Strings come from the run loop via flags.apps_lines; refreshed on
     // every show like the other data tabs.
     {
-        let apps = &pane_views[2];
+        let apps = &pane_views[3];
         let header =
             NSTextField::labelWithString(&NSString::from_str("Recorded inputs by app"), mtm);
         header.setFrame(NSRect::new(
@@ -1316,7 +1521,7 @@ fn build_window(
     // a persisted opt-in that can be disabled immediately but starts its worker
     // on the next launch.
     {
-        let context = &pane_views[3];
+        let context = &pane_views[4];
         let rows: [(&str, &Arc<AtomicBool>, objc2::runtime::Sel); 2] = [
             (
                 "Clipboard context",
@@ -1363,7 +1568,7 @@ fn build_window(
     // Emoji tab: enable switch plus skin-tone popup. The run loop owns policy
     // and persistence; the window only writes atomics.
     {
-        let emoji = &pane_views[4];
+        let emoji = &pane_views[5];
         let label = NSTextField::labelWithString(
             &NSString::from_str("Emoji shortcode completions (:smile)"),
             mtm,
@@ -1463,7 +1668,7 @@ fn build_window(
     }
 
     let shortcuts_label = {
-        let shortcuts_view = &pane_views[5];
+        let shortcuts_view = &pane_views[6];
         let initial = flags
             .shortcuts_text
             .lock()
@@ -1486,7 +1691,7 @@ fn build_window(
     // below the effective-bindings text (y=160..330). LOOK-verified.
     let mut recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)> = Vec::new();
     {
-        let shortcuts_view = &pane_views[5];
+        let shortcuts_view = &pane_views[6];
         let (word, full) = crate::effective_accept_keys_with_mods();
         for (role, label_text, y) in [
             (RecorderRole::Word, "Accept word:", 116.0),
@@ -1532,7 +1737,7 @@ fn build_window(
     // the run loop via flags.stats_lines; show() refreshes them on every
     // open. Monospaced font keeps sparkline glyphs column-aligned.
     {
-        let stats = &pane_views[6];
+        let stats = &pane_views[7];
         let stats_header =
             NSTextField::labelWithString(&NSString::from_str("This session + lifetime"), mtm);
         // Width 220 (not 300) so the header clears the Range picker's label at
@@ -1616,7 +1821,7 @@ fn build_window(
     // About tab: static for the process lifetime, so build-once is fine
     // here (unlike the Statistics rows above).
     {
-        let about_view = &pane_views[7];
+        let about_view = &pane_views[8];
         let about =
             NSTextField::wrappingLabelWithString(&NSString::from_str(&flags.about_text), mtm);
         about.setFrame(NSRect::new(
@@ -1694,7 +1899,7 @@ const APP_POLICY_FIELD_TITLES: [&str; APP_POLICY_FIELDS] =
 pub const STATS_ROWS: usize = 4;
 
 /// Number of settings tabs.
-pub const PANE_COUNT: usize = 8;
+pub const PANE_COUNT: usize = 9;
 
 /// Tab titles in display order (Cotypist order) — Setup first, About last;
 /// new panes insert between, never around.
@@ -1702,6 +1907,7 @@ pub fn pane_titles() -> [&'static str; PANE_COUNT] {
     [
         "Setup",
         "General",
+        "Personalization",
         "Apps",
         "Context",
         "Emoji",
@@ -1763,6 +1969,7 @@ mod tests {
             &[
                 "Setup",
                 "General",
+                "Personalization",
                 "Apps",
                 "Context",
                 "Emoji",

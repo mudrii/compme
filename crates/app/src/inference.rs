@@ -347,11 +347,8 @@ pub struct InferenceHandle {
     ready: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     /// Shared with the worker thread; the worker reads it per request and
-    /// `set_profile` writes it, so personalization edits apply live.
-    // ponytail: only written (via set_profile) until the Settings personalization
-    // pane calls set_profile on a control change — that wiring is the GUI shell
-    // gated on a live LOOK. The live-reload seam itself is tested now.
-    #[allow(dead_code)]
+    /// `set_profile` writes it, so personalization edits from the Settings
+    /// Personalization pane apply live (no respawn).
     profile: Arc<Mutex<PersonalizationProfile>>,
 }
 
@@ -421,9 +418,7 @@ impl InferenceHandle {
     /// Replace the personalization profile the worker steers with, live — as
     /// driven by the Settings personalization pane. Takes effect on the next
     /// request the worker processes; no respawn, no `MemoryStore` churn.
-    // ponytail: production caller is the deferred Settings pane (LOOK-gated);
-    // tested via set_profile_live_reloads_what_the_worker_steers_with.
-    #[allow(dead_code)]
+    /// Called by the run loop's Personalization-pane consumer on each knob edit.
     pub fn set_profile(&self, profile: PersonalizationProfile) {
         *self.profile.lock().expect("personalization profile lock poisoned") = profile;
     }

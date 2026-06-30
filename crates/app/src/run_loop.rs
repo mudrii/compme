@@ -1014,6 +1014,71 @@ fn build_personalization(lookup: &impl Fn(&str) -> Option<String>) -> Personaliz
     profile
 }
 
+/// Human label for each `Strength::STOPS` row, in stop order (0 = Off .. 5 =
+/// Max). The Personalization popup renders these; the run loop maps the picked
+/// index back via `Strength::from_stop`. Composed app-side because the
+/// `Strength` directive text is private to the `personalization` crate and the
+/// pane crate can't see the enum at all (the stat-range titles pattern).
+fn personalization_strength_titles() -> Vec<String> {
+    Strength::STOPS
+        .iter()
+        .map(|s| {
+            match s {
+                Strength::Off => "Off",
+                Strength::Stop1 => "Very gentle",
+                Strength::Stop2 => "Gentle",
+                Strength::Stop3 => "Balanced",
+                Strength::Stop4 => "Strong",
+                Strength::Max => "Strict",
+            }
+            .to_string()
+        })
+        .collect()
+}
+
+/// The stop index of `strength` within `Strength::STOPS` (0 = Off). Used to
+/// pre-select the popup row from the current profile. Total: every `Strength`
+/// is in `STOPS`, so the search never fails; 0 is a safe fallback regardless.
+fn personalization_strength_index(strength: Strength) -> usize {
+    Strength::STOPS
+        .iter()
+        .position(|s| *s == strength)
+        .unwrap_or(0)
+}
+
+/// Apply one Personalization-pane edit to the source `profile` in place and
+/// return the `(env_key, value)` to persist so the edit survives restart. Pure:
+/// no IO, no inference — the run loop drives `set_profile` and persistence
+/// around it. The seam carries primitives; this is where they rejoin the typed
+/// `PersonalizationProfile` (the `apps_edit` → `AppPolicyField` pattern).
+fn apply_personalization_edit(
+    profile: &mut PersonalizationProfile,
+    edit: platform_macos::PersonalizationEdit,
+) -> (&'static str, String) {
+    use platform_macos::PersonalizationEdit as E;
+    match edit {
+        E::GlobalInstructions(text) => {
+            profile.global_instructions = text.clone();
+            ("COMPME_INSTRUCTIONS", text)
+        }
+        E::SenderName(name) => {
+            profile.sender.name = name.clone();
+            ("COMPME_SENDER_NAME", name)
+        }
+        E::SenderEmail(email) => {
+            profile.sender.email = email.clone();
+            ("COMPME_SENDER_EMAIL", email)
+        }
+        E::StrengthStop(stop) => {
+            // The popup index addresses STOPS directly; clamp via from_stop so
+            // an out-of-range value is total (mirrors build_personalization).
+            let stop = stop.min(u8::MAX as usize) as u8;
+            profile.strength = Strength::from_stop(stop);
+            ("COMPME_STRENGTH", stop.to_string())
+        }
+    }
+}
+
 fn instruction_map_from_config(
     lookup: &impl Fn(&str) -> Option<String>,
     list_key: &str,
@@ -2220,6 +2285,16 @@ fn build_settings_flags(
             Arc::new(Mutex::new(shortcuts_text(word, full)))
         },
         shortcuts_rebind_request: Arc::new(Mutex::new(None)),
+        personalization_edit: Arc::new(Mutex::new(None)),
+        // Seed the pane from the current source profile so its fields/popup
+        // reflect config on open (the about_text / emoji-index pattern).
+        personalization_instructions: config.personalization.global_instructions.clone(),
+        personalization_sender_name: config.personalization.sender.name.clone(),
+        personalization_sender_email: config.personalization.sender.email.clone(),
+        personalization_strength_index: Arc::new(AtomicUsize::new(
+            personalization_strength_index(config.personalization.strength),
+        )),
+        personalization_strength_titles: personalization_strength_titles(),
     }
 }
 
@@ -3894,6 +3969,39 @@ pub fn run() -> Result<(), String> {
                 }
             }
         }
+        // Personalization pane edit: apply the recorded knob change to the
+        // source profile (so it survives restart via persist) AND push it to the
+        // running worker LIVE via set_profile — no respawn, takes effect on the
+        // next request. The seam carried a primitive; apply_personalization_edit
+        // rejoins it to the typed profile and returns the (key, value) to persist.
+        //
+        // NOTE: the three knobs here (global instructions, sender, strength)
+        // govern PROMPT STEERING only. The MemoryStore open/close lifecycle is
+        // NOT part of PersonalizationProfile — it is governed by the separate
+        // `config.memory.mode` (memory::StorageMode), opened once at startup
+        // above (`open_memory_store`). So there is no MemoryStore call to make
+        // from a profile edit.
+        // TODO(LOOK): if a future "remember my edits" mode is added to
+        // PersonalizationProfile that should gate the MemoryStore, wire it to
+        // open_memory_store / store.close() here; today the profile has no such
+        // knob, so the steering edit must not touch `memory`.
+        let pers_edit = settings_flags
+            .personalization_edit
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(edit) = pers_edit {
+            let (key, value) = apply_personalization_edit(&mut config.personalization, edit);
+            // LIVE: the worker reads the profile per request through its shared
+            // Arc<Mutex<_>>, so this applies without a respawn.
+            inference.set_profile(config.personalization.clone());
+            eprintln!("compme: personalization {key} updated");
+            if let Some(path) = config::config_file_path() {
+                if let Err(err) = config::persist_setting(&path, key, &value) {
+                    eprintln!("compme: failed to persist {key}: {err}");
+                }
+            }
+        }
         // Setup "Download Model": fetch the model the picker has selected
         // (setup_model_index; defaults to the recommended entry) into the
         // app-support models dir. Progress is logged; on Done the log says
@@ -4572,6 +4680,46 @@ mod tests {
             preamble.contains("ada@example.com"),
             "sender email must appear in the built preamble: {preamble:?}"
         );
+    }
+
+    #[test]
+    fn personalization_edit_rejoins_each_knob_onto_the_profile_and_persist_pair() {
+        // Each PersonalizationEdit variant the Settings pane records must land on
+        // the right profile field AND return the matching (env_key, value) so the
+        // run loop persists what it applied. Covers the three steering knobs.
+        use platform_macos::PersonalizationEdit as E;
+        let mut profile = PersonalizationProfile::default();
+
+        let (key, val) =
+            apply_personalization_edit(&mut profile, E::GlobalInstructions("Be terse.".into()));
+        assert_eq!(profile.global_instructions, "Be terse.");
+        assert_eq!((key, val.as_str()), ("COMPME_INSTRUCTIONS", "Be terse."));
+
+        let (key, val) = apply_personalization_edit(&mut profile, E::SenderName("Ada".into()));
+        assert_eq!(profile.sender.name, "Ada");
+        assert_eq!((key, val.as_str()), ("COMPME_SENDER_NAME", "Ada"));
+
+        let (key, val) =
+            apply_personalization_edit(&mut profile, E::SenderEmail("ada@x.io".into()));
+        assert_eq!(profile.sender.email, "ada@x.io");
+        assert_eq!((key, val.as_str()), ("COMPME_SENDER_EMAIL", "ada@x.io"));
+
+        // Strength stop addresses STOPS by index and round-trips through
+        // from_stop; the persisted value is the stop number, matching how
+        // build_personalization parses COMPME_STRENGTH.
+        let (key, val) = apply_personalization_edit(&mut profile, E::StrengthStop(5));
+        assert_eq!(profile.strength, Strength::from_stop(5));
+        assert_eq!((key, val.as_str()), ("COMPME_STRENGTH", "5"));
+        assert_eq!(personalization_strength_index(profile.strength), 5);
+
+        // Out-of-range stop is total (clamped via from_stop), never panics.
+        let (_key, val) = apply_personalization_edit(&mut profile, E::StrengthStop(9_999));
+        assert_eq!(profile.strength, Strength::from_stop(255));
+        assert_eq!(val, "255");
+
+        // Titles cover every stop in order, so the popup index always addresses
+        // a real Strength.
+        assert_eq!(personalization_strength_titles().len(), Strength::STOPS.len());
     }
 
     #[test]
