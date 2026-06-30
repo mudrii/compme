@@ -286,8 +286,8 @@ earlier note: the **F2 insertion-order decision is already shipped** — a fixed
 
 | # | Item (tier) | Effort | Why this slot |
 |---|---|---|---|
-| 1 | **Emoji gendered + skin-tone — ZWJ assembly** | S–M | **Start here.** Pure `emoji` crate logic, fully unit-testable against exact codepoint sequences, zero deps, **no LOOK gate, no design decision**. Splice the Fitzpatrick modifier inside the pre-composed gendered ZWJ sequence (today gender≠Neutral drops skin tone — `emoji/src/lib.rs:261`). |
-| 2 | **Statistics metric selector (3.3)** | S / 0 | Mostly a product call — scaffold (`StatMetric`/`metric_series`, `stats/src/lib.rs:209`) is built; decide whether the existing 3-row layout already satisfies it (recommended: yes, close 3.3) or wire an `NSPopUpButton`. |
+| 1 | ✅ **DONE (2026-06-30)** — Emoji gendered + skin-tone ZWJ assembly | S–M | Shipped: `with_skin_tone_zwj` splices the Fitzpatrick modifier into the base of the gendered ZWJ sequence (`emoji/src/lib.rs`). 27 tests pass, clippy clean. |
+| 2 | ✅ **DONE (2026-06-30, closed without picker)** — Statistics metric selector (3.3) | S / 0 | Decision taken: keep the existing layout, no `NSPopUpButton`. A single-select picker trades away at-a-glance comparison for an unrequested control. The `StatMetric`/`metric_series` scaffold (`stats/src/lib.rs:209`) stays as-is (unwired — re-evaluate as dead code in a future ponytail pass, not cut now). |
 | 3 | **Apps-pane editing rows (3.1)** | M | Bounded AppKit UI + write-back: all four backing fields (`enabled`/`tab_disabled`/`mid_line`/`autocorrect`) already exist and are consumed at runtime; pane today is display + delete only (`settings_window.rs:1175`). |
 | 4 | **Always-on hotkeys (3.4)** | M | Reuses the proven transient-accept Carbon pattern (not novel FFI); `ShortcutBindings::from_config` parses force_activate/toggle_app/toggle_global but nothing registers them (`platform_macos/src/lib.rs:2478`). Needs the force-activate decision (below) + a live key-press LOOK. |
 | 5 | **Personalization pane (3.2)** | L | **Do last.** Heaviest: `PersonalizationProfile` is moved *by value* into the inference worker thread (`inference.rs:354`), so live controls need new sync (`Arc<RwLock>`/channel reload) threaded into the inference hot path + `MemoryStore` open/close lifecycle for mode. The refactor *is* the work; the three controls are easy once it lands. |
@@ -295,12 +295,12 @@ earlier note: the **F2 insertion-order decision is already shipped** — a fixed
 
 ### Open decisions to settle (recommended defaults)
 
-1. **Stats metric picker** — *recommended: keep the 3-row layout, close 3.3 as
-   DONE.* A picker trades the at-a-glance 3-metric comparison for an unrequested
-   control.
-2. **force-activate semantics** (gates item 4) — *recommended: "force-show the
-   current pending suggestion now"* (cheap, predictable) over "kick a fresh
-   inference request" (latency + races).
+1. **Stats metric picker** — ✅ **SETTLED (2026-06-30): closed as DONE without a
+   picker.** Keep the existing layout. A picker trades the at-a-glance comparison
+   for an unrequested control.
+2. **force-activate semantics** (gates item 4) — ✅ **SETTLED (2026-06-30):
+   "force-show the current pending suggestion now"** (cheap, predictable) over
+   "kick a fresh inference request" (latency + races).
 3. **Non-AxSet plain-insert posture** — *recommended: keep best-effort*; add a
    post-insert readback only if a live per-app pass (Terminal/iTerm/Safari)
    shows wrong text. Plain inserts via SyntheticKeys/Clipboard currently assume
