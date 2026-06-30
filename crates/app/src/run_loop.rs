@@ -3607,17 +3607,11 @@ pub fn run() -> Result<(), String> {
                 HostEvent::Shortcut(action) => match action {
                     ShortcutAction::ForceActivate => {
                         // Settled semantics: re-show the CURRENT pending suggestion
-                        // without kicking a fresh inference. The engine has no
-                        // re-present event today — `on_cycle` rotates the candidate
-                        // (changes it) and `on_tick` only re-emits on a debounce
-                        // boundary, so neither is a faithful "re-show current".
-                        // TODO(LOOK): add an engine `Event::ForceShow` (or reuse the
-                        // last `offer_all` presentation snapshot) that re-emits the
-                        // current suggestion verbatim, then call it here and
-                        // `offer_all` the result. Verify by physical key-press that
-                        // a dismissed-but-pending suggestion re-appears with no new
-                        // inference request. No-op when nothing is pending.
+                        // without kicking a fresh inference. `on_force_show`
+                        // re-emits the held candidate verbatim (no rotation, no
+                        // RequestCompletion); a no-op when nothing is held.
                         eprintln!("compme: shortcut force-activate (re-show pending)");
+                        offer_all(&mut latest, log_err("on_force_show", engine.on_force_show()));
                     }
                     ShortcutAction::ToggleApp => {
                         // Flip per-app Enabled for the focused app, mirroring the

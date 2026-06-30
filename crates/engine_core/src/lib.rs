@@ -92,6 +92,11 @@ pub enum Event {
     },
     /// Rotate to the next candidate while a suggestion is showing.
     Cycle,
+    /// Re-assert the suggestion the engine currently holds (Item 4 always-on
+    /// "force-show" hotkey): re-emit the on-screen candidate verbatim — same
+    /// candidate, no rotation (unlike `Cycle`) and no fresh inference. A no-op
+    /// when nothing is currently held.
+    ForceShow,
     SecureStateChanged {
         caps: Capabilities,
     },
@@ -449,6 +454,29 @@ impl SuggestionMachine {
                             text: showing.current().to_string(),
                         });
                     }
+                }
+            }
+            Event::ForceShow => {
+                // Re-assert the held candidate verbatim (no rotation, no fresh
+                // inference). Reuses the same `showing` state `Cycle` relies on,
+                // so it can only re-present a suggestion the engine still holds;
+                // a no-op otherwise. Re-emitting `ShowGhost` (not `UpdateGhost`)
+                // re-presents from scratch, covering the case where the prior
+                // placement failed and no ghost is actually on screen.
+                //
+                // TODO(LOOK): this re-shows only while `showing` is still set —
+                // every hide path (`Dismiss*`, focus/edit/caret/secure change)
+                // takes `self.showing`, so a *dismissed* suggestion leaves no
+                // retained candidate to re-show. Retaining a dismissed candidate
+                // across snapshot-invalidating events (and re-validating its
+                // generation/snapshot on re-show) is a larger change deferred
+                // until the physical-hotkey UX is validated.
+                if let Some(showing) = self.showing.as_ref() {
+                    out.push(Command::ShowGhost {
+                        field: showing.field.clone(),
+                        snapshot: showing.snapshot,
+                        text: showing.current().to_string(),
+                    });
                 }
             }
             Event::CaretMoved { field, caret } => {
@@ -1971,6 +1999,56 @@ mod tests {
     fn cycle_with_nothing_showing_is_a_noop() {
         let mut machine = machine();
         assert_eq!(machine.on_event(Event::Cycle), vec![]);
+    }
+
+    #[test]
+    fn force_show_re_presents_the_current_candidate_verbatim() {
+        // ForceShow (Item 4 always-on hotkey) re-asserts the suggestion the
+        // engine already holds — same candidate, no rotation (unlike Cycle).
+        let mut machine = showing_three_words();
+        assert_eq!(
+            machine.on_event(Event::ForceShow),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "world there friend".into(),
+            }]
+        );
+        // Re-show does not advance the candidate index: a second ForceShow shows
+        // the *same* candidate, never the next one (that is Cycle's job).
+        assert_eq!(
+            machine.on_event(Event::ForceShow),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "world there friend".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn force_show_emits_no_new_completion_request() {
+        let mut machine = showing_solo(false);
+        let out = machine.on_event(Event::ForceShow);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, Command::RequestCompletion { .. })),
+            "ForceShow must re-present the held suggestion, never kick a fresh \
+             inference request: {out:?}"
+        );
+    }
+
+    #[test]
+    fn force_show_with_nothing_pending_is_a_noop() {
+        // Nothing held (fresh machine) → no panic, no spurious render.
+        let mut machine = machine();
+        assert_eq!(machine.on_event(Event::ForceShow), vec![]);
+
+        // And after a held suggestion is dismissed (so `showing` is cleared and
+        // no candidate is retained), ForceShow is likewise a no-op.
+        let mut machine = showing_solo(false);
+        let _ = machine.on_event(Event::Dismiss);
+        assert_eq!(machine.on_event(Event::ForceShow), vec![]);
     }
 
     #[test]

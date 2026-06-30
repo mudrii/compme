@@ -269,6 +269,15 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    /// Force-show the suggestion the engine currently holds (Item 4 always-on
+    /// hotkey): re-present the on-screen candidate verbatim — same candidate, no
+    /// rotation (unlike `on_cycle`) and no fresh inference. A no-op when nothing
+    /// is currently held.
+    pub fn on_force_show(&mut self) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self.machine.on_event(Event::ForceShow);
+        self.dispatch(commands)
+    }
+
     /// Offer a local replacement (emoji/thesaurus/typo) with one or more
     /// candidates (design spec §8/§16).
     pub fn on_replacement(
