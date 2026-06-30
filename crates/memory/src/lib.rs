@@ -111,8 +111,15 @@ impl MemoryStore {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ =
-                        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+                    if let Err(e) = std::fs::set_permissions(
+                        parent,
+                        std::fs::Permissions::from_mode(0o700),
+                    ) {
+                        eprintln!(
+                            "compme: failed to tighten permissions on {}: {e}",
+                            parent.display()
+                        );
+                    }
                 }
             }
         }
@@ -143,7 +150,14 @@ impl MemoryStore {
             use std::os::unix::fs::PermissionsExt;
             let restrict = |p: &Path| {
                 if p.exists() {
-                    let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
+                    if let Err(e) =
+                        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))
+                    {
+                        eprintln!(
+                            "compme: failed to tighten permissions on {}: {e}",
+                            p.display()
+                        );
+                    }
                 }
             };
             restrict(path);

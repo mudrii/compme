@@ -399,6 +399,10 @@ enum SubscriptionEntry {
     Accept {
         _callback: AcceptCallback,
         _observer_tap: AcceptTapResource,
+        /// Process-lifetime always-on shortcut registration (ids 5/6/7), held
+        /// for the subscription's lifetime so toggles fire with no suggestion
+        /// visible (finding C). Dropped on unsubscribe → hotkeys unregistered.
+        _shortcut_tap: AcceptTapResource,
         _controller: Arc<AcceptTapController>,
     },
 }
@@ -675,6 +679,11 @@ enum AdapterAcceptTapInstaller {
 enum AcceptTapKind {
     Observer,
     Consumer,
+    /// Process-lifetime always-on shortcut registration (ForceActivate /
+    /// ToggleApp / ToggleGlobal, ids 5/6/7). Installed ONCE per subscription
+    /// — unlike `Consumer`, it is NOT armed/dropped with each visible
+    /// suggestion, so a toggle can fire in its primary no-suggestion state.
+    Shortcut,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1571,13 +1580,30 @@ impl PlatformAdapter for MacosPlatformAdapter {
             AcceptTapKind::Observer,
             accept_observer_tap_handler(Arc::clone(&active)),
         )?;
+        let accept_action = Arc::new(Mutex::new(None));
+        // Always-on shortcuts (ids 5/6/7) install ONCE here, for the
+        // subscription lifetime — NOT armed/dropped with each visible suggestion
+        // like the consumer tap (finding C). The delivery handler is the same
+        // consumer handler: it already fires shortcuts before its `active`
+        // early-return, so a toggle works with no suggestion showing. Accept
+        // decisions read `accept_action`, but shortcut events carry their action
+        // and bypass it, so sharing the controller's slot is sound.
+        let shortcut_tap = installer(
+            AcceptTapKind::Shortcut,
+            accept_consumer_tap_handler(
+                Arc::clone(&active),
+                callback_tx.clone(),
+                Arc::clone(&cb),
+                Arc::clone(&accept_action),
+            ),
+        )?;
         let controller = Arc::new(AcceptTapController {
             installer,
             callback_tx,
             callback: Arc::clone(&cb),
             active: Arc::clone(&active),
             consumer_tap: Mutex::new(None),
-            accept_action: Arc::new(Mutex::new(None)),
+            accept_action,
             teardown_generation: AtomicU64::new(0),
         });
 
@@ -1591,6 +1617,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
                 SubscriptionEntry::Accept {
                     _callback: cb,
                     _observer_tap: observer_tap,
+                    _shortcut_tap: shortcut_tap,
                     _controller: Arc::clone(&controller),
                 },
             );
@@ -2891,11 +2918,16 @@ fn install_worker_accept_tap_resource(
     kind: AcceptTapKind,
     handler: Arc<AcceptTapHandler>,
 ) -> Result<WorkerResource, PlatformError> {
-    if kind == AcceptTapKind::Observer {
-        return Ok(Box::new(()) as WorkerResource);
+    match kind {
+        // The observer tap is a CGEventTap installed elsewhere; the worker-side
+        // resource is a no-op placeholder so the subscription owns *something*.
+        AcceptTapKind::Observer => Ok(Box::new(()) as WorkerResource),
+        // Always-on shortcuts (ids 5/6/7) install ONCE per subscription on their
+        // own process-lifetime resource — independent of the per-suggestion
+        // consumer arm — so a toggle fires before any suggestion appears.
+        AcceptTapKind::Shortcut => install_process_shortcut_hotkeys(handler),
+        AcceptTapKind::Consumer => install_carbon_accept_hotkeys(handler),
     }
-
-    install_carbon_accept_hotkeys(handler)
 }
 
 fn install_carbon_accept_hotkeys(
@@ -2911,28 +2943,152 @@ fn install_carbon_accept_hotkeys(
         hotkeys: Vec::new(),
         arm_id,
     };
+    // Accept keys (ids 1-4) ONLY: they matter solely while a suggestion is
+    // visible, so they stay tied to this per-arm consumer resource. Always-on
+    // shortcuts (ids 5/6/7) are registered once per subscription on the
+    // process-lifetime shortcut resource (`install_process_shortcut_hotkeys`),
+    // NOT here — registering them per arm cycle left them unregistered in the
+    // no-suggestion state, their primary moment (review finding C).
     for (id, keycode, mask) in
         accept_keymap().arm_bindings(TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed))
     {
         resource.register_hotkey(target, id, keycode, mask)?;
     }
 
-    // Always-on (global) shortcuts ride the same CARBON_HANDLER_SLOT and C
-    // handler: register them in this same arm cycle. A colliding set is already
-    // dropped whole by `set_shortcut_bindings_from_config`, but re-check here so
-    // a directly-mutated static can never register two hotkeys on one chord.
-    // TODO(LOOK): these are re-registered per arm cycle (focus changes), not once
-    // for the process; verify by physical key-press that a global shortcut still
-    // fires during a no-suggestion window — if the arm cycle gaps it, hoist this
-    // to a process-lifetime install like `ensure_carbon_handler_installed`.
+    Ok(Box::new(resource) as WorkerResource)
+}
+
+/// The swappable delivery handler for the process-lifetime SHORTCUT hotkeys
+/// (ids 5/6/7), kept in its OWN slot so always-on shortcuts dispatch even when
+/// the accept consumer slot ([`CARBON_HANDLER_SLOT`]) is empty (no suggestion
+/// visible). Mirrors [`CarbonHandlerSlot`]'s id-ownership + poison-recovery
+/// discipline so an out-of-order teardown can never disarm a newer arm.
+static SHORTCUT_HANDLER_SLOT: CarbonHandlerSlot = CarbonHandlerSlot::new();
+/// Unique arm ids for [`SHORTCUT_HANDLER_SLOT`] ownership checks.
+static SHORTCUT_ARM_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Drop the shortcut chords that collide with a currently-registered accept-key
+/// chord (review finding F). Accept keys (ids 1-4) and shortcuts now register on
+/// different lifecycles, so a shortcut bound to an accept chord — e.g. Tab(48)
+/// or Esc(53) — would hit `eventHotKeyExistsErr` at `RegisterEventHotKey`. We
+/// drop the colliding shortcut rather than let one bad binding abort the whole
+/// install. Pure (testable): takes the shortcut plan and the accept chords.
+fn shortcut_plan_minus_accept_collisions(
+    plan: Vec<(u32, i64, u32)>,
+    accept_chords: &[(i64, u32)],
+) -> Vec<(u32, i64, u32)> {
+    plan.into_iter()
+        .filter(|&(_, keycode, mask)| !accept_chords.contains(&(keycode, mask)))
+        .collect()
+}
+
+/// A process-lifetime resource owning the always-on SHORTCUT hotkey
+/// registrations (ids 5/6/7) and the [`SHORTCUT_HANDLER_SLOT`] arm. Mirrors
+/// [`WorkerAcceptTapResource`]: it owns its [`EventHotKeyRef`]s and, on drop,
+/// unregisters each one and disarms only the slot it still owns — so there is
+/// no leak and no double-register across subscriptions.
+struct WorkerShortcutResource {
+    hotkeys: Vec<EventHotKeyRef>,
+    arm_id: u64,
+}
+
+impl Drop for WorkerShortcutResource {
+    fn drop(&mut self) {
+        for hotkey in self.hotkeys.drain(..) {
+            // SAFETY: each ref came from a successful `RegisterEventHotKey` in
+            // `install_process_shortcut_hotkeys` and is unregistered exactly
+            // once (drained), mirroring `WorkerAcceptTapResource::drop`.
+            unsafe {
+                let _ = UnregisterEventHotKey(hotkey);
+            }
+        }
+        SHORTCUT_HANDLER_SLOT.disarm(self.arm_id);
+    }
+}
+
+impl WorkerShortcutResource {
+    fn register_hotkey(
+        &mut self,
+        target: EventTargetRef,
+        id: u32,
+        keycode: i64,
+        modifiers: u32,
+    ) -> Result<(), PlatformError> {
+        let keycode = u32::try_from(keycode).map_err(|_| PlatformError::CannotComplete {
+            reason: format!("invalid Carbon shortcut keycode: {keycode}"),
+        })?;
+        let mut hotkey_ref: EventHotKeyRef = ptr::null_mut();
+        // SAFETY: Carbon FFI; `hotkey_ref` is written by RegisterEventHotKey on
+        // success (status 0) and pushed for the matching UnregisterEventHotKey
+        // in `drop`. Same call shape as `WorkerAcceptTapResource::register_hotkey`.
+        let status = unsafe {
+            RegisterEventHotKey(
+                keycode,
+                modifiers,
+                EventHotKeyID {
+                    signature: HOTKEY_SIGNATURE,
+                    id,
+                },
+                target,
+                0,
+                &mut hotkey_ref,
+            )
+        };
+        if status != 0 {
+            return Err(PlatformError::CannotComplete {
+                reason: format!("failed to register Carbon shortcut {keycode}: status {status}"),
+            });
+        }
+        self.hotkeys.push(hotkey_ref);
+        Ok(())
+    }
+}
+
+/// Install the always-on shortcut hotkeys (ids 5/6/7) ONCE for the
+/// subscription's lifetime (review finding C). Reuses the shared Carbon handler
+/// (`ensure_carbon_handler_installed`) — which routes shortcut ids to
+/// [`SHORTCUT_HANDLER_SLOT`] — and arms that slot with the supplied delivery
+/// handler. Robust against a shortcut chord colliding with an accept-key chord:
+/// such a shortcut is dropped up front (finding F) and any residual register
+/// error is logged-and-skipped, never `?`-aborting (a bad shortcut binding must
+/// not break accept-key interception, which lives on a different resource now).
+fn install_process_shortcut_hotkeys(
+    handler: Arc<AcceptTapHandler>,
+) -> Result<WorkerResource, PlatformError> {
+    let target = unsafe { GetApplicationEventTarget() };
+    ensure_carbon_handler_installed(target)?;
+
+    let arm_id = SHORTCUT_ARM_ID.fetch_add(1, Ordering::Relaxed);
+    SHORTCUT_HANDLER_SLOT.arm(arm_id, handler);
+
+    let mut resource = WorkerShortcutResource {
+        hotkeys: Vec::new(),
+        arm_id,
+    };
+
     let shortcuts = shortcut_bindings();
-    if shortcuts.has_internal_collision() {
+    let plan = if shortcuts.has_internal_collision() {
         if debug_enabled() {
             eprintln!("compme: shortcut bindings collide ({shortcuts:?}); skipping registration");
         }
+        Vec::new()
     } else {
-        for (id, keycode, mask) in shortcuts.registration_plan() {
-            resource.register_hotkey(target, id, keycode, mask)?;
+        let accept_chords: Vec<(i64, u32)> = accept_keymap()
+            .carbon_bindings()
+            .into_iter()
+            .map(|(_, keycode, mask)| (keycode, mask))
+            .collect();
+        shortcut_plan_minus_accept_collisions(shortcuts.registration_plan(), &accept_chords)
+    };
+
+    for (id, keycode, mask) in plan {
+        // Log-and-skip on error: a single colliding/invalid shortcut binding
+        // must never abort the install (finding F). The cross-check above drops
+        // the known accept-key collisions; this guards the residual cases.
+        if let Err(err) = resource.register_hotkey(target, id, keycode, mask) {
+            if debug_enabled() {
+                eprintln!("compme: skipping shortcut hotkey id={id}: {err}");
+            }
         }
     }
 
@@ -3226,10 +3382,17 @@ extern "C" fn carbon_accept_hotkey_handler(
                 keycode
             }
         };
-        // R2-5: read the process-lifetime slot; the cloned Arc keeps the handler
-        // alive through this call even if a disarm lands concurrently. Slot empty
-        // (disarmed between dispatch and here) → drop the event safely.
-        let Some(handler) = CARBON_HANDLER_SLOT.current() else {
+        // Shortcut ids (5/6/7) read the PROCESS-LIFETIME shortcut slot so they
+        // dispatch even when no suggestion is visible (the accept slot is empty
+        // in that state — finding C). Accept ids read the per-arm accept slot.
+        // Either way the cloned Arc keeps the handler alive through this call
+        // even if a disarm lands concurrently; an empty slot drops the event.
+        let slot = if shortcut.is_some() {
+            &SHORTCUT_HANDLER_SLOT
+        } else {
+            &CARBON_HANDLER_SLOT
+        };
+        let Some(handler) = slot.current() else {
             return 0;
         };
         let _ = handler(AcceptTapEvent {
@@ -9307,6 +9470,35 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_plan_drops_chords_colliding_with_accept_keys() {
+        // Finding F: accept keys (ids 1-4) and shortcuts (5/6/7) now register on
+        // separate lifecycles, so a shortcut bound to an accept chord would hit
+        // eventHotKeyExistsErr. The cross-check drops the colliding shortcut(s)
+        // instead of aborting the whole install.
+        let accept_chords = [
+            (KEYCODE_TAB, 0u32),    // word
+            (KEYCODE_GRAVE, 0u32),  // full
+            (KEYCODE_ESCAPE, 0u32), // dismiss
+            (KEYCODE_DOWN, 0u32),   // cycle
+        ];
+        // ForceActivate collides with Tab(48); ToggleApp on a free chord survives.
+        let plan = vec![
+            (CARBON_HOTKEY_FORCE_ACTIVATE, KEYCODE_TAB, 0),
+            (CARBON_HOTKEY_TOGGLE_APP, 96, CARBON_SHIFT_KEY),
+        ];
+        let kept = shortcut_plan_minus_accept_collisions(plan, &accept_chords);
+        assert_eq!(kept, vec![(CARBON_HOTKEY_TOGGLE_APP, 96, CARBON_SHIFT_KEY)]);
+
+        // Same keycode but a DIFFERENT modifier is a distinct chord — not dropped.
+        let plan = vec![(CARBON_HOTKEY_TOGGLE_GLOBAL, KEYCODE_TAB, CARBON_CONTROL_KEY)];
+        let kept = shortcut_plan_minus_accept_collisions(plan, &accept_chords);
+        assert_eq!(
+            kept,
+            vec![(CARBON_HOTKEY_TOGGLE_GLOBAL, KEYCODE_TAB, CARBON_CONTROL_KEY)]
+        );
+    }
+
+    #[test]
     fn shortcut_action_for_hotkey_id_maps_each_always_on_slot() {
         assert_eq!(
             shortcut_action_for_hotkey_id(CARBON_HOTKEY_FORCE_ACTIVATE),
@@ -9892,27 +10084,33 @@ mod tests {
                 action_tx.send(action).expect("action send");
             }))
             .expect("subscribe accept");
-        wait_for_accept_tap_count(&accept_tap_installs, 1);
+        // Per subscription, two process-lifetime resources install up front:
+        // the Observer tap and the always-on Shortcut registration (finding C).
+        wait_for_accept_tap_count(&accept_tap_installs, 2);
         assert_eq!(
             accept_tap_installs.lock().unwrap()[0].kind,
             AcceptTapKind::Observer
+        );
+        assert_eq!(
+            accept_tap_installs.lock().unwrap()[1].kind,
+            AcceptTapKind::Shortcut
         );
 
         subscription
             .set_suggestion_visible(true)
             .expect("activate consumer");
-        wait_for_accept_tap_count(&accept_tap_installs, 2);
+        wait_for_accept_tap_count(&accept_tap_installs, 3);
         assert_eq!(
-            accept_tap_installs.lock().unwrap()[1].kind,
+            accept_tap_installs.lock().unwrap()[2].kind,
             AcceptTapKind::Consumer
         );
 
         subscription
             .set_suggestion_visible(true)
             .expect("activation is idempotent");
-        assert_eq!(accept_tap_installs.lock().unwrap().len(), 2);
+        assert_eq!(accept_tap_installs.lock().unwrap().len(), 3);
 
-        let consumer_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[1].handler);
+        let consumer_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[2].handler);
         // While armed: Tab accepts the next word, grave accepts the full completion.
         assert_eq!(
             consumer_handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
@@ -9946,9 +10144,9 @@ mod tests {
         subscription
             .set_suggestion_visible(true)
             .expect("reactivate consumer");
-        wait_for_accept_tap_count(&accept_tap_installs, 3);
+        wait_for_accept_tap_count(&accept_tap_installs, 4);
         assert_eq!(
-            accept_tap_installs.lock().unwrap()[2].kind,
+            accept_tap_installs.lock().unwrap()[3].kind,
             AcceptTapKind::Consumer
         );
     }
@@ -9974,12 +10172,14 @@ mod tests {
         subscription
             .set_suggestion_visible(true)
             .expect("activate consumer");
-        wait_for_accept_tap_count(&accept_tap_installs, 2);
+        // [Observer, Shortcut, Consumer] — the two process-lifetime resources
+        // install before the first consumer arm (finding C).
+        wait_for_accept_tap_count(&accept_tap_installs, 3);
 
         subscription.rearm_accept_tap().expect("rearm");
-        wait_for_accept_tap_count(&accept_tap_installs, 3);
+        wait_for_accept_tap_count(&accept_tap_installs, 4);
         assert_eq!(
-            accept_tap_installs.lock().unwrap()[2].kind,
+            accept_tap_installs.lock().unwrap()[3].kind,
             AcceptTapKind::Consumer
         );
         // DROP-BEFORE-INSTALL is load-bearing (Esc/Down exist in every
@@ -10025,13 +10225,14 @@ mod tests {
         let subscription = adapter
             .subscribe_accept(Arc::new(|_| {}))
             .expect("subscribe accept");
-        wait_for_accept_tap_count(&accept_tap_installs, 1); // observer only
+        wait_for_accept_tap_count(&accept_tap_installs, 2); // observer + shortcut
 
         subscription
             .rearm_accept_tap()
             .expect("unarmed rearm is Ok");
-        // Still just the observer install — no phantom consumer.
-        assert_eq!(accept_tap_installs.lock().unwrap().len(), 1);
+        // Still just the process-lifetime installs (observer + shortcut) — no
+        // phantom consumer.
+        assert_eq!(accept_tap_installs.lock().unwrap().len(), 2);
     }
 
     #[test]
@@ -10047,7 +10248,7 @@ mod tests {
         subscription
             .set_suggestion_visible(true)
             .expect("activate consumer");
-        wait_for_accept_tap_count(&accept_tap_installs, 2);
+        wait_for_accept_tap_count(&accept_tap_installs, 3);
 
         subscription
             .hide_suggestion_after(Duration::from_millis(10))
@@ -10057,9 +10258,9 @@ mod tests {
             .set_suggestion_visible(true)
             .expect("reactivate after delayed hide");
 
-        wait_for_accept_tap_count(&accept_tap_installs, 3);
+        wait_for_accept_tap_count(&accept_tap_installs, 4);
         assert_eq!(
-            accept_tap_installs.lock().unwrap()[2].kind,
+            accept_tap_installs.lock().unwrap()[3].kind,
             AcceptTapKind::Consumer
         );
     }
@@ -10077,7 +10278,7 @@ mod tests {
         subscription
             .set_suggestion_visible(true)
             .expect("activate consumer");
-        wait_for_accept_tap_count(&accept_tap_installs, 2);
+        wait_for_accept_tap_count(&accept_tap_installs, 3);
 
         subscription
             .hide_suggestion_after(Duration::from_millis(30))
@@ -10090,7 +10291,7 @@ mod tests {
             .set_suggestion_visible(true)
             .expect("still active after canceled hide");
 
-        assert_eq!(accept_tap_installs.lock().unwrap().len(), 2);
+        assert_eq!(accept_tap_installs.lock().unwrap().len(), 3);
     }
 
     #[test]

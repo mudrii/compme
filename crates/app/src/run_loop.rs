@@ -2221,6 +2221,34 @@ fn apps_policy_field_from_index(index: usize) -> Option<prefs::AppPolicyField> {
     }
 }
 
+/// Resolve each Apps row's per-app policy into the `[Enabled, TabDisabled,
+/// MidLine, Autocorrect]` checkbox bits the settings window seeds from. One
+/// entry per `app_ids` row, in the SAME order/cap as `apps_row_ids` (so the
+/// window can zip it against `apps_lines` row-for-row). The bool order matches
+/// `apps_policy_field_from_index` / `platform_macos::APP_POLICY_FIELD_TITLES`.
+fn compose_apps_policy_bits(
+    prefs: &prefs::Prefs,
+    app_ids: &[String],
+    global_mid_line: bool,
+    global_autocorrect: bool,
+) -> Vec<[bool; platform_macos::APP_POLICY_FIELDS]> {
+    app_ids
+        .iter()
+        .map(|app| {
+            [
+                prefs
+                    .per_app
+                    .get(app)
+                    .and_then(|p| p.enabled)
+                    .unwrap_or(prefs.default_enabled),
+                prefs.tab_disabled(Some(app)),
+                prefs.mid_line_enabled(Some(app), global_mid_line),
+                prefs.autocorrect_enabled(Some(app), global_autocorrect),
+            ]
+        })
+        .collect()
+}
+
 /// The settings window's shared state. `tray_enabled` is TrayFlags.enabled —
 /// the Enabled switch and the tray checkmark are two views of that one
 /// atomic (identity pinned in tests). Must run AFTER
@@ -2278,6 +2306,7 @@ fn build_settings_flags(
             .map(|g| g.label().to_string())
             .collect(),
         apps_lines: Arc::new(Mutex::new(Vec::new())),
+        apps_policy_bits: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
         apps_edit: Arc::new(Mutex::new(None)),
         shortcuts_text: {
@@ -2288,9 +2317,15 @@ fn build_settings_flags(
         personalization_edit: Arc::new(Mutex::new(None)),
         // Seed the pane from the current source profile so its fields/popup
         // reflect config on open (the about_text / emoji-index pattern).
-        personalization_instructions: config.personalization.global_instructions.clone(),
-        personalization_sender_name: config.personalization.sender.name.clone(),
-        personalization_sender_email: config.personalization.sender.email.clone(),
+        personalization_instructions: Arc::new(Mutex::new(
+            config.personalization.global_instructions.clone(),
+        )),
+        personalization_sender_name: Arc::new(Mutex::new(
+            config.personalization.sender.name.clone(),
+        )),
+        personalization_sender_email: Arc::new(Mutex::new(
+            config.personalization.sender.email.clone(),
+        )),
         personalization_strength_index: Arc::new(AtomicUsize::new(
             personalization_strength_index(config.personalization.strength),
         )),
@@ -3616,15 +3651,23 @@ pub fn run() -> Result<(), String> {
                     ShortcutAction::ToggleApp => {
                         // Flip per-app Enabled for the focused app, mirroring the
                         // tray/settings per-app toggle. The focused app key comes
-                        // from the same resolver the app-disable path uses; the
-                        // current effective value is read via `should_suggest` and
-                        // inverted, then persisted.
+                        // from the same resolver the app-disable path uses.
                         match current_field
                             .as_ref()
                             .and_then(|f| effective_app_key(f, bundle_id_for_pid))
                         {
                             Some(app) => {
-                                let current = prefs.should_suggest(Some(&app), None, now_ms);
+                                // Read the per-app `enabled` OVERRIDE directly, not
+                                // `should_suggest`: the latter folds in global snooze,
+                                // app-snooze, and `excluded_apps`, all of which take
+                                // precedence over `enabled`. Inverting the fully-gated
+                                // value would write an override the gates still mask,
+                                // so the toggle would do nothing and never converge.
+                                let current = prefs
+                                    .per_app
+                                    .get(&app)
+                                    .and_then(|p| p.enabled)
+                                    .unwrap_or(prefs.default_enabled);
                                 prefs.set_app_policy_field(
                                     &app,
                                     prefs::AppPolicyField::Enabled,
@@ -3637,9 +3680,15 @@ pub fn run() -> Result<(), String> {
                                 if let Some(path) = config::config_file_path() {
                                     persist_web_override_prefs(&path, &prefs);
                                 }
-                                // TODO(LOOK): verify by physical key-press that the
-                                // focused app's suggestions actually stop/resume and
-                                // the change survives a restart (config persisted).
+                                // Disabling must retract any suggestion already on
+                                // screen (and disarm its accept key); the gate is only
+                                // re-checked at submission, so a visible ghost would
+                                // otherwise still insert. Mirrors the snooze /
+                                // tray-disable paths below.
+                                if current {
+                                    latest.clear();
+                                    let _ = log_err("on_dismiss", engine.on_dismiss());
+                                }
                             }
                             // No resolvable focused app (no field / unknown bundle):
                             // nothing to toggle.
@@ -3656,10 +3705,14 @@ pub fn run() -> Result<(), String> {
                             &mut pending_monitored,
                             &mut monitored_buffers,
                         );
+                        // Disabling must retract any visible suggestion (and disarm
+                        // its accept key); the enabled gate is only re-checked at
+                        // submission. Mirrors the snooze / tray global-disable paths.
+                        if now {
+                            latest.clear();
+                            let _ = log_err("on_dismiss", engine.on_dismiss());
+                        }
                         eprintln!("compme: shortcut toggle-global enabled {now} -> {}", !now);
-                        // TODO(LOOK): verify by physical key-press that suggestions
-                        // globally stop/resume (runtime flag only; this mirrors the
-                        // SIGUSR1 toggle, which is also runtime-only).
                     }
                 },
             }
@@ -3714,6 +3767,12 @@ pub fn run() -> Result<(), String> {
                 &mut pending_monitored,
                 &mut monitored_buffers,
             );
+            // Disabling must retract any visible suggestion (and disarm its accept
+            // key); the enabled gate is only re-checked at submission.
+            if now {
+                latest.clear();
+                let _ = log_err("on_dismiss", engine.on_dismiss());
+            }
         }
         // Tray "Disable Completions Globally ▸": Hour/UntilRelaunch snooze
         // globally (UntilRelaunch holds for the process life); Always flips
@@ -3810,6 +3869,14 @@ pub fn run() -> Result<(), String> {
                     .unwrap_or_else(|e| e.into_inner());
                 (*lines, apps_ids) = compose_apps_rows(memory.as_ref());
             }
+            // Publish the per-row policy bits alongside apps_lines (same order/
+            // cap) so the Apps-pane checkboxes open reflecting the saved per-app
+            // override instead of a hard-seeded OFF.
+            *settings_flags
+                .apps_policy_bits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) =
+                compose_apps_policy_bits(&prefs, &apps_ids, global_mid_word, config.autocorrect);
             if let Err(err) = settings_window.show() {
                 eprintln!("compme: settings window unavailable: {err}");
             }
@@ -3938,6 +4005,17 @@ pub fn run() -> Result<(), String> {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = lines;
                     apps_ids = ids;
+                    // Rows shifted — republish the policy bits in the new order
+                    // before refresh_apps_labels re-seeds the checkboxes from them.
+                    *settings_flags
+                        .apps_policy_bits
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = compose_apps_policy_bits(
+                        &prefs,
+                        &apps_ids,
+                        global_mid_word,
+                        config.autocorrect,
+                    );
                     settings_window.refresh_apps_labels();
                 }
             }
@@ -5547,6 +5625,34 @@ mod tests {
         for i in 0..platform_macos::APP_POLICY_FIELDS {
             assert!(apps_policy_field_from_index(i).is_some());
         }
+    }
+
+    #[test]
+    fn apps_policy_bits_resolve_per_app_overrides_in_checkbox_order() {
+        // The Apps-pane checkboxes seed from these bits; each row must reflect
+        // the saved per-app override (not a hard-seeded OFF), in the SAME
+        // [Enabled, TabDisabled, MidLine, Autocorrect] order the checkboxes use.
+        use prefs::AppPolicyField::*;
+        let mut prefs = prefs::Prefs {
+            default_enabled: false,
+            ..Default::default()
+        };
+        // "explicit" overrides every field ON; "inherit" has no override and so
+        // falls back to defaults (default_enabled=false, globals passed below).
+        prefs.set_app_policy_field("com.explicit", Enabled, true);
+        prefs.set_app_policy_field("com.explicit", TabDisabled, true);
+        prefs.set_app_policy_field("com.explicit", MidLine, true);
+        prefs.set_app_policy_field("com.explicit", Autocorrect, true);
+        let ids = vec!["com.explicit".to_string(), "com.inherit".to_string()];
+
+        let bits = compose_apps_policy_bits(&prefs, &ids, false, true);
+
+        assert_eq!(bits.len(), ids.len(), "one entry per row, same order/cap");
+        // Explicit overrides win on every field.
+        assert_eq!(bits[0], [true, true, true, true]);
+        // Inherit: Enabled falls to default_enabled (false), TabDisabled default
+        // off, MidLine to the global (false), Autocorrect to the global (true).
+        assert_eq!(bits[1], [false, false, false, true]);
     }
 
     #[test]

@@ -341,6 +341,13 @@ pub struct SettingsFlags {
     /// Apps rows (per-app recorded-input counts), composed by the run loop
     /// right before each show; refreshed like stats.
     pub apps_lines: Arc<Mutex<Vec<String>>>,
+    /// Per-Apps-row resolved policy bits `[Enabled, TabDisabled, MidLine,
+    /// Autocorrect]`, composed by the run loop alongside `apps_lines` (same
+    /// order/cap) so each row's checkboxes open reflecting the saved per-app
+    /// override instead of a hard-seeded OFF. Refreshed on every show like
+    /// `apps_lines`. The bool order matches `APP_POLICY_FIELD_TITLES` / the
+    /// `apps_edit` field-index encoding.
+    pub apps_policy_bits: Arc<Mutex<Vec<[bool; APP_POLICY_FIELDS]>>>,
     /// A clicked Apps-row Delete button: the ROW INDEX (the run loop resolves
     /// it to an app id via apps_row_ids and performs the delete).
     pub apps_delete_row: Arc<Mutex<Option<usize>>>,
@@ -368,9 +375,9 @@ pub struct SettingsFlags {
     /// Personalization initial values, composed by the run loop from the source
     /// profile so the pane's fields/popup reflect the current config on open
     /// (the about_text / setup_model_index pattern — render-only seed strings).
-    pub personalization_instructions: String,
-    pub personalization_sender_name: String,
-    pub personalization_sender_email: String,
+    pub personalization_instructions: Arc<Mutex<String>>,
+    pub personalization_sender_name: Arc<Mutex<String>>,
+    pub personalization_sender_email: Arc<Mutex<String>>,
     /// Strength popup: the pre-selected stop (0..=5, 0 = Off) and one title per
     /// stop in `Strength::STOPS` order. Titles cross the seam here because
     /// `platform_macos` can't see the `personalization` crate (the stat-range
@@ -815,6 +822,28 @@ fn refresh_apps_policy_checkbox_visibility(checkboxes: &[Retained<NSButton>], li
     }
 }
 
+/// Re-seed the per-row policy checkbox CHECKED state from `bits` (composed by
+/// the run loop alongside `apps_lines`, same order/cap). Checkboxes are stored
+/// row-major (`APP_POLICY_FIELDS` per row), so flat index `idx` is row
+/// `idx / APP_POLICY_FIELDS`, field `idx % APP_POLICY_FIELDS`. A row absent
+/// from `bits` (status/empty rows) falls back to OFF — those rows are hidden
+/// anyway by [`refresh_apps_policy_checkbox_visibility`].
+fn refresh_apps_policy_checkbox_states(
+    checkboxes: &[Retained<NSButton>],
+    bits: &[[bool; APP_POLICY_FIELDS]],
+) {
+    for (idx, checkbox) in checkboxes.iter().enumerate() {
+        let row = idx / APP_POLICY_FIELDS;
+        let field = idx % APP_POLICY_FIELDS;
+        let on = bits.get(row).is_some_and(|r| r[field]);
+        checkbox.setState(if on {
+            NSControlStateValueOn
+        } else {
+            objc2_app_kit::NSControlStateValueOff
+        });
+    }
+}
+
 fn setup_action_available(lines: &[String], label: &str, ready: bool) -> bool {
     let glyph = if ready { '\u{2713}' } else { '\u{2717}' };
     let expected = format!("{glyph} {label}");
@@ -868,6 +897,12 @@ pub struct MacosSettingsWindow {
     // they could disagree with the label after a rebind that happened via a
     // non-window path while the window was closed (the banked 4b residual).
     recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)>,
+    // Personalization text fields, re-seeded from flags.personalization_* on
+    // every show so an out-of-window config reload is reflected on reopen (the
+    // same staleness class the apps/stats/shortcuts data rows guard against).
+    personalization_instructions_field: Option<Retained<NSTextField>>,
+    personalization_name_field: Option<Retained<NSTextField>>,
+    personalization_email_field: Option<Retained<NSTextField>>,
 }
 
 impl MacosSettingsWindow {
@@ -886,6 +921,9 @@ impl MacosSettingsWindow {
             switches: Vec::new(),
             shortcuts_label: None,
             recorder_labels: Vec::new(),
+            personalization_instructions_field: None,
+            personalization_name_field: None,
+            personalization_email_field: None,
         }
     }
 
@@ -906,6 +944,9 @@ impl MacosSettingsWindow {
             self.switches = built.switches;
             self.shortcuts_label = Some(built.shortcuts_label);
             self.recorder_labels = built.recorder_labels;
+            self.personalization_instructions_field = built.personalization_instructions_field;
+            self.personalization_name_field = built.personalization_name_field;
+            self.personalization_email_field = built.personalization_email_field;
             self.target = Some(target);
         }
         // Refresh data rows on EVERY show — the lazily built window is reused
@@ -929,6 +970,30 @@ impl MacosSettingsWindow {
                 button.setHidden(!lines.get(i).is_some_and(|l| apps_row_is_deletable(l)));
             }
             refresh_apps_policy_checkbox_visibility(&self.apps_policy_checkboxes, &lines);
+        }
+        // Per-row policy checkboxes re-seed from the run-loop-published bits —
+        // a per-app override edited via the web UI / config reload while the
+        // window was closed would otherwise leave the checkboxes stale.
+        if let Ok(bits) = self.flags.apps_policy_bits.lock() {
+            refresh_apps_policy_checkbox_states(&self.apps_policy_checkboxes, &bits);
+        }
+        // Personalization fields re-seed from their mutexes — a config reload
+        // while the window was closed updates flags.personalization_* and the
+        // fields would otherwise show the build-time values (c95 staleness).
+        if let Some(field) = &self.personalization_instructions_field {
+            if let Ok(text) = self.flags.personalization_instructions.lock() {
+                field.setStringValue(&NSString::from_str(&text));
+            }
+        }
+        if let Some(field) = &self.personalization_name_field {
+            if let Ok(text) = self.flags.personalization_sender_name.lock() {
+                field.setStringValue(&NSString::from_str(&text));
+            }
+        }
+        if let Some(field) = &self.personalization_email_field {
+            if let Ok(text) = self.flags.personalization_sender_email.lock() {
+                field.setStringValue(&NSString::from_str(&text));
+            }
         }
         // Shortcuts text re-reads its mutex — a live rebind (recorder 5b)
         // recomposes it while the window is closed.
@@ -1006,6 +1071,11 @@ impl MacosSettingsWindow {
             }
             refresh_apps_policy_checkbox_visibility(&self.apps_policy_checkboxes, &lines);
         }
+        // The app set may have shifted (a delete reindexes rows), so re-seed
+        // the checkbox states from the freshly published bits, mirroring show().
+        if let Ok(bits) = self.flags.apps_policy_bits.lock() {
+            refresh_apps_policy_checkbox_states(&self.apps_policy_checkboxes, &bits);
+        }
     }
 
     /// Whether the window is visible to the app — TRUE while miniaturized
@@ -1066,6 +1136,13 @@ fn build_window(
     let mut apps_delete_buttons: Vec<Retained<NSButton>> = Vec::new();
     let mut apps_policy_checkboxes: Vec<Retained<NSButton>> = Vec::new();
     let mut switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)> = Vec::new();
+    // Personalization text fields, kept so show() can re-seed them from
+    // flags.personalization_* after an out-of-window config reload (the same
+    // staleness class the data-row labels guard against). Assigned once in the
+    // unconditional Personalization block below (deferred init — no None seed).
+    let personalization_instructions_field: Option<Retained<NSTextField>>;
+    let personalization_name_field: Option<Retained<NSTextField>>;
+    let personalization_email_field: Option<Retained<NSTextField>>;
 
     // Tab layout (c105): one NSTabView as the content view, one tab per
     // pane_titles() entry. Tab content is ~500x350; per-pane coordinates are
@@ -1338,7 +1415,12 @@ fn build_window(
             NSPoint::new(20.0, 250.0),
             NSSize::new(460.0, 44.0),
         ));
-        gi_field.setStringValue(&NSString::from_str(&flags.personalization_instructions));
+        gi_field.setStringValue(&NSString::from_str(
+            &flags
+                .personalization_instructions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        ));
         gi_field.setEditable(true);
         gi_field.setSelectable(true);
         // SAFETY: target outlives the window (held by MacosSettingsWindow);
@@ -1364,7 +1446,12 @@ fn build_window(
             NSPoint::new(145.0, 208.0),
             NSSize::new(335.0, 24.0),
         ));
-        name_field.setStringValue(&NSString::from_str(&flags.personalization_sender_name));
+        name_field.setStringValue(&NSString::from_str(
+            &flags
+                .personalization_sender_name
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        ));
         name_field.setEditable(true);
         name_field.setSelectable(true);
         // SAFETY: see gi_field above.
@@ -1387,7 +1474,12 @@ fn build_window(
             NSPoint::new(145.0, 173.0),
             NSSize::new(335.0, 24.0),
         ));
-        email_field.setStringValue(&NSString::from_str(&flags.personalization_sender_email));
+        email_field.setStringValue(&NSString::from_str(
+            &flags
+                .personalization_sender_email
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        ));
         email_field.setEditable(true);
         email_field.setSelectable(true);
         // SAFETY: see gi_field above.
@@ -1429,6 +1521,11 @@ fn build_window(
             strength_popup.setAction(Some(sel!(selectStrength:)));
         }
         pers.addSubview(&strength_popup);
+        // Keep the text fields so show() can re-seed them after an
+        // out-of-window config reload (strength re-syncs via its atomic above).
+        personalization_instructions_field = Some(gi_field);
+        personalization_name_field = Some(name_field);
+        personalization_email_field = Some(email_field);
     }
 
     // Apps tab: per-app recorded-input counts (encrypted memory store).
@@ -1445,6 +1542,15 @@ fn build_window(
         apps.addSubview(&header);
         let initial: Vec<String> = flags
             .apps_lines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        // Per-row policy bits, composed by the run loop in the SAME order/cap as
+        // apps_lines, so each row's checkboxes open reflecting the saved per-app
+        // override. Applied via refresh_apps_policy_checkbox_states below (and on
+        // every show()/refresh_apps_labels, like the labels/visibility).
+        let initial_bits: Vec<[bool; APP_POLICY_FIELDS]> = flags
+            .apps_policy_bits
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
@@ -1491,11 +1597,10 @@ fn build_window(
             // the same reason Delete is. The run loop unpacks the tag, resolves
             // the row to an app id, and writes via prefs::set_app_policy_field.
             let deletable = apps_row_is_deletable(text);
-            // ponytail: checkbox initial state defaults to OFF here. The
-            // resolved per-app policy lives in `prefs` (run-loop side), which
-            // this crate intentionally cannot see (apps_lines/index-seam
-            // pattern). TODO(LOOK): publish the per-row policy bits the same
-            // way apps_lines are published so the checkboxes open pre-checked.
+            // The resolved per-app policy lives in `prefs` (run-loop side), which
+            // this crate intentionally cannot see (apps_lines/index-seam pattern).
+            // The run loop publishes the per-row bits via flags.apps_policy_bits;
+            // refresh_apps_policy_checkbox_states (below) seeds the checked state.
             for (field, title) in APP_POLICY_FIELD_TITLES.iter().enumerate() {
                 // SAFETY: target outlives the window (held by MacosSettingsWindow).
                 let checkbox = unsafe {
@@ -1520,6 +1625,7 @@ fn build_window(
                 apps_policy_checkboxes.push(checkbox);
             }
         }
+        refresh_apps_policy_checkbox_states(&apps_policy_checkboxes, &initial_bits);
     }
 
     // Context tab: prompt-context sources. Clipboard applies live; screen OCR is
@@ -1857,6 +1963,9 @@ fn build_window(
         switches,
         shortcuts_label,
         recorder_labels,
+        personalization_instructions_field,
+        personalization_name_field,
+        personalization_email_field,
     }
 }
 
@@ -1873,6 +1982,9 @@ struct BuiltWindow {
     switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
     shortcuts_label: Retained<NSTextField>,
     recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)>,
+    personalization_instructions_field: Option<Retained<NSTextField>>,
+    personalization_name_field: Option<Retained<NSTextField>>,
+    personalization_email_field: Option<Retained<NSTextField>>,
 }
 
 /// Max Setup row count (accessibility / screen recording / model file).

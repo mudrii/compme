@@ -47,7 +47,16 @@ define_class!(
                 .paramDescriptorForKeyword(KEY_DIRECT_OBJECT)
                 .and_then(|direct| direct.stringValue())
             {
-                (self.ivars().on_url)(url.to_string());
+                // objc2→Rust FFI boundary: a panic unwinding into the objc
+                // `handleGetURL:withReplyEvent:` dispatch is UB-adjacent
+                // (objc2 0.6.4 turns it into abort()). Shield the injected
+                // callback, matching the catch_unwind convention every other
+                // FFI entry in lib.rs uses.
+                let on_url = Arc::clone(&self.ivars().on_url);
+                let url = url.to_string();
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    on_url(url);
+                }));
             }
         }
     }
