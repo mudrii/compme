@@ -268,11 +268,49 @@ person at a granted macOS desktop, not new code. Sources:
 
 ---
 
-## Recommended sequencing
+## macOS completion plan (2026-06-30)
 
-1. **Tier 3** settings panes (3.2 Personalization/Context/Emoji, then 3.1 Apps
-   editing rows) — FFI, build-then-LOOK like the model picker / recorder.
-2. **Tier 1.2** distribution — wire notarization the moment a Developer ID is
-   available; cut the first `v*` tag.
-3. **Tier 1.1** cross-platform adapters — a dedicated milestone of their own.
-4. **Tier 4** — opportunistic, whenever a macOS GUI session is available.
+**Directive: finish macOS first.** Cross-platform adapters (1.1) and distribution
+(1.2) stay parked until the macOS feature set is complete — both are externally
+blocked anyway (1.1 needs Windows/Linux build+test environments; 1.2 needs an
+Apple Developer ID). Everything below is buildable on the macOS dev host today.
+
+Verified complete-list facts (2026-06-30 plan-review pass): there is **no Tier
+1.3**, and **Tier 2 is a single ✅ DONE item (2.1)** — so the macOS-buildable
+backlog is exactly the six residuals below, nothing hidden. Correction to an
+earlier note: the **F2 insertion-order decision is already shipped** — a fixed
+`AxSet → SyntheticKeys → Clipboard → None` chain (`platform_macos/src/lib.rs`
+`insertion_strategy()`), not paste-first and not per-app configurable.
+
+### Ordered build sequence (lowest-risk / decision-free first)
+
+| # | Item (tier) | Effort | Why this slot |
+|---|---|---|---|
+| 1 | **Emoji gendered + skin-tone — ZWJ assembly** | S–M | **Start here.** Pure `emoji` crate logic, fully unit-testable against exact codepoint sequences, zero deps, **no LOOK gate, no design decision**. Splice the Fitzpatrick modifier inside the pre-composed gendered ZWJ sequence (today gender≠Neutral drops skin tone — `emoji/src/lib.rs:261`). |
+| 2 | **Statistics metric selector (3.3)** | S / 0 | Mostly a product call — scaffold (`StatMetric`/`metric_series`, `stats/src/lib.rs:209`) is built; decide whether the existing 3-row layout already satisfies it (recommended: yes, close 3.3) or wire an `NSPopUpButton`. |
+| 3 | **Apps-pane editing rows (3.1)** | M | Bounded AppKit UI + write-back: all four backing fields (`enabled`/`tab_disabled`/`mid_line`/`autocorrect`) already exist and are consumed at runtime; pane today is display + delete only (`settings_window.rs:1175`). |
+| 4 | **Always-on hotkeys (3.4)** | M | Reuses the proven transient-accept Carbon pattern (not novel FFI); `ShortcutBindings::from_config` parses force_activate/toggle_app/toggle_global but nothing registers them (`platform_macos/src/lib.rs:2478`). Needs the force-activate decision (below) + a live key-press LOOK. |
+| 5 | **Personalization pane (3.2)** | L | **Do last.** Heaviest: `PersonalizationProfile` is moved *by value* into the inference worker thread (`inference.rs:354`), so live controls need new sync (`Arc<RwLock>`/channel reload) threaded into the inference hot path + `MemoryStore` open/close lifecycle for mode. The refactor *is* the work; the three controls are easy once it lands. |
+| — | Emoji `includeVanillaVariants` (3.5) | — | **Do not schedule.** Hard-blocked on a multi-candidate replacement *display* that does not exist yet. |
+
+### Open decisions to settle (recommended defaults)
+
+1. **Stats metric picker** — *recommended: keep the 3-row layout, close 3.3 as
+   DONE.* A picker trades the at-a-glance 3-metric comparison for an unrequested
+   control.
+2. **force-activate semantics** (gates item 4) — *recommended: "force-show the
+   current pending suggestion now"* (cheap, predictable) over "kick a fresh
+   inference request" (latency + races).
+3. **Non-AxSet plain-insert posture** — *recommended: keep best-effort*; add a
+   post-insert readback only if a live per-app pass (Terminal/iTerm/Safari)
+   shows wrong text. Plain inserts via SyntheticKeys/Clipboard currently assume
+   success (`platform_macos/src/lib.rs:1082`); replacements already fail closed.
+
+### After macOS is complete — longer-term order (unchanged)
+
+1. **Tier 1.2** distribution — wire notarization the moment a Developer ID is
+   available; cut the first `v*` tag (CI/cask glue already written).
+2. **Tier 1.1** cross-platform adapters — a dedicated milestone of their own
+   (Windows/UIA, Linux/AT-SPI2, GNOME-Wayland IME path).
+3. **Tier 4** — opportunistic live LOOK gates, whenever a macOS GUI session is
+   available.
