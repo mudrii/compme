@@ -2049,6 +2049,46 @@ fn app_enabled_value(prefs: &Prefs, enabled: bool) -> String {
     )
 }
 
+fn app_midline_value(prefs: &Prefs, on: bool) -> String {
+    sorted_join(
+        prefs
+            .per_app
+            .iter()
+            .filter(|(_, policy)| policy.mid_line == Some(on))
+            .map(|(app, _)| app.as_str()),
+    )
+}
+
+fn app_autocorrect_value(prefs: &Prefs, on: bool) -> String {
+    sorted_join(
+        prefs
+            .per_app
+            .iter()
+            .filter(|(_, policy)| policy.autocorrect == Some(on))
+            .map(|(app, _)| app.as_str()),
+    )
+}
+
+fn app_thesaurus_value(prefs: &Prefs, on: bool) -> String {
+    sorted_join(
+        prefs
+            .per_app
+            .iter()
+            .filter(|(_, policy)| policy.thesaurus == Some(on))
+            .map(|(app, _)| app.as_str()),
+    )
+}
+
+fn app_tab_disabled_value(prefs: &Prefs) -> String {
+    sorted_join(
+        prefs
+            .per_app
+            .iter()
+            .filter(|(_, policy)| policy.tab_disabled)
+            .map(|(app, _)| app.as_str()),
+    )
+}
+
 fn persist_setting_or_log(path: &Path, key: &str, value: &str, label: &str) {
     if let Err(err) = config::persist_setting(path, key, value) {
         eprintln!("compme: could not persist {label}: {err}");
@@ -2082,6 +2122,44 @@ fn persist_web_override_prefs(path: &Path, prefs: &Prefs) {
             "COMPME_DISABLED_APPS",
             app_enabled_value(prefs, false),
             "disabled apps",
+        ),
+        // Per-app feature overrides edited in the Apps pane. Without these the
+        // pane's MidLine/Autocorrect/Thesaurus/TabDisabled checkboxes applied
+        // live but silently reverted on restart (build_prefs reads these keys).
+        (
+            "COMPME_MIDLINE_ON_APPS",
+            app_midline_value(prefs, true),
+            "per-app mid-line on",
+        ),
+        (
+            "COMPME_MIDLINE_OFF_APPS",
+            app_midline_value(prefs, false),
+            "per-app mid-line off",
+        ),
+        (
+            "COMPME_AUTOCORRECT_ON_APPS",
+            app_autocorrect_value(prefs, true),
+            "per-app autocorrect on",
+        ),
+        (
+            "COMPME_AUTOCORRECT_OFF_APPS",
+            app_autocorrect_value(prefs, false),
+            "per-app autocorrect off",
+        ),
+        (
+            "COMPME_THESAURUS_ON_APPS",
+            app_thesaurus_value(prefs, true),
+            "per-app thesaurus on",
+        ),
+        (
+            "COMPME_THESAURUS_OFF_APPS",
+            app_thesaurus_value(prefs, false),
+            "per-app thesaurus off",
+        ),
+        (
+            "COMPME_TAB_DISABLED_APPS",
+            app_tab_disabled_value(prefs),
+            "per-app tab-disabled",
         ),
     ] {
         // An emptied category is REMOVED, not written as a blank `KEY=` line:
@@ -2724,6 +2802,9 @@ fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
     }
     for app in comma_list(lookup("COMPME_THESAURUS_OFF_APPS")) {
         prefs.per_app.entry(app).or_default().thesaurus = Some(false);
+    }
+    for app in comma_list(lookup("COMPME_TAB_DISABLED_APPS")) {
+        prefs.per_app.entry(app).or_default().tab_disabled = true;
     }
     prefs
 }
@@ -4023,8 +4104,9 @@ pub fn run() -> Result<(), String> {
         // Apps-row policy checkbox: resolve the clicked row against the SAME
         // ids/cap/order as Delete, map the field index to an AppPolicyField,
         // write the per-app override into the live prefs, and persist (the
-        // web-override persist path serializes per_app). No apps_lines
-        // recompose — the edit changes policy, not recorded-input counts.
+        // web-override persist path serializes every per_app field). No
+        // apps_lines recompose — the edit changes policy, not recorded-input
+        // counts.
         let edit = settings_flags
             .apps_edit
             .lock()
@@ -4038,6 +4120,23 @@ pub fn run() -> Result<(), String> {
                 eprintln!("compme: app policy {field:?} for {app} set to {on}");
                 if let Some(path) = config::config_file_path() {
                     persist_web_override_prefs(&path, &prefs);
+                }
+                // Disabling the FOCUSED app must retract any suggestion already on
+                // screen (and disarm its accept key); the submit gate only blocks
+                // future submits, not an already-dispatched render. Mirrors the
+                // shortcut/snooze/global-disable edges. Gated on the edited app
+                // being the focused one so editing another app's row never
+                // dismisses the focused field's ghost.
+                if field == prefs::AppPolicyField::Enabled
+                    && !on
+                    && current_field
+                        .as_ref()
+                        .and_then(|f| effective_app_key(f, bundle_id_for_pid))
+                        .as_deref()
+                        == Some(app.as_str())
+                {
+                    latest.clear();
+                    let _ = log_err("on_dismiss", engine.on_dismiss());
                 }
             }
         }
