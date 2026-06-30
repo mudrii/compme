@@ -2894,6 +2894,17 @@ fn should_dismiss_on_disable(prev_enabled: bool, enabled: bool) -> bool {
     prev_enabled && !enabled
 }
 
+/// Whether a ToggleApp shortcut must dismiss the on-screen suggestion. The
+/// toggle inverts the focused app's per-app `enabled` baseline, so it disables
+/// (and must retract any ghost) exactly when the app was enabled BEFORE the
+/// toggle. Unlike ToggleGlobal/SIGUSR1 this never moves the global `enabled`
+/// atomic, so the per-tick `should_dismiss_on_disable` reconciliation can not
+/// cover it — this seam is the only retraction. Pure so the decision is
+/// testable without driving the whole run loop.
+fn toggle_app_dismisses(prev_enabled: bool) -> bool {
+    prev_enabled
+}
+
 fn secure_input_caps() -> Capabilities {
     Capabilities {
         readable_text: false,
@@ -3790,7 +3801,7 @@ pub fn run() -> Result<(), String> {
                                 // re-checked at submission, so a visible ghost would
                                 // otherwise still insert. Mirrors the snooze /
                                 // tray-disable paths below.
-                                if current {
+                                if toggle_app_dismisses(current) {
                                     latest.clear();
                                     let _ = log_err("on_dismiss", engine.on_dismiss());
                                 }
@@ -11178,6 +11189,16 @@ mod tests {
     }
 
     #[test]
+    fn toggle_app_dismisses_only_when_app_was_enabled() {
+        // ToggleApp disables exactly when the app was enabled pre-toggle, so the
+        // dismiss seam fires on that branch only. Both arms pinned so inverting
+        // the production guard is caught (the per-app retraction has no global
+        // edge for should_dismiss_on_disable to cover).
+        assert!(toggle_app_dismisses(true)); // was enabled -> toggle disables -> dismiss
+        assert!(!toggle_app_dismisses(false)); // was disabled -> toggle enables -> keep
+    }
+
+    #[test]
     fn app_enabled_baseline_reads_override_then_default() {
         // The value ToggleApp inverts: per-app `enabled` override wins; absent an
         // override it falls back to `default_enabled` (NOT should_suggest, so
@@ -11266,6 +11287,56 @@ mod tests {
         assert!(!apps_edit_dismisses_focused(Autocorrect, false, Some("com.a"), "com.a"));
         // No focused app at all -> nothing to dismiss.
         assert!(!apps_edit_dismisses_focused(Enabled, false, None, "com.a"));
+    }
+
+    #[test]
+    fn toggle_app_dismisses_iff_focused_app_was_enabled_before_toggle() {
+        // The ToggleApp shortcut flips a PER-APP override and must retract an
+        // on-screen ghost ONLY when the toggle DISABLES the focused app. Unlike
+        // ToggleGlobal/SIGUSR1, it never touches the global `enabled` atomic, so
+        // the tick reconciliation (should_dismiss_on_disable over the global
+        // edge) can NOT cover it — the production arm's
+        // `if toggle_app_dismisses(current) { latest.clear(); on_dismiss() }`
+        // seam is the only retraction, with `current =
+        // app_enabled_baseline(&prefs, app)` read BEFORE the override write.
+        // Round 1's convergence test pinned the override write but never this
+        // dismiss guard; inverting the seam (leave a ghost on disable, dismiss
+        // on enable) passes every round-1 test. This drives the dispatch core
+        // through the same three production helpers.
+        let app = "com.toggle.dismiss";
+        let toggle_decides_dismiss = |prefs: &mut Prefs| -> bool {
+            let current = app_enabled_baseline(prefs, app);
+            prefs.set_app_policy_field(app, prefs::AppPolicyField::Enabled, !current);
+            toggle_app_dismisses(current) // the run loop's dismiss guard
+        };
+        for (default_enabled, seed) in [
+            (true, None),
+            (false, None),
+            (true, Some(true)),
+            (false, Some(false)),
+            (true, Some(false)),
+            (false, Some(true)),
+        ] {
+            let mut prefs = Prefs {
+                default_enabled,
+                ..Default::default()
+            };
+            if let Some(v) = seed {
+                prefs.per_app.entry(app.into()).or_default().enabled = Some(v);
+            }
+            let was_enabled = app_enabled_baseline(&prefs, app);
+            // Dismiss fires iff the app was enabled before (the toggle disables
+            // it); when it was already disabled, the toggle re-enables and there
+            // is nothing on screen to retract.
+            assert_eq!(
+                toggle_decides_dismiss(&mut prefs),
+                was_enabled,
+                "dismiss decision must equal pre-toggle enabled (seed {seed:?})"
+            );
+            // And the toggle still flipped the live state (guards against a
+            // mutation that returns the right dismiss bool but skips the write).
+            assert_eq!(app_enabled_baseline(&prefs, app), !was_enabled);
+        }
     }
 
     #[test]
