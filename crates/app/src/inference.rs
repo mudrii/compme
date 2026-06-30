@@ -280,7 +280,7 @@ fn recv_latest(requests: &Receiver<CompletionRequest>) -> Option<CompletionReque
 fn run(
     model: Box<dyn LocalModel>,
     prompt_mode: PromptMode,
-    profile: PersonalizationProfile,
+    profile: Arc<Mutex<PersonalizationProfile>>,
     candidates: usize,
     worker_context: WorkerContext,
     requests: Receiver<CompletionRequest>,
@@ -298,7 +298,13 @@ fn run(
     {
         // Personalization steering for the focused app and, when the request
         // came from a monitored browser field, the resolved website domain.
-        let preamble = profile.build_preamble(Some(&request.field.app), request.domain.as_deref());
+        // Read the profile per request so live Settings edits (`set_profile`)
+        // take effect without respawning the worker. The lock is held only for
+        // the (cheap, owned-String) preamble build.
+        let preamble = profile
+            .lock()
+            .expect("personalization profile lock poisoned")
+            .build_preamble(Some(&request.field.app), request.domain.as_deref());
         // Opt-in context augmentation (clipboard + previous inputs): prepend a
         // bounded, already-redacted block ahead of the steering preamble.
         let block = worker_context.block_for_with_screen_text(&request, screen_text.as_deref());
@@ -340,6 +346,13 @@ pub struct InferenceHandle {
     outcome_rx: Receiver<CompletionOutcome>,
     ready: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    /// Shared with the worker thread; the worker reads it per request and
+    /// `set_profile` writes it, so personalization edits apply live.
+    // ponytail: only written (via set_profile) until the Settings personalization
+    // pane calls set_profile on a control change — that wiring is the GUI shell
+    // gated on a live LOOK. The live-reload seam itself is tested now.
+    #[allow(dead_code)]
+    profile: Arc<Mutex<PersonalizationProfile>>,
 }
 
 impl InferenceHandle {
@@ -359,6 +372,11 @@ impl InferenceHandle {
         let (outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
         let ready = Arc::new(AtomicBool::new(false));
         let ready_for_thread = Arc::clone(&ready);
+        // Wrap the by-value profile in shared state so live Settings edits reach
+        // the running worker. spawn's signature is unchanged: callers still pass
+        // a profile by value.
+        let profile = Arc::new(Mutex::new(profile));
+        let profile_for_thread = Arc::clone(&profile);
 
         let handle = thread::Builder::new()
             .name("compme-inference".into())
@@ -366,7 +384,7 @@ impl InferenceHandle {
                 run(
                     model,
                     prompt_mode,
-                    profile,
+                    profile_for_thread,
                     candidates.max(1),
                     worker_context,
                     request_rx,
@@ -381,6 +399,7 @@ impl InferenceHandle {
             outcome_rx,
             ready,
             handle: Some(handle),
+            profile,
         })
     }
 
@@ -395,7 +414,18 @@ impl InferenceHandle {
             outcome_rx,
             ready: Arc::new(AtomicBool::new(false)),
             handle: None,
+            profile: Arc::new(Mutex::new(PersonalizationProfile::default())),
         }
+    }
+
+    /// Replace the personalization profile the worker steers with, live — as
+    /// driven by the Settings personalization pane. Takes effect on the next
+    /// request the worker processes; no respawn, no `MemoryStore` churn.
+    // ponytail: production caller is the deferred Settings pane (LOOK-gated);
+    // tested via set_profile_live_reloads_what_the_worker_steers_with.
+    #[allow(dead_code)]
+    pub fn set_profile(&self, profile: PersonalizationProfile) {
+        *self.profile.lock().expect("personalization profile lock poisoned") = profile;
     }
 
     /// True once warm-up has finished. The run loop withholds suggestions until
@@ -1100,6 +1130,40 @@ mod tests {
     }
 
     #[test]
+    fn set_profile_live_reloads_what_the_worker_steers_with() {
+        // The Settings personalization pane edits the profile while the worker is
+        // running. The profile was moved by value at spawn (frozen); set_profile
+        // must replace what the worker reads per request, so a later submission is
+        // steered by the new instructions, not the spawn-time ones.
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile {
+                global_instructions: "Write in pirate dialect.".into(),
+                ..Default::default()
+            },
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+
+        inference.set_profile(PersonalizationProfile {
+            global_instructions: "Write tersely.".into(),
+            ..Default::default()
+        });
+
+        inference.submit(request("Ahoy", 1));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert!(
+            outcome.candidates[0].contains("Write tersely."),
+            "live-reloaded preamble steers the prompt: {:?}",
+            outcome.candidates[0]
+        );
+        assert!(!outcome.candidates[0].contains("pirate dialect."));
+        inference.shutdown();
+    }
+
+    #[test]
     fn per_app_personalization_uses_request_app() {
         let mut profile = PersonalizationProfile {
             global_instructions: "Use short completions.".into(),
@@ -1252,6 +1316,7 @@ mod tests {
             outcome_rx,
             ready: Arc::new(AtomicBool::new(false)),
             handle: None,
+            profile: Arc::new(Mutex::new(PersonalizationProfile::default())),
         };
 
         assert!(!inference.submit(request("lost worker", 1)));
@@ -1345,7 +1410,7 @@ mod tests {
         run(
             Box::new(StubModel::new("x")),
             PromptMode::Raw,
-            PersonalizationProfile::default(),
+            Arc::new(Mutex::new(PersonalizationProfile::default())),
             1,
             WorkerContext::default(),
             request_rx,
@@ -1387,7 +1452,7 @@ mod tests {
                 flag: Arc::clone(&flag),
             }),
             PromptMode::Raw,
-            PersonalizationProfile::default(),
+            Arc::new(Mutex::new(PersonalizationProfile::default())),
             1,
             WorkerContext::default(),
             request_rx,
