@@ -6,9 +6,8 @@
 //! Mirrors Cotypist's `EmojiCompletion_{preferredGender, preferredSkinTone}`
 //! preferences. Skin-tone modifiers (Fitzpatrick U+1F3FB..U+1F3FF) are applied to
 //! single-glyph people emoji that support them; gendered emoji resolve to their
-//! neutral/female/male ZWJ variant. (Combining skin tone *and* gender needs full
-//! ZWJ-sequence assembly and is deferred — a gendered match keeps the default
-//! skin tone.)
+//! neutral/female/male ZWJ variant. Skin tone *and* gender combine: the modifier
+//! splices into the base of the gendered ZWJ sequence (see `with_skin_tone_zwj`).
 //!
 //! **Wiring status [updated 2026-06-11]:** WIRED — the host reads
 //! `COMPME_EMOJI`/`_SKIN_TONE`/`_GENDER`, offers the emoji ghost through the
@@ -252,18 +251,41 @@ fn with_skin_tone(base: &str, skin_tone: SkinTone) -> String {
     glyph
 }
 
+/// Splice a skin-tone modifier into a pre-composed gendered ZWJ sequence.
+///
+/// The Fitzpatrick modifier attaches to the base person glyph — the first scalar
+/// of the sequence — *before* the ZWJ, not after the whole cluster. So
+/// `🤷‍♀️` (person, ZWJ, ♀, VS-16) + medium tone → `🤷🏽‍♀️`
+/// (person, tone, ZWJ, ♀, VS-16). The base glyph carries no VS-16 of its own
+/// (same invariant as `with_skin_tone`), so inserting after the first char is safe.
+fn with_skin_tone_zwj(sequence: &str, skin_tone: SkinTone) -> String {
+    let Some(modifier) = skin_tone.modifier() else {
+        return sequence.to_string();
+    };
+    let mut chars = sequence.chars();
+    // Every gendered ZWJ sequence in the table is non-empty (base + ZWJ + sign).
+    let base = chars.next().expect("gendered ZWJ sequence is non-empty");
+    let mut glyph = String::with_capacity(sequence.len() + modifier.len_utf8());
+    glyph.push(base);
+    glyph.push(modifier);
+    glyph.extend(chars);
+    glyph
+}
+
 fn render(entry: &Entry, prefs: &EmojiPrefs) -> String {
     if let Some((neutral, female, male)) = entry.gendered {
         // Skin tone and gender are orthogonal. The neutral variant is a single
-        // people-emoji; apply skin tone only when the entry supports it (mirrors
-        // the non-gendered path, so `skin_tone` is meaningful here too — a future
-        // gendered entry whose neutral glyph can't take a modifier sets it false).
-        // Female/male are pre-composed ZWJ sequences; combining skin tone there
-        // needs full ZWJ assembly and is deferred (keep the default tone).
+        // people-emoji; female/male are pre-composed ZWJ sequences. Apply skin
+        // tone in all three when the entry supports it — `with_skin_tone` appends
+        // to the bare neutral glyph; `with_skin_tone_zwj` splices the modifier
+        // into the base of the ZWJ sequence. `skin_tone:false` keeps the default
+        // tone everywhere (a glyph whose base can't take a Fitzpatrick modifier).
         return match prefs.gender {
             Gender::Neutral if entry.skin_tone => with_skin_tone(neutral, prefs.skin_tone),
             Gender::Neutral => neutral.to_string(),
+            Gender::Female if entry.skin_tone => with_skin_tone_zwj(female, prefs.skin_tone),
             Gender::Female => female.to_string(),
+            Gender::Male if entry.skin_tone => with_skin_tone_zwj(male, prefs.skin_tone),
             Gender::Male => male.to_string(),
         };
     }
@@ -434,14 +456,14 @@ mod tests {
     }
 
     #[test]
-    fn gendered_match_ignores_skin_tone() {
+    fn gendered_match_combines_skin_tone() {
         let prefs = EmojiPrefs {
             gender: Gender::Female,
             skin_tone: SkinTone::Dark,
         };
-        // No Fitzpatrick modifier is appended to the gendered ZWJ sequence.
+        // The Fitzpatrick modifier splices into the base of the ZWJ sequence.
         let s = suggest(":raising_hand", &prefs).unwrap();
-        assert_eq!(s.glyph, "🙋\u{200D}♀\u{FE0F}");
+        assert_eq!(s.glyph, "🙋\u{1F3FF}\u{200D}♀\u{FE0F}");
     }
 
     #[test]
@@ -594,6 +616,30 @@ mod tests {
         assert_eq!(
             suggest(":raising_hand", &prefs).unwrap().glyph,
             format!("🙋{}", '\u{1F3FF}')
+        );
+    }
+
+    #[test]
+    fn gendered_match_splices_skin_tone_into_the_zwj_sequence() {
+        // Woman shrugging, medium tone: the Fitzpatrick modifier attaches to the
+        // base person glyph (U+1F937), BEFORE the ZWJ — not after the whole
+        // cluster. Exact codepoint order: person, tone, ZWJ, ♀, VS-16.
+        let prefs = EmojiPrefs {
+            gender: Gender::Female,
+            skin_tone: SkinTone::Medium,
+        };
+        assert_eq!(
+            suggest(":shrug", &prefs).unwrap().glyph,
+            "\u{1F937}\u{1F3FD}\u{200D}\u{2640}\u{FE0F}"
+        );
+        // Man raising hand, dark tone: same splice point.
+        let prefs = EmojiPrefs {
+            gender: Gender::Male,
+            skin_tone: SkinTone::Dark,
+        };
+        assert_eq!(
+            suggest(":raising_hand", &prefs).unwrap().glyph,
+            "\u{1F64B}\u{1F3FF}\u{200D}\u{2642}\u{FE0F}"
         );
     }
 }
