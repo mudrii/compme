@@ -111,6 +111,13 @@ const CARBON_HOTKEY_TAB: u32 = 1;
 const CARBON_HOTKEY_GRAVE: u32 = 2;
 const CARBON_HOTKEY_ESCAPE: u32 = 3;
 const CARBON_HOTKEY_DOWN: u32 = 4;
+// Always-on (global) shortcut ids. Disjoint from the accept-key ids above so the
+// single Carbon hotkey handler can route every fired id unambiguously — an
+// accept-key id resolves via `binding_for_hotkey_id`, a shortcut id via
+// `shortcut_action_for_hotkey_id`.
+const CARBON_HOTKEY_FORCE_ACTIVATE: u32 = 5;
+const CARBON_HOTKEY_TOGGLE_APP: u32 = 6;
+const CARBON_HOTKEY_TOGGLE_GLOBAL: u32 = 7;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -2515,6 +2522,49 @@ impl ShortcutBindings {
             }
         }
         false
+    }
+
+    /// The bound shortcuts as `(carbon_hotkey_id, keycode, modifiers)` triples for
+    /// the Carbon registration loop — unset shortcuts are skipped. Each id is the
+    /// action's `CARBON_HOTKEY_*` constant, so the fired hotkey round-trips through
+    /// [`shortcut_action_for_hotkey_id`] in the handler. Call
+    /// [`Self::has_internal_collision`] first; a colliding set must not be registered.
+    pub fn registration_plan(&self) -> Vec<(u32, i64, u32)> {
+        [
+            (CARBON_HOTKEY_FORCE_ACTIVATE, self.force_activate),
+            (CARBON_HOTKEY_TOGGLE_APP, self.toggle_app),
+            (CARBON_HOTKEY_TOGGLE_GLOBAL, self.toggle_global),
+        ]
+        .into_iter()
+        .filter_map(|(id, binding)| binding.map(|(keycode, mask)| (id, keycode, mask)))
+        .collect()
+    }
+}
+
+/// The three always-on (global) shortcut actions, decoded from a fired Carbon
+/// hotkey id. `ForceActivate` re-shows the current pending suggestion (the
+/// settled semantics — cheap and predictable, no fresh inference). `ToggleApp`
+/// flips suggestions for the focused app; `ToggleGlobal` flips them everywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShortcutAction {
+    ForceActivate,
+    ToggleApp,
+    ToggleGlobal,
+}
+
+/// Decode a fired Carbon hotkey id into its always-on shortcut action. Returns
+/// `None` for accept-key ids (handled by `binding_for_hotkey_id`) and unknown
+/// ids — the shared handler tries both decoders. Mirrors `binding_for_hotkey_id`.
+// ponytail: unused until the Carbon hotkey handler calls this to dispatch the
+// action (force-show pending suggestion / toggle). That wiring is the FFI shell
+// gated on a live key-press LOOK; the decode + registration_plan are tested now.
+#[allow(dead_code)]
+fn shortcut_action_for_hotkey_id(id: u32) -> Option<ShortcutAction> {
+    match id {
+        CARBON_HOTKEY_FORCE_ACTIVATE => Some(ShortcutAction::ForceActivate),
+        CARBON_HOTKEY_TOGGLE_APP => Some(ShortcutAction::ToggleApp),
+        CARBON_HOTKEY_TOGGLE_GLOBAL => Some(ShortcutAction::ToggleGlobal),
+        _ => None,
     }
 }
 
@@ -9167,6 +9217,52 @@ mod tests {
         // Same keycode, DIFFERENT modifiers is NOT a collision (distinct chords).
         let distinct = ShortcutBindings::from_config(Some("50"), Some("shift+50"), Some("ctrl+50"));
         assert!(!distinct.has_internal_collision());
+    }
+
+    #[test]
+    fn shortcut_action_for_hotkey_id_maps_each_always_on_slot() {
+        assert_eq!(
+            shortcut_action_for_hotkey_id(CARBON_HOTKEY_FORCE_ACTIVATE),
+            Some(ShortcutAction::ForceActivate)
+        );
+        assert_eq!(
+            shortcut_action_for_hotkey_id(CARBON_HOTKEY_TOGGLE_APP),
+            Some(ShortcutAction::ToggleApp)
+        );
+        assert_eq!(
+            shortcut_action_for_hotkey_id(CARBON_HOTKEY_TOGGLE_GLOBAL),
+            Some(ShortcutAction::ToggleGlobal)
+        );
+        assert_eq!(shortcut_action_for_hotkey_id(9999), None);
+        // Disjoint from the accept-key ids so one shared Carbon handler routes by
+        // id unambiguously: an accept id decodes to a binding, never an action.
+        for accept_id in [
+            CARBON_HOTKEY_TAB,
+            CARBON_HOTKEY_GRAVE,
+            CARBON_HOTKEY_ESCAPE,
+            CARBON_HOTKEY_DOWN,
+        ] {
+            assert_eq!(shortcut_action_for_hotkey_id(accept_id), None);
+            assert!(binding_for_hotkey_id(accept_id).is_some());
+        }
+    }
+
+    #[test]
+    fn registration_plan_lists_only_bound_shortcuts_under_their_action_ids() {
+        let b = ShortcutBindings::from_config(Some("96"), None, Some("shift+96"));
+        // Only the two bound shortcuts appear, each under its action's hotkey id;
+        // the unset toggle_app is skipped.
+        assert_eq!(
+            b.registration_plan(),
+            vec![
+                (CARBON_HOTKEY_FORCE_ACTIVATE, 96, 0),
+                (CARBON_HOTKEY_TOGGLE_GLOBAL, 96, CARBON_SHIFT_KEY),
+            ]
+        );
+        // Every planned id round-trips back to an action.
+        for (id, _, _) in b.registration_plan() {
+            assert!(shortcut_action_for_hotkey_id(id).is_some());
+        }
     }
 
     #[test]
