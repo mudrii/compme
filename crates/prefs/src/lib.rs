@@ -38,6 +38,19 @@ pub struct AppPolicy {
     pub thesaurus: Option<bool>,
 }
 
+/// The editable per-app fields exposed as row checkboxes in the Settings "Apps"
+/// pane. The AppKit layer translates one checkbox toggle into one of these; the
+/// resolution getters (`mid_line_enabled`, `autocorrect_enabled`, `tab_disabled`,
+/// `should_suggest`) consume the result live. `collect_inputs`/`thesaurus` are
+/// driven by the tray and config, not this pane, so they are intentionally absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppPolicyField {
+    Enabled,
+    TabDisabled,
+    MidLine,
+    Autocorrect,
+}
+
 /// Suggestion-gating preferences. `excluded_apps`/`excluded_domains` hard-block
 /// (e.g. Finder-like or sensitive sites); `per_app` carries finer overrides.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,6 +207,21 @@ impl Prefs {
     /// Whether a snooze is currently active at `now_ms` (auto-resumes after).
     pub fn is_snoozed(&self, now_ms: u64) -> bool {
         self.snooze_until_ms.is_some_and(|until| now_ms < until)
+    }
+
+    /// Set one editable field of an app's per-app override (Settings "Apps" pane).
+    ///
+    /// Creates the entry if absent, like `apply_override` — same in-memory model
+    /// as the existing per-app delete. The tri-state `Option` fields take
+    /// `Some(on)`; revert a field to "inherit the default" by deleting the row.
+    pub fn set_app_policy_field(&mut self, app: &str, field: AppPolicyField, on: bool) {
+        let policy = self.per_app.entry(app.to_string()).or_default();
+        match field {
+            AppPolicyField::Enabled => policy.enabled = Some(on),
+            AppPolicyField::TabDisabled => policy.tab_disabled = on,
+            AppPolicyField::MidLine => policy.mid_line = Some(on),
+            AppPolicyField::Autocorrect => policy.autocorrect = Some(on),
+        }
     }
 
     /// Apply a validated web-driven-config override (design spec §8/§16). The
@@ -800,5 +828,34 @@ mod tests {
         assert!(p.tab_disabled(Some("com.microsoft.VSCode")));
         assert!(!p.tab_disabled(Some("com.apple.TextEdit")));
         assert!(!p.tab_disabled(None));
+    }
+
+    #[test]
+    fn set_app_policy_field_writes_back_each_editable_field() {
+        // Drives the Settings "Apps" pane row checkboxes: each toggle writes one
+        // per-app override and the resolution getters reflect it live.
+        let mut p = Prefs::default(); // default_enabled = true
+        let app = "com.tinyspeck.slackmacgap";
+
+        // mid_line: turn OFF for this app (global default would say on).
+        p.set_app_policy_field(app, AppPolicyField::MidLine, false);
+        assert!(!p.mid_line_enabled(Some(app), true));
+        assert!(p.mid_line_enabled(Some("other"), true)); // other apps unaffected
+
+        // autocorrect: turn ON for this app (global default would say off).
+        p.set_app_policy_field(app, AppPolicyField::Autocorrect, true);
+        assert!(p.autocorrect_enabled(Some(app), false));
+
+        // tab_disabled: enable for this app.
+        p.set_app_policy_field(app, AppPolicyField::TabDisabled, true);
+        assert!(p.tab_disabled(Some(app)));
+
+        // enabled: turn OFF for this app -> no suggestions there, others still on.
+        p.set_app_policy_field(app, AppPolicyField::Enabled, false);
+        assert!(!p.should_suggest(Some(app), None, 0));
+        assert!(p.should_suggest(Some("other"), None, 0));
+
+        // A single shared entry holds all four edits (not four separate rows).
+        assert_eq!(p.per_app.len(), 1);
     }
 }
