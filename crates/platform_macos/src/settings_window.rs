@@ -1103,6 +1103,69 @@ fn main_thread() -> Result<MainThreadMarker, PlatformError> {
     })
 }
 
+/// One control's frame in a settings pane's local (bottom-left origin)
+/// coordinates. Extracted so a pane's layout can be geometry-checked
+/// deterministically: the pane can't be built off the test harness's non-main
+/// thread (AppKit is main-thread-only), so overlap/bounds correctness — the
+/// layout half of visual validation — is proven by test here, not only by eye.
+#[derive(Clone, Copy)]
+struct PaneRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+impl PaneRect {
+    fn ns(self) -> NSRect {
+        NSRect::new(NSPoint::new(self.x, self.y), NSSize::new(self.w, self.h))
+    }
+
+    /// Half-open rectangle intersection: shared edges (a row sitting exactly
+    /// above another, or a label butting a field) do NOT count as overlap.
+    #[cfg(test)]
+    fn intersects(self, o: PaneRect) -> bool {
+        self.x < o.x + o.w && o.x < self.x + self.w && self.y < o.y + o.h && o.y < self.y + self.h
+    }
+}
+
+/// Personalization pane control frames — the single source of truth consumed by
+/// `build_window` AND `personalization_pane_layout_has_no_overlaps_within_budget`.
+/// The multi-line instructions field (`GI_FIELD`, ~5–6 lines) pushed the
+/// sender/strength rows down into the pane's lower space; the test proves the
+/// stack stays collision-free and inside the ~500×350 pane budget so a future
+/// layout edit can't silently overlap controls (only a real Mac shows rendering,
+/// but geometry is verified here).
+mod pers_layout {
+    use super::PaneRect;
+    pub const GI_LABEL: PaneRect = PaneRect { x: 20.0, y: 300.0, w: 440.0, h: 20.0 };
+    pub const GI_FIELD: PaneRect = PaneRect { x: 20.0, y: 170.0, w: 460.0, h: 124.0 };
+    pub const NAME_LABEL: PaneRect = PaneRect { x: 20.0, y: 142.0, w: 120.0, h: 22.0 };
+    pub const NAME_FIELD: PaneRect = PaneRect { x: 145.0, y: 140.0, w: 335.0, h: 24.0 };
+    pub const EMAIL_LABEL: PaneRect = PaneRect { x: 20.0, y: 107.0, w: 120.0, h: 22.0 };
+    pub const EMAIL_FIELD: PaneRect = PaneRect { x: 145.0, y: 105.0, w: 335.0, h: 24.0 };
+    pub const STRENGTH_LABEL: PaneRect = PaneRect { x: 20.0, y: 67.0, w: 140.0, h: 22.0 };
+    pub const STRENGTH_POPUP: PaneRect = PaneRect { x: 165.0, y: 64.0, w: 220.0, h: 26.0 };
+    /// Every control, for the geometry test.
+    #[cfg(test)]
+    pub const ALL: [(&str, PaneRect); 8] = [
+        ("gi_label", GI_LABEL),
+        ("gi_field", GI_FIELD),
+        ("name_label", NAME_LABEL),
+        ("name_field", NAME_FIELD),
+        ("email_label", EMAIL_LABEL),
+        ("email_field", EMAIL_FIELD),
+        ("strength_label", STRENGTH_LABEL),
+        ("strength_popup", STRENGTH_POPUP),
+    ];
+    /// Pane content budget the layout is designed against (tab-content inset of
+    /// the 680×420 window). A control extending past this would clip on screen.
+    #[cfg(test)]
+    pub const BUDGET_W: f64 = 500.0;
+    #[cfg(test)]
+    pub const BUDGET_H: f64 = 350.0;
+}
+
 fn build_window(
     mtm: MainThreadMarker,
     target: &Retained<SettingsTarget>,
@@ -1329,10 +1392,7 @@ fn build_window(
             &NSString::from_str("Global instructions (steer every suggestion):"),
             mtm,
         );
-        gi_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 300.0),
-            NSSize::new(440.0, 20.0),
-        ));
+        gi_label.setFrame(pers_layout::GI_LABEL.ns());
         pers.addSubview(&gi_label);
 
         // Editable multi-line NSTextField. labelWithString builds a non-editable
@@ -1345,10 +1405,7 @@ fn build_window(
         // widget, but it needs a novel delegate + visual LOOK; this wrapping field
         // delivers multi-line entry with zero new FFI surface. LOOK still pending.)
         let gi_field = NSTextField::new(mtm);
-        gi_field.setFrame(NSRect::new(
-            NSPoint::new(20.0, 170.0),
-            NSSize::new(460.0, 124.0),
-        ));
+        gi_field.setFrame(pers_layout::GI_FIELD.ns());
         gi_field.setStringValue(&NSString::from_str(
             &flags
                 .personalization_instructions
@@ -1375,16 +1432,10 @@ fn build_window(
         // identity). Two single-line editable fields, same wiring.
         let name_label =
             NSTextField::labelWithString(&NSString::from_str("Your name:"), mtm);
-        name_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 142.0),
-            NSSize::new(120.0, 22.0),
-        ));
+        name_label.setFrame(pers_layout::NAME_LABEL.ns());
         pers.addSubview(&name_label);
         let name_field = NSTextField::new(mtm);
-        name_field.setFrame(NSRect::new(
-            NSPoint::new(145.0, 140.0),
-            NSSize::new(335.0, 24.0),
-        ));
+        name_field.setFrame(pers_layout::NAME_FIELD.ns());
         name_field.setStringValue(&NSString::from_str(
             &flags
                 .personalization_sender_name
@@ -1403,16 +1454,10 @@ fn build_window(
 
         let email_label =
             NSTextField::labelWithString(&NSString::from_str("Your email:"), mtm);
-        email_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 107.0),
-            NSSize::new(120.0, 22.0),
-        ));
+        email_label.setFrame(pers_layout::EMAIL_LABEL.ns());
         pers.addSubview(&email_label);
         let email_field = NSTextField::new(mtm);
-        email_field.setFrame(NSRect::new(
-            NSPoint::new(145.0, 105.0),
-            NSSize::new(335.0, 24.0),
-        ));
+        email_field.setFrame(pers_layout::EMAIL_FIELD.ns());
         email_field.setStringValue(&NSString::from_str(
             &flags
                 .personalization_sender_email
@@ -1436,14 +1481,11 @@ fn build_window(
         // `personalization` crate, invisible here; the stat-range pattern).
         let strength_label =
             NSTextField::labelWithString(&NSString::from_str("Steering strength:"), mtm);
-        strength_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 67.0),
-            NSSize::new(140.0, 22.0),
-        ));
+        strength_label.setFrame(pers_layout::STRENGTH_LABEL.ns());
         pers.addSubview(&strength_label);
         let strength_popup = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(mtm),
-            NSRect::new(NSPoint::new(165.0, 64.0), NSSize::new(220.0, 26.0)),
+            pers_layout::STRENGTH_POPUP.ns(),
             false,
         );
         for title in &flags.personalization_strength_titles {
@@ -1976,6 +2018,47 @@ pub fn pane_titles() -> [&'static str; PANE_COUNT] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personalization_pane_layout_has_no_overlaps_within_budget() {
+        // Deterministic layout check for the Personalization pane — the pane can't
+        // be built off the test harness's non-main thread, so this proves the
+        // "visual" property that matters most (no control overlaps another, and
+        // every control stays inside the ~500x350 pane budget) without a running
+        // window server. Regression guard for the multi-line GI_FIELD growth that
+        // pushed the sender/strength rows down: a future edit that overlaps a row
+        // or overflows the pane fails here instead of only showing up on a Mac.
+        let all = pers_layout::ALL;
+
+        // No two controls intersect (same-row label+field are x-disjoint at the
+        // 140->145 gutter; rows are vertically disjoint).
+        for (i, (na, a)) in all.iter().enumerate() {
+            for (nb, b) in all.iter().skip(i + 1) {
+                assert!(
+                    !a.intersects(*b),
+                    "{na} overlaps {nb}: {na}=({},{},{},{}) {nb}=({},{},{},{})",
+                    a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h
+                );
+            }
+        }
+
+        // Every control is on-pane (non-negative origin, right/top within budget).
+        for (name, r) in all.iter() {
+            assert!(r.x >= 0.0 && r.y >= 0.0, "{name} has a negative origin");
+            assert!(
+                r.x + r.w <= pers_layout::BUDGET_W,
+                "{name} overflows pane width ({} > {})",
+                r.x + r.w,
+                pers_layout::BUDGET_W
+            );
+            assert!(
+                r.y + r.h <= pers_layout::BUDGET_H,
+                "{name} overflows pane height ({} > {})",
+                r.y + r.h,
+                pers_layout::BUDGET_H
+            );
+        }
+    }
 
     #[test]
     fn apps_row_is_deletable_only_for_count_rows() {
