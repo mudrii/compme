@@ -303,7 +303,7 @@ fn run(
         // the (cheap, owned-String) preamble build.
         let preamble = profile
             .lock()
-            .expect("personalization profile lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .build_preamble(Some(&request.field.app), request.domain.as_deref());
         // Opt-in context augmentation (clipboard + previous inputs): prepend a
         // bounded, already-redacted block ahead of the steering preamble.
@@ -420,7 +420,7 @@ impl InferenceHandle {
     /// request the worker processes; no respawn, no `MemoryStore` churn.
     /// Called by the run loop's Personalization-pane consumer on each knob edit.
     pub fn set_profile(&self, profile: PersonalizationProfile) {
-        *self.profile.lock().expect("personalization profile lock poisoned") = profile;
+        *self.profile.lock().unwrap_or_else(|e| e.into_inner()) = profile;
     }
 
     /// True once warm-up has finished. The run loop withholds suggestions until
