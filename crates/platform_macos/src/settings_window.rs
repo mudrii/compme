@@ -1166,6 +1166,56 @@ mod pers_layout {
     pub const BUDGET_H: f64 = 350.0;
 }
 
+/// Apps pane layout — one COMPACT line per recorded app: name, four title-less
+/// policy checkboxes as columns (labelled by a header row + per-checkbox
+/// tooltips), and a Delete button, so N apps stack at one row-step with no
+/// overlap. Shared by `build_window` and the geometry test. Replaces a
+/// 2-line-per-row layout whose 26px step drew each row's checkboxes over the
+/// next row's name (28 collisions — see `apps_pane_grid_has_no_overlaps...`).
+mod apps_layout {
+    use super::{PaneRect, APP_POLICY_FIELDS};
+    /// "Recorded inputs by app" title.
+    pub const HEADER: PaneRect = PaneRect { x: 20.0, y: 300.0, w: 300.0, h: 24.0 };
+    /// Column-header row, just above the first data row.
+    pub const COL_HEADER_Y: f64 = 278.0;
+    pub const COL_HEADER_H: f64 = 16.0;
+    pub const NAME_HEADER: PaneRect = PaneRect {
+        x: 20.0,
+        y: COL_HEADER_Y,
+        w: 150.0,
+        h: COL_HEADER_H,
+    };
+    /// First data-row baseline; each row steps down by `ROW_STEP`.
+    pub const ROW_BASE_Y: f64 = 250.0;
+    pub const ROW_STEP: f64 = 26.0;
+    const NAME_X: f64 = 20.0;
+    const NAME_W: f64 = 150.0;
+    const NAME_H: f64 = 20.0;
+    /// Left edge of each checkbox column (header label sits at the same x).
+    pub const COL_X: [f64; APP_POLICY_FIELDS] = [180.0, 232.0, 284.0, 336.0];
+    const COL_W: f64 = 44.0;
+    const CB_H: f64 = 18.0;
+    const DELETE_X: f64 = 400.0;
+    const DELETE_W: f64 = 70.0;
+    const DELETE_H: f64 = 20.0;
+
+    fn row_y(row: usize) -> f64 {
+        ROW_BASE_Y - row as f64 * ROW_STEP
+    }
+    pub fn name_rect(row: usize) -> PaneRect {
+        PaneRect { x: NAME_X, y: row_y(row), w: NAME_W, h: NAME_H }
+    }
+    pub fn checkbox_rect(row: usize, field: usize) -> PaneRect {
+        PaneRect { x: COL_X[field], y: row_y(row), w: COL_W, h: CB_H }
+    }
+    pub fn delete_rect(row: usize) -> PaneRect {
+        PaneRect { x: DELETE_X, y: row_y(row), w: DELETE_W, h: DELETE_H }
+    }
+    pub fn col_header_rect(field: usize) -> PaneRect {
+        PaneRect { x: COL_X[field], y: COL_HEADER_Y, w: COL_W, h: COL_HEADER_H }
+    }
+}
+
 fn build_window(
     mtm: MainThreadMarker,
     target: &Retained<SettingsTarget>,
@@ -1516,11 +1566,20 @@ fn build_window(
         let apps = &pane_views[3];
         let header =
             NSTextField::labelWithString(&NSString::from_str("Recorded inputs by app"), mtm);
-        header.setFrame(NSRect::new(
-            NSPoint::new(20.0, 300.0),
-            NSSize::new(300.0, 24.0),
-        ));
+        header.setFrame(apps_layout::HEADER.ns());
         apps.addSubview(&header);
+
+        // Column-header row: "App" over the names + a short title over each policy
+        // column. The bare checkboxes below carry the full title as a tooltip.
+        let name_header = NSTextField::labelWithString(&NSString::from_str("App"), mtm);
+        name_header.setFrame(apps_layout::NAME_HEADER.ns());
+        apps.addSubview(&name_header);
+        for (field, title) in APP_POLICY_COLUMN_HEADERS.iter().enumerate() {
+            let col = NSTextField::labelWithString(&NSString::from_str(title), mtm);
+            col.setFrame(apps_layout::col_header_rect(field).ns());
+            apps.addSubview(&col);
+        }
+
         let initial: Vec<String> = flags
             .apps_lines
             .lock()
@@ -1538,10 +1597,7 @@ fn build_window(
         for row in 0..APPS_ROWS {
             let text = initial.get(row).map(String::as_str).unwrap_or("");
             let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-            label.setFrame(NSRect::new(
-                NSPoint::new(20.0, 270.0 - row as f64 * 26.0),
-                NSSize::new(440.0, 20.0),
-            ));
+            label.setFrame(apps_layout::name_rect(row).ns());
             apps.addSubview(&label);
             apps_labels.push(label);
 
@@ -1561,10 +1617,7 @@ fn build_window(
                 )
             };
             delete.setTag(row as isize);
-            delete.setFrame(NSRect::new(
-                NSPoint::new(410.0, 266.0 - row as f64 * 26.0),
-                NSSize::new(80.0, 24.0),
-            ));
+            delete.setFrame(apps_layout::delete_rect(row).ns());
             // Hidden unless this row names a deletable app — refreshed on every
             // show()/refresh_apps_labels as the app list changes.
             delete.setHidden(!apps_row_is_deletable(text));
@@ -1582,11 +1635,13 @@ fn build_window(
             // this crate intentionally cannot see (apps_lines/index-seam pattern).
             // The run loop publishes the per-row bits via flags.apps_policy_bits;
             // refresh_apps_policy_checkbox_states (below) seeds the checked state.
-            for (field, title) in APP_POLICY_FIELD_TITLES.iter().enumerate() {
+            for (field, full_title) in APP_POLICY_FIELD_TITLES.iter().enumerate() {
+                // Title-less checkbox — the column header + tooltip name it, so all
+                // four toggles fit one compact line beside the app name.
                 // SAFETY: target outlives the window (held by MacosSettingsWindow).
                 let checkbox = unsafe {
                     NSButton::buttonWithTitle_target_action(
-                        &NSString::from_str(title),
+                        &NSString::from_str(""),
                         Some({
                             let any: &AnyObject = target.as_ref();
                             any
@@ -1597,10 +1652,8 @@ fn build_window(
                 };
                 checkbox.setButtonType(NSButtonType::Switch);
                 checkbox.setTag((row * APP_POLICY_FIELDS + field) as isize);
-                checkbox.setFrame(NSRect::new(
-                    NSPoint::new(20.0 + field as f64 * 110.0, 244.0 - row as f64 * 26.0),
-                    NSSize::new(108.0, 18.0),
-                ));
+                checkbox.setFrame(apps_layout::checkbox_rect(row, field).ns());
+                checkbox.setToolTip(Some(&NSString::from_str(full_title)));
                 checkbox.setHidden(!deletable);
                 apps.addSubview(&checkbox);
                 apps_policy_checkboxes.push(checkbox);
@@ -1991,6 +2044,11 @@ pub const APP_POLICY_FIELDS: usize = 4;
 const APP_POLICY_FIELD_TITLES: [&str; APP_POLICY_FIELDS] =
     ["Enabled", "Tab key", "Mid-line", "Autocorrect"];
 
+/// Short column headers for the compact one-line Apps grid. The bare checkboxes
+/// carry the full [`APP_POLICY_FIELD_TITLES`] as tooltips; these label the
+/// columns in the header row so the toggles are self-explanatory.
+const APP_POLICY_COLUMN_HEADERS: [&str; APP_POLICY_FIELDS] = ["On", "Tab", "Mid", "AC"];
+
 /// Fixed Statistics row count (shown / accepted / words / lifetime).
 /// Public for the same reason as [`APPS_ROWS`]: the run loop's composer
 /// pins against this count instead of a drifting literal.
@@ -2044,6 +2102,54 @@ mod tests {
 
         // Every control is on-pane (non-negative origin, right/top within budget).
         for (name, r) in all.iter() {
+            assert!(r.x >= 0.0 && r.y >= 0.0, "{name} has a negative origin");
+            assert!(
+                r.x + r.w <= pers_layout::BUDGET_W,
+                "{name} overflows pane width ({} > {})",
+                r.x + r.w,
+                pers_layout::BUDGET_W
+            );
+            assert!(
+                r.y + r.h <= pers_layout::BUDGET_H,
+                "{name} overflows pane height ({} > {})",
+                r.y + r.h,
+                pers_layout::BUDGET_H
+            );
+        }
+    }
+
+    #[test]
+    fn apps_pane_grid_has_no_overlaps_within_budget() {
+        // Regression for the old 2-line-per-row Apps layout whose 26px step drew
+        // each row's four policy checkboxes over the NEXT row's app name (28
+        // collisions with 8 rows — the geometry check that surfaced this). The
+        // compact one-line grid must keep every control of every row collision-
+        // free and inside the ~500x350 pane budget.
+        let mut all: Vec<(&'static str, PaneRect)> = vec![
+            ("header", apps_layout::HEADER),
+            ("name_header", apps_layout::NAME_HEADER),
+        ];
+        for f in 0..APP_POLICY_FIELDS {
+            all.push(("col_header", apps_layout::col_header_rect(f)));
+        }
+        for row in 0..APPS_ROWS {
+            all.push(("name", apps_layout::name_rect(row)));
+            all.push(("delete", apps_layout::delete_rect(row)));
+            for f in 0..APP_POLICY_FIELDS {
+                all.push(("checkbox", apps_layout::checkbox_rect(row, f)));
+            }
+        }
+
+        for (i, (na, a)) in all.iter().enumerate() {
+            for (nb, b) in all.iter().skip(i + 1) {
+                assert!(
+                    !a.intersects(*b),
+                    "{na} overlaps {nb}: ({},{},{},{}) vs ({},{},{},{})",
+                    a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h
+                );
+            }
+        }
+        for (name, r) in &all {
             assert!(r.x >= 0.0 && r.y >= 0.0, "{name} has a negative origin");
             assert!(
                 r.x + r.w <= pers_layout::BUDGET_W,
