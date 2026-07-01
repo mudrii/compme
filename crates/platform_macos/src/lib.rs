@@ -5993,35 +5993,6 @@ fn release_retained_observer_element(element: Option<usize>) {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SafetyPollSchedule {
-    interval_ms: u64,
-    last_poll_ms: Option<u64>,
-}
-
-impl SafetyPollSchedule {
-    pub fn new(interval_ms: u64) -> Self {
-        Self {
-            interval_ms,
-            last_poll_ms: None,
-        }
-    }
-
-    pub fn should_poll(&mut self, now_ms: u64) -> bool {
-        let due = self
-            .last_poll_ms
-            .is_none_or(|last| now_ms.saturating_sub(last) >= self.interval_ms);
-        if due {
-            self.last_poll_ms = Some(now_ms);
-        }
-        due
-    }
-
-    pub fn reset(&mut self) {
-        self.last_poll_ms = None;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12246,27 +12217,6 @@ mod tests {
         assert_eq!(carets.len(), 1);
         assert_eq!(carets[0].0.element_id, "ax:ptr=ax:0x333");
         assert_eq!(carets[0].1, rect);
-    }
-
-    #[test]
-    fn safety_poll_schedule_emits_at_low_rate() {
-        let mut schedule = SafetyPollSchedule::new(250);
-
-        assert!(schedule.should_poll(1000));
-        assert!(!schedule.should_poll(1100));
-        assert!(schedule.should_poll(1250));
-        assert!(!schedule.should_poll(1499));
-        assert!(schedule.should_poll(1500));
-    }
-
-    #[test]
-    fn safety_poll_schedule_can_be_reset_after_focus_change() {
-        let mut schedule = SafetyPollSchedule::new(250);
-
-        assert!(schedule.should_poll(1000));
-        schedule.reset();
-
-        assert!(schedule.should_poll(1001));
     }
 
     #[test]
