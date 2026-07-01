@@ -365,17 +365,29 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // directly, since these apps have no usable inline caret.
                     // Asymmetry is intentional: `Ok(None)` (no geometry) falls
                     // back to the other anchor, but an `Err` (a real AX failure)
-                    // is fail-loud — `?` aborts the dispatch rather than papering
+                    // is fail-loud — it aborts the dispatch rather than papering
                     // over a broken accessibility tree with a fallback anchor.
-                    let rect = if self.mirror_mode {
-                        match self.adapter.popup_anchor(&field)? {
-                            Some(rect) => Some(rect),
-                            None => self.adapter.caret_rect(&field)?,
-                        }
+                    let anchor = if self.mirror_mode {
+                        self.adapter.popup_anchor(&field).and_then(|rect| match rect {
+                            Some(rect) => Ok(Some(rect)),
+                            None => self.adapter.caret_rect(&field),
+                        })
                     } else {
-                        match self.adapter.caret_rect(&field)? {
-                            Some(rect) => Some(rect),
-                            None => self.adapter.popup_anchor(&field)?,
+                        self.adapter.caret_rect(&field).and_then(|rect| match rect {
+                            Some(rect) => Ok(Some(rect)),
+                            None => self.adapter.popup_anchor(&field),
+                        })
+                    };
+                    let rect = match anchor {
+                        Ok(rect) => rect,
+                        Err(err) => {
+                            // A real AX failure resolving the anchor. The machine
+                            // already transitioned to showing; reconcile before
+                            // returning so the Shown stat is retracted and a later
+                            // accept cannot phantom-insert an unpainted ghost —
+                            // mirroring the show_ghost/set_tap_visible paths below.
+                            self.reconcile_failed_show();
+                            return Err(err);
                         }
                     };
                     if let Some(rect) = rect {
@@ -1382,6 +1394,37 @@ mod tests {
         assert_eq!(engine.take_stat_events(), vec![StatEvent::Shown]);
         // take_stat_events DRAINS: a second call sees nothing, not a re-emitted Shown.
         assert_eq!(engine.take_stat_events(), vec![]);
+    }
+
+    #[test]
+    fn anchor_error_reconciles_machine_and_retracts_shown_stat() {
+        // A real AX failure resolving the caret anchor (Err, not Ok(None)) must
+        // reconcile exactly like a missing-geometry show: the buffered Shown is
+        // retracted and the machine ends up NOT showing, so a later accept can't
+        // phantom-insert a ghost the user never saw. Regression for the anchor
+        // lookup that previously propagated Err WITHOUT reconciling, unlike the
+        // sibling show_ghost/set_tap_visible error paths.
+        let mut adapter = FakeAdapter::new();
+        adapter.fail_caret_rect = true;
+        let inserts = Arc::clone(&adapter.inserts);
+        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+
+        assert_eq!(
+            engine.on_completion(&requests[0], "hi".into()),
+            Err(PlatformError::Timeout)
+        );
+        // Shown must be retracted — the ghost never painted.
+        assert_eq!(engine.take_stat_events(), vec![]);
+        // The machine must not be showing: a later accept inserts nothing.
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert!(
+            inserts.lock().unwrap().is_empty(),
+            "accept after an anchor-error show must not insert a never-seen ghost"
+        );
     }
 
     #[test]
