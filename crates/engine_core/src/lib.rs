@@ -2000,6 +2000,39 @@ mod tests {
     }
 
     #[test]
+    fn force_show_re_presenting_a_held_ghost_records_no_new_shown_stat() {
+        // ForceShow re-asserts a candidate the engine ALREADY holds and already
+        // counted as Shown when it first appeared. Re-presenting it (Item 4
+        // hotkey, or recovering a failed placement) must NOT buffer a second
+        // Shown — that would inflate the acceptance-rate denominator and the
+        // usage "shown" count. The ForceShow arm intentionally omits record_stat;
+        // every OTHER show-path records one, so a "consistency" regression that
+        // added record_stat(StatEvent::Shown) here would pass every other
+        // force_show_* test (they assert only the emitted Command) yet double-
+        // count on each hotkey press.
+        let mut machine = showing_three_words();
+        // Drain the single Shown buffered by the initial real show.
+        assert_eq!(machine.take_stat_events(), vec![StatEvent::Shown]);
+
+        // Two re-presents in a row each emit a ShowGhost...
+        assert!(matches!(
+            machine.on_event(Event::ForceShow).as_slice(),
+            [Command::ShowGhost { .. }]
+        ));
+        assert!(matches!(
+            machine.on_event(Event::ForceShow).as_slice(),
+            [Command::ShowGhost { .. }]
+        ));
+        // ...but neither buffers a new Shown (nor a Superseded — the same ghost
+        // stayed up, it was not replaced).
+        assert_eq!(
+            machine.take_stat_events(),
+            vec![],
+            "re-presenting a held ghost via ForceShow must not re-count it as Shown"
+        );
+    }
+
+    #[test]
     fn force_show_re_presents_the_cycled_candidate_not_the_first() {
         // ForceShow re-asserts whatever candidate is *currently selected*, which
         // may not be candidates[0] after a Cycle. The ForceShow handler reads

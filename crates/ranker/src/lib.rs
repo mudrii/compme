@@ -591,6 +591,23 @@ mod tests {
     }
 
     #[test]
+    fn is_degenerate_repetition_ignores_multiword_phrase_with_partial_trailing_chunk() {
+        // Defends the load-bearing invariant in the fn comment: a non-dividing
+        // phrase_len is safe WITHOUT a divisibility guard because the short final
+        // chunk can never equal the full-length phrase, so `.all()` returns false.
+        // Every other test uses lengths exactly divisible by the phrase (or
+        // single-word loops, which tile any length); this pins the partial-tail
+        // case. "go home" x3 + lone "go" tail (len 7, phrase_len 2): chunks
+        // [go,home]x3 + partial [go], and [go] != [go,home] => NOT flagged. A
+        // chunks_exact swap (drops the remainder) or a prefix-only tiling check
+        // would wrongly flag it and drop a legitimate completion.
+        assert!(!is_degenerate_repetition("go home go home go home go"));
+        assert!(!is_degenerate_repetition("a b c a b c a b c a b"));
+        // Positive control: remove the partial tail and it IS a clean 3x tiling.
+        assert!(is_degenerate_repetition("go home go home go home"));
+    }
+
+    #[test]
     fn strip_suffix_overlap_folds_unicode_case() {
         // The overlap match normalizes with full Unicode case folding, so the
         // accented "café" suffix of the candidate overlaps the accented "café"

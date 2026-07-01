@@ -7175,6 +7175,34 @@ mod tests {
     }
 
     #[test]
+    fn split_identity_segments_handles_backslash_escape_boundaries() {
+        // A single '\' escapes the following '|' so it does NOT terminate a
+        // segment (the injection-defense path exercised via field_matches_*).
+        assert_eq!(split_identity_segments(r"id=a\|b"), vec![r"id=a\|b"]);
+
+        // A doubled '\\' is a LITERAL backslash: the escape is consumed by the
+        // second '\', so a following '|' DOES terminate. If the escape state
+        // leaked past the pair, the whole string would collapse to one segment
+        // and this assertion would fail. This '\\' branch has no other coverage.
+        assert_eq!(split_identity_segments(r"a\\|b"), vec![r"a\\", "b"]);
+
+        // Backslash + escaped pipe + a real terminator: the escaped '|' stays
+        // in the first segment, the unescaped '|' splits.
+        assert_eq!(split_identity_segments(r"x\|y|z"), vec![r"x\|y", "z"]);
+
+        // Plain multi-segment and single-segment baselines (no escapes).
+        assert_eq!(
+            split_identity_segments("ptr=1|pid=42|role=AXTextArea"),
+            vec!["ptr=1", "pid=42", "role=AXTextArea"]
+        );
+        assert_eq!(split_identity_segments("solo"), vec!["solo"]);
+
+        // A trailing lone backslash must not panic or drop the final segment
+        // (byte-index arithmetic on the last char).
+        assert_eq!(split_identity_segments(r"a\"), vec![r"a\"]);
+    }
+
+    #[test]
     fn field_matches_identity_accepts_pipe_bearing_identifier_via_stable_key() {
         // The positive direction of the same escaping: an identity whose
         // identifier legitimately contains '|' must still match its own
