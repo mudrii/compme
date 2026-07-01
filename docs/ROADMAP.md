@@ -266,6 +266,10 @@ word at the caret is **underlined in place**, the suggested correction is shown 
 a **banner above it**, and a **separate grammar-accept** key replaces the word.
 This is a detect→underline→confirm flow, distinct from the type-ahead ghost.
 
+**Implementation spec:** [`superpowers/specs/2026-07-01-grammar-fix-design.md`](superpowers/specs/2026-07-01-grammar-fix-design.md)
+— phase-by-phase build plan (G1-G5) with exact files, signatures, tests, and
+acceptance criteria. Start there for implementation.
+
 **Decisions settled (with the requester, 2026-07-01):**
 0. **Cross-platform by construction — Linux, Windows, and macOS.** No part of the
    feature may be macOS-only. All detection, correction, orchestration, prompt,
