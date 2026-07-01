@@ -1335,13 +1335,19 @@ fn build_window(
         ));
         pers.addSubview(&gi_label);
 
-        // Editable NSTextField. labelWithString builds a non-editable label, so
-        // we construct a plain field and turn editing on. A single-line field is
-        // sufficient for the seam; multi-line entry is a later GUI refinement.
+        // Editable multi-line NSTextField. labelWithString builds a non-editable
+        // label, so we construct a plain field and turn editing on. Multi-line:
+        // `setUsesSingleLineMode(false)` + a word-wrapping non-scrolling cell lets
+        // the user enter wrapped, multi-paragraph steering text. Return still fires
+        // the action (commit) through the field editor and Option-Return inserts a
+        // newline, so the tested target/action commit path is preserved — no
+        // delegate needed. (ponytail: NSTextView-in-NSScrollView is the richer
+        // widget, but it needs a novel delegate + visual LOOK; this wrapping field
+        // delivers multi-line entry with zero new FFI surface. LOOK still pending.)
         let gi_field = NSTextField::new(mtm);
         gi_field.setFrame(NSRect::new(
-            NSPoint::new(20.0, 250.0),
-            NSSize::new(460.0, 44.0),
+            NSPoint::new(20.0, 170.0),
+            NSSize::new(460.0, 124.0),
         ));
         gi_field.setStringValue(&NSString::from_str(
             &flags
@@ -1351,6 +1357,11 @@ fn build_window(
         ));
         gi_field.setEditable(true);
         gi_field.setSelectable(true);
+        gi_field.setUsesSingleLineMode(false);
+        if let Some(cell) = gi_field.cell() {
+            cell.setWraps(true);
+            cell.setScrollable(false);
+        }
         // SAFETY: target outlives the window (held by MacosSettingsWindow);
         // setTarget/setAction are the standard control-wiring calls.
         unsafe {
@@ -1365,13 +1376,13 @@ fn build_window(
         let name_label =
             NSTextField::labelWithString(&NSString::from_str("Your name:"), mtm);
         name_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 210.0),
+            NSPoint::new(20.0, 142.0),
             NSSize::new(120.0, 22.0),
         ));
         pers.addSubview(&name_label);
         let name_field = NSTextField::new(mtm);
         name_field.setFrame(NSRect::new(
-            NSPoint::new(145.0, 208.0),
+            NSPoint::new(145.0, 140.0),
             NSSize::new(335.0, 24.0),
         ));
         name_field.setStringValue(&NSString::from_str(
@@ -1393,13 +1404,13 @@ fn build_window(
         let email_label =
             NSTextField::labelWithString(&NSString::from_str("Your email:"), mtm);
         email_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 175.0),
+            NSPoint::new(20.0, 107.0),
             NSSize::new(120.0, 22.0),
         ));
         pers.addSubview(&email_label);
         let email_field = NSTextField::new(mtm);
         email_field.setFrame(NSRect::new(
-            NSPoint::new(145.0, 173.0),
+            NSPoint::new(145.0, 105.0),
             NSSize::new(335.0, 24.0),
         ));
         email_field.setStringValue(&NSString::from_str(
@@ -1426,13 +1437,13 @@ fn build_window(
         let strength_label =
             NSTextField::labelWithString(&NSString::from_str("Steering strength:"), mtm);
         strength_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 135.0),
+            NSPoint::new(20.0, 67.0),
             NSSize::new(140.0, 22.0),
         ));
         pers.addSubview(&strength_label);
         let strength_popup = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(mtm),
-            NSRect::new(NSPoint::new(165.0, 132.0), NSSize::new(220.0, 26.0)),
+            NSRect::new(NSPoint::new(165.0, 64.0), NSSize::new(220.0, 26.0)),
             false,
         );
         for title in &flags.personalization_strength_titles {
