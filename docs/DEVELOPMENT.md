@@ -20,15 +20,15 @@ The current checkout is on `main` and has no git tags. Treat the code as
 unreleased workspace behavior unless a future release process adds tags, release
 notes, or packaged artifacts.
 
-The root `Cargo.toml` is a Rust workspace with 24 members
-([updated 2026-06-14] — keep in sync with `Cargo.toml`):
+The root `Cargo.toml` is a Rust workspace with 25 members
+([updated 2026-07-02] — keep in sync with `Cargo.toml`):
 
 - `crates/platform` — cross-platform adapter contract
 - `crates/context`, `crates/ranker`, `crates/engine_core`, `crates/engine` — suggestion pipeline
 - `crates/personalization`, `crates/redaction`, `crates/prefs`, `crates/memory` — steering, privacy, prefs, encrypted history
 - `crates/stats` — usage statistics + lifetime persistence
 - `crates/webconfig` — signed `compme://` deep links
-- `crates/emoji`, `crates/textcase`, `crates/thesaurus`, `crates/autocorrect`, `crates/localize` — local replacement features
+- `crates/emoji`, `crates/textcase`, `crates/thesaurus`, `crates/autocorrect`, `crates/grammar`, `crates/localize` — local replacement features
 - `crates/compat` — per-app compatibility tiers
 - `crates/model_catalog`, `crates/model_fetch`, `crates/model_client` — model catalog, downloads, llama.cpp client
 - `crates/platform_macos` — the macOS adapter (AX, overlay, tray, settings window)
@@ -144,7 +144,7 @@ Build:
 cargo build --workspace --all-targets
 ```
 
-The suite is ~1491 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1533 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -193,7 +193,7 @@ cargo test
 cargo build --bins
 ```
 
-The root suite is ~1491 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1533 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance

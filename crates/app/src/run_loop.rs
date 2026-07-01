@@ -504,10 +504,11 @@ fn replacement_offer(
         if let Some(fix) = autocorrect::correct(word) {
             return Some((vec![fix], word_len));
         }
-        // Grammar capitalization ("i" -> "I", i'm/i'll/...) rides the same
-        // autocorrect gate: it is a correction, and like typo-fixing it must stay
-        // off in code fields (where a bare `i` is a variable), which the host's
-        // autocorrect gate already enforces.
+        // Grammar capitalization ("i" -> "I") rides the same autocorrect gate:
+        // it is a correction, and like typo-fixing it must stay off in code
+        // fields (where a bare `i` is a variable). Apostrophe-aware contractions
+        // are intentionally out of this trailing-word helper; they would require
+        // a caret-token model that includes apostrophes.
         if let Some(fix) = grammar::capitalize_pronoun(word) {
             return Some((vec![fix], word_len));
         }

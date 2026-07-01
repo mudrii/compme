@@ -17,9 +17,9 @@ contract. All inference is local (llama.cpp), with no proprietary telemetry.
 
 The current validated workspace has the deterministic macOS MVP and A2/A3 core
 surfaces implemented; the remaining parity and live-validation backlog is tracked
-in [docs/ROADMAP.md](docs/ROADMAP.md). The repository is a Rust workspace of 24
+in [docs/ROADMAP.md](docs/ROADMAP.md). The repository is a Rust workspace of 25
 crates: a pure completion core, a set of OS-agnostic text features
-(autocorrect, British-English, emoji, thesaurus, redaction, stats,
+(autocorrect, British-English, grammar, emoji, thesaurus, redaction, stats,
 personalization, ranking, compatibility tiers, model catalog), macOS/Windows/Linux
 platform adapter crates, a llama.cpp-backed local model seam with an async
 downloader, and the `compme` binary that wires them together. A separate spike
@@ -123,6 +123,7 @@ For development, run unbundled with `cargo run -p app`.
 │   ├── compat/                        # Per-app compatibility tiers/quirks
 │   ├── personalization/              # Instructions / strength / sender identity
 │   ├── autocorrect/                   # Trailing-word typo correction
+│   ├── grammar/                       # Pronoun capitalization; Tier 5 grammar-fix base
 │   ├── localize/                      # US↔British English normalization
 │   ├── emoji/                         # :shortcode → emoji completion
 │   ├── thesaurus/                     # Synonym suggestions
@@ -165,6 +166,7 @@ from `tools/spike/`.
 | `compat` | Pure classifier from a macOS bundle id to a compatibility tier, plus the gating policy each tier implies (mirrors the Cotypist compatibility table). |
 | `personalization` | Prompt-based personalization: global + per-app + per-domain instruction maps (request-time app and domain steering are wired, and a Personalization pane edits global instructions, strength, and sender identity — the per-app/per-domain instruction editor remains a follow-up), a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
 | `autocorrect` | Pure, high-precision trailing-word typo→correction table with the query's capitalization reapplied; never "corrects" a real word. |
+| `grammar` | Pure grammar helpers: current inline pronoun capitalization plus the planned Tier 5 LLM-backed standalone grammar/spell-fix post-filter. |
 | `localize` | Pure, high-precision US→British spelling normalization for American-only forms; deliberately skips ambiguous words. |
 | `emoji` | Pure `:shortcode`→emoji completion honoring skin-tone (Fitzpatrick) and gender preferences. |
 | `thesaurus` | Pure synonym lookup with the queried word's case pattern applied; supports selection and auto modes. |
@@ -284,7 +286,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,491 tests:
+suite is roughly 1,533 tests:
 
 ```sh
 cargo fmt --all -- --check

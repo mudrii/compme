@@ -50,6 +50,9 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets
 
+      - name: Build macOS acceptance examples
+        run: cargo build -p platform_macos --examples
+
       - name: Script syntax
         run: bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 

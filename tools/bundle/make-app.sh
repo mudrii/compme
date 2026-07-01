@@ -13,6 +13,7 @@ set -euo pipefail
 
 script_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 repo_root="${COMPME_BUNDLE_REPO_ROOT:-$script_repo_root}"
+lsregister="${COMPME_BUNDLE_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
 
 run_self_test() {
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/compme-make-app-self-test.XXXXXX")"
@@ -44,12 +45,21 @@ SH
 #!/usr/bin/env bash
 printf 'codesign %s\n' "$*" >>"$COMPME_BUNDLE_SELF_TEST_LOG"
 SH
-  chmod +x "$fake_bin/cargo" "$fake_bin/plutil" "$fake_bin/codesign"
+  cat >"$fake_bin/lsregister" <<'SH'
+#!/usr/bin/env bash
+printf 'lsregister %s\n' "$*" >>"$COMPME_BUNDLE_SELF_TEST_LOG"
+SH
+  cat >"$fake_bin/lsregister_fail" <<'SH'
+#!/usr/bin/env bash
+printf 'lsregister_fail %s\n' "$*" >>"$COMPME_BUNDLE_SELF_TEST_LOG"
+exit 23
+SH
+  chmod +x "$fake_bin/cargo" "$fake_bin/plutil" "$fake_bin/codesign" "$fake_bin/lsregister" "$fake_bin/lsregister_fail"
 
   PATH="$fake_bin:$PATH" \
     COMPME_BUNDLE_SELF_TEST_LOG="$log" \
     COMPME_BUNDLE_REPO_ROOT="$fixture_root" \
-    COMPME_BUNDLE_SKIP_LSREGISTER=1 \
+    COMPME_BUNDLE_LSREGISTER="$fake_bin/lsregister" \
     "$0" "$out_dir" >"$tmp_dir/stdout"
 
   app="$out_dir/Compme.app"
@@ -61,6 +71,17 @@ SH
   grep -Fq "plutil -lint $app/Contents/Info.plist" "$log"
   grep -Fq "codesign --force --sign - $app" "$log"
   grep -Fq "codesign --verify $app" "$log"
+  grep -Fq "lsregister -f $app" "$log"
+
+  if PATH="$fake_bin:$PATH" \
+    COMPME_BUNDLE_SELF_TEST_LOG="$log" \
+    COMPME_BUNDLE_REPO_ROOT="$fixture_root" \
+    COMPME_BUNDLE_LSREGISTER="$fake_bin/lsregister_fail" \
+    "$0" "$tmp_dir/out-fail" >"$tmp_dir/stdout-fail" 2>"$tmp_dir/stderr-fail"; then
+    echo "lsregister failure was accepted" >&2
+    return 1
+  fi
+  grep -Fq "lsregister_fail -f $tmp_dir/out-fail/Compme.app" "$log"
   echo "Self-test passed"
 }
 
@@ -89,7 +110,7 @@ codesign --verify "$app"
 
 # Register the bundle (and its compme:// scheme) with Launch Services.
 if [[ "${COMPME_BUNDLE_SKIP_LSREGISTER:-0}" != "1" ]]; then
-  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" || true
+  "$lsregister" -f "$app"
 fi
 
 echo "done: $app"

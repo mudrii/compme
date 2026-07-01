@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-01 (added Tier 5 grammar/spell-fix feature plan; docs sync + ponytail cleanup) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1509 workspace tests; spike separate)
+> **Last updated:** 2026-07-02 (review/TDD audit sync for Tier 5 grammar/spell-fix plan) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1533 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -434,7 +434,7 @@ is the novel-FFI risk and the live-LOOK gate on each OS.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1491 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1533 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

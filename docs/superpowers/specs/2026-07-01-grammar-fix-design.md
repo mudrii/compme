@@ -2,7 +2,7 @@
 
 **Status:** ☐ Not started · planned 2026-07-01 · owner: next implementation session
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1509 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1533 tests green).
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI
@@ -89,15 +89,29 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   Preserve the original word's case via `textcase::CasePattern` (as
   `autocorrect`/`grammar` already do). Add a tiny bounded Levenshtein helper
   (`// ponytail: capped at MAX_EDIT, good enough for word-level typo distance`).
+- `crates/grammar/Cargo.toml`: add `textcase = { path = "../textcase" }` when
+  `vet_correction` starts using `textcase::CasePattern`; the current grammar
+  crate has no dependencies.
 - Keep `capitalize_pronoun` as-is; `vet_correction` is independent.
 
 **Tests (grammar + model_client `#[cfg(test)]`):**
-- `grammar_fix_prompt` contains the word and the left context, is deterministic,
-  and does not leak newlines that would break single-line parsing.
-- `vet_correction` accepts a plausible one-edit fix (`"teh"→"the"`), preserves
-  case (`"Teh"→"The"`), rejects: identical output, empty, multi-word
-  (`"the cat"`), and a large-edit paraphrase (`"teh"→"kitten"`). Non-ASCII/CJK
-  input is a clean miss, never a panic.
+- RED-first before implementation: add
+  `grammar_fix_prompt_is_single_line_and_includes_word_and_left_context`. It must
+  prove the prompt contains the word and left context, is deterministic, and does
+  not leak newlines that would break single-line parsing.
+- RED-first before implementation: add
+  `vet_correction_accepts_one_edit_and_preserves_case` and
+  `vet_correction_rejects_empty_identical_multi_word_large_edit_and_non_ascii`.
+  These must prove a plausible one-edit fix (`"teh"→"the"`) is accepted, case is
+  preserved (`"Teh"→"The"`), and identical output, empty output, multi-word output
+  (`"the cat"`), large-edit paraphrases (`"teh"→"kitten"`), and non-ASCII/CJK
+  input are clean misses, never panics.
+- If G1 adds the optional autocorrect pre-pass, add
+  `grammar_autocorrect_prepass_rejects_multi_word_table_entries` and
+  `vet_correction_rejects_alot_to_a_lot_for_single_word_mode` before wiring it.
+  The current autocorrect table intentionally maps `alot` to `a lot`; grammar-fix
+  is a single-word replacement mode, so that table entry must not bypass
+  `vet_correction`.
 
 **Acceptance:** `cargo test -p grammar -p model_client` green; clippy clean.
 
@@ -117,16 +131,20 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   correction_range: CorrectionRange } }`. `engine::dispatch` constructs
   `RequestKind::Completion` for normal requests; grammar detection constructs
   `RequestKind::GrammarFix`.
-- `crates/app/src/inference.rs`: keep owning `CompletionOutcome`, and in the
-  worker serve loop branch before the existing completion prompt path. For
-  `GrammarFix`, build
+- `crates/app/src/inference.rs`: keep owning `CompletionOutcome`, and make the
+  worker receive path request-kind aware before any screen-OCR wait. Today the
+  completion worker runs `request_with_screen_context` before prompt shaping;
+  `GrammarFix` must bypass that wait because it uses only `word + left_ctx`.
+  In the worker serve loop branch before the existing completion prompt path,
+  build
   `grammar_fix_prompt`, call `model.complete(prompt, GRAMMAR_MAX_TOKENS)`, run
   `grammar::vet_correction`, and emit a `CompletionOutcome` carrying
   `correction: Option<String>` + the original `correction_range`. This branch
-  must not call `shape_prompt`, prepend personalization/context blocks, or use
-  `complete_n`; those are completion-specific and would turn a grammar prompt
-  into an inline-continuation request. `recv_latest` (:266) coalescing still
-  applies (a newer trigger supersedes an older one).
+  must not wait for screen OCR, call `shape_prompt`, prepend
+  personalization/context blocks, or use `complete_n`; those are
+  completion-specific and would turn a grammar prompt into an inline-continuation
+  request. `recv_latest` (:266) coalescing still applies (a newer trigger
+  supersedes an older one).
 - `crates/engine_core/src/lib.rs`: add a `presentation: Presentation` field
   (`enum Presentation { Ghost, Correction }`, default `Ghost`) to `Showing` (:172
   area) plus `correction_range: Option<platform::CorrectionRange>`. Thread it
@@ -150,7 +168,11 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   grammar trigger, use `read_context` -> `left/right`, extract the word under the
   caret (see G1a below), gate via `replacement_decision`-style checks (:533) plus
   the new per-app policy, and dispatch the `GrammarFix` request with its
-  `CorrectionRange`; on the outcome, call `engine.on_correction`.
+  `CorrectionRange`; on the outcome, call `engine.on_correction`. If browser
+  domain exclusion rules are configured, wrap the gate with
+  `browser_domain_fresh_enough_for_rules` exactly like the submit and local
+  replacement paths do, so an unknown or stale URL fails closed instead of
+  offering grammar fixes on an excluded domain.
 - `crates/context/src/lib.rs` (G1a): add
   `pub fn word_at_caret(value, caret) -> Option<(&str, CorrectionRange)>` — the
   word the caret is in/just after (combine trailing word of `left_context` with
@@ -178,23 +200,51 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   and a `AppPolicyField::GrammarFix` variant (:46) for the Apps-pane checkbox.
 
 **Tests (all headless, fake model + fake adapter):**
-- Worker: a `GrammarFix` request with a misspelled word yields an outcome whose
-  `correction` is the vetted word and `correction_range` is preserved; a
-  vet-rejected model output yields `correction: None` (no offer).
-- Engine: `on_correction` produces a `Showing{ presentation: Correction,
-  correction_range: Some(..) }` and a `ShowCorrection` command; a subsequent
-  `TextChanged` invalidates it (advance_snapshot); `AcceptCorrection` emits
-  `Command::ReplaceRange` with the exact range. `AcceptFull`/`AcceptWord` must not
-  commit a correction presentation.
-- `context::word_at_caret`: caret at word end, mid-word, at a boundary, empty
-  field, multibyte, and astral-prefix text — correct scalar range, no panic.
-- platform seam: `insert_replacing_range` replaces `te|h` with `the` as `the`,
-  never `theh`; `text_range_rect` converts scalar ranges to the platform-native
-  range units and returns `Ok(None)` for unsupported bounds.
-- prefs: `grammar_fix_enabled` resolves per-app override over the global default;
-  `AppPolicyField::GrammarFix` round-trips through the policy-bits pack/unpack.
-- run_loop: grammar detection respects the enable gate, per-app exclude, snooze,
-  and the AxSet gate (no offer on non-AxSet fields).
+- Worker RED-first tests:
+  `grammar_fix_request_bypasses_screen_wait_context_personalization_and_complete_n`,
+  `grammar_fix_request_preserves_range_and_vets_model_output`, and
+  `grammar_fix_rejected_output_returns_no_correction`. Together they must prove a
+  `GrammarFix` request with a misspelled word yields a vetted `correction` and
+  preserved `correction_range`, rejected model output yields `correction: None`,
+  the request does not wait for screen OCR/context, does not prepend
+  screen/clipboard/personalization context, does not call `shape_prompt` or
+  `complete_n`, and still coalesces/supersedes older grammar requests.
+- Engine RED-first tests:
+  `offer_correction_shows_correction_with_exact_range`,
+  `on_correction_shows_correction_with_range_and_invalidates_on_text_changed`,
+  `accept_correction_emits_replace_range_with_exact_range`,
+  `accept_correction_emits_replace_range`, and
+  `accept_full_and_word_do_not_commit_correction_presentation`. Together they
+  must prove `Showing{ presentation: Correction, correction_range: Some(..) }`,
+  `ShowCorrection`, invalidation on `TextChanged`, `Command::ReplaceRange` with
+  the exact range, and that `AcceptFull` / `AcceptWord` never commit correction
+  presentations.
+- `context::word_at_caret` RED-first tests:
+  `word_at_caret_returns_whole_word_and_scalar_range_at_end`,
+  `word_at_caret_returns_whole_word_and_scalar_range_mid_word`,
+  `word_at_caret_handles_astral_prefix_without_utf16_offset_drift`, and
+  `word_at_caret_returns_none_at_boundary_or_empty_field`. Include multibyte and
+  astral-prefix text; ranges are Unicode-scalar ranges and the helper must not
+  panic.
+- Platform seam RED-first tests:
+  `platform_seam_replaces_midword_range_without_left_fragment_leak` and
+  `platform_seam_text_range_rect_converts_scalar_range_and_fails_closed`.
+  `insert_replacing_range` replaces `te|h` with `the` as `the`, never `theh`;
+  `text_range_rect` converts scalar ranges to platform-native range units and
+  returns `Ok(None)` for unsupported bounds.
+- Prefs RED-first tests:
+  `grammar_fix_enabled_inherits_global_default_without_app`,
+  `grammar_fix_enabled_respects_per_app_override`, and
+  `set_app_policy_field_writes_grammar_fix`. They must prove per-app override
+  resolution and `AppPolicyField::GrammarFix` policy-bits round-trip.
+- Run-loop RED-first tests:
+  `grammar_trigger_dispatches_word_at_caret_scalar_range`,
+  `grammar_detection_blocks_without_fresh_browser_domain_when_domain_rules_exist`,
+  `grammar_detection_respects_enable_per_app_snooze_and_axset`,
+  `grammar_detection_rejects_non_empty_selection`, and
+  `grammar_detection_rejects_non_axset_before_model_request`. Together they must
+  prove the enable gate, per-app exclude, snooze, browser-domain freshness when
+  domain rules exist, non-empty selection rejection, and AxSet fail-closed gate.
 
 **Acceptance:** `cargo test --workspace` green; clippy clean. No FFI touched yet —
 the whole flow is exercised with the fake model + fake overlay.
@@ -231,7 +281,11 @@ the whole flow is exercised with the fake model + fake overlay.
   `HostEvent::Accept(AcceptAction::Correction)` to `engine.on_accept_correction`;
   do not fold it through `Full`.
 
-**Tests:** `ShortcutBindings::from_config` parses the grammar chord;
+**Tests:** RED-first tests include
+`config_parses_grammar_check_and_grammar_accept_keys`,
+`grammar_check_shortcut_routes_to_detection`, and
+`grammar_accept_action_routes_to_accept_correction_not_full`.
+`ShortcutBindings::from_config` parses the grammar chord;
 `has_internal_collision` catches shortcut-shortcut collisions;
 `shortcut_plan_minus_accept_collisions` drops grammar-trigger chords that collide
 with accept bindings; `registration_plan` lists the grammar hotkey only when
@@ -291,7 +345,11 @@ checked-in live gate entry added and checked on-device.
   extra column).
 - `crates/app/src/run_loop.rs`: handle the new `RebindRequest` role (:4002) →
   live-rebind the grammar-accept key. Surface `grammar_fix` in the General/Apps
-  panes.
+  panes. Keep the field-index plumbing synchronized across `APP_POLICY_FIELDS`,
+  Apps-pane titles/headers, `apps_policy_field_from_index`,
+  `compose_apps_policy_bits`, and the settings boundary tests. Add
+  `COMPME_GRAMMAR_FIX` and any per-app persistence keys to `SWITCH_KEYS` so env
+  shadows are warned about at relaunch.
 - grammar-trigger stays a startup config string for v1 (like the other global
   shortcuts); a recorder row for it rides the future `ShortcutBindings` UI tick.
 

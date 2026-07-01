@@ -25,7 +25,10 @@ fn require_model_tests() -> bool {
 }
 
 fn latency_budget_required(raw: Option<&str>) -> bool {
-    matches!(raw, Some("1" | "true" | "yes" | "on"))
+    matches!(
+        raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
 }
 
 fn require_latency_budget() -> bool {
@@ -126,17 +129,45 @@ fn strict_model_test_env_parses_truthy_values() {
     ] {
         assert!(model_tests_required(raw), "{raw:?}");
     }
-    for raw in [None, Some(""), Some("0"), Some("false"), Some("off")] {
+    for raw in [
+        None,
+        Some(""),
+        Some("0"),
+        Some("false"),
+        Some("FALSE"),
+        Some("no"),
+        Some(" No "),
+        Some("off"),
+        Some(" off "),
+        Some("maybe"),
+    ] {
         assert!(!model_tests_required(raw), "{raw:?}");
     }
 }
 
 #[test]
 fn strict_latency_budget_env_parses_truthy_values() {
-    for value in [Some("1"), Some("true"), Some("yes"), Some("on")] {
+    for value in [
+        Some("1"),
+        Some("true"),
+        Some("TRUE"),
+        Some(" yes "),
+        Some("on"),
+    ] {
         assert!(latency_budget_required(value));
     }
-    for value in [None, Some("0"), Some("false"), Some("off"), Some("")] {
+    for value in [
+        None,
+        Some("0"),
+        Some("false"),
+        Some("FALSE"),
+        Some("no"),
+        Some(" No "),
+        Some("off"),
+        Some(" off "),
+        Some("maybe"),
+        Some(""),
+    ] {
         assert!(!latency_budget_required(value));
     }
 }
