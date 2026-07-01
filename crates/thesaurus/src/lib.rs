@@ -68,12 +68,6 @@ pub fn synonyms(word: &str) -> Vec<String> {
     out
 }
 
-/// Whether the word has any synonym (for cheaply gating an auto-mode trigger).
-pub fn has_synonyms(word: &str) -> bool {
-    let key = word.trim().to_lowercase();
-    !key.is_empty() && GROUPS.iter().any(|g| g.contains(&key.as_str()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,15 +90,6 @@ mod tests {
     #[test]
     fn unknown_word_has_no_synonyms() {
         assert!(synonyms("xylophone").is_empty());
-        assert!(!has_synonyms("xylophone"));
-    }
-
-    #[test]
-    fn has_synonyms_reports_membership() {
-        assert!(has_synonyms("good"));
-        assert!(has_synonyms("GOOD"));
-        assert!(!has_synonyms(""));
-        assert!(!has_synonyms("   "));
     }
 
     #[test]
@@ -212,10 +197,9 @@ mod tests {
     #[test]
     fn every_table_word_has_at_least_one_synonym() {
         // Guards against introducing a degenerate <2-member group, which would
-        // make has_synonyms() true but synonyms() empty.
+        // make synonyms() empty.
         for group in GROUPS {
             for &word in *group {
-                assert!(has_synonyms(word), "{word}");
                 assert!(!synonyms(word).is_empty(), "{word}");
             }
         }

@@ -281,9 +281,6 @@ pub enum PromptDecision {
         action: String,
         trust: String,
     },
-    /// Reserved for future signed non-reversible commands; unreachable today
-    /// (every current command is reversible and prompts).
-    ApplySilently,
 }
 
 /// Decide the confirmation requirement for a parsed link. Today EVERY link
@@ -794,10 +791,7 @@ mod tests {
             scope,
             action,
             trust,
-        } = decision
-        else {
-            panic!("unsigned links must prompt");
-        };
+        } = decision;
         assert_eq!(scope, "com.apple.Mail");
         assert!(action.contains("Exclude"), "{action}");
         assert!(trust.contains("unsigned"), "{trust}");
@@ -823,10 +817,7 @@ mod tests {
             scope,
             action,
             trust,
-        } = decision
-        else {
-            panic!("unsigned links must prompt");
-        };
+        } = decision;
         assert_eq!(scope, "docs.google.com");
         assert!(action.contains("Disable"), "{action}");
         assert!(trust.contains("unsigned"), "{trust}");
@@ -866,10 +857,7 @@ mod tests {
                     scope: got_scope,
                     action: got_action,
                     trust,
-                } = prompt_decision_for_link(&command, LinkTrust::Unsigned)
-                else {
-                    panic!("{scope_str}/{action_label} must prompt");
-                };
+                } = prompt_decision_for_link(&command, LinkTrust::Unsigned);
                 assert_eq!(got_scope, scope_str, "scope for {action_label}");
                 assert_eq!(
                     got_action, action_label,

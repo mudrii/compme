@@ -2053,42 +2053,16 @@ fn excluded_domains_value(prefs: &Prefs) -> String {
 
 /// The COMPME_ENABLED_APPS / COMPME_DISABLED_APPS persistence value: apps with
 /// explicit web-config suggestion-policy overrides. Absent entries inherit.
-fn app_enabled_value(prefs: &Prefs, enabled: bool) -> String {
+fn app_override_value(
+    prefs: &Prefs,
+    pick: impl Fn(&prefs::AppPolicy) -> Option<bool>,
+    on: bool,
+) -> String {
     sorted_join(
         prefs
             .per_app
             .iter()
-            .filter(|(_, policy)| policy.enabled == Some(enabled))
-            .map(|(app, _)| app.as_str()),
-    )
-}
-
-fn app_midline_value(prefs: &Prefs, on: bool) -> String {
-    sorted_join(
-        prefs
-            .per_app
-            .iter()
-            .filter(|(_, policy)| policy.mid_line == Some(on))
-            .map(|(app, _)| app.as_str()),
-    )
-}
-
-fn app_autocorrect_value(prefs: &Prefs, on: bool) -> String {
-    sorted_join(
-        prefs
-            .per_app
-            .iter()
-            .filter(|(_, policy)| policy.autocorrect == Some(on))
-            .map(|(app, _)| app.as_str()),
-    )
-}
-
-fn app_thesaurus_value(prefs: &Prefs, on: bool) -> String {
-    sorted_join(
-        prefs
-            .per_app
-            .iter()
-            .filter(|(_, policy)| policy.thesaurus == Some(on))
+            .filter(|(_, policy)| pick(policy) == Some(on))
             .map(|(app, _)| app.as_str()),
     )
 }
@@ -2129,12 +2103,12 @@ fn persist_web_override_prefs(path: &Path, prefs: &Prefs) {
         ),
         (
             "COMPME_ENABLED_APPS",
-            app_enabled_value(prefs, true),
+            app_override_value(prefs, |p| p.enabled, true),
             "enabled apps",
         ),
         (
             "COMPME_DISABLED_APPS",
-            app_enabled_value(prefs, false),
+            app_override_value(prefs, |p| p.enabled, false),
             "disabled apps",
         ),
         // Per-app feature overrides edited in the Apps pane. Without these the
@@ -2142,32 +2116,32 @@ fn persist_web_override_prefs(path: &Path, prefs: &Prefs) {
         // live but silently reverted on restart (build_prefs reads these keys).
         (
             "COMPME_MIDLINE_ON_APPS",
-            app_midline_value(prefs, true),
+            app_override_value(prefs, |p| p.mid_line, true),
             "per-app mid-line on",
         ),
         (
             "COMPME_MIDLINE_OFF_APPS",
-            app_midline_value(prefs, false),
+            app_override_value(prefs, |p| p.mid_line, false),
             "per-app mid-line off",
         ),
         (
             "COMPME_AUTOCORRECT_ON_APPS",
-            app_autocorrect_value(prefs, true),
+            app_override_value(prefs, |p| p.autocorrect, true),
             "per-app autocorrect on",
         ),
         (
             "COMPME_AUTOCORRECT_OFF_APPS",
-            app_autocorrect_value(prefs, false),
+            app_override_value(prefs, |p| p.autocorrect, false),
             "per-app autocorrect off",
         ),
         (
             "COMPME_THESAURUS_ON_APPS",
-            app_thesaurus_value(prefs, true),
+            app_override_value(prefs, |p| p.thesaurus, true),
             "per-app thesaurus on",
         ),
         (
             "COMPME_THESAURUS_OFF_APPS",
-            app_thesaurus_value(prefs, false),
+            app_override_value(prefs, |p| p.thesaurus, false),
             "per-app thesaurus off",
         ),
         (
@@ -4462,10 +4436,7 @@ pub fn run() -> Result<(), String> {
                     scope,
                     action,
                     trust,
-                } = decision
-                else {
-                    return true; // reserved silent class (unreachable today)
-                };
+                } = decision;
                 platform_macos::confirm_deep_link_prompt(scope, action, trust).unwrap_or(false)
             };
             match handle_deep_link(&url, config.trusted_key.as_ref(), &mut prefs, confirm) {

@@ -90,12 +90,8 @@ pub struct SenderIdentity {
 }
 
 impl SenderIdentity {
-    fn is_empty(&self) -> bool {
-        self.name.trim().is_empty() && self.email.trim().is_empty()
-    }
-
     fn line(&self) -> Option<String> {
-        if self.is_empty() {
+        if self.name.trim().is_empty() && self.email.trim().is_empty() {
             return None;
         }
         let mut parts = Vec::new();

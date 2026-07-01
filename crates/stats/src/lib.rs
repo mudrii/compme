@@ -204,54 +204,6 @@ impl StatGrouping {
     }
 }
 
-/// Which metric series the chart plots (the "metric" control).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StatMetric {
-    Shown,
-    Accepted,
-    Dismissed,
-    Superseded,
-    Words,
-}
-
-impl StatMetric {
-    /// Picker menu order (drives the metric NSPopUpButton's item list).
-    pub const ALL: [StatMetric; 5] = [
-        StatMetric::Shown,
-        StatMetric::Accepted,
-        StatMetric::Dismissed,
-        StatMetric::Superseded,
-        StatMetric::Words,
-    ];
-
-    /// Human-readable picker item title.
-    pub fn label(self) -> &'static str {
-        match self {
-            StatMetric::Shown => "Shown",
-            StatMetric::Accepted => "Accepted",
-            StatMetric::Dismissed => "Dismissed",
-            StatMetric::Superseded => "Superseded",
-            StatMetric::Words => "Words",
-        }
-    }
-
-    /// Decode a selected picker-row index; out-of-range clamps to the first item.
-    pub fn from_index(index: usize) -> Self {
-        *Self::ALL.get(index).unwrap_or(&Self::ALL[0])
-    }
-
-    /// Pull this metric's value out of a single day bucket.
-    fn of(self, bucket: &DayBucket) -> usize {
-        match self {
-            StatMetric::Shown => bucket.counts.shown,
-            StatMetric::Accepted => bucket.counts.accepted,
-            StatMetric::Dismissed => bucket.counts.dismissed,
-            StatMetric::Superseded => bucket.counts.superseded,
-            StatMetric::Words => bucket.words,
-        }
-    }
-}
-
 /// A completion-lifecycle outcome worth counting (design spec §11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -499,25 +451,6 @@ impl Stats {
             }
         }
         buckets
-    }
-
-    /// Chart series for the Statistics pane's range/group/metric selector: the
-    /// chosen `metric` over the `range`, grouped per `grouping`, oldest bar
-    /// first. Daily yields one value per trailing 24h slice; Weekly sums every
-    /// 7 slices (a trailing partial week is summed as-is). Feeds `sparkline`.
-    pub fn metric_series(
-        &self,
-        now_ms: u64,
-        range: StatRange,
-        grouping: StatGrouping,
-        metric: StatMetric,
-    ) -> Vec<usize> {
-        // Re-bucket by the grouping (the weekly chunk-of-7 rule lives once in
-        // group_buckets), then project each bucket onto the chosen metric.
-        group_buckets(&self.daily_buckets(now_ms, range.days()), grouping)
-            .iter()
-            .map(|b| metric.of(b))
-            .collect()
     }
 
     /// One human-readable line for the menu bar (§11 "words completed" display):
@@ -1293,150 +1226,6 @@ mod tests {
     }
 
     #[test]
-    fn metric_series_daily_selects_the_chosen_metric_per_day() {
-        // The Statistics-pane range/group/metric control: a Daily grouping over
-        // the Last7Days range yields one value per trailing 24h slice, oldest
-        // first, for the chosen metric.
-        let mut s = Stats::new();
-        let now = T0 + 7 * DAY_MS;
-        s.record(now, Outcome::Accepted { words: 5 }); // newest slice (idx 6)
-        s.record(now - DAY_MS - 1, Outcome::Accepted { words: 2 }); // idx 5
-        s.record(now - DAY_MS - 1, Outcome::Shown); // idx 5
-        s.record(now - 2 * DAY_MS - 1, Outcome::Dismissed); // idx 4
-        s.record(now - 2 * DAY_MS - 1, Outcome::Superseded); // idx 4
-
-        assert_eq!(
-            s.metric_series(
-                now,
-                StatRange::Last7Days,
-                StatGrouping::Daily,
-                StatMetric::Accepted
-            ),
-            vec![0, 0, 0, 0, 0, 1, 1],
-        );
-        assert_eq!(
-            s.metric_series(
-                now,
-                StatRange::Last7Days,
-                StatGrouping::Daily,
-                StatMetric::Dismissed
-            ),
-            vec![0, 0, 0, 0, 1, 0, 0],
-        );
-        assert_eq!(
-            s.metric_series(
-                now,
-                StatRange::Last7Days,
-                StatGrouping::Daily,
-                StatMetric::Superseded
-            ),
-            vec![0, 0, 0, 0, 1, 0, 0],
-        );
-        assert_eq!(
-            s.metric_series(
-                now,
-                StatRange::Last7Days,
-                StatGrouping::Daily,
-                StatMetric::Words
-            ),
-            vec![0, 0, 0, 0, 0, 2, 5],
-        );
-        assert_eq!(
-            s.metric_series(
-                now,
-                StatRange::Last7Days,
-                StatGrouping::Daily,
-                StatMetric::Shown
-            ),
-            vec![0, 0, 0, 0, 0, 1, 0],
-        );
-    }
-
-    #[test]
-    fn metric_series_weekly_sums_each_seven_day_group_oldest_first() {
-        // Weekly grouping sums every 7 trailing daily slices into one bar,
-        // oldest group first; a trailing partial group is summed as-is. Use
-        // NON-uniform per-week counts plus events straddling the week boundary
-        // (slice 6 = last of week 0, slice 7 = first of week 1) so a chunk
-        // off-by-one would shift counts across bars and fail. cutoff = now -
-        // 14*DAY_MS == T0; slice index = (at - cutoff) / DAY_MS.
-        let mut s = Stats::new();
-        let now = T0 + 14 * DAY_MS;
-        // Week 0 = slices 0..=6 -> 3 accepts (distinct from week 1's count).
-        s.record(now - 14 * DAY_MS, Outcome::Accepted { words: 1 }); // slice 0
-        s.record(now - 10 * DAY_MS, Outcome::Accepted { words: 1 }); // slice 4
-        s.record(now - 8 * DAY_MS, Outcome::Accepted { words: 1 }); // slice 6 (last of week 0)
-                                                                    // Week 1 = slices 7..=13 -> 2 accepts; first lands exactly on slice 7.
-        s.record(now - 7 * DAY_MS, Outcome::Accepted { words: 1 }); // slice 7 (first of week 1)
-        s.record(now, Outcome::Accepted { words: 1 }); // slice 13
-
-        assert_eq!(
-            s.metric_series(
-                now,
-                StatRange::Last14Days,
-                StatGrouping::Weekly,
-                StatMetric::Accepted
-            ),
-            vec![3, 2],
-        );
-    }
-
-    #[test]
-    fn metric_series_weekly_30day_range_groups_into_five_buckets() {
-        // 30 daily slices → chunks of 7 → 4 full weeks + a trailing 2-day group.
-        let s = Stats::new();
-        let series = s.metric_series(
-            T0 + WINDOW_MS,
-            StatRange::Last30Days,
-            StatGrouping::Weekly,
-            StatMetric::Dismissed,
-        );
-        assert_eq!(series.len(), 5);
-        assert!(series.iter().all(|&v| v == 0));
-    }
-
-    #[test]
-    fn metric_series_weekly_30day_range_sums_nonzero_data_into_the_right_weeks() {
-        // The existing 30-day weekly test only pins the bucket COUNT with
-        // all-zero data. This one places non-zero data in DISTINCT weeks and
-        // asserts each weekly bucket sums the right values (the chunk-of-7
-        // aggregation, not just its shape). now = T0 + 30 days → cutoff = T0,
-        // so a day-index `d` slice is `[T0 + d*DAY_MS, T0 + (d+1)*DAY_MS)`.
-        // Weeks: w0=idx0-6, w1=7-13, w2=14-20, w3=21-27, w4=28-29 (partial).
-        let mut s = Stats::new();
-        let now = T0 + 30 * DAY_MS;
-        // Week 0: two accepts (idx 2 and idx 5) → accepted=2, words=3+4=7.
-        s.record(T0 + 2 * DAY_MS + 1, Outcome::Accepted { words: 3 });
-        s.record(T0 + 5 * DAY_MS + 1, Outcome::Accepted { words: 4 });
-        // Week 2: one accept (idx 14) → accepted=1, words=10.
-        s.record(T0 + 14 * DAY_MS + 1, Outcome::Accepted { words: 10 });
-        // Week 4 (partial trailing group): one accept at the newest slice
-        // (idx 29 == now) → accepted=1, words=6.
-        s.record(now, Outcome::Accepted { words: 6 });
-
-        // Accepted-count series sums per week; weeks 1 and 3 stay empty.
-        assert_eq!(
-            s.metric_series(
-                now,
-                StatRange::Last30Days,
-                StatGrouping::Weekly,
-                StatMetric::Accepted
-            ),
-            vec![2, 0, 1, 0, 1],
-        );
-        // Words series sums the per-accept word totals into the same weeks.
-        assert_eq!(
-            s.metric_series(
-                now,
-                StatRange::Last30Days,
-                StatGrouping::Weekly,
-                StatMetric::Words
-            ),
-            vec![7, 0, 10, 0, 6],
-        );
-    }
-
-    #[test]
     fn stat_range_days_are_fixed_spans() {
         assert_eq!(StatRange::Last7Days.days(), 7);
         assert_eq!(StatRange::Last14Days.days(), 14);
@@ -1461,25 +1250,10 @@ mod tests {
             StatGrouping::ALL,
             [StatGrouping::Daily, StatGrouping::Weekly]
         );
-        assert_eq!(
-            StatMetric::ALL,
-            [
-                StatMetric::Shown,
-                StatMetric::Accepted,
-                StatMetric::Dismissed,
-                StatMetric::Superseded,
-                StatMetric::Words
-            ]
-        );
 
-        // Labels are human-readable and, per metric, distinct (no two menu rows
-        // can share a title).
+        // Labels are human-readable menu titles.
         assert_eq!(StatRange::Last30Days.label(), "Last 30 days");
         assert_eq!(StatGrouping::Weekly.label(), "Weekly");
-        assert_eq!(StatMetric::Accepted.label(), "Accepted");
-        let labels: Vec<&str> = StatMetric::ALL.iter().map(|m| m.label()).collect();
-        let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
-        assert_eq!(unique.len(), labels.len());
 
         // from_index round-trips ALL and clamps out-of-range to the first item.
         for (i, &r) in StatRange::ALL.iter().enumerate() {
@@ -1488,12 +1262,8 @@ mod tests {
         for (i, &g) in StatGrouping::ALL.iter().enumerate() {
             assert_eq!(StatGrouping::from_index(i), g);
         }
-        for (i, &m) in StatMetric::ALL.iter().enumerate() {
-            assert_eq!(StatMetric::from_index(i), m);
-        }
         assert_eq!(StatRange::from_index(99), StatRange::Last7Days);
         assert_eq!(StatGrouping::from_index(99), StatGrouping::Daily);
-        assert_eq!(StatMetric::from_index(99), StatMetric::Shown);
     }
 
     #[test]
