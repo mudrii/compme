@@ -165,6 +165,21 @@ fn host_event_invalidates_pending_request(event: &HostEvent) -> bool {
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostEventRoute {
+    Normal,
+    ManualGrammarDetection,
+    AcceptCorrection,
+}
+
+fn host_event_route(event: &HostEvent) -> HostEventRoute {
+    match event {
+        HostEvent::Shortcut(ShortcutAction::GrammarCheck) => HostEventRoute::ManualGrammarDetection,
+        HostEvent::Accept(AcceptAction::Correction) => HostEventRoute::AcceptCorrection,
+        _ => HostEventRoute::Normal,
+    }
+}
+
 /// Runtime configuration, all from the environment (full config surface is P1).
 struct Config {
     /// Global on/off at launch (`COMPME_ENABLED`, default on). The tray
@@ -850,13 +865,15 @@ type KeyWithMods = (i64, u32);
 fn apply_live_accept_keymap(
     word: Option<KeyWithMods>,
     full: Option<KeyWithMods>,
+    grammar_accept: Option<KeyWithMods>,
     set_map: impl Fn(
+        Option<KeyWithMods>,
         Option<KeyWithMods>,
         Option<KeyWithMods>,
     ) -> Result<(), platform_macos::KeymapError>,
     rearm: impl Fn() -> Result<(), PlatformError>,
-    persist: impl Fn(KeyWithMods, KeyWithMods),
-    effective: impl Fn() -> (KeyWithMods, KeyWithMods),
+    persist: impl Fn(KeyWithMods, KeyWithMods, Option<KeyWithMods>),
+    effective: impl Fn() -> (KeyWithMods, KeyWithMods, Option<KeyWithMods>),
 ) -> Result<(), String> {
     let previous = effective();
     // Slice 2: the recorder now captures `(keycode, mask)` for BOTH roles (the
@@ -865,7 +882,7 @@ fn apply_live_accept_keymap(
     // clobber-avoidance). So the masks arrive already-resolved — set them as-is.
     // The audit-r2 mask-preservation that used to be reconstructed here now
     // lives at its source in `recorder_outcome`/`rebind_request_for`.
-    set_map(word, full).map_err(|err| format!("rejected keymap: {err:?}"))?;
+    set_map(word, full, grammar_accept).map_err(|err| format!("rejected keymap: {err:?}"))?;
     if let Err(err) = rearm() {
         // Best-effort revert. The previous pair was validated when it
         // registered, so this set_map cannot fail in practice; if it ever
@@ -875,7 +892,7 @@ fn apply_live_accept_keymap(
         // failure here must not be SILENT: nothing else would surface that
         // the keymap and the registered hotkeys now disagree. Reverting with
         // the masks intact restores the EXACT prior registration.
-        if let Err(revert_err) = set_map(Some(previous.0), Some(previous.1)) {
+        if let Err(revert_err) = set_map(Some(previous.0), Some(previous.1), previous.2) {
             eprintln!(
                 "compme: accept-keymap re-arm failed and revert to {previous:?} also failed: {revert_err:?}"
             );
@@ -883,7 +900,7 @@ fn apply_live_accept_keymap(
         return Err(format!("re-arm failed: {err:?}"));
     }
     let registered = effective();
-    persist(registered.0, registered.1);
+    persist(registered.0, registered.1, registered.2);
     Ok(())
 }
 
@@ -2327,16 +2344,24 @@ use platform_macos::keycode_label_with_mods;
 /// the runtime fell back to defaults), the fixed non-rebindable keys, and
 /// how to change them. Static per process — bindings are read at launch
 /// until the live-rebind refactor lands.
-fn shortcuts_text(word: (i64, u32), full: (i64, u32)) -> String {
+fn shortcuts_text(
+    word: (i64, u32),
+    full: (i64, u32),
+    grammar_accept: Option<(i64, u32)>,
+) -> String {
+    let grammar_accept = grammar_accept
+        .map(|(code, mask)| keycode_label_with_mods(code, mask))
+        .unwrap_or_else(|| "Unbound".to_string());
     format!(
         "Accept word: {}\nAccept full: {}\nDismiss: Esc\nCycle candidates: Down arrow\n\
-         Grammar check/accept: config-only via COMPME_GRAMMAR_CHECK_KEY / \
-         COMPME_GRAMMAR_ACCEPT_KEY\n\n\
-         To change: set COMPME_ACCEPT_WORD_KEY / COMPME_ACCEPT_FULL_KEY (macOS \
-         keycodes, e.g. \"shift+48\") in config.env \u{2014} applies at relaunch \
-         (the in-app recorder applies live).",
+         Grammar check: config-only via COMPME_GRAMMAR_CHECK_KEY\n\
+         Grammar accept: {}\n\n\
+         To change: set COMPME_ACCEPT_WORD_KEY / COMPME_ACCEPT_FULL_KEY / \
+         COMPME_GRAMMAR_ACCEPT_KEY (macOS keycodes, e.g. \"shift+48\") in \
+         config.env \u{2014} applies at relaunch (the in-app recorder applies live).",
         keycode_label_with_mods(word.0, word.1),
         keycode_label_with_mods(full.0, full.1),
+        grammar_accept,
     )
 }
 
@@ -2476,8 +2501,9 @@ fn build_settings_flags(
         apps_delete_row: Arc::new(Mutex::new(None)),
         apps_edit: Arc::new(Mutex::new(None)),
         shortcuts_text: {
-            let (word, full) = platform_macos::effective_accept_keys_with_mods();
-            Arc::new(Mutex::new(shortcuts_text(word, full)))
+            let (word, full, grammar_accept) =
+                platform_macos::effective_accept_keys_with_mods_and_grammar();
+            Arc::new(Mutex::new(shortcuts_text(word, full, grammar_accept)))
         },
         shortcuts_rebind_request: Arc::new(Mutex::new(None)),
         personalization_edit: Arc::new(Mutex::new(None)),
@@ -3808,6 +3834,14 @@ pub fn run() -> Result<(), String> {
                     }
                 }
                 HostEvent::Accept(action) => {
+                    debug_assert_eq!(
+                        host_event_route(&HostEvent::Accept(action)),
+                        if matches!(action, AcceptAction::Correction) {
+                            HostEventRoute::AcceptCorrection
+                        } else {
+                            HostEventRoute::Normal
+                        }
+                    );
                     eprintln!("compme: accept {action:?}");
                     // Preview the engine's accept payload once and reuse it for
                     // both the Word self-insert and the Full context record, so
@@ -3932,6 +3966,10 @@ pub fn run() -> Result<(), String> {
                         eprintln!("compme: shortcut toggle-global enabled {now} -> {}", !now);
                     }
                     ShortcutAction::GrammarCheck => {
+                        debug_assert_eq!(
+                            host_event_route(&HostEvent::Shortcut(ShortcutAction::GrammarCheck)),
+                            HostEventRoute::ManualGrammarDetection
+                        );
                         let Some(field) = current_field.clone() else {
                             eprintln!("compme: shortcut grammar-check: no focused field");
                             continue;
@@ -4235,15 +4273,20 @@ pub fn run() -> Result<(), String> {
             .lock()
             .map(|mut slot| slot.take())
             .unwrap_or_else(|poisoned| poisoned.into_inner().take());
-        if let Some((word, full)) = rebind_request {
+        if let Some((word, full, grammar_accept)) = rebind_request {
             let outcome = apply_live_accept_keymap(
                 word,
                 full,
-                |word, full| {
-                    platform_macos::set_accept_keymap_from_config_with_mods(word, full, None)
+                grammar_accept,
+                |word, full, grammar_accept| {
+                    platform_macos::set_accept_keymap_from_config_with_mods(
+                        word,
+                        full,
+                        grammar_accept,
+                    )
                 },
                 || engine.rearm_accept_keys(),
-                |w: (i64, u32), f: (i64, u32)| {
+                |w: (i64, u32), f: (i64, u32), g: Option<(i64, u32)>| {
                     if let Some(path) = config::config_file_path() {
                         // Persist with format_accept_key so a configured mask
                         // round-trips ("shift+48") through parse_accept_key at
@@ -4256,6 +4299,28 @@ pub fn run() -> Result<(), String> {
                                 eprintln!("compme: failed to persist {key}: {err}");
                             }
                         }
+                        match g {
+                            Some(value) => {
+                                let serialized =
+                                    platform_macos::format_accept_key(value.0, value.1);
+                                if let Err(err) = config::persist_setting(
+                                    &path,
+                                    "COMPME_GRAMMAR_ACCEPT_KEY",
+                                    &serialized,
+                                ) {
+                                    eprintln!(
+                                        "compme: failed to persist COMPME_GRAMMAR_ACCEPT_KEY: {err}"
+                                    );
+                                }
+                            }
+                            None => {
+                                remove_setting_or_log(
+                                    &path,
+                                    "COMPME_GRAMMAR_ACCEPT_KEY",
+                                    "grammar accept key",
+                                );
+                            }
+                        }
                     } else {
                         // The rebind is LIVE but evaporates at relaunch — say
                         // so instead of letting the success log imply it
@@ -4265,21 +4330,24 @@ pub fn run() -> Result<(), String> {
                         );
                     }
                 },
-                platform_macos::effective_accept_keys_with_mods,
+                platform_macos::effective_accept_keys_with_mods_and_grammar,
             );
             match outcome {
                 Ok(()) => {
-                    let (word, full) = platform_macos::effective_accept_keys_with_mods();
+                    let (word, full, grammar_accept) =
+                        platform_macos::effective_accept_keys_with_mods_and_grammar();
                     // Recompose the Shortcuts text; show() re-reads it on the
                     // next open (refresh-on-show — the c121 forward trap).
                     if let Ok(mut text) = settings_flags.shortcuts_text.lock() {
-                        *text = shortcuts_text(word, full);
+                        *text = shortcuts_text(word, full, grammar_accept);
                     }
                     // The slice-4 recorder lives INSIDE the window, so it is
                     // open at exactly this moment — refresh the live label
                     // (show() only covers the reopen edge) (review-c133).
                     settings_window.refresh_shortcuts_label();
-                    eprintln!("compme: accept keys rebound (word={word:?} full={full:?})");
+                    eprintln!(
+                        "compme: accept keys rebound (word={word:?} full={full:?} grammar_accept={grammar_accept:?})"
+                    );
                 }
                 Err(err) => eprintln!("compme: accept-key rebind failed: {err}"),
             }
@@ -5853,26 +5921,30 @@ mod tests {
         // Shortcuts tab (persist-only slice): current bindings by NAME for
         // the known codes, numeric fallback for exotic rebinds, fixed rows
         // for the non-rebindable keys, and the how-to-change note.
-        let text = shortcuts_text((48, 0), (50, 0));
+        let text = shortcuts_text((48, 0), (50, 0), None);
         assert!(text.contains("Accept word: Tab"));
         assert!(text.contains("Accept full: ` (backtick)"));
+        assert!(text.contains("Grammar accept: Unbound"));
         assert!(text.contains("Dismiss: Esc"));
         assert!(text.contains("Cycle candidates: Down arrow"));
         assert!(text.contains("COMPME_ACCEPT_WORD_KEY"));
+        assert!(text.contains("COMPME_GRAMMAR_ACCEPT_KEY"));
         assert!(text.contains("relaunch"));
 
-        let custom = shortcuts_text((125, 0), (200, 0));
+        let custom = shortcuts_text((125, 0), (200, 0), Some((96, 0)));
         assert!(custom.contains("Accept word: Down arrow"));
         assert!(custom.contains("Accept full: key 200")); // unnamed code → generic
+        assert!(custom.contains("Grammar accept: F5"));
 
         // Modifier masks render as glyph-prefixed labels (slice 1b label half):
         // 512 = Carbon shiftKey ⇧, 4096 = controlKey ⌃.
-        let combo = shortcuts_text((48, 512), (50, 4096));
+        let combo = shortcuts_text((48, 512), (50, 4096), Some((96, 512)));
         assert!(combo.contains("Accept word: \u{21e7}Tab"), "{combo}");
         assert!(
             combo.contains("Accept full: \u{2303}` (backtick)"),
             "{combo}"
         );
+        assert!(combo.contains("Grammar accept: \u{21e7}F5"), "{combo}");
     }
 
     #[test]
@@ -6154,6 +6226,7 @@ mod tests {
         assert_eq!(apps_policy_field_from_index(1), Some(TabDisabled));
         assert_eq!(apps_policy_field_from_index(2), Some(MidLine));
         assert_eq!(apps_policy_field_from_index(3), Some(Autocorrect));
+        assert_eq!(apps_policy_field_from_index(4), Some(GrammarFix));
         // One past the last field is out of range (stale/garbled click no-ops).
         assert_eq!(
             apps_policy_field_from_index(platform_macos::APP_POLICY_FIELDS),
@@ -6424,6 +6497,19 @@ mod tests {
         assert_eq!(
             bindings.force_activate,
             platform_macos::parse_accept_key("ctrl+49")
+        );
+    }
+
+    #[test]
+    fn config_parses_grammar_check_and_grammar_accept_keys() {
+        let config = Config::from_lookup(lookup(&[
+            ("COMPME_GRAMMAR_CHECK_KEY", "cmd+shift+96"),
+            ("COMPME_GRAMMAR_ACCEPT_KEY", "ctrl+96"),
+        ]));
+        assert_eq!(config.grammar_check_key.as_deref(), Some("cmd+shift+96"));
+        assert_eq!(
+            config.grammar_accept_key,
+            platform_macos::parse_accept_key("ctrl+96")
         );
     }
 
@@ -7606,24 +7692,25 @@ mod tests {
         let ok = apply_live_accept_keymap(
             Some((35, 0)),
             Some((38, 0)),
-            |w, f| {
-                l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
+            Some((96, 0)),
+            |w, f, g| {
+                l1.borrow_mut().push(format!("set:{w:?},{f:?},{g:?}"));
                 Ok(())
             },
             || {
                 l2.borrow_mut().push("rearm".into());
                 Ok(())
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
-            || ((35, 0), (38, 0)),
+            |w, f, g| l3.borrow_mut().push(format!("persist:{w:?},{f:?},{g:?}")),
+            || ((35, 0), (38, 0), Some((96, 0))),
         );
         assert!(ok.is_ok());
         assert_eq!(
             *log.borrow(),
             vec![
-                "set:Some((35, 0)),Some((38, 0))".to_string(),
+                "set:Some((35, 0)),Some((38, 0)),Some((96, 0))".to_string(),
                 "rearm".to_string(),
-                "persist:(35, 0),(38, 0)".to_string(),
+                "persist:(35, 0),(38, 0),Some((96, 0))".to_string(),
             ]
         );
 
@@ -7635,24 +7722,25 @@ mod tests {
         let err = apply_live_accept_keymap(
             Some((35, 0)),
             Some((38, 0)),
-            |w, f| {
-                l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
+            Some((96, 0)),
+            |w, f, g| {
+                l1.borrow_mut().push(format!("set:{w:?},{f:?},{g:?}"));
                 Ok(())
             },
             || {
                 l2.borrow_mut().push("rearm".into());
                 Err(PlatformError::Timeout)
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
-            || ((48, 0), (50, 0)), // the pre-swap registered truth
+            |w, f, g| l3.borrow_mut().push(format!("persist:{w:?},{f:?},{g:?}")),
+            || ((48, 0), (50, 0), Some((96, 512))), // the pre-swap registered truth
         );
         assert!(err.is_err());
         assert_eq!(
             *log.borrow(),
             vec![
-                "set:Some((35, 0)),Some((38, 0))".to_string(),
+                "set:Some((35, 0)),Some((38, 0)),Some((96, 0))".to_string(),
                 "rearm".to_string(),
-                "set:Some((48, 0)),Some((50, 0))".to_string(), // revert (masks intact)
+                "set:Some((48, 0)),Some((50, 0)),Some((96, 512))".to_string(), // revert (masks intact)
             ],
             "no persist after a failed re-arm"
         );
@@ -7668,7 +7756,8 @@ mod tests {
         let revert_fails = apply_live_accept_keymap(
             Some((35, 0)),
             Some((38, 0)),
-            |w, f| {
+            Some((96, 0)),
+            |w, f, _g| {
                 // First call (the forward set) succeeds; the second (the
                 // revert) fails.
                 if calls.get() == 0 {
@@ -7684,8 +7773,8 @@ mod tests {
                 l2.borrow_mut().push("rearm".into());
                 Err(PlatformError::Timeout)
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
-            || ((48, 0), (50, 0)),
+            |w, f, g| l3.borrow_mut().push(format!("persist:{w:?},{f:?},{g:?}")),
+            || ((48, 0), (50, 0), None),
         );
         assert!(
             matches!(&revert_fails, Err(e) if e.starts_with("re-arm failed")),
@@ -7706,21 +7795,22 @@ mod tests {
         let partial = apply_live_accept_keymap(
             None,
             Some((38, 0)),
-            |w, f| {
-                l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
+            None,
+            |w, f, g| {
+                l1.borrow_mut().push(format!("set:{w:?},{f:?},{g:?}"));
                 Ok(())
             },
             || {
                 l2.borrow_mut().push("rearm".into());
                 Ok(())
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
-            || ((48, 0), (38, 0)), // post-resolution: default word stays 48
+            |w, f, g| l3.borrow_mut().push(format!("persist:{w:?},{f:?},{g:?}")),
+            || ((48, 0), (38, 0), None), // post-resolution: default word stays 48
         );
         assert!(partial.is_ok());
         assert_eq!(
             log.borrow().last().unwrap(),
-            "persist:(48, 0),(38, 0)",
+            "persist:(48, 0),(38, 0),None",
             "persist writes the RESOLVED pair, not the raw request"
         );
 
@@ -7731,13 +7821,14 @@ mod tests {
         let invalid = apply_live_accept_keymap(
             Some((53, 0)),
             None,
-            |_, _| Err(platform_macos::KeymapError::Collision(53)),
+            None,
+            |_, _, _| Err(platform_macos::KeymapError::Collision(53)),
             || {
                 l2.borrow_mut().push("rearm".into());
                 Ok(())
             },
-            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
-            || ((48, 0), (50, 0)),
+            |w, f, g| l3.borrow_mut().push(format!("persist:{w:?},{f:?},{g:?}")),
+            || ((48, 0), (50, 0), None),
         );
         assert!(invalid.is_err());
         assert!(
@@ -7764,35 +7855,72 @@ mod tests {
                                 // resolved registered pair via effective(), exactly as the real run
                                 // loop does). Starts at the pre-rebind truth (word=Shift+48, full=60).
                                 // Typed literals let inference name the type (no complex annotation).
-        let registered =
-            std::rc::Rc::new(std::cell::RefCell::new(((48_i64, SHIFT), (60_i64, 0_u32))));
+        let registered = std::rc::Rc::new(std::cell::RefCell::new((
+            (48_i64, SHIFT),
+            (60_i64, 0_u32),
+            Some((96_i64, SHIFT)),
+        )));
         let r_set = std::rc::Rc::clone(&registered);
         let r_eff = std::rc::Rc::clone(&registered);
         let applied = apply_live_accept_keymap(
             Some((48, SHIFT)), // word: unchanged Shift+48, mask carried by the recorder
             Some((50, 0)),     // full: newly captured bare key
-            move |w, f| {
+            Some((96, SHIFT)), // grammar accept: existing masked key preserved
+            move |w, f, g| {
                 // Mirror set_accept_keymap_from_config_with_mods: a None slot
                 // default-fills (Tab/backtick); here both are explicit.
-                *r_set.borrow_mut() = (w.unwrap_or((48, 0)), f.unwrap_or((50, 0)));
-                l1.borrow_mut().push(format!("set:{w:?},{f:?}"));
+                *r_set.borrow_mut() = (w.unwrap_or((48, 0)), f.unwrap_or((50, 0)), g);
+                l1.borrow_mut().push(format!("set:{w:?},{f:?},{g:?}"));
                 Ok(())
             },
             || Ok(()),
-            |w, f| l3.borrow_mut().push(format!("persist:{w:?},{f:?}")),
+            |w, f, g| l3.borrow_mut().push(format!("persist:{w:?},{f:?},{g:?}")),
             move || *r_eff.borrow(),
         );
         assert!(applied.is_ok());
         assert_eq!(
             log.borrow()[0],
-            format!("set:Some((48, {SHIFT})),Some((50, 0))"),
+            format!("set:Some((48, {SHIFT})),Some((50, 0)),Some((96, {SHIFT}))"),
             "the recorder-resolved masks reach set_map verbatim — Shift+48 kept, full bare"
         );
         assert_eq!(
             log.borrow().last().unwrap(),
-            &format!("persist:(48, {SHIFT}),(50, 0)"),
+            &format!("persist:(48, {SHIFT}),(50, 0),Some((96, {SHIFT}))"),
             "persist receives the resolved registered pair — the Shift mask survives to disk"
         );
+    }
+
+    #[test]
+    fn grammar_accept_rebind_persists_compme_grammar_accept_key() {
+        let persisted: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let sink = std::rc::Rc::clone(&persisted);
+        let ok = apply_live_accept_keymap(
+            Some((48, 0)),
+            Some((50, 0)),
+            Some((96, 512)),
+            |_, _, _| Ok(()),
+            || Ok(()),
+            move |w, f, g| {
+                for (key, value) in [
+                    ("COMPME_ACCEPT_WORD_KEY", Some(w)),
+                    ("COMPME_ACCEPT_FULL_KEY", Some(f)),
+                    ("COMPME_GRAMMAR_ACCEPT_KEY", g),
+                ] {
+                    match value {
+                        Some((code, mask)) => sink.borrow_mut().push(format!(
+                            "{key}={}",
+                            platform_macos::format_accept_key(code, mask)
+                        )),
+                        None => sink.borrow_mut().push(format!("remove:{key}")),
+                    }
+                }
+            },
+            || ((48, 0), (50, 0), Some((96, 512))),
+        );
+        assert!(ok.is_ok());
+        assert!(persisted
+            .borrow()
+            .contains(&"COMPME_GRAMMAR_ACCEPT_KEY=shift+96".to_string()));
     }
 
     #[test]
@@ -12279,6 +12407,8 @@ mod tests {
         let events = vec![
             HostEvent::Focus(host_field("a")),
             HostEvent::Accept(AcceptAction::Word),
+            HostEvent::Shortcut(ShortcutAction::GrammarCheck),
+            HostEvent::Accept(AcceptAction::Correction),
         ];
         assert_eq!(coalesce_caret_reads(events.clone()), events);
     }
@@ -12295,8 +12425,42 @@ mod tests {
         assert!(host_event_invalidates_pending_request(&HostEvent::Accept(
             AcceptAction::Full
         )));
+        assert!(host_event_invalidates_pending_request(&HostEvent::Accept(
+            AcceptAction::Correction
+        )));
         assert!(host_event_invalidates_pending_request(&HostEvent::Dismiss));
         assert!(!host_event_invalidates_pending_request(&HostEvent::Cycle));
+        assert!(!host_event_invalidates_pending_request(
+            &HostEvent::Shortcut(ShortcutAction::GrammarCheck)
+        ));
+    }
+
+    #[test]
+    fn grammar_check_shortcut_routes_to_detection() {
+        assert_eq!(
+            host_event_route(&HostEvent::Shortcut(ShortcutAction::GrammarCheck)),
+            HostEventRoute::ManualGrammarDetection
+        );
+        assert_eq!(
+            host_event_route(&HostEvent::Shortcut(ShortcutAction::ForceActivate)),
+            HostEventRoute::Normal
+        );
+    }
+
+    #[test]
+    fn grammar_accept_action_routes_to_accept_correction_not_full() {
+        assert_eq!(
+            host_event_route(&HostEvent::Accept(AcceptAction::Correction)),
+            HostEventRoute::AcceptCorrection
+        );
+        assert_eq!(
+            host_event_route(&HostEvent::Accept(AcceptAction::Full)),
+            HostEventRoute::Normal
+        );
+        assert_eq!(
+            host_event_route(&HostEvent::Accept(AcceptAction::Word)),
+            HostEventRoute::Normal
+        );
     }
 
     #[test]

@@ -11,9 +11,9 @@
 use std::sync::Arc;
 
 use platform::{
-    AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback, Environment,
-    FieldHandle, FocusCallback, InsertStrategy, Inserted, PlatformAdapter, PlatformError,
-    ScreenRect, Subscription, TextContext,
+    AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback, CorrectionRange,
+    Environment, FieldHandle, FocusCallback, InsertStrategy, Inserted, PlatformAdapter,
+    PlatformError, ScreenRect, Subscription, TextContext,
 };
 use platform_macos::MacosPlatformAdapter;
 
@@ -65,6 +65,13 @@ impl<A: PlatformAdapter> PlatformAdapter for SharedAdapter<A> {
         // same forwarding-wrapper trap as insert_replacing below, c42).
         self.0.focused_page_url(field)
     }
+    fn text_range_rect(
+        &self,
+        field: &FieldHandle,
+        range: CorrectionRange,
+    ) -> Result<Option<ScreenRect>, PlatformError> {
+        self.0.text_range_rect(field, range)
+    }
     fn insert(
         &self,
         field: &FieldHandle,
@@ -87,6 +94,15 @@ impl<A: PlatformAdapter> PlatformAdapter for SharedAdapter<A> {
         // silently downgrade a replacement again.
         self.0.insert_replacing(field, text, replace_left, strategy)
     }
+    fn insert_replacing_range(
+        &self,
+        field: &FieldHandle,
+        text: &str,
+        range: CorrectionRange,
+        strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        self.0.insert_replacing_range(field, text, range, strategy)
+    }
 }
 
 #[cfg(test)]
@@ -102,6 +118,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingInner {
         last_replace_left: AtomicUsize,
+        last_range_start: AtomicUsize,
     }
 
     impl PlatformAdapter for RecordingInner {
@@ -138,6 +155,19 @@ mod tests {
         fn focused_page_url(&self, _field: &FieldHandle) -> Result<Option<String>, PlatformError> {
             Ok(Some("https://bank.example/login".into()))
         }
+        fn text_range_rect(
+            &self,
+            _field: &FieldHandle,
+            range: CorrectionRange,
+        ) -> Result<Option<ScreenRect>, PlatformError> {
+            self.last_range_start.store(range.start, Ordering::SeqCst);
+            Ok(Some(ScreenRect {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0,
+            }))
+        }
         fn insert(
             &self,
             _field: &FieldHandle,
@@ -154,6 +184,20 @@ mod tests {
             strategy: InsertStrategy,
         ) -> Result<Inserted, PlatformError> {
             self.last_replace_left.store(replace_left, Ordering::SeqCst);
+            Ok(Inserted {
+                bytes: text.len(),
+                chars: text.chars().count(),
+                strategy,
+            })
+        }
+        fn insert_replacing_range(
+            &self,
+            _field: &FieldHandle,
+            text: &str,
+            range: CorrectionRange,
+            strategy: InsertStrategy,
+        ) -> Result<Inserted, PlatformError> {
+            self.last_range_start.store(range.start, Ordering::SeqCst);
             Ok(Inserted {
                 bytes: text.len(),
                 chars: text.chars().count(),
@@ -198,6 +242,40 @@ mod tests {
             inner.last_replace_left.load(Ordering::SeqCst),
             5,
             "the inner adapter must receive the exact replace_left, not a dropped 0"
+        );
+    }
+
+    #[test]
+    fn shared_adapter_forwards_correction_range_methods_instead_of_inheriting_defaults() {
+        let inner = Arc::new(RecordingInner::default());
+        let shared = SharedAdapter::new(Arc::clone(&inner));
+
+        assert_eq!(
+            shared
+                .text_range_rect(&field(), CorrectionRange { start: 4, end: 7 })
+                .unwrap(),
+            Some(ScreenRect {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0,
+            }),
+            "SharedAdapter must forward range geometry, not inherit the fail-closed default"
+        );
+        assert_eq!(inner.last_range_start.load(Ordering::SeqCst), 4);
+
+        shared
+            .insert_replacing_range(
+                &field(),
+                "the",
+                CorrectionRange { start: 8, end: 11 },
+                InsertStrategy::AxSet,
+            )
+            .expect("forwarded insert_replacing_range");
+        assert_eq!(
+            inner.last_range_start.load(Ordering::SeqCst),
+            8,
+            "the inner adapter must receive the exact correction range"
         );
     }
 }

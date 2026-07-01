@@ -497,14 +497,18 @@ pub trait PlatformAdapter: Send + Sync {
     fn focused_page_url(&self, _field: &FieldHandle) -> Result<Option<String>, PlatformError> {
         Ok(None)
     }
-    /// Bounds for a correction range. `Ok(None)` means the field is live but
-    /// cannot expose range geometry; hosts may fall back to caret/popup anchors.
+    /// Bounds for a correction range. `Ok(None)` means the field is live and the
+    /// range is valid, but the platform cannot expose range geometry; hosts may
+    /// fall back to caret/popup anchors. An invalid/unimplemented range seam must
+    /// fail closed with `Err`, not degrade into a caret-anchored correction.
     fn text_range_rect(
         &self,
         _field: &FieldHandle,
         _range: CorrectionRange,
     ) -> Result<Option<ScreenRect>, PlatformError> {
-        Ok(None)
+        Err(PlatformError::UnsupportedField {
+            reason: "correction range geometry unsupported".into(),
+        })
     }
     /// Insert `text` at the caret using `strategy`. All-or-nothing: on `Err`
     /// the field must be unchanged. The caller guarantees the field was
@@ -561,10 +565,17 @@ pub trait OverlayPresenter {
     /// Show (or re-anchor) the ghost at `rect` with `text`, replacing any
     /// previous ghost. `rect` is in the adapter's screen coordinate space.
     fn show_ghost(&mut self, rect: ScreenRect, text: &str) -> Result<(), PlatformError>;
-    /// Show a correction underline/banner at `rect`. Defaults to ghost rendering
-    /// until platform-specific correction UI is implemented.
-    fn show_correction(&mut self, rect: ScreenRect, suggestion: &str) -> Result<(), PlatformError> {
-        self.show_ghost(rect, suggestion)
+    /// Show a correction underline/banner at `rect`. Platforms without a
+    /// correction presenter must fail closed rather than silently rendering a
+    /// ghost-like correction that cannot be accepted safely.
+    fn show_correction(
+        &mut self,
+        _rect: ScreenRect,
+        _suggestion: &str,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::UnsupportedField {
+            reason: "correction presentation unsupported".into(),
+        })
     }
     /// Change the text of the currently shown ghost without re-anchoring.
     /// Callers must have a ghost showing (a successful `show_ghost` first).
@@ -961,6 +972,40 @@ mod tests {
         // persist a keymap the re-arm failed to register).
         assert!(hooked.rearm_accept_tap().is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    struct UnsupportedCorrectionOverlay;
+
+    impl OverlayPresenter for UnsupportedCorrectionOverlay {
+        fn show_ghost(&mut self, _rect: ScreenRect, _text: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn update_ghost(&mut self, _text: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn hide(&mut self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn default_correction_presentation_fails_closed_instead_of_ghost_fallback() {
+        let mut overlay = UnsupportedCorrectionOverlay;
+
+        assert!(matches!(
+            overlay.show_correction(
+                ScreenRect {
+                    x: 1.0,
+                    y: 2.0,
+                    w: 3.0,
+                    h: 4.0,
+                },
+                "the",
+            ),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
     }
 
     #[test]

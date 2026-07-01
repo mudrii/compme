@@ -644,10 +644,14 @@ run_self_tests() {
   done
   for gate in \
     encrypted-memory-all-monitored-live \
+    grammar-fix-textedit-look \
     input-monitoring-revoked-carbon-accept; do
     assert_log_contains "default-dry-run-manual-$gate" "$dry_run_log" "^MANUAL $gate:" \
       || self_failures=$((self_failures + 1))
   done
+  assert_log_contains "default-dry-run-grammar-fix-look-checklist" "$dry_run_log" \
+    "^MANUAL grammar-fix-textedit-look: .*COMPME_GRAMMAR_FIX=1.*COMPME_GRAMMAR_CHECK_KEY.*COMPME_GRAMMAR_ACCEPT_KEY.*TextEdit.*teh.*underline/banner.*accept replaces exactly.*caret move/edit stales" \
+    || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-manual-all-monitored-residuals" "$dry_run_log" \
     '^MANUAL encrypted-memory-all-monitored-live: .*secure-input.*snoozed.*volatile-pid' \
     || self_failures=$((self_failures + 1))
@@ -678,7 +682,7 @@ run_self_tests() {
     '^SKIP accept-insert-option-tab: --skip-textedit$' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
-    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=2 logs=' \
+    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=3 logs=' \
     || self_failures=$((self_failures + 1))
 
   rm -rf "$self_test_dir"
@@ -829,6 +833,7 @@ run_accept_tap_gate "accept-tap-delayed-hide" env COMPME_ACCEPTANCE_HIDE_AFTER_M
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
 
 manual_gate "encrypted-memory-all-monitored-live" "remaining residual after 2026-06-17 TextEdit and Chrome product-loop proofs: confirm secure-input, snoozed policy transition, and volatile-pid cases add no rows"
+manual_gate "grammar-fix-textedit-look" "launch compme with COMPME_GRAMMAR_FIX=1 plus COMPME_GRAMMAR_CHECK_KEY and COMPME_GRAMMAR_ACCEPT_KEY; in TextEdit verify 'teh' shows underline/banner, accept replaces exactly, and caret move/edit stales the correction"
 run_input_monitoring_revoked_carbon_gate
 
 echo

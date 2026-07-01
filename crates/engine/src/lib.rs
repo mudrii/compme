@@ -698,6 +698,7 @@ mod tests {
         popup: Option<ScreenRect>,
         fail_caret_rect: bool,
         fail_popup: bool,
+        fail_range_rect: bool,
         fail_insert: bool,
         inserts: Arc<Mutex<Vec<(FieldHandle, String, InsertStrategy)>>>,
         replacing_inserts: Arc<Mutex<Vec<ReplacingInsert>>>,
@@ -718,6 +719,7 @@ mod tests {
                 popup: None,
                 fail_caret_rect: false,
                 fail_popup: false,
+                fail_range_rect: false,
                 fail_insert: false,
                 inserts: Arc::new(Mutex::new(Vec::new())),
                 replacing_inserts: Arc::new(Mutex::new(Vec::new())),
@@ -784,6 +786,11 @@ mod tests {
             _field: &FieldHandle,
             _range: CorrectionRange,
         ) -> Result<Option<ScreenRect>, PlatformError> {
+            if self.fail_range_rect {
+                return Err(PlatformError::UnsupportedField {
+                    reason: "bad correction range".into(),
+                });
+            }
             Ok(self.range_rect)
         }
         fn insert(
@@ -929,6 +936,39 @@ mod tests {
                 },
                 "the".into(),
             )]
+        );
+    }
+
+    #[test]
+    fn correction_range_geometry_error_fails_closed_without_caret_fallback() {
+        let mut adapter = FakeAdapter::new();
+        adapter.fail_range_rect = true;
+        let range_replacing = Arc::clone(&adapter.range_replacing_inserts);
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange {
+            start: 99,
+            end: 100,
+        };
+        let request = grammar_request(&mut engine, range);
+
+        assert_eq!(
+            engine.on_correction(&request, "the".into(), range),
+            Err(PlatformError::UnsupportedField {
+                reason: "bad correction range".into(),
+            })
+        );
+
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Hide],
+            "invalid correction ranges must not fall back to a caret-anchored correction"
+        );
+        engine.on_accept(AcceptAction::Correction).unwrap();
+        assert!(
+            range_replacing.lock().unwrap().is_empty(),
+            "a correction that never showed must not remain accept-able"
         );
     }
 

@@ -26,17 +26,25 @@ use objc2_app_kit::{
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
 
-/// A requested accept-key rebind: `(word, full)` as `(keycode, Carbon
-/// modifier mask)` pairs, `None` = reset that role to its default. Slice 2's
-/// recorder captures the modifier mask (`event.modifierFlags()`); a bare key
-/// carries mask 0.
-pub type RebindRequest = (Option<(i64, u32)>, Option<(i64, u32)>);
+pub type KeyWithMods = (i64, u32);
+
+/// A requested accept-key rebind: `(word, full, grammar_accept)` as `(keycode,
+/// Carbon modifier mask)` pairs. `None` means reset word/full to defaults and
+/// leave grammar accept unbound. Slice 2's recorder captures the modifier mask
+/// (`event.modifierFlags()`); a bare key carries mask 0.
+pub type RebindRequest = (
+    Option<KeyWithMods>,
+    Option<KeyWithMods>,
+    Option<KeyWithMods>,
+);
+pub type CurrentAcceptKeys = (KeyWithMods, KeyWithMods, Option<KeyWithMods>);
 
 /// Which accept role a recorder field rebinds (recorder 5b slice 4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RecorderRole {
     Word,
     Full,
+    GrammarAccept,
 }
 
 /// What one captured keyDown does to a recording field. Pure half of the
@@ -49,7 +57,7 @@ pub enum RecordDecision {
     Cancel,
     /// Down (the fixed cycle key): consumed silently, stay recording.
     RejectFixed,
-    /// Captured key == the OTHER role's current key: would collide at
+    /// Captured key == another role's current key: would collide at
     /// `from_accept_keys` — stay recording, show "In use".
     RejectCollision,
     /// Park the request, exit recording.
@@ -57,19 +65,19 @@ pub enum RecordDecision {
 }
 
 /// Decide what a recording field does with a captured `(keycode, mask)`, given
-/// the OTHER role's currently registered `(keycode, mask)`. Esc and Down stay
+/// the other roles' currently registered `(keycode, mask)` values. Esc and Down stay
 /// FIXED regardless of any held modifier — they are the cancel gesture and the
 /// reserved cycle key, so Shift+Esc still cancels and Ctrl+Down is still the
 /// silent reject. Collision is on the FULL `(keycode, mask)` identity (matching
 /// `from_accept_keys_with_mods`): Tab and Shift+Tab are distinct, so capturing
-/// Tab while the other role holds Shift+Tab is NOT a collision.
-pub fn record_decision(keycode: i64, mask: u32, other_role: (i64, u32)) -> RecordDecision {
+/// Tab while another role holds Shift+Tab is NOT a collision.
+pub fn record_decision(keycode: i64, mask: u32, other_roles: &[KeyWithMods]) -> RecordDecision {
     match keycode {
         // The crate consts, not literals: if the FIXED key set ever changed,
         // literals here would silently stop rejecting it (review-c135).
         crate::KEYCODE_ESCAPE => RecordDecision::Cancel, // fixed + cancel
         crate::KEYCODE_DOWN => RecordDecision::RejectFixed, // fixed cycle key
-        _ if (keycode, mask) == other_role => RecordDecision::RejectCollision,
+        _ if other_roles.contains(&(keycode, mask)) => RecordDecision::RejectCollision,
         _ => RecordDecision::Accept,
     }
 }
@@ -81,12 +89,13 @@ pub fn record_decision(keycode: i64, mask: u32, other_role: (i64, u32)) -> Recor
 /// always carries the other role's CURRENT registered key explicitly.
 pub fn rebind_request_for(
     role: RecorderRole,
-    captured: (i64, u32),
-    current: ((i64, u32), (i64, u32)),
+    captured: KeyWithMods,
+    current: CurrentAcceptKeys,
 ) -> RebindRequest {
     match role {
-        RecorderRole::Word => (Some(captured), Some(current.1)),
-        RecorderRole::Full => (Some(current.0), Some(captured)),
+        RecorderRole::Word => (Some(captured), Some(current.1), current.2),
+        RecorderRole::Full => (Some(current.0), Some(captured), current.2),
+        RecorderRole::GrammarAccept => (Some(current.0), Some(current.1), Some(captured)),
     }
 }
 
@@ -208,27 +217,49 @@ pub enum RecorderOutcome {
     },
 }
 
+fn keycode_label_for_optional(binding: Option<KeyWithMods>) -> String {
+    binding
+        .map(|(code, mask)| keycode_label_with_mods(code, mask))
+        .unwrap_or_else(|| "Unbound".to_string())
+}
+
+fn binding_for_role(role: RecorderRole, current: CurrentAcceptKeys) -> Option<KeyWithMods> {
+    match role {
+        RecorderRole::Word => Some(current.0),
+        RecorderRole::Full => Some(current.1),
+        RecorderRole::GrammarAccept => current.2,
+    }
+}
+
+fn other_bindings_for_role(role: RecorderRole, current: CurrentAcceptKeys) -> Vec<KeyWithMods> {
+    let candidates = match role {
+        RecorderRole::Word => [Some(current.1), current.2],
+        RecorderRole::Full => [Some(current.0), current.2],
+        RecorderRole::GrammarAccept => [Some(current.0), Some(current.1)],
+    };
+    candidates.into_iter().flatten().collect()
+}
+
 /// Compose one captured `(keycode, mask)` keyDown into a render+write outcome
-/// for `role`, given the (word, full) currently-registered `(keycode, mask)`
-/// pairs (`effective_accept_keys_with_mods()`). The Accept arm always carries
-/// BOTH slots so a partial request can never clobber the other role back to
-/// default (the c134 trap), and now preserves the OTHER role's modifier mask
-/// verbatim (audit-r2: a one-role rebind must not strip the other's mask).
+/// for `role`, given the currently-registered `(word, full, grammar_accept)`
+/// bindings (`effective_accept_keys_with_mods_and_grammar()`). The Accept arm
+/// always carries ALL slots so a partial request can never clobber another role
+/// back to default or unbound (the c134 trap), and preserves other roles'
+/// modifier masks verbatim (audit-r2: a one-role rebind must not strip another
+/// role's mask).
 /// Labels render through `keycode_label_with_mods`, so a modifier shows its
 /// ⌃⌥⇧⌘ glyph.
 pub fn recorder_outcome(
     role: RecorderRole,
     keycode: i64,
     mask: u32,
-    current: ((i64, u32), (i64, u32)),
+    current: CurrentAcceptKeys,
 ) -> RecorderOutcome {
-    let (role_current, other_current) = match role {
-        RecorderRole::Word => (current.0, current.1),
-        RecorderRole::Full => (current.1, current.0),
-    };
-    match record_decision(keycode, mask, other_current) {
+    let role_current = binding_for_role(role, current);
+    let other_currents = other_bindings_for_role(role, current);
+    match record_decision(keycode, mask, &other_currents) {
         RecordDecision::Cancel => RecorderOutcome::Cancel {
-            idle_label: keycode_label_with_mods(role_current.0, role_current.1),
+            idle_label: keycode_label_for_optional(role_current),
         },
         RecordDecision::RejectFixed => RecorderOutcome::RejectSilent,
         RecordDecision::RejectCollision => RecorderOutcome::RejectCollision {
@@ -747,7 +778,7 @@ define_class!(
                 self.ivars().role,
                 keycode,
                 mask,
-                crate::effective_accept_keys_with_mods(),
+                crate::effective_accept_keys_with_mods_and_grammar(),
             ) {
                 RecorderOutcome::Accept { request, label: text } => {
                     // Recover from a poisoned lock rather than silently dropping
@@ -1006,13 +1037,14 @@ impl MacosSettingsWindow {
         // the active box, and a rebind carries the OTHER role's key through
         // verbatim (rebind_request_for) — so the sibling box never goes stale.
         if !self.recorder_labels.is_empty() {
-            let (word, full) = crate::effective_accept_keys_with_mods();
+            let (word, full, grammar_accept) = crate::effective_accept_keys_with_mods_and_grammar();
             for (role, label) in &self.recorder_labels {
-                let (code, mask) = match role {
-                    RecorderRole::Word => word,
-                    RecorderRole::Full => full,
-                };
-                label.setStringValue(&NSString::from_str(&keycode_label_with_mods(code, mask)));
+                let text = keycode_label_for_optional(match role {
+                    RecorderRole::Word => Some(word),
+                    RecorderRole::Full => Some(full),
+                    RecorderRole::GrammarAccept => grammar_accept,
+                });
+                label.setStringValue(&NSString::from_str(&text));
             }
         }
         // Switches re-sync from their atomics — enabled can be flipped by
@@ -1055,6 +1087,15 @@ impl MacosSettingsWindow {
     /// the moment the text changes; show() covers the reopen edge).
     pub fn refresh_shortcuts_label(&self) {
         if let (Some(label), Ok(text)) = (&self.shortcuts_label, self.flags.shortcuts_text.lock()) {
+            label.setStringValue(&NSString::from_str(&text));
+        }
+        let (word, full, grammar_accept) = crate::effective_accept_keys_with_mods_and_grammar();
+        for (role, label) in &self.recorder_labels {
+            let text = keycode_label_for_optional(match role {
+                RecorderRole::Word => Some(word),
+                RecorderRole::Full => Some(full),
+                RecorderRole::GrammarAccept => grammar_accept,
+            });
             label.setStringValue(&NSString::from_str(&text));
         }
     }
@@ -1904,10 +1945,11 @@ fn build_window(
     let mut recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)> = Vec::new();
     {
         let shortcuts_view = &pane_views[6];
-        let (word, full) = crate::effective_accept_keys_with_mods();
+        let (word, full, grammar_accept) = crate::effective_accept_keys_with_mods_and_grammar();
         for (role, label_text, y) in [
             (RecorderRole::Word, "Accept word:", 116.0),
             (RecorderRole::Full, "Accept full:", 80.0),
+            (RecorderRole::GrammarAccept, "Grammar accept:", 44.0),
         ] {
             let row_label = NSTextField::labelWithString(&NSString::from_str(label_text), mtm);
             row_label.setFrame(NSRect::new(NSPoint::new(20.0, y), NSSize::new(110.0, 22.0)));
@@ -1915,14 +1957,12 @@ fn build_window(
 
             // Display field showing the role's current key (bezeled box), with
             // its ⌃⌥⇧⌘ glyph prefix if a modifier is bound (slice 2).
-            let (code, mask) = match role {
-                RecorderRole::Word => word,
-                RecorderRole::Full => full,
-            };
-            let key_label = NSTextField::labelWithString(
-                &NSString::from_str(&keycode_label_with_mods(code, mask)),
-                mtm,
-            );
+            let text = keycode_label_for_optional(match role {
+                RecorderRole::Word => Some(word),
+                RecorderRole::Full => Some(full),
+                RecorderRole::GrammarAccept => grammar_accept,
+            });
+            let key_label = NSTextField::labelWithString(&NSString::from_str(&text), mtm);
             key_label.setBezeled(true);
             key_label.setDrawsBackground(true);
             key_label.setEditable(false);
@@ -2348,12 +2388,12 @@ mod tests {
         // Esc is BOTH a fixed key and the cancel gesture — cancel wins, even
         // when Esc would also collide with the other role (impossible today,
         // pinned anyway: the match arm ordering is the contract).
-        assert_eq!(record_decision(53, 0, (53, 0)), RecordDecision::Cancel);
-        assert_eq!(record_decision(53, 0, (48, 0)), RecordDecision::Cancel);
+        assert_eq!(record_decision(53, 0, &[(53, 0)]), RecordDecision::Cancel);
+        assert_eq!(record_decision(53, 0, &[(48, 0)]), RecordDecision::Cancel);
         // Esc stays the cancel gesture even with a modifier held (slice 2):
         // you can't bind Shift+Esc — Esc still cancels recording.
         assert_eq!(
-            record_decision(53, crate::CARBON_SHIFT_KEY, (48, 0)),
+            record_decision(53, crate::CARBON_SHIFT_KEY, &[(48, 0)]),
             RecordDecision::Cancel
         );
     }
@@ -2361,12 +2401,12 @@ mod tests {
     #[test]
     fn record_decision_rejects_fixed_down_silently() {
         assert_eq!(
-            record_decision(125, 0, (48, 0)),
+            record_decision(125, 0, &[(48, 0)]),
             RecordDecision::RejectFixed
         );
         // Down stays the reserved cycle key even with a modifier held (slice 2).
         assert_eq!(
-            record_decision(125, crate::CARBON_CONTROL_KEY, (48, 0)),
+            record_decision(125, crate::CARBON_CONTROL_KEY, &[(48, 0)]),
             RecordDecision::RejectFixed
         );
     }
@@ -2376,12 +2416,21 @@ mod tests {
         // Capturing the OTHER role's EXACT (keycode, mask) would collide at
         // from_accept_keys_with_mods — reject in the field, stay recording.
         assert_eq!(
-            record_decision(48, 0, (48, 0)),
+            record_decision(48, 0, &[(48, 0)]),
             RecordDecision::RejectCollision
         );
         assert_eq!(
-            record_decision(48, crate::CARBON_SHIFT_KEY, (48, crate::CARBON_SHIFT_KEY)),
+            record_decision(
+                48,
+                crate::CARBON_SHIFT_KEY,
+                &[(48, crate::CARBON_SHIFT_KEY)]
+            ),
             RecordDecision::RejectCollision
+        );
+        assert_eq!(
+            record_decision(96, 0, &[(48, 0), (96, 0)]),
+            RecordDecision::RejectCollision,
+            "grammar accept must reject collisions with word/full too"
         );
     }
 
@@ -2392,20 +2441,20 @@ mod tests {
         // distinct bindings that coexist — capturing one while the other role
         // holds the same keycode under a DIFFERENT mask must ACCEPT, not reject.
         assert_eq!(
-            record_decision(48, 0, (48, crate::CARBON_SHIFT_KEY)),
+            record_decision(48, 0, &[(48, crate::CARBON_SHIFT_KEY)]),
             RecordDecision::Accept
         );
         assert_eq!(
-            record_decision(48, crate::CARBON_SHIFT_KEY, (48, 0)),
+            record_decision(48, crate::CARBON_SHIFT_KEY, &[(48, 0)]),
             RecordDecision::Accept
         );
     }
 
     #[test]
     fn record_decision_accepts_normal_keys_including_own_current() {
-        assert_eq!(record_decision(122, 0, (50, 0)), RecordDecision::Accept); // F1
-                                                                              // Re-recording the role's OWN current key is a harmless no-op rebind.
-        assert_eq!(record_decision(48, 0, (50, 0)), RecordDecision::Accept);
+        assert_eq!(record_decision(122, 0, &[(50, 0)]), RecordDecision::Accept); // F1
+                                                                                 // Re-recording the role's OWN current key is a harmless no-op rebind.
+        assert_eq!(record_decision(48, 0, &[(50, 0)]), RecordDecision::Accept);
     }
 
     #[test]
@@ -2414,17 +2463,17 @@ mod tests {
         // request carries BOTH slots (full stays 50 — clobber-safe) and the
         // label is the captured key's.
         assert_eq!(
-            recorder_outcome(RecorderRole::Word, 122, 0, ((48, 0), (50, 0))),
+            recorder_outcome(RecorderRole::Word, 122, 0, ((48, 0), (50, 0), None)),
             RecorderOutcome::Accept {
-                request: (Some((122, 0)), Some((50, 0))),
+                request: (Some((122, 0)), Some((50, 0)), None),
                 label: keycode_label_with_mods(122, 0),
             }
         );
         // Recording FULL keeps word's current in slot 0.
         assert_eq!(
-            recorder_outcome(RecorderRole::Full, 122, 0, ((48, 0), (50, 0))),
+            recorder_outcome(RecorderRole::Full, 122, 0, ((48, 0), (50, 0), None)),
             RecorderOutcome::Accept {
-                request: (Some((48, 0)), Some((122, 0))),
+                request: (Some((48, 0)), Some((122, 0)), None),
                 label: keycode_label_with_mods(122, 0),
             }
         );
@@ -2440,12 +2489,12 @@ mod tests {
             RecorderRole::Word,
             122,
             crate::CARBON_SHIFT_KEY,
-            ((48, 0), (50, 0)),
+            ((48, 0), (50, 0), None),
         );
         assert_eq!(
             outcome,
             RecorderOutcome::Accept {
-                request: (Some((122, crate::CARBON_SHIFT_KEY)), Some((50, 0))),
+                request: (Some((122, crate::CARBON_SHIFT_KEY)), Some((50, 0)), None),
                 label: keycode_label_with_mods(122, crate::CARBON_SHIFT_KEY),
             }
         );
@@ -2467,10 +2516,10 @@ mod tests {
                 RecorderRole::Word,
                 122,
                 0,
-                ((48, 0), (50, crate::CARBON_SHIFT_KEY))
+                ((48, 0), (50, crate::CARBON_SHIFT_KEY), None)
             ),
             RecorderOutcome::Accept {
-                request: (Some((122, 0)), Some((50, crate::CARBON_SHIFT_KEY))),
+                request: (Some((122, 0)), Some((50, crate::CARBON_SHIFT_KEY)), None),
                 label: keycode_label_with_mods(122, 0),
             }
         );
@@ -2490,12 +2539,13 @@ mod tests {
                 RecorderRole::Full,
                 122,
                 crate::CARBON_SHIFT_KEY,
-                ((48, crate::CARBON_SHIFT_KEY), (50, 0))
+                ((48, crate::CARBON_SHIFT_KEY), (50, 0), None)
             ),
             RecorderOutcome::Accept {
                 request: (
                     Some((48, crate::CARBON_SHIFT_KEY)),
-                    Some((122, crate::CARBON_SHIFT_KEY))
+                    Some((122, crate::CARBON_SHIFT_KEY)),
+                    None
                 ),
                 label: keycode_label_with_mods(122, crate::CARBON_SHIFT_KEY),
             }
@@ -2516,7 +2566,7 @@ mod tests {
                 RecorderRole::Full,
                 crate::KEYCODE_ESCAPE,
                 0,
-                ((48, 0), (50, crate::CARBON_SHIFT_KEY))
+                ((48, 0), (50, crate::CARBON_SHIFT_KEY), None)
             ),
             RecorderOutcome::Cancel {
                 idle_label: keycode_label_with_mods(50, crate::CARBON_SHIFT_KEY)
@@ -2527,7 +2577,7 @@ mod tests {
                 RecorderRole::Word,
                 crate::KEYCODE_ESCAPE,
                 0,
-                ((48, 0), (50, 0))
+                ((48, 0), (50, 0), None)
             ),
             RecorderOutcome::Cancel {
                 idle_label: keycode_label_with_mods(48, 0)
@@ -2542,13 +2592,42 @@ mod tests {
                 RecorderRole::Word,
                 crate::KEYCODE_DOWN,
                 0,
-                ((48, 0), (50, 0))
+                ((48, 0), (50, 0), None)
             ),
             RecorderOutcome::RejectSilent
         );
         // Recording WORD, capture (50,0) == full's current → collision, no write.
         assert!(matches!(
-            recorder_outcome(RecorderRole::Word, 50, 0, ((48, 0), (50, 0))),
+            recorder_outcome(RecorderRole::Word, 50, 0, ((48, 0), (50, 0), None)),
+            RecorderOutcome::RejectCollision { .. }
+        ));
+    }
+
+    #[test]
+    fn grammar_accept_recorder_accepts_key_and_preserves_word_full_bindings() {
+        assert_eq!(
+            recorder_outcome(
+                RecorderRole::GrammarAccept,
+                96,
+                crate::CARBON_CONTROL_KEY,
+                ((48, 0), (50, crate::CARBON_SHIFT_KEY), None)
+            ),
+            RecorderOutcome::Accept {
+                request: (
+                    Some((48, 0)),
+                    Some((50, crate::CARBON_SHIFT_KEY)),
+                    Some((96, crate::CARBON_CONTROL_KEY)),
+                ),
+                label: keycode_label_with_mods(96, crate::CARBON_CONTROL_KEY),
+            }
+        );
+        assert!(matches!(
+            recorder_outcome(
+                RecorderRole::GrammarAccept,
+                48,
+                0,
+                ((48, 0), (50, crate::CARBON_SHIFT_KEY), None)
+            ),
             RecorderOutcome::RejectCollision { .. }
         ));
     }
@@ -2560,23 +2639,28 @@ mod tests {
         // would reset the other role's prior rebind back to Tab/backtick.
         // The recorder therefore always sends BOTH slots.
         assert_eq!(
-            rebind_request_for(RecorderRole::Word, (122, 0), ((48, 0), (99, 0))),
-            (Some((122, 0)), Some((99, 0)))
+            rebind_request_for(RecorderRole::Word, (122, 0), ((48, 0), (99, 0), None)),
+            (Some((122, 0)), Some((99, 0)), None)
         );
         assert_eq!(
-            rebind_request_for(RecorderRole::Full, (122, 0), ((99, 0), (50, 0))),
-            (Some((99, 0)), Some((122, 0)))
+            rebind_request_for(RecorderRole::Full, (122, 0), ((99, 0), (50, 0), None)),
+            (Some((99, 0)), Some((122, 0)), None)
         );
         // The other role's MASK is carried verbatim, not dropped (audit-r2).
         assert_eq!(
             rebind_request_for(
                 RecorderRole::Word,
                 (122, crate::CARBON_SHIFT_KEY),
-                ((48, 0), (99, crate::CARBON_CONTROL_KEY))
+                (
+                    (48, 0),
+                    (99, crate::CARBON_CONTROL_KEY),
+                    Some((96, crate::CARBON_SHIFT_KEY))
+                )
             ),
             (
                 Some((122, crate::CARBON_SHIFT_KEY)),
-                Some((99, crate::CARBON_CONTROL_KEY))
+                Some((99, crate::CARBON_CONTROL_KEY)),
+                Some((96, crate::CARBON_SHIFT_KEY))
             )
         );
     }

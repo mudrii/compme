@@ -142,6 +142,19 @@ mod tests {
             adapter.insert_replacing(&field, "x", 1, InsertStrategy::None),
             Err(PlatformError::UnsupportedField { .. })
         ));
+        assert!(matches!(
+            adapter.text_range_rect(&field, platform::CorrectionRange { start: 0, end: 1 }),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+        assert!(matches!(
+            adapter.insert_replacing_range(
+                &field,
+                "x",
+                platform::CorrectionRange { start: 0, end: 1 },
+                InsertStrategy::AxSet,
+            ),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
         // The two methods the scaffold inherits as trait defaults (fail-OPEN by
         // design: "no anchor / no domain", which is safe) are pinned here so a
         // future change to the trait defaults can't silently alter stub behavior.

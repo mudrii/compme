@@ -100,6 +100,8 @@ const KEYCODE_ESCAPE: i64 = 53;
 /// Down arrow: rotate to the next candidate while a suggestion is visible
 /// (multi-candidate cycle).
 const KEYCODE_DOWN: i64 = 125;
+pub type KeyWithMods = (i64, u32);
+pub type EffectiveAcceptKeys = (KeyWithMods, KeyWithMods, Option<KeyWithMods>);
 const SYNTHETIC_EVENT_TAG: i64 = 0x636d706c746d65;
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(1000);
 const K_EVENT_CLASS_KEYBOARD: OSType = u32::from_be_bytes(*b"keyb");
@@ -3593,9 +3595,22 @@ pub fn effective_accept_keys() -> (i64, i64) {
 /// Like [`effective_accept_keys`] but each key carries its Carbon modifier mask
 /// (slice 1b label half) — the Shortcuts pane renders the ⌃⌥⇧⌘ glyph prefix
 /// from these. Same single source as the registration and decision paths.
-pub fn effective_accept_keys_with_mods() -> ((i64, u32), (i64, u32)) {
+pub fn effective_accept_keys_with_mods() -> (KeyWithMods, KeyWithMods) {
     let map = accept_keymap();
     ((map.word, map.word_mods), (map.full, map.full_mods))
+}
+
+/// Like [`effective_accept_keys_with_mods`] but also returns the optional
+/// grammar-accept binding. The grammar accept key is intentionally optional:
+/// an absent binding means the correction accept hotkey is unbound.
+pub fn effective_accept_keys_with_mods_and_grammar() -> EffectiveAcceptKeys {
+    let map = accept_keymap();
+    (
+        (map.word, map.word_mods),
+        (map.full, map.full_mods),
+        map.grammar_accept
+            .map(|keycode| (keycode, map.grammar_accept_mods)),
+    )
 }
 
 impl WorkerAcceptTapResource {
@@ -4734,7 +4749,9 @@ fn text_range_rect_for_field(
     let Some(range) =
         scalar_correction_range_to_utf16_range(&ctx.left, &ctx.right, selected_range, range)
     else {
-        return Ok(None);
+        return Err(PlatformError::UnsupportedField {
+            reason: "correction range is not contiguous in the field".into(),
+        });
     };
     unsafe { read_ax_bounds_for_range(element, range.location, range.length) }
 }
