@@ -247,6 +247,7 @@ are validated outside the A1b gate runner:
 --dry-run
 --force
 --allow-incomplete
+--allow-manual
 --skip-build
 --skip-e2e
 --skip-textedit
@@ -260,6 +261,10 @@ are validated outside the A1b gate runner:
 --gate-pause-ms MS
 --log-dir DIR
 ```
+
+Use `--allow-manual` only after executing and recording the MANUAL checklist
+lines emitted by the runner. Omit it for unattended readiness runs; unresolved
+manual gates fail by default.
 
 ### Logs
 

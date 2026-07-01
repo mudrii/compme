@@ -65,6 +65,9 @@ jobs:
       - name: Missing-model startup self-test
         run: tools/acceptance/missing-model-startup.sh --self-test
 
+      - name: Missing-model startup product smoke
+        run: tools/acceptance/missing-model-startup.sh
+
       - name: A1b runner self-test
         run: tools/acceptance/run-a1b-live-gates.sh --self-test
 

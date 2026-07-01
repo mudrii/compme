@@ -350,7 +350,7 @@ pub struct MacosOverlayPresenter {
     last_rect: Option<ScreenRect>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MacosOverlayDiagnostics {
     pub has_panel: bool,
     pub visible: bool,
@@ -362,6 +362,10 @@ pub struct MacosOverlayDiagnostics {
     /// full-screen auxiliary so it survives Space switches / full-screen apps.
     pub joins_all_spaces: bool,
     pub fullscreen_auxiliary: bool,
+    /// Cocoa-space panel frame last exposed to AppKit; acceptance diagnostics
+    /// use this to pin that the ghost is anchored near the caret, not just
+    /// that an NSPanel exists.
+    pub panel_frame: Option<ScreenRect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -832,9 +836,11 @@ impl MacosOverlayPresenter {
                 level: 0,
                 joins_all_spaces: false,
                 fullscreen_auxiliary: false,
+                panel_frame: None,
             };
         };
         let behavior = panel.collectionBehavior();
+        let frame = panel.frame();
 
         MacosOverlayDiagnostics {
             has_panel: true,
@@ -848,6 +854,12 @@ impl MacosOverlayPresenter {
             joins_all_spaces: behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces),
             fullscreen_auxiliary: behavior
                 .contains(NSWindowCollectionBehavior::FullScreenAuxiliary),
+            panel_frame: Some(ScreenRect {
+                x: frame.origin.x,
+                y: frame.origin.y,
+                w: frame.size.width,
+                h: frame.size.height,
+            }),
         }
     }
 }
@@ -10239,7 +10251,7 @@ mod tests {
             "rearm must drop the old consumer tap strictly before installing the new one"
         );
         // The NEW handler still consumes with the armed value intact.
-        let handler = Arc::clone(&accept_tap_installs.lock().unwrap()[2].handler);
+        let handler = Arc::clone(&accept_tap_installs.lock().unwrap()[3].handler);
         assert_eq!(
             handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
             AcceptTapDecision::Drop(AcceptAction::Word)
@@ -12307,6 +12319,7 @@ mod tests {
                 level: 0,
                 joins_all_spaces: false,
                 fullscreen_auxiliary: false,
+                panel_frame: None,
             }
         );
     }

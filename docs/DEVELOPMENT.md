@@ -289,6 +289,10 @@ browser or external popup target that must remain focused. Omit
 `--allow-incomplete` for release/readiness runs; mandatory TextEdit skips fail
 by default.
 
+Use `--allow-manual` only after executing and recording the MANUAL checklist
+lines emitted by the runner. Omit it for unattended readiness runs; unresolved
+manual gates fail by default.
+
 ```sh
 tools/acceptance/run-a1b-live-gates.sh --skip-textedit --allow-incomplete --browser-pid <pid>
 tools/acceptance/run-a1b-live-gates.sh --skip-textedit --allow-incomplete --popup-pid <pid>

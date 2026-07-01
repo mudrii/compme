@@ -61,6 +61,9 @@ jobs:
       - name: Missing-model startup self-test
         run: tools/acceptance/missing-model-startup.sh --self-test
 
+      - name: Missing-model startup product smoke
+        run: tools/acceptance/missing-model-startup.sh
+
       - name: Model client feature policy
         run: tools/release/check-model-client-features.sh
 

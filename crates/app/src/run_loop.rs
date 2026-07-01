@@ -2509,6 +2509,13 @@ fn env_shadow_warnings(is_env_set: impl Fn(&str) -> bool) -> Vec<String> {
         .collect()
 }
 
+fn startup_env_shadow_notice_lines(is_env_set: impl Fn(&str) -> bool) -> Vec<String> {
+    env_shadow_warnings(is_env_set)
+        .into_iter()
+        .map(|warning| format!("compme: {warning}"))
+        .collect()
+}
+
 /// Edge-detect a settings switch: if the UI atomic differs from the loop's
 /// current value, update the current value and return the new state — the
 /// caller applies + persists exactly once per edge (audit c121: three
@@ -3059,8 +3066,8 @@ pub fn run() -> Result<(), String> {
 
     // Env-shadow notice (review-c109): switches whose env var will override
     // the persisted file at relaunch.
-    for warning in env_shadow_warnings(|key| env::var(key).is_ok()) {
-        eprintln!("compme: {warning}");
+    for warning in startup_env_shadow_notice_lines(|key| env::var(key).is_ok()) {
+        eprintln!("{warning}");
     }
 
     if config.diag_coords {
@@ -5510,11 +5517,32 @@ mod tests {
         // The Enabled switch and the tray toggle are TWO VIEWS of ONE
         // atomic — sharing the Arc is what keeps them in sync (banked
         // c115 design). Pin identity, not just equal values.
-        let config = Config::from_lookup(lookup(&[]));
+        let config = Config::from_lookup(lookup(&[
+            ("COMPME_MIDLINE", "1"),
+            ("COMPME_AUTOCORRECT", "1"),
+            ("COMPME_TRAILING_SPACE", "1"),
+            ("COMPME_CLIPBOARD_CONTEXT", "0"),
+            ("COMPME_SCREEN_CONTEXT", "1"),
+            ("COMPME_EMOJI", "1"),
+            ("COMPME_EMOJI_SKIN_TONE", "dark"),
+            ("COMPME_EMOJI_GENDER", "female"),
+            ("COMPME_INSTRUCTIONS", "Keep completions terse."),
+            ("COMPME_SENDER_NAME", "Ada"),
+            ("COMPME_SENDER_EMAIL", "ada@example.com"),
+            ("COMPME_STRENGTH", "4"),
+        ]));
         let tray_enabled = Arc::new(AtomicBool::new(true));
         let flags = build_settings_flags(&config, Arc::clone(&tray_enabled));
         assert!(Arc::ptr_eq(&flags.general_enabled, &tray_enabled));
+        assert_eq!(
+            flags.labs_midline.load(Ordering::Relaxed),
+            config.allow_mid_word
+        );
         assert!(flags.general_autocorrect.load(Ordering::Relaxed) == config.autocorrect);
+        assert_eq!(
+            flags.general_trailing_space.load(Ordering::Relaxed),
+            config.trailing_space
+        );
         assert!(flags.context_clipboard.load(Ordering::Relaxed) == config.clipboard_context);
         assert!(flags.context_screen.load(Ordering::Relaxed) == config.screen_context);
         assert_eq!(
@@ -5524,6 +5552,39 @@ mod tests {
         assert_eq!(
             flags.emoji_skin_tone_index.load(Ordering::Relaxed),
             emoji_skin_tone_index(config.emoji_prefs.skin_tone)
+        );
+        assert_eq!(
+            flags.emoji_gender_index.load(Ordering::Relaxed),
+            emoji_gender_index(config.emoji_prefs.gender)
+        );
+        assert_eq!(
+            flags.setup_model_index.load(Ordering::Relaxed),
+            crate::model_picker::recommended_index()
+        );
+        let available_ram_gb =
+            model_catalog::bytes_to_whole_gb(platform_macos::physical_memory_bytes());
+        let expected_titles = crate::model_picker::model_menu_titles(available_ram_gb);
+        assert!(!flags.setup_model_menu_titles.is_empty());
+        assert_eq!(flags.setup_model_menu_titles, expected_titles);
+        assert_eq!(
+            *flags.personalization_instructions.lock().unwrap(),
+            config.personalization.global_instructions
+        );
+        assert_eq!(
+            *flags.personalization_sender_name.lock().unwrap(),
+            config.personalization.sender.name
+        );
+        assert_eq!(
+            *flags.personalization_sender_email.lock().unwrap(),
+            config.personalization.sender.email
+        );
+        assert_eq!(
+            flags.personalization_strength_index.load(Ordering::Relaxed),
+            personalization_strength_index(config.personalization.strength)
+        );
+        assert_eq!(
+            flags.personalization_strength_titles,
+            personalization_strength_titles()
         );
     }
 
@@ -6049,6 +6110,20 @@ mod tests {
             );
         }
         assert_eq!(every_warning.len(), 28);
+    }
+
+    #[test]
+    fn startup_env_shadow_notice_lines_keep_runtime_prefix_and_unset_keys_quiet() {
+        let notices = startup_env_shadow_notice_lines(|key| key == "COMPME_ACCEPT_WORD_KEY");
+        assert_eq!(
+            notices,
+            vec![
+                "compme: COMPME_ACCEPT_WORD_KEY is set in the environment \u{2014} Settings \
+                 changes persist to config.env but the environment wins at relaunch"
+                    .to_string()
+            ]
+        );
+        assert!(startup_env_shadow_notice_lines(|_| false).is_empty());
     }
 
     #[test]

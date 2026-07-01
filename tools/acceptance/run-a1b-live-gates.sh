@@ -45,6 +45,8 @@ Options:
                          incomplete unless paired with --allow-incomplete.
   --allow-incomplete     Allow mandatory live gates to be skipped and still exit
                          zero. Without this, missing TextEdit coverage fails.
+  --allow-manual         Allow emitted MANUAL checklist gates and still exit
+                         zero. Without this, unresolved manual gates fail.
   --self-test            Run runner classification self-tests and exit.
   --textedit-pid PID     Use this TextEdit pid instead of pgrep -x TextEdit.
   --popup-pid PID        Also run popup fallback gate against a focused writable no-rect target.
@@ -657,6 +659,10 @@ run_self_tests() {
     || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-input-monitoring-revoked-word-harness" "$dry_run_log" \
     'COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED=1 .*accept_tap_acceptance .* word' \
+    || self_failures=$((self_failures + 1))
+  help_log="$self_test_dir/help.log"
+  "$0" --help >"$help_log" 2>&1
+  assert_log_contains "help-lists-allow-manual" "$help_log" '^  --allow-manual[[:space:]]' \
     || self_failures=$((self_failures + 1))
 
   skip_textedit_log="$self_test_dir/skip-textedit-dry-run.log"
