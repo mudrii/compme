@@ -373,6 +373,26 @@ mod tests {
     }
 
     #[test]
+    fn table_shortcodes_are_unique() {
+        // `lookup` resolves by `TABLE.iter().find(...)` — first match wins. Two
+        // entries sharing a shortcode would make the second permanently
+        // unreachable (its distinct glyph never served), yet the parity test
+        // above still passes because both iterations resolve to the first
+        // entry's identical shortcode. Pin uniqueness directly so a future
+        // table edit (merge, alias typo) that duplicates a code fails loudly.
+        // `thesaurus` guards the same find()-shadowing class; emoji must too.
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for entry in TABLE.iter() {
+            assert!(
+                seen.insert(entry.shortcode),
+                "duplicate shortcode {:?} shadows a later table entry",
+                entry.shortcode
+            );
+        }
+    }
+
+    #[test]
     fn exact_shortcode_suggests_its_emoji() {
         let s = suggest_default("nice work :tada").unwrap();
         assert_eq!(s.shortcode, "tada");

@@ -318,6 +318,33 @@ mod tests {
     }
 
     #[test]
+    fn unterminated_quote_credential_value_stops_at_whitespace() {
+        // The credential value pattern is `("[^"]*"|'[^']*'|[^\s,;&]+)`. A value
+        // opened with a quote but never closed does NOT match the quoted arm
+        // (no closing quote), so it falls to the bare `[^\s,;&]+` arm, which
+        // stops at the first space. The opening-quote-plus-first-word is
+        // redacted; any tail after the space survives. This pins that
+        // known-limitation so a regex change to the value pattern is a
+        // deliberate decision, not a silent leak regression.
+        let out = redact("password=\"hunter2 trailing secret");
+        assert!(
+            out.starts_with("password=[redacted-secret]"),
+            "opening-quoted first word must be redacted, got: {out}"
+        );
+        assert!(
+            !out.contains("hunter2"),
+            "the secret's first word must be gone, got: {out}"
+        );
+        // Documented gap: the post-space tail is NOT part of the credential
+        // value token and remains verbatim. If a future edit makes the value
+        // arm greedy across spaces, update this assertion consciously.
+        assert!(
+            out.contains("trailing secret"),
+            "post-space tail is outside the value token today, got: {out}"
+        );
+    }
+
+    #[test]
     fn card_redaction_covers_the_length_band_and_spares_short_luhn_runs() {
         // The card regex matches 13–19 digit runs; both band edges and the
         // below-floor direction need pins (all values are Luhn-valid, so the

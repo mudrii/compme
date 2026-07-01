@@ -590,6 +590,22 @@ mod tests {
     }
 
     #[test]
+    fn web_override_domain_enable_clears_a_parent_rule_that_blocks_a_subdomain() {
+        // The sibling test excludes then re-includes the *exact same* host
+        // (`docs.google.com`). This drives the harder case: exclude a *parent*
+        // domain (`google.com`) — which blocks every subdomain via the
+        // dot-boundary matcher — then re-include the parent and assert a
+        // *subdomain* host (`www.google.com`) becomes suggestable again. Pins
+        // that domain-Enable removes the covering parent rule, not just an
+        // exact-host entry, end-to-end through should_suggest's suffix match.
+        let mut p = Prefs::default();
+        apply(&mut p, "compme://setOverride?domain=google.com&excluded=true");
+        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("www.google.com"), 0));
+        apply(&mut p, "compme://setOverride?domain=google.com&enabled=true");
+        assert!(p.should_suggest(Some("com.apple.Safari"), Some("www.google.com"), 0));
+    }
+
+    #[test]
     fn web_override_app_enable_clears_a_prior_exclude() {
         // Enable must be a true allow: an excluded app becomes suggestable again
         // (excluded_apps short-circuits should_suggest, so a bare per-app enable

@@ -905,6 +905,29 @@ mod tests {
     }
 
     #[test]
+    fn an_unsigned_link_still_parses_when_a_trusted_key_is_configured() {
+        // Contract: a configured trust key gates the SIGNED path only; an
+        // unsigned link (no `sig=`) must still parse and surface as Unsigned so
+        // the caller can apply its own unsigned-link policy. Pin the branch with
+        // `Some(key)` present — the sibling test only drives it with `None`, so a
+        // refactor that consulted `trusted` before the signature check (rejecting
+        // all unsigned links whenever a key is pinned) would pass unnoticed.
+        assert_eq!(
+            parse_deep_link_with_trust(
+                "compme://setOverride?app=com.apple.Mail&enabled=true",
+                Some(&test_trusted_key()),
+            ),
+            Ok((
+                OverrideCommand {
+                    scope: Scope::App("com.apple.Mail".into()),
+                    action: OverrideAction::Enable,
+                },
+                LinkTrust::Unsigned,
+            ))
+        );
+    }
+
+    #[test]
     fn a_validly_signed_link_parses_as_signed_trust() {
         let url = signed_url("compme://setOverride?app=com.apple.TextEdit&excluded=true");
         assert_eq!(
