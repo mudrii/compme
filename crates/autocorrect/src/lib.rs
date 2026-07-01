@@ -63,12 +63,6 @@ pub fn correct(word: &str) -> Option<String> {
     Some(CasePattern::of(word.trim()).apply(correction))
 }
 
-/// Whether `word` is a known typo (cheap gate for auto/typo-fix triggering).
-pub fn is_typo(word: &str) -> bool {
-    let key = word.trim().to_lowercase();
-    !key.is_empty() && TYPOS.iter().any(|(typo, _)| *typo == key)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,13 +92,12 @@ mod tests {
         assert_eq!(correct("the"), None);
         assert_eq!(correct("receive"), None);
         assert_eq!(correct("hello"), None);
-        assert!(!is_typo("the"));
     }
 
     #[test]
     fn lookup_is_case_insensitive_and_trims() {
-        assert!(is_typo("TEH"));
-        assert!(is_typo("  teh  "));
+        assert!(correct("TEH").is_some());
+        assert!(correct("  teh  ").is_some());
         assert_eq!(correct("  Teh  ").as_deref(), Some("The"));
     }
 
@@ -112,7 +105,7 @@ mod tests {
     fn empty_input_is_none() {
         assert_eq!(correct(""), None);
         assert_eq!(correct("   "), None);
-        assert!(!is_typo(""));
+        assert!(correct("").is_none());
     }
 
     #[test]
@@ -145,7 +138,7 @@ mod tests {
             "cant", "wont", "weve", "its", "were", "the", "calender", "address",
         ] {
             assert_eq!(correct(word), None, "{word}");
-            assert!(!is_typo(word), "{word}");
+            assert!(correct(word).is_none(), "{word}");
         }
     }
 
@@ -200,13 +193,13 @@ mod tests {
     #[test]
     fn multibyte_words_are_safe_and_never_falsely_corrected() {
         // The typo table is all-ASCII, so a multibyte word's lowercased key can
-        // never match — `correct`/`is_typo` must return None/false without
+        // never match — `correct` must return None without
         // panicking on the UTF-8 (the `to_lowercase` and `CasePattern::of` paths
         // both reason over scalars, not bytes). Covers accented words, a German ß
         // (whose uppercase expands to two chars), and CJK.
         for word in ["café", "naïve", "Straße", "résumé", "日本語", "Élan"] {
             assert_eq!(correct(word), None, "{word}");
-            assert!(!is_typo(word), "{word}");
+            assert!(correct(word).is_none(), "{word}");
         }
         // A multibyte prefix glued onto an ASCII typo also can't match the bare
         // key, and the surrounding case logic must not panic.

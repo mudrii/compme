@@ -149,14 +149,6 @@ pub fn to_british(word: &str) -> Option<String> {
     Some(CasePattern::of(word.trim()).apply(british))
 }
 
-/// Whether `word` is a known American-only form with a British equivalent (cheap
-/// gate for British-English triggering). Predicate↔table parity:
-/// `is_americanism(w) == true` iff `to_british(w)` is `Some`.
-pub fn is_americanism(word: &str) -> bool {
-    let key = word.trim().to_lowercase();
-    !key.is_empty() && US_TO_UK.iter().any(|(us, _)| *us == key)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,7 +195,6 @@ mod tests {
             "running",
         ] {
             assert_eq!(to_british(word), None, "{word}");
-            assert!(!is_americanism(word), "{word}");
         }
     }
 
@@ -229,14 +220,13 @@ mod tests {
             "artifacts",
         ] {
             assert_eq!(to_british(word), None, "{word}");
-            assert!(!is_americanism(word), "{word}");
         }
     }
 
     #[test]
     fn lookup_is_case_insensitive_and_trims() {
-        assert!(is_americanism("COLOR"));
-        assert!(is_americanism("  color  "));
+        assert!(to_british("COLOR").is_some());
+        assert!(to_british("  color  ").is_some());
         assert_eq!(to_british("  Color  ").as_deref(), Some("Colour"));
     }
 
@@ -245,15 +235,14 @@ mod tests {
         // `to_british` lowercases the query and looks it up; on a miss it
         // short-circuits (`?`) BEFORE the CasePattern re-application line. Every
         // table key is ASCII, so a word with a multibyte char can never match —
-        // it must be a clean lookup miss (None) in both to_british and
-        // is_americanism, with no panic on the non-ASCII path (lowercasing must
-        // not byte-slice into a codepoint). This does NOT exercise CasePattern
-        // re-application on a multibyte value — that path is unreachable here
-        // (no key matches) and is covered by textcase's own CasePattern tests.
+        // it must be a clean lookup miss (None) in to_british, with no panic on
+        // the non-ASCII path (lowercasing must not byte-slice into a codepoint).
+        // This does NOT exercise CasePattern re-application on a multibyte value
+        // — that path is unreachable here (no key matches) and is covered by
+        // textcase's own CasePattern tests.
         assert_eq!(to_british("Élan"), None);
         assert_eq!(to_british("élan"), None);
         assert_eq!(to_british("Ünder"), None);
-        assert!(!is_americanism("Élan"));
         // A trailing-multibyte query is likewise a clean miss (lowercasing keeps
         // the multibyte tail, so it never equals an ASCII key).
         assert_eq!(to_british("coloré"), None);
@@ -263,7 +252,6 @@ mod tests {
     fn empty_input_is_none() {
         assert_eq!(to_british(""), None);
         assert_eq!(to_british("   "), None);
-        assert!(!is_americanism(""));
     }
 
     #[test]
@@ -271,10 +259,9 @@ mod tests {
         // Lookup is whole-word: the query is trimmed and lowercased, then compared
         // for equality against single-word table keys. A two-word phrase like
         // "color organize" — though each word alone is an americanism — never
-        // equals any key, so it is a clean miss in both entry points. Splitting on
-        // interior whitespace is the host's job, not this crate's.
+        // equals any key, so it is a clean miss. Splitting on interior whitespace
+        // is the host's job, not this crate's.
         assert_eq!(to_british("color organize"), None);
-        assert!(!is_americanism("color organize"));
     }
 
     #[test]
@@ -283,17 +270,6 @@ mod tests {
         // job. Pin the contract so a future change is deliberate.
         assert_eq!(to_british("color."), None);
         assert_eq!(to_british("color,"), None);
-    }
-
-    #[test]
-    fn predicate_matches_table_parity() {
-        // is_americanism(w) is Some-iff for every table key (and a sample miss).
-        for (us, _) in US_TO_UK {
-            assert!(is_americanism(us), "{us}");
-            assert!(to_british(us).is_some(), "{us}");
-        }
-        assert!(!is_americanism("colour"));
-        assert!(to_british("colour").is_none());
     }
 
     #[test]
