@@ -368,10 +368,12 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // is fail-loud — it aborts the dispatch rather than papering
                     // over a broken accessibility tree with a fallback anchor.
                     let anchor = if self.mirror_mode {
-                        self.adapter.popup_anchor(&field).and_then(|rect| match rect {
-                            Some(rect) => Ok(Some(rect)),
-                            None => self.adapter.caret_rect(&field),
-                        })
+                        self.adapter
+                            .popup_anchor(&field)
+                            .and_then(|rect| match rect {
+                                Some(rect) => Ok(Some(rect)),
+                                None => self.adapter.caret_rect(&field),
+                            })
                     } else {
                         self.adapter.caret_rect(&field).and_then(|rect| match rect {
                             Some(rect) => Ok(Some(rect)),
@@ -2040,7 +2042,9 @@ mod tests {
         engine.on_focus(field()).unwrap();
         engine.on_text_changed(typed("x", 1, 0)).unwrap();
         let requests = engine.on_tick(500).unwrap();
-        engine.on_completion(&requests[0], "hi there".into()).unwrap();
+        engine
+            .on_completion(&requests[0], "hi there".into())
+            .unwrap();
         // Drop the setup noise so we observe only the force-show effects.
         overlay.calls.lock().unwrap().clear();
         visible.lock().unwrap().clear();
@@ -2079,7 +2083,10 @@ mod tests {
 
         let follow = engine.on_force_show().unwrap();
 
-        assert!(follow.is_empty(), "no follow-up requests on an empty force-show");
+        assert!(
+            follow.is_empty(),
+            "no follow-up requests on an empty force-show"
+        );
         assert!(
             overlay.calls.lock().unwrap().is_empty(),
             "the overlay must not be touched when there is nothing to force-show"

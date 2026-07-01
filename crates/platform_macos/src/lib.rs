@@ -10961,7 +10961,10 @@ mod tests {
         .expect("resolve caret");
 
         assert_eq!(rect, Some(chromium_marker));
-        assert!(!range_called, "range fallback must not run for a usable marker");
+        assert!(
+            !range_called,
+            "range fallback must not run for a usable marker"
+        );
     }
 
     #[test]

@@ -122,7 +122,7 @@ assert_pipeline_evidence() {
   if [ "$readback_mode" = "real" ]; then
     document_bytes="$(printf '%s' "$document_text" | wc -c | tr -d '[:space:]')"
     baseline_bytes="$(printf '%s' "$expected_text" | wc -c | tr -d '[:space:]')"
-    candidate_bytes="$(sed -n 's/.*gen=[0-9][0-9]* candidate_lengths=\[\([0-9][0-9]*\).*/\1/p' "$log_file" | tail -n 1)"
+    candidate_bytes="$(sed -n 's/.*gen=[0-9][0-9]* .*candidate_lengths=\[\([0-9][0-9]*\).*/\1/p' "$log_file" | tail -n 1)"
     document_delta=$((document_bytes - baseline_bytes))
     if [ "$document_delta" -le 0 ]; then
       echo "E2E: document did not grow after real-model accept [FAIL]"
@@ -271,7 +271,7 @@ run_self_tests() {
   printf '%s\n' \
     'compme: focus TextEdit' \
     'compme: request gen=7 prompt_chars=32 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true' \
-    'compme: completion gen=7 candidate_count=1 candidate_lengths=[8]' \
+    'compme: completion gen=7 candidate_count=1 candidate_lengths=[11]' \
     'compme: accept Full' >"$pipeline_log"
   if assert_pipeline_evidence 'prefix STUB-COMPLETE' 'STUB-COMPLETE' "$pipeline_log" full 0 >/dev/null; then
     echo "PASS self-test-e2e-pipeline-evidence-full-success"
@@ -290,7 +290,8 @@ run_self_tests() {
     'compme: focus TextEdit' \
     'compme: request gen=7 prompt_chars=32 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true' \
     'compme: completion gen=7 candidate_count=1 candidate_lengths=[8]' \
-    'compme: accept Word' >"$word_pipeline_log"
+    'compme: accept Word' \
+    'compme: accept Full' >"$word_pipeline_log"
   if assert_pipeline_evidence 'prompt baseline ok' 'prompt baseline' "$word_pipeline_log" word 0 real >/dev/null; then
     echo "PASS self-test-e2e-pipeline-evidence-real-word-accepts-bounded-growth"
   else

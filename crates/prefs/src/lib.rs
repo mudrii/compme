@@ -599,9 +599,15 @@ mod tests {
         // that domain-Enable removes the covering parent rule, not just an
         // exact-host entry, end-to-end through should_suggest's suffix match.
         let mut p = Prefs::default();
-        apply(&mut p, "compme://setOverride?domain=google.com&excluded=true");
+        apply(
+            &mut p,
+            "compme://setOverride?domain=google.com&excluded=true",
+        );
         assert!(!p.should_suggest(Some("com.apple.Safari"), Some("www.google.com"), 0));
-        apply(&mut p, "compme://setOverride?domain=google.com&enabled=true");
+        apply(
+            &mut p,
+            "compme://setOverride?domain=google.com&enabled=true",
+        );
         assert!(p.should_suggest(Some("com.apple.Safari"), Some("www.google.com"), 0));
     }
 

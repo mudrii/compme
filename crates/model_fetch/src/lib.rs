@@ -1023,7 +1023,10 @@ mod tests {
             body,
             "overlong part must be discarded via truncate-restart, not appended"
         );
-        assert!(!part.exists(), "the part is renamed into dest, not left behind");
+        assert!(
+            !part.exists(),
+            "the part is renamed into dest, not left behind"
+        );
         let _ = std::fs::remove_file(&dest);
     }
 
@@ -1056,7 +1059,10 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         match res {
             Err(FetchError::Io(_)) => {
-                assert!(part.exists(), "part kept as the resume base when rename fails");
+                assert!(
+                    part.exists(),
+                    "part kept as the resume base when rename fails"
+                );
                 assert!(!dest.exists(), "dest never appears when the rename fails");
             }
             // Root ignores dir perms: rename succeeds, the download completes.

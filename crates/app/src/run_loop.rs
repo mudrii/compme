@@ -290,7 +290,9 @@ impl Config {
                 .and_then(|raw| platform_macos::parse_accept_key(&raw)),
             accept_full_key: lookup("COMPME_ACCEPT_FULL_KEY")
                 .and_then(|raw| platform_macos::parse_accept_key(&raw)),
-            force_activate_key: lookup("COMPME_FORCE_ACTIVATE").filter(|s| !s.is_empty()),
+            force_activate_key: lookup("COMPME_FORCE_ACTIVATE_KEY")
+                .or_else(|| lookup("COMPME_FORCE_ACTIVATE"))
+                .filter(|s| !s.is_empty()),
             toggle_app_key: lookup("COMPME_TOGGLE_APP_KEY").filter(|s| !s.is_empty()),
             toggle_global_key: lookup("COMPME_TOGGLE_GLOBAL_KEY").filter(|s| !s.is_empty()),
             acceptance_pid: lookup("COMPME_ACCEPTANCE_PID").and_then(|raw| raw.parse::<i32>().ok()),
@@ -2385,9 +2387,9 @@ fn build_settings_flags(
         personalization_sender_email: Arc::new(Mutex::new(
             config.personalization.sender.email.clone(),
         )),
-        personalization_strength_index: Arc::new(AtomicUsize::new(
-            personalization_strength_index(config.personalization.strength),
-        )),
+        personalization_strength_index: Arc::new(AtomicUsize::new(personalization_strength_index(
+            config.personalization.strength,
+        ))),
         personalization_strength_titles: personalization_strength_titles(),
     }
 }
@@ -2454,13 +2456,17 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
 /// must be added here or its shadow goes unwarned (review-c111/c127; the
 /// len-pinned test below backstops this). Deliberately conservative: a key
 /// set to "" still warns — it parses falsy but still occupies the env layer.
-const SWITCH_KEYS: [&str; 17] = [
+const SWITCH_KEYS: [&str; 28] = [
     "COMPME_ENABLED",
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
     "COMPME_TRAILING_SPACE",
     "COMPME_CLIPBOARD_CONTEXT",
     "COMPME_SCREEN_CONTEXT",
+    "COMPME_INSTRUCTIONS",
+    "COMPME_SENDER_NAME",
+    "COMPME_SENDER_EMAIL",
+    "COMPME_STRENGTH",
     "COMPME_EMOJI",
     "COMPME_EMOJI_SKIN_TONE",
     "COMPME_EMOJI_GENDER",
@@ -2469,6 +2475,13 @@ const SWITCH_KEYS: [&str; 17] = [
     "COMPME_EXCLUDED_DOMAINS",
     "COMPME_ENABLED_APPS",
     "COMPME_DISABLED_APPS",
+    "COMPME_MIDLINE_ON_APPS",
+    "COMPME_MIDLINE_OFF_APPS",
+    "COMPME_AUTOCORRECT_ON_APPS",
+    "COMPME_AUTOCORRECT_OFF_APPS",
+    "COMPME_THESAURUS_ON_APPS",
+    "COMPME_THESAURUS_OFF_APPS",
+    "COMPME_TAB_DISABLED_APPS",
     // License acceptances persist on the prompt's Accept; an env shadow
     // resurrects the un-accepted state at relaunch → surprise re-prompt
     // (fail-closed, but confusing without the warning) (review-c127).
@@ -3719,7 +3732,10 @@ pub fn run() -> Result<(), String> {
                         // re-emits the held candidate verbatim (no rotation, no
                         // RequestCompletion); a no-op when nothing is held.
                         eprintln!("compme: shortcut force-activate (re-show pending)");
-                        offer_all(&mut latest, log_err("on_force_show", engine.on_force_show()));
+                        offer_all(
+                            &mut latest,
+                            log_err("on_force_show", engine.on_force_show()),
+                        );
                     }
                     ShortcutAction::ToggleApp => {
                         // Flip per-app Enabled for the focused app, mirroring the
@@ -4872,7 +4888,10 @@ mod tests {
 
         // Titles cover every stop in order, so the popup index always addresses
         // a real Strength.
-        assert_eq!(personalization_strength_titles().len(), Strength::STOPS.len());
+        assert_eq!(
+            personalization_strength_titles().len(),
+            Strength::STOPS.len()
+        );
     }
 
     #[test]
@@ -5215,7 +5234,10 @@ mod tests {
         assert_eq!(map.get("COMPME_ENABLED_APPS"), None);
         assert_eq!(map.get("COMPME_TAB_DISABLED_APPS"), Some(&app.to_string()));
         assert_eq!(map.get("COMPME_MIDLINE_ON_APPS"), Some(&app.to_string()));
-        assert_eq!(map.get("COMPME_AUTOCORRECT_OFF_APPS"), Some(&app.to_string()));
+        assert_eq!(
+            map.get("COMPME_AUTOCORRECT_OFF_APPS"),
+            Some(&app.to_string())
+        );
 
         let reloaded = build_prefs(&|key| map.get(key).cloned());
         let p = &reloaded.per_app[app];
@@ -5998,6 +6020,10 @@ mod tests {
             "COMPME_TRAILING_SPACE",
             "COMPME_CLIPBOARD_CONTEXT",
             "COMPME_SCREEN_CONTEXT",
+            "COMPME_INSTRUCTIONS",
+            "COMPME_SENDER_NAME",
+            "COMPME_SENDER_EMAIL",
+            "COMPME_STRENGTH",
             "COMPME_EMOJI",
             "COMPME_EMOJI_SKIN_TONE",
             "COMPME_EMOJI_GENDER",
@@ -6006,6 +6032,13 @@ mod tests {
             "COMPME_EXCLUDED_DOMAINS",
             "COMPME_ENABLED_APPS",
             "COMPME_DISABLED_APPS",
+            "COMPME_MIDLINE_ON_APPS",
+            "COMPME_MIDLINE_OFF_APPS",
+            "COMPME_AUTOCORRECT_ON_APPS",
+            "COMPME_AUTOCORRECT_OFF_APPS",
+            "COMPME_THESAURUS_ON_APPS",
+            "COMPME_THESAURUS_OFF_APPS",
+            "COMPME_TAB_DISABLED_APPS",
             "COMPME_LICENSE_ACCEPTED",
             "COMPME_ACCEPT_WORD_KEY",
             "COMPME_ACCEPT_FULL_KEY",
@@ -6015,7 +6048,41 @@ mod tests {
                 "{key} must warn when env shadows persisted config"
             );
         }
-        assert_eq!(every_warning.len(), 17);
+        assert_eq!(every_warning.len(), 28);
+    }
+
+    #[test]
+    fn force_activate_parses_documented_key_and_legacy_alias() {
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPME_FORCE_ACTIVATE_KEY", "ctrl+49")]))
+                .force_activate_key
+                .as_deref(),
+            Some("ctrl+49")
+        );
+        assert_eq!(
+            Config::from_lookup(lookup(&[("COMPME_FORCE_ACTIVATE", "shift+49")]))
+                .force_activate_key
+                .as_deref(),
+            Some("shift+49")
+        );
+        let config = Config::from_lookup(lookup(&[
+            ("COMPME_FORCE_ACTIVATE_KEY", "ctrl+49"),
+            ("COMPME_FORCE_ACTIVATE", "shift+49"),
+        ]));
+        assert_eq!(
+            config.force_activate_key.as_deref(),
+            Some("ctrl+49"),
+            "documented key spelling wins over the legacy alias"
+        );
+        let bindings = platform_macos::ShortcutBindings::from_config(
+            config.force_activate_key.as_deref(),
+            None,
+            None,
+        );
+        assert_eq!(
+            bindings.force_activate,
+            platform_macos::parse_accept_key("ctrl+49")
+        );
     }
 
     #[test]
@@ -10058,17 +10125,29 @@ mod tests {
             Some((vec!["I".into()], 1))
         );
         // Words that merely start with "i" are untouched (no false fix).
-        assert_eq!(replacement_offer("in", &on, on.autocorrect, on.thesaurus), None);
-        assert_eq!(replacement_offer("idea", &on, on.autocorrect, on.thesaurus), None);
+        assert_eq!(
+            replacement_offer("in", &on, on.autocorrect, on.thesaurus),
+            None
+        );
+        assert_eq!(
+            replacement_offer("idea", &on, on.autocorrect, on.thesaurus),
+            None
+        );
         // Contraction limitation pinned: `trailing_word` tokenizes on the
         // apostrophe (it takes only alphabetic chars), so "i'm" reaches the
         // pipeline as "m" and no grammar fix fires — even though
         // grammar::capitalize_pronoun("i'm") itself returns "I'm". Capitalizing
         // contractions would need the caret-token model to include apostrophes.
-        assert_eq!(replacement_offer("i'm", &on, on.autocorrect, on.thesaurus), None);
+        assert_eq!(
+            replacement_offer("i'm", &on, on.autocorrect, on.thesaurus),
+            None
+        );
         // Gated off: autocorrect disabled -> no grammar fix either.
         let off = Config::from_lookup(lookup(&[("COMPME_AUTOCORRECT", "0")]));
-        assert_eq!(replacement_offer("i", &off, off.autocorrect, off.thesaurus), None);
+        assert_eq!(
+            replacement_offer("i", &off, off.autocorrect, off.thesaurus),
+            None
+        );
     }
 
     #[test]
@@ -11237,18 +11316,10 @@ mod tests {
         prefs.default_enabled = false;
         assert!(!app_enabled_baseline(&prefs, "com.none"));
         // Override beats default in both directions.
-        prefs
-            .per_app
-            .entry("com.on".into())
-            .or_default()
-            .enabled = Some(true);
+        prefs.per_app.entry("com.on".into()).or_default().enabled = Some(true);
         assert!(app_enabled_baseline(&prefs, "com.on")); // override true vs default false
         prefs.default_enabled = true;
-        prefs
-            .per_app
-            .entry("com.off".into())
-            .or_default()
-            .enabled = Some(false);
+        prefs.per_app.entry("com.off".into()).or_default().enabled = Some(false);
         assert!(!app_enabled_baseline(&prefs, "com.off")); // override false vs default true
     }
 
@@ -11285,12 +11356,18 @@ mod tests {
             let start = app_enabled_baseline(&prefs, app);
             // One toggle flips the effective enabled state and pins an override.
             let after_first = one_toggle(&mut prefs);
-            assert_eq!(after_first, !start, "first toggle must flip (seed {seed:?})");
+            assert_eq!(
+                after_first, !start,
+                "first toggle must flip (seed {seed:?})"
+            );
             assert_eq!(prefs.per_app[app].enabled, Some(!start));
             assert_eq!(app_enabled_baseline(&prefs, app), !start);
             // Second toggle converges back — no drift, regardless of baseline.
             let after_second = one_toggle(&mut prefs);
-            assert_eq!(after_second, start, "second toggle must converge (seed {seed:?})");
+            assert_eq!(
+                after_second, start,
+                "second toggle must converge (seed {seed:?})"
+            );
             assert_eq!(app_enabled_baseline(&prefs, app), start);
         }
     }
@@ -11301,15 +11378,45 @@ mod tests {
         // Gap 3: editing the FOCUSED app's Enabled->off dismisses; editing a
         // DIFFERENT app's row does not; and only the Enabled->off edge fires.
         // Focused app == "com.a".
-        assert!(apps_edit_dismisses_focused(Enabled, false, Some("com.a"), "com.a"));
+        assert!(apps_edit_dismisses_focused(
+            Enabled,
+            false,
+            Some("com.a"),
+            "com.a"
+        ));
         // Different app edited while focused on com.a -> no dismiss.
-        assert!(!apps_edit_dismisses_focused(Enabled, false, Some("com.a"), "com.b"));
+        assert!(!apps_edit_dismisses_focused(
+            Enabled,
+            false,
+            Some("com.a"),
+            "com.b"
+        ));
         // Enabling (on=true) the focused app does not dismiss.
-        assert!(!apps_edit_dismisses_focused(Enabled, true, Some("com.a"), "com.a"));
+        assert!(!apps_edit_dismisses_focused(
+            Enabled,
+            true,
+            Some("com.a"),
+            "com.a"
+        ));
         // A non-Enabled field edit on the focused app does not dismiss.
-        assert!(!apps_edit_dismisses_focused(TabDisabled, false, Some("com.a"), "com.a"));
-        assert!(!apps_edit_dismisses_focused(MidLine, false, Some("com.a"), "com.a"));
-        assert!(!apps_edit_dismisses_focused(Autocorrect, false, Some("com.a"), "com.a"));
+        assert!(!apps_edit_dismisses_focused(
+            TabDisabled,
+            false,
+            Some("com.a"),
+            "com.a"
+        ));
+        assert!(!apps_edit_dismisses_focused(
+            MidLine,
+            false,
+            Some("com.a"),
+            "com.a"
+        ));
+        assert!(!apps_edit_dismisses_focused(
+            Autocorrect,
+            false,
+            Some("com.a"),
+            "com.a"
+        ));
         // No focused app at all -> nothing to dismiss.
         assert!(!apps_edit_dismisses_focused(Enabled, false, None, "com.a"));
     }

@@ -1138,14 +1138,54 @@ impl PaneRect {
 /// but geometry is verified here).
 mod pers_layout {
     use super::PaneRect;
-    pub const GI_LABEL: PaneRect = PaneRect { x: 20.0, y: 300.0, w: 440.0, h: 20.0 };
-    pub const GI_FIELD: PaneRect = PaneRect { x: 20.0, y: 170.0, w: 460.0, h: 124.0 };
-    pub const NAME_LABEL: PaneRect = PaneRect { x: 20.0, y: 142.0, w: 120.0, h: 22.0 };
-    pub const NAME_FIELD: PaneRect = PaneRect { x: 145.0, y: 140.0, w: 335.0, h: 24.0 };
-    pub const EMAIL_LABEL: PaneRect = PaneRect { x: 20.0, y: 107.0, w: 120.0, h: 22.0 };
-    pub const EMAIL_FIELD: PaneRect = PaneRect { x: 145.0, y: 105.0, w: 335.0, h: 24.0 };
-    pub const STRENGTH_LABEL: PaneRect = PaneRect { x: 20.0, y: 67.0, w: 140.0, h: 22.0 };
-    pub const STRENGTH_POPUP: PaneRect = PaneRect { x: 165.0, y: 64.0, w: 220.0, h: 26.0 };
+    pub const GI_LABEL: PaneRect = PaneRect {
+        x: 20.0,
+        y: 300.0,
+        w: 440.0,
+        h: 20.0,
+    };
+    pub const GI_FIELD: PaneRect = PaneRect {
+        x: 20.0,
+        y: 170.0,
+        w: 460.0,
+        h: 124.0,
+    };
+    pub const NAME_LABEL: PaneRect = PaneRect {
+        x: 20.0,
+        y: 142.0,
+        w: 120.0,
+        h: 22.0,
+    };
+    pub const NAME_FIELD: PaneRect = PaneRect {
+        x: 145.0,
+        y: 140.0,
+        w: 335.0,
+        h: 24.0,
+    };
+    pub const EMAIL_LABEL: PaneRect = PaneRect {
+        x: 20.0,
+        y: 107.0,
+        w: 120.0,
+        h: 22.0,
+    };
+    pub const EMAIL_FIELD: PaneRect = PaneRect {
+        x: 145.0,
+        y: 105.0,
+        w: 335.0,
+        h: 24.0,
+    };
+    pub const STRENGTH_LABEL: PaneRect = PaneRect {
+        x: 20.0,
+        y: 67.0,
+        w: 140.0,
+        h: 22.0,
+    };
+    pub const STRENGTH_POPUP: PaneRect = PaneRect {
+        x: 165.0,
+        y: 64.0,
+        w: 220.0,
+        h: 26.0,
+    };
     /// Every control, for the geometry test.
     #[cfg(test)]
     pub const ALL: [(&str, PaneRect); 8] = [
@@ -1175,7 +1215,12 @@ mod pers_layout {
 mod apps_layout {
     use super::{PaneRect, APP_POLICY_FIELDS};
     /// "Recorded inputs by app" title.
-    pub const HEADER: PaneRect = PaneRect { x: 20.0, y: 300.0, w: 300.0, h: 24.0 };
+    pub const HEADER: PaneRect = PaneRect {
+        x: 20.0,
+        y: 300.0,
+        w: 300.0,
+        h: 24.0,
+    };
     /// Column-header row, just above the first data row.
     pub const COL_HEADER_Y: f64 = 278.0;
     pub const COL_HEADER_H: f64 = 16.0;
@@ -1203,16 +1248,36 @@ mod apps_layout {
         ROW_BASE_Y - row as f64 * ROW_STEP
     }
     pub fn name_rect(row: usize) -> PaneRect {
-        PaneRect { x: NAME_X, y: row_y(row), w: NAME_W, h: NAME_H }
+        PaneRect {
+            x: NAME_X,
+            y: row_y(row),
+            w: NAME_W,
+            h: NAME_H,
+        }
     }
     pub fn checkbox_rect(row: usize, field: usize) -> PaneRect {
-        PaneRect { x: COL_X[field], y: row_y(row), w: COL_W, h: CB_H }
+        PaneRect {
+            x: COL_X[field],
+            y: row_y(row),
+            w: COL_W,
+            h: CB_H,
+        }
     }
     pub fn delete_rect(row: usize) -> PaneRect {
-        PaneRect { x: DELETE_X, y: row_y(row), w: DELETE_W, h: DELETE_H }
+        PaneRect {
+            x: DELETE_X,
+            y: row_y(row),
+            w: DELETE_W,
+            h: DELETE_H,
+        }
     }
     pub fn col_header_rect(field: usize) -> PaneRect {
-        PaneRect { x: COL_X[field], y: COL_HEADER_Y, w: COL_W, h: COL_HEADER_H }
+        PaneRect {
+            x: COL_X[field],
+            y: COL_HEADER_Y,
+            w: COL_W,
+            h: COL_HEADER_H,
+        }
     }
 }
 
@@ -1380,7 +1445,11 @@ fn build_window(
     {
         let general = &pane_views[1];
         let rows: [(&str, &Arc<AtomicBool>, objc2::runtime::Sel); 4] = [
-            ("Enable completions", &flags.general_enabled, sel!(toggleEnabled:)),
+            (
+                "Enable completions",
+                &flags.general_enabled,
+                sel!(toggleEnabled:),
+            ),
             (
                 "Mid-line completions (show even with text after the cursor)",
                 &flags.labs_midline,
@@ -1480,8 +1549,7 @@ fn build_window(
 
         // Sender name + email rows (templated into the prompt as the writer's
         // identity). Two single-line editable fields, same wiring.
-        let name_label =
-            NSTextField::labelWithString(&NSString::from_str("Your name:"), mtm);
+        let name_label = NSTextField::labelWithString(&NSString::from_str("Your name:"), mtm);
         name_label.setFrame(pers_layout::NAME_LABEL.ns());
         pers.addSubview(&name_label);
         let name_field = NSTextField::new(mtm);
@@ -1502,8 +1570,7 @@ fn build_window(
         }
         pers.addSubview(&name_field);
 
-        let email_label =
-            NSTextField::labelWithString(&NSString::from_str("Your email:"), mtm);
+        let email_label = NSTextField::labelWithString(&NSString::from_str("Your email:"), mtm);
         email_label.setFrame(pers_layout::EMAIL_LABEL.ns());
         pers.addSubview(&email_label);
         let email_field = NSTextField::new(mtm);
@@ -2095,7 +2162,14 @@ mod tests {
                 assert!(
                     !a.intersects(*b),
                     "{na} overlaps {nb}: {na}=({},{},{},{}) {nb}=({},{},{},{})",
-                    a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h
+                    a.x,
+                    a.y,
+                    a.w,
+                    a.h,
+                    b.x,
+                    b.y,
+                    b.w,
+                    b.h
                 );
             }
         }
@@ -2145,7 +2219,14 @@ mod tests {
                 assert!(
                     !a.intersects(*b),
                     "{na} overlaps {nb}: ({},{},{},{}) vs ({},{},{},{})",
-                    a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h
+                    a.x,
+                    a.y,
+                    a.w,
+                    a.h,
+                    b.x,
+                    b.y,
+                    b.w,
+                    b.h
                 );
             }
         }
@@ -2246,7 +2327,9 @@ mod tests {
         // each with no gaps or collisions, so two distinct (row, field) cells can
         // never share a tag (which would alias two checkboxes onto one app slot).
         let mut tags: Vec<usize> = (0..APPS_ROWS)
-            .flat_map(|row| (0..APP_POLICY_FIELDS).map(move |field| row * APP_POLICY_FIELDS + field))
+            .flat_map(|row| {
+                (0..APP_POLICY_FIELDS).map(move |field| row * APP_POLICY_FIELDS + field)
+            })
             .collect();
         let count = tags.len();
         tags.sort_unstable();

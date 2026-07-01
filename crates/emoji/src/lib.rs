@@ -741,7 +741,10 @@ mod tests {
             SkinTone::MediumDark,
             SkinTone::Dark,
         ];
-        for entry in TABLE.iter().filter(|e| !e.skin_tone && e.gendered.is_none()) {
+        for entry in TABLE
+            .iter()
+            .filter(|e| !e.skin_tone && e.gendered.is_none())
+        {
             for tone in tones {
                 let prefs = EmojiPrefs {
                     skin_tone: tone,
@@ -782,11 +785,7 @@ mod tests {
                     ..Default::default()
                 };
                 let s = suggest(&format!(":{}", entry.shortcode), &prefs).unwrap();
-                assert_eq!(
-                    s.glyph, expected,
-                    "{:?} tone {tone:?}",
-                    entry.shortcode
-                );
+                assert_eq!(s.glyph, expected, "{:?} tone {tone:?}", entry.shortcode);
             }
         }
     }

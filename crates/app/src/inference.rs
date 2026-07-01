@@ -1199,7 +1199,9 @@ mod tests {
         // with the newly-written profile — a panicking read would drop the
         // outcome and hang recv, so a steered outcome proves the read survived.
         inference.submit(request("Ahoy", 1));
-        let outcome = inference.recv_outcome().expect("worker served despite poison");
+        let outcome = inference
+            .recv_outcome()
+            .expect("worker served despite poison");
         assert!(
             outcome.candidates[0].contains("Write tersely."),
             "worker read recovered the poisoned lock and steered with set_profile: {:?}",

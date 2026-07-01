@@ -2078,12 +2078,10 @@ mod tests {
         // would pass every other force_show_* test yet re-show the already-typed
         // word here.
         let mut machine = showing_three_words(); // "world there friend"
-        // Partially accept the first word; the tail "there friend" stays held.
+                                                 // Partially accept the first word; the tail "there friend" stays held.
         let accept = machine.on_event(Event::AcceptWord);
         assert!(
-            accept
-                .iter()
-                .any(|c| matches!(c, Command::Insert { .. })),
+            accept.iter().any(|c| matches!(c, Command::Insert { .. })),
             "AcceptWord should insert the accepted word: {accept:?}"
         );
         assert!(

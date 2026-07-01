@@ -794,9 +794,7 @@ mod tests {
         // Signed links ALSO prompt today (no non-reversible commands exist;
         // the silent path is reserved and unreachable until they do).
         let signed = prompt_decision_for_link(&command, LinkTrust::Signed);
-        assert!(
-            matches!(signed, PromptDecision { trust, .. } if trust.contains("signed"))
-        );
+        assert!(matches!(signed, PromptDecision { trust, .. } if trust.contains("signed")));
     }
 
     #[test]

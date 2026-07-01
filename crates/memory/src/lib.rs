@@ -111,10 +111,9 @@ impl MemoryStore {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    if let Err(e) = std::fs::set_permissions(
-                        parent,
-                        std::fs::Permissions::from_mode(0o700),
-                    ) {
+                    if let Err(e) =
+                        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                    {
                         eprintln!(
                             "compme: failed to tighten permissions on {}: {e}",
                             parent.display()
@@ -1253,7 +1252,10 @@ mod tests {
         }
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(mode, 0o700, "memory parent dir must be owner-only, got {mode:o}");
+        assert_eq!(
+            mode, 0o700,
+            "memory parent dir must be owner-only, got {mode:o}"
+        );
     }
 
     #[test]
