@@ -1233,6 +1233,29 @@ mod tests {
         assert_eq!(mode, 0o600, "db file must be owner-only, got {mode:o}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn open_tightens_a_freshly_created_parent_dir_to_0700() {
+        // open() chmods a newly-created parent directory to 0700 so the db and
+        // its WAL/SHM sidecars aren't group/world-traversable. Only the 0600
+        // *file* modes are pinned elsewhere — nothing asserts the *directory*
+        // mode, so loosening it to 0755 or dropping the chmod (which is only
+        // logged on failure, never fatal) would stay green. Pin it.
+        use std::os::unix::fs::PermissionsExt;
+        let mut suffix = [0u8; 8];
+        getrandom::getrandom(&mut suffix).unwrap();
+        let hex: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
+        let dir = std::env::temp_dir().join(format!("cm-memory-dirmode-{hex}"));
+        let path = dir.join("store.db");
+        {
+            let store = MemoryStore::open(&path, &key(60), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "secret").unwrap();
+        }
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(mode, 0o700, "memory parent dir must be owner-only, got {mode:o}");
+    }
+
     #[test]
     fn open_creates_missing_parent_directory() {
         // open() must create the parent dir; otherwise SQLite errors and the

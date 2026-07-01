@@ -497,6 +497,25 @@ mod tests {
     }
 
     #[test]
+    fn terminal_skips_user_executable_path_invocations() {
+        // `is_users_executable_path` (line ~242) treats BOTH `/Users/<u>/bin/...`
+        // and `/Users/<u>/.local/bin/...` as shell path invocations, so an AI
+        // prompt must NOT pop over them. Existing path tests only exercise the
+        // `.local/bin/` arm, so deleting the `bin/` operand of the `||` would go
+        // unnoticed. Pin each arm as the deciding branch (one case per operand):
+        // dropping either arm flips its line to a spurious activation.
+        let term = "com.googlecode.iterm2";
+        assert!(
+            !terminal_prompt_activates(term, "/Users/mudrii/bin/tool input output"),
+            "a ~/bin executable invocation is a shell command, not a prompt"
+        );
+        assert!(
+            !terminal_prompt_activates(term, "/Users/mudrii/.local/bin/tool input output"),
+            "a ~/.local/bin executable invocation is a shell command, not a prompt"
+        );
+    }
+
+    #[test]
     fn terminal_activates_for_minimal_three_word_prompt() {
         // Exactly three lowercase-prose tokens with a non-shell leader is the
         // smallest accepted prompt: pins the `tokens.len() < 3` lower bound so a
