@@ -5228,6 +5228,54 @@ mod tests {
     }
 
     #[test]
+    fn web_override_persist_round_trips_all_four_overrides_on_one_app() {
+        // A single app carrying ALL FOUR per-app overrides at once — enabled +
+        // tab_disabled + mid_line + autocorrect — must survive
+        // persist_web_override_prefs -> build_prefs with every field intact and
+        // INDEPENDENT. The existing feature-only round-trip pins mid_line/
+        // autocorrect/tab_disabled but deliberately keeps `enabled == None` to
+        // prove independence; no test rounds the `enabled` key alongside the
+        // three feature keys on the SAME app. Because each field serializes to a
+        // *separate* comma-list key, a regression where the enabled write (or its
+        // reload) clobbered or dropped a co-resident feature override — or vice
+        // versa — would pass every existing round-trip yet corrupt an app that a
+        // user configured fully in the Apps pane.
+        use prefs::AppPolicyField::*;
+        let app = "com.foo.allfour";
+        let mut prefs = Prefs::default();
+        prefs.set_app_policy_field(app, Enabled, false); // -> COMPME_DISABLED_APPS
+        prefs.set_app_policy_field(app, TabDisabled, true); // -> COMPME_TAB_DISABLED_APPS
+        prefs.set_app_policy_field(app, MidLine, true); // -> COMPME_MIDLINE_ON_APPS
+        prefs.set_app_policy_field(app, Autocorrect, false); // -> COMPME_AUTOCORRECT_OFF_APPS
+
+        let dir = std::env::temp_dir().join(format!(
+            "compme-web-override-allfour-persist-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.env");
+        persist_web_override_prefs(&path, &prefs);
+
+        let map = config::load_file_map(&path);
+        // Each field lands in its own key for this one app; the disabled/enabled
+        // split is pinned so a polarity flip is caught.
+        assert_eq!(map.get("COMPME_DISABLED_APPS"), Some(&app.to_string()));
+        assert_eq!(map.get("COMPME_ENABLED_APPS"), None);
+        assert_eq!(map.get("COMPME_TAB_DISABLED_APPS"), Some(&app.to_string()));
+        assert_eq!(map.get("COMPME_MIDLINE_ON_APPS"), Some(&app.to_string()));
+        assert_eq!(map.get("COMPME_AUTOCORRECT_OFF_APPS"), Some(&app.to_string()));
+
+        let reloaded = build_prefs(&|key| map.get(key).cloned());
+        let p = &reloaded.per_app[app];
+        assert_eq!(p.enabled, Some(false), "enabled override lost");
+        assert!(p.tab_disabled, "tab_disabled override lost");
+        assert_eq!(p.mid_line, Some(true), "mid_line override lost");
+        assert_eq!(p.autocorrect, Some(false), "autocorrect override lost");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn web_override_persist_round_trips_midline_autocorrect_tab_disabled_per_app() {
         // r2 HIGH-2: the Apps-pane feature overrides (mid_line / autocorrect /
         // tab_disabled) must survive persist_web_override_prefs -> build_prefs

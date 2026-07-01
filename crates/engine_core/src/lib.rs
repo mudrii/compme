@@ -2058,6 +2058,46 @@ mod tests {
     }
 
     #[test]
+    fn force_show_after_partial_accept_re_presents_the_remaining_completion() {
+        // A word-by-word `AcceptWord` that leaves a remainder does NOT clear
+        // `showing`: the handler retains it, collapsed to a single candidate
+        // holding only the *unaccepted* tail (`candidates == [rest]`, index 0).
+        // ForceShow reads that live post-accept state, so it must re-present the
+        // remaining tail — not the original full candidate, and not a no-op.
+        //
+        // This exercises the ForceShow × AcceptWord-partial combination that the
+        // verbatim/cycled/no-op tests never reach: they only cover the pristine
+        // pre-accept `showing`. A regression that cached the pre-accept candidate
+        // on the ForceShow path, or that failed to collapse `showing` to `rest`,
+        // would pass every other force_show_* test yet re-show the already-typed
+        // word here.
+        let mut machine = showing_three_words(); // "world there friend"
+        // Partially accept the first word; the tail "there friend" stays held.
+        let accept = machine.on_event(Event::AcceptWord);
+        assert!(
+            accept
+                .iter()
+                .any(|c| matches!(c, Command::Insert { .. })),
+            "AcceptWord should insert the accepted word: {accept:?}"
+        );
+        assert!(
+            !accept.iter().any(|c| matches!(c, Command::Hide)),
+            "a partial accept must NOT hide the ghost (rest remains): {accept:?}"
+        );
+        // ForceShow now re-asserts the *remaining* completion, verbatim.
+        assert_eq!(
+            machine.on_event(Event::ForceShow),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "there friend".into(),
+            }],
+            "ForceShow after a partial accept must re-present only the unaccepted \
+             tail (the live `showing` state), never the original full candidate"
+        );
+    }
+
+    #[test]
     fn force_show_emits_no_new_completion_request() {
         let mut machine = showing_solo(false);
         let out = machine.on_event(Event::ForceShow);
