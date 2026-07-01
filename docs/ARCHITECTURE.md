@@ -181,7 +181,7 @@ substituted word carries the same case the user typed. Pure and OS-agnostic.
 enable/exclude, per-app Tab-key disable, and a global pause/snooze. Pure — a
 policy struct plus deterministic resolution against a caller-supplied clock
 (`now_ms`), so every transition is unit-testable. The run loop resolves
-`suggestion_gates_pass(app_key, left, domain, now_ms)` before either suggestion
+`suggestion_gates_pass(app_key, text, domain, prefs, now_ms)` before either suggestion
 path produces output. Persistence and the settings UI live in the host.
 
 ### `compat`
@@ -270,10 +270,15 @@ Important events:
 - `CaretMoved`
 - `Tick`
 - `CompletionReady`
+- `CompletionReadyMulti` (multi-candidate cycling)
+- `Cycle` (advance to the next candidate)
+- `ForceShow` (always-on force-show hotkey)
 - `SecureStateChanged`
 - `AcceptFull`
 - `AcceptWord`
 - `Dismiss`
+- `DismissDiscard` (tray-disable clears the suggestion)
+- `DismissSuppress` (Esc suppresses re-show for the current context)
 
 Important commands:
 
@@ -282,6 +287,7 @@ Important commands:
 - `UpdateGhost`
 - `Hide`
 - `Insert`
+- `Replace` (range replacement for local emoji/typo/US→UK/thesaurus fixes)
 
 The machine tracks:
 
@@ -418,7 +424,7 @@ Major responsibilities:
 - AppKit `NSPanel` overlay presenter that is transparent, click-through, and
   non-activating.
 - `NSStatusItem` tray with a template menu-bar icon and status menu.
-- An 8-tab settings `NSWindow` shell (render-only; the run loop owns policy),
+- A 9-tab settings `NSWindow` shell (render-only; the run loop owns policy),
   including the `KeyRecorderField` accept-key recorder.
 
 ## macOS Runtime Model
@@ -525,9 +531,9 @@ it on each heartbeat.
 
 ### Settings Window
 
-The settings window is an 8-tab AppKit `NSWindow` — **Setup, General, Apps,
-Context, Emoji, Shortcuts, Statistics, About** (an `NSTabView`). It is
-render-only: the run loop
+The settings window is a 9-tab AppKit `NSWindow` — **Setup, General,
+Personalization, Apps, Context, Emoji, Shortcuts, Statistics, About** (an
+`NSTabView`). It is render-only: the run loop
 owns all policy and pushes pane contents and reads back UI intents through a
 flags struct each heartbeat (the tray-flags pattern). Because the app is an
 `LSUIElement` accessory, showing the window promotes the activation policy to

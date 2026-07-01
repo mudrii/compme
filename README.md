@@ -91,8 +91,8 @@ For development, run unbundled with `cargo run -p app`.
   Keychain-managed key.
 - **Usage statistics** — a rolling 30-day accumulator (shown / accepted / dismissed /
   superseded, words completed, latency) surfaced in the Statistics pane.
-- **Eight-tab settings window** — Setup, General, Apps, Context, Emoji,
-  Shortcuts, Statistics, About.
+- **Nine-tab settings window** — Setup, General, Personalization, Apps, Context,
+  Emoji, Shortcuts, Statistics, About.
 - **Menu-bar icon** — a caret + double-chevron template image (it recently replaced the
   old "CM…" text title; that title remains only as a fallback if the image fails to load).
 - **Signed deep-link config** — a fail-closed `compme://setOverride` URL scheme for
@@ -160,7 +160,7 @@ from `tools/spike/`.
 | `ranker` | Candidate shaping helpers: word capping, first-word extraction, and repetition penalty. |
 | `prefs` | Suggestion-gating preferences: per-app and per-domain enable/exclude, per-app Tab-key disable, and a global pause/snooze, resolved against an injected clock. |
 | `compat` | Pure classifier from a macOS bundle id to a compatibility tier, plus the gating policy each tier implies (mirrors the Cotypist compatibility table). |
-| `personalization` | Prompt-based personalization: global + per-app + per-domain instruction maps (request-time app and domain steering are wired; the Settings editor remains a follow-up), a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
+| `personalization` | Prompt-based personalization: global + per-app + per-domain instruction maps (request-time app and domain steering are wired, and a Personalization pane edits global instructions, strength, and sender identity — the per-app/per-domain instruction editor remains a follow-up), a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
 | `autocorrect` | Pure, high-precision trailing-word typo→correction table with the query's capitalization reapplied; never "corrects" a real word. |
 | `localize` | Pure, high-precision US→British spelling normalization for American-only forms; deliberately skips ambiguous words. |
 | `emoji` | Pure `:shortcode`→emoji completion honoring skin-tone (Fitzpatrick) and gender preferences. |
@@ -281,7 +281,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,169 tests:
+suite is roughly 1,487 tests:
 
 ```sh
 cargo fmt --all -- --check
@@ -332,9 +332,9 @@ At a high level:
    accept actions through transient Carbon hotkeys (`RegisterEventHotKey`, armed
    only while a suggestion is shown, supporting modifier+key combos rebound from
    the Shortcuts pane), and inserts accepted text through the safest available
-   strategy. A menu-bar tray icon and an eight-tab settings window (Setup /
-   General / Apps / Context / Emoji / Shortcuts / Statistics / About) drive
-   configuration and the model picker.
+   strategy. A menu-bar tray icon and a nine-tab settings window (Setup /
+   General / Personalization / Apps / Context / Emoji / Shortcuts / Statistics /
+   About) drive configuration and the model picker.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 

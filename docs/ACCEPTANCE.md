@@ -401,10 +401,10 @@ COMPME_EMOJI=1 COMPME_DEBUG=1 cargo run -p app 2>&1 | tee /tmp/cm.log
 ```
 
 Open Settings from the tray menu (or the tray's Settings item). The window has
-eight tabs in display order (`pane_titles`): **Setup, General, Apps, Context,
-Emoji, Shortcuts, Statistics, About**. Setup, Apps, Context, Emoji, Statistics,
-and Shortcuts rows are recomposed by the run loop right before each show;
-General switches re-read their atomics on every show.
+nine tabs in display order (`pane_titles`): **Setup, General, Personalization,
+Apps, Context, Emoji, Shortcuts, Statistics, About**. Setup, Apps, Context,
+Emoji, Statistics, and Shortcuts rows are recomposed by the run loop right
+before each show; General switches re-read their atomics on every show.
 
 ### Menu-bar icon LOOK gate
 
@@ -468,15 +468,19 @@ download block. To exercise:
    prompt** appears (the `download_gate` `NeedsLicense` path) before any fetch.
    Today's recommended default is unencumbered, so a plain run never prompts.
 
-### Eight-tab Settings walkthrough
+### Nine-tab Settings walkthrough
 
-A quick LOOK pass over all eight panes:
+A quick LOOK pass over all nine panes:
 
 - **Setup** — readiness checklist (Accessibility / Screen Recording / model
   file) plus the model picker + Download button; rows re-probe on each show.
 - **General** — the master Enabled switch (the same atomic as the tray
   checkmark) plus autocorrect / trailing-space / Labs mid-line switches; flips
   live-apply and persist.
+- **Personalization** — the enable switch, a strength slider, and editors for the
+  global steering instructions and sender identity (name / email), driven by the
+  `PersonalizationEdit` enum; edits live-apply and persist. (Pane builds;
+  per-app/per-domain instruction editing is a follow-up.)
 - **Apps** — per-app recorded-input counts from the encrypted memory store;
   count rows (`app — N`) carry a Delete button, status/empty rows do not.
 - **Context** — Clipboard and Screen Context switches match their current

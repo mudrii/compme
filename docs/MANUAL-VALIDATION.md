@@ -64,6 +64,28 @@ invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visibl
       and extend the `normalize_caret_rect` test — promoting them from guess to
       evidence, exactly as Chrome/Safari were.
 
+## Caret-rect source — live-Chrome AXTextMarker path (`source=Marker`)
+
+> The web caret path (`AXSelectedTextMarkerRange` → `AXBoundsForTextMarkerRange`,
+> in `read_ax_bounds_for_selected_text_marker_range`) is first-class and
+> preferred over the `NSRange` fallback by `resolve_caret_rect_with_marker_first`,
+> which reports `MacosCaretRectSource::Marker`. The Chromium/WebKit zero-width
+> marker case is pinned by the unit test
+> `resolve_caret_rect_with_marker_first_prefers_zero_width_chromium_marker`. This
+> checklist item is the live confirmation the plan-review doc
+> ([`2026-06-04-plan-review-online-validation.md`](superpowers/plans/2026-06-04-plan-review-online-validation.md),
+> Finding 3) delegates here before declaring broad Chromium/Electron support.
+
+- [ ] On a granted desktop, focus a **Google Chrome** (`com.google.Chrome`)
+      textarea or content-editable and type; confirm the ghost lands on the caret
+      line (the marker path resolved) rather than one line low or at the field
+      origin (the `NSRange` fallback), with `MacosCaretRectSource::Marker` in the
+      `COMPME_DEBUG` caret diagnostics.
+- [ ] Repeat in a Chromium build (`org.chromium.*`) and an Electron app (e.g. VS
+      Code) to confirm the zero-width marker case resolves via the marker path in
+      the live app, matching the unit test, before extending Chromium/Electron
+      support claims.
+
 <!-- Future Tier-3 FFI items (group/metric pickers, Personalization controls,
 Apps editing rows, the 3.4 hotkey recorder rows + Carbon registration) append
 their LOOK gates below as they land. -->

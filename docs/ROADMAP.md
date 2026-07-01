@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-06-17 (third TDD audit coverage pass) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1169 workspace tests; spike separate)
+> **Last updated:** 2026-07-01 (docs sync + ponytail cleanup) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1487 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -137,8 +137,8 @@ settings editor for these values remains part of Tier 3.2.
 
 ## Tier 3 — A3 settings-UI residuals (medium, build-then-LOOK)
 
-Per `2026-06-10-a3-settings-ui-design.md`. The window ships as 8 tabs
-(Setup/General/Apps/Context/Emoji/Shortcuts/Statistics/About via NSTabView). Backing
+Per `2026-06-10-a3-settings-ui-design.md`. The window ships as 9 tabs
+(Setup/General/Personalization/Apps/Context/Emoji/Shortcuts/Statistics/About via NSTabView). Backing
 config + crates exist for the remaining panes; what's missing is narrower UI
 surface: Apps editing rows, a Personalization pane (mode/strength/instructions),
 the Statistics metric picker, the Context appearance sub-toggle, and the new
