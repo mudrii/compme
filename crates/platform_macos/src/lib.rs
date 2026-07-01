@@ -2342,7 +2342,6 @@ fn tag_synthetic_event(event: &CGEvent) {
     event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, SYNTHETIC_EVENT_TAG);
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn should_ignore_event_for_tap(event_source_user_data: i64) -> bool {
     event_source_user_data == SYNTHETIC_EVENT_TAG
 }
