@@ -1260,131 +1260,59 @@ fn build_window(
         refresh_setup_action_buttons(&setup_action_buttons, &initial);
     }
 
-    // General tab: the Labs switch (global mid-line toggle), initialized
-    // from the CURRENT config state.
+    // General tab: a uniform stack of global toggles (40px step), each two
+    // views of one atomic — see SettingsFlags. Same table+loop idiom as the
+    // Context tab below. Push order (enabled, midline, autocorrect, trailing)
+    // is the refresh order.
     {
         let general = &pane_views[1];
+        let rows: [(&str, &Arc<AtomicBool>, objc2::runtime::Sel); 4] = [
+            ("Enable completions", &flags.general_enabled, sel!(toggleEnabled:)),
+            (
+                "Mid-line completions (show even with text after the cursor)",
+                &flags.labs_midline,
+                sel!(toggleMidline:),
+            ),
+            (
+                "Autocorrect typos (offer the fix as you type)",
+                &flags.general_autocorrect,
+                sel!(toggleAutocorrect:),
+            ),
+            (
+                "Trailing space after single-word completions",
+                &flags.general_trailing_space,
+                sel!(toggleTrailingSpace:),
+            ),
+        ];
+        for (row, (title, flag, action)) in rows.into_iter().enumerate() {
+            let label = NSTextField::labelWithString(&NSString::from_str(title), mtm);
+            label.setFrame(NSRect::new(
+                NSPoint::new(20.0, 340.0 - row as f64 * 40.0),
+                NSSize::new(400.0, 20.0),
+            ));
+            general.addSubview(&label);
 
-        // Enabled row (top): two views of one atomic — see SettingsFlags.
-        let en_label = NSTextField::labelWithString(&NSString::from_str("Enable completions"), mtm);
-        en_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 340.0),
-            NSSize::new(400.0, 20.0),
-        ));
-        general.addSubview(&en_label);
-        let en_switch = NSSwitch::new(mtm);
-        en_switch.setFrame(NSRect::new(
-            NSPoint::new(420.0, 336.0),
-            NSSize::new(60.0, 26.0),
-        ));
-        en_switch.setState(if flags.general_enabled.load(Ordering::Relaxed) {
-            objc2_app_kit::NSControlStateValueOn
-        } else {
-            objc2_app_kit::NSControlStateValueOff
-        });
-        // SAFETY: target outlives the window (held by MacosSettingsWindow).
-        unsafe {
-            en_switch.setTarget(Some({
-                let any: &AnyObject = target.as_ref();
-                any
-            }));
-            en_switch.setAction(Some(sel!(toggleEnabled:)));
+            let switch = NSSwitch::new(mtm);
+            switch.setFrame(NSRect::new(
+                NSPoint::new(420.0, 336.0 - row as f64 * 40.0),
+                NSSize::new(60.0, 26.0),
+            ));
+            switch.setState(if flag.load(Ordering::Relaxed) {
+                objc2_app_kit::NSControlStateValueOn
+            } else {
+                objc2_app_kit::NSControlStateValueOff
+            });
+            // SAFETY: target outlives the window (held by MacosSettingsWindow).
+            unsafe {
+                switch.setTarget(Some({
+                    let any: &AnyObject = target.as_ref();
+                    any
+                }));
+                switch.setAction(Some(action));
+            }
+            general.addSubview(&switch);
+            switches.push((switch, Arc::clone(flag)));
         }
-        general.addSubview(&en_switch);
-        switches.push((en_switch, Arc::clone(&flags.general_enabled)));
-
-        let label = NSTextField::labelWithString(
-            &NSString::from_str("Mid-line completions (show even with text after the cursor)"),
-            mtm,
-        );
-        label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 300.0),
-            NSSize::new(400.0, 20.0),
-        ));
-        general.addSubview(&label);
-
-        let switch = NSSwitch::new(mtm);
-        switch.setFrame(NSRect::new(
-            NSPoint::new(420.0, 296.0),
-            NSSize::new(60.0, 26.0),
-        ));
-        switch.setState(if flags.labs_midline.load(Ordering::Relaxed) {
-            objc2_app_kit::NSControlStateValueOn
-        } else {
-            objc2_app_kit::NSControlStateValueOff
-        });
-        // SAFETY: target outlives the window (held by MacosSettingsWindow).
-        unsafe {
-            switch.setTarget(Some({
-                let any: &AnyObject = target.as_ref();
-                any
-            }));
-            switch.setAction(Some(sel!(toggleMidline:)));
-        }
-        general.addSubview(&switch);
-        switches.push((switch, Arc::clone(&flags.labs_midline)));
-
-        // Autocorrect row, same switch pattern one row below.
-        let ac_label = NSTextField::labelWithString(
-            &NSString::from_str("Autocorrect typos (offer the fix as you type)"),
-            mtm,
-        );
-        ac_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 260.0),
-            NSSize::new(400.0, 20.0),
-        ));
-        general.addSubview(&ac_label);
-        let ac_switch = NSSwitch::new(mtm);
-        ac_switch.setFrame(NSRect::new(
-            NSPoint::new(420.0, 256.0),
-            NSSize::new(60.0, 26.0),
-        ));
-        ac_switch.setState(if flags.general_autocorrect.load(Ordering::Relaxed) {
-            objc2_app_kit::NSControlStateValueOn
-        } else {
-            objc2_app_kit::NSControlStateValueOff
-        });
-        // SAFETY: target outlives the window (held by MacosSettingsWindow).
-        unsafe {
-            ac_switch.setTarget(Some({
-                let any: &AnyObject = target.as_ref();
-                any
-            }));
-            ac_switch.setAction(Some(sel!(toggleAutocorrect:)));
-        }
-        general.addSubview(&ac_switch);
-        switches.push((ac_switch, Arc::clone(&flags.general_autocorrect)));
-
-        // Trailing-space row, third in the stack.
-        let ts_label = NSTextField::labelWithString(
-            &NSString::from_str("Trailing space after single-word completions"),
-            mtm,
-        );
-        ts_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 220.0),
-            NSSize::new(400.0, 20.0),
-        ));
-        general.addSubview(&ts_label);
-        let ts_switch = NSSwitch::new(mtm);
-        ts_switch.setFrame(NSRect::new(
-            NSPoint::new(420.0, 216.0),
-            NSSize::new(60.0, 26.0),
-        ));
-        ts_switch.setState(if flags.general_trailing_space.load(Ordering::Relaxed) {
-            objc2_app_kit::NSControlStateValueOn
-        } else {
-            objc2_app_kit::NSControlStateValueOff
-        });
-        // SAFETY: target outlives the window (held by MacosSettingsWindow).
-        unsafe {
-            ts_switch.setTarget(Some({
-                let any: &AnyObject = target.as_ref();
-                any
-            }));
-            ts_switch.setAction(Some(sel!(toggleTrailingSpace:)));
-        }
-        general.addSubview(&ts_switch);
-        switches.push((ts_switch, Arc::clone(&flags.general_trailing_space)));
     }
 
     // Personalization tab: the three steering knobs (roadmap item 5) — global
