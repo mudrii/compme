@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-01 (docs sync + ponytail cleanup) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1491 workspace tests; spike separate)
+> **Last updated:** 2026-07-01 (added Tier 5 grammar/spell-fix feature plan; docs sync + ponytail cleanup) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1509 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -255,6 +255,155 @@ person at a granted macOS desktop, not new code. Sources:
 | Trailing-space toggle | accept-path ✅ | live evidence for exact inserted text |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
 | Google Docs / Arc onboarding | `needs_accessibility_setup` ✅ | live Docs round-trip |
+
+---
+
+## Tier 5 — ☐ Standalone grammar/spell-fix mode (NEW, LLM-backed)
+
+**Intent (2026-07-01 user request):** a *separate* feature from inline
+completion — press a **grammar-trigger** key, the nearest misspelled/ungrammatical
+word at the caret is **underlined in place**, the suggested correction is shown in
+a **banner above it**, and a **separate grammar-accept** key replaces the word.
+This is a detect→underline→confirm flow, distinct from the type-ahead ghost.
+
+**Decisions settled (with the requester, 2026-07-01):**
+0. **Cross-platform by construction — Linux, Windows, and macOS.** No part of the
+   feature may be macOS-only. All detection, correction, orchestration, prompt,
+   policy, and state logic lives in the **portable crates** (`model_client`,
+   `engine_core`, `engine`, `run_loop`, `context`, `prefs`, a `grammar` crate);
+   only three thin surfaces sit behind the existing `platform` trait, each OS
+   providing its own impl: (a) global hotkey registration, (b) the correction
+   overlay (underline + banner), (c) text range read + in-place replace. macOS is
+   the **reference implementation**; Windows and Linux implement the same trait
+   methods (see the per-OS mapping table below). This matches the repo's existing
+   seam — `platform_linux`/`platform_windows` already exist as fail-closed stubs,
+   and `OverlayPlacement` already enumerates `LayeredWindow` (Win),
+   `LayerShell`/`OverrideRedirect` (Linux), and `NativePanel` (mac).
+1. **Detection/correction engine = the installed local LLM**, not a platform
+   spell API (NSSpellChecker/UITextChecker) and not a bundled dictionary. compme
+   already runs a local llama.cpp model; grammar-fix becomes a new *inference
+   request kind*, which keeps detection **inherently cross-platform** (one code
+   path, no per-OS spell binding) and stronger than a word list.
+   `autocorrect`/`thesaurus` stay closed tables (they can only fire on their
+   31/handful of entries), so they cannot be the engine — at most a zero-cost,
+   portable pre-pass.
+2. **Scope = the nearest word at the caret** (reuse `trailing_word`,
+   `run_loop.rs:474`), not a whole-field scan-and-cycle. Matches the single-ghost
+   pipeline; multi-error cycling is a later extension, not v1.
+3. **Two dedicated keystrokes** (the user asked for a separate fix key), not a
+   reuse of accept-word/full.
+4. **Its own enable toggle + Apps-pane column** ("a separate feature for grammar
+   only"), gated off in code fields like `autocorrect`.
+
+### Reuse — already built (do NOT rebuild)
+- **In-place replace mechanics:** `Command::Replace { replace_left }`
+  (`engine_core/src/lib.rs:155`), produced by `offer_replacement_multi`
+  (`:780`), applied on accept via the `AcceptFull`/`AcceptWord` arms (`:526-572`)
+  → `engine.on_replacement` (`engine/src/lib.rs:283`) → `insert_replacing`
+  (`platform_macos/src/lib.rs:1777`). `replace_left` = the misspelled word's char
+  count. **Same `InsertStrategy::AxSet` gate** applies (`engine_core/src/lib.rs:791`):
+  only AX range-replace can atomically delete-left-and-insert; on non-AxSet fields
+  offer nothing (degrade), exactly as replacements do today.
+- **Snapshot/staleness safety:** model the correction as a `Showing` with
+  `replace_left > 0`; every TextChanged/CaretMoved bumps `generation`/`snapshot`
+  so a correction can't apply to stale text (`engine_core/src/lib.rs:193-201`).
+- **Word geometry for the underline:** `read_ax_bounds_for_range(element, loc,
+  len)` (`platform_macos/src/lib.rs:4559`) already returns any UTF-16 range's
+  on-screen rect; convert the word's char span → UTF-16 with the existing
+  `extend_range_left` pattern (`:4840`). (Do **not** reuse the thin-caret
+  `usable_caret_rect` guard — a word is wider than its threshold.)
+- **Inference plumbing:** `CompletionRequest`/`CompletionOutcome` over channels
+  (`inference.rs:286/345`), `LocalModel::complete(prompt, max_tokens)`
+  (`model_client/src/lib.rs:78`), `terse_continuation_prompt` (`:578`) as the
+  template for a new `grammar_fix_prompt`.
+- **Gates/policy:** `replacement_decision`/`suggestion_gates_pass`
+  (`run_loop.rs:533`); `AppPolicy` tri-state fields (`prefs/src/lib.rs:13`);
+  Apps-pane checkbox enum `AppPolicyField` (`prefs/src/lib.rs:46`).
+- **Keystroke infra:** always-on shortcuts `ShortcutBindings`/`registration_plan`
+  (`platform_macos/src/lib.rs:2521/2568`), `ShortcutAction` (`platform/src/lib.rs:202`);
+  ghost-scoped accept keymap `AcceptKeymap`/`binding_for_hotkey_id`
+  (`platform_macos/src/lib.rs:3142/3425`); recorder UI `KeyRecorderField`
+  (`settings_window.rs:692`).
+- **Overlay recipe:** the borderless transparent `NSPanel` in `ensure_panel`
+  (`platform_macos/src/lib.rs:776`) + Y-flip in `overlay_frame_for_text` (`:969`).
+
+### Build — genuinely new
+1. **Correction engine (LLM):** `model_client::grammar_fix_prompt(word, left_ctx)`
+   (pure, next to `terse_continuation_prompt`) + a **grammar request kind** on
+   `CompletionRequest` and a corrected-word field on `CompletionOutcome`
+   (`inference.rs`), routed through the existing worker/`recv_latest` loop. Tight
+   prompt: "return the corrected word only, or the word unchanged"; low
+   `max_tokens`; **post-filter** the model output (reject multi-word / large-edit
+   / meaning-changing responses; require small edit distance) so it can't rewrite
+   the user's word into something else.
+2. **Correction UI (novel FFI):** underline the misspelled word in place + a
+   correction **banner** above it. Neither primitive exists (the overlay only
+   appends uniform ghost text at the caret; no attributed strings anywhere).
+   Build as **two thin borderless panels** cloning the `ensure_panel` recipe: a
+   1-2px filled underline panel positioned under the word rect, and a small
+   background-filled banner panel above it showing the suggestion. New
+   `OverlayPresenter` method(s) (e.g. `show_correction(word_rect, suggestion)`)
+   or a sibling presenter; update `FakeOverlay` (`engine/src/lib.rs:554`) and the
+   `ux_mode`/placement plumbing to match. Degrade to a caret-anchored popup when
+   `read_ax_bounds_for_range` returns `Ok(None)`.
+3. **Two keystrokes:** **grammar-trigger** = new `ShortcutAction::GrammarCheck`
+   (always-on Carbon hotkey, new id 8, config `COMPME_GRAMMAR_CHECK_KEY`,
+   startup-string first like the other global shortcuts) — routed at the
+   `HostEvent::Shortcut` match (`run_loop.rs:3715`) to run detection.
+   **grammar-accept** = new `AcceptBinding::GrammarAccept` role (ghost-scoped,
+   armed/disarmed with the correction, new Carbon id, config
+   `COMPME_GRAMMAR_ACCEPT_KEY`), live-rebindable via a third `RecorderRole` later.
+   Both auto-covered by collision detection once added to the existing field
+   arrays (`has_internal_collision` / `record_decision`).
+4. **Toggle + policy wiring:** `Config.grammar_fix` (`COMPME_GRAMMAR_FIX`,
+   `run_loop.rs:169/277`), `AppPolicy.grammar_fix: Option<bool>` + a
+   `grammar_fix_enabled(app, default)` getter (`prefs/src/lib.rs:133` mirror), a
+   `AppPolicyField::GrammarFix` Apps-pane column, consulted in the new flow.
+
+### Ordered build sequence (pure/testable first, novel FFI last)
+| # | Phase | Effort | Notes |
+|---|---|---|---|
+| G1 | `grammar_fix_prompt` + output post-filter (model_client, pure) + word-under-caret helper (context) | S | Fully unit-testable; deterministic prompt + filter shape. |
+| G2 | Grammar inference request/outcome kind + worker routing; reuse `Showing`+`replace_left` for accept; `Config`/`AppPolicy`/`AppPolicyField` toggle wiring | M | Headless-testable (fake model, fake adapter), no new FFI. |
+| G3 | Two keystrokes: `ShortcutAction::GrammarCheck` + `AcceptBinding::GrammarAccept` registration + routing | M | Pure parse/plan layers unit-tested; dispatch needs a physical keypress (like 3.4). |
+| G4 | Underline + correction-banner overlay (novel FFI) | L | The genuinely new UI; needs live LOOK on a granted Mac. |
+| G5 | Settings: grammar-accept recorder row + Apps-pane `GrammarFix` column; live validation | M | Reuses `KeyRecorderField` (widen its 2-role collision model to N). |
+
+### Open decisions (recommended defaults)
+- **Underline rendering:** *recommend a thin filled sub-panel* under the word rect
+  (matches the existing "position a transparent panel" pattern) over an
+  attributed-string `NSUnderlineStyle` (the repo uses no attributed strings yet).
+- **LLM safety:** *recommend* a strict single-word post-filter + small-edit-distance
+  guard; the local model must not turn a typo-fix into a paraphrase. If the model
+  is unreliable at word-level, fall back to the pure `autocorrect` table for the
+  known-typo subset.
+- **Trigger with no error found:** *recommend* a silent no-op (or a subtle flash),
+  not a "nothing to fix" banner.
+### Cross-platform architecture (Linux · Windows · macOS)
+The portable core (G1-G2, plus policy/settings logic) is **written once** and
+shared by all three OSes. Only these three trait surfaces get a per-OS impl; each
+is an existing `platform`-trait method, so the seam already exists:
+
+| Surface | macOS (reference) | Windows | Linux |
+|---|---|---|---|
+| Global grammar-trigger hotkey | Carbon `RegisterEventHotKey` (`ShortcutBindings`, already built) | `RegisterHotKey` (Win32) | X11 `XGrabKey` / Wayland global-shortcuts portal |
+| Ghost-scoped grammar-accept key | Carbon accept keymap (already built) | keyboard hook / `RegisterHotKey` | X11/Wayland key grab |
+| Word rect + in-place replace | AX `kAXBoundsForRange` + `insert_replacing` (built) | UI Automation `TextPattern` `BoundingRectangles` + `SetText`/value | AT-SPI2 `Text`/`EditableText`, or IME/synthetic fallback |
+| Underline + banner overlay | borderless `NSPanel` (`NativePanel`) | layered top-most window (`LayeredWindow`) | `wlr-layer-shell` (`LayerShell`) / override-redirect X11 (`OverrideRedirect`) |
+
+Detection (LLM inference) has **no per-OS surface at all** — it runs through the
+same portable `model_client`/`inference` path on every OS. Sequencing: macOS
+lands G1-G5 first as the reference; Windows and Linux then implement the four
+trait rows above (their crates currently return fail-closed `UnsupportedField`,
+so grammar-fix simply stays inert there until each row is built — never
+misbehaves). This is the same parity model as Tier 1.1 foundation work, and it
+depends on the platform `insert_replacing`/text-read impls that Windows/Linux owe
+regardless of this feature.
+
+**Effort:** Large. Portable core (G1-G2) + macOS reference surfaces (G3-G5) are the
+first milestone; Windows and Linux each add the four-row trait impl as follow-on
+platform work. G1-G3 are buildable/testable headless today; G4 (underline+banner)
+is the novel-FFI risk and the live-LOOK gate on each OS.
 
 ---
 
