@@ -1159,6 +1159,56 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_profile_lock_still_lets_set_profile_and_the_worker_degrade_not_panic() {
+        // A panic anywhere holding the profile lock (e.g. a future panicking
+        // `build_preamble`) poisons the Mutex. Both writers (`set_profile`) and
+        // readers (the worker, per request) recover via `into_inner` rather than
+        // propagating the poison and killing the pane edit / the worker thread.
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile {
+                global_instructions: "Write in pirate dialect.".into(),
+                ..Default::default()
+            },
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+
+        // Poison the shared profile lock: a thread panics while holding the guard.
+        let profile = Arc::clone(&inference.profile);
+        std::thread::spawn(move || {
+            let _guard = profile.lock().unwrap();
+            panic!("poison the profile lock");
+        })
+        .join()
+        .expect_err("the poisoning thread must have panicked");
+        assert!(
+            inference.profile.lock().is_err(),
+            "the profile lock must actually be poisoned for this test to prove anything"
+        );
+
+        // set_profile must not panic despite the poison, and must write through.
+        inference.set_profile(PersonalizationProfile {
+            global_instructions: "Write tersely.".into(),
+            ..Default::default()
+        });
+
+        // The worker's per-request read must also recover the poison and steer
+        // with the newly-written profile — a panicking read would drop the
+        // outcome and hang recv, so a steered outcome proves the read survived.
+        inference.submit(request("Ahoy", 1));
+        let outcome = inference.recv_outcome().expect("worker served despite poison");
+        assert!(
+            outcome.candidates[0].contains("Write tersely."),
+            "worker read recovered the poisoned lock and steered with set_profile: {:?}",
+            outcome.candidates[0]
+        );
+        inference.shutdown();
+    }
+
+    #[test]
     fn set_profile_steers_without_triggering_a_request() {
         // A Personalization-pane edit must be a pure state write: it re-steers the
         // NEXT submitted request but must never itself enqueue inference. If a

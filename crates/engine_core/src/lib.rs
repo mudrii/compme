@@ -2027,6 +2027,37 @@ mod tests {
     }
 
     #[test]
+    fn force_show_re_presents_the_cycled_candidate_not_the_first() {
+        // ForceShow re-asserts whatever candidate is *currently selected*, which
+        // may not be candidates[0] after a Cycle. The ForceShow handler reads
+        // `showing.current()` independently of Accept/preview, so a regression
+        // that reset the index or cached candidates[0] on the ForceShow path
+        // would still pass the verbatim/no-rotation test above (it never cycles)
+        // yet break here. This is the ForceShow analog of
+        // `preview_reports_the_cycled_candidate_not_the_first` and
+        // `accept_full_inserts_the_cycled_candidate`.
+        let mut machine = showing_candidates(&["alpha", "beta"]);
+        // Cycle advances the selection to the second candidate.
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::UpdateGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "beta".into(),
+            }]
+        );
+        // ForceShow must re-present "beta" (the cycled-to candidate), not "alpha".
+        assert_eq!(
+            machine.on_event(Event::ForceShow),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "beta".into(),
+            }]
+        );
+    }
+
+    #[test]
     fn force_show_emits_no_new_completion_request() {
         let mut machine = showing_solo(false);
         let out = machine.on_event(Event::ForceShow);
