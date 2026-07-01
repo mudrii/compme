@@ -110,7 +110,7 @@ instruction maps, with the settings design deferring the editing UI.
   multiple apps/domains (`instruction_map_from_config` in `run_loop.rs`).
 - Inference now calls
   `profile.build_preamble(Some(&request.field.app), request.domain.as_deref())`
-  (`crates/app/src/inference.rs:297-302`), so resolved browser domains can
+  (`crates/app/src/inference.rs:304-307`), so resolved browser domains can
   activate per-domain steering.
 - The submit path reads the cached browser domain into `RequestLogContext`, and
   `submit_request_and_track` copies it onto the request before dispatch
@@ -153,10 +153,12 @@ Shortcuts hotkeys.
 > for what shipped are in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md).
 
 ### 3.1 ☐ Per-app override *editing* rows (Apps pane) — the largest residual pane
-- **Status:** Apps pane is **display + delete only** — per-app recorded-input
-  count rows (`settings_window.rs:1171-1193`) with per-row Delete buttons gated
-  by `apps_row_is_deletable`. No add-app control, no per-row
-  enable / mid-line / autocorrect / Tab-disable toggles.
+- **Status:** Apps pane now ships a **compact one-line policy grid** (see
+  macOS-plan item #3) — each per-app row carries per-row enable / mid-line /
+  autocorrect / Tab-disable checkboxes (`checkbox_rect`/`col_header_rect` +
+  `compose_apps_policy_bits`, `settings_window.rs` `apps_layout`) alongside the
+  Delete button gated by `apps_row_is_deletable`. **Remaining residual:** no
+  add-app control (apps still appear only after first recorded input).
 - **Backing exists:** `prefs` per-app override fields + `tab_disabled` tap
   suppression are live; only the editing UI is missing.
 - Spec: `a3-settings-ui-design.md:50,78` (Phase S2 "App Settings pane — largest").
