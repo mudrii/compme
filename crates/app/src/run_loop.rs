@@ -845,6 +845,7 @@ fn request_log_line(
     prefs: &Prefs,
     now_ms: u64,
     acceptance_prompt_marker: Option<&str>,
+    blocked: bool,
 ) -> String {
     let app_allows = app_allows_suggestions(app_key);
     let terminal_ok =
@@ -856,8 +857,9 @@ fn request_log_line(
         None => false,
     };
     format!(
-        "compme: request gen={} prompt_chars={} app={} app_allows={} \
+        "compme: request{} gen={} prompt_chars={} app={} app_allows={} \
          terminal_ok={} domain_ready={} prefs_ok={} prompt_marker={}",
+        if blocked { " blocked" } else { "" },
         request.generation,
         request.prompt.chars().count(),
         app_key.unwrap_or("unknown"),
@@ -886,6 +888,7 @@ impl RequestLogContext {
             &self.prefs,
             now_ms,
             self.acceptance_prompt_marker.as_deref(),
+            false,
         )
     }
 }
@@ -1286,37 +1289,6 @@ fn request_passes_submit_gates(
 ) -> bool {
     browser_domain_fresh_enough_for_rules(app_key, domain, prefs)
         && suggestion_gates_pass(app_key, &request.prompt, domain, prefs, now_ms)
-}
-
-fn blocked_request_log_line(
-    request: &CompletionRequest,
-    app_key: Option<&str>,
-    domain: Option<&str>,
-    prefs: &Prefs,
-    now_ms: u64,
-    acceptance_prompt_marker: Option<&str>,
-) -> String {
-    let app_allows = app_allows_suggestions(app_key);
-    let terminal_ok =
-        app_key.is_none_or(|app| compat::terminal_prompt_activates(app, &request.prompt));
-    let domain_ready = browser_domain_fresh_enough_for_rules(app_key, domain, prefs);
-    let prefs_ok = prefs.should_suggest(app_key, domain, now_ms);
-    let prompt_marker = match acceptance_prompt_marker {
-        Some(marker) => request.prompt.contains(marker),
-        None => false,
-    };
-    format!(
-        "compme: request blocked gen={} prompt_chars={} app={} app_allows={} \
-         terminal_ok={} domain_ready={} prefs_ok={} prompt_marker={}",
-        request.generation,
-        request.prompt.chars().count(),
-        app_key.unwrap_or("unknown"),
-        app_allows,
-        terminal_ok,
-        domain_ready,
-        prefs_ok,
-        prompt_marker,
-    )
 }
 
 fn browser_domain_fresh_enough_for_rules(
@@ -4726,13 +4698,14 @@ pub fn run() -> Result<(), String> {
                 } else {
                     eprintln!(
                         "{}",
-                        blocked_request_log_line(
+                        request_log_line(
                             &request,
                             app_key.as_deref(),
                             cached_domain(&last_domain, app_key.as_deref()),
                             &prefs,
                             now_ms,
                             config.acceptance_prompt_marker.as_deref(),
+                            true,
                         )
                     );
                 }
@@ -5098,6 +5071,7 @@ mod tests {
             &prefs,
             1_000,
             Some("ada@example.com"),
+            false,
         );
         assert!(
             line.contains("request gen=42 prompt_chars=34 app=com.apple.TextEdit"),
@@ -6962,13 +6936,14 @@ mod tests {
     fn blocked_request_log_line_reports_gate_metadata_without_prompt_text() {
         let prefs = Prefs::default();
         let request = req_with_prompt("git status && print-secret");
-        let line = blocked_request_log_line(
+        let line = request_log_line(
             &request,
             Some("com.apple.Terminal"),
             None,
             &prefs,
             1_000,
             Some("print-secret"),
+            true,
         );
 
         assert!(line.contains("request blocked"));
