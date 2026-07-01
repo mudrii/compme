@@ -63,6 +63,16 @@ Required guardrail:
 
 - A1b still must implement real lifecycle semantics around a real suggestion, including create/enable/teardown, tap-disabled handling, and deferred teardown after synthetic insertion.
 
+**Status (2026-07-01): SUPERSEDED (design decision, not a gap).** A1b deliberately did NOT
+adopt a consuming `CGEventTap` for accept-key interception. The production path is transient
+**Carbon `RegisterEventHotKey`** (`platform_macos/src/lib.rs`), armed only while a suggestion
+is visible and torn down on hide via a generation guard (`rearm_consumer_tap`,
+`teardown_generation`) — so the lifecycle semantics this guardrail demanded (arm-while-showing,
+teardown, disabled-tap re-enable) are honored around the Carbon "consumer" abstraction. The
+real-`CGEventTap` re-enable contract is kept as a reserved `AcceptTapDecision::ReenableAndKeep`
+branch, pinned by `accept_tap_decision_reenables_*` tests. Recorded in
+`2026-06-04-a1b-macos-adapter-contract.md`.
+
 ### 3. Chromium/Web caret path remains an A1b risk
 
 The plan identifies the web path as `AXSelectedTextMarkerRange` to `AXBoundsForTextMarkerRange`, not `NSRange`. The implemented spike only does:
@@ -76,6 +86,17 @@ Required fix:
 
 - Keep A1b responsible for `AXSelectedTextMarkerRange` / `AXBoundsForTextMarkerRange`.
 - Add a P4b-style marker probe or adapter test before declaring broad Chromium/Electron support.
+
+**Status (2026-07-01): CLOSED.** The AXTextMarker path is first-class:
+`AX_SELECTED_TEXT_MARKER_RANGE_ATTRIBUTE` + `read_ax_bounds_for_selected_text_marker_range`
+(`platform_macos/src/lib.rs`) feed `resolve_caret_rect_with_marker_first`, which prefers the
+marker rect over the `NSRange` fallback and reports `MacosCaretRectSource::Marker`. The
+guardrail's "adapter test before declaring broad Chromium/Electron support" is met by
+`resolve_caret_rect_with_marker_first_prefers_zero_width_chromium_marker`, which pins the
+Chromium/WebKit **zero-width** marker rect (G5) as usable-and-preferred end-to-end — a
+regression that rejected zero-width markers (silently breaking Chrome caret geometry) fails
+that test. Live-Chrome `source=Marker` remains a MANUAL-VALIDATION spot-check, but automated
+coverage now gates the code path.
 
 ### 4. A1a `PlatformAdapter` is not the validated contract
 
@@ -119,6 +140,8 @@ Impact: The first-run trust goal is undermined. The state machine would request 
 Required fix:
 
 - Replace `TextChanged { value, caret, now_ms }` with an input event that includes `edit_kind` (`Insert`, `Delete`, `Paste`, `Unknown`), previous caret/value metadata, and a `TriggerPolicy`.
+
+  **Status (2026-07-01):** DONE, with one correction. `Event::TextChanged` now carries `edit: EditKind` + `trigger: TriggerPolicy` and all four gating tests exist (`engine_core/src/lib.rs`). The `EditKind` list above is superseded: the current enum is `Insert`/`Delete`/`Unknown` only — the speculative `Paste` variant was removed (commit `63c7f7f`) because gating depends solely on the Delete/non-Delete split, and a paste is a non-Delete edit that already behaves identically to `Insert`.
 - Add tests for no request after backspace, no request mid-word, no request below min context, and request after whitespace/sentence boundary.
 
 ### 6. Focus invalidation clears internal state without emitting `Hide`
@@ -259,7 +282,7 @@ Required guardrail:
 
 ## Non-Blocking But Worth Fixing
 
-- Naming a crate `core` compiles, but it is confusing because Rust has a built-in `core` crate. Prefer `engine_core` or `complete_me_core`.
+- Naming a crate `core` compiles, but it is confusing because Rust has a built-in `core` crate. Prefer `engine_core` or `complete_me_core`. **Done (2026-07-01):** renamed to `engine_core`; no `core` crate remains in the workspace (`Cargo.toml` members are `crates/engine` + `crates/engine_core`).
 - A1a root workspace excludes `tools/spike`; that is good, but the model path in A1a still depends on the spike model location. Make that dependency explicit.
 - The Tauri global-shortcut plugin is useful for configurable hotkeys, but not for plain Tab accept in another app. The plan should say "global shortcut is not a consuming accept path" rather than implying the plugin is broken.
 - Historical Tauri updater research is superseded for macOS. A3 should now plan a native updater, with Sparkle as the leading candidate because Cotypist ships it; any non-Sparkle updater still needs artifact generation, public-key/signing-key handling, endpoint format, manifest strategy, and failure recovery.

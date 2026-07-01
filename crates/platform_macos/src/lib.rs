@@ -10905,6 +10905,38 @@ mod tests {
     }
 
     #[test]
+    fn resolve_caret_rect_with_marker_first_prefers_zero_width_chromium_marker() {
+        // Finding-3 guardrail (2026-07-01): the AXTextMarker path must be
+        // first-class for Chromium/WebKit, which return ZERO-WIDTH marker rects
+        // (G5). A collapsed caret (w == 0.0) is a valid thin bar and must be
+        // preferred over the range fallback — never treated as degenerate. This
+        // pins the end-to-end decision (usable_caret_rect + marker-first) so a
+        // regression that rejected zero-width markers, silently breaking Chrome
+        // caret geometry, fails here (the four other resolver tests use w > 0 or
+        // a container marker and would not catch it).
+        let chromium_marker = ScreenRect {
+            x: 120.0,
+            y: 240.0,
+            w: 0.0,
+            h: 16.0,
+        };
+        let mut range_called = false;
+
+        let rect = resolve_caret_rect_with_marker_first(
+            7,
+            || Ok(Some(chromium_marker)),
+            |_, _| {
+                range_called = true;
+                Ok(None)
+            },
+        )
+        .expect("resolve caret");
+
+        assert_eq!(rect, Some(chromium_marker));
+        assert!(!range_called, "range fallback must not run for a usable marker");
+    }
+
+    #[test]
     fn resolve_caret_rect_with_marker_first_falls_back_when_marker_missing() {
         let native = ScreenRect {
             x: 10.0,
