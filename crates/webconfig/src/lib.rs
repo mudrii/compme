@@ -269,18 +269,14 @@ fn split_trailing_signature(
     )))
 }
 
-/// Whether a parsed deep link may apply silently or must be confirmed by the
-/// user first (the §16 mandatory host confirmation). Pure — the host's UI
-/// layer renders the prompt; tests inject the answer.
+/// The §16 mandatory host confirmation for a parsed deep link: every link must
+/// be confirmed by the user before applying. Pure — the host's UI layer renders
+/// the prompt from these human-readable pieces; tests inject the answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PromptDecision {
-    /// Show a confirmation prompt before applying; the fields are
-    /// human-readable pieces for the prompt text.
-    PromptRequired {
-        scope: String,
-        action: String,
-        trust: String,
-    },
+pub struct PromptDecision {
+    pub scope: String,
+    pub action: String,
+    pub trust: String,
 }
 
 /// Decide the confirmation requirement for a parsed link. Today EVERY link
@@ -291,7 +287,7 @@ pub fn prompt_decision_for_link(command: &OverrideCommand, trust: LinkTrust) -> 
         Scope::App(app) => app.clone(),
         Scope::Domain(domain) => domain.clone(),
     };
-    PromptDecision::PromptRequired {
+    PromptDecision {
         scope,
         action: format!("{:?}", command.action),
         trust: match trust {
@@ -787,7 +783,7 @@ mod tests {
         };
         // Unsigned reversible link: prompt, with human-readable pieces.
         let decision = prompt_decision_for_link(&command, LinkTrust::Unsigned);
-        let PromptDecision::PromptRequired {
+        let PromptDecision {
             scope,
             action,
             trust,
@@ -799,7 +795,7 @@ mod tests {
         // the silent path is reserved and unreachable until they do).
         let signed = prompt_decision_for_link(&command, LinkTrust::Signed);
         assert!(
-            matches!(signed, PromptDecision::PromptRequired { trust, .. } if trust.contains("signed"))
+            matches!(signed, PromptDecision { trust, .. } if trust.contains("signed"))
         );
     }
 
@@ -813,7 +809,7 @@ mod tests {
             action: OverrideAction::Disable,
         };
         let decision = prompt_decision_for_link(&command, LinkTrust::Unsigned);
-        let PromptDecision::PromptRequired {
+        let PromptDecision {
             scope,
             action,
             trust,
@@ -825,7 +821,7 @@ mod tests {
         let signed = prompt_decision_for_link(&command, LinkTrust::Signed);
         assert!(matches!(
             signed,
-            PromptDecision::PromptRequired { scope, trust, .. }
+            PromptDecision { scope, trust, .. }
                 if scope == "docs.google.com" && trust.contains("signed")
         ));
     }
@@ -853,7 +849,7 @@ mod tests {
                     scope: scope.clone(),
                     action,
                 };
-                let PromptDecision::PromptRequired {
+                let PromptDecision {
                     scope: got_scope,
                     action: got_action,
                     trust,

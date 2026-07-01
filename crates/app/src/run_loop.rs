@@ -4432,7 +4432,7 @@ pub fn run() -> Result<(), String> {
         };
         for url in pending_links {
             let confirm = |decision: &webconfig::PromptDecision| -> bool {
-                let webconfig::PromptDecision::PromptRequired {
+                let webconfig::PromptDecision {
                     scope,
                     action,
                     trust,
