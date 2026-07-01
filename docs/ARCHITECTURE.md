@@ -187,9 +187,11 @@ substituted word carries the same case the user typed. Pure and OS-agnostic.
 `prefs` is the suggestion-gating policy core (§8 / §16): per-app and per-domain
 enable/exclude, per-app Tab-key disable, and a global pause/snooze. Pure — a
 policy struct plus deterministic resolution against a caller-supplied clock
-(`now_ms`), so every transition is unit-testable. The run loop resolves
-`suggestion_gates_pass(app_key, text, domain, prefs, now_ms)` before either suggestion
-path produces output. Persistence and the settings UI live in the host.
+(`now_ms`), so every transition is unit-testable. The host wrapper
+`suggestion_gates_pass(app_key, text, domain, prefs, now_ms)` (in
+`app/run_loop.rs`, which composes `prefs.should_suggest` with the `compat` tier
+and the terminal-prompt check) resolves before either suggestion path produces
+output. Persistence and the settings UI live in the host.
 
 ### `compat`
 

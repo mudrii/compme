@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-01 (docs sync + ponytail cleanup) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1487 workspace tests; spike separate)
+> **Last updated:** 2026-07-01 (docs sync + ponytail cleanup) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1491 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
