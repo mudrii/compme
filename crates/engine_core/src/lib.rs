@@ -32,7 +32,6 @@ const STAT_EVENTS_CAP: usize = 4096;
 pub enum EditKind {
     Insert,
     Delete,
-    Paste,
     Unknown,
 }
 
@@ -1170,32 +1169,6 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, Command::RequestCompletion { .. })),
             "expected no RequestCompletion after a Delete edit, got: {cmds:?}"
-        );
-    }
-
-    #[test]
-    fn paste_edit_triggers_request_like_insert() {
-        // A paste (Cmd+V) is a non-Delete edit and must arm a completion the
-        // same way typing does.
-        let mut machine = machine();
-
-        machine.on_event(Event::TextChanged {
-            field: field("field-a"),
-            value: "pasted text ".into(),
-            caret: 12,
-            edit: EditKind::Paste,
-            trigger: TriggerPolicy::Automatic,
-            now_ms: 1000,
-        });
-
-        assert_eq!(
-            machine.on_event(Event::Tick { now_ms: 1200 }),
-            vec![Command::RequestCompletion {
-                generation: 1,
-                field: field("field-a"),
-                snapshot: 1,
-                prompt: "pasted text".into(),
-            }]
         );
     }
 
