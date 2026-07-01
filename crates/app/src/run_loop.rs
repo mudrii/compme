@@ -22,12 +22,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use emoji::{EmojiPrefs, Gender, SkinTone};
-use engine::{CompletionRequest, Engine, TriggerPolicy};
+use engine::{CompletionRequest, Engine, RequestKind, TriggerPolicy};
 use personalization::{PersonalizationProfile, SenderIdentity, Strength};
 use platform::{
-    env_flag_on, AcceptAction, AcceptSubscription, Capabilities, FieldHandle, InsertStrategy,
-    KeyInterceptMode, OverlayPlacement, PlatformAdapter, PlatformError, ScreenRect, SecurityState,
-    ShortcutAction, Subscription, TapControl, Toolkit,
+    env_flag_on, AcceptAction, AcceptSubscription, Capabilities, CorrectionRange, FieldHandle,
+    InsertStrategy, KeyInterceptMode, OverlayPlacement, PlatformAdapter, PlatformError, ScreenRect,
+    SecurityState, ShortcutAction, Subscription, TapControl, TextContext, Toolkit,
 };
 use platform_macos::DisableArm;
 use platform_macos::{
@@ -204,6 +204,8 @@ struct Config {
     /// Inline typo autocorrect (A2 §8/§16, `COMPME_AUTOCORRECT`, default off):
     /// offer the correction when the trailing word is a known typo.
     autocorrect: bool,
+    /// Standalone grammar/spell-fix trigger (`COMPME_GRAMMAR_FIX`, default off).
+    grammar_fix: bool,
     /// British-English normalization (A2 §16, `COMPME_BRITISH_ENGLISH`, default
     /// off): offer the UK spelling when the trailing word is a known US-only form.
     british_english: bool,
@@ -229,6 +231,7 @@ struct Config {
     /// startup with a logged error.
     accept_word_key: Option<(i64, u32)>,
     accept_full_key: Option<(i64, u32)>,
+    grammar_accept_key: Option<(i64, u32)>,
     /// Always-on (global) shortcut chords, raw config strings parsed by
     /// `platform_macos::set_shortcut_bindings_from_config` (same grammar as the
     /// accept keys, e.g. `"96"` or `"ctrl+shift+50"`). `None` → that shortcut is
@@ -236,6 +239,7 @@ struct Config {
     force_activate_key: Option<String>,
     toggle_app_key: Option<String>,
     toggle_global_key: Option<String>,
+    grammar_check_key: Option<String>,
 }
 
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
@@ -290,11 +294,14 @@ impl Config {
                 .and_then(|raw| platform_macos::parse_accept_key(&raw)),
             accept_full_key: lookup("COMPME_ACCEPT_FULL_KEY")
                 .and_then(|raw| platform_macos::parse_accept_key(&raw)),
+            grammar_accept_key: lookup("COMPME_GRAMMAR_ACCEPT_KEY")
+                .and_then(|raw| platform_macos::parse_accept_key(&raw)),
             force_activate_key: lookup("COMPME_FORCE_ACTIVATE_KEY")
                 .or_else(|| lookup("COMPME_FORCE_ACTIVATE"))
                 .filter(|s| !s.is_empty()),
             toggle_app_key: lookup("COMPME_TOGGLE_APP_KEY").filter(|s| !s.is_empty()),
             toggle_global_key: lookup("COMPME_TOGGLE_GLOBAL_KEY").filter(|s| !s.is_empty()),
+            grammar_check_key: lookup("COMPME_GRAMMAR_CHECK_KEY").filter(|s| !s.is_empty()),
             acceptance_pid: lookup("COMPME_ACCEPTANCE_PID").and_then(|raw| raw.parse::<i32>().ok()),
             stub_completion: lookup("COMPME_STUB_COMPLETION").filter(|s| !s.is_empty()),
             model_path: lookup("COMPME_MODEL_PATH")
@@ -342,6 +349,8 @@ impl Config {
             emoji_prefs,
             emoji: emoji_enabled.then_some(emoji_prefs),
             autocorrect: lookup("COMPME_AUTOCORRECT")
+                .is_some_and(|v| v == "1" || v == "true" || v == "on"),
+            grammar_fix: lookup("COMPME_GRAMMAR_FIX")
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
             british_english: lookup("COMPME_BRITISH_ENGLISH")
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
@@ -553,6 +562,60 @@ fn replacement_decision(
     let autocorrect = prefs.autocorrect_enabled(app_key, config.autocorrect);
     let thesaurus = prefs.thesaurus_enabled(app_key, config.thesaurus);
     replacement_offer(left, config, autocorrect, thesaurus)
+}
+
+struct GrammarRequestGate<'a> {
+    config: &'a Config,
+    prefs: &'a Prefs,
+    app_key: Option<&'a str>,
+    domain: Option<&'a str>,
+    enabled: bool,
+    caps: &'a Capabilities,
+    now_ms: u64,
+}
+
+fn grammar_fix_request(
+    field: &FieldHandle,
+    ctx: &TextContext,
+    gate: GrammarRequestGate<'_>,
+) -> Option<CompletionRequest> {
+    if !gate.enabled
+        || !gate
+            .prefs
+            .grammar_fix_enabled(gate.app_key, gate.config.grammar_fix)
+        || !browser_domain_fresh_enough_for_rules(gate.app_key, gate.domain, gate.prefs)
+        || !suggestion_gates_pass(
+            gate.app_key,
+            &ctx.left,
+            gate.domain,
+            gate.prefs,
+            gate.now_ms,
+        )
+        || gate.caps.insert_strategy != InsertStrategy::AxSet
+        || ctx.selection.is_some_and(|range| range.start != range.end)
+    {
+        return None;
+    }
+
+    let value = format!("{}{}", ctx.left, ctx.right);
+    let caret = ctx.left.chars().count();
+    let word = context::word_at_caret(&value, caret)?;
+    Some(CompletionRequest {
+        generation: field.generation,
+        field: field.clone(),
+        domain: gate.domain.map(str::to_string),
+        snapshot: field.generation,
+        prompt: String::new(),
+        max_tokens: DEFAULT_MAX_TOKENS,
+        kind: RequestKind::GrammarFix {
+            word: word.word.to_string(),
+            left_ctx: ctx.left.clone(),
+            correction_range: CorrectionRange {
+                start: word.range.start,
+                end: word.range.end,
+            },
+        },
+    })
 }
 
 /// The completion worker's context char bound. Clipboard/screen context need
@@ -858,8 +921,8 @@ fn request_log_line(
     blocked: bool,
 ) -> String {
     let app_allows = app_allows_suggestions(app_key);
-    let terminal_ok =
-        app_key.is_none_or(|app| compat::terminal_prompt_activates(app, &request.prompt));
+    let gate_text = request_gate_text(request);
+    let terminal_ok = app_key.is_none_or(|app| compat::terminal_prompt_activates(app, gate_text));
     let domain_ready = browser_domain_fresh_enough_for_rules(app_key, domain, prefs);
     let prefs_ok = prefs.should_suggest(app_key, domain, now_ms);
     let prompt_marker = match acceptance_prompt_marker {
@@ -879,6 +942,13 @@ fn request_log_line(
         prefs_ok,
         prompt_marker,
     )
+}
+
+fn request_gate_text(request: &CompletionRequest) -> &str {
+    match &request.kind {
+        RequestKind::Completion => &request.prompt,
+        RequestKind::GrammarFix { left_ctx, .. } => left_ctx,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1298,7 +1368,7 @@ fn request_passes_submit_gates(
     now_ms: u64,
 ) -> bool {
     browser_domain_fresh_enough_for_rules(app_key, domain, prefs)
-        && suggestion_gates_pass(app_key, &request.prompt, domain, prefs, now_ms)
+        && suggestion_gates_pass(app_key, request_gate_text(request), domain, prefs, now_ms)
 }
 
 fn browser_domain_fresh_enough_for_rules(
@@ -1539,10 +1609,12 @@ fn record_full_accept(
 }
 
 type AcceptPreview = (FieldHandle, String, usize);
+type CorrectionPreview = (FieldHandle, String, CorrectionRange);
 
 struct AcceptSideEffects<'a> {
     action: AcceptAction,
     preview: Option<&'a AcceptPreview>,
+    correction_preview: Option<&'a CorrectionPreview>,
     wall_ms: u64,
     context_max_chars: usize,
     previous_inputs: &'a PreviousInputs,
@@ -1557,6 +1629,19 @@ fn apply_accept_side_effects(accepted: bool, side_effects: AcceptSideEffects<'_>
         return;
     }
     let Some((field, text, replace_left)) = side_effects.preview else {
+        if side_effects.action == AcceptAction::Correction {
+            if let Some((field, text, range)) = side_effects.correction_preview {
+                side_effects
+                    .tracker
+                    .apply_self_replace_range(field, text, *range);
+                side_effects.usage.record(
+                    side_effects.wall_ms,
+                    stats::Outcome::Accepted {
+                        words: accept_word_count(text),
+                    },
+                );
+            }
+        }
         return;
     };
 
@@ -2117,6 +2202,16 @@ fn persist_web_override_prefs(path: &Path, prefs: &Prefs) {
             "per-app autocorrect off",
         ),
         (
+            "COMPME_GRAMMAR_FIX_ON_APPS",
+            app_override_value(prefs, |p| p.grammar_fix, true),
+            "per-app grammar fix on",
+        ),
+        (
+            "COMPME_GRAMMAR_FIX_OFF_APPS",
+            app_override_value(prefs, |p| p.grammar_fix, false),
+            "per-app grammar fix off",
+        ),
+        (
             "COMPME_THESAURUS_ON_APPS",
             app_override_value(prefs, |p| p.thesaurus, true),
             "per-app thesaurus on",
@@ -2234,7 +2329,9 @@ use platform_macos::keycode_label_with_mods;
 /// until the live-rebind refactor lands.
 fn shortcuts_text(word: (i64, u32), full: (i64, u32)) -> String {
     format!(
-        "Accept word: {}\nAccept full: {}\nDismiss: Esc\nCycle candidates: Down arrow\n\n\
+        "Accept word: {}\nAccept full: {}\nDismiss: Esc\nCycle candidates: Down arrow\n\
+         Grammar check/accept: config-only via COMPME_GRAMMAR_CHECK_KEY / \
+         COMPME_GRAMMAR_ACCEPT_KEY\n\n\
          To change: set COMPME_ACCEPT_WORD_KEY / COMPME_ACCEPT_FULL_KEY (macOS \
          keycodes, e.g. \"shift+48\") in config.env \u{2014} applies at relaunch \
          (the in-app recorder applies live).",
@@ -2255,17 +2352,21 @@ fn apps_row_ids(counts: &[(String, u64)]) -> Vec<String> {
 }
 
 /// Whether an Apps-pane policy edit must retract the suggestion already on the
-/// FOCUSED field. Only an Enabled→off edit (`field == Enabled && !on`) on the
-/// app that owns the focused field qualifies — editing a different app's row, or
-/// any non-Enabled / enabling edit, leaves the focused ghost alone (the submit
-/// gate handles future submits). Pure so the focused-vs-other gate is testable.
+/// FOCUSED field. Disabling all suggestions or the focused app's grammar-fix
+/// policy qualifies; editing a different app's row or enabling a policy leaves
+/// the focused ghost alone (the submit gate handles future submits). Pure so the
+/// focused-vs-other gate is testable.
 fn apps_edit_dismisses_focused(
     field: prefs::AppPolicyField,
     on: bool,
     focused_app: Option<&str>,
     edited_app: &str,
 ) -> bool {
-    field == prefs::AppPolicyField::Enabled && !on && focused_app == Some(edited_app)
+    !on && focused_app == Some(edited_app)
+        && matches!(
+            field,
+            prefs::AppPolicyField::Enabled | prefs::AppPolicyField::GrammarFix
+        )
 }
 
 /// Map an Apps-row checkbox field index (the low part of the packed tag, see
@@ -2279,12 +2380,13 @@ fn apps_policy_field_from_index(index: usize) -> Option<prefs::AppPolicyField> {
         1 => Some(TabDisabled),
         2 => Some(MidLine),
         3 => Some(Autocorrect),
+        4 => Some(GrammarFix),
         _ => None,
     }
 }
 
 /// Resolve each Apps row's per-app policy into the `[Enabled, TabDisabled,
-/// MidLine, Autocorrect]` checkbox bits the settings window seeds from. One
+/// MidLine, Autocorrect, GrammarFix]` checkbox bits the settings window seeds from. One
 /// entry per `app_ids` row, in the SAME order/cap as `apps_row_ids` (so the
 /// window can zip it against `apps_lines` row-for-row). The bool order matches
 /// `apps_policy_field_from_index` / `platform_macos::APP_POLICY_FIELD_TITLES`.
@@ -2293,6 +2395,7 @@ fn compose_apps_policy_bits(
     app_ids: &[String],
     global_mid_line: bool,
     global_autocorrect: bool,
+    global_grammar_fix: bool,
 ) -> Vec<[bool; platform_macos::APP_POLICY_FIELDS]> {
     app_ids
         .iter()
@@ -2306,6 +2409,7 @@ fn compose_apps_policy_bits(
                 prefs.tab_disabled(Some(app)),
                 prefs.mid_line_enabled(Some(app), global_mid_line),
                 prefs.autocorrect_enabled(Some(app), global_autocorrect),
+                prefs.grammar_fix_enabled(Some(app), global_grammar_fix),
             ]
         })
         .collect()
@@ -2457,10 +2561,11 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
 /// must be added here or its shadow goes unwarned (review-c111/c127; the
 /// len-pinned test below backstops this). Deliberately conservative: a key
 /// set to "" still warns — it parses falsy but still occupies the env layer.
-const SWITCH_KEYS: [&str; 28] = [
+const SWITCH_KEYS: [&str; 33] = [
     "COMPME_ENABLED",
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
+    "COMPME_GRAMMAR_FIX",
     "COMPME_TRAILING_SPACE",
     "COMPME_CLIPBOARD_CONTEXT",
     "COMPME_SCREEN_CONTEXT",
@@ -2480,6 +2585,8 @@ const SWITCH_KEYS: [&str; 28] = [
     "COMPME_MIDLINE_OFF_APPS",
     "COMPME_AUTOCORRECT_ON_APPS",
     "COMPME_AUTOCORRECT_OFF_APPS",
+    "COMPME_GRAMMAR_FIX_ON_APPS",
+    "COMPME_GRAMMAR_FIX_OFF_APPS",
     "COMPME_THESAURUS_ON_APPS",
     "COMPME_THESAURUS_OFF_APPS",
     "COMPME_TAB_DISABLED_APPS",
@@ -2492,6 +2599,8 @@ const SWITCH_KEYS: [&str; 28] = [
     // Shortcuts pane read the file — the exact desync the warning names.
     "COMPME_ACCEPT_WORD_KEY",
     "COMPME_ACCEPT_FULL_KEY",
+    "COMPME_GRAMMAR_ACCEPT_KEY",
+    "COMPME_GRAMMAR_CHECK_KEY",
 ];
 
 /// One warning line per switch key currently set in the environment
@@ -2798,6 +2907,12 @@ fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
     }
     for app in comma_list(lookup("COMPME_AUTOCORRECT_OFF_APPS")) {
         prefs.per_app.entry(app).or_default().autocorrect = Some(false);
+    }
+    for app in comma_list(lookup("COMPME_GRAMMAR_FIX_ON_APPS")) {
+        prefs.per_app.entry(app).or_default().grammar_fix = Some(true);
+    }
+    for app in comma_list(lookup("COMPME_GRAMMAR_FIX_OFF_APPS")) {
+        prefs.per_app.entry(app).or_default().grammar_fix = Some(false);
     }
     for app in comma_list(lookup("COMPME_THESAURUS_ON_APPS")) {
         prefs.per_app.entry(app).or_default().thesaurus = Some(true);
@@ -3214,14 +3329,18 @@ pub fn run() -> Result<(), String> {
     // before suggestions can arm accept handling, so the Carbon registration,
     // the decision logic, and the handler's id→keycode inverse all read one
     // source. Collision/invalid → fail soft to defaults.
-    if config.accept_word_key.is_some() || config.accept_full_key.is_some() {
+    if config.accept_word_key.is_some()
+        || config.accept_full_key.is_some()
+        || config.grammar_accept_key.is_some()
+    {
         match platform_macos::set_accept_keymap_from_config_with_mods(
             config.accept_word_key,
             config.accept_full_key,
+            config.grammar_accept_key,
         ) {
             Ok(()) => eprintln!(
-                "compme: accept keys rebound (word={:?} full={:?})",
-                config.accept_word_key, config.accept_full_key
+                "compme: accept keys rebound (word={:?} full={:?} grammar={:?})",
+                config.accept_word_key, config.accept_full_key, config.grammar_accept_key
             ),
             Err(err) => {
                 eprintln!("compme: accept-key rebind invalid ({err:?}); using defaults")
@@ -3236,11 +3355,13 @@ pub fn run() -> Result<(), String> {
     if config.force_activate_key.is_some()
         || config.toggle_app_key.is_some()
         || config.toggle_global_key.is_some()
+        || config.grammar_check_key.is_some()
     {
         let bindings = platform_macos::set_shortcut_bindings_from_config(
             config.force_activate_key.as_deref(),
             config.toggle_app_key.as_deref(),
             config.toggle_global_key.as_deref(),
+            config.grammar_check_key.as_deref(),
         );
         eprintln!("compme: global shortcuts configured ({bindings:?})");
     }
@@ -3453,6 +3574,7 @@ pub fn run() -> Result<(), String> {
         // Wall-clock stamp for usage stats only (its 30-day window needs an
         // absolute clock); `now_ms` stays monotonic for latency/debounce deltas.
         let wall_ms = wall_now_ms();
+        let mut manual_grammar_request: Option<CompletionRequest> = None;
 
         // 1. Host events → engine. The caret callback is the typing driver: read
         // context (executes on the adapter's AX worker), diff into a TextChange.
@@ -3691,6 +3813,7 @@ pub fn run() -> Result<(), String> {
                     // both the Word self-insert and the Full context record, so
                     // the two never read divergent engine snapshots.
                     let preview = engine.preview_accept_insert(action);
+                    let correction_preview = engine.preview_accept_correction();
                     match engine.on_accept(action) {
                         Ok(requests) => {
                             // Absorb the accept's own insertion echo (Word OR
@@ -3704,6 +3827,7 @@ pub fn run() -> Result<(), String> {
                                 AcceptSideEffects {
                                     action,
                                     preview: preview.as_ref(),
+                                    correction_preview: correction_preview.as_ref(),
                                     wall_ms,
                                     context_max_chars: config.context_max_chars,
                                     previous_inputs: &previous_inputs,
@@ -3807,12 +3931,91 @@ pub fn run() -> Result<(), String> {
                         }
                         eprintln!("compme: shortcut toggle-global enabled {now} -> {}", !now);
                     }
+                    ShortcutAction::GrammarCheck => {
+                        let Some(field) = current_field.clone() else {
+                            eprintln!("compme: shortcut grammar-check: no focused field");
+                            continue;
+                        };
+                        let app_key = effective_app_key(&field, bundle_id_for_pid);
+                        let domain = cached_domain(&last_domain, app_key.as_deref());
+                        let ctx = match adapter.read_context(&field) {
+                            Ok(ctx) => ctx,
+                            Err(err) => {
+                                eprintln!("compme: grammar-check read_context error: {err:?}");
+                                continue;
+                            }
+                        };
+                        let caps = match adapter.capabilities(&field) {
+                            Ok(caps) => caps,
+                            Err(err) => {
+                                eprintln!("compme: grammar-check capabilities error: {err:?}");
+                                continue;
+                            }
+                        };
+                        latest.clear();
+                        if let Some(mut request) = grammar_fix_request(
+                            &field,
+                            &ctx,
+                            GrammarRequestGate {
+                                config: &config,
+                                prefs: &prefs,
+                                app_key: app_key.as_deref(),
+                                domain,
+                                enabled: flags.enabled.load(Ordering::Relaxed),
+                                caps: &caps,
+                                now_ms,
+                            },
+                        ) {
+                            if let Some((generation, snapshot)) =
+                                engine.arm_manual_grammar_request(&field)
+                            {
+                                request.generation = generation;
+                                request.snapshot = snapshot;
+                                manual_grammar_request = Some(request);
+                            } else {
+                                eprintln!("compme: shortcut grammar-check not armed");
+                            }
+                        } else {
+                            eprintln!("compme: shortcut grammar-check blocked");
+                        }
+                    }
                 },
             }
         }
 
         // 2. Inference outcomes → engine (stale ones are discarded internally).
         for outcome in inference.drain_outcomes() {
+            if matches!(outcome.request.kind, RequestKind::GrammarFix { .. }) {
+                if let Some(latency) =
+                    latency_sample(&mut submit_times, outcome.request.generation, now_ms)
+                {
+                    usage.record_latency(wall_ms, latency);
+                }
+                match (outcome.correction, outcome.correction_range) {
+                    (Some(correction), Some(correction_range)) => {
+                        eprintln!(
+                            "compme: grammar outcome gen={} correction_present=true",
+                            outcome.request.generation
+                        );
+                        offer_all(
+                            &mut latest,
+                            log_err(
+                                "on_correction",
+                                engine.on_correction(
+                                    &outcome.request,
+                                    correction,
+                                    correction_range,
+                                ),
+                            ),
+                        );
+                    }
+                    _ => eprintln!(
+                        "compme: grammar outcome gen={} correction_present=false",
+                        outcome.request.generation
+                    ),
+                }
+                continue;
+            }
             eprintln!(
                 "{}",
                 completion_outcome_log_line(outcome.request.generation, &outcome.candidates)
@@ -3968,8 +4171,13 @@ pub fn run() -> Result<(), String> {
             *settings_flags
                 .apps_policy_bits
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) =
-                compose_apps_policy_bits(&prefs, &apps_ids, global_mid_word, config.autocorrect);
+                .unwrap_or_else(|e| e.into_inner()) = compose_apps_policy_bits(
+                &prefs,
+                &apps_ids,
+                global_mid_word,
+                config.autocorrect,
+                config.grammar_fix,
+            );
             if let Err(err) = settings_window.show() {
                 eprintln!("compme: settings window unavailable: {err}");
             }
@@ -4031,7 +4239,9 @@ pub fn run() -> Result<(), String> {
             let outcome = apply_live_accept_keymap(
                 word,
                 full,
-                platform_macos::set_accept_keymap_from_config_with_mods,
+                |word, full| {
+                    platform_macos::set_accept_keymap_from_config_with_mods(word, full, None)
+                },
                 || engine.rearm_accept_keys(),
                 |w: (i64, u32), f: (i64, u32)| {
                     if let Some(path) = config::config_file_path() {
@@ -4108,6 +4318,7 @@ pub fn run() -> Result<(), String> {
                         &apps_ids,
                         global_mid_word,
                         config.autocorrect,
+                        config.grammar_fix,
                     );
                     settings_window.refresh_apps_labels();
                 }
@@ -4666,6 +4877,41 @@ pub fn run() -> Result<(), String> {
         // 5. Submit the newest pending request only when suggestions are allowed
         // (Ready ⇒ trusted + not secure + warm + enabled).
         if status.suggestions_allowed() {
+            if let Some(request) = manual_grammar_request.take() {
+                let app_key = effective_app_key(&request.field, bundle_id_for_pid);
+                let domain = cached_domain(&last_domain, app_key.as_deref());
+                if request_passes_submit_gates(&request, app_key.as_deref(), domain, &prefs, now_ms)
+                {
+                    let log_context = RequestLogContext {
+                        app_key,
+                        domain: domain.map(str::to_owned),
+                        prefs: prefs.clone(),
+                        acceptance_prompt_marker: config.acceptance_prompt_marker.clone(),
+                    };
+                    let submitted_line = submit_request_and_track(
+                        &mut submit_times,
+                        request,
+                        now_ms,
+                        log_context,
+                        |request| inference.submit(request),
+                    );
+                    eprintln!("{submitted_line}");
+                } else {
+                    eprintln!(
+                        "{}",
+                        request_log_line(
+                            &request,
+                            app_key.as_deref(),
+                            domain,
+                            &prefs,
+                            now_ms,
+                            config.acceptance_prompt_marker.as_deref(),
+                            true,
+                        )
+                    );
+                }
+                latest.clear();
+            }
             if let Some(request) = latest.take() {
                 // Per-app/domain gating + pause/snooze (A2 §8). The exclude list
                 // is keyed on bundle ids. Prefer a fresh pid resolution, but keep
@@ -5096,6 +5342,7 @@ mod tests {
             snapshot: 42,
             prompt: "secret prompt with ada@example.com".into(),
             max_tokens: 24,
+            kind: RequestKind::Completion,
         };
         let prefs = Prefs::default();
         let line = request_log_line(
@@ -5270,11 +5517,13 @@ mod tests {
         // so we prove the feature keys round-trip on their own.
         prefs.set_app_policy_field("com.foo.feat", prefs::AppPolicyField::MidLine, true);
         prefs.set_app_policy_field("com.foo.feat", prefs::AppPolicyField::Autocorrect, false);
+        prefs.set_app_policy_field("com.foo.feat", prefs::AppPolicyField::GrammarFix, true);
         prefs.set_app_policy_field("com.foo.feat", prefs::AppPolicyField::TabDisabled, true);
         // A second app exercising the opposite mid_line/autocorrect polarity so
         // the _ON vs _OFF list split is pinned, not just "non-default present".
         prefs.set_app_policy_field("com.bar.feat", prefs::AppPolicyField::MidLine, false);
         prefs.set_app_policy_field("com.bar.feat", prefs::AppPolicyField::Autocorrect, true);
+        prefs.set_app_policy_field("com.bar.feat", prefs::AppPolicyField::GrammarFix, false);
 
         let dir = std::env::temp_dir().join(format!(
             "compme-web-override-feature-persist-test-{}",
@@ -5303,6 +5552,14 @@ mod tests {
             Some(&"com.foo.feat".to_string())
         );
         assert_eq!(
+            map.get("COMPME_GRAMMAR_FIX_ON_APPS"),
+            Some(&"com.foo.feat".to_string())
+        );
+        assert_eq!(
+            map.get("COMPME_GRAMMAR_FIX_OFF_APPS"),
+            Some(&"com.bar.feat".to_string())
+        );
+        assert_eq!(
             map.get("COMPME_TAB_DISABLED_APPS"),
             Some(&"com.foo.feat".to_string())
         );
@@ -5311,12 +5568,14 @@ mod tests {
         let foo = &reloaded.per_app["com.foo.feat"];
         assert_eq!(foo.mid_line, Some(true));
         assert_eq!(foo.autocorrect, Some(false));
+        assert_eq!(foo.grammar_fix, Some(true));
         assert!(foo.tab_disabled);
         // Independence: the feature-only app never gained an enabled override.
         assert_eq!(foo.enabled, None);
         let bar = &reloaded.per_app["com.bar.feat"];
         assert_eq!(bar.mid_line, Some(false));
         assert_eq!(bar.autocorrect, Some(true));
+        assert_eq!(bar.grammar_fix, Some(false));
         assert!(!bar.tab_disabled);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -5910,7 +6169,7 @@ mod tests {
     fn apps_policy_bits_resolve_per_app_overrides_in_checkbox_order() {
         // The Apps-pane checkboxes seed from these bits; each row must reflect
         // the saved per-app override (not a hard-seeded OFF), in the SAME
-        // [Enabled, TabDisabled, MidLine, Autocorrect] order the checkboxes use.
+        // [Enabled, TabDisabled, MidLine, Autocorrect, GrammarFix] order the checkboxes use.
         use prefs::AppPolicyField::*;
         let mut prefs = prefs::Prefs {
             default_enabled: false,
@@ -5922,16 +6181,17 @@ mod tests {
         prefs.set_app_policy_field("com.explicit", TabDisabled, true);
         prefs.set_app_policy_field("com.explicit", MidLine, true);
         prefs.set_app_policy_field("com.explicit", Autocorrect, true);
+        prefs.set_app_policy_field("com.explicit", GrammarFix, false);
         let ids = vec!["com.explicit".to_string(), "com.inherit".to_string()];
 
-        let bits = compose_apps_policy_bits(&prefs, &ids, false, true);
+        let bits = compose_apps_policy_bits(&prefs, &ids, false, true, true);
 
         assert_eq!(bits.len(), ids.len(), "one entry per row, same order/cap");
         // Explicit overrides win on every field.
-        assert_eq!(bits[0], [true, true, true, true]);
+        assert_eq!(bits[0], [true, true, true, true, false]);
         // Inherit: Enabled falls to default_enabled (false), TabDisabled default
-        // off, MidLine to the global (false), Autocorrect to the global (true).
-        assert_eq!(bits[1], [false, false, false, true]);
+        // off, MidLine to the global (false), Autocorrect and GrammarFix to globals (true).
+        assert_eq!(bits[1], [false, false, false, true, true]);
     }
 
     #[test]
@@ -6079,6 +6339,7 @@ mod tests {
             "COMPME_ENABLED",
             "COMPME_MIDLINE",
             "COMPME_AUTOCORRECT",
+            "COMPME_GRAMMAR_FIX",
             "COMPME_TRAILING_SPACE",
             "COMPME_CLIPBOARD_CONTEXT",
             "COMPME_SCREEN_CONTEXT",
@@ -6098,19 +6359,23 @@ mod tests {
             "COMPME_MIDLINE_OFF_APPS",
             "COMPME_AUTOCORRECT_ON_APPS",
             "COMPME_AUTOCORRECT_OFF_APPS",
+            "COMPME_GRAMMAR_FIX_ON_APPS",
+            "COMPME_GRAMMAR_FIX_OFF_APPS",
             "COMPME_THESAURUS_ON_APPS",
             "COMPME_THESAURUS_OFF_APPS",
             "COMPME_TAB_DISABLED_APPS",
             "COMPME_LICENSE_ACCEPTED",
             "COMPME_ACCEPT_WORD_KEY",
             "COMPME_ACCEPT_FULL_KEY",
+            "COMPME_GRAMMAR_ACCEPT_KEY",
+            "COMPME_GRAMMAR_CHECK_KEY",
         ] {
             assert!(
                 every_warning.iter().any(|warning| warning.starts_with(key)),
                 "{key} must warn when env shadows persisted config"
             );
         }
-        assert_eq!(every_warning.len(), 28);
+        assert_eq!(every_warning.len(), 33);
     }
 
     #[test]
@@ -6152,6 +6417,7 @@ mod tests {
         );
         let bindings = platform_macos::ShortcutBindings::from_config(
             config.force_activate_key.as_deref(),
+            None,
             None,
             None,
         );
@@ -6938,6 +7204,7 @@ mod tests {
             AcceptSideEffects {
                 action: AcceptAction::Full,
                 preview: Some(&preview),
+                correction_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
                 previous_inputs: &previous,
@@ -6973,6 +7240,7 @@ mod tests {
             AcceptSideEffects {
                 action: AcceptAction::Full,
                 preview: Some(&preview),
+                correction_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
                 previous_inputs: &previous,
@@ -7020,6 +7288,7 @@ mod tests {
             AcceptSideEffects {
                 action: AcceptAction::Full,
                 preview: Some(&preview),
+                correction_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
                 previous_inputs: &previous,
@@ -7050,6 +7319,66 @@ mod tests {
         // Sanity: the accept still recorded its stats and sinks.
         assert_eq!(store.count().unwrap(), 1);
         assert_eq!(usage.session_totals().counts.accepted, 1);
+    }
+
+    #[test]
+    fn correction_accept_absorbs_exact_range_echo_and_records_stats() {
+        let previous = PreviousInputs::default();
+        let store = accepted_store();
+        let mut tracker = FieldTracker::new();
+        let mut usage = stats::Stats::new();
+        let prefs = Prefs::default();
+        let field = field_with_app("com.apple.TextEdit");
+        tracker.observe(
+            &field,
+            &text_context(&field, "I saw teh"),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        let correction = (
+            field.clone(),
+            "the".to_string(),
+            CorrectionRange { start: 6, end: 9 },
+        );
+
+        apply_accept_side_effects(
+            true,
+            AcceptSideEffects {
+                action: AcceptAction::Correction,
+                preview: None,
+                correction_preview: Some(&correction),
+                wall_ms: 10_000,
+                context_max_chars: 160,
+                previous_inputs: &previous,
+                memory: Some(&store),
+                prefs: &prefs,
+                tracker: &mut tracker,
+                usage: &mut usage,
+            },
+        );
+
+        let observed = tracker.observe(
+            &field,
+            &text_context(&field, "I saw the"),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field.clone(),
+                caret: 9,
+            }
+        );
+        let totals = usage.session_totals();
+        assert_eq!(totals.counts.accepted, 1);
+        assert_eq!(totals.words, 1);
+        assert_eq!(
+            store.count().unwrap(),
+            0,
+            "corrections are not full accepts"
+        );
+        assert!(previous.recent("com.apple.TextEdit").is_empty());
     }
 
     #[test]
@@ -7557,6 +7886,20 @@ mod tests {
         assert!(!request_passes_submit_gates(
             &req_with_prompt("Dear team"),
             Some("com.apple.Safari"),
+            None,
+            &prefs,
+            0
+        ));
+    }
+
+    #[test]
+    fn submit_gate_uses_grammar_left_context_not_empty_prompt() {
+        let prefs = Prefs::default();
+        let request = grammar_req_with_left_ctx("Dear team teh");
+        assert_eq!(request.prompt, "");
+        assert!(request_passes_submit_gates(
+            &request,
+            Some("com.apple.Terminal"),
             None,
             &prefs,
             0
@@ -8173,6 +8516,7 @@ mod tests {
             snapshot: generation,
             prompt: "hello world".into(),
             max_tokens: 24,
+            kind: RequestKind::Completion,
         }
     }
 
@@ -8509,6 +8853,286 @@ mod tests {
             field_id: field.clone(),
             offset_encoding: platform::OffsetEncoding::UnicodeScalars,
         }
+    }
+
+    fn text_context_with_right(
+        field: &FieldHandle,
+        left: &str,
+        right: &str,
+    ) -> platform::TextContext {
+        platform::TextContext {
+            left: left.into(),
+            right: right.into(),
+            selection: None,
+            caret: left.chars().count(),
+            source: platform::ContextSource::Accessibility,
+            field_id: field.clone(),
+            offset_encoding: platform::OffsetEncoding::Utf16CodeUnits,
+        }
+    }
+
+    fn writable_axset_caps() -> Capabilities {
+        Capabilities {
+            readable_text: true,
+            readable_caret: true,
+            writable: true,
+            secure: false,
+            security_state: SecurityState::Normal,
+            toolkit: Toolkit::AppKit,
+            multiline: true,
+            insert_strategy: InsertStrategy::AxSet,
+            accept_intercept: KeyInterceptMode::CgEventTap,
+            overlay_at_caret: OverlayPlacement::NativePanel,
+            coords_global_screen: true,
+        }
+    }
+
+    fn grammar_gate<'a>(
+        config: &'a Config,
+        prefs: &'a Prefs,
+        app_key: Option<&'a str>,
+        domain: Option<&'a str>,
+        enabled: bool,
+        caps: &'a Capabilities,
+        now_ms: u64,
+    ) -> GrammarRequestGate<'a> {
+        GrammarRequestGate {
+            config,
+            prefs,
+            app_key,
+            domain,
+            enabled,
+            caps,
+            now_ms,
+        }
+    }
+
+    #[test]
+    fn grammar_trigger_dispatches_word_at_caret_scalar_range() {
+        let field = host_field("grammar");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let request = grammar_fix_request(
+            &field,
+            &text_context_with_right(&field, "😀 teh", ""),
+            grammar_gate(
+                &config,
+                &config.prefs,
+                Some("TextEdit"),
+                None,
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .expect("request");
+
+        assert_eq!(request.generation, field.generation);
+        assert_eq!(request.prompt, "");
+        match request.kind {
+            RequestKind::GrammarFix {
+                word,
+                left_ctx,
+                correction_range,
+            } => {
+                assert_eq!(word, "teh");
+                assert_eq!(left_ctx, "😀 teh");
+                assert_eq!(correction_range, CorrectionRange { start: 2, end: 5 });
+            }
+            RequestKind::Completion => panic!("expected grammar request"),
+        }
+    }
+
+    #[test]
+    fn grammar_trigger_dispatches_midword_whole_word_range() {
+        let field = host_field("grammar-mid");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let request = grammar_fix_request(
+            &field,
+            &text_context_with_right(&field, "te", "h later"),
+            grammar_gate(
+                &config,
+                &config.prefs,
+                Some("TextEdit"),
+                None,
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .expect("request");
+
+        match request.kind {
+            RequestKind::GrammarFix {
+                word,
+                correction_range,
+                ..
+            } => {
+                assert_eq!(word, "teh");
+                assert_eq!(correction_range, CorrectionRange { start: 0, end: 3 });
+            }
+            RequestKind::Completion => panic!("expected grammar request"),
+        }
+    }
+
+    #[test]
+    fn grammar_detection_blocks_without_fresh_browser_domain_when_domain_rules_exist() {
+        let field = field_with_app("com.google.Chrome");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let mut prefs = config.prefs.clone();
+        prefs.excluded_domains.insert("docs.example.com".into());
+
+        assert!(grammar_fix_request(
+            &field,
+            &text_context_with_right(&field, "teh", ""),
+            grammar_gate(
+                &config,
+                &prefs,
+                Some("com.google.Chrome"),
+                None,
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_none());
+        assert!(grammar_fix_request(
+            &field,
+            &text_context_with_right(&field, "teh", ""),
+            grammar_gate(
+                &config,
+                &prefs,
+                Some("com.google.Chrome"),
+                Some("docs.example.com"),
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_none());
+        assert!(grammar_fix_request(
+            &field,
+            &text_context_with_right(&field, "teh", ""),
+            grammar_gate(
+                &config,
+                &prefs,
+                Some("com.google.Chrome"),
+                Some("public.example.com"),
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn grammar_detection_respects_enable_per_app_snooze_and_axset() {
+        let field = host_field("grammar-gates");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let ctx = text_context_with_right(&field, "teh", "");
+        assert!(grammar_fix_request(
+            &field,
+            &ctx,
+            grammar_gate(
+                &config,
+                &config.prefs,
+                Some("TextEdit"),
+                None,
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_some());
+
+        assert!(grammar_fix_request(
+            &field,
+            &ctx,
+            grammar_gate(
+                &config,
+                &config.prefs,
+                Some("TextEdit"),
+                None,
+                false,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_none());
+
+        let mut prefs = config.prefs.clone();
+        prefs.set_app_policy_field("TextEdit", prefs::AppPolicyField::GrammarFix, false);
+        assert!(grammar_fix_request(
+            &field,
+            &ctx,
+            grammar_gate(
+                &config,
+                &prefs,
+                Some("TextEdit"),
+                None,
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_none());
+
+        let mut prefs = config.prefs.clone();
+        prefs.snooze_app("TextEdit", 0, 60);
+        assert!(grammar_fix_request(
+            &field,
+            &ctx,
+            grammar_gate(
+                &config,
+                &prefs,
+                Some("TextEdit"),
+                None,
+                true,
+                &writable_axset_caps(),
+                1,
+            ),
+        )
+        .is_none());
+
+        let mut caps = writable_axset_caps();
+        caps.insert_strategy = InsertStrategy::SyntheticKeys;
+        assert!(grammar_fix_request(
+            &field,
+            &ctx,
+            grammar_gate(
+                &config,
+                &config.prefs,
+                Some("TextEdit"),
+                None,
+                true,
+                &caps,
+                0,
+            ),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn grammar_detection_rejects_non_empty_selection() {
+        let field = host_field("grammar-selection");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let mut ctx = text_context_with_right(&field, "teh", "");
+        ctx.selection = Some(platform::TextRange { start: 0, end: 1 });
+
+        assert!(grammar_fix_request(
+            &field,
+            &ctx,
+            grammar_gate(
+                &config,
+                &config.prefs,
+                Some("TextEdit"),
+                None,
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_none());
     }
 
     fn typed_change_after_baseline(
@@ -9989,6 +10613,7 @@ mod tests {
             snapshot: 7,
             prompt: "now".into(),
             max_tokens: 8,
+            kind: RequestKind::Completion,
         };
         let volatile_request = engine::CompletionRequest {
             generation: 7,
@@ -10002,6 +10627,7 @@ mod tests {
             snapshot: 7,
             prompt: "now".into(),
             max_tokens: 8,
+            kind: RequestKind::Completion,
         };
 
         assert!(worker_context
@@ -10039,6 +10665,7 @@ mod tests {
         assert_eq!(config.heartbeat_ms, DEFAULT_HEARTBEAT_MS);
         assert_eq!(config.min_context_chars, DEFAULT_MIN_CONTEXT_CHARS);
         assert!(!config.allow_mid_word); // conservative default: mid-word suppressed
+        assert!(!config.grammar_fix);
         assert!(!config.diag_coords);
     }
 
@@ -10128,6 +10755,7 @@ mod tests {
     fn autocorrect_and_british_off_by_default() {
         let config = Config::from_lookup(lookup(&[]));
         assert!(!config.autocorrect);
+        assert!(!config.grammar_fix);
         assert!(!config.british_english);
         assert!(!config.thesaurus);
         // Off → no word-based offer even on a known typo / americanism.
@@ -10291,6 +10919,29 @@ mod tests {
         let prefs = build_prefs(&lookup(&[("COMPME_AUTOCORRECT_ON_APPS", "com.a.one")]));
         assert!(prefs.autocorrect_enabled(Some("com.a.one"), false));
         assert!(!prefs.autocorrect_enabled(Some("com.other"), false));
+    }
+
+    #[test]
+    fn grammar_fix_config_and_per_app_lists_parse() {
+        let config = Config::from_lookup(lookup(&[
+            ("COMPME_GRAMMAR_FIX", "on"),
+            ("COMPME_GRAMMAR_ACCEPT_KEY", "ctrl+96"),
+            ("COMPME_GRAMMAR_CHECK_KEY", "shift+96"),
+        ]));
+        assert!(config.grammar_fix);
+        assert_eq!(
+            config.grammar_accept_key,
+            platform_macos::parse_accept_key("ctrl+96")
+        );
+        assert_eq!(config.grammar_check_key.as_deref(), Some("shift+96"));
+
+        let prefs = build_prefs(&lookup(&[
+            ("COMPME_GRAMMAR_FIX_ON_APPS", "com.a.one"),
+            ("COMPME_GRAMMAR_FIX_OFF_APPS", "com.a.two"),
+        ]));
+        assert!(prefs.grammar_fix_enabled(Some("com.a.one"), false));
+        assert!(!prefs.grammar_fix_enabled(Some("com.a.two"), true));
+        assert!(!prefs.grammar_fix_enabled(Some("com.other"), false));
     }
 
     #[test]
@@ -11298,12 +11949,25 @@ mod tests {
             snapshot: generation,
             prompt: "p".into(),
             max_tokens: 8,
+            kind: RequestKind::Completion,
         }
     }
 
     fn req_with_prompt(prompt: &str) -> CompletionRequest {
         CompletionRequest {
             prompt: prompt.into(),
+            ..req(1)
+        }
+    }
+
+    fn grammar_req_with_left_ctx(left_ctx: &str) -> CompletionRequest {
+        CompletionRequest {
+            prompt: String::new(),
+            kind: RequestKind::GrammarFix {
+                word: "teh".into(),
+                left_ctx: left_ctx.into(),
+                correction_range: CorrectionRange { start: 0, end: 3 },
+            },
             ..req(1)
         }
     }
@@ -11474,7 +12138,15 @@ mod tests {
             Some("com.a"),
             "com.a"
         ));
-        // A non-Enabled field edit on the focused app does not dismiss.
+        // Disabling GrammarFix for the focused app also dismisses, because an
+        // already visible correction would otherwise remain acceptable.
+        assert!(apps_edit_dismisses_focused(
+            GrammarFix,
+            false,
+            Some("com.a"),
+            "com.a"
+        ));
+        // A non-Enabled/non-GrammarFix field edit on the focused app does not dismiss.
         assert!(!apps_edit_dismisses_focused(
             TabDisabled,
             false,

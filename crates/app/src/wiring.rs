@@ -10,7 +10,7 @@
 //!    works the newest request.
 
 use engine::{CompletionRequest, EditKind, TextChange, TriggerPolicy};
-use platform::{FieldHandle, TextContext};
+use platform::{CorrectionRange, FieldHandle, TextContext};
 
 /// Reconstruct the full field value and a char-indexed caret from a context read.
 ///
@@ -236,6 +236,27 @@ impl FieldTracker {
             last.caret = last.caret.saturating_add(text.chars().count());
         }
     }
+
+    pub fn apply_self_replace_range(
+        &mut self,
+        field: &FieldHandle,
+        text: &str,
+        range: CorrectionRange,
+    ) {
+        let Some(last) = &mut self.last else {
+            return;
+        };
+        if &last.field != field {
+            return;
+        }
+        let total = last.value.chars().count();
+        let start_char = range.start.min(total);
+        let end_char = range.end.min(total).max(start_char);
+        let start = byte_index_for_char(&last.value, start_char);
+        let end = byte_index_for_char(&last.value, end_char);
+        last.value.replace_range(start..end, text);
+        last.caret = start_char.saturating_add(text.chars().count());
+    }
 }
 
 fn byte_index_for_char(value: &str, target_chars: usize) -> usize {
@@ -286,6 +307,7 @@ impl LatestRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::RequestKind;
     use platform::{ContextSource, OffsetEncoding, TextRange};
 
     fn field(id: &str) -> FieldHandle {
@@ -576,6 +598,31 @@ mod tests {
     }
 
     #[test]
+    fn self_replace_range_absorbs_midword_correction_readback() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(
+            &field("f"),
+            &ctx("te", "h later"),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        tracker.apply_self_replace_range(&field("f"), "the", CorrectionRange { start: 0, end: 3 });
+        let observed = tracker.observe(
+            &field("f"),
+            &ctx("the", " later"),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 3
+            }
+        );
+    }
+
+    #[test]
     fn self_replace_clamps_replace_left_to_available_chars() {
         // `replace_left` larger than the caret position clamps to what's there.
         let mut tracker = FieldTracker::new();
@@ -773,6 +820,7 @@ mod tests {
             snapshot: generation,
             prompt: "p".into(),
             max_tokens: 16,
+            kind: RequestKind::Completion,
         }
     }
 

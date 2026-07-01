@@ -101,6 +101,15 @@ pub struct ScreenRect {
     pub h: f64,
 }
 
+/// Half-open Unicode-scalar range for a word correction in `left + right`
+/// context text. Platform adapters convert this to their native offset units at
+/// the trait boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CorrectionRange {
+    pub start: usize,
+    pub end: usize,
+}
+
 /// What an adapter can do with one specific field, probed at focus time. This
 /// is the sole input to [`ux_mode`]; callers must re-probe on every focus and
 /// secure-state change rather than cache across fields — `secure`/
@@ -177,6 +186,7 @@ pub enum KeyInterceptMode {
 pub enum AcceptAction {
     Full,
     Word,
+    Correction,
 }
 
 /// A control signal delivered by the accept key-interception tap. Either an
@@ -203,6 +213,7 @@ pub enum ShortcutAction {
     ForceActivate,
     ToggleApp,
     ToggleGlobal,
+    GrammarCheck,
 }
 
 /// How a ghost overlay can be anchored for a field. `None` means no
@@ -486,6 +497,15 @@ pub trait PlatformAdapter: Send + Sync {
     fn focused_page_url(&self, _field: &FieldHandle) -> Result<Option<String>, PlatformError> {
         Ok(None)
     }
+    /// Bounds for a correction range. `Ok(None)` means the field is live but
+    /// cannot expose range geometry; hosts may fall back to caret/popup anchors.
+    fn text_range_rect(
+        &self,
+        _field: &FieldHandle,
+        _range: CorrectionRange,
+    ) -> Result<Option<ScreenRect>, PlatformError> {
+        Ok(None)
+    }
     /// Insert `text` at the caret using `strategy`. All-or-nothing: on `Err`
     /// the field must be unchanged. The caller guarantees the field was
     /// validated via [`capabilities`](Self::capabilities) and is writable.
@@ -517,6 +537,20 @@ pub trait PlatformAdapter: Send + Sync {
         replace_left: usize,
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError>;
+    /// Replace exactly `range` with `text`. Adapters that do not support
+    /// arbitrary range replacement must fail closed rather than approximate with
+    /// a left-of-caret deletion.
+    fn insert_replacing_range(
+        &self,
+        _field: &FieldHandle,
+        _text: &str,
+        _range: CorrectionRange,
+        _strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        Err(PlatformError::UnsupportedField {
+            reason: "range replacement unsupported".into(),
+        })
+    }
 }
 
 /// Renders the ghost-text overlay. Deliberately not `Send`/`Sync`:
@@ -527,6 +561,11 @@ pub trait OverlayPresenter {
     /// Show (or re-anchor) the ghost at `rect` with `text`, replacing any
     /// previous ghost. `rect` is in the adapter's screen coordinate space.
     fn show_ghost(&mut self, rect: ScreenRect, text: &str) -> Result<(), PlatformError>;
+    /// Show a correction underline/banner at `rect`. Defaults to ghost rendering
+    /// until platform-specific correction UI is implemented.
+    fn show_correction(&mut self, rect: ScreenRect, suggestion: &str) -> Result<(), PlatformError> {
+        self.show_ghost(rect, suggestion)
+    }
     /// Change the text of the currently shown ghost without re-anchoring.
     /// Callers must have a ghost showing (a successful `show_ghost` first).
     fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError>;

@@ -50,8 +50,8 @@ use objc2_foundation::{
 };
 use platform::{
     env_flag_on, AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities,
-    CaretCallback, ContextSource, Environment, FieldHandle, FocusCallback, InsertStrategy,
-    Inserted, KeyInterceptMode, OffsetEncoding, OperatingSystem, OverlayPlacement,
+    CaretCallback, ContextSource, CorrectionRange, Environment, FieldHandle, FocusCallback,
+    InsertStrategy, Inserted, KeyInterceptMode, OffsetEncoding, OperatingSystem, OverlayPlacement,
     OverlayPresenter, PlatformAdapter, PlatformError, ScreenRect, SecurityState, ShortcutAction,
     Subscription, TapControl, TextContext, TextRange, Toolkit,
 };
@@ -118,6 +118,8 @@ const CARBON_HOTKEY_DOWN: u32 = 4;
 const CARBON_HOTKEY_FORCE_ACTIVATE: u32 = 5;
 const CARBON_HOTKEY_TOGGLE_APP: u32 = 6;
 const CARBON_HOTKEY_TOGGLE_GLOBAL: u32 = 7;
+const CARBON_HOTKEY_GRAMMAR_CHECK: u32 = 8;
+const CARBON_HOTKEY_GRAMMAR_ACCEPT: u32 = 9;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -347,6 +349,7 @@ pub struct MacosPlatformAdapter {
 pub struct MacosOverlayPresenter {
     panel: Option<Retained<NSPanel>>,
     label: Option<Retained<NSTextField>>,
+    underline_panel: Option<Retained<NSPanel>>,
     last_rect: Option<ScreenRect>,
 }
 
@@ -511,11 +514,20 @@ impl AcceptTapController {
             return Ok(());
         }
         self.teardown_generation.fetch_add(1, Ordering::AcqRel);
-        self.set_accept_action(if visible {
-            Some(AcceptAction::Full)
+        let action = if visible {
+            Some(
+                *self
+                    .accept_action
+                    .lock()
+                    .map_err(|_| PlatformError::CannotComplete {
+                        reason: "accept action lock poisoned".into(),
+                    })?
+                    .get_or_insert(AcceptAction::Full),
+            )
         } else {
             None
-        })
+        };
+        self.set_accept_action(action)
     }
 
     fn set_accept_action(&self, action: Option<AcceptAction>) -> Result<(), PlatformError> {
@@ -548,7 +560,10 @@ impl AcceptTapController {
                     Arc::clone(&self.callback),
                     Arc::clone(&self.accept_action),
                 );
-                *consumer_tap = Some((self.installer)(AcceptTapKind::Consumer, handler)?);
+                *consumer_tap = Some((self.installer)(
+                    accept_consumer_kind_for_action(action),
+                    handler,
+                )?);
             }
             (false, true) => {
                 *consumer_tap = None;
@@ -599,7 +614,16 @@ impl AcceptTapController {
         // FIFO #2, blocks until live. On Err the tap stays disarmed —
         // fail-open to the user's typing — and self-heals on the next
         // visibility transition (set_accept_action sees (Some, None)).
-        *consumer_tap = Some((self.installer)(AcceptTapKind::Consumer, handler)?);
+        let action = *self
+            .accept_action
+            .lock()
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "accept action lock poisoned".into(),
+            })?;
+        *consumer_tap = Some((self.installer)(
+            accept_consumer_kind_for_action(action),
+            handler,
+        )?);
         Ok(())
     }
 
@@ -683,11 +707,20 @@ enum AdapterAcceptTapInstaller {
 enum AcceptTapKind {
     Observer,
     Consumer,
+    CorrectionConsumer,
     /// Process-lifetime always-on shortcut registration (ForceActivate /
     /// ToggleApp / ToggleGlobal, ids 5/6/7). Installed ONCE per subscription
     /// — unlike `Consumer`, it is NOT armed/dropped with each visible
     /// suggestion, so a toggle can fire in its primary no-suggestion state.
     Shortcut,
+}
+
+fn accept_consumer_kind_for_action(action: Option<AcceptAction>) -> AcceptTapKind {
+    if action == Some(AcceptAction::Correction) {
+        AcceptTapKind::CorrectionConsumer
+    } else {
+        AcceptTapKind::Consumer
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -773,6 +806,7 @@ impl MacosOverlayPresenter {
         Ok(Self {
             panel: None,
             label: None,
+            underline_panel: None,
             last_rect: None,
         })
     }
@@ -822,6 +856,37 @@ impl MacosOverlayPresenter {
 
         self.panel = Some(panel);
         self.label = Some(label);
+        Ok(())
+    }
+
+    fn ensure_underline_panel(
+        &mut self,
+        mtm: MainThreadMarker,
+        frame: OverlayFrame,
+    ) -> Result<(), PlatformError> {
+        if self.underline_panel.is_some() {
+            return Ok(());
+        }
+
+        let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+        let panel: Retained<NSPanel> = NSPanel::initWithContentRect_styleMask_backing_defer(
+            NSPanel::alloc(mtm),
+            ns_rect(frame),
+            style,
+            NSBackingStoreType::Buffered,
+            false,
+        );
+        panel.setOpaque(false);
+        panel.setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(0.45, 0.9)));
+        panel.setLevel(101);
+        panel.setIgnoresMouseEvents(true);
+        panel.setHidesOnDeactivate(false);
+        panel.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        );
+
+        self.underline_panel = Some(panel);
         Ok(())
     }
 
@@ -900,6 +965,53 @@ impl OverlayPresenter for MacosOverlayPresenter {
         if let Some(label) = &self.label {
             configure_overlay_label(label, frame, text);
         }
+        if let Some(panel) = &self.underline_panel {
+            panel.orderOut(None);
+        }
+        Ok(())
+    }
+
+    fn show_correction(&mut self, rect: ScreenRect, suggestion: &str) -> Result<(), PlatformError> {
+        let mtm = overlay_main_thread_marker()?;
+        let primary_height = primary_screen_height(mtm);
+        let banner = correction_banner_frame_for_word(rect, suggestion, primary_height);
+        let underline = correction_underline_frame_for_word(rect, primary_height);
+        if debug_enabled() {
+            eprintln!(
+                "compme: correction suggestion_len={} word_rect=(x{:.1} y{:.1} w{:.1} h{:.1}) \
+                 primary_h={:.1} banner=(x{:.1} y{:.1} w{:.1} h{:.1}) \
+                 underline=(x{:.1} y{:.1} w{:.1} h{:.1})",
+                suggestion.len(),
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                primary_height,
+                banner.x,
+                banner.y,
+                banner.w,
+                banner.h,
+                underline.x,
+                underline.y,
+                underline.w,
+                underline.h
+            );
+        }
+
+        self.ensure_panel(mtm, banner, suggestion)?;
+        self.ensure_underline_panel(mtm, underline)?;
+        self.last_rect = Some(rect);
+        if let Some(panel) = &self.panel {
+            panel.setFrame_display(ns_rect(banner), true);
+            panel.orderFrontRegardless();
+        }
+        if let Some(label) = &self.label {
+            configure_overlay_label(label, banner, suggestion);
+        }
+        if let Some(panel) = &self.underline_panel {
+            panel.setFrame_display(ns_rect(underline), true);
+            panel.orderFrontRegardless();
+        }
         Ok(())
     }
 
@@ -929,6 +1041,9 @@ impl OverlayPresenter for MacosOverlayPresenter {
     fn hide(&mut self) -> Result<(), PlatformError> {
         let _mtm = overlay_main_thread_marker()?;
         if let Some(panel) = &self.panel {
+            panel.orderOut(None);
+        }
+        if let Some(panel) = &self.underline_panel {
             panel.orderOut(None);
         }
         Ok(())
@@ -1014,6 +1129,31 @@ fn overlay_frame_for_text(rect: ScreenRect, text: &str, primary_height: f64) -> 
     // The degenerate branch above is what keeps the known bad case onscreen:
     // an element-bounds position is inside a visible element.
     OverlayFrame { x: rect.x, y, w, h }
+}
+
+fn correction_banner_frame_for_word(
+    rect: ScreenRect,
+    text: &str,
+    primary_height: f64,
+) -> OverlayFrame {
+    let text_width = (text.chars().count() as f64 * 7.0) + 24.0;
+    let w = text_width.clamp(96.0, 480.0).max(rect.w);
+    let h = (rect.h + 8.0).clamp(20.0, 52.0);
+    OverlayFrame {
+        x: rect.x,
+        y: primary_height - rect.y + 4.0,
+        w,
+        h,
+    }
+}
+
+fn correction_underline_frame_for_word(rect: ScreenRect, primary_height: f64) -> OverlayFrame {
+    OverlayFrame {
+        x: rect.x,
+        y: primary_height - rect.y - rect.h - 2.0,
+        w: rect.w.max(8.0),
+        h: 2.0,
+    }
 }
 
 fn overlay_label_frame(frame: OverlayFrame) -> OverlayFrame {
@@ -1777,6 +1917,38 @@ impl PlatformAdapter for MacosPlatformAdapter {
         self.map_app_exited(pid, app, result)
     }
 
+    fn text_range_rect(
+        &self,
+        field: &FieldHandle,
+        range: CorrectionRange,
+    ) -> Result<Option<ScreenRect>, PlatformError> {
+        if (self.secure_input_enabled)() {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            });
+        }
+        if field_has_secure_text_subrole(field) {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            });
+        }
+
+        let field = field.clone();
+        let app = field.app.clone();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for text_range_rect".into(),
+            })?;
+
+        let result = self
+            .worker
+            .run(move || text_range_rect_for_field(pid, field, range))?;
+        self.map_app_exited(pid, app, result)
+    }
+
     fn insert(
         &self,
         field: &FieldHandle,
@@ -1794,6 +1966,52 @@ impl PlatformAdapter for MacosPlatformAdapter {
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError> {
         self.insert_impl(field, text, replace_left, strategy)
+    }
+
+    fn insert_replacing_range(
+        &self,
+        field: &FieldHandle,
+        text: &str,
+        range: CorrectionRange,
+        strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        if strategy != InsertStrategy::AxSet {
+            return Err(PlatformError::UnsupportedField {
+                reason: "range replacement requires AxSet".into(),
+            });
+        }
+        if (self.secure_input_enabled)() {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            });
+        }
+        if field_has_secure_text_subrole(field) {
+            return Err(PlatformError::SecureInput {
+                state: SecurityState::SecureField,
+            });
+        }
+
+        let field = field.clone();
+        let app = field.app.clone();
+        let text = text.to_string();
+        let pid = field
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .or_else(|| (self.frontmost_pid)())
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "no pid available for insert_replacing_range".into(),
+            })?;
+
+        let result = self
+            .worker
+            .run(move || insert_range_for_field(pid, field, text, range, strategy))?
+            .and_then(|apply| match apply {
+                AxSetApply::Applied(inserted) => Ok(inserted),
+                AxSetApply::SilentlyIgnored => Err(PlatformError::CannotComplete {
+                    reason: "AX range replacement was ignored".into(),
+                }),
+            });
+        self.map_app_exited(pid, app, result)
     }
 }
 
@@ -2413,6 +2631,7 @@ fn accept_consumer_tap_handler(
 pub enum AcceptBinding {
     Word,
     Full,
+    GrammarAccept,
     Dismiss,
     Cycle,
 }
@@ -2435,11 +2654,13 @@ pub struct AcceptKeymap {
     full: i64,
     dismiss: i64,
     cycle: i64,
+    grammar_accept: Option<i64>,
     /// Carbon modifier masks for the two rebindable accept keys (modifier-combo
     /// support, slice 1). 0 = bare key (today's behavior). Dismiss/cycle are
     /// fixed bare keys, so they carry no mask.
     word_mods: u32,
     full_mods: u32,
+    grammar_accept_mods: u32,
 }
 
 /// Carbon event modifier masks — the `modifiers` argument of
@@ -2534,6 +2755,7 @@ pub struct ShortcutBindings {
     pub force_activate: Option<(i64, u32)>,
     pub toggle_app: Option<(i64, u32)>,
     pub toggle_global: Option<(i64, u32)>,
+    pub grammar_check: Option<(i64, u32)>,
 }
 
 impl ShortcutBindings {
@@ -2545,11 +2767,13 @@ impl ShortcutBindings {
         force_activate: Option<&str>,
         toggle_app: Option<&str>,
         toggle_global: Option<&str>,
+        grammar_check: Option<&str>,
     ) -> Self {
         Self {
             force_activate: force_activate.and_then(parse_accept_key),
             toggle_app: toggle_app.and_then(parse_accept_key),
             toggle_global: toggle_global.and_then(parse_accept_key),
+            grammar_check: grammar_check.and_then(parse_accept_key),
         }
     }
 
@@ -2558,10 +2782,15 @@ impl ShortcutBindings {
     /// must reject/ignore a colliding set before installing them. Same keycode
     /// with different modifiers is a distinct chord (not a collision).
     pub fn has_internal_collision(&self) -> bool {
-        let bound: Vec<(i64, u32)> = [self.force_activate, self.toggle_app, self.toggle_global]
-            .into_iter()
-            .flatten()
-            .collect();
+        let bound: Vec<(i64, u32)> = [
+            self.force_activate,
+            self.toggle_app,
+            self.toggle_global,
+            self.grammar_check,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         for i in 0..bound.len() {
             for j in (i + 1)..bound.len() {
                 if bound[i] == bound[j] {
@@ -2582,6 +2811,7 @@ impl ShortcutBindings {
             (CARBON_HOTKEY_FORCE_ACTIVATE, self.force_activate),
             (CARBON_HOTKEY_TOGGLE_APP, self.toggle_app),
             (CARBON_HOTKEY_TOGGLE_GLOBAL, self.toggle_global),
+            (CARBON_HOTKEY_GRAMMAR_CHECK, self.grammar_check),
         ]
         .into_iter()
         .filter_map(|(id, binding)| binding.map(|(keycode, mask)| (id, keycode, mask)))
@@ -2600,6 +2830,7 @@ fn shortcut_action_for_hotkey_id(id: u32) -> Option<ShortcutAction> {
         CARBON_HOTKEY_FORCE_ACTIVATE => Some(ShortcutAction::ForceActivate),
         CARBON_HOTKEY_TOGGLE_APP => Some(ShortcutAction::ToggleApp),
         CARBON_HOTKEY_TOGGLE_GLOBAL => Some(ShortcutAction::ToggleGlobal),
+        CARBON_HOTKEY_GRAMMAR_CHECK => Some(ShortcutAction::GrammarCheck),
         _ => None,
     }
 }
@@ -2681,8 +2912,10 @@ impl Default for AcceptKeymap {
             full: KEYCODE_GRAVE,
             dismiss: KEYCODE_ESCAPE,
             cycle: KEYCODE_DOWN,
+            grammar_accept: None,
             word_mods: 0,
             full_mods: 0,
+            grammar_accept_mods: 0,
         }
     }
 }
@@ -2694,6 +2927,8 @@ impl AcceptKeymap {
             Some(AcceptBinding::Word)
         } else if keycode == self.full {
             Some(AcceptBinding::Full)
+        } else if self.grammar_accept == Some(keycode) {
+            Some(AcceptBinding::GrammarAccept)
         } else if keycode == self.dismiss {
             Some(AcceptBinding::Dismiss)
         } else if keycode == self.cycle {
@@ -2716,16 +2951,43 @@ impl AcceptKeymap {
             .collect()
     }
 
+    pub fn arm_bindings_for_action(
+        &self,
+        action: AcceptAction,
+        suppress_tab: bool,
+    ) -> Vec<(u32, i64, u32)> {
+        match action {
+            AcceptAction::Correction => self
+                .carbon_bindings()
+                .into_iter()
+                .filter(|(id, _, _)| *id == CARBON_HOTKEY_GRAMMAR_ACCEPT)
+                .collect(),
+            AcceptAction::Full | AcceptAction::Word => self
+                .arm_bindings(suppress_tab)
+                .into_iter()
+                .filter(|(id, _, _)| *id != CARBON_HOTKEY_GRAMMAR_ACCEPT)
+                .collect(),
+        }
+    }
+
     /// The Carbon `(hotkey-id, keycode, modifier-mask)` triples for this keymap.
     /// The mask is 0 for a bare key (the default for all four bindings); the two
     /// rebindable keys can carry a non-zero Carbon modifier mask (slice 1).
-    pub fn carbon_bindings(&self) -> [(u32, i64, u32); 4] {
-        [
+    pub fn carbon_bindings(&self) -> Vec<(u32, i64, u32)> {
+        let mut bindings = vec![
             (CARBON_HOTKEY_TAB, self.word, self.word_mods),
             (CARBON_HOTKEY_GRAVE, self.full, self.full_mods),
             (CARBON_HOTKEY_ESCAPE, self.dismiss, 0),
             (CARBON_HOTKEY_DOWN, self.cycle, 0),
-        ]
+        ];
+        if let Some(grammar_accept) = self.grammar_accept {
+            bindings.push((
+                CARBON_HOTKEY_GRAMMAR_ACCEPT,
+                grammar_accept,
+                self.grammar_accept_mods,
+            ));
+        }
+        bindings
     }
 
     /// The keycode a registered Carbon hotkey id resolves to under this keymap —
@@ -2757,25 +3019,47 @@ impl AcceptKeymap {
         word_mods: u32,
         full_mods: u32,
     ) -> Result<Self, KeymapError> {
+        Self::from_accept_keys_with_mods_and_grammar(word, full, None, word_mods, full_mods, 0)
+    }
+
+    pub fn from_accept_keys_with_mods_and_grammar(
+        word: Option<i64>,
+        full: Option<i64>,
+        grammar_accept: Option<i64>,
+        word_mods: u32,
+        full_mods: u32,
+        grammar_accept_mods: u32,
+    ) -> Result<Self, KeymapError> {
         let map = Self {
             word: word.unwrap_or(KEYCODE_TAB),
             full: full.unwrap_or(KEYCODE_GRAVE),
+            grammar_accept,
             word_mods,
             full_mods,
+            grammar_accept_mods,
             ..Self::default()
         };
-        let keys = [map.word, map.full, map.dismiss, map.cycle];
-        if let Some(&bad) = keys.iter().find(|&&k| k < 0) {
+        let keys = [
+            Some(map.word),
+            Some(map.full),
+            Some(map.dismiss),
+            Some(map.cycle),
+            map.grammar_accept,
+        ];
+        if let Some(bad) = keys.into_iter().flatten().find(|&k| k < 0) {
             return Err(KeymapError::InvalidKeycode(bad));
         }
         // Collision is on the full binding identity (keycode, mask), not keycode
         // alone — dismiss/cycle are fixed bare keys so their mask is 0.
-        let bindings = [
+        let mut bindings = vec![
             (map.word, map.word_mods),
             (map.full, map.full_mods),
             (map.dismiss, 0u32),
             (map.cycle, 0u32),
         ];
+        if let Some(grammar_accept) = map.grammar_accept {
+            bindings.push((grammar_accept, map.grammar_accept_mods));
+        }
         for i in 0..bindings.len() {
             for j in (i + 1)..bindings.len() {
                 if bindings[i] == bindings[j] {
@@ -2816,25 +3100,33 @@ fn accept_tap_decision(
     if should_ignore_event_for_tap(event.source_user_data) {
         return AcceptTapDecision::Keep;
     }
-    if kind == AcceptTapKind::Consumer
-        && matches!(event.event_type, CGEventType::KeyDown)
-        && action.is_some()
+    if matches!(
+        kind,
+        AcceptTapKind::Consumer | AcceptTapKind::CorrectionConsumer
+    ) && matches!(event.event_type, CGEventType::KeyDown)
     {
-        // Cotypist binding: the keycode picks the action, not the armed value.
-        // The word key accepts the next word (partial); the full key (default the
-        // grave/backtick above Tab) accepts the whole completion; Esc dismisses +
-        // suppresses the field. `action.is_some()` is only the armed/visible gate.
-        // Driven by `AcceptKeymap` so a rebind is honored from one source.
+        // Cotypist binding: while a ghost is armed, the keycode picks the action.
+        // While a correction is armed, only the dedicated grammar-accept key is
+        // consumed; normal Word/Full/Esc/Down keys pass through to the app.
         // Prefer the role resolved from the fired hotkey id (mask-correct when
         // two roles share a keycode); fall back to the keycode map otherwise.
-        match event.binding.or_else(|| keymap.binding_for(event.keycode)) {
-            // Option+<word key> is the per-app Tab bypass: pass it through
-            // literally (no Word accept, no swallow).
-            Some(AcceptBinding::Word) if event.option_down => return AcceptTapDecision::Keep,
-            Some(AcceptBinding::Word) => return AcceptTapDecision::Drop(AcceptAction::Word),
-            Some(AcceptBinding::Full) => return AcceptTapDecision::Drop(AcceptAction::Full),
-            Some(AcceptBinding::Dismiss) => return AcceptTapDecision::DropDismiss,
-            Some(AcceptBinding::Cycle) => return AcceptTapDecision::DropCycle,
+        let binding = event.binding.or_else(|| keymap.binding_for(event.keycode));
+        match action {
+            Some(AcceptAction::Correction) => {
+                if binding == Some(AcceptBinding::GrammarAccept) {
+                    return AcceptTapDecision::Drop(AcceptAction::Correction);
+                }
+            }
+            Some(AcceptAction::Full | AcceptAction::Word) => match binding {
+                // Option+<word key> is the per-app Tab bypass: pass it through
+                // literally (no Word accept, no swallow).
+                Some(AcceptBinding::Word) if event.option_down => return AcceptTapDecision::Keep,
+                Some(AcceptBinding::Word) => return AcceptTapDecision::Drop(AcceptAction::Word),
+                Some(AcceptBinding::Full) => return AcceptTapDecision::Drop(AcceptAction::Full),
+                Some(AcceptBinding::Dismiss) => return AcceptTapDecision::DropDismiss,
+                Some(AcceptBinding::Cycle) => return AcceptTapDecision::DropCycle,
+                Some(AcceptBinding::GrammarAccept) | None => {}
+            },
             None => {}
         }
     }
@@ -2937,12 +3229,16 @@ fn install_worker_accept_tap_resource(
         // own process-lifetime resource — independent of the per-suggestion
         // consumer arm — so a toggle fires before any suggestion appears.
         AcceptTapKind::Shortcut => install_process_shortcut_hotkeys(handler),
-        AcceptTapKind::Consumer => install_carbon_accept_hotkeys(handler),
+        AcceptTapKind::Consumer => install_carbon_accept_hotkeys(handler, AcceptAction::Full),
+        AcceptTapKind::CorrectionConsumer => {
+            install_carbon_accept_hotkeys(handler, AcceptAction::Correction)
+        }
     }
 }
 
 fn install_carbon_accept_hotkeys(
     handler: Arc<AcceptTapHandler>,
+    action: AcceptAction,
 ) -> Result<WorkerResource, PlatformError> {
     let target = unsafe { GetApplicationEventTarget() };
     ensure_carbon_handler_installed(target)?;
@@ -2960,8 +3256,8 @@ fn install_carbon_accept_hotkeys(
     // process-lifetime shortcut resource (`install_process_shortcut_hotkeys`),
     // NOT here — registering them per arm cycle left them unregistered in the
     // no-suggestion state, their primary moment (review finding C).
-    for (id, keycode, mask) in
-        accept_keymap().arm_bindings(TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed))
+    for (id, keycode, mask) in accept_keymap()
+        .arm_bindings_for_action(action, TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed))
     {
         resource.register_hotkey(target, id, keycode, mask)?;
     }
@@ -3156,8 +3452,10 @@ static ACCEPT_KEYMAP: std::sync::RwLock<AcceptKeymap> = std::sync::RwLock::new(A
     full: KEYCODE_GRAVE,
     dismiss: KEYCODE_ESCAPE,
     cycle: KEYCODE_DOWN,
+    grammar_accept: None,
     word_mods: 0,
     full_mods: 0,
+    grammar_accept_mods: 0,
 });
 
 /// Per-app Tab suppression (§16 tab_disabled): the run loop sets this on
@@ -3199,7 +3497,7 @@ pub fn set_accept_keymap_from_config(
     // Bare-keycode entry (the live-rebind fn-pointer path still calls this):
     // delegate to the modifier-aware form with a zero mask, so both paths
     // share one validate-then-swap.
-    set_accept_keymap_from_config_with_mods(word.map(|k| (k, 0)), full.map(|k| (k, 0)))
+    set_accept_keymap_from_config_with_mods(word.map(|k| (k, 0)), full.map(|k| (k, 0)), None)
 }
 
 /// Like [`set_accept_keymap_from_config`] but each key carries a Carbon modifier
@@ -3210,12 +3508,15 @@ pub fn set_accept_keymap_from_config(
 pub fn set_accept_keymap_from_config_with_mods(
     word: Option<(i64, u32)>,
     full: Option<(i64, u32)>,
+    grammar_accept: Option<(i64, u32)>,
 ) -> Result<(), KeymapError> {
-    let map = AcceptKeymap::from_accept_keys_with_mods(
+    let map = AcceptKeymap::from_accept_keys_with_mods_and_grammar(
         word.map(|(k, _)| k),
         full.map(|(k, _)| k),
+        grammar_accept.map(|(k, _)| k),
         word.map(|(_, m)| m).unwrap_or(0),
         full.map(|(_, m)| m).unwrap_or(0),
+        grammar_accept.map(|(_, m)| m).unwrap_or(0),
     )?;
     set_accept_keymap(map);
     Ok(())
@@ -3230,6 +3531,7 @@ static SHORTCUT_BINDINGS: std::sync::RwLock<ShortcutBindings> =
         force_activate: None,
         toggle_app: None,
         toggle_global: None,
+        grammar_check: None,
     });
 
 /// Snapshot the active shortcut bindings (the registration loop's single read).
@@ -3250,8 +3552,10 @@ pub fn set_shortcut_bindings_from_config(
     force_activate: Option<&str>,
     toggle_app: Option<&str>,
     toggle_global: Option<&str>,
+    grammar_check: Option<&str>,
 ) -> ShortcutBindings {
-    let bindings = ShortcutBindings::from_config(force_activate, toggle_app, toggle_global);
+    let bindings =
+        ShortcutBindings::from_config(force_activate, toggle_app, toggle_global, grammar_check);
     let effective = if bindings.has_internal_collision() {
         if debug_enabled() {
             eprintln!(
@@ -3438,6 +3742,7 @@ fn binding_for_hotkey_id(id: u32) -> Option<AcceptBinding> {
     match id {
         CARBON_HOTKEY_TAB => Some(AcceptBinding::Word),
         CARBON_HOTKEY_GRAVE => Some(AcceptBinding::Full),
+        CARBON_HOTKEY_GRAMMAR_ACCEPT => Some(AcceptBinding::GrammarAccept),
         CARBON_HOTKEY_ESCAPE => Some(AcceptBinding::Dismiss),
         CARBON_HOTKEY_DOWN => Some(AcceptBinding::Cycle),
         _ => None,
@@ -4337,6 +4642,14 @@ fn axset_readback_outcome(original: &str, readback: &str, inserted: Inserted) ->
     }
 }
 
+fn axset_exact_readback_outcome(expected: &str, readback: &str, inserted: Inserted) -> AxSetApply {
+    if readback == expected {
+        AxSetApply::Applied(inserted)
+    } else {
+        AxSetApply::SilentlyIgnored
+    }
+}
+
 fn insert_for_field(
     pid: i32,
     field: FieldHandle,
@@ -4390,6 +4703,85 @@ fn insert_for_field(
         .unwrap_or_else(|_| new_value.clone());
     Ok(axset_readback_outcome(
         &value,
+        &readback,
+        Inserted {
+            bytes: text.len(),
+            chars: text.chars().count(),
+            strategy,
+        },
+    ))
+}
+
+fn text_range_rect_for_field(
+    pid: i32,
+    field: FieldHandle,
+    range: CorrectionRange,
+) -> Result<Option<ScreenRect>, PlatformError> {
+    let (element, _owners) = copy_focused_or_app_element(pid)?;
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    if !field_matches_identity(&field, &identity) {
+        return Err(PlatformError::StaleField);
+    }
+    if macos_secure_input_enabled() {
+        return Err(PlatformError::SecureInput {
+            state: SecurityState::SecureInputEnabled,
+        });
+    }
+
+    let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
+    let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    let ctx = text_context_from_value(field, value, selected_range);
+    let Some(range) =
+        scalar_correction_range_to_utf16_range(&ctx.left, &ctx.right, selected_range, range)
+    else {
+        return Ok(None);
+    };
+    unsafe { read_ax_bounds_for_range(element, range.location, range.length) }
+}
+
+fn insert_range_for_field(
+    pid: i32,
+    field: FieldHandle,
+    text: String,
+    range: CorrectionRange,
+    strategy: InsertStrategy,
+) -> Result<AxSetApply, PlatformError> {
+    let (element, _owners) = copy_focused_or_app_element(pid)?;
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    if !field_matches_identity(&field, &identity) {
+        return Err(PlatformError::StaleField);
+    }
+    if macos_secure_input_enabled() {
+        return Err(PlatformError::SecureInput {
+            state: SecurityState::SecureInputEnabled,
+        });
+    }
+
+    let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
+    let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    let ctx = text_context_from_value(field, value.clone(), selected_range);
+    let Some(range) =
+        scalar_correction_range_to_utf16_range(&ctx.left, &ctx.right, selected_range, range)
+    else {
+        return Err(PlatformError::UnsupportedField {
+            reason: "correction range is not contiguous in the field".into(),
+        });
+    };
+    let (new_value, new_caret) = splice_text_at_utf16_range(&value, range, &text);
+    unsafe {
+        set_required_ax_string_attribute(element, kAXValueAttribute, &new_value)?;
+        let caret_result = set_required_ax_selected_range(element, new_caret);
+        if !matches!(
+            caret_result,
+            Ok(()) | Err(PlatformError::UnsupportedField { .. })
+        ) {
+            caret_result?;
+        }
+    }
+
+    let readback = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
+    Ok(axset_exact_readback_outcome(
+        &new_value,
         &readback,
         Inserted {
             bytes: text.len(),
@@ -4905,6 +5297,66 @@ fn splice_text_at_utf16_range(
         new_value,
         start.saturating_add(insert.encode_utf16().count()),
     )
+}
+
+fn utf16_units_for_scalar_prefix(value: &str, scalar_count: usize) -> Option<usize> {
+    let total = value.chars().count();
+    if scalar_count > total {
+        return None;
+    }
+    Some(value.chars().take(scalar_count).map(char::len_utf16).sum())
+}
+
+fn scalar_correction_range_to_utf16_range(
+    left: &str,
+    right: &str,
+    selected_range: CFRange,
+    range: CorrectionRange,
+) -> Option<CFRange> {
+    if range.start > range.end {
+        return None;
+    }
+    let left_scalars = left.chars().count();
+    let right_scalars = right.chars().count();
+    if range.end > left_scalars.saturating_add(right_scalars) {
+        return None;
+    }
+
+    let selection_len = selected_range.length.max(0) as usize;
+    let caret_utf16 = (selected_range.location.max(0) as usize).saturating_add(selection_len);
+    let selection_start = selected_range.location.max(0) as usize;
+
+    let (start_utf16, end_utf16) = if range.end <= left_scalars {
+        let left_start = utf16_units_for_scalar_prefix(left, range.start)?;
+        let left_end = utf16_units_for_scalar_prefix(left, range.end)?;
+        (left_start, left_end)
+    } else if range.start >= left_scalars {
+        let right_start =
+            utf16_units_for_scalar_prefix(right, range.start.saturating_sub(left_scalars))?;
+        let right_end =
+            utf16_units_for_scalar_prefix(right, range.end.saturating_sub(left_scalars))?;
+        (
+            caret_utf16.saturating_add(right_start),
+            caret_utf16.saturating_add(right_end),
+        )
+    } else if selection_len == 0 {
+        let left_start = utf16_units_for_scalar_prefix(left, range.start)?;
+        let right_end =
+            utf16_units_for_scalar_prefix(right, range.end.saturating_sub(left_scalars))?;
+        (left_start, caret_utf16.saturating_add(right_end))
+    } else {
+        return None;
+    };
+
+    if start_utf16 > end_utf16
+        || (selection_len > 0 && start_utf16 < selection_start && end_utf16 > selection_start)
+    {
+        return None;
+    }
+    Some(CFRange {
+        location: start_utf16 as isize,
+        length: end_utf16.saturating_sub(start_utf16) as isize,
+    })
 }
 
 fn editable_capabilities(
@@ -8120,6 +8572,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn insert_replacing_range_refuses_non_axset_without_posting_text() {
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        let p = Arc::clone(&posted);
+        config.synthetic_key_poster = Arc::new(move |_, text| {
+            p.lock().unwrap().push(text.to_string());
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert_replacing_range(
+                &field,
+                "the",
+                CorrectionRange { start: 0, end: 3 },
+                InsertStrategy::SyntheticKeys,
+            ),
+            Err(PlatformError::UnsupportedField {
+                reason: "range replacement requires AxSet".into(),
+            })
+        );
+        assert!(posted.lock().unwrap().is_empty());
+    }
+
     fn keep_handler(log: Arc<Mutex<Vec<i64>>>) -> Arc<AcceptTapHandler> {
         Arc::new(move |event: AcceptTapEvent| {
             log.lock().unwrap().push(event.keycode);
@@ -8927,6 +9410,57 @@ mod tests {
     }
 
     #[test]
+    fn correction_frames_place_banner_above_and_underline_below_word_rect() {
+        let rect = ScreenRect {
+            x: 120.0,
+            y: 240.0,
+            w: 48.0,
+            h: 14.0,
+        };
+
+        let banner = correction_banner_frame_for_word(rect, "the", 1000.0);
+        let underline = correction_underline_frame_for_word(rect, 1000.0);
+
+        assert_eq!(banner.x, 120.0);
+        assert_eq!(banner.y, 764.0);
+        assert_eq!(banner.w, 96.0);
+        assert_eq!(banner.h, 22.0);
+        assert_eq!(
+            underline,
+            OverlayFrame {
+                x: 120.0,
+                y: 744.0,
+                w: 48.0,
+                h: 2.0,
+            }
+        );
+        assert!(
+            underline.y < 1000.0 - rect.y - rect.h,
+            "underline sits below the word rect in Cocoa coordinates"
+        );
+        assert!(
+            banner.y > 1000.0 - rect.y,
+            "banner sits above the word rect in Cocoa coordinates"
+        );
+    }
+
+    #[test]
+    fn correction_frames_preserve_secondary_display_negative_y() {
+        let rect = ScreenRect {
+            x: 120.0,
+            y: 1100.0,
+            w: 48.0,
+            h: 14.0,
+        };
+
+        let banner = correction_banner_frame_for_word(rect, "correction", 1000.0);
+        let underline = correction_underline_frame_for_word(rect, 1000.0);
+
+        assert!(banner.y < 0.0);
+        assert!(underline.y < 0.0);
+    }
+
+    #[test]
     fn overlay_frame_treats_narrow_but_tall_rect_as_degenerate() {
         // The degenerate guard ORs both dimensions
         // (rect.w > CARET_MAX_W || rect.h > CARET_MAX_H), so a narrow-but-tall
@@ -9457,26 +9991,140 @@ mod tests {
     fn shortcut_bindings_parse_from_config_and_detect_internal_collisions() {
         // The three optional global shortcuts (A3 Shortcuts pane) each parse via
         // parse_accept_key; None/empty/malformed leaves that binding unset.
-        let b = ShortcutBindings::from_config(Some("shift+96"), None, Some("garbage"));
+        let b = ShortcutBindings::from_config(Some("shift+96"), None, Some("garbage"), None);
         assert_eq!(b.force_activate, Some((96, CARBON_SHIFT_KEY)));
         assert_eq!(b.toggle_app, None);
         assert_eq!(b.toggle_global, None); // malformed → unset (fail-soft)
+        assert_eq!(b.grammar_check, None);
         assert!(!b.has_internal_collision());
 
         // All-unset is the default (no global hotkey registered).
         assert_eq!(
             ShortcutBindings::default(),
-            ShortcutBindings::from_config(None, None, None)
+            ShortcutBindings::from_config(None, None, None, None)
         );
 
         // Two bindings on the SAME (keycode, mask) chord collide — the caller
         // must reject the set before registering (one chord can't fire two).
-        let clash = ShortcutBindings::from_config(Some("ctrl+50"), Some("ctrl+50"), None);
+        let clash = ShortcutBindings::from_config(Some("ctrl+50"), Some("ctrl+50"), None, None);
         assert!(clash.has_internal_collision());
 
         // Same keycode, DIFFERENT modifiers is NOT a collision (distinct chords).
-        let distinct = ShortcutBindings::from_config(Some("50"), Some("shift+50"), Some("ctrl+50"));
+        let distinct = ShortcutBindings::from_config(
+            Some("50"),
+            Some("shift+50"),
+            Some("ctrl+50"),
+            Some("option+50"),
+        );
         assert!(!distinct.has_internal_collision());
+    }
+
+    #[test]
+    fn grammar_accept_key_maps_to_correction_action_only_in_correction_mode() {
+        let keymap = AcceptKeymap::from_accept_keys_with_mods_and_grammar(
+            None,
+            None,
+            Some(96),
+            0,
+            0,
+            CARBON_CONTROL_KEY,
+        )
+        .unwrap();
+
+        assert_eq!(keymap.binding_for(96), Some(AcceptBinding::GrammarAccept));
+        assert!(keymap.carbon_bindings().contains(&(
+            CARBON_HOTKEY_GRAMMAR_ACCEPT,
+            96,
+            CARBON_CONTROL_KEY
+        )));
+        assert_eq!(
+            binding_for_hotkey_id(CARBON_HOTKEY_GRAMMAR_ACCEPT),
+            Some(AcceptBinding::GrammarAccept)
+        );
+        let grammar_press = AcceptTapEvent {
+            event_type: CGEventType::KeyDown,
+            keycode: 96,
+            source_user_data: 0,
+            option_down: false,
+            binding: Some(AcceptBinding::GrammarAccept),
+            shortcut: None,
+        };
+
+        // Ghost mode preserves the existing Word/Full accept keys and lets the
+        // grammar-accept key reach the app.
+        assert_eq!(
+            accept_tap_decision(
+                &keymap,
+                AcceptTapKind::Consumer,
+                grammar_press,
+                Some(AcceptAction::Full),
+            ),
+            AcceptTapDecision::Keep
+        );
+
+        // Correction mode consumes only the dedicated grammar-accept binding.
+        assert_eq!(
+            accept_tap_decision(
+                &keymap,
+                AcceptTapKind::Consumer,
+                grammar_press,
+                Some(AcceptAction::Correction),
+            ),
+            AcceptTapDecision::Drop(AcceptAction::Correction)
+        );
+    }
+
+    #[test]
+    fn correction_arm_passes_word_full_dismiss_and_cycle_keys_through() {
+        let keymap =
+            AcceptKeymap::from_accept_keys_with_mods_and_grammar(None, None, Some(96), 0, 0, 0)
+                .unwrap();
+        for (keycode, binding) in [
+            (KEYCODE_TAB, Some(AcceptBinding::Word)),
+            (KEYCODE_GRAVE, Some(AcceptBinding::Full)),
+            (KEYCODE_ESCAPE, Some(AcceptBinding::Dismiss)),
+            (KEYCODE_DOWN, Some(AcceptBinding::Cycle)),
+        ] {
+            assert_eq!(
+                accept_tap_decision(
+                    &keymap,
+                    AcceptTapKind::Consumer,
+                    AcceptTapEvent {
+                        event_type: CGEventType::KeyDown,
+                        keycode,
+                        source_user_data: 0,
+                        option_down: false,
+                        binding,
+                        shortcut: None,
+                    },
+                    Some(AcceptAction::Correction),
+                ),
+                AcceptTapDecision::Keep,
+                "correction arm must pass through {binding:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn grammar_accept_key_collides_on_same_chord_only() {
+        assert!(AcceptKeymap::from_accept_keys_with_mods_and_grammar(
+            None,
+            Some(96),
+            Some(96),
+            0,
+            CARBON_CONTROL_KEY,
+            CARBON_CONTROL_KEY,
+        )
+        .is_err());
+        assert!(AcceptKeymap::from_accept_keys_with_mods_and_grammar(
+            None,
+            Some(96),
+            Some(96),
+            0,
+            CARBON_SHIFT_KEY,
+            CARBON_CONTROL_KEY,
+        )
+        .is_ok());
     }
 
     #[test]
@@ -9563,6 +10211,10 @@ mod tests {
             shortcut_action_for_hotkey_id(CARBON_HOTKEY_TOGGLE_GLOBAL),
             Some(ShortcutAction::ToggleGlobal)
         );
+        assert_eq!(
+            shortcut_action_for_hotkey_id(CARBON_HOTKEY_GRAMMAR_CHECK),
+            Some(ShortcutAction::GrammarCheck)
+        );
         assert_eq!(shortcut_action_for_hotkey_id(9999), None);
         // Disjoint from the accept-key ids so one shared Carbon handler routes by
         // id unambiguously: an accept id decodes to a binding, never an action.
@@ -9579,7 +10231,7 @@ mod tests {
 
     #[test]
     fn registration_plan_lists_only_bound_shortcuts_under_their_action_ids() {
-        let b = ShortcutBindings::from_config(Some("96"), None, Some("shift+96"));
+        let b = ShortcutBindings::from_config(Some("96"), None, Some("shift+96"), Some("ctrl+96"));
         // Only the two bound shortcuts appear, each under its action's hotkey id;
         // the unset toggle_app is skipped.
         assert_eq!(
@@ -9587,6 +10239,7 @@ mod tests {
             vec![
                 (CARBON_HOTKEY_FORCE_ACTIVATE, 96, 0),
                 (CARBON_HOTKEY_TOGGLE_GLOBAL, 96, CARBON_SHIFT_KEY),
+                (CARBON_HOTKEY_GRAMMAR_CHECK, 96, CARBON_CONTROL_KEY),
             ]
         );
         // Every planned id round-trips back to an action.
@@ -9598,14 +10251,17 @@ mod tests {
     #[test]
     fn set_shortcut_bindings_from_config_drops_a_colliding_set_whole() {
         // A distinct set is stored verbatim and returned for the caller to log.
-        let ok = set_shortcut_bindings_from_config(Some("96"), None, Some("shift+96"));
+        let ok =
+            set_shortcut_bindings_from_config(Some("96"), None, Some("shift+96"), Some("ctrl+96"));
         assert_eq!(ok.force_activate, Some((96, 0)));
         assert_eq!(ok.toggle_global, Some((96, CARBON_SHIFT_KEY)));
+        assert_eq!(ok.grammar_check, Some((96, CARBON_CONTROL_KEY)));
         assert_eq!(shortcut_bindings(), ok);
 
         // A set where two shortcuts share one chord is unregisterable, so the
         // whole set is dropped to the default (no partial registration).
-        let dropped = set_shortcut_bindings_from_config(Some("ctrl+50"), Some("ctrl+50"), None);
+        let dropped =
+            set_shortcut_bindings_from_config(Some("ctrl+50"), Some("ctrl+50"), None, None);
         assert_eq!(dropped, ShortcutBindings::default());
         assert_eq!(shortcut_bindings(), ShortcutBindings::default());
     }
@@ -9759,7 +10415,7 @@ mod tests {
         // (slice 1b): set_accept_keymap_from_config_with_mods lands a non-zero
         // Carbon mask in carbon_bindings (word) while the unset key stays bare;
         // restored to the default afterward so the global is clean for others.
-        set_accept_keymap_from_config_with_mods(Some((35, CARBON_SHIFT_KEY)), None).unwrap();
+        set_accept_keymap_from_config_with_mods(Some((35, CARBON_SHIFT_KEY)), None, None).unwrap();
         let armed = accept_keymap().carbon_bindings();
         assert_eq!(armed[0], (CARBON_HOTKEY_TAB, 35, CARBON_SHIFT_KEY));
         assert_eq!(armed[1], (CARBON_HOTKEY_GRAVE, KEYCODE_GRAVE, 0));
@@ -9918,6 +10574,27 @@ mod tests {
         // a word key rebound elsewhere keeps all four bindings.
         let rebound = AcceptKeymap::from_accept_keys(Some(35), None).unwrap();
         assert_eq!(rebound.arm_bindings(true).len(), 4);
+    }
+
+    #[test]
+    fn arm_bindings_for_action_are_mode_specific() {
+        let map =
+            AcceptKeymap::from_accept_keys_with_mods_and_grammar(None, None, Some(96), 0, 0, 0)
+                .unwrap();
+
+        let ghost = map.arm_bindings_for_action(AcceptAction::Full, false);
+        assert!(ghost.iter().any(|(id, _, _)| *id == CARBON_HOTKEY_TAB));
+        assert!(ghost.iter().any(|(id, _, _)| *id == CARBON_HOTKEY_GRAVE));
+        assert!(ghost.iter().any(|(id, _, _)| *id == CARBON_HOTKEY_ESCAPE));
+        assert!(ghost.iter().any(|(id, _, _)| *id == CARBON_HOTKEY_DOWN));
+        assert!(!ghost
+            .iter()
+            .any(|(id, _, _)| *id == CARBON_HOTKEY_GRAMMAR_ACCEPT));
+
+        assert_eq!(
+            map.arm_bindings_for_action(AcceptAction::Correction, false),
+            vec![(CARBON_HOTKEY_GRAMMAR_ACCEPT, 96, 0)]
+        );
     }
 
     #[test]
@@ -10503,6 +11180,46 @@ mod tests {
     }
 
     #[test]
+    fn correction_range_splice_replaces_midword_without_left_fragment_leak() {
+        let selected_range = CFRange {
+            location: 2,
+            length: 0,
+        };
+        let range = scalar_correction_range_to_utf16_range(
+            "te",
+            "h later",
+            selected_range,
+            CorrectionRange { start: 0, end: 3 },
+        )
+        .expect("midword correction range");
+        let (value, caret) = splice_text_at_utf16_range("teh later", range, "the");
+
+        assert_eq!(value, "the later");
+        assert_eq!(caret, 3);
+    }
+
+    #[test]
+    fn exact_range_readback_rejects_partial_or_wrong_range_mutations() {
+        let inserted = Inserted {
+            bytes: 3,
+            chars: 3,
+            strategy: InsertStrategy::AxSet,
+        };
+        assert_eq!(
+            axset_exact_readback_outcome("the later", "the later", inserted.clone()),
+            AxSetApply::Applied(inserted.clone())
+        );
+        assert_eq!(
+            axset_exact_readback_outcome("the later", "theh later", inserted.clone()),
+            AxSetApply::SilentlyIgnored
+        );
+        assert_eq!(
+            axset_exact_readback_outcome("the later", "teh later", inserted),
+            AxSetApply::SilentlyIgnored
+        );
+    }
+
+    #[test]
     fn extend_range_left_is_utf16_aware_for_astral_prefix() {
         // "🎉:1" — 🎉 is 2 UTF-16 units; caret at 4 (after "1"). Delete ":1" (2 chars).
         let range = extend_range_left(
@@ -10515,6 +11232,117 @@ mod tests {
         );
         assert_eq!(range.location, 2); // immediately after 🎉
         assert_eq!(range.length, 2); // ":1" spans 2 UTF-16 units
+    }
+
+    #[test]
+    fn scalar_correction_range_to_utf16_range_handles_ascii_and_zero_length() {
+        let collapsed = CFRange {
+            location: 5,
+            length: 0,
+        };
+        let range = scalar_correction_range_to_utf16_range(
+            "I saw",
+            " teh",
+            collapsed,
+            CorrectionRange { start: 6, end: 9 },
+        )
+        .expect("range");
+        assert_eq!(range.location, 6);
+        assert_eq!(range.length, 3);
+
+        let empty = scalar_correction_range_to_utf16_range(
+            "hello",
+            "",
+            collapsed,
+            CorrectionRange { start: 2, end: 2 },
+        )
+        .expect("empty range");
+        assert_eq!(empty.location, 2);
+        assert_eq!(empty.length, 0);
+    }
+
+    #[test]
+    fn scalar_correction_range_to_utf16_range_accounts_for_astral_scalars() {
+        let before = scalar_correction_range_to_utf16_range(
+            "😀 t",
+            "eh",
+            CFRange {
+                location: 4,
+                length: 0,
+            },
+            CorrectionRange { start: 2, end: 5 },
+        )
+        .expect("range after astral prefix");
+        assert_eq!(before.location, 3);
+        assert_eq!(before.length, 3);
+
+        let inside = scalar_correction_range_to_utf16_range(
+            "a",
+            "😀b",
+            CFRange {
+                location: 1,
+                length: 0,
+            },
+            CorrectionRange { start: 1, end: 3 },
+        )
+        .expect("range containing astral scalar");
+        assert_eq!(inside.location, 1);
+        assert_eq!(inside.length, 3);
+    }
+
+    #[test]
+    fn scalar_correction_range_to_utf16_range_fails_closed_across_selection_gap() {
+        // TextContext left/right omit the live selection. A correction entirely
+        // before or after the omitted gap is still contiguous in the raw field;
+        // a correction spanning the gap is not safely representable.
+        let selected = CFRange {
+            location: 3,
+            length: 2,
+        };
+        let before = scalar_correction_range_to_utf16_range(
+            "abc",
+            "def",
+            selected,
+            CorrectionRange { start: 0, end: 3 },
+        )
+        .expect("before selection");
+        assert_eq!(before.location, 0);
+        assert_eq!(before.length, 3);
+
+        let after = scalar_correction_range_to_utf16_range(
+            "abc",
+            "def",
+            selected,
+            CorrectionRange { start: 3, end: 6 },
+        )
+        .expect("after selection");
+        assert_eq!(after.location, 5);
+        assert_eq!(after.length, 3);
+
+        assert!(scalar_correction_range_to_utf16_range(
+            "abc",
+            "def",
+            selected,
+            CorrectionRange { start: 2, end: 4 },
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn scalar_correction_range_splice_allows_empty_text_to_delete_range() {
+        let range = scalar_correction_range_to_utf16_range(
+            "I saw ",
+            "teh",
+            CFRange {
+                location: 6,
+                length: 0,
+            },
+            CorrectionRange { start: 6, end: 9 },
+        )
+        .expect("range");
+        let (value, caret) = splice_text_at_utf16_range("I saw teh", range, "");
+        assert_eq!(value, "I saw ");
+        assert_eq!(caret, 6);
     }
 
     #[test]
@@ -12303,6 +13131,7 @@ mod tests {
         let presenter = MacosOverlayPresenter {
             panel: None,
             label: None,
+            underline_panel: None,
             last_rect: None,
         };
 

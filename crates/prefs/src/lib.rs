@@ -36,6 +36,9 @@ pub struct AppPolicy {
     /// `COMPME_THESAURUS_ON_APPS`/`COMPME_THESAURUS_OFF_APPS`): `None` →
     /// inherit the global `COMPME_THESAURUS`.
     pub thesaurus: Option<bool>,
+    /// Per-app standalone grammar/spell-fix override (config/UI): `None` →
+    /// inherit the global `COMPME_GRAMMAR_FIX`.
+    pub grammar_fix: Option<bool>,
 }
 
 /// The editable per-app fields exposed as row checkboxes in the Settings "Apps"
@@ -49,6 +52,7 @@ pub enum AppPolicyField {
     TabDisabled,
     MidLine,
     Autocorrect,
+    GrammarFix,
 }
 
 /// Suggestion-gating preferences. `excluded_apps`/`excluded_domains` hard-block
@@ -133,6 +137,14 @@ impl Prefs {
     pub fn autocorrect_enabled(&self, app: Option<&str>, global_default: bool) -> bool {
         app.and_then(|app| self.per_app.get(app))
             .and_then(|policy| policy.autocorrect)
+            .unwrap_or(global_default)
+    }
+
+    /// Effective standalone grammar/spell-fix state for `app`: the per-app
+    /// override, else the caller's global default.
+    pub fn grammar_fix_enabled(&self, app: Option<&str>, global_default: bool) -> bool {
+        app.and_then(|app| self.per_app.get(app))
+            .and_then(|policy| policy.grammar_fix)
             .unwrap_or(global_default)
     }
 
@@ -221,6 +233,7 @@ impl Prefs {
             AppPolicyField::TabDisabled => policy.tab_disabled = on,
             AppPolicyField::MidLine => policy.mid_line = Some(on),
             AppPolicyField::Autocorrect => policy.autocorrect = Some(on),
+            AppPolicyField::GrammarFix => policy.grammar_fix = Some(on),
         }
     }
 
@@ -331,6 +344,45 @@ mod tests {
             .thesaurus = Some(false);
         assert!(!p.thesaurus_enabled(Some("com.apple.Safari"), true)); // per-app off wins
         assert!(p.thesaurus_enabled(Some("unconfigured.app"), true)); // no override → global
+    }
+
+    #[test]
+    fn grammar_fix_enabled_inherits_global_default_without_app() {
+        let p = Prefs::default();
+        assert!(p.grammar_fix_enabled(None, true));
+        assert!(!p.grammar_fix_enabled(None, false));
+        assert!(p.grammar_fix_enabled(Some("com.apple.TextEdit"), true));
+        assert!(!p.grammar_fix_enabled(Some("com.apple.TextEdit"), false));
+    }
+
+    #[test]
+    fn grammar_fix_enabled_respects_per_app_override() {
+        let mut p = Prefs::default();
+        p.per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .grammar_fix = Some(false);
+        p.per_app
+            .entry("com.apple.Safari".into())
+            .or_default()
+            .grammar_fix = Some(true);
+
+        assert!(!p.grammar_fix_enabled(Some("com.apple.TextEdit"), true));
+        assert!(p.grammar_fix_enabled(Some("com.apple.Safari"), false));
+        assert!(p.grammar_fix_enabled(Some("com.apple.Notes"), true));
+    }
+
+    #[test]
+    fn set_app_policy_field_writes_grammar_fix() {
+        let mut p = Prefs::default();
+        p.set_app_policy_field("com.apple.TextEdit", AppPolicyField::GrammarFix, false);
+        assert_eq!(
+            p.per_app
+                .get("com.apple.TextEdit")
+                .and_then(|policy| policy.grammar_fix),
+            Some(false)
+        );
+        assert!(!p.grammar_fix_enabled(Some("com.apple.TextEdit"), true));
     }
 
     #[test]

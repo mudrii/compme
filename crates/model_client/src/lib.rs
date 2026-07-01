@@ -579,6 +579,31 @@ pub fn terse_continuation_prompt(prefix: &str) -> String {
     format!("Complete this text inline. Return only the continuation.\nText: {prefix}")
 }
 
+/// Prompt the model for a safe single-word grammar/spelling correction.
+/// Callers post-filter with `grammar::vet_correction`; this prompt is only a
+/// terse hint and intentionally stays single-line for easy diagnostics.
+pub fn grammar_fix_prompt(word: &str, left_ctx: &str) -> String {
+    let one_line_ctx = left_ctx.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!(
+        "Correct one word only. Context: {one_line_ctx} Word: {word} Return only the corrected word, or the original word if already correct."
+    )
+}
+
+#[cfg(test)]
+mod grammar_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn grammar_fix_prompt_is_single_line_and_includes_word_and_left_context() {
+        let prompt = grammar_fix_prompt("teh", "I typed");
+
+        assert_eq!(prompt, grammar_fix_prompt("teh", "I typed"));
+        assert!(prompt.contains("teh"));
+        assert!(prompt.contains("I typed"));
+        assert!(!prompt.contains('\n'), "{prompt:?}");
+    }
+}
+
 /// How many leading tokens of `next` can reuse the KV cache already holding
 /// `prev`'s tokens. This is the length of the shared prefix, except we always
 /// leave at least one token of `next` to re-decode so the context produces fresh

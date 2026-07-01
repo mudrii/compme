@@ -241,6 +241,26 @@ are validated outside the A1b gate runner:
 > when read-only preflight shows Input Monitoring is already revoked, and
 > otherwise leaves it as a manual checklist item.
 
+### Standalone Grammar-Fix LOOK Gate
+
+The grammar/spell-fix implementation has deterministic coverage for request
+gating, correction vetting, scalar range conversion, correction-only accept
+routing, fail-closed range replacement, and macOS underline/banner geometry. The
+remaining live LOOK gate is visual and requires an unlocked macOS GUI session
+with Accessibility permission:
+
+- launch `compme` with `COMPME_GRAMMAR_FIX=1`,
+  `COMPME_GRAMMAR_CHECK_KEY=<trigger>`, and
+  `COMPME_GRAMMAR_ACCEPT_KEY=<accept>`
+- focus TextEdit, type a single-word typo such as `teh`, place the caret in or
+  just after the word, and press the grammar trigger
+- confirm a thin underline appears under the word and a correction banner appears
+  above it without moving focus or swallowing normal completion accept keys
+- press the grammar accept key and confirm the original word is replaced in place
+  with the vetted correction, with no duplicate suffix or left-fragment leak
+- move the caret or edit the field before accepting and confirm the stale
+  correction no longer applies
+
 ### Useful Options
 
 ```text

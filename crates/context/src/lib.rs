@@ -17,6 +17,59 @@ pub fn right_context(value: &str, caret: usize) -> String {
     value.chars().skip(caret).collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WordRange {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WordAtCaret<'a> {
+    pub word: &'a str,
+    pub range: WordRange,
+}
+
+pub fn word_at_caret(value: &str, caret: usize) -> Option<WordAtCaret<'_>> {
+    let chars: Vec<(usize, char)> = value.char_indices().collect();
+    if chars.is_empty() {
+        return None;
+    }
+    let len = chars.len();
+    let caret = caret.min(len);
+
+    if caret == len && !is_word_char(chars[len - 1].1) {
+        return None;
+    }
+    let seed = if caret < len && is_word_char(chars[caret].1) {
+        caret
+    } else {
+        caret.checked_sub(1)?
+    };
+    if !is_word_char(chars[seed].1) {
+        return None;
+    }
+
+    let mut start = seed;
+    while start > 0 && is_word_char(chars[start - 1].1) {
+        start -= 1;
+    }
+    let mut end = seed + 1;
+    while end < len && is_word_char(chars[end].1) {
+        end += 1;
+    }
+
+    let byte_start = chars[start].0;
+    let byte_end = chars.get(end).map(|(idx, _)| *idx).unwrap_or(value.len());
+    Some(WordAtCaret {
+        word: &value[byte_start..byte_end],
+        range: WordRange { start, end },
+    })
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '\''
+}
+
 /// Strip trailing whitespace from a left-context prompt (the model should not
 /// see a dangling space/newline after the caret). Leading whitespace is kept —
 /// it is part of the user's text. Named for what it does: trims the *trailing*
@@ -283,6 +336,59 @@ Recent: green blue\n"
             build_context_block(Some("anything"), None, &["more"], 0),
             ""
         );
+    }
+
+    #[test]
+    fn word_at_caret_returns_whole_word_and_scalar_range_at_end() {
+        assert_eq!(
+            word_at_caret("please fix teh", 14),
+            Some(WordAtCaret {
+                word: "teh",
+                range: WordRange { start: 11, end: 14 },
+            })
+        );
+    }
+
+    #[test]
+    fn word_at_caret_returns_whole_word_and_scalar_range_mid_word() {
+        assert_eq!(
+            word_at_caret("please fix teh now", 12),
+            Some(WordAtCaret {
+                word: "teh",
+                range: WordRange { start: 11, end: 14 },
+            })
+        );
+    }
+
+    #[test]
+    fn word_at_caret_handles_astral_prefix_without_utf16_offset_drift() {
+        assert_eq!(
+            word_at_caret("😀teh", 2),
+            Some(WordAtCaret {
+                word: "teh",
+                range: WordRange { start: 1, end: 4 },
+            })
+        );
+    }
+
+    #[test]
+    fn word_at_caret_returns_previous_word_at_boundary_and_none_for_empty_field() {
+        assert_eq!(word_at_caret("", 0), None);
+        assert_eq!(
+            word_at_caret("hello world", 5),
+            Some(WordAtCaret {
+                word: "hello",
+                range: WordRange { start: 0, end: 5 },
+            })
+        );
+        assert_eq!(
+            word_at_caret("hello world", 6),
+            Some(WordAtCaret {
+                word: "world",
+                range: WordRange { start: 6, end: 11 },
+            })
+        );
+        assert_eq!(word_at_caret("  ", 1), None);
     }
 
     #[test]

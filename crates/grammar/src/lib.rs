@@ -12,6 +12,10 @@
 //! host passes a single trailing word, so word boundaries are not this crate's
 //! concern.
 
+use textcase::CasePattern;
+
+const MAX_EDIT_DISTANCE: usize = 2;
+
 /// Capitalize the first-person pronoun. Returns the corrected word if `word` is
 /// the standalone lowercase pronoun `i` or a known `i`-leading contraction that
 /// needs its leading letter capitalized; `None` otherwise (already capital, or
@@ -40,6 +44,64 @@ pub fn capitalize_pronoun(word: &str) -> Option<String> {
         return Some(format!("I{rest}"));
     }
     None
+}
+
+/// Vet a model-proposed single-word correction. The model is advisory only:
+/// this filter rejects no-ops, multi-word output, non-ASCII words, and large
+/// edits, then reapplies the original word's case pattern.
+pub fn vet_correction(original: &str, model_output: &str) -> Option<String> {
+    let original = original.trim();
+    let candidate = model_output.trim();
+    if original.is_empty()
+        || candidate.is_empty()
+        || !original.is_ascii()
+        || !candidate.is_ascii()
+        || candidate.split_whitespace().count() != 1
+        || !is_ascii_word(original)
+        || !is_ascii_word(candidate)
+        || original.eq_ignore_ascii_case(candidate)
+    {
+        return None;
+    }
+
+    let original_lower = original.to_ascii_lowercase();
+    let candidate_lower = candidate.to_ascii_lowercase();
+    if capped_levenshtein(&original_lower, &candidate_lower, MAX_EDIT_DISTANCE) > MAX_EDIT_DISTANCE
+    {
+        return None;
+    }
+
+    Some(CasePattern::of(original).apply(&candidate_lower))
+}
+
+fn is_ascii_word(value: &str) -> bool {
+    value.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
+}
+
+// ponytail: capped at MAX_EDIT_DISTANCE, good enough for word-level typo distance.
+fn capped_levenshtein(left: &str, right: &str, max: usize) -> usize {
+    if left.len().abs_diff(right.len()) > max {
+        return max + 1;
+    }
+
+    let mut prev: Vec<usize> = (0..=right.len()).collect();
+    let mut curr = vec![0; right.len() + 1];
+    for (i, lc) in left.bytes().enumerate() {
+        curr[0] = i + 1;
+        let mut row_min = curr[0];
+        for (j, rc) in right.bytes().enumerate() {
+            let substitution = prev[j] + usize::from(lc != rc);
+            let insertion = curr[j] + 1;
+            let deletion = prev[j + 1] + 1;
+            curr[j + 1] = substitution.min(insertion).min(deletion);
+            row_min = row_min.min(curr[j + 1]);
+        }
+        if row_min > max {
+            return max + 1;
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[right.len()]
 }
 
 #[cfg(test)]
@@ -110,5 +172,26 @@ mod tests {
         for word in ["\u{131}", "\u{ec}", "\u{12b}", "\u{456}"] {
             assert_eq!(capitalize_pronoun(word), None, "{word}");
         }
+    }
+
+    #[test]
+    fn vet_correction_accepts_one_edit_and_preserves_case() {
+        assert_eq!(vet_correction("teh", "the").as_deref(), Some("the"));
+        assert_eq!(vet_correction("Teh", "the").as_deref(), Some("The"));
+        assert_eq!(vet_correction("TEH", "the").as_deref(), Some("THE"));
+    }
+
+    #[test]
+    fn vet_correction_rejects_empty_identical_multi_word_large_edit_and_non_ascii() {
+        for output in ["", "   ", "teh", "the cat", "kitten"] {
+            assert_eq!(vet_correction("teh", output), None, "{output:?}");
+        }
+        assert_eq!(vet_correction("日本", "本日"), None);
+        assert_eq!(vet_correction("teh", "thé"), None);
+    }
+
+    #[test]
+    fn vet_correction_rejects_alot_to_a_lot_for_single_word_mode() {
+        assert_eq!(vet_correction("alot", "a lot"), None);
     }
 }

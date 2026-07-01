@@ -14,12 +14,14 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use engine::CompletionRequest;
+use engine::{CompletionRequest, RequestKind};
 use model_client::LocalModel;
 use personalization::PersonalizationProfile;
-use platform::FieldHandle;
+use platform::{CorrectionRange, FieldHandle};
 
 use crate::model_select::{shape_prompt, PromptMode};
+
+const GRAMMAR_MAX_TOKENS: usize = 8;
 
 /// Per-app bounded rings of recent accepted completions (redacted), shared
 /// between the run loop (which records on accept) and the inference worker (which
@@ -111,6 +113,9 @@ impl WorkerContext {
         mut request: CompletionRequest,
         requests: &Receiver<CompletionRequest>,
     ) -> (CompletionRequest, Option<String>) {
+        if matches!(request.kind, RequestKind::GrammarFix { .. }) {
+            return (request, None);
+        }
         if self.screen_wait.is_zero() {
             let screen_text = self.matching_screen_text_now(&request);
             return (request, screen_text);
@@ -120,6 +125,9 @@ impl WorkerContext {
         loop {
             while let Ok(newer) = requests.try_recv() {
                 request = newer;
+                if matches!(request.kind, RequestKind::GrammarFix { .. }) {
+                    return (request, None);
+                }
                 deadline = Instant::now() + self.screen_wait;
             }
 
@@ -139,6 +147,9 @@ impl WorkerContext {
             ) {
                 Ok(newer) => {
                     request = newer;
+                    if matches!(request.kind, RequestKind::GrammarFix { .. }) {
+                        return (request, None);
+                    }
                     deadline = Instant::now() + self.screen_wait;
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -259,6 +270,8 @@ pub struct CompletionOutcome {
     /// One or more candidate continuations (multi-candidate, A2 §16). At least
     /// one; the engine shows the first and cycles through the rest.
     pub candidates: Vec<String>,
+    pub correction: Option<String>,
+    pub correction_range: Option<CorrectionRange>,
 }
 
 /// Block for the next request, then drain any that piled up behind it and keep
@@ -296,6 +309,33 @@ fn run(
 
     while let Some((request, screen_text)) = request_with_screen_context(&requests, &worker_context)
     {
+        if let RequestKind::GrammarFix {
+            word,
+            left_ctx,
+            correction_range,
+        } = request.kind.clone()
+        {
+            let prompt = model_client::grammar_fix_prompt(&word, &left_ctx);
+            match model.complete(&prompt, GRAMMAR_MAX_TOKENS) {
+                Ok(raw) => {
+                    let correction = grammar::vet_correction(&word, &raw);
+                    if outcomes
+                        .send(CompletionOutcome {
+                            request,
+                            candidates: Vec::new(),
+                            correction,
+                            correction_range: Some(correction_range),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(err) => eprintln!("compme: grammar inference error: {err}"),
+            }
+            continue;
+        }
+
         // Personalization steering for the focused app and, when the request
         // came from a monitored browser field, the resolved website domain.
         // Read the profile per request so live Settings edits (`set_profile`)
@@ -327,6 +367,8 @@ fn run(
                     .send(CompletionOutcome {
                         request,
                         candidates,
+                        correction: None,
+                        correction_range: None,
                     })
                     .is_err()
                 {
@@ -512,7 +554,187 @@ mod tests {
             snapshot: generation,
             prompt: prompt.into(),
             max_tokens: 8,
+            kind: RequestKind::Completion,
         }
+    }
+
+    fn grammar_request(
+        word: &str,
+        left_ctx: &str,
+        correction_range: CorrectionRange,
+        generation: u64,
+    ) -> CompletionRequest {
+        CompletionRequest {
+            generation,
+            field: FieldHandle {
+                app: "TextEdit".into(),
+                pid: Some(1),
+                element_id: "f".into(),
+                generation,
+            },
+            domain: None,
+            snapshot: generation,
+            prompt: String::new(),
+            max_tokens: 128,
+            kind: RequestKind::GrammarFix {
+                word: word.into(),
+                left_ctx: left_ctx.into(),
+                correction_range,
+            },
+        }
+    }
+
+    struct GrammarEchoModel {
+        output: &'static str,
+        seen: Arc<Mutex<Vec<(String, usize)>>>,
+    }
+
+    impl LocalModel for GrammarEchoModel {
+        fn complete(&self, prompt: &str, max_tokens: usize) -> LocalModelResult<String> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((prompt.to_string(), max_tokens));
+            Ok(self.output.into())
+        }
+
+        fn complete_n(
+            &self,
+            _prompt: &str,
+            _max_tokens: usize,
+            _n: usize,
+        ) -> LocalModelResult<Vec<String>> {
+            panic!("grammar fix requests must not call complete_n");
+        }
+    }
+
+    #[test]
+    fn grammar_fix_request_bypasses_screen_wait_context_personalization_and_complete_n() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let previous = PreviousInputs::default();
+        previous.record("TextEdit", "previous private context".into());
+        let screen = Arc::new(Mutex::new(None));
+        let inference = InferenceHandle::spawn(
+            Box::new(GrammarEchoModel {
+                output: "the",
+                seen: Arc::clone(&seen),
+            }),
+            PromptMode::Raw,
+            PersonalizationProfile {
+                global_instructions: "Never leak this steering text.".into(),
+                ..Default::default()
+            },
+            4,
+            WorkerContext {
+                previous_inputs: previous,
+                clipboard: Arc::new(Mutex::new(Some("clipboard context".into()))),
+                screen,
+                screen_wait: Duration::from_secs(10),
+                max_chars: 500,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let request = grammar_request(
+            "teh",
+            "I read teh",
+            CorrectionRange { start: 7, end: 10 },
+            1,
+        );
+        let start = Instant::now();
+        assert!(inference.submit(request));
+        let outcome = inference
+            .outcome_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("grammar outcome must not wait for OCR");
+
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "grammar branch waited for screen context"
+        );
+        assert_eq!(outcome.correction.as_deref(), Some("the"));
+        assert!(outcome.candidates.is_empty());
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].1, GRAMMAR_MAX_TOKENS);
+        assert!(seen[0].0.contains("teh"));
+        assert!(seen[0].0.contains("I read teh"));
+        assert!(!seen[0].0.contains("clipboard context"));
+        assert!(!seen[0].0.contains("previous private context"));
+        assert!(!seen[0].0.contains("Never leak this steering text."));
+
+        inference.shutdown();
+    }
+
+    #[test]
+    fn grammar_fix_request_preserves_range_and_vets_model_output() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let inference = InferenceHandle::spawn(
+            Box::new(GrammarEchoModel {
+                output: "the",
+                seen,
+            }),
+            PromptMode::Terse,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        let range = CorrectionRange { start: 2, end: 5 };
+
+        assert!(inference.submit(grammar_request("Teh", "A Teh", range, 2)));
+        let outcome = inference.recv_outcome().expect("outcome");
+
+        assert_eq!(outcome.correction.as_deref(), Some("The"));
+        assert_eq!(outcome.correction_range, Some(range));
+        assert!(outcome.candidates.is_empty());
+        inference.shutdown();
+    }
+
+    #[test]
+    fn grammar_fix_rejected_output_returns_no_correction() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let inference = InferenceHandle::spawn(
+            Box::new(GrammarEchoModel {
+                output: "the cat",
+                seen,
+            }),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+
+        assert!(inference.submit(grammar_request("teh", "teh", range, 3)));
+        let outcome = inference.recv_outcome().expect("outcome");
+
+        assert_eq!(outcome.correction, None);
+        assert_eq!(outcome.correction_range, Some(range));
+        assert!(outcome.candidates.is_empty());
+        inference.shutdown();
+    }
+
+    #[test]
+    fn screen_wait_switches_to_newer_grammar_request_without_waiting_for_ocr() {
+        let old = request("old typing", 1);
+        let grammar = grammar_request("teh", "old teh", CorrectionRange { start: 4, end: 7 }, 2);
+        let worker_context = WorkerContext {
+            screen_wait: Duration::from_secs(10),
+            ..Default::default()
+        };
+        let (request_tx, request_rx) = channel();
+        request_tx.send(grammar).unwrap();
+
+        let start = Instant::now();
+        let (selected, screen_text) = worker_context.wait_for_screen_or_newer(old, &request_rx);
+
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert_eq!(selected.generation, 2);
+        assert!(matches!(selected.kind, RequestKind::GrammarFix { .. }));
+        assert_eq!(screen_text, None);
     }
 
     #[test]
@@ -691,6 +913,7 @@ mod tests {
             snapshot: 2,
             prompt: "target field".into(),
             max_tokens: 8,
+            kind: RequestKind::Completion,
         };
         let screen = Arc::new(Mutex::new(Some(ScreenContext {
             field: source.field,
@@ -731,6 +954,7 @@ mod tests {
             domain: None,
             prompt: "target typing".into(),
             max_tokens: 8,
+            kind: RequestKind::Completion,
         };
         let screen = Arc::new(Mutex::new(Some(ScreenContext {
             field: source.field,

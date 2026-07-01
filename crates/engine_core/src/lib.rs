@@ -1,7 +1,9 @@
 //! Deterministic suggestion state machine.
 
 use context::{left_context, right_context, trim_trailing};
-use platform::{ux_mode, AcceptAction, Capabilities, FieldHandle, InsertStrategy, UxMode};
+use platform::{
+    ux_mode, AcceptAction, Capabilities, CorrectionRange, FieldHandle, InsertStrategy, UxMode,
+};
 use ranker::{
     cap_words, is_degenerate_repetition, next_word, repetition_penalty, strip_suffix_overlap,
     trim_to_stop_boundary, truncate_at_sentence_end,
@@ -89,6 +91,13 @@ pub enum Event {
         snapshot: SnapshotId,
         candidates: Vec<String>,
     },
+    CorrectionReady {
+        generation: u64,
+        field: FieldHandle,
+        snapshot: SnapshotId,
+        suggestion: String,
+        correction_range: CorrectionRange,
+    },
     /// Rotate to the next candidate while a suggestion is showing.
     Cycle,
     /// Re-assert the suggestion the engine currently holds (Item 4 always-on
@@ -101,6 +110,7 @@ pub enum Event {
     },
     AcceptFull,
     AcceptWord,
+    AcceptCorrection,
     /// Snapshot-neutral hide: drop the showing ghost without invalidating any
     /// in-flight request. Used for idempotent reconciliation (e.g. an overlay
     /// placement that failed) where a freshly-requested completion must still be
@@ -136,6 +146,12 @@ pub enum Command {
         snapshot: SnapshotId,
         text: String,
     },
+    ShowCorrection {
+        field: FieldHandle,
+        snapshot: SnapshotId,
+        suggestion: String,
+        correction_range: CorrectionRange,
+    },
     UpdateGhost {
         field: FieldHandle,
         snapshot: SnapshotId,
@@ -157,6 +173,17 @@ pub enum Command {
         text: String,
         replace_left: usize,
     },
+    ReplaceRange {
+        field: FieldHandle,
+        text: String,
+        correction_range: CorrectionRange,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presentation {
+    Ghost,
+    Correction,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,6 +197,8 @@ struct Showing {
     /// Characters to delete left of the caret on accept (a replacement, set by
     /// `offer_replacement`). `0` for ordinary model completions (append-only).
     replace_left: usize,
+    presentation: Presentation,
+    correction_range: Option<CorrectionRange>,
 }
 
 impl Showing {
@@ -232,6 +261,13 @@ struct RequestedCompletion {
     generation: u64,
     field: FieldHandle,
     snapshot: SnapshotId,
+    kind: RequestedKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestedKind {
+    Completion,
+    GrammarFix,
 }
 
 impl SuggestionMachine {
@@ -416,6 +452,7 @@ impl SuggestionMachine {
                             generation,
                             field: field.clone(),
                             snapshot,
+                            kind: RequestedKind::Completion,
                         });
                         self.pending_since = None;
                         out.push(Command::RequestCompletion {
@@ -442,6 +479,22 @@ impl SuggestionMachine {
                 candidates,
             } => {
                 self.on_completion_ready(generation, &field, snapshot, candidates, &mut out);
+            }
+            Event::CorrectionReady {
+                generation,
+                field,
+                snapshot,
+                suggestion,
+                correction_range,
+            } => {
+                self.on_correction_ready(
+                    generation,
+                    &field,
+                    snapshot,
+                    suggestion,
+                    correction_range,
+                    &mut out,
+                );
             }
             Event::Cycle => {
                 if let Some(showing) = self.showing.as_mut() {
@@ -525,6 +578,10 @@ impl SuggestionMachine {
             }
             Event::AcceptFull => {
                 if let Some(showing) = self.showing.take() {
+                    if showing.presentation == Presentation::Correction {
+                        self.showing = Some(showing);
+                        return out;
+                    }
                     // A replacement (`replace_left > 0`) inserts its exact rendered
                     // text (emoji glyph / synonym) — the trailing-space-after-
                     // single-word policy applies only to append-only completions.
@@ -555,6 +612,10 @@ impl SuggestionMachine {
             }
             Event::AcceptWord => {
                 if let Some(mut showing) = self.showing.take() {
+                    if showing.presentation == Presentation::Correction {
+                        self.showing = Some(showing);
+                        return out;
+                    }
                     // A replacement (`replace_left > 0`, e.g. emoji/synonym) is
                     // atomic — there is no "next word" of a glyph to partially
                     // accept, and a multi-word synonym ("big deal") must not be
@@ -610,6 +671,26 @@ impl SuggestionMachine {
                     }
                 }
             }
+            Event::AcceptCorrection => {
+                if let Some(showing) = self.showing.take() {
+                    if showing.presentation != Presentation::Correction {
+                        self.showing = Some(showing);
+                        return out;
+                    }
+                    let Some(correction_range) = showing.correction_range else {
+                        self.showing = Some(showing);
+                        return out;
+                    };
+                    let text = showing.candidates[showing.index].clone();
+                    out.push(Command::ReplaceRange {
+                        field: showing.field,
+                        text,
+                        correction_range,
+                    });
+                    out.push(Command::Hide);
+                    self.advance_snapshot();
+                }
+            }
         }
 
         if was_showing && non_user_event && self.showing.is_none() {
@@ -642,6 +723,7 @@ impl SuggestionMachine {
             requested.generation == generation
                 && requested.snapshot == snapshot
                 && requested.field == *field
+                && requested.kind == RequestedKind::Completion
                 && generation == self.generation
                 && snapshot == self.snapshot
         });
@@ -689,6 +771,8 @@ impl SuggestionMachine {
                 index: 0,
                 caret: self.caret,
                 replace_left: 0,
+                presentation: Presentation::Ghost,
+                correction_range: None,
             });
             out.push(Command::ShowGhost {
                 field: field.clone(),
@@ -698,6 +782,70 @@ impl SuggestionMachine {
             self.record_stat(StatEvent::Shown);
         }
         self.requested = None;
+    }
+
+    fn on_correction_ready(
+        &mut self,
+        generation: u64,
+        field: &FieldHandle,
+        snapshot: SnapshotId,
+        suggestion: String,
+        correction_range: CorrectionRange,
+        out: &mut Vec<Command>,
+    ) {
+        let matches_request = self.requested.as_ref().is_some_and(|requested| {
+            requested.generation == generation
+                && requested.snapshot == snapshot
+                && requested.field == *field
+                && requested.kind == RequestedKind::GrammarFix
+                && generation == self.generation
+                && snapshot == self.snapshot
+        });
+        if !matches_request
+            || !self.enabled()
+            || self.suppressed
+            || suggestion.is_empty()
+            || self.caps.insert_strategy != InsertStrategy::AxSet
+        {
+            return;
+        }
+        if self.showing.is_some() {
+            self.record_stat(StatEvent::Superseded);
+        }
+        self.showing = Some(Showing {
+            field: field.clone(),
+            snapshot,
+            candidates: vec![suggestion.clone()],
+            index: 0,
+            caret: self.caret,
+            replace_left: 0,
+            presentation: Presentation::Correction,
+            correction_range: Some(correction_range),
+        });
+        out.push(Command::ShowCorrection {
+            field: field.clone(),
+            snapshot,
+            suggestion,
+            correction_range,
+        });
+        self.record_stat(StatEvent::Shown);
+        self.requested = None;
+    }
+
+    pub fn arm_manual_grammar_request(&mut self, field: &FieldHandle) -> Option<(u64, SnapshotId)> {
+        if !self.enabled() || self.suppressed || self.field.as_ref() != Some(field) {
+            return None;
+        }
+        let generation = self.generation;
+        let snapshot = self.snapshot;
+        self.pending_since = None;
+        self.requested = Some(RequestedCompletion {
+            generation,
+            field: field.clone(),
+            snapshot,
+            kind: RequestedKind::GrammarFix,
+        });
+        Some((generation, snapshot))
     }
 
     /// Retract the most recent `Shown` stat event — used by the host when an
@@ -725,6 +873,9 @@ impl SuggestionMachine {
         action: AcceptAction,
     ) -> Option<(FieldHandle, String, usize)> {
         let showing = self.showing.as_ref()?;
+        if showing.presentation == Presentation::Correction {
+            return None;
+        }
         if showing.replace_left > 0 {
             let text = showing.current().to_string();
             return (!text.is_empty()).then(|| (showing.field.clone(), text, showing.replace_left));
@@ -732,9 +883,20 @@ impl SuggestionMachine {
         let raw = match action {
             AcceptAction::Full => showing.current().to_string(),
             AcceptAction::Word => next_word(showing.current()).0,
+            AcceptAction::Correction => return None,
         };
         let text = self.finalize_accept_text(&raw);
         (!raw.is_empty()).then(|| (showing.field.clone(), text, 0))
+    }
+
+    pub fn preview_accept_correction(&self) -> Option<(FieldHandle, String, CorrectionRange)> {
+        let showing = self.showing.as_ref()?;
+        if showing.presentation != Presentation::Correction {
+            return None;
+        }
+        let range = showing.correction_range?;
+        let text = showing.candidates.get(showing.index)?.clone();
+        (!text.is_empty()).then(|| (showing.field.clone(), text, range))
     }
 
     /// Offer a local *replacement* suggestion: show `text` as the ghost, and on
@@ -819,6 +981,8 @@ impl SuggestionMachine {
             index: 0,
             caret: self.caret,
             replace_left,
+            presentation: Presentation::Ghost,
+            correction_range: None,
         });
         self.pending_since = None;
         self.requested = None;
@@ -826,6 +990,48 @@ impl SuggestionMachine {
             field: field.clone(),
             snapshot: self.snapshot,
             text,
+        });
+        self.record_stat(StatEvent::Shown);
+        out
+    }
+
+    pub fn offer_correction(
+        &mut self,
+        field: &FieldHandle,
+        suggestion: String,
+        correction_range: CorrectionRange,
+    ) -> Vec<Command> {
+        let mut out = Vec::new();
+        if !self.enabled()
+            || self.suppressed
+            || suggestion.is_empty()
+            || self.caps.insert_strategy != InsertStrategy::AxSet
+        {
+            return out;
+        }
+        if self.field.as_ref() != Some(field) {
+            return out;
+        }
+        if self.showing.is_some() {
+            self.record_stat(StatEvent::Superseded);
+        }
+        self.showing = Some(Showing {
+            field: field.clone(),
+            snapshot: self.snapshot,
+            candidates: vec![suggestion.clone()],
+            index: 0,
+            caret: self.caret,
+            replace_left: 0,
+            presentation: Presentation::Correction,
+            correction_range: Some(correction_range),
+        });
+        self.pending_since = None;
+        self.requested = None;
+        out.push(Command::ShowCorrection {
+            field: field.clone(),
+            snapshot: self.snapshot,
+            suggestion,
+            correction_range,
         });
         self.record_stat(StatEvent::Shown);
         out
@@ -911,6 +1117,79 @@ mod tests {
             trigger: TriggerPolicy::Automatic,
             now_ms,
         }
+    }
+
+    #[test]
+    fn offer_correction_shows_correction_with_exact_range() {
+        let mut machine = machine();
+        machine.on_event(text_changed("teh", 3, 0));
+        let range = CorrectionRange { start: 0, end: 3 };
+
+        assert_eq!(
+            machine.offer_correction(&field("field-a"), "the".into(), range),
+            vec![Command::ShowCorrection {
+                field: field("field-a"),
+                snapshot: 1,
+                suggestion: "the".into(),
+                correction_range: range,
+            }]
+        );
+        let showing = machine.showing.as_ref().expect("correction showing");
+        assert_eq!(showing.presentation, Presentation::Correction);
+        assert_eq!(showing.correction_range, Some(range));
+    }
+
+    #[test]
+    fn on_correction_shows_correction_with_range_and_invalidates_on_text_changed() {
+        let mut machine = machine();
+        machine.on_event(text_changed("teh", 3, 0));
+        machine.offer_correction(
+            &field("field-a"),
+            "the".into(),
+            CorrectionRange { start: 0, end: 3 },
+        );
+
+        assert_eq!(
+            machine.on_event(text_changed("the", 3, 10)),
+            vec![Command::Hide]
+        );
+        assert!(machine.showing.is_none());
+    }
+
+    #[test]
+    fn accept_correction_emits_replace_range_with_exact_range() {
+        let mut machine = machine();
+        machine.on_event(text_changed("teh", 3, 0));
+        let range = CorrectionRange { start: 0, end: 3 };
+        machine.offer_correction(&field("field-a"), "the".into(), range);
+
+        assert_eq!(
+            machine.on_event(Event::AcceptCorrection),
+            vec![
+                Command::ReplaceRange {
+                    field: field("field-a"),
+                    text: "the".into(),
+                    correction_range: range,
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn accept_full_and_word_do_not_commit_correction_presentation() {
+        let mut machine = machine();
+        machine.on_event(text_changed("teh", 3, 0));
+        machine.offer_correction(
+            &field("field-a"),
+            "the".into(),
+            CorrectionRange { start: 0, end: 3 },
+        );
+
+        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
+        assert!(machine.showing.is_some());
+        assert_eq!(machine.on_event(Event::AcceptWord), vec![]);
+        assert!(machine.showing.is_some());
     }
 
     #[test]
@@ -2739,6 +3018,8 @@ mod tests {
             index: 0,
             caret: machine.caret,
             replace_left: 0,
+            presentation: Presentation::Ghost,
+            correction_range: None,
         });
         let _ = machine.take_stat_events(); // anchor: drain any pre-existing events
 

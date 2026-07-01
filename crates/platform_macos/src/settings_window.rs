@@ -1237,10 +1237,10 @@ mod apps_layout {
     const NAME_W: f64 = 150.0;
     const NAME_H: f64 = 20.0;
     /// Left edge of each checkbox column (header label sits at the same x).
-    pub const COL_X: [f64; APP_POLICY_FIELDS] = [180.0, 232.0, 284.0, 336.0];
+    pub const COL_X: [f64; APP_POLICY_FIELDS] = [176.0, 220.0, 264.0, 308.0, 352.0];
     const COL_W: f64 = 44.0;
     const CB_H: f64 = 18.0;
-    const DELETE_X: f64 = 400.0;
+    const DELETE_X: f64 = 410.0;
     const DELETE_W: f64 = 70.0;
     const DELETE_H: f64 = 20.0;
 
@@ -2100,21 +2100,26 @@ pub const APPS_ROWS: usize = 8;
 
 /// Number of editable per-app policy fields rendered as checkboxes on each
 /// Apps row, in tag-encoding order: 0=Enabled, 1=TabDisabled, 2=MidLine,
-/// 3=Autocorrect. Mirrors `prefs::AppPolicyField`'s variant order; the run
+/// 3=Autocorrect, 4=GrammarFix. Mirrors `prefs::AppPolicyField`'s variant order; the run
 /// loop maps the index back. A checkbox's tag is `row * APP_POLICY_FIELDS +
 /// field`, so this is the modulus the run loop unpacks against.
-pub const APP_POLICY_FIELDS: usize = 4;
+pub const APP_POLICY_FIELDS: usize = 5;
 
 /// Checkbox titles for the per-app policy fields, indexed the same as the tag
 /// encoding (and `prefs::AppPolicyField`'s variant order). `TabDisabled` reads
 /// as "Tab key" so the checked state means "Tab is a literal Tab here".
-const APP_POLICY_FIELD_TITLES: [&str; APP_POLICY_FIELDS] =
-    ["Enabled", "Tab key", "Mid-line", "Autocorrect"];
+const APP_POLICY_FIELD_TITLES: [&str; APP_POLICY_FIELDS] = [
+    "Enabled",
+    "Tab key",
+    "Mid-line",
+    "Autocorrect",
+    "Grammar fix",
+];
 
 /// Short column headers for the compact one-line Apps grid. The bare checkboxes
 /// carry the full [`APP_POLICY_FIELD_TITLES`] as tooltips; these label the
 /// columns in the header row so the toggles are self-explanatory.
-const APP_POLICY_COLUMN_HEADERS: [&str; APP_POLICY_FIELDS] = ["On", "Tab", "Mid", "AC"];
+const APP_POLICY_COLUMN_HEADERS: [&str; APP_POLICY_FIELDS] = ["On", "Tab", "Mid", "AC", "Gr"];
 
 /// Fixed Statistics row count (shown / accepted / words / lifetime).
 /// Public for the same reason as [`APPS_ROWS`]: the run loop's composer

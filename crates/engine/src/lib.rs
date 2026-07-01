@@ -11,8 +11,8 @@
 use engine_core::{Command, Event, SnapshotId, SuggestionMachine};
 pub use engine_core::{EditKind, StatEvent, TriggerPolicy};
 use platform::{
-    AcceptAction, Capabilities, FieldHandle, InsertStrategy, KeyInterceptMode, OverlayPlacement,
-    OverlayPresenter, PlatformAdapter, SecurityState, Toolkit,
+    AcceptAction, Capabilities, CorrectionRange, FieldHandle, InsertStrategy, KeyInterceptMode,
+    OverlayPlacement, OverlayPresenter, PlatformAdapter, SecurityState, Toolkit,
 };
 use std::time::Duration;
 
@@ -48,6 +48,17 @@ pub struct CompletionRequest {
     pub snapshot: SnapshotId,
     pub prompt: String,
     pub max_tokens: usize,
+    pub kind: RequestKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RequestKind {
+    Completion,
+    GrammarFix {
+        word: String,
+        left_ctx: String,
+        correction_range: CorrectionRange,
+    },
 }
 
 /// Impure-but-deterministic wiring layer that connects the pure
@@ -151,8 +162,13 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         action: Option<AcceptAction>,
     ) -> Result<(), platform::PlatformError> {
         if let Some(accept) = &self.accept {
-            accept.set_suggestion_visible(visible)?;
-            accept.set_accept_action(action)?;
+            if visible {
+                accept.set_accept_action(action)?;
+                accept.set_suggestion_visible(true)?;
+            } else {
+                accept.set_suggestion_visible(false)?;
+                accept.set_accept_action(action)?;
+            }
         }
         Ok(())
     }
@@ -292,6 +308,26 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    pub fn arm_manual_grammar_request(&mut self, field: &FieldHandle) -> Option<(u64, SnapshotId)> {
+        self.machine.arm_manual_grammar_request(field)
+    }
+
+    pub fn on_correction(
+        &mut self,
+        request: &CompletionRequest,
+        suggestion: String,
+        correction_range: CorrectionRange,
+    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self.machine.on_event(Event::CorrectionReady {
+            generation: request.generation,
+            field: request.field.clone(),
+            snapshot: request.snapshot,
+            suggestion,
+            correction_range,
+        });
+        self.dispatch(commands)
+    }
+
     pub fn on_accept(
         &mut self,
         action: AcceptAction,
@@ -299,6 +335,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         let event = match action {
             AcceptAction::Full => Event::AcceptFull,
             AcceptAction::Word => Event::AcceptWord,
+            AcceptAction::Correction => Event::AcceptCorrection,
         };
         let commands = self.machine.on_event(event);
         self.dispatch(commands)
@@ -309,6 +346,10 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         action: AcceptAction,
     ) -> Option<(FieldHandle, String, usize)> {
         self.machine.preview_accept_insert(action)
+    }
+
+    pub fn preview_accept_correction(&self) -> Option<(FieldHandle, String, CorrectionRange)> {
+        self.machine.preview_accept_correction()
     }
 
     /// Drain machine-internal Shown/Superseded stat events for the host to record
@@ -357,6 +398,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     snapshot,
                     prompt,
                     max_tokens: self.max_tokens,
+                    kind: RequestKind::Completion,
                 }),
                 Command::ShowGhost { field, text, .. } => {
                     // Inline placement uses the caret rect; popup mode (no caret
@@ -416,6 +458,43 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                         show_failed = true;
                     }
                 }
+                Command::ShowCorrection {
+                    field,
+                    suggestion,
+                    correction_range,
+                    ..
+                } => {
+                    let anchor = self
+                        .adapter
+                        .text_range_rect(&field, correction_range)
+                        .and_then(|rect| match rect {
+                            Some(rect) => Ok(Some(rect)),
+                            None => self.adapter.caret_rect(&field).and_then(|rect| match rect {
+                                Some(rect) => Ok(Some(rect)),
+                                None => self.adapter.popup_anchor(&field),
+                            }),
+                        });
+                    let rect = match anchor {
+                        Ok(rect) => rect,
+                        Err(err) => {
+                            self.reconcile_failed_show();
+                            return Err(err);
+                        }
+                    };
+                    if let Some(rect) = rect {
+                        if let Err(err) = self.overlay.show_correction(rect, &suggestion) {
+                            self.reconcile_failed_show();
+                            return Err(err);
+                        }
+                        if let Err(err) = self.set_tap_visible(true, Some(AcceptAction::Correction))
+                        {
+                            self.reconcile_failed_show();
+                            return Err(err);
+                        }
+                    } else {
+                        show_failed = true;
+                    }
+                }
                 Command::Insert { field, text } => {
                     // Contract: the adapter must tag this self-inserted text so it is NOT
                     // fed back to the engine as a TextChanged event. Failure breaks the
@@ -446,6 +525,23 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                         self.adapter
                             .insert_replacing(&field, &text, replace_left, strategy)
                     {
+                        self.reconcile_visible_failure();
+                        return Err(err);
+                    }
+                    delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
+                }
+                Command::ReplaceRange {
+                    field,
+                    text,
+                    correction_range,
+                } => {
+                    let strategy = self.caps.insert_strategy;
+                    if let Err(err) = self.adapter.insert_replacing_range(
+                        &field,
+                        &text,
+                        correction_range,
+                        strategy,
+                    ) {
                         self.reconcile_visible_failure();
                         return Err(err);
                     }
@@ -548,6 +644,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq)]
     enum OverlayCall {
         Show(ScreenRect, String),
+        ShowCorrection(ScreenRect, String),
         Update(String),
         Hide,
     }
@@ -565,6 +662,17 @@ mod tests {
                 .push(OverlayCall::Show(rect, text.into()));
             Ok(())
         }
+        fn show_correction(
+            &mut self,
+            rect: ScreenRect,
+            suggestion: &str,
+        ) -> Result<(), PlatformError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(OverlayCall::ShowCorrection(rect, suggestion.into()));
+            Ok(())
+        }
         fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError> {
             self.calls
                 .lock()
@@ -580,6 +688,8 @@ mod tests {
 
     /// A recorded replacement insert: (field, text, replace_left, strategy).
     type ReplacingInsert = (FieldHandle, String, usize, InsertStrategy);
+    /// A recorded range replacement insert: (field, text, range, strategy).
+    type RangeReplacingInsert = (FieldHandle, String, CorrectionRange, InsertStrategy);
 
     #[derive(Clone)]
     struct FakeAdapter {
@@ -591,6 +701,8 @@ mod tests {
         fail_insert: bool,
         inserts: Arc<Mutex<Vec<(FieldHandle, String, InsertStrategy)>>>,
         replacing_inserts: Arc<Mutex<Vec<ReplacingInsert>>>,
+        range_rect: Option<ScreenRect>,
+        range_replacing_inserts: Arc<Mutex<Vec<RangeReplacingInsert>>>,
     }
 
     impl FakeAdapter {
@@ -609,6 +721,13 @@ mod tests {
                 fail_insert: false,
                 inserts: Arc::new(Mutex::new(Vec::new())),
                 replacing_inserts: Arc::new(Mutex::new(Vec::new())),
+                range_rect: Some(ScreenRect {
+                    x: 30.0,
+                    y: 40.0,
+                    w: 20.0,
+                    h: 12.0,
+                }),
+                range_replacing_inserts: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -660,6 +779,13 @@ mod tests {
             }
             Ok(self.popup)
         }
+        fn text_range_rect(
+            &self,
+            _field: &FieldHandle,
+            _range: CorrectionRange,
+        ) -> Result<Option<ScreenRect>, PlatformError> {
+            Ok(self.range_rect)
+        }
         fn insert(
             &self,
             field: &FieldHandle,
@@ -701,6 +827,28 @@ mod tests {
                 strategy,
             })
         }
+        fn insert_replacing_range(
+            &self,
+            field: &FieldHandle,
+            text: &str,
+            range: CorrectionRange,
+            strategy: InsertStrategy,
+        ) -> Result<Inserted, PlatformError> {
+            if self.fail_insert {
+                return Err(PlatformError::StaleField);
+            }
+            self.range_replacing_inserts.lock().unwrap().push((
+                field.clone(),
+                text.into(),
+                range,
+                strategy,
+            ));
+            Ok(Inserted {
+                bytes: text.len(),
+                chars: text.chars().count(),
+                strategy,
+            })
+        }
     }
 
     fn engine() -> (Engine<FakeAdapter, FakeOverlay>, FakeAdapter, FakeOverlay) {
@@ -721,6 +869,28 @@ mod tests {
         (engine, adapter, overlay)
     }
 
+    fn grammar_request(
+        engine: &mut Engine<FakeAdapter, FakeOverlay>,
+        range: CorrectionRange,
+    ) -> CompletionRequest {
+        let (generation, snapshot) = engine
+            .arm_manual_grammar_request(&field())
+            .expect("grammar request armed");
+        CompletionRequest {
+            generation,
+            field: field(),
+            domain: None,
+            snapshot,
+            prompt: String::new(),
+            max_tokens: 8,
+            kind: RequestKind::GrammarFix {
+                word: "teh".into(),
+                left_ctx: "teh".into(),
+                correction_range: range,
+            },
+        }
+    }
+
     #[test]
     fn replacement_accept_forwards_replace_left_through_dispatch() {
         // Integration step 3: a replacement accept must reach the adapter via
@@ -737,6 +907,63 @@ mod tests {
         );
         // It went through insert_replacing, NOT the append-only insert path.
         assert!(adapter.inserts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn on_correction_shows_correction_with_range_anchor() {
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+
+        engine.on_correction(&request, "the".into(), range).unwrap();
+
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::ShowCorrection(
+                ScreenRect {
+                    x: 30.0,
+                    y: 40.0,
+                    w: 20.0,
+                    h: 12.0,
+                },
+                "the".into(),
+            )]
+        );
+    }
+
+    #[test]
+    fn accept_correction_emits_replace_range() {
+        let (mut engine, adapter, _overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+        engine.on_correction(&request, "the".into(), range).unwrap();
+
+        engine.on_accept(AcceptAction::Correction).unwrap();
+
+        assert_eq!(
+            *adapter.range_replacing_inserts.lock().unwrap(),
+            vec![(field(), "the".to_string(), range, InsertStrategy::AxSet)]
+        );
+        assert!(adapter.inserts.lock().unwrap().is_empty());
+        assert!(adapter.replacing_inserts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stale_correction_result_is_ignored_after_text_changes() {
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+        engine.on_text_changed(typed("tehx", 4, 10)).unwrap();
+
+        engine.on_correction(&request, "the".into(), range).unwrap();
+
+        assert!(
+            overlay.calls.lock().unwrap().is_empty(),
+            "stale correction must not be shown against the newer snapshot"
+        );
     }
 
     #[test]
@@ -1005,16 +1232,30 @@ mod tests {
         let (mut engine, _adapter, _overlay) = engine();
         let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
         let actions: Arc<Mutex<Vec<Option<AcceptAction>>>> = Arc::new(Mutex::new(Vec::new()));
+        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
         let v = Arc::clone(&visible);
         let a = Arc::clone(&actions);
+        let order_visible = Arc::clone(&order);
+        let order_action = Arc::clone(&order);
         let sub = AcceptSubscription::new(
             Subscription::new(0),
             move |vis| {
+                order_visible.lock().unwrap().push(if vis {
+                    "visible:true"
+                } else {
+                    "visible:false"
+                });
                 v.lock().unwrap().push(vis);
                 Ok(())
             },
             |_delay| Ok(()),
             move |act| {
+                order_action.lock().unwrap().push(match act {
+                    Some(AcceptAction::Full) => "action:full",
+                    Some(AcceptAction::Word) => "action:word",
+                    Some(AcceptAction::Correction) => "action:correction",
+                    None => "action:none",
+                });
                 a.lock().unwrap().push(act);
                 Ok(())
             },
@@ -1030,6 +1271,11 @@ mod tests {
 
         assert_eq!(*visible.lock().unwrap(), vec![true], "armed on show");
         assert_eq!(*actions.lock().unwrap(), vec![Some(AcceptAction::Full)]);
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["action:full", "visible:true"],
+            "the action must be installed before visible=true arms the platform tap"
+        );
 
         engine.on_accept(AcceptAction::Full).unwrap();
 
@@ -1041,6 +1287,16 @@ mod tests {
         assert_eq!(
             *actions.lock().unwrap(),
             vec![Some(AcceptAction::Full), None]
+        );
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec![
+                "action:full",
+                "visible:true",
+                "visible:false",
+                "action:none"
+            ],
+            "hide clears visibility before removing the action override"
         );
     }
 

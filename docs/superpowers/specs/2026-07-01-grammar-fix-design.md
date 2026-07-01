@@ -1,6 +1,6 @@
 # Standalone grammar/spell-fix mode — implementation spec
 
-**Status:** ☐ Not started · planned 2026-07-01 · owner: next implementation session
+**Status:** ◕ Implemented · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
 **Prereqs:** clean `main` (builds, clippy clean, ≈1533 tests green).
 
@@ -8,6 +8,18 @@ This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase pla
 Every phase is sized to land independently, pure/testable layers first, novel FFI
 last. File:line anchors are from a 2026-07-01 4-agent code analysis; verify them
 before editing (they drift).
+
+## Implementation progress
+
+- G1 correction prompt/vetting and caret-word extraction are implemented with focused tests.
+- G2 headless inference request kind, correction presentation state, run-loop gating,
+  prefs/config, and correction accept side effects are implemented with focused tests.
+- G3 macOS grammar trigger/accept key routing is implemented behind configurable
+  `COMPME_GRAMMAR_CHECK_KEY` and `COMPME_GRAMMAR_ACCEPT_KEY`.
+- G4 macOS scalar-range conversion, range bounds, fail-closed AxSet range
+  replacement, and a two-panel underline/banner correction presenter are
+  implemented with focused geometry tests. Live LOOK validation remains pending
+  because it requires granted Accessibility permissions and an interactive macOS app.
 
 ---
 
