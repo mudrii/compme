@@ -2,15 +2,18 @@
 
 [![CI](https://github.com/mudrii/compme/actions/workflows/ci.yml/badge.svg)](https://github.com/mudrii/compme/actions/workflows/ci.yml)
 
-Compme is an **open-source, multi-platform** inline text-completion engine with
-the project scope of re-implementing all [Cotypist](https://cotypist.app)
-functionality **except payment, licensing, subscription tiers, and multi-device
-seats** (the only parts deliberately not cloned). Every feature is intended to be
-available to every user with no pricing gates; the only constraint on which local
-models are offered is hardware capability. macOS ships first; **Windows and Linux
-are committed deliverables** built behind a shared cross-platform
-`PlatformAdapter` contract. All inference is local (llama.cpp), with no
-proprietary telemetry.
+Compme is an **open-source, multi-platform** inline text-completion engine
+**inspired by** [Cotypist](https://cotypist.app). It is **not** a clone and does
+**not** aim to replicate all of Cotypist — it borrows the ideas worth having
+(local on-device completion, broad app compatibility, an unobtrusive inline UX)
+and shapes them to its own goals. Where Compme implements a Cotypist-like feature
+it aims for behavioral parity *on that feature*, but the project picks its own
+scope and deliberately leaves parts out — including payment, licensing,
+subscription tiers, and multi-device seats. Every feature that ships is available
+to every user with no pricing gates; the only constraint on which local models are
+offered is hardware capability. macOS ships first; **Windows and Linux are
+committed deliverables** built behind a shared cross-platform `PlatformAdapter`
+contract. All inference is local (llama.cpp), with no proprietary telemetry.
 
 The current validated workspace has the deterministic macOS MVP and A2/A3 core
 surfaces implemented; the remaining parity and live-validation backlog is tracked

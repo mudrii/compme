@@ -7,6 +7,13 @@ implementation focuses on macOS because the hard integration points are
 Accessibility, event taps, AppKit overlays, Secure Input, and pasteboard
 behavior.
 
+Compme is **inspired by [Cotypist](https://cotypist.app), not a re-implementation
+of it.** Where a crate below notes that it "mirrors" a Cotypist behavior, that is
+deliberate behavioral parity *on that specific feature* — the project does **not**
+aim to replicate all of Cotypist, and it freely diverges (open-source, cross-
+platform, no pricing gates, and supersets like candidate cycling) where its own
+goals differ.
+
 The workspace now holds 24 crates. The shape is deliberate: almost everything
 outside the model/download seams, platform adapters, and host is pure (text in →
 decision out, time and keys injected, no I/O), so it is unit-testable without a
