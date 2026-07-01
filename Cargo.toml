@@ -15,6 +15,7 @@ members = [
     "crates/textcase",
     "crates/thesaurus",
     "crates/autocorrect",
+    "crates/grammar",
     "crates/localize",
     "crates/compat",
     "crates/model_catalog",

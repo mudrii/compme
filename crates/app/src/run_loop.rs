@@ -502,6 +502,13 @@ fn replacement_offer(
         if let Some(fix) = autocorrect::correct(word) {
             return Some((vec![fix], word_len));
         }
+        // Grammar capitalization ("i" -> "I", i'm/i'll/...) rides the same
+        // autocorrect gate: it is a correction, and like typo-fixing it must stay
+        // off in code fields (where a bare `i` is a variable), which the host's
+        // autocorrect gate already enforces.
+        if let Some(fix) = grammar::capitalize_pronoun(word) {
+            return Some((vec![fix], word_len));
+        }
     }
     if config.british_english {
         if let Some(uk) = localize::to_british(word) {
@@ -10038,6 +10045,30 @@ mod tests {
             replacement_offer("teh", &both, both.autocorrect, both.thesaurus),
             Some((vec!["the".into()], 3))
         );
+    }
+
+    #[test]
+    fn grammar_capitalizes_standalone_i_under_the_autocorrect_gate() {
+        // "i" -> "I" is a grammar fix wired into replacement_offer behind the
+        // autocorrect toggle (so it stays off in code fields like typo-fixing).
+        let on = Config::from_lookup(lookup(&[("COMPME_AUTOCORRECT", "1")]));
+        // A lone lowercase pronoun is offered as capital "I", replacing 1 char.
+        assert_eq!(
+            replacement_offer("i", &on, on.autocorrect, on.thesaurus),
+            Some((vec!["I".into()], 1))
+        );
+        // Words that merely start with "i" are untouched (no false fix).
+        assert_eq!(replacement_offer("in", &on, on.autocorrect, on.thesaurus), None);
+        assert_eq!(replacement_offer("idea", &on, on.autocorrect, on.thesaurus), None);
+        // Contraction limitation pinned: `trailing_word` tokenizes on the
+        // apostrophe (it takes only alphabetic chars), so "i'm" reaches the
+        // pipeline as "m" and no grammar fix fires — even though
+        // grammar::capitalize_pronoun("i'm") itself returns "I'm". Capitalizing
+        // contractions would need the caret-token model to include apostrophes.
+        assert_eq!(replacement_offer("i'm", &on, on.autocorrect, on.thesaurus), None);
+        // Gated off: autocorrect disabled -> no grammar fix either.
+        let off = Config::from_lookup(lookup(&[("COMPME_AUTOCORRECT", "0")]));
+        assert_eq!(replacement_offer("i", &off, off.autocorrect, off.thesaurus), None);
     }
 
     #[test]
