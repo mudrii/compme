@@ -153,7 +153,17 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
             "config path has no parent",
         )
     })?;
+    // Owner-only dir (on first creation only, so a deliberate later chmod
+    // sticks) and file, matching the hardening memory::open applies to the
+    // same app-support tree — config.env holds no secret today, but the
+    // permission shouldn't need revisiting if one is ever added.
+    let created_dir = !dir.exists();
     std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    if created_dir {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
     let temp = dir.join(format!(
         ".{}.tmp.{}",
         path.file_name()
@@ -162,6 +172,11 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
         std::process::id()
     ));
     std::fs::write(&temp, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
+    }
     std::fs::rename(&temp, path)
 }
 
@@ -571,6 +586,27 @@ mod tests {
             original,
             "the pre-existing target must survive byte-identical — no truncation/partial write"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_creates_owner_only_dir_and_file() {
+        // Fresh-install hardening: the first write must leave the app-support
+        // dir 0700 and config.env 0600, matching memory::open's convention. A
+        // pre-existing dir keeps its permissions (pinned indirectly by the
+        // failed-rename test above, whose 0555 dir must NOT be re-chmodded).
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("compme-atomic-perms-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.env");
+
+        atomic_write(&path, "K=v\n").expect("write");
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700, "created dir is owner-only");
+        assert_eq!(mode(&path), 0o600, "config file is owner-only");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

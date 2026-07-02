@@ -524,11 +524,25 @@ impl SuggestionMachine {
                 // generation/snapshot on re-show) is a larger change deferred
                 // until the physical-hotkey UX is validated.
                 if let Some(showing) = self.showing.as_ref() {
-                    out.push(Command::ShowGhost {
-                        field: showing.field.clone(),
-                        snapshot: showing.snapshot,
-                        text: showing.current().to_string(),
-                    });
+                    // A held grammar correction must re-present as a correction:
+                    // ShowGhost would anchor at the caret instead of the
+                    // correction span and arm the tap as AcceptFull, which
+                    // deliberately no-ops on Presentation::Correction.
+                    match (showing.presentation, showing.correction_range) {
+                        (Presentation::Correction, Some(correction_range)) => {
+                            out.push(Command::ShowCorrection {
+                                field: showing.field.clone(),
+                                snapshot: showing.snapshot,
+                                suggestion: showing.current().to_string(),
+                                correction_range,
+                            });
+                        }
+                        _ => out.push(Command::ShowGhost {
+                            field: showing.field.clone(),
+                            snapshot: showing.snapshot,
+                            text: showing.current().to_string(),
+                        }),
+                    }
                 }
             }
             Event::CaretMoved { field, caret } => {
@@ -1106,6 +1120,30 @@ mod tests {
             vec![Command::Hide]
         );
         assert!(machine.showing.is_none());
+    }
+
+    #[test]
+    fn force_show_reasserts_a_correction_as_correction_not_ghost() {
+        let mut machine = machine();
+        machine.on_event(text_changed("teh", 3, 0));
+        let range = CorrectionRange { start: 0, end: 3 };
+        show_correction(&mut machine, "the", range);
+
+        // ForceShow must re-present a held correction AS a correction: a
+        // ShowGhost here would anchor at the caret (not the correction span)
+        // and arm the tap as AcceptFull, which silently no-ops on Correction.
+        let out = machine.on_event(Event::ForceShow);
+        match out.as_slice() {
+            [Command::ShowCorrection {
+                suggestion,
+                correction_range,
+                ..
+            }] => {
+                assert_eq!(suggestion, "the");
+                assert_eq!(*correction_range, range);
+            }
+            other => panic!("expected a single ShowCorrection, got {other:?}"),
+        }
     }
 
     #[test]

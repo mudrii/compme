@@ -172,11 +172,20 @@ fn download_with_agent(
 
     // 206 → append to the part; anything else → truncate (fresh or the
     // server-ignored-Range restart).
-    let mut file = std::fs::OpenOptions::new()
+    let mut options = std::fs::OpenOptions::new();
+    options
         .create(true)
         .append(resumed)
         .write(true)
-        .truncate(!resumed)
+        .truncate(!resumed);
+    // Owner-only like memory's db pre-create: weights aren't secret, but new
+    // files in the app dir follow one permission convention.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(&part)
         .map_err(|e| FetchError::Io(e.to_string()))?;
 
@@ -661,6 +670,15 @@ mod tests {
             b"0123456789",
             "the part keeps exactly the bytes received before the drop, as the resume base"
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&part).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "the part file is created owner-only"
+            );
+        }
         let _ = std::fs::remove_file(&part);
     }
 
