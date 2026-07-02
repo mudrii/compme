@@ -194,4 +194,17 @@ mod tests {
     fn vet_correction_rejects_alot_to_a_lot_for_single_word_mode() {
         assert_eq!(vet_correction("alot", "a lot"), None);
     }
+
+    #[test]
+    fn vet_correction_pins_max_edit_distance_boundary() {
+        // Same-length words so the length short-circuit in `capped_levenshtein`
+        // never fires — this exercises the real DP distance against
+        // MAX_EDIT_DISTANCE (2). "cat"->"cog" is exactly two substitutions
+        // (accepted at the boundary); "cat"->"dog" is three (rejected one past
+        // it). The `kitten` reject elsewhere only trips the length guard, so it
+        // would pass even if MAX_EDIT_DISTANCE were mis-set — these two pin the
+        // constant's exact value.
+        assert_eq!(vet_correction("cat", "cog").as_deref(), Some("cog"));
+        assert_eq!(vet_correction("cat", "dog"), None);
+    }
 }

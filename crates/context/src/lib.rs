@@ -392,6 +392,45 @@ Recent: green blue\n"
     }
 
     #[test]
+    fn word_at_caret_treats_apostrophe_as_a_word_char() {
+        // is_word_char (lib.rs L69) allows `'` so contractions stay whole: the
+        // caret inside "don't" must return the entire "don't", not a fragment
+        // split at the apostrophe. Nothing else pins the `|| c == '\''` arm; drop
+        // it and this word splits to "t"/"don".
+        assert_eq!(
+            word_at_caret("don't", 5),
+            Some(WordAtCaret {
+                word: "don't",
+                range: WordRange { start: 0, end: 5 },
+            })
+        );
+        assert_eq!(
+            word_at_caret("it's fine", 4),
+            Some(WordAtCaret {
+                word: "it's",
+                range: WordRange { start: 0, end: 4 },
+            })
+        );
+    }
+
+    #[test]
+    fn word_at_caret_at_offset_zero_on_nonempty_field() {
+        // caret 0 on a non-empty field is only tested on "" today. When the first
+        // char is a word char the caret sits at a word's start and the whole word
+        // is returned (the `caret < len && is_word_char(chars[caret])` seed arm at
+        // offset 0). When the first char is NOT a word char there is nothing to the
+        // left, so `caret.checked_sub(1)?` yields None rather than underflow-panicking.
+        assert_eq!(
+            word_at_caret("hi there", 0),
+            Some(WordAtCaret {
+                word: "hi",
+                range: WordRange { start: 0, end: 2 },
+            })
+        );
+        assert_eq!(word_at_caret(" x", 0), None);
+    }
+
+    #[test]
     fn newlines_in_sources_are_collapsed() {
         // A recorded entry with newlines must not masquerade as a new directive
         // line or escape the block (review #5).

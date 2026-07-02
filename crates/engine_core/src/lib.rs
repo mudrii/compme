@@ -4238,4 +4238,150 @@ mod tests {
             vec![]
         );
     }
+
+    #[test]
+    fn arm_manual_grammar_request_round_trips_through_correction_ready_and_accept() {
+        // The manual grammar-fix path has its own arming entry point distinct from
+        // the auto-completion debounce: the host calls `arm_manual_grammar_request`,
+        // gets back the (generation, snapshot) to stamp its request with, and a
+        // later `CorrectionReady` carrying that stamp shows a correction the user can
+        // accept. This end-to-end test pins arm (returns the live gen/snap and
+        // cancels any armed completion debounce), `on_correction_ready` (matches the
+        // GrammarFix request and emits ShowCorrection), `preview_accept_correction`
+        // (reports the pending replacement), and AcceptCorrection through the grammar
+        // arming path.
+        let mut machine = machine();
+        // Typing arms a completion debounce; the manual grammar arm must cancel it.
+        machine.on_event(text_changed("teh quik", 8, 1000));
+        let f = field("field-a");
+        let (gen, snap) = machine
+            .arm_manual_grammar_request(&f)
+            .expect("focused, enabled, unsuppressed field arms a grammar request");
+
+        // Arming cleared the completion debounce: a Tick past the window fires
+        // nothing (the pending model request was preempted by the grammar arm).
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 9999 }), vec![]);
+
+        let range = CorrectionRange { start: 0, end: 8 };
+        assert_eq!(
+            machine.on_event(Event::CorrectionReady {
+                generation: gen,
+                field: f.clone(),
+                snapshot: snap,
+                suggestion: "the quick".into(),
+                correction_range: range,
+            }),
+            vec![Command::ShowCorrection {
+                field: f.clone(),
+                snapshot: snap,
+                suggestion: "the quick".into(),
+                correction_range: range,
+            }]
+        );
+        // The host previews the pending correction (echo absorption) before accept.
+        assert_eq!(
+            machine.preview_accept_correction(),
+            Some((f.clone(), "the quick".into(), range))
+        );
+        assert_eq!(
+            machine.on_event(Event::AcceptCorrection),
+            vec![
+                Command::ReplaceRange {
+                    field: f,
+                    text: "the quick".into(),
+                    correction_range: range,
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn arm_manual_grammar_request_is_gated_by_focus_suppression_and_secure() {
+        let f = field("field-a");
+        // Nothing focused → no field identity to arm against.
+        assert_eq!(machine().arm_manual_grammar_request(&f), None);
+        // Focused elsewhere: an arm for a non-focused field is rejected.
+        assert_eq!(
+            focused_machine().arm_manual_grammar_request(&field("field-b")),
+            None
+        );
+        // Esc-suppressed field: no manual grammar request while suppressed.
+        let mut suppressed = focused_machine();
+        suppressed.on_event(Event::DismissSuppress);
+        assert_eq!(suppressed.arm_manual_grammar_request(&f), None);
+        // Secure field (UxMode::Blocked → not enabled): never arm — a grammar fix
+        // must never inspect a password field.
+        let mut secure = machine();
+        secure.on_event(Event::Focus {
+            field: f.clone(),
+            caps: secure_caps(),
+        });
+        assert_eq!(secure.arm_manual_grammar_request(&f), None);
+    }
+
+    #[test]
+    fn correction_ready_dropped_when_stale_empty_or_kind_mismatched() {
+        let f = field("field-a");
+        let range = CorrectionRange { start: 0, end: 1 };
+
+        // Stale snapshot: a grammar request is armed, but the correction carries a
+        // snapshot that no longer matches the boundary → dropped, nothing shows.
+        let mut grammar = focused_machine();
+        let (gen, snap) = grammar.arm_manual_grammar_request(&f).expect("armed");
+        assert_eq!(
+            grammar.on_event(Event::CorrectionReady {
+                generation: gen,
+                field: f.clone(),
+                snapshot: snap + 1,
+                suggestion: "x".into(),
+                correction_range: range,
+            }),
+            vec![]
+        );
+        assert!(grammar.preview_accept_correction().is_none());
+        // Empty suggestion on the matching stamp is still dropped (no blank ghost).
+        assert_eq!(
+            grammar.on_event(Event::CorrectionReady {
+                generation: gen,
+                field: f.clone(),
+                snapshot: snap,
+                suggestion: String::new(),
+                correction_range: range,
+            }),
+            vec![]
+        );
+        assert!(grammar.preview_accept_correction().is_none());
+
+        // Kind discriminator: a CorrectionReady arriving against a COMPLETION
+        // request (armed by the debounce, not by arm_manual_grammar_request) must
+        // not match — the grammar-fix result cannot render over a completion slot.
+        let mut completion = machine();
+        completion.on_event(text_changed("hello ", 6, 1000));
+        assert!(completion
+            .on_event(Event::Tick { now_ms: 1200 })
+            .iter()
+            .any(|c| matches!(c, Command::RequestCompletion { .. })));
+        assert_eq!(
+            completion.on_event(Event::CorrectionReady {
+                generation: 1,
+                field: f,
+                snapshot: 1,
+                suggestion: "world".into(),
+                correction_range: range,
+            }),
+            vec![]
+        );
+        assert!(completion.preview_accept_correction().is_none());
+    }
+
+    #[test]
+    fn preview_accept_correction_is_none_unless_a_correction_is_showing() {
+        // Nothing showing → nothing to preview.
+        assert_eq!(machine().preview_accept_correction(), None);
+        // A ghost (ordinary completion) is not a correction: the correction preview
+        // must return None so the host never applies a ReplaceRange for a plain
+        // completion. Pins the presentation discriminator.
+        assert_eq!(showing_three_words().preview_accept_correction(), None);
+    }
 }

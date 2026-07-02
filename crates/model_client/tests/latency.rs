@@ -92,12 +92,11 @@ fn strict_model_test_env_parses_truthy_values() {
     }
 }
 
-// Ignored by default: needs the qwen2.5-0.5b GGUF on disk and a Metal GPU. Run
-// with `cargo test -p model_client -- --ignored`. By default this skips when the
-// GGUF is absent; set `COMPME_REQUIRE_MODEL_TESTS=1` to make absence fail. The
-// position/skip/reuse arithmetic it would otherwise protect is covered in CI by
-// pure unit tests in `src/lib.rs`; this adds an end-to-end real-model check when
-// a GGUF and GPU are available.
+// Pure env-parsing guard (no GGUF/GPU needed). The latency-budget gate must arm
+// only on an explicit truthy COMPME_REQUIRE_LATENCY_BUDGET and stay OFF for
+// absent/empty/falsy values, so a normal `cargo test` run never enforces the
+// 500ms budget. (The real end-to-end 500ms check lives in
+// `warm_completion_under_500ms`, which is #[ignore]'d and needs a GGUF + GPU.)
 #[test]
 fn strict_latency_budget_env_parses_truthy_values() {
     for value in [

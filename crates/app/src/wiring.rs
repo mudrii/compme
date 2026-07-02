@@ -163,6 +163,11 @@ impl FieldTracker {
         // app normalized it so the readback differs from the text we intended.
         // The fresh read is now the baseline (set above); report a caret move so
         // no completion is armed and no artifact reaches monitored memory.
+        // ponytail: a real keystroke whose AX notification coalesces with this
+        // echo (single observe carrying both) is absorbed too — one missed
+        // trigger/memory record, self-healing on the next keystroke; diff the
+        // readback against the intended text and split out the remainder as
+        // Typed if that window ever matters.
         if resync_next && prev.is_some() {
             return Observation::CaretMoved {
                 field: field.clone(),

@@ -440,6 +440,21 @@ mod tests {
     }
 
     #[test]
+    fn truncate_at_sentence_end_cut_is_byte_correct_after_a_multibyte_prefix() {
+        // The cut slices `&text[..index + ch.len_utf8()]`, where `index` is the
+        // BYTE offset from `char_indices()`. Every other passing cut test is
+        // ASCII-only before the terminator, so byte offset == char position and a
+        // char-position mutant (`text.chars().enumerate()`) would still pass them.
+        // A multibyte scalar before the terminator makes the two diverge: "café."
+        // has '.' at byte 5 but char position 4, so a char-indexed slice would drop
+        // the period (or split a codepoint). Pin the byte-correct cut.
+        assert_eq!(truncate_at_sentence_end("café. rest"), "café.");
+        // Two multibyte scalars before the '?': '世界' is 6 bytes, so the byte/char
+        // gap is larger still.
+        assert_eq!(truncate_at_sentence_end("世界? more"), "世界?");
+    }
+
+    #[test]
     fn strip_suffix_overlap_removes_words_already_after_caret() {
         // caret in "the quick| fox"; right context is "fox"; model returned
         // "quick brown fox" — the trailing "fox" must be dropped.

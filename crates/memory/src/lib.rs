@@ -1376,4 +1376,36 @@ mod tests {
         store.remember("app2", small).unwrap();
         assert_eq!(store.recent("app2", 1).unwrap(), vec![small.to_string()]);
     }
+
+    #[test]
+    fn store_redacts_before_truncating_so_a_boundary_secret_cannot_leak_a_fragment() {
+        // The store() ordering is security-critical (see the module/store docstring):
+        // redaction runs over the FULL text BEFORE the MAX_RECORD_CHARS cap, so a
+        // secret straddling the truncation boundary becomes a placeholder rather than
+        // being sliced into a sub-threshold prefix that redaction would then miss.
+        // The existing cap test uses '☃' (no secret), so a truncate-THEN-redact
+        // regression would pass it while leaking here. Position a real AWS key (always
+        // redacted by its `AKIA` prefix, regardless of length/entropy) so the cap
+        // lands a few chars in: truncate-first keeps only "AKIAI" (below every
+        // redaction floor) and it survives; redact-first turns the whole key into
+        // [redacted-secret] first, so no raw fragment can appear.
+        let store = MemoryStore::open_in_memory(&key(71), StorageMode::AllMonitored).unwrap();
+        // Low-entropy filler (all-lowercase letters — survives redaction) up to 6
+        // chars short of the cap, a space separator, then the secret; the boundary
+        // falls inside the key.
+        let filler = "x".repeat(MAX_RECORD_CHARS - 6);
+        let secret = "AKIAIOSFODNN7EXAMPLE"; // AKIA + 16 chars: the always-redacted AWS shape
+        store.monitor("app", &format!("{filler} {secret}")).unwrap();
+        let recent = store.recent("app", 1).unwrap();
+        assert_eq!(recent.len(), 1, "the record is stored");
+        assert!(
+            !recent[0].contains("AKIA"),
+            "no raw secret fragment may survive the boundary cut: {:?}",
+            recent[0].chars().rev().take(24).collect::<String>()
+        );
+        assert!(
+            recent[0].chars().count() <= MAX_RECORD_CHARS,
+            "the stored record still respects the char cap"
+        );
+    }
 }

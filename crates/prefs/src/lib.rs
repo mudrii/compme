@@ -1018,6 +1018,55 @@ mod tests {
     }
 
     #[test]
+    fn fully_enable_app_clears_the_exclude_but_preserves_other_per_app_fields() {
+        // fully_enable_app uses `entry().or_default()` specifically so re-enabling an
+        // app keeps its OTHER per-app settings (tab_disabled, autocorrect, …) intact;
+        // it only flips `enabled` on and drops the hard-block exclude. Every existing
+        // enable-clears-exclude test starts from an exclude-only row, so a regression
+        // that overwrote the whole entry with a fresh `AppPolicy { enabled: Some(true),
+        // ..default }` would clobber the siblings undetected. Pin the preservation
+        // through the shared helper via both public entry points.
+        for use_deep_link in [false, true] {
+            let mut p = Prefs::default();
+            // Pre-existing per-app config the user set earlier, plus a tray exclude.
+            let app = "com.microsoft.VSCode";
+            p.per_app.insert(
+                app.into(),
+                AppPolicy {
+                    enabled: Some(false),
+                    tab_disabled: true,
+                    autocorrect: Some(false),
+                    ..Default::default()
+                },
+            );
+            p.excluded_apps.insert(app.into());
+
+            if use_deep_link {
+                apply(&mut p, "compme://setOverride?app=com.microsoft.VSCode&enabled=true");
+            } else {
+                p.set_app_policy_field(app, AppPolicyField::Enabled, true);
+            }
+
+            // The dual-clear happened…
+            assert!(
+                !p.excluded_apps.contains(app),
+                "re-enable clears the exclude ({use_deep_link})"
+            );
+            assert_eq!(p.per_app[app].enabled, Some(true), "{use_deep_link}");
+            // …and the co-existing fields survived (not reset to Default).
+            assert!(
+                p.per_app[app].tab_disabled,
+                "tab_disabled must be preserved on re-enable ({use_deep_link})"
+            );
+            assert_eq!(
+                p.per_app[app].autocorrect,
+                Some(false),
+                "autocorrect override must be preserved on re-enable ({use_deep_link})"
+            );
+        }
+    }
+
+    #[test]
     fn set_app_policy_field_disable_does_not_add_to_excluded_apps() {
         // Disable is intentionally NOT the mirror of enable: it sets the soft
         // per-app `enabled = Some(false)` gate and must leave excluded_apps

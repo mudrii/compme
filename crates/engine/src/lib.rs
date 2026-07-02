@@ -3162,4 +3162,39 @@ mod tests {
         assert_eq!(engine.preview_accept_insert(AcceptAction::Full), None);
         assert_eq!(engine.preview_accept_insert(AcceptAction::Word), None);
     }
+
+    #[test]
+    fn preview_accept_correction_exposes_suggestion_and_range_while_showing() {
+        // Sibling to the preview_accept_insert previews (which had two tests);
+        // this public forwarder had no engine-layer coverage. With a correction
+        // ghost up, the engine must expose (field, suggestion, range) for host
+        // reconciliation. A plain completion ghost (a different presentation) and
+        // a cold engine must both yield None — pinning that the correction
+        // discriminator is honoured, not mis-forwarded to the completion preview.
+        let (mut correction_engine, _adapter, _overlay) = engine();
+        correction_engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut correction_engine, range);
+        correction_engine
+            .on_correction(&request, "the".into(), range)
+            .unwrap();
+
+        assert_eq!(
+            correction_engine.preview_accept_correction(),
+            Some((field(), "the".into(), range)),
+            "a showing correction previews its suggestion and range for the host"
+        );
+
+        // A plain completion ghost is NOT an accept-able correction.
+        let (completion_engine, _a, _o) = showing("hi there");
+        assert_eq!(
+            completion_engine.preview_accept_correction(),
+            None,
+            "a completion ghost must not preview as a correction"
+        );
+
+        // Nothing showing at all → None.
+        let (cold_engine, _a, _o) = engine();
+        assert_eq!(cold_engine.preview_accept_correction(), None);
+    }
 }

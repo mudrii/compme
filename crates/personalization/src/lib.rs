@@ -339,6 +339,34 @@ mod tests {
     }
 
     #[test]
+    fn default_strength_is_the_middle_stop_so_personalization_is_on_by_default() {
+        // The `#[default]` on Strength is Stop3 (not Off): a freshly-constructed
+        // profile has personalization ON at a balanced steer. This is a product
+        // decision (§6/§16 — "Default to a middle stop"), not incidental enum
+        // ordering. Pin both the enum default and its observable consequence — a
+        // default-strength profile carrying a global instruction produces a
+        // non-empty, Stop3-directive-bearing preamble; if the default silently
+        // moved to Off the preamble would be empty, and a move to any other stop
+        // would change the directive wording. Every other test sets `strength`
+        // explicitly, so this default was otherwise unpinned.
+        assert_eq!(Strength::default(), Strength::Stop3);
+
+        let p = PersonalizationProfile {
+            global_instructions: "Write concisely.".into(),
+            ..Default::default() // strength defaults to Stop3
+        };
+        let preamble = p.build_preamble(None, None);
+        assert!(
+            !preamble.is_empty(),
+            "default strength must steer (not Off): {preamble:?}"
+        );
+        assert!(
+            preamble.contains("Follow the following preferences"),
+            "default steer must be the Stop3 directive: {preamble:?}"
+        );
+    }
+
+    #[test]
     fn from_stop_clamps_out_of_range() {
         assert_eq!(Strength::from_stop(0), Strength::Off);
         assert_eq!(Strength::from_stop(5), Strength::Max);

@@ -602,6 +602,24 @@ mod grammar_prompt_tests {
         assert!(prompt.contains("I typed"));
         assert!(!prompt.contains('\n'), "{prompt:?}");
     }
+
+    #[test]
+    fn grammar_fix_prompt_collapses_multiline_and_tabbed_context_to_one_line() {
+        // grammar_fix_prompt runs left_ctx through split_whitespace().join(" ")
+        // so a multi-line / tabbed / multi-space context collapses to a single
+        // diagnostic line (the doc contract: "intentionally stays single-line").
+        // The sibling test feeds an already-single-spaced context ("I typed"),
+        // so it never exercises the normalization — dropping the collapse would
+        // slip past it. Feed embedded newlines, tabs and runs of spaces.
+        let prompt = grammar_fix_prompt("teh", "I  really\n\ttyped\nthis");
+        assert!(!prompt.contains('\n'), "must be single-line: {prompt:?}");
+        assert!(!prompt.contains('\t'), "tabs must collapse: {prompt:?}");
+        assert!(
+            prompt.contains("I really typed this"),
+            "runs of whitespace must collapse to single spaces: {prompt:?}"
+        );
+        assert!(prompt.contains("teh"));
+    }
 }
 
 /// How many leading tokens of `next` can reuse the KV cache already holding

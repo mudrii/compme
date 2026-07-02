@@ -541,6 +541,23 @@ mod tests {
         }
     }
 
+    /// Errors on the grammar prompt (which carries the word) but serves plain
+    /// completion prompts, so a test can prove a grammar `complete()` error
+    /// emits no outcome yet the worker keeps serving. Signals when it errored.
+    struct GrammarErrorThenServeModel {
+        grammar_error_seen: Sender<()>,
+    }
+    impl LocalModel for GrammarErrorThenServeModel {
+        fn complete(&self, prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+            if prompt.contains("teh") {
+                let _ = self.grammar_error_seen.send(());
+                Err(LocalModelError::new("grammar", "nope"))
+            } else {
+                Ok(prompt.to_string())
+            }
+        }
+    }
+
     fn request(prompt: &str, generation: u64) -> CompletionRequest {
         CompletionRequest {
             generation,
@@ -1702,6 +1719,43 @@ mod tests {
             .recv_outcome()
             .expect("worker survives an error and serves later requests");
         assert_eq!(outcome.candidates[0], "good");
+        inference.shutdown();
+    }
+
+    #[test]
+    fn grammar_complete_error_emits_no_outcome_and_worker_keeps_serving() {
+        // A grammar request whose complete() errors must be a silent no-op: the
+        // grammar branch logs and `continue`s without sending a CompletionOutcome
+        // (spec: "trigger with no correction → no banner"). This is a distinct
+        // branch from the completion error path — it has its own `continue` and
+        // never emits `correction: None`. Proven by submitting the errored
+        // grammar request first, then a good completion request: the completion
+        // outcome must arrive as the FIRST outcome received, which is only true
+        // if the grammar error emitted nothing ahead of it.
+        let (grammar_error_seen, error_rx) = channel();
+        let inference = InferenceHandle::spawn(
+            Box::new(GrammarErrorThenServeModel { grammar_error_seen }),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        inference.submit(grammar_request(
+            "teh",
+            "I read teh",
+            CorrectionRange { start: 7, end: 10 },
+            1,
+        ));
+        error_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker must exercise the grammar complete() error path");
+        inference.submit(request("good", 2));
+        let outcome = inference
+            .recv_outcome()
+            .expect("worker survives a grammar error and serves later requests");
+        assert_eq!(outcome.candidates[0], "good");
+        assert_eq!(outcome.correction, None);
         inference.shutdown();
     }
 

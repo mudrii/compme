@@ -4183,6 +4183,34 @@ fn ax_parameterized_absent(error: AXError) -> bool {
     ax_settable_absent(error) || error == kAXErrorParameterizedAttributeUnsupported
 }
 
+/// The outcome of an AX bounds/marker copy, classified from the returned
+/// `AXError` before the value pointer is touched.
+#[derive(Debug, PartialEq, Eq)]
+enum AxBoundsRead {
+    /// The attribute is simply absent/unsupported on this element. Fail CLOSED:
+    /// the caller degrades to `Ok(None)` (no rect) and falls back to
+    /// caret/popup anchoring rather than surfacing an error.
+    Absent,
+    /// A real AX failure (e.g. `CannotComplete`): surface it as a `PlatformError`.
+    Failed,
+    /// The copy succeeded: read the rect from the returned value.
+    Present,
+}
+
+/// Classify an AX bounds/marker copy result. This is the pure fail-closed seam
+/// behind `text_range_rect`: an absent parameterized attribute degrades to a
+/// missing rect (`Absent` → `Ok(None)`), never an error, while any other
+/// non-success code is a genuine failure to surface (`Failed` → `Err`).
+fn classify_ax_bounds_read(error: AXError) -> AxBoundsRead {
+    if ax_parameterized_absent(error) {
+        AxBoundsRead::Absent
+    } else if error != kAXErrorSuccess {
+        AxBoundsRead::Failed
+    } else {
+        AxBoundsRead::Present
+    }
+}
+
 fn focused_element_lookup_allows_app_fallback(error: AXError) -> bool {
     ax_attribute_absent(error)
 }
@@ -4657,6 +4685,18 @@ fn axset_readback_outcome(original: &str, readback: &str, inserted: Inserted) ->
     }
 }
 
+/// Whether a post-write readback is worth logging as a divergence. A readback
+/// equal to `new_value` is a clean apply, and one equal to `original` is the
+/// silent-no-op quirk already classified by [`axset_readback_outcome`]; both
+/// stay silent. Only a readback matching NEITHER is the diagnostic signal —
+/// usually app-side normalization, but also the sole observable symptom of a
+/// wrong-range or partially-applied splice — and must be surfaced. The `&&`
+/// (not `||`) is load-bearing: either clause alone would fire on every normal
+/// apply or every silent no-op.
+fn range_readback_diverged(original: &str, new_value: &str, readback: &str) -> bool {
+    readback != new_value && readback != original
+}
+
 /// Set the caret after a value write, treating any failure as non-fatal.
 ///
 /// The value write already landed by the time this runs; a caret-set failure
@@ -4813,12 +4853,10 @@ fn insert_range_for_field(
     // silent-write quirk.
     let readback = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }
         .unwrap_or_else(|_| new_value.clone());
-    // A divergent readback is usually app-side normalization, but it is also
-    // the only observable symptom of a wrong-range or partially-applied splice
-    // (e.g. a UTF-16 offset bug) — log it so that failure mode stays
+    // Log a divergent readback so a wrong-range/partial-splice failure stays
     // diagnosable while still reporting Applied. Lengths only: the field text
     // may be sensitive.
-    if readback != new_value && readback != value {
+    if range_readback_diverged(&value, &new_value, &readback) {
         eprintln!(
             "compme: range replacement readback diverged from expected value \
              (expected {} utf16 units, read back {})",
@@ -4977,11 +5015,10 @@ unsafe fn read_ax_bounds_for_selected_text_marker_range(
         marker_attribute.as_concrete_TypeRef(),
         &mut marker_range,
     );
-    if ax_parameterized_absent(err) {
-        return Ok(None);
-    }
-    if err != kAXErrorSuccess {
-        return Err(map_ax_error(err));
+    match classify_ax_bounds_read(err) {
+        AxBoundsRead::Absent => return Ok(None),
+        AxBoundsRead::Failed => return Err(map_ax_error(err)),
+        AxBoundsRead::Present => {}
     }
     if marker_range.is_null() {
         return Ok(None);
@@ -4996,11 +5033,10 @@ unsafe fn read_ax_bounds_for_selected_text_marker_range(
         marker_range_owner.as_CFTypeRef(),
         &mut value,
     );
-    if ax_parameterized_absent(err) {
-        return Ok(None);
-    }
-    if err != kAXErrorSuccess {
-        return Err(map_ax_error(err));
+    match classify_ax_bounds_read(err) {
+        AxBoundsRead::Absent => return Ok(None),
+        AxBoundsRead::Failed => return Err(map_ax_error(err)),
+        AxBoundsRead::Present => {}
     }
 
     screen_rect_from_ax_value(value)
@@ -5028,11 +5064,10 @@ unsafe fn read_ax_bounds_for_range(
         parameter as CFTypeRef,
         &mut value,
     );
-    if ax_parameterized_absent(err) {
-        return Ok(None);
-    }
-    if err != kAXErrorSuccess {
-        return Err(map_ax_error(err));
+    match classify_ax_bounds_read(err) {
+        AxBoundsRead::Absent => return Ok(None),
+        AxBoundsRead::Failed => return Err(map_ax_error(err)),
+        AxBoundsRead::Present => {}
     }
     if value.is_null() {
         return Ok(None);
@@ -7427,6 +7462,29 @@ mod tests {
             assert!(!ax_settable_absent(err));
             assert!(!ax_parameterized_absent(err));
         }
+    }
+
+    #[test]
+    fn text_range_rect_bounds_read_fails_closed_when_bounds_absent() {
+        // The fail-closed seam behind `text_range_rect`: an absent/unsupported
+        // parameterized bounds attribute must classify as `Absent`, which the
+        // FFI reads degrade to `Ok(None)` (no rect, caret/popup fallback) — never
+        // an error. Any other non-success code is a genuine `Failed` to surface.
+        for absent in [
+            kAXErrorAttributeUnsupported,
+            kAXErrorNoValue,
+            kAXErrorIllegalArgument,
+            kAXErrorParameterizedAttributeUnsupported,
+        ] {
+            assert_eq!(classify_ax_bounds_read(absent), AxBoundsRead::Absent);
+        }
+        for failed in [kAXErrorCannotComplete, kAXErrorFailure] {
+            assert_eq!(classify_ax_bounds_read(failed), AxBoundsRead::Failed);
+        }
+        assert_eq!(
+            classify_ax_bounds_read(kAXErrorSuccess),
+            AxBoundsRead::Present
+        );
     }
 
     #[test]
@@ -11301,6 +11359,20 @@ mod tests {
                 reason: "AX tree rebuilt".into(),
             }
         ));
+    }
+
+    #[test]
+    fn range_readback_divergence_logs_only_when_readback_matches_neither() {
+        // The range-replacement divergence log fires only when the readback
+        // equals NEITHER the value we wrote nor the original field text. A clean
+        // apply (readback == new_value) and the silent no-op (readback ==
+        // original) both stay quiet; app-side normalization to a third string is
+        // the diagnostic case worth logging.
+        let original = "teh cat";
+        let new_value = "the cat";
+        assert!(!range_readback_diverged(original, new_value, new_value));
+        assert!(!range_readback_diverged(original, new_value, original));
+        assert!(range_readback_diverged(original, new_value, "the  cat"));
     }
 
     #[test]

@@ -11937,19 +11937,35 @@ mod tests {
     }
 
     #[test]
-    fn manual_grammar_request_submits_only_when_ready() {
+    fn manual_grammar_request_drops_under_loading_unlike_pending_completions() {
         // The one-shot GrammarCheck shortcut arms `manual_grammar_request`,
-        // which resets every tick and is only consumed inside
-        // `suggestions_allowed()`. Every non-Ready status must therefore take
-        // the drop-with-log branch instead of submitting — otherwise the user's
-        // key press is silently discarded. This pins the exact gate the drop
-        // branch keys on; unlike pending `latest` requests, Loading also drops.
+        // consumed only inside the `suggestions_allowed()` arm; every other
+        // status takes the drop-with-log `else if` so the key press is never
+        // silently discarded. The `suggestions_allowed` truth table alone is
+        // owned by status.rs (`only_ready_allows_suggestions`) — asserting it
+        // again here would be a duplicate. The behavior *this* branch encodes,
+        // pinned nowhere else, is the DIVERGENCE at Loading: a manual grammar
+        // request is dropped there (suggestions not allowed) even though a
+        // pending *completion* request is preserved (`status_drops_pending_
+        // requests` is false for Loading). If the two predicates were ever
+        // realigned at Loading, the grammar drop branch would silently change
+        // meaning; this guards that coupling.
+        // Ready: grammar submitted, pending completions kept.
         assert!(AppStatus::Ready.suggestions_allowed());
+        assert!(!status_drops_pending_requests(AppStatus::Ready));
+        // Loading: grammar request dropped, pending completion preserved.
         assert!(!AppStatus::Loading.suggestions_allowed());
-        assert!(!AppStatus::Disabled.suggestions_allowed());
-        assert!(!AppStatus::Blocked(BlockReason::Permission).suggestions_allowed());
-        assert!(!AppStatus::Blocked(BlockReason::SecureInput).suggestions_allowed());
-        assert!(!AppStatus::Blocked(BlockReason::ModelUnavailable).suggestions_allowed());
+        assert!(!status_drops_pending_requests(AppStatus::Loading));
+        // Hard-blocked / disabled: grammar request and pending completions both go.
+        for status in [
+            AppStatus::Disabled,
+            AppStatus::Blocked(BlockReason::Permission),
+            AppStatus::Blocked(BlockReason::SecureInput),
+            AppStatus::Blocked(BlockReason::ModelUnavailable),
+        ] {
+            assert!(!status.suggestions_allowed(), "{status:?}");
+            assert!(status_drops_pending_requests(status), "{status:?}");
+        }
     }
 
     #[test]

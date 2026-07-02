@@ -612,6 +612,59 @@ mod tests {
     }
 
     #[test]
+    fn mid_body_failure_keeps_the_partial_bytes_as_the_resume_base() {
+        // The read-loop's Network-error arm must KEEP the part file: the bytes
+        // written before the connection dropped are the next resume base (the
+        // "Keep the part file: the bytes so far are the next resume base"
+        // contract the whole resume design leans on). The stalled-server test
+        // covers the 0-byte hang; this covers a drop AFTER real bytes landed.
+        // The server promises 200 bytes (Content-Length) but sends only 10 and
+        // closes, so ureq's length-framed body reader errors mid-stream once
+        // the 10 bytes are consumed. Pin: typed Network error, dest never
+        // appears, and the part holds EXACTLY those 10 bytes (not deleted, not
+        // truncated) so a later resume continues from offset 10.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut req = [0u8; 1024];
+                let _ = stream.read(&mut req);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: 200\r\nConnection: close\r\n\r\n"
+                );
+                // Deliver 10 of the promised 200 bytes, then drop the stream:
+                // the truncated body makes the client's next read error.
+                let _ = stream.write_all(b"0123456789");
+            }
+        });
+        let dest = temp_dest("midbody");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let agent = ureq::AgentBuilder::new()
+            .timeout_read(std::time::Duration::from_secs(5))
+            .build();
+        let err = download_with_agent(
+            &agent,
+            &format!("http://{addr}/model.bin"),
+            &dest,
+            None,
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, FetchError::Network(_)), "got: {err}");
+        assert!(!dest.exists(), "dest never appears on a mid-body failure");
+        assert_eq!(
+            std::fs::read(&part).unwrap(),
+            b"0123456789",
+            "the part keeps exactly the bytes received before the drop, as the resume base"
+        );
+        let _ = std::fs::remove_file(&part);
+    }
+
+    #[test]
     fn connect_timeout_aborts_a_stalled_connection_instead_of_hanging() {
         // Sibling to the read-timeout test: timeout_read only fires once bytes
         // start flowing — a connection that never COMPLETES the TCP handshake

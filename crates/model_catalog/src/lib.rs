@@ -708,6 +708,53 @@ mod tests {
     }
 
     #[test]
+    fn catalog_and_provenance_urls_are_hosted_on_huggingface() {
+        // Provenance = trusted SOURCE, not just a well-formed URL. Every
+        // download/provenance URL must originate from huggingface.co. The
+        // existing checks only pin `https://` + a `/resolve/<40hex>/` path
+        // shape, both of which a hostile mirror (e.g. https://evil.example/
+        // resolve/<40hex>/m.gguf) satisfies — a supply-chain origin swap would
+        // slip through. Pin the host so a non-HF origin is a build failure.
+        const TRUSTED: &str = "https://huggingface.co/";
+        for e in catalog() {
+            assert!(
+                e.url.starts_with(TRUSTED),
+                "{}: catalog url must be hosted on huggingface.co, got {:?}",
+                e.name,
+                e.url
+            );
+        }
+        for p in catalog_provenance() {
+            assert!(
+                p.url.starts_with(TRUSTED),
+                "{}: provenance url must be hosted on huggingface.co, got {:?}",
+                p.name,
+                p.url
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_pinned_hashes_are_unique() {
+        // Each artifact has its own SHA-256. Two entries sharing a pinned hash
+        // means at least one is a copy-paste provenance error (a new row cloned
+        // from an existing one without updating expected_sha256) — the mispinned
+        // model would then fail verify-before-rename against a foreign file's
+        // digest forever. Names are guarded for uniqueness elsewhere; the hash
+        // (the integrity anchor) must be distinct too.
+        let hashes: Vec<&str> = catalog()
+            .iter()
+            .map(|e| e.expected_sha256.expect("every entry is pinned"))
+            .collect();
+        let unique: std::collections::HashSet<&str> = hashes.iter().copied().collect();
+        assert_eq!(
+            hashes.len(),
+            unique.len(),
+            "catalog pinned hashes must be unique (a shared hash is a copy-paste mispin)"
+        );
+    }
+
+    #[test]
     fn gemma_and_llama_named_entries_are_license_gated() {
         // Guards name-implies-license drift: any entry whose name says "llama"
         // must carry the Llama gate, and any "gemma" entry the Gemma gate. A
