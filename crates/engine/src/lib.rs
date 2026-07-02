@@ -2388,6 +2388,73 @@ mod tests {
     }
 
     #[test]
+    fn on_force_show_re_presents_a_held_correction_as_a_correction_not_a_ghost() {
+        // Companion to the ghost force-show test above, for the grammar-correction
+        // path. The engine_core fix makes a held correction re-emit `ShowCorrection`
+        // (not `ShowGhost`) on `ForceShow`; this pins the engine-side consequence of
+        // that choice end to end. A regression that re-emitted `ShowGhost` would, at
+        // this dispatch layer, anchor the overlay at the caret rect (10,20) instead
+        // of the correction span (30,40) AND arm the tap as `AcceptAction::Full` —
+        // which silently no-ops on a correction, leaving the hotkey dead.
+        let (mut engine, _adapter, overlay) = engine();
+        let actions: Arc<Mutex<Vec<Option<AcceptAction>>>> = Arc::new(Mutex::new(Vec::new()));
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let a = Arc::clone(&actions);
+        let v = Arc::clone(&visible);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            |_delay| Ok(()),
+            move |act| {
+                a.lock().unwrap().push(act);
+                Ok(())
+            },
+        ));
+
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+        engine.on_correction(&request, "the".into(), range).unwrap();
+        // Drop the setup noise so we observe only the force-show effects.
+        overlay.calls.lock().unwrap().clear();
+        actions.lock().unwrap().clear();
+        visible.lock().unwrap().clear();
+
+        let follow = engine.on_force_show().unwrap();
+
+        assert!(
+            follow.is_empty(),
+            "force-show re-presents the held correction, never kicks a fresh request"
+        );
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::ShowCorrection(
+                ScreenRect {
+                    x: 30.0,
+                    y: 40.0,
+                    w: 20.0,
+                    h: 12.0,
+                },
+                "the".into(),
+            )],
+            "force-show must re-present the held correction at the correction span, \
+             not a caret-anchored ghost"
+        );
+        assert_eq!(
+            *actions.lock().unwrap(),
+            vec![Some(AcceptAction::Correction)],
+            "the re-shown correction must re-arm the tap as a Correction, never Full"
+        );
+        assert!(
+            !visible.lock().unwrap().contains(&false),
+            "the still-valid correction tap must stay armed across a force-show"
+        );
+    }
+
+    #[test]
     fn completion_for_wrong_field_is_dropped() {
         // Staleness at the dispatch boundary: a completion stamped for a field
         // OTHER than the one the in-flight request was issued for must be dropped.
