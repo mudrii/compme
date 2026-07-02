@@ -192,6 +192,8 @@ classify_blocker() {
     echo "permission: check Accessibility grant"
   elif grep -Eq 'AX text value unavailable|AX selected text range unavailable|DIAG_ERROR no field observed' "$log_file"; then
     echo "focus-target: focus an editable text field, not the app shell"
+  elif grep -Eq 'SHOW_DIAG_ERROR|UPDATE_DIAG_ERROR|CORRECTION_SHOW_DIAG_ERROR|HIDE_DIAG_ERROR' "$log_file"; then
+    echo "overlay-diagnostics: overlay presenter contract failed"
   elif grep -q 'front_app=Some("pid:' "$log_file" && pgrep -x loginwindow >/dev/null 2>&1; then
     login_pid="$(pgrep -x loginwindow | head -n 1)"
     if [ -n "$login_pid" ] && grep -q "front_app=Some(\"pid:$login_pid\")" "$log_file"; then
@@ -515,6 +517,10 @@ run_self_tests() {
     "permission: check Accessibility grant" || self_failures=$((self_failures + 1))
   assert_classifies "focus-target" 'DIAG_ERROR no field observed' \
     "focus-target: focus an editable text field, not the app shell" || self_failures=$((self_failures + 1))
+  assert_classifies "overlay-show-diagnostics" 'SHOW_DIAG_ERROR MacosOverlayDiagnostics { visible: false }' \
+    "overlay-diagnostics: overlay presenter contract failed" || self_failures=$((self_failures + 1))
+  assert_classifies "overlay-correction-diagnostics" 'CORRECTION_SHOW_DIAG_ERROR MacosOverlayDiagnostics { joins_all_spaces: false }' \
+    "overlay-diagnostics: overlay presenter contract failed" || self_failures=$((self_failures + 1))
   assert_classifies "unknown" 'some unrelated output' \
     "unknown: see log" || self_failures=$((self_failures + 1))
 
@@ -636,22 +642,40 @@ run_self_tests() {
     accept-tap-word \
     accept-tap-escape \
     accept-tap-option-tab \
-    accept-tap-cycle \
-    accept-tap-delayed-hide \
-    overlay-presenter; do
+	    accept-tap-cycle \
+	    accept-tap-delayed-hide \
+	    overlay-presenter \
+	    overlay-correction-presenter; do
     assert_log_contains "default-dry-run-gate-$gate" "$dry_run_log" "^== $gate ==$" \
       || self_failures=$((self_failures + 1))
   done
-  for gate in \
-    encrypted-memory-all-monitored-live \
-    grammar-fix-textedit-look \
-    input-monitoring-revoked-carbon-accept; do
+	  for gate in \
+	    apps-policy-toggle-look \
+	    personalization-pane-look \
+	    encrypted-memory-all-monitored-live \
+	    grammar-fix-textedit-look \
+	    input-monitoring-revoked-carbon-accept; do
     assert_log_contains "default-dry-run-manual-$gate" "$dry_run_log" "^MANUAL $gate:" \
       || self_failures=$((self_failures + 1))
   done
-  assert_log_contains "default-dry-run-grammar-fix-look-checklist" "$dry_run_log" \
-    "^MANUAL grammar-fix-textedit-look: .*COMPME_GRAMMAR_FIX=1.*COMPME_GRAMMAR_CHECK_KEY.*COMPME_GRAMMAR_ACCEPT_KEY.*TextEdit.*teh.*underline/banner.*accept replaces exactly.*caret move/edit stales" \
-    || self_failures=$((self_failures + 1))
+	  assert_log_contains "default-dry-run-grammar-fix-look-checklist" "$dry_run_log" \
+	    "^MANUAL grammar-fix-textedit-look: .*COMPME_GRAMMAR_FIX=1.*COMPME_GRAMMAR_CHECK_KEY.*COMPME_GRAMMAR_ACCEPT_KEY.*TextEdit.*teh.*underline/banner.*accept replaces exactly.*caret move/edit stales" \
+	    || self_failures=$((self_failures + 1))
+	  assert_log_contains "default-dry-run-correction-overlay-mode" "$dry_run_log" \
+	    'COMPME_OVERLAY_MODE=correction .*COMPME_OVERLAY_W=80 .*COMPME_OVERLAY_TEXT=the .*overlay_presenter_acceptance' \
+	    || self_failures=$((self_failures + 1))
+	  assert_log_contains "default-dry-run-apps-policy-look-checklist" "$dry_run_log" \
+	    '^MANUAL apps-policy-toggle-look: .*Settings > Apps.*On/Tab/Mid/AC/GF.*Enabled and Grammar fix.*dismiss.*persists' \
+	    || self_failures=$((self_failures + 1))
+	  if grep -Eq '^MANUAL apps-policy-toggle-look: .*GrammarFix' "$dry_run_log"; then
+	    echo "FAIL default-dry-run-apps-policy-look-no-grammarfix-camelcase" >&2
+	    self_failures=$((self_failures + 1))
+	  else
+	    echo "PASS default-dry-run-apps-policy-look-no-grammarfix-camelcase"
+	  fi
+	  assert_log_contains "default-dry-run-personalization-look-checklist" "$dry_run_log" \
+	    '^MANUAL personalization-pane-look: .*Settings > Personalization.*instructions, sender, and strength.*multi-line.*without relaunch' \
+	    || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-manual-all-monitored-residuals" "$dry_run_log" \
     '^MANUAL encrypted-memory-all-monitored-live: .*secure-input.*snoozed.*volatile-pid' \
     || self_failures=$((self_failures + 1))
@@ -669,6 +693,12 @@ run_self_tests() {
   assert_log_contains "help-lists-allow-manual" "$help_log" '^  --allow-manual[[:space:]]' \
     || self_failures=$((self_failures + 1))
 
+  acceptance_doc="$ROOT_DIR/docs/ACCEPTANCE.md"
+  while IFS= read -r gate; do
+    assert_log_contains "acceptance-doc-lists-manual-$gate" "$acceptance_doc" "(^|[^[:alnum:]_-])$gate([^[:alnum:]_-]|$)" \
+      || self_failures=$((self_failures + 1))
+  done < <(grep -E '^[[:space:]]*manual_gate "' "$0" | sed -E 's/.*manual_gate "([^"]+)".*/\1/')
+
   skip_textedit_log="$self_test_dir/skip-textedit-dry-run.log"
   A1B_LOG_DIR="$self_test_dir/skip-textedit-dry-run-logs" "$0" --dry-run --skip-textedit >"$skip_textedit_log" 2>&1
   skip_textedit_status=$?
@@ -682,7 +712,7 @@ run_self_tests() {
     '^SKIP accept-insert-option-tab: --skip-textedit$' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
-    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=3 logs=' \
+    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=5 logs=' \
     || self_failures=$((self_failures + 1))
 
   rm -rf "$self_test_dir"
@@ -831,7 +861,10 @@ run_accept_tap_gate "accept-tap-cycle" env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="
 run_accept_tap_gate "accept-tap-delayed-hide" env COMPME_ACCEPTANCE_HIDE_AFTER_MS="$HIDE_AFTER_MS" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_BIN" "$SHORT_TIMEOUT_MS" delayed-hide
 
 run_gate "overlay-presenter" "$OVERLAY_BIN" "$TIMEOUT_MS"
+run_gate "overlay-correction-presenter" env COMPME_OVERLAY_MODE=correction COMPME_OVERLAY_W=80 COMPME_OVERLAY_TEXT=the "$OVERLAY_BIN" "$TIMEOUT_MS"
 
+manual_gate "apps-policy-toggle-look" "open Settings > Apps with at least two rows; verify On/Tab/Mid/AC/GF checkbox columns do not overlap names, toggle Enabled and Grammar fix for the focused app, confirm suggestions/corrections dismiss and config persists"
+manual_gate "personalization-pane-look" "open Settings > Personalization; edit instructions, sender, and strength, confirm multi-line commit/persistence and that the next request uses updated steering without relaunch"
 manual_gate "encrypted-memory-all-monitored-live" "remaining residual after 2026-06-17 TextEdit and Chrome product-loop proofs: confirm secure-input, snoozed policy transition, and volatile-pid cases add no rows"
 manual_gate "grammar-fix-textedit-look" "launch compme with COMPME_GRAMMAR_FIX=1 plus COMPME_GRAMMAR_CHECK_KEY and COMPME_GRAMMAR_ACCEPT_KEY; in TextEdit verify 'teh' shows underline/banner, accept replaces exactly, and caret move/edit stales the correction"
 run_input_monitoring_revoked_carbon_gate

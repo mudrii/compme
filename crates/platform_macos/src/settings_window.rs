@@ -2159,7 +2159,7 @@ const APP_POLICY_FIELD_TITLES: [&str; APP_POLICY_FIELDS] = [
 /// Short column headers for the compact one-line Apps grid. The bare checkboxes
 /// carry the full [`APP_POLICY_FIELD_TITLES`] as tooltips; these label the
 /// columns in the header row so the toggles are self-explanatory.
-const APP_POLICY_COLUMN_HEADERS: [&str; APP_POLICY_FIELDS] = ["On", "Tab", "Mid", "AC", "Gr"];
+const APP_POLICY_COLUMN_HEADERS: [&str; APP_POLICY_FIELDS] = ["On", "Tab", "Mid", "AC", "GF"];
 
 /// Fixed Statistics row count (shown / accepted / words / lifetime).
 /// Public for the same reason as [`APPS_ROWS`]: the run loop's composer
@@ -2290,6 +2290,11 @@ mod tests {
                 pers_layout::BUDGET_H
             );
         }
+    }
+
+    #[test]
+    fn apps_policy_column_headers_match_manual_acceptance_contract() {
+        assert_eq!(APP_POLICY_COLUMN_HEADERS, ["On", "Tab", "Mid", "AC", "GF"]);
     }
 
     #[test]

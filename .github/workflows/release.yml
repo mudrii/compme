@@ -186,23 +186,43 @@ jobs:
             ${{ steps.pkg.outputs.zip }}.sha256
             ${{ steps.manifest.outputs.manifest }}
 
-      # The cask's sha256 can only be known after the artifact is built, so it
-      # is finalized out-of-band (see docs/RELEASING.md). Surface the exact
-      # values here so the maintainer can run tools/release/update-cask.sh.
-      - name: Cask update instructions
+      # The cask's sha256 can only be known after the artifact is built. Finalize
+      # it from the just-published artifact so Homebrew users do not see the
+      # placeholder checksum after the first release tag lands.
+      - name: Finalize Homebrew cask
         env:
           VERSION: ${{ steps.pkg.outputs.version }}
-          SHA256: ${{ steps.pkg.outputs.sha256 }}
+          ZIP: ${{ steps.pkg.outputs.zip }}
           TAG: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          set -euo pipefail
+          artifact_path="$PWD/$ZIP"
+          git fetch origin "$DEFAULT_BRANCH"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"; then
+            echo "release tag commit $GITHUB_SHA is not on origin/$DEFAULT_BRANCH" >&2
+            exit 1
+          fi
+          git checkout "$DEFAULT_BRANCH"
+          git pull --ff-only origin "$DEFAULT_BRANCH"
+          current_cask_version="$(ruby -ne 'puts $1 if /^  version "([^"]+)"/' Casks/compme.rb)"
+          if [ "$current_cask_version" != "$VERSION" ]; then
+            echo "default-branch cask version is $current_cask_version, expected $VERSION" >&2
+            echo "refusing to publish a stale or out-of-order cask update" >&2
+            exit 1
+          fi
+          COMPME_CASK_ARTIFACT="$artifact_path" tools/release/update-cask.sh "$TAG"
+          if git diff --quiet -- Casks/compme.rb; then
+            echo "Casks/compme.rb already matches $TAG"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Casks/compme.rb
+            git commit -m "chore(release): cask $TAG"
+            git push origin "HEAD:$DEFAULT_BRANCH"
+          fi
           {
             echo "## Homebrew cask"
-            echo "Finalize \`Casks/compme.rb\` for this release:"
-            echo '```sh'
-            echo "tools/release/update-cask.sh \"$TAG\""
-            echo "git add Casks/compme.rb"
-            echo "git commit -m \"chore(release): cask $TAG\" && git push"
-            echo '```'
+            echo "Finalized \`Casks/compme.rb\` for \`$TAG\` on \`$DEFAULT_BRANCH\`."
             echo "version: \`$VERSION\`"
-            echo "sha256:  \`$SHA256\`"
           } >> "$GITHUB_STEP_SUMMARY"

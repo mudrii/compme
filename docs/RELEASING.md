@@ -8,8 +8,8 @@ on GitHub Actions (Apple Silicon `macos-14` runners).
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | branch push / PR / tag `v*` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets -- --test-threads=1`, `cargo build --workspace --all-targets`, plus acceptance/bundle/release script syntax, bundle metadata/version check, bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), A1b/A2/E2E self-tests, missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy (`tools/release/check-model-client-features.sh`), release model-gate policy, cask-updater self-test (`tools/release/update-cask.sh --self-test`), notarization helper self-test, and update-manifest self-test. Spike gates: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --bins` in `tools/spike`. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | tag `v*` | Runs release validation first: serialized root fmt/clippy/test/build, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), acceptance/bundle/release script syntax + self-tests, missing-model startup product smoke (`tools/acceptance/missing-model-startup.sh`), bundle metadata/version check (`tools/bundle/check-bundle-metadata.sh`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), model-client feature policy (`tools/release/check-model-client-features.sh`), release model-gate policy, cask-updater self-test, notarization helper self-test, update-manifest self-test, and spike fmt/clippy/test/build. Only after validation passes, imports the Developer-ID certificate, builds `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh) with hardened runtime, notarizes + staples it via [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh), zips it with `ditto`, computes the sha256, writes an update manifest, and publishes a GitHub Release with the zip, `.sha256`, and manifest. |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | branch push / PR / tag `v*` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets -- --test-threads=1`, `cargo build --workspace --all-targets`, plus acceptance/bundle/release script syntax, bundle metadata/version check, bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), A1b/A2/E2E self-tests, missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy (`tools/release/check-model-client-features.sh`), release model-gate policy, cask-updater self-test (`tools/release/update-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --bins` in `tools/spike`. |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | tag `v*` | Runs release validation first: serialized root fmt/clippy/test/build, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), acceptance/bundle/release script syntax + self-tests, missing-model startup product smoke (`tools/acceptance/missing-model-startup.sh`), bundle metadata/version check (`tools/bundle/check-bundle-metadata.sh`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), model-client feature policy (`tools/release/check-model-client-features.sh`), release model-gate policy, cask-updater self-test (`tools/release/update-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`), and spike fmt/clippy/test/build. Only after validation passes, imports the Developer-ID certificate, builds `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh) with hardened runtime, notarizes + staples it via [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh), zips it with `ditto`, computes the sha256, writes an update manifest, publishes a GitHub Release with the zip, `.sha256`, and manifest, then commits the finalized Homebrew cask checksum back to the default branch. |
 
 Model-inference tests (`crates/model_client/tests/latency.rs` and the spike model
 integration test) are `#[ignore]`d because they need a local GGUF and a Metal GPU,
@@ -46,9 +46,14 @@ determinism and the sub-500ms latency budget enforced on the current machine.
    cd ../..
    ```
 
-4. Tag and push:
+4. Ensure the release commit is on the up-to-date default branch, then tag and
+   push. The cask finalizer refuses to update `main` if the tag commit is not an
+   ancestor of the default branch or if the default-branch cask version has
+   already moved past the tag version:
 
    ```sh
+   git checkout main
+   git pull --ff-only origin main
    git tag v0.1.0
    git push origin v0.1.0
    ```
@@ -56,8 +61,9 @@ determinism and the sub-500ms latency budget enforced on the current machine.
    The Release workflow builds, Developer-ID signs, notarizes, staples, packages,
    and publishes `compme-0.1.0-macos.zip`, `compme-0.1.0-macos.zip.sha256`, and
    `compme-0.1.0-update.json` to the `v0.1.0` GitHub Release.
-5. Finalize the cask sha256 from the published artifact (the workflow prints the
-   exact `version`/`sha256` to its run summary):
+5. Confirm the workflow's **Finalize Homebrew cask** step committed the cask
+   sha256 back to the default branch. If branch protection blocks that bot push
+   or you need to recover manually, run:
 
    ```sh
    tools/release/update-cask.sh v0.1.0

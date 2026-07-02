@@ -50,8 +50,9 @@ Release artifacts are Developer-ID signed and notarized by the tag workflow.
 Enable Compme under System Settings → Privacy & Security → Accessibility. All
 inference is local; nothing leaves the machine.
 
-> The cask resolves once a release is tagged (see
-> [docs/RELEASING.md](docs/RELEASING.md)). Until then, build from source.
+> The cask resolves once a tagged release workflow publishes the artifact and
+> finalizes the cask checksum (see [docs/RELEASING.md](docs/RELEASING.md)).
+> Until then, build from source.
 
 ### From source
 
@@ -291,7 +292,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,614 tests:
+suite is roughly 1,623 tests:
 
 ```sh
 cargo fmt --all -- --check
@@ -310,6 +311,8 @@ tools/acceptance/run-a2-compat-gates.sh --self-test
 tools/release/check-model-client-features.sh
 bash tools/release/check-model-gates.sh
 tools/release/update-cask.sh --self-test
+tools/release/notarize-app.sh --self-test
+tools/release/write-update-manifest.sh --self-test
 bash tools/release/run-model-gates.sh
 
 cd tools/spike

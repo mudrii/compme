@@ -97,11 +97,13 @@ impl<A: PlatformAdapter> PlatformAdapter for SharedAdapter<A> {
     fn insert_replacing_range(
         &self,
         field: &FieldHandle,
+        expected_text: &str,
         text: &str,
         range: CorrectionRange,
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError> {
-        self.0.insert_replacing_range(field, text, range, strategy)
+        self.0
+            .insert_replacing_range(field, expected_text, text, range, strategy)
     }
 }
 
@@ -110,6 +112,7 @@ mod tests {
     use super::*;
     use platform::OperatingSystem;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     /// Minimal inner adapter whose two trap-prone overrides are observable:
     /// `focused_page_url` returns a real URL (NOT the trait's `Ok(None)`
@@ -119,6 +122,7 @@ mod tests {
     struct RecordingInner {
         last_replace_left: AtomicUsize,
         last_range_start: AtomicUsize,
+        last_expected_text: Mutex<Option<String>>,
     }
 
     impl PlatformAdapter for RecordingInner {
@@ -193,11 +197,13 @@ mod tests {
         fn insert_replacing_range(
             &self,
             _field: &FieldHandle,
+            expected_text: &str,
             text: &str,
             range: CorrectionRange,
             strategy: InsertStrategy,
         ) -> Result<Inserted, PlatformError> {
             self.last_range_start.store(range.start, Ordering::SeqCst);
+            *self.last_expected_text.lock().unwrap() = Some(expected_text.to_string());
             Ok(Inserted {
                 bytes: text.len(),
                 chars: text.chars().count(),
@@ -267,6 +273,7 @@ mod tests {
         shared
             .insert_replacing_range(
                 &field(),
+                "teh",
                 "the",
                 CorrectionRange { start: 8, end: 11 },
                 InsertStrategy::AxSet,
@@ -276,6 +283,11 @@ mod tests {
             inner.last_range_start.load(Ordering::SeqCst),
             8,
             "the inner adapter must receive the exact correction range"
+        );
+        assert_eq!(
+            inner.last_expected_text.lock().unwrap().as_deref(),
+            Some("teh"),
+            "the inner adapter must receive the original text guard"
         );
     }
 }

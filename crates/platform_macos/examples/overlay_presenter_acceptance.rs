@@ -19,6 +19,7 @@ fn main() {
         h: env_f64("COMPME_OVERLAY_H").unwrap_or(18.0),
     };
     let text = env::var("COMPME_OVERLAY_TEXT").unwrap_or_else(|_| "ghost completion text".into());
+    let mode = env::var("COMPME_OVERLAY_MODE").unwrap_or_else(|_| "ghost".into());
     let update_text = env::var("COMPME_OVERLAY_UPDATE_TEXT")
         .unwrap_or_else(|_| "updated ghost completion text".into());
     let update_after = env::var("COMPME_OVERLAY_UPDATE_AFTER_MS")
@@ -34,6 +35,46 @@ fn main() {
             process::exit(2);
         }
     };
+
+    if mode == "correction" {
+        if let Err(err) = presenter.show_correction(rect, &text) {
+            eprintln!("CORRECTION_SHOW_ERROR {err:?}");
+            process::exit(1);
+        }
+        println!(
+            "CORRECTION_SHOW rect={rect:?} suggestion={text:?} pid={}",
+            process::id()
+        );
+        let diagnostics = presenter.diagnostics_for_acceptance();
+        println!("CORRECTION_SHOW_DIAG {diagnostics:?}");
+        if !correction_diagnostics_ok(diagnostics) {
+            eprintln!("CORRECTION_SHOW_DIAG_ERROR {diagnostics:?}");
+            process::exit(1);
+        }
+
+        thread::sleep(duration);
+        if let Err(err) = presenter.hide() {
+            eprintln!("HIDE_ERROR {err:?}");
+            process::exit(1);
+        }
+        println!("HIDE");
+        let hidden_diagnostics = presenter.diagnostics_for_acceptance();
+        println!("HIDE_DIAG {hidden_diagnostics:?}");
+        if !hidden_diagnostics.has_panel
+            || hidden_diagnostics.visible
+            || hidden_diagnostics.underline_visible
+        {
+            eprintln!("HIDE_DIAG_ERROR {hidden_diagnostics:?}");
+            process::exit(1);
+        }
+        println!(
+            "SUMMARY correction_shown=true hidden=true underline_visible_before=true click_through={} nonactivating={} can_key={}",
+            diagnostics.ignores_mouse_events,
+            diagnostics.nonactivating_panel,
+            diagnostics.can_become_key_window
+        );
+        return;
+    }
 
     if let Err(err) = presenter.show_ghost(rect, &text) {
         eprintln!("SHOW_ERROR {err:?}");
@@ -91,5 +132,73 @@ fn shown_diagnostics_ok(diagnostics: MacosOverlayDiagnostics) -> bool {
         && diagnostics.ignores_mouse_events
         && diagnostics.nonactivating_panel
         && !diagnostics.can_become_key_window
+        && diagnostics.joins_all_spaces
+        && diagnostics.fullscreen_auxiliary
         && diagnostics.level == 101
+}
+
+fn correction_diagnostics_ok(diagnostics: MacosOverlayDiagnostics) -> bool {
+    shown_diagnostics_ok(diagnostics)
+        && diagnostics.has_underline_panel
+        && diagnostics.underline_visible
+        && diagnostics.panel_frame.is_some()
+        && diagnostics.underline_frame.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_shown_diagnostics() -> MacosOverlayDiagnostics {
+        MacosOverlayDiagnostics {
+            has_panel: true,
+            visible: true,
+            ignores_mouse_events: true,
+            nonactivating_panel: true,
+            can_become_key_window: false,
+            level: 101,
+            joins_all_spaces: true,
+            fullscreen_auxiliary: true,
+            panel_frame: Some(ScreenRect {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0,
+            }),
+            has_underline_panel: true,
+            underline_visible: true,
+            underline_frame: Some(ScreenRect {
+                x: 1.0,
+                y: 20.0,
+                w: 3.0,
+                h: 2.0,
+            }),
+        }
+    }
+
+    #[test]
+    fn shown_diagnostics_require_space_collection_behavior() {
+        assert!(shown_diagnostics_ok(valid_shown_diagnostics()));
+
+        let mut missing_spaces = valid_shown_diagnostics();
+        missing_spaces.joins_all_spaces = false;
+        assert!(!shown_diagnostics_ok(missing_spaces));
+
+        let mut missing_fullscreen = valid_shown_diagnostics();
+        missing_fullscreen.fullscreen_auxiliary = false;
+        assert!(!shown_diagnostics_ok(missing_fullscreen));
+    }
+
+    #[test]
+    fn correction_diagnostics_require_space_collection_behavior() {
+        assert!(correction_diagnostics_ok(valid_shown_diagnostics()));
+
+        let mut missing_spaces = valid_shown_diagnostics();
+        missing_spaces.joins_all_spaces = false;
+        assert!(!correction_diagnostics_ok(missing_spaces));
+
+        let mut missing_fullscreen = valid_shown_diagnostics();
+        missing_fullscreen.fullscreen_auxiliary = false;
+        assert!(!correction_diagnostics_ok(missing_fullscreen));
+    }
 }

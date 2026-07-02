@@ -149,6 +149,7 @@ mod tests {
         assert!(matches!(
             adapter.insert_replacing_range(
                 &field,
+                "old",
                 "x",
                 platform::CorrectionRange { start: 0, end: 1 },
                 InsertStrategy::AxSet,
@@ -248,6 +249,19 @@ mod tests {
                     Err(PlatformError::UnsupportedField { .. })
                 ),
                 "insert_replacing {strategy:?}"
+            );
+            assert!(
+                matches!(
+                    adapter.insert_replacing_range(
+                        &field,
+                        "old",
+                        "x",
+                        platform::CorrectionRange { start: 0, end: 1 },
+                        strategy,
+                    ),
+                    Err(PlatformError::UnsupportedField { .. })
+                ),
+                "insert_replacing_range {strategy:?}"
             );
         }
     }

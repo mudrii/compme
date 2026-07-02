@@ -1443,6 +1443,76 @@ fn typing_domain(
     cached_domain(cache, app_key).map(str::to_owned)
 }
 
+fn typing_domain_for_current_field(
+    cache: &mut Option<(String, String)>,
+    app_key: Option<&str>,
+    observe_domain: bool,
+    mut focused_page_url: impl FnMut() -> Option<String>,
+) -> Option<String> {
+    let fresh_url = if app_key.is_some_and(compat::is_browser) && observe_domain {
+        focused_page_url()
+    } else {
+        None
+    };
+    typing_domain(cache, app_key, observe_domain, fresh_url.as_deref())
+}
+
+struct ManualGrammarRequestInputs<'a> {
+    field: &'a FieldHandle,
+    ctx: &'a TextContext,
+    caps: &'a Capabilities,
+    config: &'a Config,
+    prefs: &'a Prefs,
+    app_key: Option<&'a str>,
+    enabled: bool,
+    now_ms: u64,
+}
+
+fn manual_grammar_request_for_current_field(
+    inputs: ManualGrammarRequestInputs<'_>,
+    last_domain: &mut Option<(String, String)>,
+    focused_page_url: impl FnMut() -> Option<String>,
+) -> Option<CompletionRequest> {
+    let observe_domain = domain_observation_enabled(inputs.prefs, &inputs.config.personalization);
+    let domain = typing_domain_for_current_field(
+        last_domain,
+        inputs.app_key,
+        observe_domain,
+        focused_page_url,
+    );
+    grammar_fix_request(
+        inputs.field,
+        inputs.ctx,
+        GrammarRequestGate {
+            config: inputs.config,
+            prefs: inputs.prefs,
+            app_key: inputs.app_key,
+            domain: domain.as_deref(),
+            enabled: inputs.enabled,
+            caps: inputs.caps,
+            now_ms: inputs.now_ms,
+        },
+    )
+}
+
+fn enqueue_monitored_change_for_current_domain(
+    pending: &mut Vec<PendingMonitoredText>,
+    last_domain: &mut Option<(String, String)>,
+    change: &engine::TextChange,
+    app_key: Option<String>,
+    observe_domain: bool,
+    focused_page_url: impl FnMut() -> Option<String>,
+) -> Option<String> {
+    let domain = typing_domain_for_current_field(
+        last_domain,
+        app_key.as_deref(),
+        observe_domain,
+        focused_page_url,
+    );
+    enqueue_monitored_change(pending, change, app_key, domain.clone());
+    domain
+}
+
 /// First-suggestion latency (ms) for a completed request's `generation`: the
 /// elapsed time since it was submitted. Removes the matched submit timestamp and
 /// prunes older ones (requests coalesced away in the inference channel never
@@ -3716,25 +3786,13 @@ pub fn run() -> Result<(), String> {
                                 Observation::Typed(change) => {
                                     let observe_domain =
                                         domain_observation_enabled(&prefs, &config.personalization);
-                                    let fresh_url =
-                                        if app_key.as_deref().is_some_and(compat::is_browser)
-                                            && observe_domain
-                                        {
-                                            adapter.focused_page_url(&field).ok().flatten()
-                                        } else {
-                                            None
-                                        };
-                                    let domain = typing_domain(
-                                        &mut last_domain,
-                                        app_key.as_deref(),
-                                        observe_domain,
-                                        fresh_url.as_deref(),
-                                    );
-                                    enqueue_monitored_change(
+                                    let domain = enqueue_monitored_change_for_current_domain(
                                         &mut pending_monitored,
+                                        &mut last_domain,
                                         &change,
                                         app_key.clone(),
-                                        domain.clone(),
+                                        observe_domain,
+                                        || adapter.focused_page_url(&field).ok().flatten(),
                                     );
                                     offer_all(
                                         &mut latest,
@@ -3977,7 +4035,6 @@ pub fn run() -> Result<(), String> {
                             continue;
                         };
                         let app_key = effective_app_key(&field, bundle_id_for_pid);
-                        let domain = cached_domain(&last_domain, app_key.as_deref());
                         let ctx = match adapter.read_context(&field) {
                             Ok(ctx) => ctx,
                             Err(err) => {
@@ -3993,18 +4050,19 @@ pub fn run() -> Result<(), String> {
                             }
                         };
                         latest.clear();
-                        if let Some(mut request) = grammar_fix_request(
-                            &field,
-                            &ctx,
-                            GrammarRequestGate {
+                        if let Some(mut request) = manual_grammar_request_for_current_field(
+                            ManualGrammarRequestInputs {
+                                field: &field,
+                                ctx: &ctx,
+                                caps: &caps,
                                 config: &config,
                                 prefs: &prefs,
                                 app_key: app_key.as_deref(),
-                                domain,
                                 enabled: flags.enabled.load(Ordering::Relaxed),
-                                caps: &caps,
                                 now_ms,
                             },
+                            &mut last_domain,
+                            || adapter.focused_page_url(&field).ok().flatten(),
                         ) {
                             if let Some((generation, snapshot)) =
                                 engine.arm_manual_grammar_request(&field)
@@ -9238,6 +9296,145 @@ mod tests {
     }
 
     #[test]
+    fn grammar_detection_refresh_drops_stale_allowed_browser_domain() {
+        let field = field_with_app("com.google.Chrome");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let mut prefs = config.prefs.clone();
+        prefs.excluded_domains.insert("blocked.example".into());
+        let mut cache = Some((
+            "com.google.Chrome".to_string(),
+            "allowed.example".to_string(),
+        ));
+
+        let refreshed_domain = typing_domain(&mut cache, Some("com.google.Chrome"), true, None);
+
+        assert_eq!(refreshed_domain, None);
+        assert!(grammar_fix_request(
+            &field,
+            &text_context_with_right(&field, "teh", ""),
+            grammar_gate(
+                &config,
+                &prefs,
+                Some("com.google.Chrome"),
+                refreshed_domain.as_deref(),
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn grammar_detection_refresh_reads_current_browser_url_before_gating() {
+        let field = field_with_app("com.google.Chrome");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let mut prefs = config.prefs.clone();
+        prefs.excluded_domains.insert("blocked.example".into());
+        let calls = std::cell::Cell::new(0);
+        let mut cache = Some((
+            "com.google.Chrome".to_string(),
+            "allowed.example".to_string(),
+        ));
+
+        let refreshed_domain =
+            typing_domain_for_current_field(&mut cache, Some("com.google.Chrome"), true, || {
+                calls.set(calls.get() + 1);
+                Some("https://blocked.example/doc".to_string())
+            });
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(refreshed_domain.as_deref(), Some("blocked.example"));
+        assert!(grammar_fix_request(
+            &field,
+            &text_context_with_right(&field, "teh", ""),
+            grammar_gate(
+                &config,
+                &prefs,
+                Some("com.google.Chrome"),
+                refreshed_domain.as_deref(),
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn grammar_detection_refresh_allows_current_allowed_browser_url() {
+        let field = field_with_app("com.google.Chrome");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let mut prefs = config.prefs.clone();
+        prefs.excluded_domains.insert("blocked.example".into());
+        let calls = std::cell::Cell::new(0);
+        let mut cache = Some((
+            "com.google.Chrome".to_string(),
+            "blocked.example".to_string(),
+        ));
+
+        let refreshed_domain =
+            typing_domain_for_current_field(&mut cache, Some("com.google.Chrome"), true, || {
+                calls.set(calls.get() + 1);
+                Some("https://allowed.example/doc".to_string())
+            });
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(refreshed_domain.as_deref(), Some("allowed.example"));
+        assert!(grammar_fix_request(
+            &field,
+            &text_context_with_right(&field, "teh", ""),
+            grammar_gate(
+                &config,
+                &prefs,
+                Some("com.google.Chrome"),
+                refreshed_domain.as_deref(),
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn manual_grammar_request_uses_fresh_browser_url_before_gating() {
+        let field = field_with_app("com.google.Chrome");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let mut prefs = config.prefs.clone();
+        prefs.excluded_domains.insert("blocked.example".into());
+        let calls = std::cell::Cell::new(0);
+        let mut cache = Some((
+            "com.google.Chrome".to_string(),
+            "allowed.example".to_string(),
+        ));
+
+        let request = manual_grammar_request_for_current_field(
+            ManualGrammarRequestInputs {
+                field: &field,
+                ctx: &text_context_with_right(&field, "teh", ""),
+                caps: &writable_axset_caps(),
+                config: &config,
+                prefs: &prefs,
+                app_key: Some("com.google.Chrome"),
+                enabled: true,
+                now_ms: 0,
+            },
+            &mut cache,
+            || {
+                calls.set(calls.get() + 1);
+                Some("https://blocked.example/doc".to_string())
+            },
+        );
+
+        assert_eq!(calls.get(), 1);
+        assert!(
+            request.is_none(),
+            "manual grammar shortcut must not arm from stale allowed cache after the current URL is excluded"
+        );
+    }
+
+    #[test]
     fn grammar_detection_respects_enable_per_app_snooze_and_axset() {
         let field = host_field("grammar-gates");
         let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
@@ -10082,6 +10279,50 @@ mod tests {
         let prefs = Prefs::default();
         queue_and_flush_monitored(&change, &store, &prefs, true, true);
         assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn monitored_typing_uses_fresh_browser_url_before_persisting() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([20u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.google.Chrome");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+        let mut prefs = Prefs::default();
+        prefs.excluded_domains.insert("blocked.example".into());
+        let mut cache = Some((
+            "com.google.Chrome".to_string(),
+            "allowed.example".to_string(),
+        ));
+        let calls = std::cell::Cell::new(0);
+        let mut pending = Vec::new();
+        let mut buffers = HashMap::new();
+
+        let domain = enqueue_monitored_change_for_current_domain(
+            &mut pending,
+            &mut cache,
+            &change,
+            Some("com.google.Chrome".to_string()),
+            true,
+            || {
+                calls.set(calls.get() + 1);
+                Some("https://blocked.example/doc".to_string())
+            },
+        );
+        flush_monitored_changes(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &prefs,
+            monitored_policy(true, false, true, 1_000),
+        );
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(domain.as_deref(), Some("blocked.example"));
+        assert_eq!(store.count().unwrap(), 0);
+        assert!(buffers.is_empty());
     }
 
     #[test]

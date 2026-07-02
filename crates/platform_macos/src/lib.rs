@@ -371,6 +371,9 @@ pub struct MacosOverlayDiagnostics {
     /// use this to pin that the ghost is anchored near the caret, not just
     /// that an NSPanel exists.
     pub panel_frame: Option<ScreenRect>,
+    pub has_underline_panel: bool,
+    pub underline_visible: bool,
+    pub underline_frame: Option<ScreenRect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -904,10 +907,22 @@ impl MacosOverlayPresenter {
                 joins_all_spaces: false,
                 fullscreen_auxiliary: false,
                 panel_frame: None,
+                has_underline_panel: false,
+                underline_visible: false,
+                underline_frame: None,
             };
         };
         let behavior = panel.collectionBehavior();
         let frame = panel.frame();
+        let underline_frame = self.underline_panel.as_ref().map(|panel| {
+            let frame = panel.frame();
+            ScreenRect {
+                x: frame.origin.x,
+                y: frame.origin.y,
+                w: frame.size.width,
+                h: frame.size.height,
+            }
+        });
 
         MacosOverlayDiagnostics {
             has_panel: true,
@@ -927,6 +942,12 @@ impl MacosOverlayPresenter {
                 w: frame.size.width,
                 h: frame.size.height,
             }),
+            has_underline_panel: self.underline_panel.is_some(),
+            underline_visible: self
+                .underline_panel
+                .as_ref()
+                .is_some_and(|panel| panel.isVisible()),
+            underline_frame,
         }
     }
 }
@@ -1973,6 +1994,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
     fn insert_replacing_range(
         &self,
         field: &FieldHandle,
+        expected_text: &str,
         text: &str,
         range: CorrectionRange,
         strategy: InsertStrategy,
@@ -1995,6 +2017,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let field = field.clone();
         let app = field.app.clone();
+        let expected_text = expected_text.to_string();
         let text = text.to_string();
         let pid = field
             .pid
@@ -2006,7 +2029,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let result = self
             .worker
-            .run(move || insert_range_for_field(pid, field, text, range, strategy))?
+            .run(move || insert_range_for_field(pid, field, expected_text, text, range, strategy))?
             .and_then(|apply| match apply {
                 AxSetApply::Applied(inserted) => Ok(inserted),
                 AxSetApply::SilentlyIgnored => Err(PlatformError::CannotComplete {
@@ -4811,6 +4834,7 @@ fn text_range_rect_for_field(
 fn insert_range_for_field(
     pid: i32,
     field: FieldHandle,
+    expected_text: String,
     text: String,
     range: CorrectionRange,
     strategy: InsertStrategy,
@@ -4836,6 +4860,9 @@ fn insert_range_for_field(
             reason: "correction range is not contiguous in the field".into(),
         });
     };
+    if !utf16_range_matches_expected(&value, range, &expected_text) {
+        return Err(PlatformError::StaleField);
+    }
     let (new_value, new_caret) = splice_text_at_utf16_range(&value, range, &text);
     unsafe {
         set_required_ax_string_attribute(element, kAXValueAttribute, &new_value)?;
@@ -5378,6 +5405,24 @@ fn splice_text_at_utf16_range(
         new_value,
         start.saturating_add(insert.encode_utf16().count()),
     )
+}
+
+fn utf16_range_matches_expected(value: &str, selected_range: CFRange, expected: &str) -> bool {
+    let utf16_len = value.encode_utf16().count();
+    let start = selected_range.location.max(0) as usize;
+    let length = selected_range.length.max(0) as usize;
+    let Some(end) = start.checked_add(length) else {
+        return false;
+    };
+    if end > utf16_len {
+        return false;
+    }
+
+    let left_end = byte_index_for_utf16_units(value, start);
+    let right_start = byte_index_for_utf16_units(value, end);
+    value
+        .get(left_end..right_start)
+        .is_some_and(|current| current == expected)
 }
 
 fn utf16_units_for_scalar_prefix(value: &str, scalar_count: usize) -> Option<usize> {
@@ -8696,6 +8741,7 @@ mod tests {
         assert_eq!(
             adapter.insert_replacing_range(
                 &field,
+                "teh",
                 "the",
                 CorrectionRange { start: 0, end: 3 },
                 InsertStrategy::SyntheticKeys,
@@ -11303,6 +11349,34 @@ mod tests {
     }
 
     #[test]
+    fn correction_range_expected_text_guard_rejects_changed_live_text() {
+        let range = CFRange {
+            location: 2,
+            length: 3,
+        };
+
+        assert!(
+            utf16_range_matches_expected("😀teh later", range, "teh"),
+            "the live field substring at the mutation range still matches the original typo"
+        );
+        assert!(
+            !utf16_range_matches_expected("😀cat later", range, "teh"),
+            "the same numeric range in changed text must fail closed before mutation"
+        );
+        assert!(
+            !utf16_range_matches_expected(
+                "😀teh later",
+                CFRange {
+                    location: 2,
+                    length: 99
+                },
+                "teh"
+            ),
+            "out-of-range coordinates must not be treated as a match"
+        );
+    }
+
+    #[test]
     fn range_readback_treats_normalized_replacement_as_applied_not_silent() {
         // `insert_range_for_field` classifies a grammar-fix range replacement
         // with `axset_readback_outcome` (original == the pre-write field text),
@@ -13305,6 +13379,9 @@ mod tests {
                 joins_all_spaces: false,
                 fullscreen_auxiliary: false,
                 panel_frame: None,
+                has_underline_panel: false,
+                underline_visible: false,
+                underline_frame: None,
             }
         );
     }

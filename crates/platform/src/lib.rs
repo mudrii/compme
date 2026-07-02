@@ -541,12 +541,14 @@ pub trait PlatformAdapter: Send + Sync {
         replace_left: usize,
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError>;
-    /// Replace exactly `range` with `text`. Adapters that do not support
+    /// Replace exactly `range` with `text`, but only if the current field text at
+    /// `range` still equals `expected_text`. Adapters that do not support
     /// arbitrary range replacement must fail closed rather than approximate with
     /// a left-of-caret deletion.
     fn insert_replacing_range(
         &self,
         _field: &FieldHandle,
+        _expected_text: &str,
         _text: &str,
         _range: CorrectionRange,
         _strategy: InsertStrategy,

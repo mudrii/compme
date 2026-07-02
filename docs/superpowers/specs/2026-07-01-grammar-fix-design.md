@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1614 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1623 tests green).
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI
@@ -226,28 +226,32 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   screen/clipboard/personalization context, does not call `shape_prompt` or
   `complete_n`, and still coalesces/supersedes older grammar requests.
 - Engine RED-first tests:
-  `offer_correction_shows_correction_with_exact_range`,
-  `on_correction_shows_correction_with_range_and_invalidates_on_text_changed`,
-  `accept_correction_emits_replace_range_with_exact_range`,
-  `accept_correction_emits_replace_range`, and
+  `on_correction_shows_correction_with_range_anchor`,
+  `stale_correction_result_is_ignored_after_text_changes`,
+  `accept_correction_emits_replace_range`,
+  `preview_accept_correction_exposes_suggestion_and_range_while_showing`, and
   `accept_full_and_word_do_not_commit_correction_presentation`. Together they
   must prove `Showing{ presentation: Correction, correction_range: Some(..) }`,
   `ShowCorrection`, invalidation on `TextChanged`, `Command::ReplaceRange` with
-  the exact range, and that `AcceptFull` / `AcceptWord` never commit correction
-  presentations.
+  the exact range plus original text, and that `AcceptFull` / `AcceptWord` never
+  commit correction presentations.
 - `context::word_at_caret` RED-first tests:
   `word_at_caret_returns_whole_word_and_scalar_range_at_end`,
   `word_at_caret_returns_whole_word_and_scalar_range_mid_word`,
   `word_at_caret_handles_astral_prefix_without_utf16_offset_drift`, and
-  `word_at_caret_returns_none_at_boundary_or_empty_field`. Include multibyte and
-  astral-prefix text; ranges are Unicode-scalar ranges and the helper must not
-  panic.
+  `word_at_caret_returns_previous_word_at_boundary_and_none_for_empty_field`.
+  Include multibyte and astral-prefix text; ranges are Unicode-scalar ranges and
+  the helper must not panic.
 - Platform seam RED-first tests:
-  `platform_seam_replaces_midword_range_without_left_fragment_leak` and
-  `platform_seam_text_range_rect_converts_scalar_range_and_fails_closed`.
+  `correction_range_splice_replaces_midword_without_left_fragment_leak`,
+  `scalar_correction_range_to_utf16_range_accounts_for_astral_scalars`,
+  `correction_range_geometry_error_fails_closed_without_caret_fallback`, and
+  `correction_range_expected_text_guard_rejects_changed_live_text`.
   `insert_replacing_range` replaces `te|h` with `the` as `the`, never `theh`;
-  `text_range_rect` converts scalar ranges to platform-native range units and
-  returns `Ok(None)` for unsupported bounds.
+  `text_range_rect` converts scalar ranges to platform-native range units,
+  geometry failures do not fall back to a caret correction, and accept-time range
+  replacement refuses to write if the live field text no longer matches the
+  original typo.
 - Prefs RED-first tests:
   `grammar_fix_enabled_inherits_global_default_without_app`,
   `grammar_fix_enabled_respects_per_app_override`, and
@@ -256,11 +260,13 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
 - Run-loop RED-first tests:
   `grammar_trigger_dispatches_word_at_caret_scalar_range`,
   `grammar_detection_blocks_without_fresh_browser_domain_when_domain_rules_exist`,
+  `grammar_detection_refresh_drops_stale_allowed_browser_domain`,
   `grammar_detection_respects_enable_per_app_snooze_and_axset`,
-  `grammar_detection_rejects_non_empty_selection`, and
-  `grammar_detection_rejects_non_axset_before_model_request`. Together they must
-  prove the enable gate, per-app exclude, snooze, browser-domain freshness when
-  domain rules exist, non-empty selection rejection, and AxSet fail-closed gate.
+  `grammar_detection_rejects_non_empty_selection`, and the AxSet arm inside
+  `grammar_detection_respects_enable_per_app_snooze_and_axset`. Together they
+  must prove the enable gate, per-app exclude, snooze, browser-domain freshness
+  when domain rules exist, stale cached-domain refresh, non-empty selection
+  rejection, and AxSet fail-closed gate.
 
 **Acceptance:** `cargo test --workspace` green; clippy clean. No FFI touched yet —
 the whole flow is exercised with the fake model + fake overlay.
@@ -438,6 +444,8 @@ range bounds and range replacement, not just the existing left-of-caret
 - `tools/release/check-model-client-features.sh`
 - `bash tools/release/check-model-gates.sh`
 - `tools/release/update-cask.sh --self-test`
+- `tools/release/notarize-app.sh --self-test`
+- `tools/release/write-update-manifest.sh --self-test`
 - `COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1`
 - `cd tools/spike && cargo fmt -- --check`
 - `cd tools/spike && cargo clippy --all-targets -- -D warnings`

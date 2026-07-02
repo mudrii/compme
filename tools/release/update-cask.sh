@@ -2,9 +2,9 @@
 # Finalize Casks/compme.rb for a published release: download the release zip,
 # compute its sha256, and rewrite the cask's `version` + `sha256` lines.
 #
-# The cask sha256 can only be known after the Release workflow builds and
-# uploads the artifact, so this is a deliberate post-release step (the workflow
-# prints the same values to its job summary). Run it, then commit + push.
+# The cask sha256 can only be known after the Release workflow builds the
+# artifact. The tag workflow runs this automatically from the just-built zip;
+# run it manually only to recover or verify a release cask update.
 #
 # Usage: tools/release/update-cask.sh vX.Y.Z   (or X.Y.Z)
 #        tools/release/update-cask.sh --self-test
@@ -28,6 +28,15 @@ rewrite_cask() {
   cask_path="$1"
   version="$2"
   sha="$3"
+
+  if ! grep -Eq '^  version "[^"]+"$' "$cask_path"; then
+    echo "missing rewritable version line in $cask_path" >&2
+    return 1
+  fi
+  if ! grep -Eq '^  sha256 "[0-9a-f]{64}"$' "$cask_path"; then
+    echo "missing rewritable sha256 line in $cask_path" >&2
+    return 1
+  fi
 
   # Portable in-place sed: BSD sed parses -i'' as -i with the NEXT arg (-E) as
   # the backup suffix, silently disabling ERE and littering a "-E" backup file.
@@ -121,6 +130,55 @@ CASK
   grep -q 'version "1.2.3"' "$malformed"
   grep -q 'example.invalid/old.zip' "$malformed"
 
+  no_check="$tmp/no-check.rb"
+  cat >"$no_check" <<'CASK'
+cask "compme" do
+  version "1.2.3"
+  sha256 :no_check
+  url "https://example.invalid/old.zip"
+end
+CASK
+  no_check_golden="$tmp/no-check.golden"
+  cp "$no_check" "$no_check_golden"
+  if COMPME_CASK_PATH="$no_check" COMPME_CASK_ARTIFACT="$artifact" "$0" v9.8.7 >"$tmp/no-check.log" 2>&1; then
+    echo "sha256 :no_check cask unexpectedly passed" >&2
+    return 1
+  fi
+  grep -q 'missing rewritable sha256 line' "$tmp/no-check.log"
+  cmp "$no_check" "$no_check_golden"
+
+  no_sha="$tmp/no-sha.rb"
+  cat >"$no_sha" <<'CASK'
+cask "compme" do
+  version "1.2.3"
+  url "https://example.invalid/old.zip"
+end
+CASK
+  no_sha_golden="$tmp/no-sha.golden"
+  cp "$no_sha" "$no_sha_golden"
+  if COMPME_CASK_PATH="$no_sha" COMPME_CASK_ARTIFACT="$artifact" "$0" v9.8.7 >"$tmp/no-sha.log" 2>&1; then
+    echo "missing sha256 cask unexpectedly passed" >&2
+    return 1
+  fi
+  grep -q 'missing rewritable sha256 line' "$tmp/no-sha.log"
+  cmp "$no_sha" "$no_sha_golden"
+
+  no_version="$tmp/no-version.rb"
+  cat >"$no_version" <<'CASK'
+cask "compme" do
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  url "https://example.invalid/old.zip"
+end
+CASK
+  no_version_golden="$tmp/no-version.golden"
+  cp "$no_version" "$no_version_golden"
+  if COMPME_CASK_PATH="$no_version" COMPME_CASK_ARTIFACT="$artifact" "$0" v9.8.7 >"$tmp/no-version.log" 2>&1; then
+    echo "missing version cask unexpectedly passed" >&2
+    return 1
+  fi
+  grep -q 'missing rewritable version line' "$tmp/no-version.log"
+  cmp "$no_version" "$no_version_golden"
+
   # Regression pin for the historical `sed -i''` mis-parse: BSD sed still
   # substituted correctly (the patterns are BRE-compatible) so content greps
   # can't catch it — the stray `<file>-E` backup is the only observable
@@ -169,4 +227,4 @@ rewrite_cask "$cask" "$version" "$sha"
 
 echo "updated $cask:"
 grep -E '^\s+(version|sha256) ' "$cask"
-echo "next: git add Casks/compme.rb && git commit -m 'chore(release): cask v${version}' && git push"
+echo "next: commit Casks/compme.rb if you are running this outside the release workflow"

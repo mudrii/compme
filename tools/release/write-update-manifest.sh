@@ -83,6 +83,27 @@ run_self_test() {
     return 1
   fi
   grep -Fq "invalid version" "$tmp/bad.err"
+  upper_sha="$(printf '%s' "$sha" | tr '[:lower:]' '[:upper:]')"
+  if "$0" 1.2.3 compme-1.2.3-macos.zip "$upper_sha" >"$tmp/upper-sha.out" 2>"$tmp/upper-sha.err"; then
+    echo "self-test FAILED: uppercase sha passed" >&2
+    return 1
+  fi
+  grep -Fq "invalid sha256" "$tmp/upper-sha.err"
+  if "$0" 1.2.3 compme-1.2.3-macos.zip "${sha:0:63}" >"$tmp/short-sha.out" 2>"$tmp/short-sha.err"; then
+    echo "self-test FAILED: truncated sha passed" >&2
+    return 1
+  fi
+  grep -Fq "invalid sha256" "$tmp/short-sha.err"
+  if "$0" 1.2.3 compme-1.2.4-macos.zip "$sha" >"$tmp/bad-zip.out" 2>"$tmp/bad-zip.err"; then
+    echo "self-test FAILED: mismatched zip version passed" >&2
+    return 1
+  fi
+  grep -Fq "zip filename must be compme-1.2.3-macos.zip" "$tmp/bad-zip.err"
+  if "$0" 1.2.3 compme-1.2.3-macos.zip >"$tmp/argc.out" 2>"$tmp/argc.err"; then
+    echo "self-test FAILED: wrong argument count passed" >&2
+    return 1
+  fi
+  grep -Fq "usage: write-update-manifest.sh" "$tmp/argc.err"
   echo "Self-test passed"
 }
 

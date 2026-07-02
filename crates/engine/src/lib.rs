@@ -320,6 +320,10 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
             generation: request.generation,
             field: request.field.clone(),
             snapshot: request.snapshot,
+            original: match &request.kind {
+                RequestKind::GrammarFix { word, .. } => word.clone(),
+                RequestKind::Completion => String::new(),
+            },
             suggestion,
             correction_range,
         });
@@ -530,12 +534,14 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                 }
                 Command::ReplaceRange {
                     field,
+                    expected_text,
                     text,
                     correction_range,
                 } => {
                     let strategy = self.caps.insert_strategy;
                     if let Err(err) = self.adapter.insert_replacing_range(
                         &field,
+                        &expected_text,
                         &text,
                         correction_range,
                         strategy,
@@ -686,8 +692,8 @@ mod tests {
 
     /// A recorded replacement insert: (field, text, replace_left, strategy).
     type ReplacingInsert = (FieldHandle, String, usize, InsertStrategy);
-    /// A recorded range replacement insert: (field, text, range, strategy).
-    type RangeReplacingInsert = (FieldHandle, String, CorrectionRange, InsertStrategy);
+    /// A recorded range replacement insert: (field, expected_text, text, range, strategy).
+    type RangeReplacingInsert = (FieldHandle, String, String, CorrectionRange, InsertStrategy);
 
     #[derive(Clone)]
     struct FakeAdapter {
@@ -835,6 +841,7 @@ mod tests {
         fn insert_replacing_range(
             &self,
             field: &FieldHandle,
+            expected_text: &str,
             text: &str,
             range: CorrectionRange,
             strategy: InsertStrategy,
@@ -844,6 +851,7 @@ mod tests {
             }
             self.range_replacing_inserts.lock().unwrap().push((
                 field.clone(),
+                expected_text.into(),
                 text.into(),
                 range,
                 strategy,
@@ -982,7 +990,13 @@ mod tests {
 
         assert_eq!(
             *adapter.range_replacing_inserts.lock().unwrap(),
-            vec![(field(), "the".to_string(), range, InsertStrategy::AxSet)]
+            vec![(
+                field(),
+                "teh".to_string(),
+                "the".to_string(),
+                range,
+                InsertStrategy::AxSet
+            )]
         );
         assert!(adapter.inserts.lock().unwrap().is_empty());
         assert!(adapter.replacing_inserts.lock().unwrap().is_empty());

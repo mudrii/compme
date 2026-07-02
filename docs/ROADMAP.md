@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-02 (Tier 5 grammar/spell-fix code-complete status sync) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1614 workspace tests; spike separate)
+> **Last updated:** 2026-07-02 (Tier 5 grammar/spell-fix code-complete status sync) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1623 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -87,9 +87,8 @@ signing + hardened runtime + notarization + a native updater.
 **Pending:**
 - Configure GitHub Secrets for Developer-ID signing and notarization.
 - Run the first tag build and verify the notarized zip, `.sha256`, and update
-  manifest publish correctly.
-- Finalize `Casks/compme.rb` from the published artifact with
-  `tools/release/update-cask.sh vX.Y.Z`, commit, and push.
+  manifest publish correctly, and that the workflow commits the finalized
+  `Casks/compme.rb` checksum back to the default branch.
 - Optional later upgrade: replace the GitHub-release menu handoff with a full
   Sparkle/appcast client.
 
@@ -451,7 +450,7 @@ physical trigger/accept interaction.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1614 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1623 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

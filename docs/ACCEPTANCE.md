@@ -28,6 +28,8 @@ tools/acceptance/run-a2-compat-gates.sh --self-test
 tools/release/check-model-client-features.sh
 bash tools/release/check-model-gates.sh
 tools/release/update-cask.sh --self-test
+tools/release/notarize-app.sh --self-test
+tools/release/write-update-manifest.sh --self-test
 ```
 
 Spike workspace:
@@ -114,6 +116,7 @@ By default the runner builds the `platform_macos` examples, builds the
 - `accept-tap-delayed-hide`
 - `popup-fallback-fixture`
 - `overlay-presenter`
+- `overlay-correction-presenter`
 
 If TextEdit is not running, TextEdit-dependent gates are skipped instead of
 misreporting app-focus failures as product failures. These are mandatory skips:
@@ -246,8 +249,9 @@ are validated outside the A1b gate runner:
 The grammar/spell-fix implementation has deterministic coverage for request
 gating, correction vetting, scalar range conversion, correction-only accept
 routing, fail-closed range replacement, and macOS underline/banner geometry. The
-remaining live LOOK gate is visual and requires an unlocked macOS GUI session
-with Accessibility permission:
+scripted `overlay-correction-presenter` gate exercises the correction banner and
+underline presenter directly. The remaining product LOOK gate is visual and
+requires an unlocked macOS GUI session with Accessibility permission:
 
 - launch `compme` with `COMPME_GRAMMAR_FIX=1`,
   `COMPME_GRAMMAR_CHECK_KEY=<trigger>`, and
@@ -260,6 +264,21 @@ with Accessibility permission:
   with the vetted correction, with no duplicate suffix or left-fragment leak
 - move the caret or edit the field before accepting and confirm the stale
   correction no longer applies
+
+### Settings LOOK Gates
+
+These Settings-window checks are manual because they depend on visible AppKit
+layout and live control interaction:
+
+- **Apps policy grid** — open Settings > Apps with at least two rows; verify the
+  On / Tab / Mid / AC / GF checkbox columns do not overlap or truncate app names,
+  toggle `Enabled` and `Grammar fix` for the focused app, confirm visible
+  suggestions/corrections dismiss, and confirm persisted `COMPME_*_APPS` config
+  changes.
+- **Personalization pane** — open Settings > Personalization; edit global
+  instructions, sender identity, and strength, confirm the multi-line field
+  commits and persists, and confirm the next request uses updated steering
+  without relaunch.
 
 ### Useful Options
 
@@ -558,6 +577,14 @@ the root `platform_macos` examples and `tools/acceptance/run-a1b-live-gates.sh`.
 gate as a `MANUAL ...` checklist line after the deterministic gates. The
 runner's `--self-test` pins that checklist so these public-behavior gaps cannot
 quietly disappear from the acceptance surface.
+
+Exact runner-emitted manual gate IDs:
+
+- `apps-policy-toggle-look`
+- `personalization-pane-look`
+- `encrypted-memory-all-monitored-live`
+- `grammar-fix-textedit-look`
+- `input-monitoring-revoked-carbon-accept`
 
 - **Settings timed/behavioral gate (completed 2026-06-17):** live AppKit runs
   against disposable `COMPME_CONFIG` roots verified General switches apply

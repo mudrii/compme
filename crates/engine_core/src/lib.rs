@@ -95,6 +95,7 @@ pub enum Event {
         generation: u64,
         field: FieldHandle,
         snapshot: SnapshotId,
+        original: String,
         suggestion: String,
         correction_range: CorrectionRange,
     },
@@ -175,6 +176,7 @@ pub enum Command {
     },
     ReplaceRange {
         field: FieldHandle,
+        expected_text: String,
         text: String,
         correction_range: CorrectionRange,
     },
@@ -199,6 +201,13 @@ struct Showing {
     replace_left: usize,
     presentation: Presentation,
     correction_range: Option<CorrectionRange>,
+    correction_original: Option<String>,
+}
+
+struct CorrectionOffer {
+    original: String,
+    suggestion: String,
+    range: CorrectionRange,
 }
 
 impl Showing {
@@ -484,6 +493,7 @@ impl SuggestionMachine {
                 generation,
                 field,
                 snapshot,
+                original,
                 suggestion,
                 correction_range,
             } => {
@@ -491,8 +501,11 @@ impl SuggestionMachine {
                     generation,
                     &field,
                     snapshot,
-                    suggestion,
-                    correction_range,
+                    CorrectionOffer {
+                        original,
+                        suggestion,
+                        range: correction_range,
+                    },
                     &mut out,
                 );
             }
@@ -695,9 +708,14 @@ impl SuggestionMachine {
                         self.showing = Some(showing);
                         return out;
                     };
+                    let Some(expected_text) = showing.correction_original.clone() else {
+                        self.showing = Some(showing);
+                        return out;
+                    };
                     let text = showing.candidates[showing.index].clone();
                     out.push(Command::ReplaceRange {
                         field: showing.field,
+                        expected_text,
                         text,
                         correction_range,
                     });
@@ -787,6 +805,7 @@ impl SuggestionMachine {
                 replace_left: 0,
                 presentation: Presentation::Ghost,
                 correction_range: None,
+                correction_original: None,
             });
             out.push(Command::ShowGhost {
                 field: field.clone(),
@@ -803,8 +822,7 @@ impl SuggestionMachine {
         generation: u64,
         field: &FieldHandle,
         snapshot: SnapshotId,
-        suggestion: String,
-        correction_range: CorrectionRange,
+        offer: CorrectionOffer,
         out: &mut Vec<Command>,
     ) {
         let matches_request = self.requested.as_ref().is_some_and(|requested| {
@@ -818,7 +836,7 @@ impl SuggestionMachine {
         if !matches_request
             || !self.enabled()
             || self.suppressed
-            || suggestion.is_empty()
+            || offer.suggestion.is_empty()
             || self.caps.insert_strategy != InsertStrategy::AxSet
         {
             return;
@@ -829,18 +847,19 @@ impl SuggestionMachine {
         self.showing = Some(Showing {
             field: field.clone(),
             snapshot,
-            candidates: vec![suggestion.clone()],
+            candidates: vec![offer.suggestion.clone()],
             index: 0,
             caret: self.caret,
             replace_left: 0,
             presentation: Presentation::Correction,
-            correction_range: Some(correction_range),
+            correction_range: Some(offer.range),
+            correction_original: Some(offer.original),
         });
         out.push(Command::ShowCorrection {
             field: field.clone(),
             snapshot,
-            suggestion,
-            correction_range,
+            suggestion: offer.suggestion,
+            correction_range: offer.range,
         });
         self.record_stat(StatEvent::Shown);
         self.requested = None;
@@ -997,6 +1016,7 @@ impl SuggestionMachine {
             replace_left,
             presentation: Presentation::Ghost,
             correction_range: None,
+            correction_original: None,
         });
         self.pending_since = None;
         self.requested = None;
@@ -1102,6 +1122,7 @@ mod tests {
             generation,
             field: f,
             snapshot,
+            original: "teh".into(),
             suggestion: suggestion.into(),
             correction_range: range,
         });
@@ -2985,6 +3006,7 @@ mod tests {
             replace_left: 0,
             presentation: Presentation::Ghost,
             correction_range: None,
+            correction_original: None,
         });
         let _ = machine.take_stat_events(); // anchor: drain any pre-existing events
 
@@ -4233,6 +4255,7 @@ mod tests {
                 generation: gen,
                 field: f.clone(),
                 snapshot: snap,
+                original: "teh quick".into(),
                 suggestion: "the quick".into(),
                 correction_range: range,
             }),
@@ -4253,6 +4276,7 @@ mod tests {
             vec![
                 Command::ReplaceRange {
                     field: f,
+                    expected_text: "teh quick".into(),
                     text: "the quick".into(),
                     correction_range: range,
                 },
@@ -4299,6 +4323,7 @@ mod tests {
                 generation: gen,
                 field: f.clone(),
                 snapshot: snap + 1,
+                original: "t".into(),
                 suggestion: "x".into(),
                 correction_range: range,
             }),
@@ -4311,6 +4336,7 @@ mod tests {
                 generation: gen,
                 field: f.clone(),
                 snapshot: snap,
+                original: "t".into(),
                 suggestion: String::new(),
                 correction_range: range,
             }),
@@ -4332,6 +4358,7 @@ mod tests {
                 generation: 1,
                 field: f,
                 snapshot: 1,
+                original: "wrold".into(),
                 suggestion: "world".into(),
                 correction_range: range,
             }),
