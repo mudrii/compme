@@ -1042,7 +1042,10 @@ mod tests {
             p.excluded_apps.insert(app.into());
 
             if use_deep_link {
-                apply(&mut p, "compme://setOverride?app=com.microsoft.VSCode&enabled=true");
+                apply(
+                    &mut p,
+                    "compme://setOverride?app=com.microsoft.VSCode&enabled=true",
+                );
             } else {
                 p.set_app_policy_field(app, AppPolicyField::Enabled, true);
             }

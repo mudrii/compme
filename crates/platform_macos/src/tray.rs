@@ -37,6 +37,9 @@ pub struct TrayFlags {
     /// Set when the user picks "Settings…"; the run loop shows the S2
     /// settings window (and handles the activation-policy dance).
     pub open_settings_window: Arc<AtomicBool>,
+    /// Set when the user picks "Check for Updates…"; the run loop opens the
+    /// GitHub Releases updater surface.
+    pub check_updates: Arc<AtomicBool>,
     /// Set when the user picks "Toggle Input Collection in Current App"; the
     /// run loop consumes it (swap false) and flips the frontmost app's
     /// typing-history collection override.
@@ -117,6 +120,11 @@ define_class!(
         #[unsafe(method(openSettingsWindow:))]
         fn open_settings_window(&self, _sender: Option<&AnyObject>) {
             self.ivars().flags.open_settings_window.store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(checkUpdates:))]
+        fn check_updates(&self, _sender: Option<&AnyObject>) {
+            self.ivars().flags.check_updates.store(true, Ordering::Relaxed);
         }
 
         #[unsafe(method(toggleCollection:))]
@@ -293,6 +301,17 @@ impl MacosTray {
         // modifier for key equivalents).
         settings_window_item.setKeyEquivalent(&NSString::from_str(","));
         menu.addItem(&settings_window_item);
+
+        // GitHub-release updater surface. The release workflow publishes a
+        // machine-readable manifest next to the zip; opening the latest release
+        // is the native menu affordance until a Sparkle/appcast client lands.
+        let check_updates_item = NSMenuItem::new(mtm);
+        check_updates_item.setTitle(&NSString::from_str("Check for Updates…"));
+        unsafe {
+            check_updates_item.setTarget(Some(target_as_any(&target)));
+            check_updates_item.setAction(Some(sel!(checkUpdates:)));
+        }
+        menu.addItem(&check_updates_item);
 
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 

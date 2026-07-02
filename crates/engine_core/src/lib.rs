@@ -1008,7 +1008,6 @@ impl SuggestionMachine {
         self.record_stat(StatEvent::Shown);
         out
     }
-
 }
 
 /// Cotypist's "Include trailing space after single-word completions": when

@@ -14,13 +14,10 @@ cask "compme" do
   app "Compme.app"
 
   caveats <<~EOS
-    Compme is ad-hoc signed (no Apple Developer ID / notarization yet), so macOS
-    Gatekeeper quarantines it on first launch. Clear the quarantine flag once:
+    Open Compme and grant it Accessibility access in
+    System Settings -> Privacy & Security -> Accessibility.
 
-      xattr -dr com.apple.quarantine "#{appdir}/Compme.app"
-
-    Then open Compme and grant it Accessibility access in
-    System Settings -> Privacy & Security -> Accessibility. All inference is
-    local; nothing is sent off the machine.
+    Use the menu-bar item "Check for Updates…" to open the latest GitHub
+    release. All inference is local; nothing is sent off the machine.
   EOS
 end

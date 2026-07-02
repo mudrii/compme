@@ -86,6 +86,12 @@ jobs:
       - name: Release cask updater self-test
         run: tools/release/update-cask.sh --self-test
 
+      - name: Notarization helper self-test
+        run: tools/release/notarize-app.sh --self-test
+
+      - name: Update manifest self-test
+        run: tools/release/write-update-manifest.sh --self-test
+
   spike:
     name: spike fmt · clippy · test · build (macOS)
     runs-on: macos-14

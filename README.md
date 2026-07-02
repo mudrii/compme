@@ -16,8 +16,8 @@ committed deliverables** built behind a shared cross-platform `PlatformAdapter`
 contract. All inference is local (llama.cpp), with no proprietary telemetry.
 
 The current validated workspace has the deterministic macOS MVP and A2/A3 core
-surfaces implemented; the remaining parity and live-validation backlog is tracked
-in [docs/ROADMAP.md](docs/ROADMAP.md). The repository is a Rust workspace of 25
+surfaces implemented; the remaining live-validation backlog is tracked in
+[docs/ROADMAP.md](docs/ROADMAP.md). The repository is a Rust workspace of 25
 crates: a pure completion core, a set of OS-agnostic text features
 (autocorrect, British-English, grammar, emoji, thesaurus, redaction, stats,
 personalization, ranking, compatibility tiers, model catalog), macOS/Windows/Linux
@@ -26,12 +26,14 @@ downloader, and the `compme` binary that wires them together. A separate spike
 prototype under `tools/spike` validates low-level macOS behavior before it is
 promoted into the workspace.
 
-The project is not packaged as an end-user app yet, but the macOS run loop is
-functional: it reads caret/text context through Accessibility, generates short local
-completions, classifies field UX (inline / popup / blocked / hotkey-only /
-unsupported), shows a non-activating AppKit ghost-text overlay, intercepts accept keys
-through transient Carbon hotkeys, and inserts accepted text through Accessibility,
-synthetic keys, or a clipboard-paste fallback.
+The macOS run loop is functional: it reads caret/text context through
+Accessibility, generates short local completions, classifies field UX (inline /
+popup / blocked / hotkey-only / unsupported), shows a non-activating AppKit
+ghost-text overlay, intercepts accept keys through transient Carbon hotkeys, and
+inserts accepted text through Accessibility, synthetic keys, or a clipboard-paste
+fallback. Tagged release artifacts are built through the GitHub Release workflow
+as Developer-ID signed and notarized bundles when the repository release secrets
+are configured.
 
 ## Install
 
@@ -44,15 +46,9 @@ brew tap mudrii/compme https://github.com/mudrii/compme
 brew install --cask compme
 ```
 
-Compme is ad-hoc signed (no Apple Developer-ID notarization yet), so clear the
-Gatekeeper quarantine flag once and grant Accessibility:
-
-```sh
-xattr -dr com.apple.quarantine "$(brew --caskroom)/compme/"*/Compme.app
-```
-
-Then enable Compme under System Settings → Privacy & Security → Accessibility.
-All inference is local; nothing leaves the machine.
+Release artifacts are Developer-ID signed and notarized by the tag workflow.
+Enable Compme under System Settings → Privacy & Security → Accessibility. All
+inference is local; nothing leaves the machine.
 
 > The cask resolves once a release is tagged (see
 > [docs/RELEASING.md](docs/RELEASING.md)). Until then, build from source.
@@ -61,7 +57,7 @@ All inference is local; nothing leaves the machine.
 
 ```sh
 git clone https://github.com/mudrii/compme && cd compme
-tools/bundle/make-app.sh        # → target/bundle/Compme.app (ad-hoc signed)
+tools/bundle/make-app.sh        # → target/bundle/Compme.app (ad-hoc signed by default)
 open target/bundle/Compme.app
 ```
 
@@ -101,6 +97,9 @@ For development, run unbundled with `cargo run -p app`.
   Emoji, Shortcuts, Statistics, About.
 - **Menu-bar icon** — a caret + double-chevron template image (it recently replaced the
   old "CM…" text title; that title remains only as a fallback if the image fails to load).
+- **Release updater surface** — the tray's **Check for Updates…** item opens the
+  latest GitHub Release; tagged releases also upload a machine-readable update
+  manifest next to the notarized zip and checksum.
 - **Signed deep-link config** — a fail-closed `compme://setOverride` URL scheme for
   reversible per-app/per-domain overrides; non-reversible settings require an Ed25519
   signature.

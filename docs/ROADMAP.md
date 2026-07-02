@@ -63,28 +63,35 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
 Each method's required Win32/Linux API is mapped in its crate's `src/lib.rs` doc
 comments — the scaffold doubles as the implementation guide.
 
-### 1.2 ☐🔒 Distribution hardening (signing, notarization, updater)
+### 1.2 ◑🔒 Distribution hardening (signing, notarization, updater)
 
 **Plan:** `2026-06-03-engine-macos-mvp-design.md §9` (A3 ship) — Developer-ID
 signing + hardened runtime + notarization + a native updater.
 
 **Status:**
-- Signing is **ad-hoc only**: `tools/bundle/make-app.sh:87` runs
-  `codesign --force --sign -` (ad-hoc), `:88` verifies. No `notarytool`,
-  `stapler`, or Developer-ID identity anywhere.
-- **No Sparkle / auto-updater** in code (only mentioned as a future candidate in
-  design docs; `2026-06-10-a3-settings-ui-design.md:19` defers it explicitly).
-- **No `v*` git tags** yet (`git tag -l 'v*'` empty), so the Homebrew cask
-  scaffolding (`Casks/compme.rb`, `.github/workflows/release.yml`,
-  `tools/release/update-cask.sh`) is in place but not yet resolvable.
+- Signing now defaults to ad-hoc for local source builds, but
+  `tools/bundle/make-app.sh` accepts `COMPME_CODESIGN_IDENTITY` to produce a
+  Developer-ID hardened-runtime, timestamped release signature.
+- `tools/release/notarize-app.sh` submits the signed app archive with
+  `xcrun notarytool submit --wait`, staples the ticket with `xcrun stapler`, and
+  validates the staple. The tag workflow imports the Developer-ID `.p12`, fails
+  closed when signing/notarization secrets are missing, notarizes before zipping,
+  and uploads the notarized zip.
+- The updater path is GitHub-release-driven: the tray has **Check for Updates…**
+  and the release workflow uploads `compme-<version>-update.json` next to the
+  zip and checksum. A full Sparkle/appcast client remains an optional later
+  upgrade.
+- **No `v*` git tags** yet (`git tag -l 'v*'` empty), so the first real release
+  still needs the external Developer-ID secrets plus a maintainer-created tag.
 
 **Pending:**
-- Developer-ID Application signing + `--options runtime` (hardened runtime) in
-  `make-app.sh`, then `xcrun notarytool submit … --wait` + `xcrun stapler staple`.
-- Sparkle integration (appcast feed, `SUFeedURL`, EdDSA-signed updates) **or** a
-  GitHub-release-driven "Check for Updates" — its own ship item.
-- Cut the first `v*` tag once signing lands → release workflow produces the
-  notarized zip + sha256 → cask becomes installable.
+- Configure GitHub Secrets for Developer-ID signing and notarization.
+- Run the first tag build and verify the notarized zip, `.sha256`, and update
+  manifest publish correctly.
+- Finalize `Casks/compme.rb` from the published artifact with
+  `tools/release/update-cask.sh vX.Y.Z`, commit, and push.
+- Optional later upgrade: replace the GitHub-release menu handoff with a full
+  Sparkle/appcast client.
 
 **Effort:** Medium. **Blocked on an Apple Developer ID account ($99/yr) — human-gated.**
 The CI/release/cask glue is already written and validated; only the secrets +

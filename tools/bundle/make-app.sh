@@ -4,8 +4,10 @@
 # A real bundle is the unlock for: Launch Services registering the compme://
 # scheme (CFBundleURLTypes), SMAppService launch-at-login, and a stable TCC
 # identity (Accessibility/Screen Recording grants keyed on the bundle).
-# Ad-hoc signed (-s -) for local use; real codesign/notarization is the
-# A3 ship item and needs a Developer ID (human-gated).
+# Ad-hoc signed (-s -) by default for local use. Set
+# COMPME_CODESIGN_IDENTITY to a Developer ID Application identity to produce a
+# hardened-runtime, timestamped release signature; notarization is handled by
+# tools/release/notarize-app.sh after packaging.
 #
 # Usage: tools/bundle/make-app.sh [output-dir]   (default: target/bundle)
 #        tools/bundle/make-app.sh --self-test
@@ -70,8 +72,18 @@ SH
   grep -Fq "cargo build --release -p app --manifest-path $fixture_root/Cargo.toml" "$log"
   grep -Fq "plutil -lint $app/Contents/Info.plist" "$log"
   grep -Fq "codesign --force --sign - $app" "$log"
-  grep -Fq "codesign --verify $app" "$log"
+  grep -Fq "codesign --verify --strict $app" "$log"
   grep -Fq "lsregister -f $app" "$log"
+
+  signed_out="$tmp_dir/out-signed"
+  PATH="$fake_bin:$PATH" \
+    COMPME_BUNDLE_SELF_TEST_LOG="$log" \
+    COMPME_BUNDLE_REPO_ROOT="$fixture_root" \
+    COMPME_BUNDLE_LSREGISTER="$fake_bin/lsregister" \
+    COMPME_CODESIGN_IDENTITY="Developer ID Application: Compme Test (TEAMID)" \
+    COMPME_CODESIGN_ENTITLEMENTS="$fixture_root/tools/bundle/release.entitlements" \
+    "$0" "$signed_out" >"$tmp_dir/stdout-signed"
+  grep -Fq "codesign --force --sign Developer ID Application: Compme Test (TEAMID) --options runtime --timestamp --entitlements $fixture_root/tools/bundle/release.entitlements $signed_out/Compme.app" "$log"
 
   if PATH="$fake_bin:$PATH" \
     COMPME_BUNDLE_SELF_TEST_LOG="$log" \
@@ -104,9 +116,19 @@ cp "$repo_root/target/release/compme" "$app/Contents/MacOS/compme"
 
 plutil -lint "$app/Contents/Info.plist"
 
-echo "ad-hoc signing…"
-codesign --force --sign - "$app"
-codesign --verify "$app"
+codesign_identity="${COMPME_CODESIGN_IDENTITY:--}"
+codesign_args=(--force --sign "$codesign_identity")
+if [[ "$codesign_identity" == "-" ]]; then
+  echo "ad-hoc signing…"
+else
+  echo "Developer-ID signing…"
+  codesign_args+=(--options runtime --timestamp)
+fi
+if [[ -n "${COMPME_CODESIGN_ENTITLEMENTS:-}" ]]; then
+  codesign_args+=(--entitlements "$COMPME_CODESIGN_ENTITLEMENTS")
+fi
+codesign "${codesign_args[@]}" "$app"
+codesign --verify --strict "$app"
 
 # Register the bundle (and its compme:// scheme) with Launch Services.
 if [[ "${COMPME_BUNDLE_SKIP_LSREGISTER:-0}" != "1" ]]; then

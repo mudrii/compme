@@ -67,6 +67,7 @@ const SECURE_POLL_INTERVAL_MS: u64 = 480;
 const STATS_FLUSH_INTERVAL_MS: u64 = 5 * 60 * 1000;
 const ACCESSIBILITY_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+const UPDATES_URL: &str = "https://github.com/mudrii/compme/releases/latest";
 
 /// Set by the SIGINT/SIGTERM handler; observed by the loop to begin shutdown.
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -3499,6 +3500,7 @@ pub fn run() -> Result<(), String> {
         snooze_requested: Arc::new(AtomicBool::new(false)),
         global_disable: Arc::new(Mutex::new(None)),
         open_settings_window: Arc::new(AtomicBool::new(false)),
+        check_updates: Arc::new(AtomicBool::new(false)),
         collection_toggle: Arc::new(AtomicBool::new(false)),
         app_disable: Arc::new(Mutex::new(None)),
     };
@@ -5066,7 +5068,9 @@ pub fn run() -> Result<(), String> {
             // Blocked, or Disabled) the request can never be consumed, so log
             // the drop instead of silently discarding the user's key press —
             // matching the outcome line every sibling shortcut action emits.
-            eprintln!("compme: shortcut grammar-check dropped \u{2014} status={status:?} not ready");
+            eprintln!(
+                "compme: shortcut grammar-check dropped \u{2014} status={status:?} not ready"
+            );
         }
 
         // 6. Tray actions (menu callbacks fire on this same main thread via the
@@ -5076,6 +5080,14 @@ pub fn run() -> Result<(), String> {
             // heartbeat, and nothing reads the exit status anyway.
             if let Err(err) = Command::new("open").arg(ACCESSIBILITY_SETTINGS_URL).spawn() {
                 eprintln!("compme: open settings failed: {err}");
+            }
+        }
+        if flags.check_updates.swap(false, Ordering::Relaxed) {
+            // Same non-blocking stance as Accessibility settings: the release
+            // page carries the uploaded update manifest, zip, checksum, and
+            // generated release notes.
+            if let Err(err) = Command::new("open").arg(UPDATES_URL).spawn() {
+                eprintln!("compme: open updates failed: {err}");
             }
         }
         if flags.quit.load(Ordering::Relaxed) {

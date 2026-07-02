@@ -73,6 +73,12 @@ jobs:
       - name: Release cask updater self-test
         run: tools/release/update-cask.sh --self-test
 
+      - name: Notarization helper self-test
+        run: tools/release/notarize-app.sh --self-test
+
+      - name: Update manifest self-test
+        run: tools/release/write-update-manifest.sh --self-test
+
       - name: Spike gates
         working-directory: tools/spike
         run: |
@@ -95,15 +101,53 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2
 
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.COMPME_DEVELOPER_ID_P12_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.COMPME_CODESIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY; do
+            if [ -z "${!name:-}" ]; then
+              echo "missing required release secret: $name" >&2
+              exit 1
+            fi
+          done
+          keychain="$RUNNER_TEMP/compme-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          p12="$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          {
+            echo "COMPME_SIGNING_KEYCHAIN=$keychain"
+            echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY"
+          } >> "$GITHUB_ENV"
+
       # Reuse the project's own bundler so the released .app matches a local
       # build exactly: release binary -> Compme.app (Info.plist, compme://
-      # scheme, launch-at-login) -> ad-hoc signed (-s -). Real Developer-ID
-      # codesign/notarization is a human-gated follow-up.
+      # scheme, launch-at-login) -> Developer-ID hardened-runtime signature.
       - name: Build the .app bundle
         run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 
       - name: Check release tag matches bundle metadata
         run: COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh
+
+      - name: Notarize and staple the .app
+        env:
+          COMPME_NOTARYTOOL_KEY_BASE64: ${{ secrets.COMPME_NOTARYTOOL_KEY_BASE64 }}
+          COMPME_NOTARYTOOL_KEY_ID: ${{ secrets.COMPME_NOTARYTOOL_KEY_ID }}
+          COMPME_NOTARYTOOL_ISSUER: ${{ secrets.COMPME_NOTARYTOOL_ISSUER }}
+          COMPME_NOTARYTOOL_APPLE_ID: ${{ secrets.COMPME_NOTARYTOOL_APPLE_ID }}
+          COMPME_NOTARYTOOL_PASSWORD: ${{ secrets.COMPME_NOTARYTOOL_PASSWORD }}
+          COMPME_NOTARYTOOL_TEAM_ID: ${{ secrets.COMPME_NOTARYTOOL_TEAM_ID }}
+          COMPME_NOTARYTOOL_KEYCHAIN_PROFILE: ${{ secrets.COMPME_NOTARYTOOL_KEYCHAIN_PROFILE }}
+        run: tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app"
 
       - name: Package + checksum
         id: pkg
@@ -121,6 +165,18 @@ jobs:
             echo "sha256=$sha"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Write update manifest
+        id: manifest
+        env:
+          VERSION: ${{ steps.pkg.outputs.version }}
+          ZIP: ${{ steps.pkg.outputs.zip }}
+          SHA256: ${{ steps.pkg.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          manifest="compme-${VERSION}-update.json"
+          tools/release/write-update-manifest.sh "$VERSION" "$ZIP" "$SHA256" > "$manifest"
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -128,6 +184,7 @@ jobs:
           files: |
             ${{ steps.pkg.outputs.zip }}
             ${{ steps.pkg.outputs.zip }}.sha256
+            ${{ steps.manifest.outputs.manifest }}
 
       # The cask's sha256 can only be known after the artifact is built, so it
       # is finalized out-of-band (see docs/RELEASING.md). Surface the exact
