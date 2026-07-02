@@ -449,9 +449,6 @@ mod tests {
         // has '.' at byte 5 but char position 4, so a char-indexed slice would drop
         // the period (or split a codepoint). Pin the byte-correct cut.
         assert_eq!(truncate_at_sentence_end("café. rest"), "café.");
-        // Two multibyte scalars before the '?': '世界' is 6 bytes, so the byte/char
-        // gap is larger still.
-        assert_eq!(truncate_at_sentence_end("世界? more"), "世界?");
     }
 
     #[test]

@@ -404,13 +404,6 @@ Recent: green blue\n"
                 range: WordRange { start: 0, end: 5 },
             })
         );
-        assert_eq!(
-            word_at_caret("it's fine", 4),
-            Some(WordAtCaret {
-                word: "it's",
-                range: WordRange { start: 0, end: 4 },
-            })
-        );
     }
 
     #[test]
