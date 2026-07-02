@@ -4657,12 +4657,30 @@ fn axset_readback_outcome(original: &str, readback: &str, inserted: Inserted) ->
     }
 }
 
-fn axset_exact_readback_outcome(expected: &str, readback: &str, inserted: Inserted) -> AxSetApply {
-    if readback == expected {
-        AxSetApply::Applied(inserted)
-    } else {
-        AxSetApply::SilentlyIgnored
+/// Set the caret after a value write, treating any failure as non-fatal.
+///
+/// The value write already landed by the time this runs; a caret-set failure
+/// must NOT override that completed write. `set_required_ax_selected_range` can
+/// return `StaleField`/`CannotComplete` when the preceding value-set rebuilt the
+/// AX tree (the same quirk class as the iTerm2 silent-no-op finding). Letting
+/// such an error propagate via `?` would strand a COMPLETED write before the
+/// caller's readback classification, turning a landed insert into a bare `Err`.
+/// The readback is the source of truth for whether the text applied, so the
+/// caret result is advisory: `UnsupportedField` is expected on some fields and
+/// stays silent; any other error is logged and swallowed.
+unsafe fn set_caret_after_value_write(element: AXUIElementRef, new_caret: usize) {
+    if let Err(err) = set_required_ax_selected_range(element, new_caret) {
+        if caret_set_failure_is_worth_logging(&err) {
+            eprintln!("compme: caret set after AX value write failed (non-fatal): {err:?}");
+        }
     }
+}
+
+/// Whether a caret-set failure (after a landed value write) is worth logging.
+/// `UnsupportedField` is expected on fields that expose no settable selected
+/// range, so it stays silent; every other error is non-fatal but surfaced.
+fn caret_set_failure_is_worth_logging(err: &PlatformError) -> bool {
+    !matches!(err, PlatformError::UnsupportedField { .. })
 }
 
 fn insert_for_field(
@@ -4700,13 +4718,7 @@ fn insert_for_field(
 
     unsafe {
         set_required_ax_string_attribute(element, kAXValueAttribute, &new_value)?;
-        let caret_result = set_required_ax_selected_range(element, new_caret);
-        if !matches!(
-            caret_result,
-            Ok(()) | Err(PlatformError::UnsupportedField { .. })
-        ) {
-            caret_result?;
-        }
+        set_caret_after_value_write(element, new_caret);
     }
 
     // Read the value back: some apps (live: iTerm2) report a settable
@@ -4787,18 +4799,22 @@ fn insert_range_for_field(
     let (new_value, new_caret) = splice_text_at_utf16_range(&value, range, &text);
     unsafe {
         set_required_ax_string_attribute(element, kAXValueAttribute, &new_value)?;
-        let caret_result = set_required_ax_selected_range(element, new_caret);
-        if !matches!(
-            caret_result,
-            Ok(()) | Err(PlatformError::UnsupportedField { .. })
-        ) {
-            caret_result?;
-        }
+        set_caret_after_value_write(element, new_caret);
     }
 
-    let readback = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
-    Ok(axset_exact_readback_outcome(
-        &new_value,
+    // Classify by readback exactly like `insert_for_field`: fail OPEN on a
+    // readback read error (the set reported success and we cannot prove
+    // otherwise), and treat any value that differs from the ORIGINAL as
+    // Applied. A readback that differs from both original and `new_value` (e.g.
+    // app-side normalization of smart quotes / trailing whitespace) is a
+    // COMPLETED replacement, not a silent no-op; classifying it `SilentlyIgnored`
+    // would claim nothing happened after the field was already mutated (see the
+    // `AxSetApply` doc). Only a readback byte-identical to the original is the
+    // silent-write quirk.
+    let readback = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }
+        .unwrap_or_else(|_| new_value.clone());
+    Ok(axset_readback_outcome(
+        &value,
         &readback,
         Inserted {
             bytes: text.len(),
@@ -11216,24 +11232,62 @@ mod tests {
     }
 
     #[test]
-    fn exact_range_readback_rejects_partial_or_wrong_range_mutations() {
+    fn range_readback_treats_normalized_replacement_as_applied_not_silent() {
+        // `insert_range_for_field` classifies a grammar-fix range replacement
+        // with `axset_readback_outcome` (original == the pre-write field text),
+        // mirroring `insert_for_field`. The original field is `"teh later"`, the
+        // intended replacement `"the later"`.
         let inserted = Inserted {
             bytes: 3,
             chars: 3,
             strategy: InsertStrategy::AxSet,
         };
+        // Readback == the exact replacement → applied.
         assert_eq!(
-            axset_exact_readback_outcome("the later", "the later", inserted.clone()),
+            axset_readback_outcome("teh later", "the later", inserted.clone()),
             AxSetApply::Applied(inserted.clone())
         );
+        // Readback still byte-identical to the ORIGINAL → the write silently did
+        // nothing (the iTerm2 quirk / wrong-range no-op) → refuse.
         assert_eq!(
-            axset_exact_readback_outcome("the later", "theh later", inserted.clone()),
+            axset_readback_outcome("teh later", "teh later", inserted.clone()),
             AxSetApply::SilentlyIgnored
         );
+        // App-side normalization: the field applied the replacement but also
+        // trimmed/rewrote it, so the readback differs from BOTH the original and
+        // the intended `new_value`. This is a COMPLETED replacement, not a silent
+        // no-op — classify Applied. The former exact-match helper misclassified
+        // this as SilentlyIgnored, producing a hard error after the field was
+        // already mutated (and a retrying caller would double-apply).
         assert_eq!(
-            axset_exact_readback_outcome("the later", "teh later", inserted),
-            AxSetApply::SilentlyIgnored
+            axset_readback_outcome("teh later", "“the” later", inserted),
+            AxSetApply::Applied(Inserted {
+                bytes: 3,
+                chars: 3,
+                strategy: InsertStrategy::AxSet,
+            })
         );
+    }
+
+    #[test]
+    fn caret_set_failure_after_value_write_is_non_fatal_and_selectively_logged() {
+        // After a landed AX value write, a caret-set failure must not turn the
+        // completed write into an error (see `set_caret_after_value_write`). The
+        // only observable is logging: `UnsupportedField` is expected and silent,
+        // any other error is surfaced.
+        assert!(!caret_set_failure_is_worth_logging(
+            &PlatformError::UnsupportedField {
+                reason: "no settable selected range".into(),
+            }
+        ));
+        assert!(caret_set_failure_is_worth_logging(
+            &PlatformError::StaleField
+        ));
+        assert!(caret_set_failure_is_worth_logging(
+            &PlatformError::CannotComplete {
+                reason: "AX tree rebuilt".into(),
+            }
+        ));
     }
 
     #[test]

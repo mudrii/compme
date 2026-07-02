@@ -13,6 +13,10 @@ fn main() {
         eprintln!("usage: sign_link <seed-hex-64> <url>");
         std::process::exit(2);
     };
+    if seed_hex.len() != 64 || !seed_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        eprintln!("seed must be exactly 64 hex chars");
+        std::process::exit(2);
+    }
     let seed: [u8; 32] = (0..32)
         .map(|i| u8::from_str_radix(&seed_hex[i * 2..i * 2 + 2], 16).expect("hex seed"))
         .collect::<Vec<_>>()

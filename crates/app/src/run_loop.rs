@@ -4572,6 +4572,11 @@ pub fn run() -> Result<(), String> {
                         }
                     }
                 }
+            } else {
+                // The click was already consumed by the swap above; without HOME
+                // there is no app-support dir to download into, so log the no-op
+                // rather than dropping the press silently.
+                eprintln!("compme: download-model click ignored \u{2014} HOME is not set");
             }
         }
         // Download progress/terminal-state logging (one line per transition).
@@ -5055,6 +5060,13 @@ pub fn run() -> Result<(), String> {
                     );
                 }
             }
+        } else if manual_grammar_request.take().is_some() {
+            // A one-shot GrammarCheck shortcut arms `manual_grammar_request`,
+            // which resets every tick. When this tick is not Ready (Loading,
+            // Blocked, or Disabled) the request can never be consumed, so log
+            // the drop instead of silently discarding the user's key press —
+            // matching the outcome line every sibling shortcut action emits.
+            eprintln!("compme: shortcut grammar-check dropped \u{2014} status={status:?} not ready");
         }
 
         // 6. Tray actions (menu callbacks fire on this same main thread via the
@@ -11862,6 +11874,22 @@ mod tests {
         assert!(status_drops_pending_requests(AppStatus::Blocked(
             BlockReason::ModelUnavailable
         )));
+    }
+
+    #[test]
+    fn manual_grammar_request_submits_only_when_ready() {
+        // The one-shot GrammarCheck shortcut arms `manual_grammar_request`,
+        // which resets every tick and is only consumed inside
+        // `suggestions_allowed()`. Every non-Ready status must therefore take
+        // the drop-with-log branch instead of submitting — otherwise the user's
+        // key press is silently discarded. This pins the exact gate the drop
+        // branch keys on; unlike pending `latest` requests, Loading also drops.
+        assert!(AppStatus::Ready.suggestions_allowed());
+        assert!(!AppStatus::Loading.suggestions_allowed());
+        assert!(!AppStatus::Disabled.suggestions_allowed());
+        assert!(!AppStatus::Blocked(BlockReason::Permission).suggestions_allowed());
+        assert!(!AppStatus::Blocked(BlockReason::SecureInput).suggestions_allowed());
+        assert!(!AppStatus::Blocked(BlockReason::ModelUnavailable).suggestions_allowed());
     }
 
     #[test]

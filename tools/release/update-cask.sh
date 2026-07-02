@@ -29,9 +29,12 @@ rewrite_cask() {
   version="$2"
   sha="$3"
 
-  # Portable in-place sed (BSD/macOS needs the empty -i arg; GNU tolerates -i'').
-  sed -i'' -E "s/^  version \".*\"/  version \"${version}\"/" "$cask_path"
-  sed -i'' -E "s/^  sha256 \"[0-9a-f]*\"/  sha256 \"${sha}\"/" "$cask_path"
+  # Portable in-place sed: BSD sed parses -i'' as -i with the NEXT arg (-E) as
+  # the backup suffix, silently disabling ERE and littering a "-E" backup file.
+  # -i.bak + rm is the form both BSD and GNU parse identically.
+  sed -i.bak -E "s/^  version \".*\"/  version \"${version}\"/" "$cask_path"
+  sed -i.bak -E "s/^  sha256 \"[0-9a-f]*\"/  sha256 \"${sha}\"/" "$cask_path"
+  rm -f "${cask_path}.bak"
 }
 
 run_self_test() {

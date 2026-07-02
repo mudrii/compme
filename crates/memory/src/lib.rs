@@ -23,12 +23,31 @@ use zeroize::Zeroize;
 const NONCE_LEN: usize = 12;
 
 /// Upper bound on stored records. After each insert the store trims oldest-first
-/// (lowest id) back down to this cap, so an `AllMonitored` session cannot grow
-/// the database without bound (disk-exhaustion / unbounded retention).
+/// (lowest id) back down to this cap. Paired with [`MAX_RECORD_CHARS`] (a
+/// per-record size bound), an `AllMonitored` session cannot grow the database
+/// without bound: the count cap alone is defeated if a single record can be
+/// arbitrarily large (one multi-MB paste per row), so both a row-count and a
+/// per-record-size limit are needed to bound disk use / unbounded retention.
 // ponytail: a single global `MAX_RECORDS` cap. The roadmap specifies no
 // retention policy, so this is a generous fixed bound; per-app and time-based
 // (age) retention are the upgrade path if a roadmap item demands finer control.
 const MAX_RECORDS: i64 = 50_000;
+
+/// Upper bound on characters stored per record. A typing-history record is a
+/// short fragment, so a few KB is ample; this caps a single multi-MB paste (in
+/// `AllMonitored` mode) so it cannot become one unbounded row that defeats the
+/// [`MAX_RECORDS`] count cap's disk-exhaustion reasoning. Applied AFTER
+/// redaction in [`MemoryStore::store`] — see the note there on ordering.
+const MAX_RECORD_CHARS: usize = 4096;
+
+/// Truncate to at most `max` characters on a char boundary (never mid-scalar).
+/// Mirrors `personalization`'s `truncate_chars`.
+fn truncate_chars(s: &str, max: usize) -> &str {
+    match s.char_indices().nth(max) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
+}
 
 /// The 32-byte AES-256 key. Production fills it from the OS keystore (Keychain);
 /// tests/headless use a fixed key. (A `KeyProvider` trait was inlined here once it
@@ -228,7 +247,15 @@ impl MemoryStore {
         // redacted text can still carry private (non-PII) prose. Best-effort: the
         // caller's `text` is its own and is not scrubbed here.
         let redacted = zeroize::Zeroizing::new(redaction::redact(text));
-        let blob = self.encrypt(redacted.as_str(), app.as_bytes())?;
+        // Redact BEFORE truncating: truncating first could split a secret across
+        // the cut so the retained prefix falls below redaction's length/entropy
+        // thresholds (e.g. the generic 32+ char token branch) and leaks a raw
+        // fragment. Over the full text, redaction turns secrets into
+        // placeholders, so the char cap can then only cut prose or an
+        // already-safe placeholder. `capped` borrows the zeroizing buffer, so it
+        // stays scrubbed too.
+        let capped = truncate_chars(redacted.as_str(), MAX_RECORD_CHARS);
+        let blob = self.encrypt(capped, app.as_bytes())?;
         self.conn.execute(
             "INSERT INTO memories (app, blob) VALUES (?1, ?2)",
             params![app, blob],
@@ -1318,5 +1345,35 @@ mod tests {
             10,
             "well under MAX_RECORDS: nothing evicted"
         );
+    }
+
+    #[test]
+    fn store_caps_record_length_on_a_char_boundary_leaving_small_records_untouched() {
+        // A single oversized paste (AllMonitored) must not become one unbounded
+        // row: store() caps each record at MAX_RECORD_CHARS chars, so a multi-MB
+        // paste cannot defeat the MAX_RECORDS count bound. Use 3-byte multibyte
+        // chars ('☃') so a naive byte-truncation at the cap would split a scalar;
+        // the cut must land on a char boundary and yield valid UTF-8. '☃' is
+        // outside every redaction charset, so redaction leaves the run verbatim
+        // and only the length cap applies.
+        let store = MemoryStore::open_in_memory(&key(70), StorageMode::AllMonitored).unwrap();
+        let oversized: String = "☃".repeat(MAX_RECORD_CHARS + 500);
+        store.monitor("app", &oversized).unwrap();
+        let recent = store.recent("app", 1).unwrap();
+        assert_eq!(recent.len(), 1, "the oversized row is stored");
+        assert_eq!(
+            recent[0].chars().count(),
+            MAX_RECORD_CHARS,
+            "record is truncated to exactly the char cap"
+        );
+        assert!(
+            recent[0].chars().all(|c| c == '☃'),
+            "the retained prefix is intact multibyte chars, cut on a char boundary"
+        );
+
+        // A normal-sized record is stored verbatim — the cap never touches it.
+        let small = "just a short note";
+        store.remember("app2", small).unwrap();
+        assert_eq!(store.recent("app2", 1).unwrap(), vec![small.to_string()]);
     }
 }
