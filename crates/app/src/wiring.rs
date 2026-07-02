@@ -85,6 +85,15 @@ pub enum Observation {
 #[derive(Default)]
 pub struct FieldTracker {
     last: Option<TrackedField>,
+    /// One-shot: armed by a self-applied edit (insert / replace / correction) so
+    /// the NEXT observe adopts the field's readback as the new baseline and
+    /// reports a caret move — even when the app normalized the write (smart
+    /// quotes, trimmed whitespace) so the readback differs from the text we
+    /// intended. Without it a normalized readback would diff against the INTENDED
+    /// baseline and synthesize phantom typing, arming a spurious request and
+    /// routing app-generated text into monitored memory. Consumed on the next
+    /// observe and cleared by [`reset`](Self::reset) (focus change).
+    resync_next: bool,
 }
 
 struct TrackedField {
@@ -133,6 +142,7 @@ impl FieldTracker {
         now_ms: u64,
         capture_inserted_text: bool,
     ) -> Observation {
+        let resync_next = std::mem::take(&mut self.resync_next);
         let (value, caret) = value_and_caret(ctx);
         let new_chars = value.chars().count();
 
@@ -148,6 +158,17 @@ impl FieldTracker {
             value: value.clone(),
             caret,
         });
+
+        // A self-applied edit's readback is an echo, not typing — even when the
+        // app normalized it so the readback differs from the text we intended.
+        // The fresh read is now the baseline (set above); report a caret move so
+        // no completion is armed and no artifact reaches monitored memory.
+        if resync_next && prev.is_some() {
+            return Observation::CaretMoved {
+                field: field.clone(),
+                caret,
+            };
+        }
 
         if let Some((prev_value, _)) = &prev {
             if *prev_value == value {
@@ -190,6 +211,7 @@ impl FieldTracker {
     /// next observation is treated as a fresh field.
     pub fn reset(&mut self) {
         self.last = None;
+        self.resync_next = false;
     }
 
     pub fn apply_self_insert(&mut self, field: &FieldHandle, text: &str) {
@@ -206,6 +228,7 @@ impl FieldTracker {
         let byte_index = byte_index_for_char(&last.value, last.caret);
         last.value.insert_str(byte_index, text);
         last.caret = last.caret.saturating_add(text.chars().count());
+        self.resync_next = true;
     }
 
     /// Absorb a *replacement* self-insert (emoji `:smile`→😄, typo fix, US→UK
@@ -235,6 +258,7 @@ impl FieldTracker {
             last.value.insert_str(byte_index, text);
             last.caret = last.caret.saturating_add(text.chars().count());
         }
+        self.resync_next = true;
     }
 
     pub fn apply_self_replace_range(
@@ -256,6 +280,7 @@ impl FieldTracker {
         let end = byte_index_for_char(&last.value, end_char);
         last.value.replace_range(start..end, text);
         last.caret = start_char.saturating_add(text.chars().count());
+        self.resync_next = true;
     }
 }
 
@@ -620,6 +645,69 @@ mod tests {
                 caret: 3
             }
         );
+    }
+
+    #[test]
+    fn self_replace_range_absorbs_app_normalized_readback_as_caret_move() {
+        // The app normalized the landed correction (autocapitalized "the" to
+        // "The") so the readback differs from the intended text. It is still the
+        // accept's echo, not typing: it must absorb as a caret move rather than
+        // synthesize a TextChange that would arm a request or reach memory.
+        let mut tracker = FieldTracker::new();
+        tracker.observe(
+            &field("f"),
+            &ctx("I saw teh", ""),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        tracker.apply_self_replace_range(&field("f"), "the", CorrectionRange { start: 6, end: 9 });
+        let observed = tracker.observe_with_inserted_text(
+            &field("f"),
+            &ctx("I saw The", ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn self_replace_range_resync_is_one_shot() {
+        // Absorbing the normalized echo must not swallow the user's NEXT edit:
+        // the resync is consumed by the echo observe, so real typing afterwards
+        // still registers as a TextChange.
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("teh", ""), TriggerPolicy::Automatic, 0);
+        tracker.apply_self_replace_range(&field("f"), "the", CorrectionRange { start: 0, end: 3 });
+        let echo = tracker.observe(&field("f"), &ctx("The", ""), TriggerPolicy::Automatic, 1);
+        assert!(matches!(echo, Observation::CaretMoved { .. }));
+
+        let change =
+            typed(tracker.observe(&field("f"), &ctx("The!", ""), TriggerPolicy::Automatic, 2));
+        assert_eq!(change.edit, EditKind::Insert);
+        assert_eq!(change.value, "The!");
+    }
+
+    #[test]
+    fn self_insert_absorbs_app_normalized_readback_as_caret_move() {
+        // Same echo-normalization guarantee for an append-only accept: the app
+        // swapped the inserted straight quotes for smart quotes, so the readback
+        // differs — but it is still the accept's own echo.
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("say ", ""), TriggerPolicy::Automatic, 0);
+        tracker.apply_self_insert(&field("f"), "\"hi\"");
+        let observed = tracker.observe_with_inserted_text(
+            &field("f"),
+            &ctx("say \u{201c}hi\u{201d}", ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        assert!(matches!(observed, Observation::CaretMoved { .. }));
     }
 
     #[test]

@@ -31,9 +31,12 @@ rewrite_cask() {
 
   # Portable in-place sed: BSD sed parses -i'' as -i with the NEXT arg (-E) as
   # the backup suffix, silently disabling ERE and littering a "-E" backup file.
-  # -i.bak + rm is the form both BSD and GNU parse identically.
-  sed -i.bak -E "s/^  version \".*\"/  version \"${version}\"/" "$cask_path"
-  sed -i.bak -E "s/^  sha256 \"[0-9a-f]*\"/  sha256 \"${sha}\"/" "$cask_path"
+  # -i.bak + rm is the form both BSD and GNU parse identically; one invocation
+  # with two -e expressions keeps the .bak cleanup failure-safe under set -e.
+  sed -i.bak -E \
+    -e "s/^  version \".*\"/  version \"${version}\"/" \
+    -e "s/^  sha256 \"[0-9a-f]*\"/  sha256 \"${sha}\"/" \
+    "$cask_path" || { rm -f "${cask_path}.bak"; return 1; }
   rm -f "${cask_path}.bak"
 }
 
@@ -117,6 +120,16 @@ CASK
   fi
   grep -q 'version "1.2.3"' "$malformed"
   grep -q 'example.invalid/old.zip' "$malformed"
+
+  # Regression pin for the historical `sed -i''` mis-parse: BSD sed still
+  # substituted correctly (the patterns are BRE-compatible) so content greps
+  # can't catch it — the stray `<file>-E` backup is the only observable
+  # symptom. Assert no backup litter of any kind remains.
+  stray="$(find "$tmp" -name '*.rb?*' -print)"
+  if [ -n "$stray" ]; then
+    echo "self-test FAILED: stray sed backup files: $stray" >&2
+    exit 1
+  fi
 
   echo "Self-test passed"
 }

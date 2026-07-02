@@ -221,12 +221,34 @@ impl Prefs {
         self.snooze_until_ms.is_some_and(|until| now_ms < until)
     }
 
+    /// Fully re-enable `app`: turn the per-app `enabled` policy ON *and* clear any
+    /// hard-block exclude, so re-enable is a true inverse of exclude/disable.
+    /// `excluded_apps` short-circuits `should_suggest` (checked before the per-app
+    /// `enabled`), so a bare `enabled = Some(true)` on an app that was excluded via
+    /// tray "Disable ▸ Always" would silently no-op — the checkbox/shortcut would
+    /// read On while suggestions stay dead with no in-app recovery. Shared by
+    /// `set_app_policy_field` (Settings "Apps" checkbox + toggle-app shortcut) and
+    /// `apply_override`'s deep-link Enable arm so the invariant can't diverge.
+    fn fully_enable_app(&mut self, app: &str) {
+        self.excluded_apps.remove(app);
+        self.per_app.entry(app.to_string()).or_default().enabled = Some(true);
+    }
+
     /// Set one editable field of an app's per-app override (Settings "Apps" pane).
     ///
     /// Creates the entry if absent, like `apply_override` — same in-memory model
     /// as the existing per-app delete. The tri-state `Option` fields take
     /// `Some(on)`; revert a field to "inherit the default" by deleting the row.
+    ///
+    /// Re-enabling (`Enabled`, `on == true`) routes through `fully_enable_app`, so
+    /// it also clears a prior hard-block exclude. Disable is intentionally NOT the
+    /// mirror image: `enabled = Some(false)` blocks softly, and a tray-set
+    /// `excluded_apps` entry is a deliberately stronger state left untouched here.
     pub fn set_app_policy_field(&mut self, app: &str, field: AppPolicyField, on: bool) {
+        if let (AppPolicyField::Enabled, true) = (field, on) {
+            self.fully_enable_app(app);
+            return;
+        }
         let policy = self.per_app.entry(app.to_string()).or_default();
         match field {
             AppPolicyField::Enabled => policy.enabled = Some(on),
@@ -252,8 +274,7 @@ impl Prefs {
         use webconfig::{OverrideAction::*, Scope};
         match (&command.scope, command.action) {
             (Scope::App(app), Enable) => {
-                self.excluded_apps.remove(app);
-                self.per_app.entry(app.clone()).or_default().enabled = Some(true);
+                self.fully_enable_app(app);
             }
             (Scope::App(app), Disable) => {
                 self.per_app.entry(app.clone()).or_default().enabled = Some(false);
@@ -974,5 +995,40 @@ mod tests {
             !p.autocorrect_enabled(Some(app), false),
             "after delete, autocorrect inherits the false global default"
         );
+    }
+
+    #[test]
+    fn set_app_policy_field_enable_clears_a_tray_exclude() {
+        // The Settings "Apps" checkbox / toggle-app shortcut trap: an app hard-
+        // blocked via tray "Disable ▸ Always" lands in excluded_apps, which
+        // short-circuits should_suggest BEFORE the per-app `enabled` is consulted.
+        // Toggling the checkbox back On must be a true re-enable — clear the
+        // exclude too — or the checkbox reads On forever while suggestions stay
+        // dead. Mirrors the deep-link apply_override Enable arm.
+        let mut p = Prefs::default();
+        p.excluded_apps.insert("com.foo.bar".into());
+        assert!(!p.should_suggest(Some("com.foo.bar"), None, 0));
+        p.set_app_policy_field("com.foo.bar", AppPolicyField::Enabled, true);
+        assert!(
+            !p.excluded_apps.contains("com.foo.bar"),
+            "re-enable must clear the hard-block exclude"
+        );
+        assert_eq!(p.per_app["com.foo.bar"].enabled, Some(true));
+        assert!(p.should_suggest(Some("com.foo.bar"), None, 0));
+    }
+
+    #[test]
+    fn set_app_policy_field_disable_does_not_add_to_excluded_apps() {
+        // Disable is intentionally NOT the mirror of enable: it sets the soft
+        // per-app `enabled = Some(false)` gate and must leave excluded_apps
+        // untouched (tray-exclude is a deliberately stronger, separate state).
+        let mut p = Prefs::default();
+        p.set_app_policy_field("com.foo.bar", AppPolicyField::Enabled, false);
+        assert_eq!(p.per_app["com.foo.bar"].enabled, Some(false));
+        assert!(
+            p.excluded_apps.is_empty(),
+            "soft disable must not promote the app into the hard-block set"
+        );
+        assert!(!p.should_suggest(Some("com.foo.bar"), None, 0));
     }
 }

@@ -4813,6 +4813,19 @@ fn insert_range_for_field(
     // silent-write quirk.
     let readback = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }
         .unwrap_or_else(|_| new_value.clone());
+    // A divergent readback is usually app-side normalization, but it is also
+    // the only observable symptom of a wrong-range or partially-applied splice
+    // (e.g. a UTF-16 offset bug) — log it so that failure mode stays
+    // diagnosable while still reporting Applied. Lengths only: the field text
+    // may be sensitive.
+    if readback != new_value && readback != value {
+        eprintln!(
+            "compme: range replacement readback diverged from expected value \
+             (expected {} utf16 units, read back {})",
+            new_value.encode_utf16().count(),
+            readback.encode_utf16().count()
+        );
+    }
     Ok(axset_readback_outcome(
         &value,
         &readback,

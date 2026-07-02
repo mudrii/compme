@@ -7480,6 +7480,66 @@ mod tests {
     }
 
     #[test]
+    fn correction_accept_absorbs_app_normalized_readback_as_caret_move() {
+        // The app normalized the landed correction on write (here it
+        // autocapitalized "the" to "The"), so the next AX readback differs from
+        // the text the correction intended. It is still the accept's own echo —
+        // not new typing — so it must absorb as a caret move. Before the
+        // one-shot resync, the tracker seeded the INTENDED "the" and the
+        // normalized "The" readback diffed into a synthetic same-length change,
+        // arming a spurious request and routing "The" into monitored memory.
+        let previous = PreviousInputs::default();
+        let store = accepted_store();
+        let mut tracker = FieldTracker::new();
+        let mut usage = stats::Stats::new();
+        let prefs = Prefs::default();
+        let field = field_with_app("com.apple.TextEdit");
+        tracker.observe(
+            &field,
+            &text_context(&field, "I saw teh"),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        let correction = (
+            field.clone(),
+            "the".to_string(),
+            CorrectionRange { start: 6, end: 9 },
+        );
+
+        apply_accept_side_effects(
+            true,
+            AcceptSideEffects {
+                action: AcceptAction::Correction,
+                preview: None,
+                correction_preview: Some(&correction),
+                wall_ms: 10_000,
+                context_max_chars: 160,
+                previous_inputs: &previous,
+                memory: Some(&store),
+                prefs: &prefs,
+                tracker: &mut tracker,
+                usage: &mut usage,
+            },
+        );
+
+        // Readback is the app-normalized form ("The"), NOT the intended "the".
+        let observed = tracker.observe_with_inserted_text(
+            &field,
+            &text_context(&field, "I saw The"),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        match observed {
+            Observation::CaretMoved { caret, .. } => assert_eq!(caret, 9),
+            Observation::Typed(change) => panic!(
+                "normalized correction echo must absorb as a caret move, not \
+                 synthesize typing (inserted_text={:?})",
+                change.inserted_text
+            ),
+        }
+    }
+
+    #[test]
     fn completion_outcome_log_line_never_includes_candidate_text() {
         let line = completion_outcome_log_line(7, &["secret phrase".into(), "other".into()]);
 
