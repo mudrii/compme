@@ -995,47 +995,6 @@ impl SuggestionMachine {
         out
     }
 
-    pub fn offer_correction(
-        &mut self,
-        field: &FieldHandle,
-        suggestion: String,
-        correction_range: CorrectionRange,
-    ) -> Vec<Command> {
-        let mut out = Vec::new();
-        if !self.enabled()
-            || self.suppressed
-            || suggestion.is_empty()
-            || self.caps.insert_strategy != InsertStrategy::AxSet
-        {
-            return out;
-        }
-        if self.field.as_ref() != Some(field) {
-            return out;
-        }
-        if self.showing.is_some() {
-            self.record_stat(StatEvent::Superseded);
-        }
-        self.showing = Some(Showing {
-            field: field.clone(),
-            snapshot: self.snapshot,
-            candidates: vec![suggestion.clone()],
-            index: 0,
-            caret: self.caret,
-            replace_left: 0,
-            presentation: Presentation::Correction,
-            correction_range: Some(correction_range),
-        });
-        self.pending_since = None;
-        self.requested = None;
-        out.push(Command::ShowCorrection {
-            field: field.clone(),
-            snapshot: self.snapshot,
-            suggestion,
-            correction_range,
-        });
-        self.record_stat(StatEvent::Shown);
-        out
-    }
 }
 
 /// Cotypist's "Include trailing space after single-word completions": when
@@ -1119,35 +1078,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn offer_correction_shows_correction_with_exact_range() {
-        let mut machine = machine();
-        machine.on_event(text_changed("teh", 3, 0));
-        let range = CorrectionRange { start: 0, end: 3 };
-
-        assert_eq!(
-            machine.offer_correction(&field("field-a"), "the".into(), range),
-            vec![Command::ShowCorrection {
-                field: field("field-a"),
-                snapshot: 1,
-                suggestion: "the".into(),
-                correction_range: range,
-            }]
-        );
-        let showing = machine.showing.as_ref().expect("correction showing");
-        assert_eq!(showing.presentation, Presentation::Correction);
-        assert_eq!(showing.correction_range, Some(range));
+    /// Seed a showing correction through the production path: arm a manual
+    /// grammar request, then deliver the matching `CorrectionReady`.
+    fn show_correction(machine: &mut SuggestionMachine, suggestion: &str, range: CorrectionRange) {
+        let f = field("field-a");
+        let (generation, snapshot) = machine
+            .arm_manual_grammar_request(&f)
+            .expect("focused, enabled, unsuppressed field arms a grammar request");
+        machine.on_event(Event::CorrectionReady {
+            generation,
+            field: f,
+            snapshot,
+            suggestion: suggestion.into(),
+            correction_range: range,
+        });
+        assert!(machine.showing.is_some(), "correction is showing");
     }
 
     #[test]
-    fn on_correction_shows_correction_with_range_and_invalidates_on_text_changed() {
+    fn shown_correction_is_invalidated_by_text_changed() {
         let mut machine = machine();
         machine.on_event(text_changed("teh", 3, 0));
-        machine.offer_correction(
-            &field("field-a"),
-            "the".into(),
-            CorrectionRange { start: 0, end: 3 },
-        );
+        show_correction(&mut machine, "the", CorrectionRange { start: 0, end: 3 });
 
         assert_eq!(
             machine.on_event(text_changed("the", 3, 10)),
@@ -1157,34 +1109,10 @@ mod tests {
     }
 
     #[test]
-    fn accept_correction_emits_replace_range_with_exact_range() {
-        let mut machine = machine();
-        machine.on_event(text_changed("teh", 3, 0));
-        let range = CorrectionRange { start: 0, end: 3 };
-        machine.offer_correction(&field("field-a"), "the".into(), range);
-
-        assert_eq!(
-            machine.on_event(Event::AcceptCorrection),
-            vec![
-                Command::ReplaceRange {
-                    field: field("field-a"),
-                    text: "the".into(),
-                    correction_range: range,
-                },
-                Command::Hide,
-            ]
-        );
-    }
-
-    #[test]
     fn accept_full_and_word_do_not_commit_correction_presentation() {
         let mut machine = machine();
         machine.on_event(text_changed("teh", 3, 0));
-        machine.offer_correction(
-            &field("field-a"),
-            "the".into(),
-            CorrectionRange { start: 0, end: 3 },
-        );
+        show_correction(&mut machine, "the", CorrectionRange { start: 0, end: 3 });
 
         assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
         assert!(machine.showing.is_some());

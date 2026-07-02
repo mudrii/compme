@@ -190,10 +190,8 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
     /// the machine has already transitioned to showing, so also rewind its
     /// last-shown bookkeeping (`cancel_last_shown`) before dismissing.
     fn reconcile_failed_show(&mut self) {
-        let _ = self.overlay.hide();
-        let _ = self.set_tap_visible(false, None);
         self.machine.cancel_last_shown();
-        let _ = self.machine.on_event(Event::Dismiss);
+        self.reconcile_visible_failure();
     }
 
     pub fn on_focus(
