@@ -77,11 +77,14 @@ For development, run unbundled with `cargo run -p app`.
   `modifier+keycode` string such as `shift+48` or `ctrl+shift+50`.
 - **Inline autocorrect** — high-precision trailing-word typo→correction replacement,
   with no false-correct on real words.
+- **Standalone grammar/spell fix** — a separate trigger/accept flow for the word
+  at the caret: underline + correction banner, strict single-word model vetting,
+  and exact range replacement.
 - **British-English normalization** — opt-in US→UK spelling for unambiguous American-only forms.
 - **Emoji completion** — `:shortcode`→emoji with skin-tone and gender preferences.
 - **Thesaurus / synonyms** — curated synonym suggestions for the trailing word.
 - **Per-app and per-domain control** — per-app enable, Tab-key disable, input-collection
-  opt-out, and mid-line / autocorrect / thesaurus overrides, plus per-app and
+  opt-out, and mid-line / autocorrect / grammar-fix / thesaurus overrides, plus per-app and
   per-browser-domain exclusion.
 - **Browser-domain detection** — the focused browser page's host is read from the
   Accessibility URL and matched against domain exclusions. Model submit fails closed
@@ -123,7 +126,7 @@ For development, run unbundled with `cargo run -p app`.
 │   ├── compat/                        # Per-app compatibility tiers/quirks
 │   ├── personalization/              # Instructions / strength / sender identity
 │   ├── autocorrect/                   # Trailing-word typo correction
-│   ├── grammar/                       # Pronoun capitalization; Tier 5 grammar-fix base
+│   ├── grammar/                       # Pronoun capitalization and grammar-fix post-filter
 │   ├── localize/                      # US↔British English normalization
 │   ├── emoji/                         # :shortcode → emoji completion
 │   ├── thesaurus/                     # Synonym suggestions
@@ -166,7 +169,7 @@ from `tools/spike/`.
 | `compat` | Pure classifier from a macOS bundle id to a compatibility tier, plus the gating policy each tier implies (mirrors the Cotypist compatibility table). |
 | `personalization` | Prompt-based personalization: global + per-app + per-domain instruction maps (request-time app and domain steering are wired, and a Personalization pane edits global instructions, strength, and sender identity — the per-app/per-domain instruction editor remains a follow-up), a 6-stop strength slider (no tier caps), and sender identity, templated into a steering preamble. |
 | `autocorrect` | Pure, high-precision trailing-word typo→correction table with the query's capitalization reapplied; never "corrects" a real word. |
-| `grammar` | Pure grammar helpers: current inline pronoun capitalization plus the planned Tier 5 LLM-backed standalone grammar/spell-fix post-filter. |
+| `grammar` | Pure grammar helpers: current inline pronoun capitalization plus the LLM-backed standalone grammar/spell-fix post-filter. |
 | `localize` | Pure, high-precision US→British spelling normalization for American-only forms; deliberately skips ambiguous words. |
 | `emoji` | Pure `:shortcode`→emoji completion honoring skin-tone (Fitzpatrick) and gender preferences. |
 | `thesaurus` | Pure synonym lookup with the queried word's case pattern applied; supports selection and auto modes. |
@@ -208,6 +211,9 @@ comma-separated bundle ids.
 | `COMPME_DEFAULT_ENABLED` | Per-app suggestion-policy default in `prefs` (distinct from the master `COMPME_ENABLED`). |
 | `COMPME_MIDLINE` | Allow mid-line completions (also a Settings switch). `_ON_APPS` / `_OFF_APPS` override per app. |
 | `COMPME_AUTOCORRECT` | Inline typo autocorrect (default off; also a Settings switch). `_ON_APPS` / `_OFF_APPS` override per app. |
+| `COMPME_GRAMMAR_FIX` | Standalone grammar/spell-fix trigger flow (default off). `_ON_APPS` / `_OFF_APPS` override per app. |
+| `COMPME_GRAMMAR_CHECK_KEY` | Always-on grammar trigger shortcut as a `modifier+keycode` string; runs detection for the word at the caret. |
+| `COMPME_GRAMMAR_ACCEPT_KEY` | Correction-only accept key as a `modifier+keycode` string; replaces the vetted word only while a correction is showing. |
 | `COMPME_BRITISH_ENGLISH` | British-English normalization (default off). |
 | `COMPME_THESAURUS` | Inline thesaurus / synonym suggestions (default off). `_ON_APPS` / `_OFF_APPS` override per app. |
 | `COMPME_TRAILING_SPACE` | Append a trailing space on single-word accept (default off; also a Settings switch). |
@@ -286,7 +292,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,585 tests:
+suite is roughly 1,614 tests:
 
 ```sh
 cargo fmt --all -- --check

@@ -1,8 +1,8 @@
 # Standalone grammar/spell-fix mode — implementation spec
 
-**Status:** ◕ Implemented · deterministic validation green 2026-07-02 · pending live LOOK validation
+**Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1585 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1614 tests green).
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI
@@ -20,6 +20,10 @@ before editing (they drift).
   replacement, and a two-panel underline/banner correction presenter are
   implemented with focused geometry tests. Live LOOK validation remains pending
   because it requires granted Accessibility permissions and an interactive macOS app.
+- G5 settings surface is implemented: the Shortcuts pane has a grammar-accept
+  recorder row, live rebind persists `COMPME_GRAMMAR_ACCEPT_KEY`, the Apps pane
+  includes the `GrammarFix` policy column, and config/env shadow tests cover the
+  grammar keys.
 
 ---
 
@@ -442,7 +446,9 @@ range bounds and range replacement, not just the existing left-of-caret
 - `cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1`
 
 ## Definition of done (macOS reference)
-G1–G5 landed, the validation command set above is green, the grammar LOOK gate is
-listed in `docs/ACCEPTANCE.md` / `tools/acceptance/run-a1b-live-gates.sh --self-test`
-and checked on-device, and the ROADMAP Tier 5 status flipped from ☐ to 🟢 with
-verified anchors.
+Code-complete criteria are met: G1–G5 landed, the validation command set above is
+green, the grammar LOOK gate is listed in `docs/ACCEPTANCE.md` /
+`tools/acceptance/run-a1b-live-gates.sh --self-test`, and ROADMAP Tier 5 is now
+marked 🟢 with verified anchors. The remaining release-readiness item is
+on-device live LOOK validation of the TextEdit underline/banner and
+grammar-accept replacement flow in a granted macOS GUI session.

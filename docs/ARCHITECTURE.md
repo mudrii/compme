@@ -14,7 +14,7 @@ aim to replicate all of Cotypist, and it freely diverges (open-source, cross-
 platform, no pricing gates, and supersets like candidate cycling) where its own
 goals differ.
 
-The workspace now holds 24 crates. The shape is deliberate: almost everything
+The workspace now holds 25 crates. The shape is deliberate: almost everything
 outside the model/download seams, platform adapters, and host is pure (text in →
 decision out, time and keys injected, no I/O), so it is unit-testable without a
 clock, a network, or AppKit. The impurity is fenced into `model_client`
@@ -59,15 +59,18 @@ side stores:
   prefs / compat / webconfig — local per-app + per-domain gating and overrides
 ```
 
-Two suggestion paths share the gate. The **model path** runs left-context
-through the engine/state-machine and llama.cpp. The **local-replacement path**
-short-circuits in the observe path for the four deterministic text features
-(emoji shortcode, typo fix, US→UK, thesaurus) — no model, no latency. Both
-honor the same per-app/per-domain prefs gate.
+Three suggestion paths share the gate. The **completion model path** runs
+left-context through the engine/state-machine and llama.cpp. The
+**grammar-fix model path** uses the word at the caret plus left context, vets the
+model output to a safe single-word correction, and carries one `CorrectionRange`
+through underline geometry and accept-time replacement. The **local-replacement
+path** short-circuits in the observe path for the four deterministic text
+features (emoji shortcode, typo fix, US→UK, thesaurus) — no model, no latency.
+All paths honor the same per-app/per-domain prefs gate.
 
 ## Workspace Crates
 
-The 24 crates fall into six groups: the **contract + core** (`platform`,
+The 25 crates fall into six groups: the **contract + core** (`platform`,
 `engine_core`, `engine`, `context`, `ranker`), the **model seam**
 (`model_client`, `model_catalog`, `model_fetch`), **pure text features**
 (`autocorrect`, `localize`, `thesaurus`, `emoji`, `textcase`), **policy &
@@ -88,14 +91,18 @@ Key concepts:
   focused field.
 - `TextContext`: text to the left and right of the caret, selection metadata,
   source, field identity, and offset encoding.
+- `CorrectionRange`: Unicode-scalar range used by standalone grammar/spell-fix
+  for both underline geometry and exact accept-time replacement.
 - `Capabilities`: what the focused field supports: readable text, readable
   caret, write support, secure-state information, toolkit, insertion strategy,
   accept interception, and overlay placement.
 - `InsertStrategy`: `AxSet`, `SyntheticKeys`, `Clipboard`, `ImeCommit`, or
   `None`.
 - `PlatformAdapter`: focus/caret/accept subscriptions, app discovery,
-  capabilities, context reads, caret geometry, and insertion.
-- `OverlayPresenter`: `show_ghost`, `update_ghost`, and `hide`.
+  capabilities, context reads, caret/range geometry, insertion, and exact range
+  replacement.
+- `OverlayPresenter`: `show_ghost`, `show_correction`, `update_ghost`, and
+  `hide`.
 - `ux_mode`: classifies capabilities as `Inline`, `Popup`, `Hotkey`,
   `Unsupported`, or `Blocked`.
 
@@ -106,6 +113,7 @@ Key concepts:
 - `left_context`
 - `right_context`
 - `left_tail`
+- `word_at_caret`
 - `trim_prefix`
 
 These helpers avoid platform dependencies and are tested with Unicode-safe
@@ -143,6 +151,17 @@ ambiguous strings that are also real words (`cant`, `wont`, `weve`) are
 deliberately excluded. Full statistical autocorrect is a separate host concern.
 The host wires it into the local-replacement path (`replacement_offer`) and
 gates it on `COMPME_AUTOCORRECT`; it must not run in code editors.
+
+### `grammar`
+
+`grammar` contains two pure grammar surfaces. The inline surface keeps the
+original pronoun-capitalization helper. The standalone grammar/spell-fix surface
+is the safety filter behind the LLM-backed correction flow: `vet_correction`
+accepts only one ASCII word, preserves the typed case pattern, rejects identical
+or non-ASCII output, rejects multi-word rewrites, and bounds edit distance so a
+model cannot turn the trigger into a broad rewrite. The host supplies the word
+at the caret, asks the model for a correction, and shows nothing unless this
+post-filter returns a safe single-word replacement.
 
 ### `localize`
 
@@ -285,6 +304,7 @@ Important events:
 - `SecureStateChanged`
 - `AcceptFull`
 - `AcceptWord`
+- `AcceptCorrection`
 - `Dismiss`
 - `DismissDiscard` (tray-disable clears the suggestion)
 - `DismissSuppress` (Esc suppresses re-show for the current context)
@@ -293,10 +313,14 @@ Important commands:
 
 - `RequestCompletion`
 - `ShowGhost`
+- `ShowCorrection`
 - `UpdateGhost`
 - `Hide`
 - `Insert`
-- `Replace` (range replacement for local emoji/typo/US→UK/thesaurus fixes)
+- `Replace` (left-of-caret replacement for local emoji/typo/US→UK/thesaurus
+  fixes)
+- `ReplaceRange` (exact scalar-range replacement for vetted grammar/spell
+  corrections)
 
 The machine tracks:
 
@@ -390,9 +414,14 @@ Major responsibilities:
 
 - load dotenv-style config plus environment overrides
 - choose `StubModel` or `LlamaModel`; warm the model before serving
-- resolve the prefs/compat gate, then drive either the model path (engine →
-  llama.cpp) or the local-replacement path (`replacement_offer`: emoji,
-  autocorrect, localize, thesaurus) in the observe path
+- resolve the prefs/compat gate, then drive the completion model path
+  (engine → llama.cpp), the grammar-fix model path (word at caret → LLM →
+  `grammar::vet_correction`), or the local-replacement path
+  (`replacement_offer`: emoji, autocorrect, localize, thesaurus) in the observe
+  path
+- route `ShortcutAction::GrammarCheck` to a manual grammar request, detect the
+  word at the caret, carry its `CorrectionRange`, show the correction banner,
+  and keep `AcceptCorrection` isolated from normal word/full ghost accepts
 - compute the browser page domain from the focused element's AX URL and feed it
   into the per-domain gate
 - apply per-app mid-line override live on focus via `Engine::set_allow_mid_word`
@@ -424,14 +453,19 @@ Major responsibilities:
 - Text reads through AX value and selected range.
 - Caret geometry through native range bounds and Chromium/WebKit marker
   attributes.
+- Correction range geometry through AX bounds-for-range, used by the
+  standalone grammar/spell-fix underline and banner.
 - Capability classification for inline and popup UX.
 - Insert planning across `AxSet`, `SyntheticKeys`, and `Clipboard`.
+- Exact range replacement through `insert_replacing_range` for fields where
+  `AxSet` can update the value and selected range safely.
 - Stale-focus rejection before global synthetic or paste insertion.
 - Pasteboard snapshot/restore with `changeCount` guard.
 - Transient Carbon `RegisterEventHotKey` accept interception, armed only while
   a suggestion is shown, with rebindable keys + modifier masks (`AcceptKeymap`).
-- AppKit `NSPanel` overlay presenter that is transparent, click-through, and
-  non-activating.
+- AppKit `NSPanel` overlay presenter that is transparent, click-through,
+  non-activating, and can show either ghost text or a correction underline plus
+  banner.
 - `NSStatusItem` tray with a template menu-bar icon and status menu.
 - A 9-tab settings `NSWindow` shell (render-only; the run loop owns policy),
   including the `KeyRecorderField` accept-key recorder.

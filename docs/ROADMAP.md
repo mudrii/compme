@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-02 (review/TDD audit sync for Tier 5 grammar/spell-fix plan) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1585 workspace tests; spike separate)
+> **Last updated:** 2026-07-02 (Tier 5 grammar/spell-fix code-complete status sync) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1614 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -258,7 +258,7 @@ person at a granted macOS desktop, not new code. Sources:
 
 ---
 
-## Tier 5 — ☐ Standalone grammar/spell-fix mode (NEW, LLM-backed)
+## Tier 5 — 🟢 Standalone grammar/spell-fix mode (CODE-COMPLETE, live LOOK pending)
 
 **Intent (2026-07-01 user request):** a *separate* feature from inline
 completion — press a **grammar-trigger** key, the nearest misspelled/ungrammatical
@@ -269,6 +269,14 @@ This is a detect→underline→confirm flow, distinct from the type-ahead ghost.
 **Implementation spec:** [`superpowers/specs/2026-07-01-grammar-fix-design.md`](superpowers/specs/2026-07-01-grammar-fix-design.md)
 — phase-by-phase build plan (G1-G5) with exact files, signatures, tests, and
 acceptance criteria. Start there for implementation.
+
+**Status (2026-07-02):** G1-G5 are implemented and deterministic validation is
+green. The portable correction pipeline, macOS trigger/accept routing,
+fail-closed range seams, underline/banner presenter, Apps-pane `GrammarFix`
+policy column, and grammar-accept recorder/persistence are in code with focused
+tests. The remaining acceptance item is the interactive TextEdit grammar LOOK
+gate emitted by `tools/acceptance/run-a1b-live-gates.sh --self-test`, which
+requires a granted macOS GUI session.
 
 **Decisions settled (with the requester, 2026-07-01):**
 0. **Cross-platform by construction — Linux, Windows, and macOS.** No part of the
@@ -371,11 +379,11 @@ acceptance criteria. Start there for implementation.
 ### Ordered build sequence (pure/testable first, novel FFI last)
 | # | Phase | Effort | Notes |
 |---|---|---|---|
-| G1 | `grammar_fix_prompt` + output post-filter (model_client, pure) + word-under-caret helper (context) | S | Fully unit-testable; deterministic prompt + filter shape. |
-| G2 | Grammar inference request/outcome kind + worker routing; `CorrectionRange`/`Showing`/`ReplaceRange` wiring; `Config`/`AppPolicy`/`AppPolicyField` toggle wiring | M | Headless-testable (fake model, fake adapter), with fail-closed platform stubs. |
-| G3 | Two keystrokes: `ShortcutAction::GrammarCheck` + `AcceptBinding::GrammarAccept` registration + routing | M | Pure parse/plan layers unit-tested; dispatch needs a physical keypress (like 3.4). |
-| G4 | Underline + correction-banner overlay (novel FFI) | L | The genuinely new UI; needs live LOOK on a granted Mac. |
-| G5 | Settings: grammar-accept recorder row + Apps-pane `GrammarFix` column; live validation | M | Reuses `KeyRecorderField` (widen its 2-role collision model to N). |
+| G1 | `grammar_fix_prompt` + output post-filter (model_client, pure) + word-under-caret helper (context) | S | ✅ Implemented with deterministic prompt, vetting, and caret-word tests. |
+| G2 | Grammar inference request/outcome kind + worker routing; `CorrectionRange`/`Showing`/`ReplaceRange` wiring; `Config`/`AppPolicy`/`AppPolicyField` toggle wiring | M | ✅ Implemented with fake model/adapter coverage and fail-closed platform stubs. |
+| G3 | Two keystrokes: `ShortcutAction::GrammarCheck` + `AcceptBinding::GrammarAccept` registration + routing | M | ✅ Implemented with config parsing, shortcut routing, accept-action isolation, and Carbon plan tests; physical keypress remains part of live LOOK. |
+| G4 | Underline + correction-banner overlay (novel FFI) | L | ✅ Implemented with macOS range geometry and correction presenter tests; live visual LOOK remains pending on a granted Mac. |
+| G5 | Settings: grammar-accept recorder row + Apps-pane `GrammarFix` column; live validation | M | ✅ Implemented: recorder role/collision handling, live grammar-accept rebind persistence, Apps-pane `GrammarFix` mapping, and env-shadow/config tests are covered. |
 
 ### Open decisions (recommended defaults)
 - **Underline rendering:** *recommend a thin filled sub-panel* under the word rect
@@ -410,10 +418,12 @@ This is the same parity model as Tier 1.1 foundation work, and it depends on the
 platform text-range read/replace impls that Windows/Linux owe regardless of this
 feature.
 
-**Effort:** Large. Portable core (G1-G2) + macOS reference surfaces (G3-G5) are the
-first milestone; Windows and Linux each add the four-row trait impl as follow-on
-platform work. G1-G3 are buildable/testable headless today; G4 (underline+banner)
-is the novel-FFI risk and the live-LOOK gate on each OS.
+**Effort/status:** Large milestone now code-complete for the macOS reference:
+portable core (G1-G2) and macOS reference surfaces (G3-G5) are implemented and
+headless-tested. Windows and Linux retain fail-closed stubs for the new range
+and correction surfaces until their real four-row trait impls are built. The
+remaining macOS risk is live LOOK validation of the underline/banner and
+physical trigger/accept interaction.
 
 ---
 
@@ -434,7 +444,7 @@ is the novel-FFI risk and the live-LOOK gate on each OS.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1585 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1614 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

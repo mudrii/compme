@@ -443,7 +443,7 @@ before each show; General switches re-read their atomics on every show.
 
 The Shortcuts pane lists the current accept bindings with macOS modifier-glyph
 labels (⌃⌥⇧⌘ via `accept_key_modifier_glyphs` / `keycode_label_with_mods`) and
-carries a recorder box per role (Word / Full).
+carries a recorder box per role (Word / Full / Grammar accept).
 
 1. Settings → **Shortcuts** → click a recorder box → press a modifier combo,
    e.g. **Shift+F5**. The box label updates to **`⇧F5`**.
@@ -454,13 +454,16 @@ carries a recorder box per role (Word / Full).
      (id=1 is the Word/Tab slot)
 3. The new combo **accepts live** in TextEdit (type to a suggestion, press
    Shift+F5 → `accept Word`).
-4. Fixed-key behavior holds inside the recorder: **Esc cancels** the recording
+4. The **Grammar accept** row can be rebound the same way; it persists
+   `COMPME_GRAMMAR_ACCEPT_KEY` and is used only for correction presentations,
+   not normal Word/Full ghosts.
+5. Fixed-key behavior holds inside the recorder: **Esc cancels** the recording
    (reverts to the role's current key), and **Down is rejected silently**
    (reserved cycle key) — neither can be rebound. A capture that collides with
-   the other role's `(keycode, mask)` shows "In use — press another".
-5. Reopen Settings: the Shortcuts pane **re-syncs to the effective keymap**
-   (`effective_accept_keys_with_mods()`), so the glyph labels reflect the live
-   binding, not a stale default.
+   another role's `(keycode, mask)` shows "In use — press another".
+6. Reopen Settings: the Shortcuts pane **re-syncs to the effective keymap**
+   (`effective_accept_keys_with_mods_and_grammar()`), so the glyph labels
+   reflect the live binding, not a stale default.
 
 Record the box label, the two log lines, and the live accept for each rebind.
 

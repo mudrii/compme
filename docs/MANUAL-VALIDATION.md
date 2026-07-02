@@ -47,6 +47,27 @@ _Live evidence: the dropdown exposed Neutral/Female/Male, persisted
 `COMPME_EMOJI_GENDER=female`, and reopened with Female selected. Stale-ghost
 invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visible_suggestion`._
 
+## Tier 5 grammar/spell-fix LOOK gate (pending live evidence)
+
+> Deterministic coverage is green for grammar request routing, correction
+> vetting, scalar-range tracking, correction-only accept handling, and fail-closed
+> platform stubs. This checklist records the remaining on-device visual pass
+> before it is promoted into [`ACCEPTANCE.md`](ACCEPTANCE.md).
+
+- [ ] Launch `compme` with `COMPME_GRAMMAR_FIX=1`,
+      `COMPME_GRAMMAR_CHECK_KEY=<trigger>`, and
+      `COMPME_GRAMMAR_ACCEPT_KEY=<accept>`.
+- [ ] In TextEdit, type a single-word typo such as `teh`, place the caret in or
+      just after the word, and press the grammar trigger.
+- [ ] Confirm a thin underline appears under the word and a correction banner
+      appears above it without stealing focus or swallowing normal completion
+      accept keys.
+- [ ] Press the grammar accept key and confirm the original word is replaced in
+      place with the vetted correction, with no duplicate suffix or leftover
+      left fragment.
+- [ ] Move the caret or edit the field before accepting and confirm the stale
+      correction no longer applies.
+
 ## Caret-rect calibration — Chromium forks (pending live evidence)
 
 > The `RECT_IS_LINE_BUNDLE_PREFIXES` list (platform_macos `normalize_caret_rect`)
