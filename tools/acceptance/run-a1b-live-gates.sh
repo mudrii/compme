@@ -656,6 +656,10 @@ run_self_tests() {
 	    shortcuts-recorder-look \
 	    setup-model-picker-look \
 	    nine-tab-settings-walkthrough \
+	    caret-marker-chromium-forks-calibration \
+	    caret-marker-chrome-marker \
+	    caret-marker-chromium-marker \
+	    caret-marker-electron-marker \
 	    encrypted-memory-all-monitored-live \
 	    grammar-fix-textedit-look \
 	    input-monitoring-revoked-carbon-accept; do
@@ -691,6 +695,18 @@ run_self_tests() {
 	    || self_failures=$((self_failures + 1))
 	  assert_log_contains "default-dry-run-nine-tab-settings-walkthrough-checklist" "$dry_run_log" \
 	    '^MANUAL nine-tab-settings-walkthrough: .*all nine Settings panes.*Setup.*General.*Personalization.*Apps.*Context.*Emoji.*Shortcuts.*Statistics.*About' \
+	    || self_failures=$((self_failures + 1))
+	  assert_log_contains "default-dry-run-caret-marker-chromium-forks-calibration-checklist" "$dry_run_log" \
+	    '^MANUAL caret-marker-chromium-forks-calibration: .*Brave.*Edge.*Vivaldi.*RECT_IS_LINE_BUNDLE_PREFIXES' \
+	    || self_failures=$((self_failures + 1))
+	  assert_log_contains "default-dry-run-caret-marker-chrome-marker-checklist" "$dry_run_log" \
+	    '^MANUAL caret-marker-chrome-marker: .*Google Chrome.*MacosCaretRectSource::Marker' \
+	    || self_failures=$((self_failures + 1))
+	  assert_log_contains "default-dry-run-caret-marker-chromium-marker-checklist" "$dry_run_log" \
+	    '^MANUAL caret-marker-chromium-marker: .*Chromium.*MacosCaretRectSource::Marker' \
+	    || self_failures=$((self_failures + 1))
+	  assert_log_contains "default-dry-run-caret-marker-electron-marker-checklist" "$dry_run_log" \
+	    '^MANUAL caret-marker-electron-marker: .*Electron.*MacosCaretRectSource::Marker' \
 	    || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-manual-all-monitored-residuals" "$dry_run_log" \
     '^MANUAL encrypted-memory-all-monitored-live: .*secure-input.*snoozed.*volatile-pid' \
@@ -728,7 +744,7 @@ run_self_tests() {
     '^SKIP accept-insert-option-tab: --skip-textedit$' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
-    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=9 logs=' \
+    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=13 logs=' \
     || self_failures=$((self_failures + 1))
 
   rm -rf "$self_test_dir"
@@ -885,6 +901,10 @@ manual_gate "menu-bar-icon-look" "verify the menu bar icon renders crisply in li
 manual_gate "shortcuts-recorder-look" "open Settings > Shortcuts; click a recorder box, press a modifier-combo accept key, confirm the resolved chord displays, live rebind works, and the value persists after reopening Settings"
 manual_gate "setup-model-picker-look" "open Settings > Setup; verify model picker rows show fit suffixes, Download uses the selected row, license prompts appear before encumbered fetches, and dest-exists blocks re-fetch"
 manual_gate "nine-tab-settings-walkthrough" "walk all nine Settings panes: Setup, General, Personalization, Apps, Context, Emoji, Shortcuts, Statistics, and About; verify controls fit, reflect current state, and live-apply where documented"
+manual_gate "caret-marker-chromium-forks-calibration" "on a granted desktop, type in Brave, Edge, and Vivaldi; confirm whether each ghost lands one line low before adding any bundle prefix to RECT_IS_LINE_BUNDLE_PREFIXES"
+manual_gate "caret-marker-chrome-marker" "focus a Google Chrome textarea or content-editable field; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics"
+manual_gate "caret-marker-chromium-marker" "focus a Chromium build textarea or content-editable field; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics"
+manual_gate "caret-marker-electron-marker" "focus an Electron app text field such as VS Code; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics"
 manual_gate "encrypted-memory-all-monitored-live" "remaining residual after 2026-06-17 TextEdit and Chrome product-loop proofs: confirm secure-input, snoozed policy transition, and volatile-pid cases add no rows"
 manual_gate "grammar-fix-textedit-look" "launch compme with COMPME_GRAMMAR_FIX=1 plus COMPME_GRAMMAR_CHECK_KEY and COMPME_GRAMMAR_ACCEPT_KEY; in TextEdit verify 'teh' shows underline/banner, accept replaces exactly, and caret move/edit stales the correction"
 run_input_monitoring_revoked_carbon_gate

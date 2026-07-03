@@ -130,6 +130,23 @@ CASK
   grep -q 'version "1.2.3"' "$malformed"
   grep -q 'example.invalid/old.zip' "$malformed"
 
+  extra_arg="$tmp/extra-arg.rb"
+  cat >"$extra_arg" <<'CASK'
+cask "compme" do
+  version "1.2.3"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  url "https://example.invalid/old.zip"
+end
+CASK
+  extra_arg_golden="$tmp/extra-arg.golden"
+  cp "$extra_arg" "$extra_arg_golden"
+  if COMPME_CASK_PATH="$extra_arg" COMPME_CASK_ARTIFACT="$artifact" "$0" v9.8.7 unexpected-extra >"$tmp/extra-arg.log" 2>&1; then
+    echo "extra positional arg unexpectedly passed" >&2
+    return 1
+  fi
+  grep -q 'usage: update-cask.sh' "$tmp/extra-arg.log"
+  cmp "$extra_arg" "$extra_arg_golden"
+
   no_check="$tmp/no-check.rb"
   cat >"$no_check" <<'CASK'
 cask "compme" do
@@ -193,8 +210,17 @@ CASK
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+  if [ "$#" -ne 1 ]; then
+    usage
+    exit 2
+  fi
   run_self_test
   exit 0
+fi
+
+if [ "$#" -ne 1 ]; then
+  usage
+  exit 2
 fi
 
 raw="${1:-}"

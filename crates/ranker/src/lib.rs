@@ -51,11 +51,19 @@ pub fn truncate_at_sentence_end(text: &str) -> &str {
         if matches!(ch, '.' | '!' | '?') {
             let next = bytes.get(index + ch.len_utf8());
             if next.is_none_or(|b| b.is_ascii_whitespace()) {
+                if ch == '.' && is_common_abbreviation_period(text, index) {
+                    continue;
+                }
                 return &text[..index + ch.len_utf8()];
             }
         }
     }
     text
+}
+
+fn is_common_abbreviation_period(text: &str, period_index: usize) -> bool {
+    let prefix = text[..period_index + 1].to_ascii_lowercase();
+    ["e.g.", "i.e."].iter().any(|abbr| prefix.ends_with(abbr))
 }
 
 /// Drop a trailing run of `candidate` words that the user already has to the
@@ -409,11 +417,12 @@ mod tests {
     }
 
     #[test]
-    fn truncate_at_sentence_end_cuts_abbreviation_period_known_limitation() {
-        // A period+space is treated as a sentence end, so abbreviations like
-        // "e.g." are cut. Acceptable for a dictionary-free heuristic; the model
-        // rarely opens an inline completion with one.
-        assert_eq!(truncate_at_sentence_end("e.g. this"), "e.g.");
+    fn truncate_at_sentence_end_keeps_common_abbreviations() {
+        // The public contract calls out `e.g.` as a non-boundary. Keep common
+        // multi-period abbreviations whole when the final period is followed by
+        // whitespace.
+        assert_eq!(truncate_at_sentence_end("e.g. this"), "e.g. this");
+        assert_eq!(truncate_at_sentence_end("i.e. this"), "i.e. this");
     }
 
     #[test]

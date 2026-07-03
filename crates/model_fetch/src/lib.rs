@@ -949,14 +949,16 @@ mod tests {
             .borrow()
             .first()
             .expect("a resumed download still reports at least one chunk");
+        assert_eq!(
+            first.1,
+            Some(10),
+            "resumed progress must keep reporting the full body length"
+        );
         assert!(
-            first.0 >= 4,
-            "first progress event must start at the resume offset (>= existing 4), got {}",
+            first.0 > 4,
+            "first progress event must include the resume offset plus newly written bytes, got {}",
             first.0
         );
-        // Stronger: it must NOT report from zero — the resume offset is baked
-        // into the running counter before the first chunk lands.
-        assert_ne!(first.0, 0, "a resumed download must never report written=0");
         let _ = std::fs::remove_file(&dest);
     }
 

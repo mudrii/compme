@@ -33,38 +33,78 @@ tree_for() {
   fi
 }
 
+check_non_macos_tree() {
+  label="$1"
+  tree="$2"
+  assert_contains "$label" "$tree" 'llama-cpp-2 feature "dynamic-backends"' || return 1
+  assert_contains "$label" "$tree" 'llama-cpp-2 feature "vulkan"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "metal"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "default"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "openmp"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "android"' || return 1
+  echo "model_client feature check passed: $label"
+}
+
 check_non_macos_target() {
   label="$1"
   target="$2"
   tree="$(tree_for "$target")"
-  assert_contains "$label" "$tree" 'llama-cpp-2 feature "dynamic-backends"'
-  assert_contains "$label" "$tree" 'llama-cpp-2 feature "vulkan"'
-  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "metal"'
-  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "default"'
-  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "openmp"'
-  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "android"'
+  check_non_macos_tree "$label" "$tree"
+}
+
+check_macos_tree() {
+  label="$1"
+  tree="$2"
+  assert_contains "$label" "$tree" 'llama-cpp-2 feature "metal"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "dynamic-backends"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "vulkan"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "default"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "openmp"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "android"' || return 1
   echo "model_client feature check passed: $label"
 }
 
 check_spike_macos_features() {
   tree="$(cd tools/spike && cargo tree -e features)"
-  assert_contains "spike macOS" "$tree" 'llama-cpp-2 feature "metal"'
-  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "dynamic-backends"'
-  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "vulkan"'
-  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "default"'
-  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "openmp"'
-  assert_not_contains "spike macOS" "$tree" 'llama-cpp-2 feature "android"'
-  echo "model_client feature check passed: spike macOS"
+  check_macos_tree "spike macOS" "$tree"
 }
+
+run_self_test() {
+  macos_tree='llama-cpp-2 feature "metal"'
+  non_macos_tree='llama-cpp-2 feature "dynamic-backends"
+llama-cpp-2 feature "vulkan"'
+
+  check_macos_tree "self-test macOS" "$macos_tree" >/dev/null
+  check_non_macos_tree "self-test non-macOS" "$non_macos_tree" >/dev/null
+
+  macos_with_default="$(printf '%s\n%s\n' "$macos_tree" 'llama-cpp-2 feature "default"')"
+  non_macos_with_metal="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "metal"')"
+
+  if check_macos_tree "self-test macOS forbidden default" "$macos_with_default" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: macOS default feature passed" >&2
+    return 1
+  fi
+  if check_non_macos_tree "self-test non-macOS missing vulkan" 'llama-cpp-2 feature "dynamic-backends"' >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: missing Vulkan feature passed" >&2
+    return 1
+  fi
+  if check_non_macos_tree "self-test non-macOS forbidden metal" "$non_macos_with_metal" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: non-macOS Metal feature passed" >&2
+    return 1
+  fi
+
+  echo "Self-test passed"
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  run_self_test
+  exit 0
+fi
 
 host_triple="$(rustc -vV | awk '/^host:/ { print $2 }')"
 if [[ "$host_triple" == *apple-darwin ]]; then
   host_tree="$(tree_for host)"
-  assert_contains "host macOS" "$host_tree" 'llama-cpp-2 feature "metal"'
-  assert_not_contains "host macOS" "$host_tree" 'llama-cpp-2 feature "dynamic-backends"'
-  assert_not_contains "host macOS" "$host_tree" 'llama-cpp-2 feature "vulkan"'
-  assert_not_contains "host macOS" "$host_tree" 'llama-cpp-2 feature "default"'
-  echo "model_client feature check passed: host macOS"
+  check_macos_tree "host macOS" "$host_tree"
   check_spike_macos_features
 else
   echo "model_client feature check skipped: host is $host_triple, not macOS"

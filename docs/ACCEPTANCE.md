@@ -586,6 +586,10 @@ Exact runner-emitted manual gate IDs:
 - `shortcuts-recorder-look`
 - `setup-model-picker-look`
 - `nine-tab-settings-walkthrough`
+- `caret-marker-chromium-forks-calibration`
+- `caret-marker-chrome-marker`
+- `caret-marker-chromium-marker`
+- `caret-marker-electron-marker`
 - `encrypted-memory-all-monitored-live`
 - `grammar-fix-textedit-look`
 - `input-monitoring-revoked-carbon-accept`

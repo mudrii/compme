@@ -584,8 +584,9 @@ pub fn terse_continuation_prompt(prefix: &str) -> String {
 /// terse hint and intentionally stays single-line for easy diagnostics.
 pub fn grammar_fix_prompt(word: &str, left_ctx: &str) -> String {
     let one_line_ctx = left_ctx.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one_line_word = word.split_whitespace().collect::<Vec<_>>().join(" ");
     format!(
-        "Correct one word only. Context: {one_line_ctx} Word: {word} Return only the corrected word, or the original word if already correct."
+        "Correct one word only. Context: {one_line_ctx} Word: {one_line_word} Return only the corrected word, or the original word if already correct."
     )
 }
 
@@ -622,6 +623,24 @@ mod grammar_prompt_tests {
             "runs of whitespace must collapse to single spaces: {prompt:?}"
         );
         assert!(prompt.contains("teh"));
+    }
+
+    #[test]
+    fn grammar_fix_prompt_collapses_multiline_and_tabbed_word_to_one_line() {
+        let prompt = grammar_fix_prompt("teh\n\tword", "I typed");
+
+        assert!(
+            !prompt.contains('\n'),
+            "word must stay single-line: {prompt:?}"
+        );
+        assert!(
+            !prompt.contains('\t'),
+            "word tabs must collapse: {prompt:?}"
+        );
+        assert!(
+            prompt.contains("Word: teh word Return only"),
+            "word whitespace must collapse to single spaces: {prompt:?}"
+        );
     }
 }
 
