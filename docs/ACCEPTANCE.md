@@ -524,8 +524,8 @@ A quick LOOK pass over all nine panes:
 - **General** — the master Enabled switch (the same atomic as the tray
   checkmark) plus autocorrect / trailing-space / Labs mid-line switches; flips
   live-apply and persist.
-- **Personalization** — the enable switch, a strength slider, and editors for the
-  global steering instructions and sender identity (name / email), driven by the
+- **Personalization** — a strength popup plus editors for the global steering
+  instructions and sender identity (name / email), driven by the
   `PersonalizationEdit` enum; edits live-apply and persist. (Pane builds;
   per-app/per-domain instruction editing is a follow-up.)
 - **Apps** — per-app recorded-input counts from the encrypted memory store;
@@ -582,6 +582,10 @@ Exact runner-emitted manual gate IDs:
 
 - `apps-policy-toggle-look`
 - `personalization-pane-look`
+- `menu-bar-icon-look`
+- `shortcuts-recorder-look`
+- `setup-model-picker-look`
+- `nine-tab-settings-walkthrough`
 - `encrypted-memory-all-monitored-live`
 - `grammar-fix-textedit-look`
 - `input-monitoring-revoked-carbon-accept`

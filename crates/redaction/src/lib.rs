@@ -57,13 +57,13 @@ fn looks_high_entropy(token: &str) -> bool {
 }
 
 /// Matches a *maximal* run of ASCII digits optionally interleaved with the card
-/// separators (whitespace, dash, no-break space). The 13–19-digit Luhn windowing
+/// separators (whitespace, dash, dot, comma, no-break space). The 13–19-digit Luhn windowing
 /// happens inside the run (`redact_card_run`) so two cards separated only by a
 /// separator are each detected, rather than a greedy span straddling the card
 /// boundary and failing Luhn over the merged digits (which leaked both PANs).
 fn card_run_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\d(?:[\s\u{00a0}-]*\d)*").expect("card run regex"))
+    RE.get_or_init(|| Regex::new(r"\d(?:[\s\u{00a0}.,-]*\d)*").expect("card run regex"))
 }
 
 /// Redact every Luhn-valid 13–19-digit window inside one digit/separator run by
@@ -135,7 +135,7 @@ fn credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|[^\s,;&]+)"#,
+        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("credential assignment regex")
     })
@@ -318,29 +318,16 @@ mod tests {
     }
 
     #[test]
-    fn unterminated_quote_credential_value_stops_at_whitespace() {
-        // The credential value pattern is `("[^"]*"|'[^']*'|[^\s,;&]+)`. A value
-        // opened with a quote but never closed does NOT match the quoted arm
-        // (no closing quote), so it falls to the bare `[^\s,;&]+` arm, which
-        // stops at the first space. The opening-quote-plus-first-word is
-        // redacted; any tail after the space survives. This pins that
-        // known-limitation so a regex change to the value pattern is a
-        // deliberate decision, not a silent leak regression.
+    fn unterminated_quote_credential_value_redacts_tail_to_safe_delimiter() {
         let out = redact("password=\"hunter2 trailing secret");
         assert!(
             out.starts_with("password=[redacted-secret]"),
-            "opening-quoted first word must be redacted, got: {out}"
+            "opening-quoted value must be redacted, got: {out}"
         );
+        assert!(!out.contains("hunter2"), "secret first word leaked: {out}");
         assert!(
-            !out.contains("hunter2"),
-            "the secret's first word must be gone, got: {out}"
-        );
-        // Documented gap: the post-space tail is NOT part of the credential
-        // value token and remains verbatim. If a future edit makes the value
-        // arm greedy across spaces, update this assertion consciously.
-        assert!(
-            out.contains("trailing secret"),
-            "post-space tail is outside the value token today, got: {out}"
+            !out.contains("trailing secret"),
+            "secret tail leaked: {out}"
         );
     }
 
@@ -384,23 +371,17 @@ mod tests {
     }
 
     #[test]
-    fn dot_and_comma_are_not_card_separators() {
-        // card_run_re only treats whitespace, NBSP, and dash as digit separators
-        // (`\d(?:[\s\u{00a0}-]*\d)*`). A PAN written with `.` separators is parsed
-        // as four independent <13-digit runs, none of which reaches the 13-digit
-        // Luhn floor, so it is NOT redacted as a card. (4242 4242 4242 4242 IS a
-        // Luhn-valid PAN when space-separated — proven elsewhere — so the only
-        // thing sparing it here is the separator class.)
+    fn dot_and_comma_are_card_separators() {
         let dotted = redact("card 4242.4242.4242.4242 end");
         assert!(
-            !dotted.contains("[redacted-card]"),
-            "dot-separated groups are each <13 digits: {dotted:?}"
+            dotted.contains("[redacted-card]"),
+            "dot-separated PAN must redact: {dotted:?}"
         );
-        assert!(dotted.contains("4242.4242.4242.4242"), "got {dotted:?}");
-        // Comma separators behave the same way.
+        assert!(!dotted.contains("4242.4242.4242.4242"), "got {dotted:?}");
+
         let comma = redact("card 4242,4242,4242,4242 end");
-        assert!(!comma.contains("[redacted-card]"), "got {comma:?}");
-        assert!(comma.contains("4242,4242,4242,4242"), "got {comma:?}");
+        assert!(comma.contains("[redacted-card]"), "got {comma:?}");
+        assert!(!comma.contains("4242,4242,4242,4242"), "got {comma:?}");
     }
 
     #[test]

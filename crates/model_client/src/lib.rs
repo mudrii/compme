@@ -597,7 +597,10 @@ mod grammar_prompt_tests {
     fn grammar_fix_prompt_is_single_line_and_includes_word_and_left_context() {
         let prompt = grammar_fix_prompt("teh", "I typed");
 
-        assert_eq!(prompt, grammar_fix_prompt("teh", "I typed"));
+        assert_eq!(
+            prompt,
+            "Correct one word only. Context: I typed Word: teh Return only the corrected word, or the original word if already correct."
+        );
         assert!(prompt.contains("teh"));
         assert!(prompt.contains("I typed"));
         assert!(!prompt.contains('\n'), "{prompt:?}");
