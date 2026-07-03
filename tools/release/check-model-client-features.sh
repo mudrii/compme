@@ -4,6 +4,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$repo_root"
 
+usage() {
+  echo "usage: check-model-client-features.sh [--self-test]" >&2
+}
+
 assert_contains() {
   label="$1"
   haystack="$2"
@@ -97,8 +101,17 @@ llama-cpp-2 feature "vulkan"'
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+  if [ "$#" -ne 1 ]; then
+    usage
+    exit 2
+  fi
   run_self_test
   exit 0
+fi
+
+if [ "$#" -ne 0 ]; then
+  usage
+  exit 2
 fi
 
 host_triple="$(rustc -vV | awk '/^host:/ { print $2 }')"
