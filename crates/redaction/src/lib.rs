@@ -461,6 +461,7 @@ mod tests {
             "“password”: “hunter2”",
             "«api_key»: «short-dev-key»",
             "password “letmein” trailing",
+            "password [redacted-secret]}",
         ] {
             let once = redact(input);
             let twice = redact(&once);
@@ -493,6 +494,14 @@ mod tests {
         // (the idempotency contract this alternative exists for).
         let json = redact(r#"{"password": [redacted-secret]}"#);
         assert_eq!(json, r#"{"password": [redacted-secret]}"#);
+
+        // The placeholder shell itself is strict: a non-lowercase name or an
+        // empty name is NOT an existing placeholder and re-redacts whole, so
+        // a secret wrapped in a placeholder costume cannot ride through.
+        let cased = redact("password=[redacted-Abc123]");
+        assert_eq!(cased, "password=[redacted-secret]");
+        assert!(!cased.contains("Abc123"));
+        assert_eq!(redact("password=[redacted-]"), "password=[redacted-secret]");
     }
 
     #[test]

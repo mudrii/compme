@@ -239,6 +239,17 @@ Recent: recent\n"
     }
 
     #[test]
+    fn context_block_pre_bound_keeps_the_true_tail_past_4x_sources() {
+        // Source far beyond the 4x pre-bound window, with a collapsible
+        // whitespace run inside the raw tail: the 4x slack must still yield
+        // the same collapsed tail a full collapse would (a 1x pre-bound would
+        // collapse the raw "    z" tail to just "z" and lose "ef ").
+        let src = format!("{}abcdef    z", "x".repeat(100));
+        let block = build_context_block(Some(&src), None, &[], 4);
+        assert!(block.contains("Clipboard: ef z"), "got {block:?}");
+    }
+
+    #[test]
     fn context_block_keeps_source_whole_when_len_equals_max() {
         // tail_chars returns the source unchanged when its scalar count is <= max
         // (the `count <= max` early return). Pin the exact boundary: a 4-char

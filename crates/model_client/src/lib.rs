@@ -1067,8 +1067,18 @@ mod tests {
         }));
         assert!(poisoner.is_err());
         assert!(model.job_tx.lock().is_err(), "lock should be poisoned");
-        model.close_worker(); // must return, not hang
-        assert!(model.handle.is_none());
+        // Run close_worker off-thread with a timeout: the regression mode
+        // (skip-on-poison) is a permanent hang on join(), which would stall
+        // the whole suite rather than fail this test.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            model.close_worker();
+            let _ = done_tx.send(model.handle.is_none());
+        });
+        let handle_taken = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("close_worker hung on a poisoned job_tx");
+        assert!(handle_taken);
     }
 
     #[test]
