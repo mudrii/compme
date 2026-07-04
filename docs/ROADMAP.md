@@ -1,12 +1,12 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-02 (Tier 5 grammar/spell-fix code-complete status sync) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1624 workspace tests; spike separate)
+> **Last updated:** 2026-07-04 (plan/docs review after release-gate hardening) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1624 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with `file:line` anchors verified 2026-06-15.
+> with symbol/function anchors re-reviewed 2026-07-04.
 
 ## Status legend
 
@@ -136,96 +136,70 @@ instruction maps, with the settings design deferring the editing UI.
   `cargo test -p app personalization_skips_ambiguous_per_target_instruction_keys`,
   and `cargo test -p app per_domain_personalization_uses_request_domain`.
 
-**Remaining:** no code/test gap for instruction steering. The user-facing
-settings editor for these values remains part of Tier 3.2.
+**Remaining:** no code/test gap for instruction steering. The global
+Personalization pane editor has shipped under Tier 3.2; a per-app/per-domain
+instruction editor remains a future enhancement, not a runtime steering gap.
 
 ---
 
-## Tier 3 — A3 settings-UI residuals (medium, build-then-LOOK)
+## Tier 3 — A3 settings UI (code-complete; live LOOK remaining)
 
-Per `2026-06-10-a3-settings-ui-design.md`. The window ships as 9 tabs
-(Setup/General/Personalization/Apps/Context/Emoji/Shortcuts/Statistics/About via NSTabView). Backing
-config + crates exist for the remaining panes; what's missing is narrower UI
-surface: Apps editing rows, a Personalization pane (mode/strength/instructions),
-the Statistics metric picker, the Context appearance sub-toggle, and the new
-Shortcuts hotkeys.
+Per `2026-06-10-a3-settings-ui-design.md`. The settings window now ships as 9
+tabs (Setup, General, Personalization, Apps, Context, Emoji, Shortcuts,
+Statistics, About). The macOS-buildable Tier 3 controls have landed in code and
+deterministic tests; the remaining work is the live visual/physical LOOK pass
+tracked in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md), plus optional UX
+enhancements explicitly called out below.
 
-> **Autonomous-loop status (2026-06-15):** the cleanly loop-doable Tier-3
-> controls have shipped — Statistics **range** + **grouping** pickers (3.3) and
-> the Emoji **gender** picker (3.2), plus the pure foundations for the Shortcuts
-> hotkeys (3.4) and Statistics chart model. The **remaining** items are
-> design-gated or need a runtime-application refactor, not clean FFI-over-pure-layer
-> (see each below) — they are handed off rather than blind-built. Live UX gates
-> for what shipped are in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md).
+### 3.1 🔬 Per-app override editing rows (Apps pane) — code complete, LOOK pending
+- **Status:** the Apps pane ships a compact one-line policy grid. Each recorded
+  app row exposes enable, Tab-disable, mid-line, autocorrect, and grammar-fix
+  policy checkboxes plus a delete action. The run loop resolves row/field edits
+  into `prefs::AppPolicyField` updates and retracts visible suggestions when a
+  policy edge makes the focused field ineligible.
+- **Remaining:** visual LOOK only: column readability, name truncation, and
+  toggling behavior in a real settings window. A manual "add app" control is a
+  future convenience, not a blocking residual for the current Apps-grid scope;
+  rows are created from observed/recorded apps.
+- Spec: `a3-settings-ui-design.md` Phase S2 "App Settings pane — largest".
 
-### 3.1 ☐ Per-app override *editing* rows (Apps pane) — the largest residual pane
-- **Status:** Apps pane now ships a **compact one-line policy grid** (see
-  macOS-plan item #3) — each per-app row carries per-row enable / mid-line /
-  autocorrect / Tab-disable checkboxes (`checkbox_rect`/`col_header_rect` +
-  `compose_apps_policy_bits`, `settings_window.rs` `apps_layout`) alongside the
-  Delete button gated by `apps_row_is_deletable`. **Remaining residual:** no
-  add-app control (apps still appear only after first recorded input).
-- **Backing exists:** `prefs` per-app override fields + `tab_disabled` tap
-  suppression are live; only the editing UI is missing.
-- Spec: `a3-settings-ui-design.md:50,78` (Phase S2 "App Settings pane — largest").
+### 3.2 🔬 Dedicated Personalization / Context / Emoji panes — code complete, LOOK pending
+- **Context:** the dedicated Context tab controls clipboard and screen-OCR
+  prompt context. The run loop initializes the switches from config, persists
+  edits, clears disabled context cells, and gates submissions by the current
+  values.
+- **Emoji:** the Emoji tab controls enable, skin tone, and gender preferences.
+  The gender picker is implemented and unit-tested, so the Emoji pane is complete
+  for the current scope.
+- **Personalization:** the Personalization tab now edits global instructions,
+  sender name/email, and the 6-stop steering strength. Edits update the live
+  inference worker profile through `set_profile` and persist through the same
+  settings path. Memory storage mode remains governed by memory config and UI
+  controls elsewhere; it is not part of the personalization profile.
+- **Remaining:** visual LOOK only: the pane layout, multiline instructions field
+  behavior, sender/strength controls, and visible steering effect in a live app.
+  A Context appearance sub-toggle remains a future visual option, not a current
+  blocking item.
 
-### 3.2 ◑ Dedicated Personalization / Context / Emoji panes
-- **Status:** Context now exists as a dedicated settings tab with clipboard and
-  screen-OCR context switches (`pane_titles` includes `Context`;
-  `settings_window.rs` renders the two switch rows and writes
-  `context_clipboard` / `context_screen` atomics; `run_loop.rs` initializes them
-  from config, persists switch edges, clears disabled context cells, and gates
-  screen submissions by the current config). General
-  carries 4 switches —
-  `general_enabled`, `labs_midline` (mid-line, moved here from Labs),
-  `general_autocorrect`, `general_trailing_space` (the General pane block,
-  `settings_window.rs:1020-1142`).
-  Emoji now exists as a dedicated tab with a live `COMPME_EMOJI` enable switch
-  `COMPME_EMOJI_SKIN_TONE` popup:
-  `pane_titles` includes `Emoji`; `settings_window.rs` renders the rows and
-  writes `emoji_enabled` / `emoji_skin_tone_index`; `run_loop.rs` initializes
-  them from config and persists switch and skin-tone edges.
-- **Emoji gender ✅ DONE (`6366f64`):** a `COMPME_EMOJI_GENDER` popup
-  (Neutral/Female/Male) below the skin-tone popup, mirroring the skin-tone
-  feature (`emoji_gender_index` + `handle_emoji_gender_change`, unit-tested). The
-  **Emoji pane is now complete** (enable + skin-tone + gender).
-- **Pending — Personalization pane (🔒 design/refactor-gated, NOT clean FFI):**
-  mode (AcceptedOnly/AllMonitored), 6-stop strength, instructions editor. Backing
-  is parsed at startup (`build_personalization`, `parse_storage_mode`), but the
-  `PersonalizationProfile` is **moved into the inference worker** at startup
-  (`inference.rs`), so a *runtime-applying* control needs shared-mutable-profile
-  threading (a refactor + design choice); **mode** changes also need encrypted-store
-  open/close lifecycle; the **instructions** editor is a novel text-input + persist-timing
-  UX decision. Persist-only "applies next launch" is possible but is itself a UX
-  call. Context appearance sub-toggle remains deferred. Spec:
-  `a3-settings-ui-design.md:46,47,48,73`.
+### 3.3 ✅ Statistics range / group / metric controls — current scope complete
+- **Range picker ✅:** Last 7/14/30 days drives the bucket span.
+- **Grouping picker ✅:** Daily/Weekly re-buckets rows through the shared stats
+  grouping path.
+- **Metric selector closed by design:** the pane already renders separate
+  sparkline rows for shown, accepted, and words. A single metric selector would
+  be a redesign, not a missing control. The pure metric selection model remains
+  available if that redesign is chosen later.
 
-### 3.3 ◑ Statistics range / group / metric controls — range + group DONE
-- **Range picker ✅ DONE (`48f7fc5`):** an NSPopUpButton (Last 7/14/30 days)
-  drives the `daily_buckets` span via `StatRange::from_index().days()`.
-- **Grouping picker ✅ DONE (`3722a1d`):** a second popup (Daily/Weekly)
-  re-buckets the rows via `stats::group_buckets`; `metric_series` was refactored
-  onto it so the weekly chunk-of-7 rule lives once. Both pickers are bare
-  self-describing popups on the header row.
-- **Metric picker — deferred (design):** the pane renders one sparkline row per
-  metric (shown/accepted/words) already, so a metric *selector* implies a
-  single-metric-chart redesign — arguably already satisfied by the 3-row layout.
-  The pure selection model (`StatMetric::{ALL,label,from_index}` + `metric_series`)
-  is shipped and unit-tested, ready if a redesign is chosen.
-- Spec: `a3-settings-ui-design.md:52`.
-
-### 3.4 ◑ Shortcuts pane — recorder + parse foundation done; new hotkeys gated
-- **Status:** ✅ `KeyRecorderField` rows + live rebind + modifier-combo capture
-  (⌃⌥⇧⌘) are DONE and live-validated. **Parse foundation ✅ DONE (`52f1bc6`):**
-  `ShortcutBindings::from_config` parses `COMPME_FORCE_ACTIVATE_KEY` /
-  `_TOGGLE_APP_KEY` / `_TOGGLE_GLOBAL_KEY` (+ internal-collision check), unit-tested.
-- **Pending — registration + actions (🔒 design/novel-FFI-gated):** the three
-  hotkeys need **always-on** Carbon registration (a new lifecycle — accept keys
-  are *transient*, armed only while a suggestion shows) and on-fire behavior.
-  toggle-app / toggle-global mirror the existing tray disable submenus, but
-  **force-activate's semantics ("force a completion now") are an unresolved design
-  decision**, and persistent global-hotkey registration + fire-handling is novel
-  FFI requiring live validation. Spec: `a3-settings-ui-design.md:49,75`.
+### 3.4 🔬 Shortcuts pane and always-on hotkeys — code complete, physical LOOK pending
+- **Status:** recorder rows, live rebind, modifier-combo capture, config parsing,
+  internal collision checks, process-lifetime Carbon registration, and run-loop
+  dispatch are implemented for force-activate, per-app toggle, and global toggle.
+  Toggle-app/global mirror the tray policy paths. Force-activate re-shows the
+  currently held suggestion; it deliberately does not start fresh inference.
+- **Remaining:** physical keypress LOOK only: verify configured force/toggle
+  shortcuts fire in a granted macOS session, update the focused app/global policy
+  as expected, and that force-activate behaves as the held-suggestion re-show
+  command.
 
 ### 3.5 ☐ Emoji `includeVanillaVariants` (deferred by design)
 - Deferred: an alternate vanilla glyph has no display path in the single-ghost

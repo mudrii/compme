@@ -222,9 +222,13 @@ comma-separated bundle ids.
 | `COMPME_EMOJI_GENDER` | Preferred gender (neutral / female / male) for emoji completion. |
 | `COMPME_ACCEPT_WORD_KEY` | Word-accept key as a `modifier+keycode` string (e.g. `48` or `shift+48`); default Tab (48). Applies at relaunch. |
 | `COMPME_ACCEPT_FULL_KEY` | Full-accept key as a `modifier+keycode` string (e.g. `50` or `ctrl+shift+50`); default grave/backtick (50). |
+| `COMPME_FORCE_ACTIVATE_KEY` | Always-on force-show shortcut as a `modifier+keycode` string (alias: `COMPME_FORCE_ACTIVATE`); requests a suggestion even when idle. |
+| `COMPME_TOGGLE_APP_KEY` | Always-on shortcut toggling suggestions for the focused app. |
+| `COMPME_TOGGLE_GLOBAL_KEY` | Always-on shortcut toggling the global suggestion switch. |
 | `COMPME_EXCLUDED_APPS` | Comma-separated bundle ids excluded from completion (persisted by tray/deep-link/config today; Apps editing UI pending). |
 | `COMPME_EXCLUDED_DOMAINS` | Comma-separated browser hosts excluded from completion. |
-| `COMPME_ENABLED_APPS` / `COMPME_DISABLED_APPS` | Per-app enable / Tab-disable overrides. |
+| `COMPME_ENABLED_APPS` / `COMPME_DISABLED_APPS` | Per-app suggestion enable / disable overrides. |
+| `COMPME_TAB_DISABLED_APPS` | Comma-separated bundle ids where the Tab word-accept key is disabled (Tab types normally there). |
 | `COMPME_NO_COLLECT_APPS` | Apps for which input is never collected into typing memory. |
 | `COMPME_CLIPBOARD_CONTEXT` | Opt-in: include clipboard text in the context block. |
 | `COMPME_SCREEN_CONTEXT` | Opt-in: include screen text in the context block. |

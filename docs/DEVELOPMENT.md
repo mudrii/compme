@@ -21,7 +21,7 @@ unreleased workspace behavior unless a future release process adds tags, release
 notes, or packaged artifacts.
 
 The root `Cargo.toml` is a Rust workspace with 25 members
-([updated 2026-07-02] — keep in sync with `Cargo.toml`):
+([verified 2026-07-04] — keep in sync with `Cargo.toml`):
 
 - `crates/platform` — cross-platform adapter contract
 - `crates/context`, `crates/ranker`, `crates/engine_core`, `crates/engine` — suggestion pipeline

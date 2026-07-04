@@ -135,7 +135,7 @@ fn credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)"#,
+        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["']?\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("credential assignment regex")
     })
@@ -145,7 +145,7 @@ fn whitespace_credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b\s+)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)|\b(authorization\b\s+bearer\s+)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)"#,
+            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["']?\s+)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)|\b(authorization\b["']?\s+bearer\s+)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("whitespace credential regex")
     })
@@ -357,6 +357,20 @@ mod tests {
         assert!(!out.contains("foo bar baz"));
         assert!(!out.contains("quoted dev key"));
         assert!(!out.contains("space bearer"));
+    }
+
+    #[test]
+    fn redacts_json_quoted_credential_keys() {
+        // JSON puts a closing quote between the key and the colon
+        // (`"password": "v"`); the key regexes must tolerate it or short
+        // secrets in pasted JSON blobs survive redaction verbatim.
+        let out = redact(r#"{"password": "hunter2", "api_key": "short-dev-key"}"#);
+        assert!(!out.contains("hunter2"), "JSON password leaked: {out}");
+        assert!(!out.contains("short-dev-key"), "JSON api_key leaked: {out}");
+        assert!(out.contains("[redacted-secret]"));
+
+        let single = redact("'token': 'abc-def'");
+        assert!(!single.contains("abc-def"), "quoted token leaked: {single}");
     }
 
     #[test]
