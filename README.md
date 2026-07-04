@@ -222,7 +222,7 @@ comma-separated bundle ids.
 | `COMPME_EMOJI_GENDER` | Preferred gender (neutral / female / male) for emoji completion. |
 | `COMPME_ACCEPT_WORD_KEY` | Word-accept key as a `modifier+keycode` string (e.g. `48` or `shift+48`); default Tab (48). Applies at relaunch. |
 | `COMPME_ACCEPT_FULL_KEY` | Full-accept key as a `modifier+keycode` string (e.g. `50` or `ctrl+shift+50`); default grave/backtick (50). |
-| `COMPME_FORCE_ACTIVATE_KEY` | Always-on force-show shortcut as a `modifier+keycode` string (alias: `COMPME_FORCE_ACTIVATE`); requests a suggestion even when idle. |
+| `COMPME_FORCE_ACTIVATE_KEY` | Always-on shortcut re-showing the currently held suggestion (alias: `COMPME_FORCE_ACTIVATE`); no fresh inference, no-op when nothing is pending. |
 | `COMPME_TOGGLE_APP_KEY` | Always-on shortcut toggling suggestions for the focused app. |
 | `COMPME_TOGGLE_GLOBAL_KEY` | Always-on shortcut toggling the global suggestion switch. |
 | `COMPME_EXCLUDED_APPS` | Comma-separated bundle ids excluded from completion (persisted by tray/deep-link/config today; Apps editing UI pending). |

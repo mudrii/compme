@@ -135,7 +135,7 @@ fn credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["']?\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)"#,
+        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("credential assignment regex")
     })
@@ -145,7 +145,7 @@ fn whitespace_credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["']?\s+)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)|\b(authorization\b["']?\s+bearer\s+)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)"#,
+            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("whitespace credential regex")
     })
@@ -371,6 +371,27 @@ mod tests {
 
         let single = redact("'token': 'abc-def'");
         assert!(!single.contains("abc-def"), "quoted token leaked: {single}");
+    }
+
+    #[test]
+    fn redacts_smart_quoted_credential_keys_and_values() {
+        // macOS substitutes smart quotes by default in Notes/Mail/Pages, so
+        // pasted credential snippets often arrive curly-quoted; the key and
+        // value quote classes must both tolerate the typographic glyphs.
+        let out = redact("“password”: “hunter2”");
+        assert!(!out.contains("hunter2"), "smart-quoted password leaked: {out}");
+
+        let mixed = redact("password: “hunter2 trailing”");
+        assert!(
+            !mixed.contains("hunter2") && !mixed.contains("trailing"),
+            "curly-quoted value with space leaked: {mixed}"
+        );
+
+        let guillemet = redact("«api_key»: «short-dev-key»");
+        assert!(
+            !guillemet.contains("short-dev-key"),
+            "guillemet-quoted api_key leaked: {guillemet}"
+        );
     }
 
     #[test]
