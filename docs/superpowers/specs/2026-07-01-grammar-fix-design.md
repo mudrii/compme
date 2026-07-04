@@ -94,6 +94,10 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   `terse_continuation_prompt` (:578). Instruction-style prompt that asks for the
   single corrected word only (or the word unchanged), with the left context for
   disambiguation. Keep it terse; the caller uses a small `max_tokens`.
+  (Hardened 2026-07-04: the host tail-bounds `left_ctx` to
+  `GRAMMAR_LEFT_CTX_CHARS` = 400 scalars before building the request — the AX
+  field value is unbounded input. Like the completion prompt, `left_ctx` is raw
+  field text sent only to the local model; it is never logged or persisted raw.)
 - `crates/grammar/src/lib.rs`: add
   `pub fn vet_correction(original: &str, model_output: &str) -> Option<String>`.
   Pure post-filter, the safety gate for D1. Returns `Some(correction)` only if the
@@ -296,6 +300,10 @@ the whole flow is exercised with the fake model + fake overlay.
     `AcceptArm::Correction { grammar: true }`. In correction mode, Word/Full
     accept keys pass through and only the grammar-accept key is swallowed. In
     ghost mode, grammar-accept passes through.
+    **As built:** no `AcceptArm` enum was needed — correction-scoped dispatch
+    checks `binding == Some(AcceptBinding::GrammarAccept)` directly
+    (`platform_macos/src/lib.rs:3141-3153`); the swallow/pass behavior matches
+    this design and is pinned by tests.
 - `crates/app/src/run_loop.rs`: `Config` gets `grammar_check_key: Option<String>`
   and `grammar_accept_key: Option<(i64,u32)>`, parsed in `from_lookup` (:289-295)
   as `COMPME_GRAMMAR_CHECK_KEY` / `COMPME_GRAMMAR_ACCEPT_KEY`. Add the

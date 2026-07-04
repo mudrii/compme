@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-04 (plan/docs review after release-gate hardening) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1661 workspace tests; spike separate)
+> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1661 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -116,7 +116,7 @@ instruction maps, with the settings design deferring the editing UI.
   multiple apps/domains (`instruction_map_from_config` in `run_loop.rs`).
 - Inference now calls
   `profile.build_preamble(Some(&request.field.app), request.domain.as_deref())`
-  (`crates/app/src/inference.rs:304-307`), so resolved browser domains can
+  (`crates/app/src/inference.rs:344-347`), so resolved browser domains can
   activate per-domain steering.
 - The submit path reads the cached browser domain into `RequestLogContext`, and
   `submit_request_and_track` copies it onto the request before dispatch
@@ -147,8 +147,10 @@ instruction editor remains a future enhancement, not a runtime steering gap.
 Per `2026-06-10-a3-settings-ui-design.md`. The settings window now ships as 9
 tabs (Setup, General, Personalization, Apps, Context, Emoji, Shortcuts,
 Statistics, About). The macOS-buildable Tier 3 controls have landed in code and
-deterministic tests; the remaining work is the live visual/physical LOOK pass
-tracked in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md), plus optional UX
+deterministic tests; the remaining work is the live visual/physical LOOK pass —
+the authoritative pass/fail ledger is [`ACCEPTANCE.md`](ACCEPTANCE.md)'s
+Manual/Live Gate Ledger (13 runner-pinned gate IDs); detailed walkthroughs live
+in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md) — plus optional UX
 enhancements explicitly called out below.
 
 ### 3.1 🔬 Per-app override editing rows (Apps pane) — code complete, LOOK pending
@@ -169,8 +171,9 @@ enhancements explicitly called out below.
   edits, clears disabled context cells, and gates submissions by the current
   values.
 - **Emoji:** the Emoji tab controls enable, skin tone, and gender preferences.
-  The gender picker is implemented and unit-tested, so the Emoji pane is complete
-  for the current scope.
+  The gender picker is implemented and unit-tested, and its live LOOK closed
+  2026-06-17 — the Emoji pane is complete; remaining 3.2 LOOK is only the
+  Personalization and Context panes.
 - **Personalization:** the Personalization tab now edits global instructions,
   sender name/email, and the 6-stop steering strength. Edits update the live
   inference worker profile through `set_profile` and persist through the same
@@ -207,7 +210,7 @@ enhancements explicitly called out below.
   exists. Spec: `a3-settings-ui-design.md:64`.
 
 > **Corrected 2026-06-15:** the global disable submenu (For 1 Hour / Until
-> Relaunch / Always) is **✅ DONE** (`crates/platform_macos/src/tray.rs:238-246`,
+> Relaunch / Always) is **✅ DONE** (`crates/platform_macos/src/tray.rs:247-256`,
 > `DisableArm` `:53-59`; mapped through the `apply_global_disable` fn in
 > `run_loop.rs`, dispatched from the tray global-disable submenu handler
 > (symbol anchors — line numbers here drifted three times)). The older "NOT built — only flat Snooze-1h" note is
@@ -221,6 +224,11 @@ These are implemented to a deterministic/build-verified standard and (mostly)
 scripted-smoke-gated via `tools/acceptance/run-a2-compat-gates.sh`. They need a
 person at a granted macOS desktop, not new code. Sources:
 `2026-06-09-a2-parity-design.md §16`, `integration-phase-design.md`.
+Gate coverage note: only the AllMonitored row has a dedicated runner gate ID
+(`encrypted-memory-all-monitored-live`); the other residuals are covered by
+`run-a2-compat-gates.sh` smoke kinds and the folded settings LOOK gates
+(`personalization-pane-look`, `nine-tab-settings-walkthrough`) rather than
+per-row IDs.
 
 | Item | Status | Live residual |
 |---|---|---|
@@ -326,6 +334,10 @@ requires a granted macOS GUI session.
    (pure, next to `terse_continuation_prompt`) + a **grammar request kind** on
    `engine::CompletionRequest` and a corrected-word/range field on
    `CompletionOutcome`, routed through the existing worker/`recv_latest` loop.
+   `left_ctx` is tail-bounded to `GRAMMAR_LEFT_CTX_CHARS` (400 scalars,
+   `run_loop.rs:596` — the AX field value is unbounded input); the correction
+   range stays in full-field coordinates. Like the completion prompt, it is raw
+   field text sent only to the local model — never logged or persisted raw.
    Tight prompt: "return the corrected word only, or the word unchanged"; low
    `max_tokens`; **post-filter** the model output (reject multi-word / large-edit
    / meaning-changing responses; require small edit distance) so it can't rewrite
@@ -385,7 +397,7 @@ every adapter when the shared trait changes:
 | Surface | macOS (reference) | Windows | Linux |
 |---|---|---|---|
 | Global grammar-trigger hotkey | Carbon `RegisterEventHotKey` (`ShortcutBindings`, already built) | `RegisterHotKey` (Win32) | X11 `XGrabKey` / Wayland global-shortcuts portal |
-| Correction-scoped grammar-accept key | Carbon accept keymap with explicit `AcceptArm::Correction` / `AcceptArm::Ghost` modes | keyboard hook / `RegisterHotKey` | X11/Wayland key grab |
+| Correction-scoped grammar-accept key | Carbon accept keymap with correction-scoped `AcceptBinding::GrammarAccept` dispatch (no separate `AcceptArm` enum was needed) | keyboard hook / `RegisterHotKey` | X11/Wayland key grab |
 | Word rect + in-place replace | AX `kAXBoundsForRange` via `text_range_rect` + `insert_replacing_range` | UI Automation `TextPattern` `BoundingRectangles` + range `SetValue`/`SetText` strategy | AT-SPI2 `Text`/`EditableText`, or IME/synthetic fallback |
 | Underline + banner overlay | borderless `NSPanel` (`NativePanel`) | layered top-most window (`LayeredWindow`) | `wlr-layer-shell` (`LayerShell`) / override-redirect X11 (`OverrideRedirect`) |
 
@@ -428,7 +440,9 @@ physical trigger/accept interaction.
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is
-> Apple-ID-gated. See `docs/MANUAL-VALIDATION.md` for the live checklist.
+> Apple-ID-gated. The authoritative live-gate ledger is `docs/ACCEPTANCE.md`
+> (Manual/Live Gate Ledger); `docs/MANUAL-VALIDATION.md` carries the detailed
+> walkthroughs.
 
 **Directive: finish macOS first.** Cross-platform adapters (1.1) and distribution
 (1.2) stay parked until the macOS feature set is complete — both are externally

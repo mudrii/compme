@@ -107,6 +107,26 @@ invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visibl
       the live app, matching the unit test, before extending Chromium/Electron
       support claims.
 
-<!-- Future Tier-3 FFI items (group/metric pickers, Personalization controls,
-Apps editing rows, the 3.4 hotkey recorder rows + Carbon registration) append
-their LOOK gates below as they land. -->
+## Settings & runtime LOOK gates (runner-emitted)
+
+The authoritative pass/fail ledger for these is
+[`ACCEPTANCE.md`](ACCEPTANCE.md)'s Manual/Live Gate Ledger; the runner
+(`tools/acceptance/run-a1b-live-gates.sh`) emits each ID and its self-test pins
+the set. Walkthrough detail lives in the ledger entries.
+
+- [ ] `apps-policy-toggle-look` — Apps pane On/Tab/Mid/AC/GF columns render
+      without overlap; toggling Enabled + Grammar fix dismisses and persists.
+- [ ] `personalization-pane-look` — instructions/sender/strength edits commit
+      (multiline field) and visibly re-steer output without relaunch.
+- [ ] `shortcuts-recorder-look` — physical modifier-combo capture, live rebind,
+      persistence across reopen.
+- [ ] `nine-tab-settings-walkthrough` — all nine panes fit, hold state, and
+      live-apply.
+- [ ] `menu-bar-icon-look` — caret + double-chevron template icon renders
+      (text title only as fallback).
+- [ ] `setup-model-picker-look` — picker rows carry RAM verdicts; license gate
+      and dest-exists skip behave.
+- [ ] `encrypted-memory-all-monitored-live` — residual legs: secure-input
+      suppression, snoozed policy transition, volatile `pid:N` adds no rows.
+- [ ] `input-monitoring-revoked-carbon-accept` — accept keys still fire with
+      Input Monitoring revoked (Carbon path).
