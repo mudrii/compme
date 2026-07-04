@@ -131,9 +131,7 @@ codesign "${codesign_args[@]}" "$app"
 codesign --verify --strict "$app"
 
 # Register the bundle (and its compme:// scheme) with Launch Services.
-if [[ "${COMPME_BUNDLE_SKIP_LSREGISTER:-0}" != "1" ]]; then
-  "$lsregister" -f "$app"
-fi
+"$lsregister" -f "$app"
 
 echo "done: $app"
 echo "smoke: COMPME_RUN_MS=1500 \"$app/Contents/MacOS/compme\""
