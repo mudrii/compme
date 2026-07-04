@@ -2671,6 +2671,24 @@ mod tests {
     }
 
     #[test]
+    fn keycode_label_names_are_unique_across_known_keycodes() {
+        // The ~60-arm table is asserted by sample below; uniqueness closes the
+        // remaining mutation class — a transposed arm that aliases two
+        // keycodes to one label (e.g. 5 => "G" typo'd to "H").
+        let mut seen = std::collections::HashMap::new();
+        for code in 0..=127i64 {
+            let label = keycode_label(code);
+            if label == format!("key {code}") {
+                continue; // fallback, not a named arm
+            }
+            if let Some(prev) = seen.insert(label.clone(), code) {
+                panic!("label {label:?} maps from both keycode {prev} and {code}");
+            }
+        }
+        assert!(seen.len() > 50, "expected the full named table, got {}", seen.len());
+    }
+
+    #[test]
     fn keycode_label_names_known_keys_and_falls_back() {
         assert_eq!(keycode_label(48), "Tab");
         assert_eq!(keycode_label(50), "` (backtick)");

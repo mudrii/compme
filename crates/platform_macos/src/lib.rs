@@ -9735,6 +9735,28 @@ mod tests {
     }
 
     #[test]
+    fn overlay_label_frame_floors_a_tiny_box_at_one_point() {
+        // A degenerate box smaller than the 4pt insets must floor at 1pt, not
+        // go negative (a negative NSRect width/height is undefined AppKit
+        // territory).
+        let label = overlay_label_frame(OverlayFrame {
+            x: 0.0,
+            y: 0.0,
+            w: 2.0,
+            h: 2.0,
+        });
+        assert_eq!(
+            label,
+            OverlayFrame {
+                x: 2.0,
+                y: 2.0,
+                w: 1.0,
+                h: 1.0,
+            }
+        );
+    }
+
+    #[test]
     fn overlay_label_frame_keeps_fixed_inset() {
         // 2pt insets all around: the box hugs the caret line and starts at the
         // caret x, so the label must hug the box for the ghost text to sit on
@@ -10423,6 +10445,12 @@ mod tests {
         assert_eq!(parse_accept_key("  96 "), Some((96, 0)));
         // Single + multiple modifiers, case-insensitive, with aliases.
         assert_eq!(parse_accept_key("shift+96"), Some((96, CARBON_SHIFT_KEY)));
+        // Duplicated modifier is idempotent (|= not XOR/+=): the bit is set
+        // once, not toggled off or overflowed.
+        assert_eq!(
+            parse_accept_key("shift+shift+96"),
+            Some((96, CARBON_SHIFT_KEY))
+        );
         assert_eq!(
             parse_accept_key("Ctrl+Shift+96"),
             Some((96, CARBON_SHIFT_KEY | CARBON_CONTROL_KEY))
