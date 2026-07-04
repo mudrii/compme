@@ -80,7 +80,7 @@ pub fn trim_trailing(value: &str) -> &str {
 
 /// Truncate to at most `max` chars on a char boundary, keeping the tail (the
 /// most recent / caret-adjacent end).
-fn tail_chars(s: &str, max: usize) -> &str {
+pub fn tail_chars(s: &str, max: usize) -> &str {
     if max == 0 {
         return "";
     }
@@ -112,7 +112,15 @@ pub fn build_context_block(
     }
     // Collapse whitespace runs (incl. newlines) to a single space so a multi-line
     // source can't masquerade as a new directive line or escape the block.
-    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Pre-bound to a 4x tail first so a multi-MB source costs O(max_chars), not
+    // O(source): collapse never lengthens text, so 4x slack keeps the final
+    // tail_chars() cut identical for anything but whitespace-dominated tails.
+    let one_line = |s: &str| {
+        tail_chars(s, max_chars.saturating_mul(4))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let mut lines: Vec<String> = Vec::new();
     if let Some(clip) = pasteboard {
         let clip = one_line(clip);

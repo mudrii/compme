@@ -590,6 +590,11 @@ struct GrammarRequestGate<'a> {
     now_ms: u64,
 }
 
+/// Cap on the left-context tail sent to the grammar-fix prompt. The vetted
+/// correction is a single word, so a few hundred caret-adjacent chars carry
+/// all the signal; the full AX field value can be arbitrarily large.
+const GRAMMAR_LEFT_CTX_CHARS: usize = 400;
+
 fn grammar_fix_request(
     field: &FieldHandle,
     ctx: &TextContext,
@@ -625,7 +630,10 @@ fn grammar_fix_request(
         max_tokens: DEFAULT_MAX_TOKENS,
         kind: RequestKind::GrammarFix {
             word: word.word.to_string(),
-            left_ctx: ctx.left.clone(),
+            // Tail-bounded: the prompt needs the word plus nearby context, and
+            // the AX-read field value is unbounded attacker/user-sized input.
+            // correction_range stays in full-field coordinates (from `value`).
+            left_ctx: context::tail_chars(&ctx.left, GRAMMAR_LEFT_CTX_CHARS).to_string(),
             correction_range: CorrectionRange {
                 start: word.range.start,
                 end: word.range.end,
@@ -9266,6 +9274,55 @@ mod tests {
                 assert_eq!(word, "teh");
                 assert_eq!(left_ctx, "😀 teh");
                 assert_eq!(correction_range, CorrectionRange { start: 2, end: 5 });
+            }
+            RequestKind::Completion => panic!("expected grammar request"),
+        }
+    }
+
+    #[test]
+    fn grammar_request_bounds_left_context_to_a_caret_adjacent_tail() {
+        // The AX field value is unbounded input; the prompt context must be a
+        // bounded tail while correction_range stays in full-field coordinates.
+        let field = host_field("grammar-long");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let long_left = format!("{} teh", "word ".repeat(400).trim_end());
+        let request = grammar_fix_request(
+            &field,
+            &text_context_with_right(&field, &long_left, ""),
+            grammar_gate(
+                &config,
+                &config.prefs,
+                Some("TextEdit"),
+                None,
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .expect("request");
+
+        match request.kind {
+            RequestKind::GrammarFix {
+                word,
+                left_ctx,
+                correction_range,
+            } => {
+                assert_eq!(word, "teh");
+                assert!(
+                    left_ctx.chars().count() <= GRAMMAR_LEFT_CTX_CHARS,
+                    "left_ctx not bounded: {} chars",
+                    left_ctx.chars().count()
+                );
+                assert!(left_ctx.ends_with("teh"), "tail must stay caret-adjacent");
+                // Range still addresses the full field value, not the tail.
+                let start = long_left.chars().count() - 3;
+                assert_eq!(
+                    correction_range,
+                    CorrectionRange {
+                        start,
+                        end: start + 3
+                    }
+                );
             }
             RequestKind::Completion => panic!("expected grammar request"),
         }

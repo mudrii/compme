@@ -553,9 +553,16 @@ impl LlamaModel {
     /// after an explicit `shutdown`) finds the channel already closed and the
     /// handle already taken, so it is a harmless no-op.
     fn close_worker(&mut self) {
-        if let Ok(mut guard) = self.job_tx.lock() {
-            guard.take();
-        }
+        // Recover a poisoned lock instead of skipping: the sender MUST be
+        // dropped before the unconditional join below, or a poisoned mutex
+        // (panic inside a dispatch round-trip) turns shutdown into a permanent
+        // hang on a worker still blocked in recv().
+        let mut guard = self
+            .job_tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.take();
+        drop(guard);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -1040,6 +1047,28 @@ mod tests {
             .expect_err("warm-up should surface decode errors");
 
         assert_eq!(err.stage(), "decode prompt");
+    }
+
+    #[test]
+    fn close_worker_recovers_a_poisoned_job_tx_and_still_joins() {
+        // A panic inside a dispatch round-trip poisons job_tx. close_worker
+        // must recover the poison and drop the sender anyway — skipping the
+        // take() would leave the worker blocked in recv() and the join below
+        // would hang shutdown forever.
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let handle = std::thread::spawn(move || while rx.recv().is_ok() {});
+        let mut model = LlamaModel {
+            job_tx: Mutex::new(Some(tx)),
+            handle: Some(handle),
+        };
+        let poisoner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = model.job_tx.lock().unwrap();
+            panic!("poison the job_tx lock");
+        }));
+        assert!(poisoner.is_err());
+        assert!(model.job_tx.lock().is_err(), "lock should be poisoned");
+        model.close_worker(); // must return, not hang
+        assert!(model.handle.is_none());
     }
 
     #[test]

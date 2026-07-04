@@ -135,7 +135,7 @@ fn credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)(\[redacted-[a-z]+\]|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)(\[redacted-[a-z]+\][^\s,;&}\])]*|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("credential assignment regex")
     })
@@ -145,7 +145,7 @@ fn whitespace_credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)(\[redacted-[a-z]+\]|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)(\[redacted-[a-z]+\]|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)(\[redacted-[a-z]+\][^\s,;&}\])]*|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)(\[redacted-[a-z]+\][^\s,;&}\])]*|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("whitespace credential regex")
     })
@@ -436,6 +436,28 @@ mod tests {
             let twice = redact(&once);
             assert_eq!(once, twice, "second pass changed text for: {input}");
         }
+    }
+
+    #[test]
+    fn placeholder_shaped_prefix_cannot_mask_a_trailing_secret() {
+        // Leftmost-first alternation would otherwise stop at a literal
+        // "[redacted-x]" prefix and leave a glued-on real secret outside the
+        // match (adversarial or coincidental paste shape).
+        for input in [
+            "password=[redacted-secret]hunter2trailing",
+            "password [redacted-secret]hunter2trailing",
+            r#""token": [redacted-secret]hunter2trailing"#,
+        ] {
+            let out = redact(input);
+            assert!(
+                !out.contains("hunter2trailing"),
+                "masked secret leaked: {input} -> {out}"
+            );
+        }
+        // ...while a bare placeholder before a JSON closer stays untouched
+        // (the idempotency contract this alternative exists for).
+        let json = redact(r#"{"password": [redacted-secret]}"#);
+        assert_eq!(json, r#"{"password": [redacted-secret]}"#);
     }
 
     #[test]
