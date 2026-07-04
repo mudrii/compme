@@ -112,9 +112,11 @@ pub fn build_context_block(
     }
     // Collapse whitespace runs (incl. newlines) to a single space so a multi-line
     // source can't masquerade as a new directive line or escape the block.
-    // Pre-bound to a 4x tail first so a multi-MB source costs O(max_chars), not
-    // O(source): collapse never lengthens text, so 4x slack keeps the final
-    // tail_chars() cut identical for anything but whitespace-dominated tails.
+    // Pre-bound to a 4x tail first: this caps the whitespace-collapse + join
+    // allocation at O(max_chars) instead of O(source). (The tail_chars scan
+    // itself is still linear in the source — it only avoids the allocation.)
+    // Collapse never lengthens text, so 4x slack keeps the final tail_chars()
+    // cut identical for anything but whitespace-dominated tails.
     let one_line = |s: &str| {
         tail_chars(s, max_chars.saturating_mul(4))
             .split_whitespace()

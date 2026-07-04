@@ -135,7 +135,7 @@ fn credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)(\[redacted-[a-z]+\][^\s,;&}\])]*|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("credential assignment regex")
     })
@@ -145,10 +145,28 @@ fn whitespace_credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)(\[redacted-[a-z]+\][^\s,;&}\])]*|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)(\[redacted-[a-z]+\][^\s,;&}\])]*|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("whitespace credential regex")
     })
+}
+
+/// Whether a captured credential value is exactly an existing placeholder,
+/// optionally followed by JSON/paren closers (the shape a prior redact() pass
+/// leaves behind, e.g. `[redacted-secret]}`). Decided here rather than in the
+/// regex because leftmost-first alternation cannot express "placeholder only
+/// when nothing secret follows" — any stopper set in the pattern becomes the
+/// bypass (mask a real secret behind `[redacted-x]}`).
+fn already_redacted(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("[redacted-") else {
+        return false;
+    };
+    let Some(end) = rest.find(']') else {
+        return false;
+    };
+    !rest[..end].is_empty()
+        && rest[..end].bytes().all(|b| b.is_ascii_lowercase())
+        && rest[end + 1..].chars().all(|c| matches!(c, '}' | ']' | ')'))
 }
 
 fn should_redact_whitespace_credential(prefix: &str, value: &str) -> bool {
@@ -183,14 +201,26 @@ pub fn redact(input: &str) -> String {
 
     // 2. Secrets. Vendor-prefixed keys always redact; the generic long-token
     //    branch redacts only high-entropy runs so long prose words survive.
-    let stage2 = credential_re().replace_all(&stage1, "$1[redacted-secret]");
+    //    Already-redacted values pass through untouched (idempotency) — but
+    //    ONLY when the value is exactly placeholder+closers; anything glued on
+    //    re-redacts so a placeholder-shaped prefix can't mask a real secret.
+    let stage2 = credential_re().replace_all(&stage1, |caps: &regex::Captures| {
+        let (prefix, value) = (&caps[1], &caps[2]);
+        if already_redacted(value) {
+            caps[0].to_string()
+        } else {
+            format!("{prefix}[redacted-secret]")
+        }
+    });
     let stage2b = whitespace_credential_re().replace_all(&stage2, |caps: &regex::Captures| {
         let (prefix, value) = match (caps.get(1), caps.get(2), caps.get(3), caps.get(4)) {
             (Some(prefix), Some(value), _, _) => (prefix.as_str(), value.as_str()),
             (_, _, Some(prefix), Some(value)) => (prefix.as_str(), value.as_str()),
             _ => return caps[0].to_string(),
         };
-        if prefix.to_ascii_lowercase().contains("authorization")
+        if already_redacted(value) {
+            caps[0].to_string()
+        } else if prefix.to_ascii_lowercase().contains("authorization")
             || should_redact_whitespace_credential(prefix, value)
         {
             format!("{prefix}[redacted-secret]")
@@ -447,6 +477,11 @@ mod tests {
             "password=[redacted-secret]hunter2trailing",
             "password [redacted-secret]hunter2trailing",
             r#""token": [redacted-secret]hunter2trailing"#,
+            // Stopper-glued variants: a closer between placeholder and secret
+            // must not carve the secret out of the match.
+            "password=[redacted-secret]}hunter2trailing",
+            "password=[redacted-x])hunter2trailing",
+            "password=[redacted-]hunter2trailing",
         ] {
             let out = redact(input);
             assert!(
