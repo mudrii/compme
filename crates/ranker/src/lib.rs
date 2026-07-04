@@ -426,6 +426,15 @@ mod tests {
     }
 
     #[test]
+    fn truncate_at_sentence_end_keeps_uppercase_abbreviations() {
+        // `is_common_abbreviation_period` lowercases the prefix before matching
+        // (lib.rs L65), so a sentence-initial "E.g." / "I.e." is still
+        // recognized as an abbreviation and not cut at its trailing period.
+        assert_eq!(truncate_at_sentence_end("E.g. this"), "E.g. this");
+        assert_eq!(truncate_at_sentence_end("I.e. this"), "I.e. this");
+    }
+
+    #[test]
     fn truncate_at_sentence_end_keeps_unterminated_text() {
         assert_eq!(
             truncate_at_sentence_end("just a continuation"),

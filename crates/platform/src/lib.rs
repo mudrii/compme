@@ -801,6 +801,48 @@ mod tests {
     }
 
     #[test]
+    fn non_hotkey_intercept_variants_do_not_resolve_to_hotkey_mode() {
+        // The Hotkey gate is an equality check against HotkeyOnly, so EVERY other
+        // KeyInterceptMode variant must fall through it. With otherwise-full
+        // (inline-capable) caps, each non-HotkeyOnly variant resolves to Inline —
+        // a mutation that widened the gate (e.g. `!=` flipped, or a matches! with
+        // extra variants) would surface Hotkey here and fail.
+        for intercept in [
+            KeyInterceptMode::CgEventTap,
+            KeyInterceptMode::CarbonHotkey,
+            KeyInterceptMode::LowLevelHook,
+            KeyInterceptMode::XGrabKey,
+            KeyInterceptMode::FocusScopedInhibit,
+            KeyInterceptMode::ImeOwnsKey,
+            KeyInterceptMode::None,
+        ] {
+            // Exhaustive, wildcard-free: a new KeyInterceptMode variant breaks
+            // compilation here and forces the array above to be updated too.
+            // (HotkeyOnly is intentionally excluded from the array — it is the
+            // one variant that DOES resolve to Hotkey, pinned by
+            // `hotkey_only_intercept_is_hotkey_mode`.)
+            match intercept {
+                KeyInterceptMode::CgEventTap
+                | KeyInterceptMode::CarbonHotkey
+                | KeyInterceptMode::LowLevelHook
+                | KeyInterceptMode::XGrabKey
+                | KeyInterceptMode::FocusScopedInhibit
+                | KeyInterceptMode::ImeOwnsKey
+                | KeyInterceptMode::HotkeyOnly
+                | KeyInterceptMode::None => {}
+            }
+            let mut c = caps();
+            c.accept_intercept = intercept;
+
+            assert_eq!(
+                ux_mode(&c),
+                UxMode::Inline,
+                "non-HotkeyOnly intercept {intercept:?} must not demote to Hotkey"
+            );
+        }
+    }
+
+    #[test]
     fn secure_field_blocks_even_with_hotkey_only_intercept() {
         // The secure guard runs before the intercept check, so a secure field
         // is Blocked regardless of a HotkeyOnly intercept that would otherwise
@@ -1008,6 +1050,105 @@ mod tests {
             ),
             Err(PlatformError::UnsupportedField { .. })
         ));
+    }
+
+    /// Minimal adapter that implements only the REQUIRED trait methods, so the
+    /// range-seam defaults (`text_range_rect`, `insert_replacing_range`) are the
+    /// trait-provided ones — exactly what a not-yet-ported platform inherits.
+    struct DefaultRangeSeamAdapter;
+
+    impl PlatformAdapter for DefaultRangeSeamAdapter {
+        fn environment(&self) -> Environment {
+            Environment {
+                os: OperatingSystem::Unknown("test".to_string()),
+                version: "0".to_string(),
+            }
+        }
+
+        fn subscribe_focus(&self, _cb: FocusCallback) -> Result<Subscription, PlatformError> {
+            Ok(Subscription::new(1))
+        }
+
+        fn subscribe_caret(&self, _cb: CaretCallback) -> Result<Subscription, PlatformError> {
+            Ok(Subscription::new(2))
+        }
+
+        fn subscribe_accept(
+            &self,
+            _cb: AcceptCallback,
+        ) -> Result<AcceptSubscription, PlatformError> {
+            Ok(AcceptSubscription::new(
+                Subscription::new(3),
+                |_| Ok(()),
+                |_| Ok(()),
+                |_| Ok(()),
+            ))
+        }
+
+        fn front_app(&self) -> Option<AppId> {
+            None
+        }
+
+        fn capabilities(&self, _field: &FieldHandle) -> Result<Capabilities, PlatformError> {
+            Err(PlatformError::Timeout)
+        }
+
+        fn read_context(&self, _field: &FieldHandle) -> Result<TextContext, PlatformError> {
+            Err(PlatformError::Timeout)
+        }
+
+        fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+            Ok(None)
+        }
+
+        fn insert(
+            &self,
+            _field: &FieldHandle,
+            _text: &str,
+            _strategy: InsertStrategy,
+        ) -> Result<Inserted, PlatformError> {
+            Err(PlatformError::Timeout)
+        }
+
+        fn insert_replacing(
+            &self,
+            _field: &FieldHandle,
+            _text: &str,
+            _replace_left: usize,
+            _strategy: InsertStrategy,
+        ) -> Result<Inserted, PlatformError> {
+            Err(PlatformError::Timeout)
+        }
+    }
+
+    #[test]
+    fn default_range_seam_errors_name_the_unsupported_capability() {
+        // The trait defaults for the correction-range seam must fail closed AND
+        // name the missing capability, so an operator log distinguishes "range
+        // geometry missing" from "range replacement missing". Pin the exact
+        // reason strings — a reworded or swapped default would break diagnosis.
+        let adapter = DefaultRangeSeamAdapter;
+        let field = FieldHandle {
+            app: "test".to_string(),
+            pid: None,
+            element_id: "range-seam".to_string(),
+            generation: 0,
+        };
+        let range = CorrectionRange { start: 0, end: 3 };
+
+        match adapter.text_range_rect(&field, range) {
+            Err(PlatformError::UnsupportedField { reason }) => {
+                assert_eq!(reason, "correction range geometry unsupported");
+            }
+            other => panic!("text_range_rect default must fail closed, got {other:?}"),
+        }
+
+        match adapter.insert_replacing_range(&field, "old", "new", range, InsertStrategy::AxSet) {
+            Err(PlatformError::UnsupportedField { reason }) => {
+                assert_eq!(reason, "range replacement unsupported");
+            }
+            other => panic!("insert_replacing_range default must fail closed, got {other:?}"),
+        }
     }
 
     #[test]

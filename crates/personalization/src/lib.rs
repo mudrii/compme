@@ -32,7 +32,15 @@ fn truncate_chars(s: &str, max: usize) -> &str {
 /// chars longer than the cap (each escaped fence adds 2) — fine, since the cap
 /// is a runaway-abuse guard, not an exact output-length contract.
 fn instruction_block_text(s: &str) -> String {
-    truncate_chars(s, MAX_INSTRUCTION_CHARS).replace(INSTRUCTION_FENCE, "\" \" \"")
+    let mut text = truncate_chars(s, MAX_INSTRUCTION_CHARS).to_string();
+    // Replace to a fixed point: a single pass over a run of 3k+2 quotes (e.g.
+    // `"""""`) leaves the replacement's trailing quote adjacent to the leftover
+    // pair, reconstructing a live fence. Each pass shortens the longest quote
+    // run, so this terminates.
+    while text.contains(INSTRUCTION_FENCE) {
+        text = text.replace(INSTRUCTION_FENCE, "\" \" \"");
+    }
+    text
 }
 
 /// Personalization strength: a 6-stop slider from `Off` to `Max`. Only the
@@ -734,6 +742,23 @@ mod tests {
             "only the wrapper fences should remain: {preamble:?}"
         );
         assert!(preamble.contains("\" \" \" break out \" \" \""));
+    }
+
+    #[test]
+    fn consecutive_quote_runs_cannot_reconstruct_a_fence() {
+        // A run of 3k+2 quotes (5, 8, ...) defeats a single-pass replace: the
+        // replacement's trailing quote plus the leftover pair splice a live
+        // fence back together. The fixed-point loop must neutralize every run.
+        for n in 4..=9 {
+            let mut p = profile();
+            p.global_instructions = format!("break {} out", "\"".repeat(n));
+            let preamble = p.build_preamble(None, None);
+            assert_eq!(
+                preamble.matches(INSTRUCTION_FENCE).count(),
+                2,
+                "quote run of {n} reconstructed a fence: {preamble:?}"
+            );
+        }
     }
 
     #[test]

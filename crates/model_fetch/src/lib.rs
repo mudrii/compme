@@ -1423,6 +1423,153 @@ mod tests {
     }
 
     #[test]
+    fn worker_serves_a_second_request_after_a_failure() {
+        // The worker loop (`while let Ok(req) = rx.recv()`) must OUTLIVE a
+        // failed download: the Err arm maps into Failed and the loop takes
+        // the next request. A regression that breaks/returns on error would
+        // wedge every later download behind one dead URL — and the single
+        // process-lifetime worker (review-c120) has no respawn to hide
+        // behind. Drive a 404 to Failed, then a healthy request through the
+        // SAME worker to Done.
+        let bad_url = serve_404();
+        let good_url = serve(b"post-failure bytes", RangeMode::Honor);
+        let good_dest = temp_dest("second-after-fail");
+        let _ = std::fs::remove_file(&good_dest);
+        let worker = ModelDownloader::spawn().unwrap();
+
+        let failed = std::sync::Arc::new(DownloadStatus::default());
+        assert!(worker.request(DownloadRequest {
+            url: bad_url,
+            dest: temp_dest("second-after-fail-bad"),
+            expected_sha256: None,
+            status: std::sync::Arc::clone(&failed),
+        }));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let state = failed.state.lock().unwrap();
+                match &*state {
+                    DownloadState::Failed(msg) => {
+                        assert!(msg.contains("404"), "got: {msg}");
+                        break;
+                    }
+                    DownloadState::Done(path) => panic!("unexpected success: {path:?}"),
+                    _ => {}
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "first request timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Queue the healthy request against the same worker. The depth-1
+        // queue should be free once Failed is observable, but retry until
+        // accepted rather than assuming the worker already looped to recv().
+        let done = std::sync::Arc::new(DownloadStatus::default());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !worker.request(DownloadRequest {
+            url: good_url.clone(),
+            dest: good_dest.clone(),
+            expected_sha256: None,
+            status: std::sync::Arc::clone(&done),
+        }) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "second request never accepted"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let state = done.state.lock().unwrap();
+                match &*state {
+                    DownloadState::Done(path) => {
+                        assert_eq!(std::fs::read(path).unwrap(), b"post-failure bytes");
+                        break;
+                    }
+                    DownloadState::Failed(err) => panic!("second request failed: {err}"),
+                    _ => {}
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "second request timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_file(&good_dest);
+    }
+
+    #[test]
+    fn drop_while_download_inflight_returns_promptly() {
+        // The Drop contract ("Drop detaches rather than joins"): dropping the
+        // downloader only closes the channel — the worker exits after its
+        // current item. Joining instead would block a mid-download shutdown
+        // for the full 30s read timeout against a stalled server. Headers
+        // sent + body stalled holds the worker inside the read while we drop
+        // and time it.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let test_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server_done = std::sync::Arc::clone(&test_done);
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut req = [0u8; 1024];
+                let _ = stream.read(&mut req);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n"
+                );
+                // Stall the body until the test flags completion, then exit
+                // cleanly (closing the socket errors the detached worker's
+                // read) instead of leaking a sleeping thread past the
+                // assertion.
+                while !server_done.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        });
+        let dest = temp_dest("drop-inflight");
+        let part = dest.with_extension("part");
+        let worker = ModelDownloader::spawn().unwrap();
+        let status = std::sync::Arc::new(DownloadStatus::default());
+        assert!(worker.request(DownloadRequest {
+            url: format!("http://{addr}/model.bin"),
+            dest,
+            expected_sha256: None,
+            status: std::sync::Arc::clone(&status),
+        }));
+        // Wait until the download is demonstrably in flight.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let state = status.state.lock().unwrap();
+                match &*state {
+                    DownloadState::Running => break,
+                    DownloadState::Done(path) => panic!("unexpected success: {path:?}"),
+                    DownloadState::Failed(err) => panic!("unexpected failure: {err}"),
+                    DownloadState::Idle => {}
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "worker never started");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let start = std::time::Instant::now();
+        drop(worker);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "Drop must detach, not wait out the stalled read: {elapsed:?}"
+        );
+        // Unblock the detached worker and clear the part it may have opened.
+        test_done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = std::fs::remove_file(&part);
+    }
+
+    #[test]
     fn fetch_error_display_is_stable_per_variant() {
         // These strings land in telemetry and the picker UI's Failed(msg)
         // text, so they're matched by users/tooling — pin the exact stable

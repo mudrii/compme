@@ -1179,6 +1179,31 @@ mod tests {
     }
 
     #[test]
+    fn accept_correction_on_a_ghost_is_a_noop_and_keeps_the_ghost() {
+        // The converse of accept_full_and_word_do_not_commit_correction_presentation:
+        // AcceptCorrection's take-then-restore must put a plain completion ghost
+        // back untouched (no commands), leaving it fully accept-able as a
+        // completion afterwards — a broken restore would silently eat the ghost.
+        let mut machine = showing_three_words();
+
+        assert_eq!(machine.on_event(Event::AcceptCorrection), vec![]);
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "world there friend".into(), 0))
+        );
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: "world there friend".into(),
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
     fn no_request_when_context_below_min() {
         // min_context_chars=3; "hi " trims to "hi" (2 chars) < 3 → never arms.
         let mut machine = machine().with_trigger_gates(3, false);
@@ -2850,6 +2875,38 @@ mod tests {
     }
 
     #[test]
+    fn correction_replacing_a_showing_ghost_records_superseded() {
+        // Mirror of fresh_completion_replacing_a_showing_ghost_records_superseded
+        // for the CorrectionReady path: a grammar correction arriving over a
+        // still-showing completion ghost supersedes it (the user never acted on
+        // the old one) before recording the correction's own Shown.
+        let mut machine = machine_showing();
+        assert_eq!(machine.take_stat_events(), vec![StatEvent::Shown]);
+        let f = field("field-a");
+        let (gen, snap) = machine
+            .arm_manual_grammar_request(&f)
+            .expect("focused, enabled, unsuppressed field arms a grammar request");
+
+        assert!(matches!(
+            machine
+                .on_event(Event::CorrectionReady {
+                    generation: gen,
+                    field: f,
+                    snapshot: snap,
+                    original: "hello".into(),
+                    suggestion: "hallo".into(),
+                    correction_range: CorrectionRange { start: 0, end: 5 },
+                })
+                .as_slice(),
+            [Command::ShowCorrection { suggestion, .. }] if suggestion == "hallo"
+        ));
+        assert_eq!(
+            machine.take_stat_events(),
+            vec![StatEvent::Superseded, StatEvent::Shown]
+        );
+    }
+
+    #[test]
     fn focus_change_over_a_showing_ghost_records_superseded() {
         let mut machine = machine_showing();
         let _ = machine.take_stat_events(); // drop the Shown
@@ -4339,6 +4396,37 @@ mod tests {
             vec![]
         );
         assert!(completion.preview_accept_correction().is_none());
+    }
+
+    #[test]
+    fn correction_ready_dropped_on_non_axset_field() {
+        // The grammar path can only commit via ReplaceRange, which only the
+        // AxSet strategy honors (on_correction_ready's insert_strategy gate): a
+        // matching CorrectionReady on a SyntheticKeys field must be dropped —
+        // no ShowCorrection, nothing to accept, no Shown stat buffered.
+        let mut caps = inline_caps();
+        caps.insert_strategy = InsertStrategy::SyntheticKeys;
+        let f = field("field-a");
+        let mut machine = SuggestionMachine::new(caps.clone(), 200, 4);
+        machine.on_event(Event::Focus {
+            field: f.clone(),
+            caps,
+        });
+        let (gen, snap) = machine.arm_manual_grammar_request(&f).expect("armed");
+
+        assert_eq!(
+            machine.on_event(Event::CorrectionReady {
+                generation: gen,
+                field: f,
+                snapshot: snap,
+                original: "teh".into(),
+                suggestion: "the".into(),
+                correction_range: CorrectionRange { start: 0, end: 3 },
+            }),
+            vec![]
+        );
+        assert!(machine.preview_accept_correction().is_none());
+        assert!(!machine.take_stat_events().contains(&StatEvent::Shown));
     }
 
     #[test]

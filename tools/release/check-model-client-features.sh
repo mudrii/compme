@@ -83,17 +83,45 @@ llama-cpp-2 feature "vulkan"'
 
   macos_with_default="$(printf '%s\n%s\n' "$macos_tree" 'llama-cpp-2 feature "default"')"
   non_macos_with_metal="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "metal"')"
+  macos_with_openmp="$(printf '%s\n%s\n' "$macos_tree" 'llama-cpp-2 feature "openmp"')"
+  macos_with_android="$(printf '%s\n%s\n' "$macos_tree" 'llama-cpp-2 feature "android"')"
+  non_macos_with_openmp="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "openmp"')"
+  non_macos_with_android="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "android"')"
 
   if check_macos_tree "self-test macOS forbidden default" "$macos_with_default" >/dev/null 2>&1; then
     echo "model_client feature self-test failed: macOS default feature passed" >&2
+    return 1
+  fi
+  if check_macos_tree "self-test macOS missing metal" 'llama-cpp-2 feature "accelerate"' >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: missing Metal feature passed" >&2
+    return 1
+  fi
+  if check_macos_tree "self-test macOS forbidden openmp" "$macos_with_openmp" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: macOS OpenMP feature passed" >&2
+    return 1
+  fi
+  if check_macos_tree "self-test macOS forbidden android" "$macos_with_android" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: macOS Android feature passed" >&2
     return 1
   fi
   if check_non_macos_tree "self-test non-macOS missing vulkan" 'llama-cpp-2 feature "dynamic-backends"' >/dev/null 2>&1; then
     echo "model_client feature self-test failed: missing Vulkan feature passed" >&2
     return 1
   fi
+  if check_non_macos_tree "self-test non-macOS missing dynamic-backends" 'llama-cpp-2 feature "vulkan"' >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: missing dynamic-backends feature passed" >&2
+    return 1
+  fi
   if check_non_macos_tree "self-test non-macOS forbidden metal" "$non_macos_with_metal" >/dev/null 2>&1; then
     echo "model_client feature self-test failed: non-macOS Metal feature passed" >&2
+    return 1
+  fi
+  if check_non_macos_tree "self-test non-macOS forbidden openmp" "$non_macos_with_openmp" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: non-macOS OpenMP feature passed" >&2
+    return 1
+  fi
+  if check_non_macos_tree "self-test non-macOS forbidden android" "$non_macos_with_android" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: non-macOS Android feature passed" >&2
     return 1
   fi
 

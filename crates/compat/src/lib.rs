@@ -637,6 +637,27 @@ mod tests {
     }
 
     #[test]
+    fn prompt_context_token_skip_bound_is_two() {
+        // command_candidate_tokens (line ~196) skips AT MOST TWO leading
+        // prompt-decoration tokens (user@host, a repo/dir name) behind a
+        // sigil, looking for the real command word. TWO decorations → the
+        // `git` behind them is found, the line is shell input, no activation.
+        // THREE decorations → the bound stops the scan before `git`, the line
+        // reads as prose, and it activates. Pins the deliberate `index < 2`
+        // bound in both directions: lowering it to 1 flips the first case,
+        // raising it to 3 flips the second.
+        let term = "com.googlecode.iterm2";
+        assert!(
+            !terminal_prompt_activates(term, "user@host repo1 % git push origin main"),
+            "a shell command behind two decoration tokens is still shell input"
+        );
+        assert!(
+            terminal_prompt_activates(term, "user@host repo1 sess2 % git push origin main"),
+            "three decoration tokens exceed the skip bound, so the line reads as prose"
+        );
+    }
+
+    #[test]
     fn terminal_skips_shell_leaders_case_insensitively() {
         // The shell-leader gate lowercases tokens[0] before matching SHELL_LEADERS
         // (line ~157), so a mixed/upper-case leader is still recognized as shell

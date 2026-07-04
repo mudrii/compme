@@ -171,6 +171,12 @@ SH
   fi
   grep -q "is not on origin/main" "$tmp/ancestor.err"
 
+  if "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 >/dev/null 2>"$tmp/usage.err"; then
+    echo "finalize-cask self-test failed: wrong argument count was accepted" >&2
+    return 1
+  fi
+  grep -q "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH" "$tmp/usage.err"
+
   echo "Self-test passed"
 }
 

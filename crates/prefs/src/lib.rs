@@ -508,6 +508,41 @@ mod tests {
     }
 
     #[test]
+    fn app_snooze_and_excluded_domain_override_a_per_app_force_enable() {
+        // Order pins for the two remaining gates ahead of the per-app `enabled`
+        // consult (the global-snooze arm is pinned above): a PER-APP snooze and
+        // an excluded DOMAIN each short-circuit should_suggest before the
+        // force-enable (Some(true)) is read, so neither can be punched through.
+
+        // (a) Per-app snooze beats the force-enable, and auto-resumes.
+        let mut p = Prefs::default();
+        p.per_app
+            .entry("com.apple.TextEdit".into())
+            .or_default()
+            .enabled = Some(true);
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        p.snooze_app("com.apple.TextEdit", 1_000, 60);
+        assert!(!p.should_suggest(Some("com.apple.TextEdit"), None, 1_000));
+        // Past the deadline the force-enable governs again.
+        assert!(p.should_suggest(Some("com.apple.TextEdit"), None, 1_000 + 60 * 60_000));
+
+        // (b) Excluded domain beats the force-enable (fresh prefs, no snooze).
+        let mut p = Prefs::default();
+        p.per_app
+            .entry("com.apple.Safari".into())
+            .or_default()
+            .enabled = Some(true);
+        p.excluded_domains.insert("bank.example.com".into());
+        assert!(!p.should_suggest(
+            Some("com.apple.Safari"),
+            Some("bank.example.com"),
+            1_000
+        ));
+        // A non-excluded domain in the same context still suggests.
+        assert!(p.should_suggest(Some("com.apple.Safari"), Some("docs.example.com"), 1_000));
+    }
+
+    #[test]
     fn per_app_collect_inputs_false_blocks_collection_but_not_suggestions() {
         // The collection toggle is independent of the suggestion gate: a per-app
         // collect_inputs = Some(false) stops durable monitored recording

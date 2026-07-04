@@ -135,7 +135,7 @@ fn credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)(\[redacted-[a-z]+\]|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("credential assignment regex")
     })
@@ -145,7 +145,7 @@ fn whitespace_credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)(\[redacted-[a-z]+\]|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)(\[redacted-[a-z]+\]|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("whitespace credential regex")
     })
@@ -156,6 +156,9 @@ fn should_redact_whitespace_credential(prefix: &str, value: &str) -> bool {
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
         .or_else(|| value.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .or_else(|| value.strip_prefix('“').and_then(|s| s.strip_suffix('”')))
+        .or_else(|| value.strip_prefix('‘').and_then(|s| s.strip_suffix('’')))
+        .or_else(|| value.strip_prefix('«').and_then(|s| s.strip_suffix('»')))
         .unwrap_or(value);
     let prefix = prefix.trim().to_ascii_lowercase();
     let weak_password = matches!(
@@ -163,7 +166,7 @@ fn should_redact_whitespace_credential(prefix: &str, value: &str) -> bool {
         "admin" | "letmein" | "password" | "qwerty" | "secret" | "swordfish" | "welcome"
     );
     (matches!(prefix.as_str(), "password" | "passwd") && weak_password)
-        || value.starts_with(['"', '\''])
+        || value.starts_with(['"', '\'', '“', '‘', '«'])
         || unquoted.chars().any(|c| c.is_ascii_digit())
         || unquoted.contains(['_', '-', '.', '/', '+', '='])
         || unquoted.len() >= 16
@@ -392,6 +395,60 @@ mod tests {
             !guillemet.contains("short-dev-key"),
             "guillemet-quoted api_key leaked: {guillemet}"
         );
+
+        let curly_single = redact("‘token’: ‘abc-def’");
+        assert!(
+            !curly_single.contains("abc-def"),
+            "curly-single-quoted token leaked: {curly_single}"
+        );
+        let curly_single_pw = redact("‘password’: ‘hunter2’");
+        assert!(
+            !curly_single_pw.contains("hunter2"),
+            "curly-single-quoted password leaked: {curly_single_pw}"
+        );
+    }
+
+    #[test]
+    fn redacts_smart_quoted_whitespace_delimited_weak_passwords() {
+        // The space-delimited form routes through the weak-password heuristic,
+        // whose quote stripping must cover the same glyphs as the regex.
+        for input in [
+            "password \"letmein\"",
+            "password “letmein”",
+            "password «letmein»",
+            "passwd ‘letmein’",
+        ] {
+            let out = redact(input);
+            assert!(!out.contains("letmein"), "weak password leaked: {input} -> {out}");
+            assert!(out.contains("[redacted-secret]"), "no placeholder: {out}");
+        }
+    }
+
+    #[test]
+    fn redaction_is_idempotent_for_quoted_credential_shapes() {
+        for input in [
+            r#"{"password": "hunter2", "api_key": "k"}"#,
+            "“password”: “hunter2”",
+            "«api_key»: «short-dev-key»",
+            "password “letmein” trailing",
+        ] {
+            let once = redact(input);
+            let twice = redact(&once);
+            assert_eq!(once, twice, "second pass changed text for: {input}");
+        }
+    }
+
+    #[test]
+    fn quoted_credential_nouns_in_prose_keep_low_entropy_neighbors() {
+        // The optional key-quote must not scrub ordinary prose that merely
+        // quotes a credential noun without a value attached.
+        for input in [
+            "the “token” bucket algorithm",
+            "he typed “password” quietly",
+            "the word \"token\" means a lexeme",
+        ] {
+            assert_eq!(redact(input), input, "benign prose was scrubbed");
+        }
     }
 
     #[test]

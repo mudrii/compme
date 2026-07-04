@@ -191,6 +191,34 @@ mod tests {
     }
 
     #[test]
+    fn vet_correction_rejects_case_only_difference() {
+        // The `eq_ignore_ascii_case` guard (lib.rs L62): a case-only "fix" is a
+        // no-op once the original's case pattern is reapplied, so it must be
+        // rejected outright — the host never offers a replacement that changes
+        // nothing.
+        assert_eq!(vet_correction("Teh", "teh"), None);
+        assert_eq!(vet_correction("TEH", "teh"), None);
+    }
+
+    #[test]
+    fn vet_correction_rejects_non_word_tokens() {
+        // `is_ascii_word` gates BOTH sides to letters/apostrophes: punctuation
+        // in the candidate or a digit in the original is not a single-word
+        // correction, however small the edit distance.
+        assert_eq!(vet_correction("teh", "the."), None);
+        assert_eq!(vet_correction("teh", "the,"), None);
+        assert_eq!(vet_correction("b4", "by"), None);
+    }
+
+    #[test]
+    fn vet_correction_accepts_apostrophe_contraction() {
+        // `is_ascii_word` allows `'` on both sides, so a contraction target
+        // survives vetting: one insertion, and the original's all-lowercase
+        // pattern is reapplied verbatim.
+        assert_eq!(vet_correction("dont", "don't").as_deref(), Some("don't"));
+    }
+
+    #[test]
     fn vet_correction_rejects_alot_to_a_lot_for_single_word_mode() {
         assert_eq!(vet_correction("alot", "a lot"), None);
     }

@@ -440,6 +440,36 @@ run_self_tests() {
     echo "FAIL self-test-e2e-real-model-rejects-stub-completion: expected error missing" >&2
     failures=$((failures + 1))
   fi
+  invalid_accept_log="$tmp_dir/invalid-accept-mode.log"
+  if (
+    ACCEPT_MODE=banana
+    REAL_MODEL=0
+    STUB=""
+    configure_e2e_mode
+  ) >"$invalid_accept_log" 2>&1; then
+    echo "FAIL self-test-e2e-rejects-invalid-accept-mode: invalid accept mode passed" >&2
+    failures=$((failures + 1))
+  elif grep -q 'COMPME_E2E_ACCEPT must be full or word' "$invalid_accept_log"; then
+    echo "PASS self-test-e2e-rejects-invalid-accept-mode"
+  else
+    echo "FAIL self-test-e2e-rejects-invalid-accept-mode: expected error missing" >&2
+    failures=$((failures + 1))
+  fi
+  invalid_real_model_log="$tmp_dir/invalid-real-model.log"
+  if (
+    ACCEPT_MODE=full
+    REAL_MODEL=2
+    STUB=""
+    configure_e2e_mode
+  ) >"$invalid_real_model_log" 2>&1; then
+    echo "FAIL self-test-e2e-rejects-invalid-real-model: invalid real-model value passed" >&2
+    failures=$((failures + 1))
+  elif grep -q 'COMPME_E2E_REAL_MODEL must be 0/1, true/false, yes/no, or on/off' "$invalid_real_model_log"; then
+    echo "PASS self-test-e2e-rejects-invalid-real-model"
+  else
+    echo "FAIL self-test-e2e-rejects-invalid-real-model: expected error missing" >&2
+    failures=$((failures + 1))
+  fi
   rm -rf "$tmp_dir"
   [ "$failures" -eq 0 ] || return 1
   echo "E2E self-tests passed"

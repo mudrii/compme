@@ -119,6 +119,38 @@ MD
 
   grammar_spec="$old_grammar_spec"
 
+  old_readme_doc="$readme_doc"
+  readme_doc="$tmp_dir/good-readme.md"
+  cat >"$readme_doc" <<'MD'
+# Fixture
+
+## Current Validation Gates
+tools/bundle/check-bundle-metadata.sh
+
+## Next section
+MD
+  require_readme_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "fixture README gate line"
+
+  readme_doc="$tmp_dir/bad-readme.md"
+  cat >"$readme_doc" <<'MD'
+# Fixture
+
+tools/bundle/check-bundle-metadata.sh
+
+## Current Validation Gates
+- no gate commands listed here
+
+## Next section
+MD
+  if require_readme_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "fixture README gate line" >/dev/null 2>&1; then
+    echo "release gate self-test failed: README gate line outside the gates section was accepted" >&2
+    readme_doc="$old_readme_doc"
+    cleanup
+    return 1
+  fi
+
+  readme_doc="$old_readme_doc"
+
   rust_helper_fixture="$tmp_dir/helper-only.rs"
   cat >"$rust_helper_fixture" <<'RS'
 fn accept_correction_emits_replace_range() {}

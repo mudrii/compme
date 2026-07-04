@@ -2930,6 +2930,16 @@ fn apply_snooze_request(requested: bool, prefs: &mut Prefs, now_ms: u64) -> bool
     requested
 }
 
+/// Consume the tray "Check for Updates…" flag: one click opens the release
+/// page at most once (swap-consumed, the same one-shot contract as the snooze
+/// request). The opener is injected — the same closure-injection seam the
+/// submit path uses — so tests observe the URL instead of spawning `open(1)`.
+fn handle_check_updates_flag(flag: &AtomicBool, open: impl FnOnce(&'static str)) {
+    if flag.swap(false, Ordering::Relaxed) {
+        open(UPDATES_URL);
+    }
+}
+
 /// Strict tri-state boolean: explicit truthy → `Some(true)`, explicit falsy →
 /// `Some(false)`, absent/unrecognized → `None` (callers treat `None` as
 /// "leave the current state alone" — a typo must never flip a login item).
@@ -5140,14 +5150,14 @@ pub fn run() -> Result<(), String> {
                 eprintln!("compme: open settings failed: {err}");
             }
         }
-        if flags.check_updates.swap(false, Ordering::Relaxed) {
+        handle_check_updates_flag(&flags.check_updates, |url| {
             // Same non-blocking stance as Accessibility settings: the release
             // page carries the uploaded update manifest, zip, checksum, and
             // generated release notes.
-            if let Err(err) = Command::new("open").arg(UPDATES_URL).spawn() {
+            if let Err(err) = Command::new("open").arg(url).spawn() {
                 eprintln!("compme: open updates failed: {err}");
             }
-        }
+        });
         if flags.quit.load(Ordering::Relaxed) {
             eprintln!("compme: quit requested");
             break;
@@ -6596,6 +6606,41 @@ mod tests {
     }
 
     #[test]
+    fn config_parses_toggle_shortcut_keys_and_maps_them_to_their_own_bindings() {
+        let config = Config::from_lookup(lookup(&[
+            ("COMPME_TOGGLE_APP_KEY", "ctrl+48"),
+            ("COMPME_TOGGLE_GLOBAL_KEY", "shift+50"),
+        ]));
+        assert_eq!(config.toggle_app_key.as_deref(), Some("ctrl+48"));
+        assert_eq!(config.toggle_global_key.as_deref(), Some("shift+50"));
+        // Empty strings must fall through to None (the .filter guard), not
+        // survive as bound-but-unparseable chords.
+        let empty = Config::from_lookup(lookup(&[
+            ("COMPME_TOGGLE_APP_KEY", ""),
+            ("COMPME_TOGGLE_GLOBAL_KEY", ""),
+        ]));
+        assert!(empty.toggle_app_key.is_none());
+        assert!(empty.toggle_global_key.is_none());
+        // Thread the keys exactly as run() does (force_activate, toggle_app,
+        // toggle_global, grammar_check): distinct chords so a positional swap
+        // between the two toggle slots fails.
+        let bindings = platform_macos::ShortcutBindings::from_config(
+            None,
+            config.toggle_app_key.as_deref(),
+            config.toggle_global_key.as_deref(),
+            None,
+        );
+        assert_eq!(
+            bindings.toggle_app,
+            platform_macos::parse_accept_key("ctrl+48")
+        );
+        assert_eq!(
+            bindings.toggle_global,
+            platform_macos::parse_accept_key("shift+50")
+        );
+    }
+
+    #[test]
     fn env_shadow_warns_when_emoji_gender_env_shadows_persisted_setting() {
         let warnings = env_shadow_warnings(|key| key == "COMPME_EMOJI_GENDER");
         assert_eq!(
@@ -7705,6 +7750,20 @@ mod tests {
         assert!(prefs.is_snoozed(1_000));
         assert!(prefs.is_snoozed(1_000 + 59 * 60 * 1_000));
         assert!(!prefs.is_snoozed(1_000 + 60 * 60 * 1_000));
+    }
+
+    #[test]
+    fn check_updates_flag_opens_the_updates_url_once() {
+        // An armed "Check for Updates…" flag opens the release page exactly
+        // once and is consumed by the tick that observed it.
+        let flag = AtomicBool::new(true);
+        let mut opened: Vec<&'static str> = Vec::new();
+        handle_check_updates_flag(&flag, |url| opened.push(url));
+        assert_eq!(opened, [UPDATES_URL]);
+        assert!(!flag.load(Ordering::Relaxed));
+        // Second tick: the consumed flag opens nothing.
+        handle_check_updates_flag(&flag, |url| opened.push(url));
+        assert_eq!(opened, [UPDATES_URL]);
     }
 
     #[test]

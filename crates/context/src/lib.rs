@@ -407,6 +407,23 @@ Recent: green blue\n"
     }
 
     #[test]
+    fn word_at_caret_past_end_caret_clamps_to_len() {
+        // A past-end caret is clamped to the scalar count (the `caret.min(len)`
+        // at lib.rs L38), so a wild caret still resolves the trailing word
+        // instead of panicking or missing it...
+        assert_eq!(
+            word_at_caret("please fix teh", 99),
+            Some(WordAtCaret {
+                word: "teh",
+                range: WordRange { start: 11, end: 14 },
+            })
+        );
+        // ...and clamping onto trailing whitespace still yields None (the
+        // clamped end-of-text char is not a word char).
+        assert_eq!(word_at_caret("hi ", 99), None);
+    }
+
+    #[test]
     fn word_at_caret_at_offset_zero_on_nonempty_field() {
         // caret 0 on a non-empty field is only tested on "" today. When the first
         // char is a word char the caret sits at a word's start and the whole word

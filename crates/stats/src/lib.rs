@@ -962,6 +962,26 @@ mod tests {
     }
 
     #[test]
+    fn words_and_percentile_include_the_exact_cutoff_sample() {
+        // The exact-cutoff inclusivity is pinned for `counts` and
+        // `latency_avg_ms`; this pins the same `at >= cutoff` boundary in the
+        // two remaining window filters — `words_completed` and
+        // `latency_percentile_ms` — so a `>` mutant in either dies.
+        let mut s = Stats::new();
+        s.record(T0, Outcome::Accepted { words: 5 });
+        s.record_latency(T0, 42);
+        // Exactly at the window edge (now - WINDOW_MS == T0) is still counted.
+        let edge = T0 + WINDOW_MS;
+        assert_eq!(s.words_completed(edge), 5);
+        assert_eq!(s.latency_p95_ms(edge), Some(42));
+        assert_eq!(s.latency_percentile_ms(edge, 50), Some(42));
+        // One ms past the edge drops both.
+        assert_eq!(s.words_completed(edge + 1), 0);
+        assert_eq!(s.latency_p95_ms(edge + 1), None);
+        assert_eq!(s.latency_percentile_ms(edge + 1, 50), None);
+    }
+
+    #[test]
     fn recording_past_the_window_prunes_old_entries_to_bound_memory() {
         let mut s = Stats::new();
         s.record(T0, Outcome::Shown);

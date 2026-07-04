@@ -1142,6 +1142,22 @@ mod tests {
     }
 
     #[test]
+    fn trusted_key_from_hex_trims_surrounding_whitespace() {
+        // from_hex trims before decoding (line ~210): a key pasted from a
+        // config file or shell arrives with a trailing newline / padding
+        // spaces, and it must parse to the SAME key as the bare hex — not
+        // fail closed on the padding.
+        let hex = encode_hex(test_signer().verifying_key().as_bytes());
+        let bare = TrustedKey::from_hex(&hex).expect("bare hex parses");
+        let padded = TrustedKey::from_hex(&format!("  {hex}\n")).expect("padded hex parses");
+        assert_eq!(
+            padded.0.to_bytes(),
+            bare.0.to_bytes(),
+            "whitespace-padded hex must decode to the identical key"
+        );
+    }
+
+    #[test]
     fn display_messages_carry_the_offending_token() {
         // The host surfaces these Display strings to the user, so each
         // value-carrying variant must echo the offending token verbatim. Pins the

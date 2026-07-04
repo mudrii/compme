@@ -979,6 +979,165 @@ mod tests {
     }
 
     #[test]
+    fn correction_with_no_range_rect_anchors_at_caret_rect() {
+        // The ShowCorrection anchor chain (range rect → caret rect → popup
+        // anchor) falls back to the caret rect when the adapter reports
+        // Ok(None) geometry for the correction span — distinct from the Err
+        // direction, which fails closed without any fallback.
+        let mut adapter = FakeAdapter::new();
+        adapter.range_rect = None;
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+
+        engine.on_correction(&request, "the".into(), range).unwrap();
+
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::ShowCorrection(
+                ScreenRect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 1.0,
+                    h: 14.0,
+                },
+                "the".into(),
+            )],
+            "a missing range rect must fall back to the caret rect anchor"
+        );
+    }
+
+    #[test]
+    fn correction_with_no_geometry_reconciles_and_records_no_shown() {
+        // Range rect, caret rect, and popup anchor all Ok(None): the correction
+        // cannot be placed, so the show_failed reconcile path must retract the
+        // buffered Shown stat and dismiss — never leaving an invisible
+        // correction accept-able. The only overlay effect is the reconcile's
+        // idempotent Hide.
+        let mut adapter = FakeAdapter::new();
+        adapter.range_rect = None;
+        adapter.rect = None;
+        adapter.popup = None;
+        let range_replacing = Arc::clone(&adapter.range_replacing_inserts);
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+
+        engine.on_correction(&request, "the".into(), range).unwrap();
+
+        let calls = overlay.calls.lock().unwrap();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, OverlayCall::ShowCorrection(_, _))),
+            "a correction without geometry must never be shown: {calls:?}"
+        );
+        assert_eq!(*calls, vec![OverlayCall::Hide]);
+        drop(calls);
+        assert_eq!(
+            engine.take_stat_events(),
+            vec![],
+            "a correction that never presented must not count as shown"
+        );
+
+        engine.on_accept(AcceptAction::Correction).unwrap();
+        assert!(
+            range_replacing.lock().unwrap().is_empty(),
+            "accept after a failed correction show must not phantom-replace"
+        );
+    }
+
+    #[test]
+    fn show_correction_error_propagates_and_reconciles() {
+        // A failing overlay show_correction must surface its error AND
+        // reconcile (retract the Shown stat, dismiss the machine) — the
+        // correction sibling of overlay_show_error_propagates, whose overlay
+        // only fails show_ghost.
+        #[derive(Clone)]
+        struct CorrectionFailsOverlay {
+            calls: Arc<Mutex<Vec<OverlayCall>>>,
+        }
+        impl OverlayPresenter for CorrectionFailsOverlay {
+            fn show_ghost(&mut self, rect: ScreenRect, text: &str) -> Result<(), PlatformError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(OverlayCall::Show(rect, text.into()));
+                Ok(())
+            }
+            fn show_correction(
+                &mut self,
+                _rect: ScreenRect,
+                _suggestion: &str,
+            ) -> Result<(), PlatformError> {
+                Err(PlatformError::Timeout)
+            }
+            fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(OverlayCall::Update(text.into()));
+                Ok(())
+            }
+            fn hide(&mut self) -> Result<(), PlatformError> {
+                self.calls.lock().unwrap().push(OverlayCall::Hide);
+                Ok(())
+            }
+        }
+
+        let adapter = FakeAdapter::new();
+        let range_replacing = Arc::clone(&adapter.range_replacing_inserts);
+        let overlay = CorrectionFailsOverlay {
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let calls = Arc::clone(&overlay.calls);
+        let mut engine = Engine::new(adapter, overlay, 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let (generation, snapshot) = engine
+            .arm_manual_grammar_request(&field())
+            .expect("grammar request armed");
+        let request = CompletionRequest {
+            generation,
+            field: field(),
+            domain: None,
+            snapshot,
+            prompt: String::new(),
+            max_tokens: 8,
+            kind: RequestKind::GrammarFix {
+                word: "teh".into(),
+                left_ctx: "teh".into(),
+                correction_range: range,
+            },
+        };
+
+        assert_eq!(
+            engine.on_correction(&request, "the".into(), range),
+            Err(PlatformError::Timeout),
+            "a failed correction show must surface, not be swallowed"
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![OverlayCall::Hide],
+            "a correction that failed to paint must be reconciled with a hide"
+        );
+        assert_eq!(
+            engine.take_stat_events(),
+            vec![],
+            "a correction that never painted must not count as shown"
+        );
+        engine.on_accept(AcceptAction::Correction).unwrap();
+        assert!(
+            range_replacing.lock().unwrap().is_empty(),
+            "accept after a failed correction show must be a no-op"
+        );
+    }
+
+    #[test]
     fn accept_correction_emits_replace_range() {
         let (mut engine, adapter, _overlay) = engine();
         engine.on_focus(field()).unwrap();
@@ -1136,6 +1295,79 @@ mod tests {
         );
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
+            Ok(vec![]),
+            "a follow-up accept with nothing pending must be a no-op, not wedged"
+        );
+    }
+
+    #[test]
+    fn insert_replacing_range_error_propagates_on_correction_accept() {
+        // The ReplaceRange dispatch branch uses `?` exactly like Insert and
+        // Replace; a regression that swallowed the range replacement's error
+        // (or dropped the `?`) would pass every other test, since fail_insert
+        // is never otherwise exercised against insert_replacing_range.
+        let mut adapter = FakeAdapter::new();
+        adapter.fail_insert = true;
+        let range_replacing = Arc::clone(&adapter.range_replacing_inserts);
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let actions: Arc<Mutex<Vec<Option<AcceptAction>>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        let a = Arc::clone(&actions);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |vis| {
+                v.lock().unwrap().push(vis);
+                Ok(())
+            },
+            |_| Ok(()),
+            move |action| {
+                a.lock().unwrap().push(action);
+                Ok(())
+            },
+        ));
+
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+        engine.on_correction(&request, "the".into(), range).unwrap();
+        overlay.calls.lock().unwrap().clear();
+        visible.lock().unwrap().clear();
+        actions.lock().unwrap().clear();
+
+        // The ReplaceRange dispatch branch fails mid-batch (insert_replacing_range
+        // errors before the trailing Hide), so reconcile_visible_failure must run
+        // its FULL effect: hide the correction, disarm the accept tap, and dismiss
+        // the machine so the engine is not left wedged.
+        assert_eq!(
+            engine.on_accept(AcceptAction::Correction),
+            Err(PlatformError::StaleField),
+            "a failing insert_replacing_range must surface, not be swallowed"
+        );
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Hide],
+            "a failed correction accept must hide the stale correction"
+        );
+        assert_eq!(
+            *visible.lock().unwrap(),
+            vec![false],
+            "a failed correction accept must disarm the accept tap"
+        );
+        assert_eq!(
+            *actions.lock().unwrap(),
+            vec![None],
+            "a failed correction accept must clear the accept action"
+        );
+        assert!(
+            range_replacing.lock().unwrap().is_empty(),
+            "the failing adapter must record no range replacement"
+        );
+
+        // Not wedged: a follow-up accept with nothing pending is a no-op.
+        assert_eq!(
+            engine.on_accept(AcceptAction::Correction),
             Ok(vec![]),
             "a follow-up accept with nothing pending must be a no-op, not wedged"
         );
