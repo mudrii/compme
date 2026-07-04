@@ -282,10 +282,20 @@ mod tests {
 
     fn shell_assignment<'a>(script: &'a str, name: &str) -> Option<&'a str> {
         let prefix = format!("{name}=\"");
-        script
+        let value = script
             .lines()
             .map(str::trim)
-            .find_map(|line| line.strip_prefix(&prefix)?.strip_suffix('"'))
+            .find_map(|line| line.strip_prefix(&prefix)?.strip_suffix('"'))?;
+        if let Some(default) = value
+            .strip_prefix("${")
+            .and_then(|v| v.strip_suffix('}'))
+            .and_then(|v| v.split_once(":-"))
+            .map(|(_, default)| default)
+        {
+            Some(default)
+        } else {
+            Some(value)
+        }
     }
 
     fn make(name: &'static str, size_mb: u32, license: License) -> ModelEntry {

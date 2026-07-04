@@ -115,7 +115,7 @@ pub fn needs_accessibility_setup(bundle_id: &str, readable_text: bool) -> bool {
 const SHELL_LEADERS: &[&str] = &[
     "cd", "ls", "git", "cat", "rm", "cp", "mv", "mkdir", "sudo", "brew", "npm", "cargo", "python",
     "pip", "ssh", "curl", "grep", "rg", "echo", "vim", "nano", "make", "docker", "kubectl", "npx",
-    "pnpm",
+    "pnpm", "rtk", "uv", "gh", "bun", "yarn",
 ];
 
 const GO_SUBCOMMANDS: &[&str] = &[
@@ -164,28 +164,138 @@ pub fn terminal_prompt_activates(bundle_id: &str, left_context: &str) -> bool {
         .trim();
     // Drop leading shell-prompt sigils ($ / % / > / #) that render as their own
     // tokens, so the real command word is inspected (not a bare sigil).
+    let mut saw_prompt_sigil = false;
     let tokens: Vec<&str> = line
         .split_whitespace()
-        .map(|word| word.trim_start_matches(['$', '%', '>', '#']))
-        .filter(|word| !word.is_empty())
+        .filter_map(|word| {
+            let trimmed = word.trim_start_matches(['$', '%', '>', '#', '➜', '❯']);
+            saw_prompt_sigil |= trimmed.len() != word.len();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
         .collect();
     if tokens.len() < 3 {
         return false;
     }
-    // A recognized shell command leader → treat as shell input, not a prompt.
-    if SHELL_LEADERS.contains(&tokens[0].to_lowercase().as_str()) {
+    let command_tokens = command_candidate_tokens(&tokens, saw_prompt_sigil);
+    if command_tokens.is_empty() {
         return false;
     }
-    if is_go_command(&tokens) {
-        return false;
-    }
-    // Executable path invocation → treat as shell input even when the path or
-    // flags contain lowercase ASCII that would otherwise look prose-like.
-    if looks_like_shell_path_invocation(tokens[0], &tokens[1..]) {
+    if looks_like_shell_command(command_tokens) {
         return false;
     }
     // Require some lowercase-alphabetic prose so a bare path/flags line is skipped.
     line.chars().any(|c| c.is_ascii_lowercase())
+}
+
+fn command_candidate_tokens<'a>(tokens: &'a [&'a str], saw_prompt_sigil: bool) -> &'a [&'a str] {
+    let tokens = skip_env_assignments(tokens);
+    if saw_prompt_sigil {
+        if looks_like_shell_command(tokens) {
+            return tokens;
+        }
+        let mut index = 0;
+        while index < 2
+            && tokens
+                .get(index)
+                .is_some_and(|token| is_prompt_context_token(token))
+        {
+            index += 1;
+            if looks_like_shell_command(&tokens[index..]) {
+                return &tokens[index..];
+            }
+        }
+    }
+    tokens
+}
+
+fn is_prompt_context_token(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "why" | "what" | "how" | "when" | "where" | "who" | "can" | "could" | "should" | "please"
+    ) {
+        return false;
+    }
+    is_path_token(token)
+        || token.contains('@')
+        || token.ends_with(':')
+        || token
+            .chars()
+            .all(|c| c == '_' || c == '-' || c == '.' || c.is_ascii_alphanumeric())
+}
+
+fn looks_like_shell_command(tokens: &[&str]) -> bool {
+    let tokens = skip_env_assignments(tokens);
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    let first_lower = first.to_lowercase();
+    if SHELL_LEADERS.contains(&first_lower.as_str()) || is_go_command(tokens) {
+        return true;
+    }
+    if first_lower == "env" {
+        return looks_like_shell_command(skip_wrapper_options("env", &tokens[1..]));
+    }
+    if matches!(first_lower.as_str(), "time" | "command") {
+        return looks_like_shell_command(skip_wrapper_options(first_lower.as_str(), &tokens[1..]));
+    }
+    if first_lower == "just" {
+        return tokens.len() <= 3
+            || tokens.get(1).is_some_and(|target| {
+                matches!(
+                    target.to_ascii_lowercase().as_str(),
+                    "build" | "check" | "ci" | "dev" | "fmt" | "lint" | "release" | "run" | "test"
+                )
+            });
+    }
+    looks_like_shell_path_invocation(first, &tokens[1..])
+}
+
+fn skip_env_assignments<'a>(tokens: &'a [&'a str]) -> &'a [&'a str] {
+    let mut index = 0;
+    while tokens
+        .get(index)
+        .is_some_and(|token| is_env_assignment_token(token))
+    {
+        index += 1;
+    }
+    &tokens[index..]
+}
+
+fn skip_wrapper_options<'a>(wrapper: &str, tokens: &'a [&'a str]) -> &'a [&'a str] {
+    let tokens = skip_env_assignments(tokens);
+    let mut index = 0;
+    while tokens
+        .get(index)
+        .is_some_and(|token| token.starts_with('-'))
+    {
+        let option = tokens[index];
+        index += 1;
+        if wrapper == "env" {
+            if matches!(option, "-u" | "--unset" | "-C" | "--chdir") && tokens.get(index).is_some()
+            {
+                index += 1;
+            }
+            continue;
+        }
+        if matches!(wrapper, "time" | "command") {
+            continue;
+        }
+        break;
+    }
+    skip_env_assignments(&tokens[index..])
+}
+
+fn is_env_assignment_token(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
 }
 
 fn looks_like_shell_path_invocation(first: &str, rest: &[&str]) -> bool {
@@ -625,6 +735,33 @@ mod tests {
     fn terminal_skips_common_lowercase_shell_commands() {
         let term = "com.googlecode.iterm2";
         for command in [
+            "rtk cargo test",
+            "RUST_LOG=debug rtk cargo test",
+            "CARGO_TERM_COLOR=always cargo test",
+            "http_proxy=http://127.0.0.1 cargo test",
+            "foo=bar cargo test",
+            "FOO= cargo test",
+            "uv run pytest tests",
+            "gh pr view 123",
+            "just run release",
+            "just deploy prod",
+            "bun install package",
+            "yarn add package",
+            "env RUST_LOG=debug cargo test",
+            "env -i cargo test",
+            "env -u FOO cargo test",
+            "env -C /tmp cargo test",
+            "time cargo test",
+            "time -p cargo test",
+            "time -l -p cargo test",
+            "command cargo test",
+            "command -v cargo",
+            "command -p -v cargo",
+            "➜ git status",
+            "➜ compme git status",
+            "❯ ~/src/compme git status",
+            "compme % git status",
+            "~/src/compme $ cargo test",
             "npx ctx7 latest",
             "pnpm add react",
             "go test ./...",
@@ -654,6 +791,12 @@ mod tests {
         let term = "com.googlecode.iterm2";
         for prompt in [
             "go fix the failing tests",
+            "just summarize the recent changes",
+            "time to inspect the failing tests",
+            "command the app to open settings",
+            "why did $ cargo test fail",
+            "> why did cargo test fail",
+            "➜ why did rtk cargo test fail",
             "/review the current tracked diff",
             "/graphify --update current repo",
             "/review --all current diff",

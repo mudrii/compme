@@ -1,5 +1,12 @@
 // graphify OpenCode plugin
 // Injects a knowledge graph reminder before bash tool calls when the graph exists.
+//
+// IMPORTANT: keep the reminder string free of backticks and $(...) constructs.
+// The hook prepends `printf "<reminder>" >&2 && <cmd>` to the user's bash
+// command; backticks inside the double-quoted printf trigger bash command
+// substitution, which both corrupts tool output and silently executes the very
+// graphify command we are only suggesting. Plain words render fine in opencode's
+// TUI, and stderr keeps machine-readable stdout intact.
 import { existsSync } from "fs";
 import { join } from "path";
 
@@ -13,7 +20,7 @@ export const GraphifyPlugin = async ({ directory }) => {
 
       if (input.tool === "bash") {
         output.args.command =
-          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run \`graphify query \"<question>\"\` (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." && ' +
+          'printf "%s\\n" "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." >&2 && ' +
           output.args.command;
         reminded = true;
       }

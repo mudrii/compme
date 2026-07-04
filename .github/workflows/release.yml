@@ -70,8 +70,14 @@ jobs:
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh
 
+      - name: Release model gate self-test
+        run: tools/release/run-model-gates.sh --self-test
+
       - name: Release cask updater self-test
         run: tools/release/update-cask.sh --self-test
+
+      - name: Release cask finalizer self-test
+        run: tools/release/finalize-cask.sh --self-test
 
       - name: Notarization helper self-test
         run: tools/release/notarize-app.sh --self-test
@@ -198,31 +204,4 @@ jobs:
         run: |
           set -euo pipefail
           artifact_path="$PWD/$ZIP"
-          git fetch origin "$DEFAULT_BRANCH"
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"; then
-            echo "release tag commit $GITHUB_SHA is not on origin/$DEFAULT_BRANCH" >&2
-            exit 1
-          fi
-          git checkout "$DEFAULT_BRANCH"
-          git pull --ff-only origin "$DEFAULT_BRANCH"
-          current_cask_version="$(ruby -ne 'puts $1 if /^  version "([^"]+)"/' Casks/compme.rb)"
-          if [ "$current_cask_version" != "$VERSION" ]; then
-            echo "default-branch cask version is $current_cask_version, expected $VERSION" >&2
-            echo "refusing to publish a stale or out-of-order cask update" >&2
-            exit 1
-          fi
-          COMPME_CASK_ARTIFACT="$artifact_path" tools/release/update-cask.sh "$TAG"
-          if git diff --quiet -- Casks/compme.rb; then
-            echo "Casks/compme.rb already matches $TAG"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add Casks/compme.rb
-            git commit -m "chore(release): cask $TAG"
-            git push origin "HEAD:$DEFAULT_BRANCH"
-          fi
-          {
-            echo "## Homebrew cask"
-            echo "Finalized \`Casks/compme.rb\` for \`$TAG\` on \`$DEFAULT_BRANCH\`."
-            echo "version: \`$VERSION\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"

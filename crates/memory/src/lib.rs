@@ -562,6 +562,31 @@ mod tests {
     }
 
     #[test]
+    fn redacts_space_delimited_credentials_before_storing() {
+        let store = MemoryStore::open_in_memory(&key(3), StorageMode::AcceptedOnly).unwrap();
+        store
+            .remember("app", "password hunter2 token abc123secretvalue")
+            .unwrap();
+        let recent = store.recent("app", 1).unwrap();
+        assert_eq!(
+            recent,
+            vec!["password [redacted-secret] token [redacted-secret]"]
+        );
+    }
+
+    #[test]
+    fn monitor_redacts_space_delimited_credentials_before_storing() {
+        let store = MemoryStore::open_in_memory(&key(3), StorageMode::AllMonitored).unwrap();
+        store
+            .monitor("app", "password hunter2 token abc123secretvalue")
+            .unwrap();
+        assert_eq!(
+            store.recent("app", 1).unwrap(),
+            vec!["password [redacted-secret] token [redacted-secret]"]
+        );
+    }
+
+    #[test]
     fn plaintext_never_written_to_disk() {
         let path = temp_db_path();
         {
@@ -767,16 +792,12 @@ mod tests {
     #[test]
     fn decrypting_a_blob_under_a_different_app_aad_returns_none() {
         // The app id is bound as GCM AAD. Decrypting a valid blob under a
-        // DIFFERENT app id must fail authentication and yield None — it must
-        // never leak the original app's plaintext. This pins the actual crypto
-        // boundary (AAD mismatch -> auth fail) rather than only observing that
-        // `recent()` happens to return nothing.
+        // different app id must fail authentication and never leak plaintext.
         let path = temp_db_path();
         {
             let store = MemoryStore::open(&path, &key(15), StorageMode::AcceptedOnly).unwrap();
             store.remember("real.app", "private note").unwrap();
         }
-        // Read the raw stored ciphertext blob back via a plain connection.
         let raw = rusqlite::Connection::open(&path).unwrap();
         let blob: Vec<u8> = raw
             .query_row("SELECT blob FROM memories LIMIT 1", [], |row| {
@@ -786,13 +807,10 @@ mod tests {
         drop(raw);
 
         let store = MemoryStore::open(&path, &key(15), StorageMode::AcceptedOnly).unwrap();
-        // Positive control: under the correct AAD the blob decrypts to the
-        // original plaintext, proving the blob and key are valid.
         assert_eq!(
             store.decrypt(&blob, b"real.app").as_deref(),
             Some("private note")
         );
-        // Boundary: under a different app's AAD, no plaintext is returned.
         assert_eq!(store.decrypt(&blob, b"attacker.app"), None);
         let _ = std::fs::remove_file(&path);
     }

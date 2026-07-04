@@ -141,6 +141,34 @@ fn credential_re() -> &'static Regex {
     })
 }
 
+fn whitespace_credential_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b\s+)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)|\b(authorization\b\s+bearer\s+)("[^"]*"|'[^']*'|"[^\n;&]*|'[^\n;&]*|[^\s,;&]+)"#,
+        )
+        .expect("whitespace credential regex")
+    })
+}
+
+fn should_redact_whitespace_credential(prefix: &str, value: &str) -> bool {
+    let unquoted = value
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| value.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(value);
+    let prefix = prefix.trim().to_ascii_lowercase();
+    let weak_password = matches!(
+        unquoted.to_ascii_lowercase().as_str(),
+        "admin" | "letmein" | "password" | "qwerty" | "secret" | "swordfish" | "welcome"
+    );
+    (matches!(prefix.as_str(), "password" | "passwd") && weak_password)
+        || value.starts_with(['"', '\''])
+        || unquoted.chars().any(|c| c.is_ascii_digit())
+        || unquoted.contains(['_', '-', '.', '/', '+', '='])
+        || unquoted.len() >= 16
+}
+
 /// Replace emails, Luhn-valid card numbers, and API-key/secret-like tokens with
 /// stable placeholders. Idempotent on already-redacted text.
 ///
@@ -153,7 +181,21 @@ pub fn redact(input: &str) -> String {
     // 2. Secrets. Vendor-prefixed keys always redact; the generic long-token
     //    branch redacts only high-entropy runs so long prose words survive.
     let stage2 = credential_re().replace_all(&stage1, "$1[redacted-secret]");
-    let stage3 = secret_re().replace_all(&stage2, |caps: &regex::Captures| {
+    let stage2b = whitespace_credential_re().replace_all(&stage2, |caps: &regex::Captures| {
+        let (prefix, value) = match (caps.get(1), caps.get(2), caps.get(3), caps.get(4)) {
+            (Some(prefix), Some(value), _, _) => (prefix.as_str(), value.as_str()),
+            (_, _, Some(prefix), Some(value)) => (prefix.as_str(), value.as_str()),
+            _ => return caps[0].to_string(),
+        };
+        if prefix.to_ascii_lowercase().contains("authorization")
+            || should_redact_whitespace_credential(prefix, value)
+        {
+            format!("{prefix}[redacted-secret]")
+        } else {
+            caps[0].to_string()
+        }
+    });
+    let stage3 = secret_re().replace_all(&stage2b, |caps: &regex::Captures| {
         let m = &caps[0];
         let is_keyed = KEY_PREFIXES.iter().any(|prefix| m.starts_with(prefix));
         if is_keyed || looks_high_entropy(m) {
@@ -734,15 +776,43 @@ mod tests {
     }
 
     #[test]
-    fn space_delimited_credential_is_not_redacted_known_gap() {
-        // ACCEPTED GAP: the credential regex only fires on an explicit `:`/`=`
-        // assignment (`password: x`, `token=x`). A space-delimited credential
-        // (`password hunter2`) is NOT recognized as a key/value pair, and the
-        // bare value is too short / too low-entropy for the generic secret
-        // branch, so it passes through unredacted. This pins that accepted gap
-        // so a change in EITHER direction is caught.
-        assert_eq!(redact("password hunter2"), "password hunter2");
-        assert_eq!(redact("token abc123secretvalue"), "token abc123secretvalue");
+    fn redacts_high_confidence_space_delimited_credentials() {
+        assert_eq!(redact("password hunter2"), "password [redacted-secret]");
+        assert_eq!(redact("password swordfish"), "password [redacted-secret]");
+        assert_eq!(redact("passwd letmein"), "passwd [redacted-secret]");
+        assert!(
+            !redact("password \"hunter2 trailing secret").contains("trailing secret"),
+            "unterminated quoted password tail must be redacted"
+        );
+        assert_eq!(redact("token abc123secretvalue"), "token [redacted-secret]");
+        assert_eq!(
+            redact("Authorization Bearer abc123"),
+            "Authorization Bearer [redacted-secret]"
+        );
+        assert_eq!(redact("token \"dev key\""), "token [redacted-secret]");
+        assert_eq!(redact("api_key dev-key"), "api_key [redacted-secret]");
+        assert_eq!(
+            redact("client_secret abc.def"),
+            "client_secret [redacted-secret]"
+        );
+        assert_eq!(
+            redact("access_token abcdefghijklmnop"),
+            "access_token [redacted-secret]"
+        );
+        assert_eq!(redact("api_key devkey"), "api_key devkey");
+    }
+
+    #[test]
+    fn leaves_prose_after_credential_words_alone() {
+        assert_eq!(redact("token bucket algorithm"), "token bucket algorithm");
+        assert_eq!(
+            redact("password requirements include length"),
+            "password requirements include length"
+        );
+        assert_eq!(
+            redact("authorization failed for request"),
+            "authorization failed for request"
+        );
     }
 
     #[test]

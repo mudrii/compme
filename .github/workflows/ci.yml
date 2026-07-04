@@ -83,8 +83,14 @@ jobs:
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh
 
+      - name: Release model gate self-test
+        run: tools/release/run-model-gates.sh --self-test
+
       - name: Release cask updater self-test
         run: tools/release/update-cask.sh --self-test
+
+      - name: Release cask finalizer self-test
+        run: tools/release/finalize-cask.sh --self-test
 
       - name: Notarization helper self-test
         run: tools/release/notarize-app.sh --self-test

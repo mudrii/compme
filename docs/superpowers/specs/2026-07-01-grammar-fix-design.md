@@ -443,7 +443,9 @@ range bounds and range replacement, not just the existing left-of-caret
 - `tools/acceptance/run-a2-compat-gates.sh --self-test`
 - `tools/release/check-model-client-features.sh`
 - `bash tools/release/check-model-gates.sh`
+- `tools/release/run-model-gates.sh --self-test`
 - `tools/release/update-cask.sh --self-test`
+- `tools/release/finalize-cask.sh --self-test`
 - `tools/release/notarize-app.sh --self-test`
 - `tools/release/write-update-manifest.sh --self-test`
 - `COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1`

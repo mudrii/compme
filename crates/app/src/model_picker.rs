@@ -79,18 +79,27 @@ mod tests {
         }
         // Abundant RAM (64 GiB) → the smallest model (index 0) comfortably fits.
         let plenty = model_menu_titles(64);
-        assert!(
-            plenty[0].ends_with("fits"),
-            "64 GiB → smallest model fits: {:?}",
-            plenty[0]
-        );
-        // The suffix tracks ram_verdict exactly (not a fixed string) — pin one
-        // row against the helper it composes from.
-        let entry = &catalog()[0];
         assert_eq!(
-            model_menu_titles(64)[0],
-            format!("{} \u{b7} {}", entry.name, ram_verdict(entry, 64).advice())
+            plenty[0], "qwen2.5-0.5b-q4_k_m \u{b7} fits",
+            "64 GiB → smallest model fits"
         );
+        assert_eq!(
+            model_menu_titles(3)[0],
+            "qwen2.5-0.5b-q4_k_m \u{b7} tight \u{2014} may swap under load",
+            "3 GiB → smallest model is tight"
+        );
+        for available in [0, 3, 64] {
+            for (title, entry) in model_menu_titles(available).iter().zip(catalog()) {
+                assert_eq!(
+                    title,
+                    &format!(
+                        "{} \u{b7} {}",
+                        entry.name,
+                        ram_verdict(entry, available).advice()
+                    )
+                );
+            }
+        }
     }
 
     #[test]
