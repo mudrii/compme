@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1687 workspace tests; spike separate)
+> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1695 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -230,18 +230,18 @@ person at a granted macOS desktop, not new code. Sources:
 `2026-06-09-a2-parity-design.md §16`, `integration-phase-design.md`.
 Gate coverage note: only the AllMonitored row has a dedicated runner gate ID
 (`encrypted-memory-all-monitored-live`); the other residuals are covered by
-`run-a2-compat-gates.sh` smoke kinds and the folded settings LOOK gates
-(`personalization-pane-look`, `nine-tab-settings-walkthrough`) rather than
-per-row IDs.
+`run-a2-compat-gates.sh` smoke kinds, the table-driven `matrix` ledger, and the
+folded settings LOOK gates (`personalization-pane-look`,
+`nine-tab-settings-walkthrough`).
 
 | Item | Status | Live residual |
 |---|---|---|
-| Browser-domain extraction | code ✅ (`c131`) | 9-item LOOK checklist (Safari/Chrome/Brave detect + exclusion suppress) |
+| Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking | run against live Safari/Chrome/Brave PIDs with focused hosts; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
 | Multi-candidate Down-cycle | engine ✅ | physical Down-arrow cycle UX confirmation |
-| Compatibility matrix | classifier ✅; smoke gates only | full table-driven per-app matrix runner/live ledger remains pending; current `run-a2-compat-gates.sh` covers request-path smoke kinds, not every app row |
+| Compatibility matrix | classifier ✅; `run-a2-compat-gates.sh matrix` provides table-driven row execution and TSV ledger | supply live row PID map via `COMPME_A2_MATRIX_TARGETS` for all committed app rows; missing rows fail unless explicitly skipped |
 | Browser mirror-window | `set_mirror_mode` ✅ | live Firefox/Zen ghost-in-mirror confirmation |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅ | tuning vs real agent prompts |
-| Screen-context OCR | `screen_context_text` ✅ | OCR quality/perf on a granted desktop + multi-display caret confirm |
+| Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch | OCR quality/perf on a granted desktop + multi-display caret confirm |
 | Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: secure input, snoozed transition, volatile `pid:N` |
 | Per-app memory inspect/delete UI | count/delete_app ✅ | completed live in Apps pane; global `delete_all` and memory-mode controls are deferred UI work, not part of the current Personalization pane |
 | Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback in deterministic `word-only` mode; real-model E2E must use `full`/`word` because real-model `word-only` fails closed; optional manual UX confirmation remains part of the broad settings walkthrough |
@@ -441,7 +441,7 @@ physical trigger/accept interaction.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1687 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1695 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

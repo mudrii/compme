@@ -15,6 +15,13 @@
 #                metadata proves clipboard context reached submit.
 #   screen       works app + COMPME_SCREEN_CONTEXT=1; Screen Recording must
 #                be granted and OCR must return context before submit.
+#   browser-domain-allow
+#                focused Safari/Chrome/Brave URL resolves to host-only domain
+#                metadata and still submits.
+#   browser-domain-exclude
+#                same browser-domain proof, but COMPME_EXCLUDED_DOMAINS blocks.
+#   matrix       table-driven runner over COMPME_A2_MATRIX_TARGETS row_id=pid
+#                entries; writes a per-row ledger under tools/acceptance/logs.
 #
 # This is the executable form of the §16 compatibility-matrix gate. It needs a
 # console GUI session, Accessibility granted, the relevant apps installed/focused,
@@ -26,7 +33,7 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="${COMPME_BIN:-$ROOT_DIR/target/debug/compme}"
 PID="${COMPME_ACCEPTANCE_PID:-}"
-KIND="${1:-works}"            # works | unsupported | terminal-cmd | terminal-nlp | clipboard | screen
+KIND="${1:-works}"            # works | unsupported | terminal-cmd | terminal-nlp | clipboard | screen | browser-domain-allow | browser-domain-exclude | matrix
 RUN_MS="${COMPME_RUN_MS:-3500}"
 WARMUP_MS="${COMPME_WARMUP_MS:-1200}"
 PREFIX="${COMPME_PREFIX:-Dear team, I wanted to }"
@@ -40,6 +47,23 @@ REQUEST_LINE_PREFIX='^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* a
 REQUEST_LINE_SUFFIX=' app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true$'
 WORKS_APP_PATTERN='(com\.apple\.Safari|com\.google\.Chrome|com\.apple\.mail|com\.microsoft\.Word|com\.apple\.TextEdit|com\.apple\.Notes|notion\.id|md\.obsidian|com\.apple\.MobileSMS)'
 TERMINAL_APP_PATTERN='(com\.apple\.Terminal|com\.googlecode\.iterm2)'
+BROWSER_APP_PATTERN='(com\.apple\.Safari|com\.google\.Chrome|com\.brave\.Browser)'
+
+A2_MATRIX_ROWS=(
+  "textedit|works|com.apple.TextEdit|request"
+  "notes|works|com.apple.Notes|request"
+  "mail|works|com.apple.mail|request"
+  "word|works|com.microsoft.Word|request"
+  "safari|browser-domain-allow|com.apple.Safari|domain-request"
+  "chrome|browser-domain-allow|com.google.Chrome|domain-request"
+  "brave|browser-domain-allow|com.brave.Browser|domain-request"
+  "browser-exclude|browser-domain-exclude|browser-domain|blocked-prefs"
+  "terminal-cmd|terminal-cmd|terminal|blocked-terminal"
+  "terminal-nlp|terminal-nlp|terminal|request"
+  "unsupported|unsupported|unsupported-app|blocked-app"
+  "clipboard|clipboard|works-app|context-request"
+  "screen|screen|works-app|context-request"
+)
 
 terminal_cmd_prefix() {
   printf 'git status # %s ' "$PROMPT_MARKER"
@@ -64,6 +88,22 @@ has_works_request() {
 
 has_terminal_nlp_request() {
   has_request_for_app_pattern "$1" "$TERMINAL_APP_PATTERN"
+}
+
+has_browser_domain_host() {
+  grep -Eq "^compme: domain=[[:alnum:].-]+ \(${BROWSER_APP_PATTERN}\)$" "$1" \
+    && ! grep -Eq '^compme: domain=(https?://|[^ ]*[/?:#])' "$1"
+}
+
+has_browser_domain_allow_evidence() {
+  has_browser_domain_host "$1" \
+    && has_request_for_app_pattern "$1" "$BROWSER_APP_PATTERN"
+}
+
+has_browser_domain_exclude_evidence() {
+  has_browser_domain_host "$1" \
+    && grep -Eq "^compme: request blocked gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app=${BROWSER_APP_PATTERN} app_allows=true terminal_ok=true domain_ready=true prefs_ok=false prompt_marker=true$" "$1" \
+    && ! has_request "$1"
 }
 
 has_clipboard_prompt_context() {
@@ -100,6 +140,18 @@ wait_for_product_status() {
 
 product_status_ok() {
   [[ "$1" -eq 0 ]]
+}
+
+matrix_target_pid() {
+  row_id="$1"
+  printf '%s\n' "${COMPME_A2_MATRIX_TARGETS:-}" \
+    | tr ', ' '\n' \
+    | awk -F= -v id="$row_id" '$1 == id { print $2; exit }'
+}
+
+matrix_rows_are_unique() {
+  printf '%s\n' "${A2_MATRIX_ROWS[@]}" \
+    | awk -F'|' 'seen[$1]++ { duplicate = 1 } END { exit duplicate }'
 }
 
 self_test_assert() {
@@ -140,6 +192,9 @@ run_self_tests() {
   marker_missing_request="$tmp_dir/marker-missing-request.log"
   embedded_request="$tmp_dir/embedded-request.log"
   terminal_request="$tmp_dir/terminal-request.log"
+  browser_domain_allow="$tmp_dir/browser-domain-allow.log"
+  browser_domain_raw_url="$tmp_dir/browser-domain-raw-url.log"
+  browser_domain_exclude="$tmp_dir/browser-domain-exclude.log"
   focus_only="$tmp_dir/focus-only.log"
   empty="$tmp_dir/empty.log"
 
@@ -234,6 +289,18 @@ LOG
 compme: focus ax:1
 compme: request gen=7 prompt_chars=44 app=com.apple.Terminal app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
 LOG
+  cat >"$browser_domain_allow" <<'LOG'
+compme: domain=docs.google.com (com.apple.Safari)
+compme: request gen=7 prompt_chars=44 app=com.apple.Safari app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+LOG
+  cat >"$browser_domain_raw_url" <<'LOG'
+compme: domain=https://docs.google.com/document/d/secret?token=abc (com.apple.Safari)
+compme: request gen=7 prompt_chars=44 app=com.apple.Safari app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+LOG
+  cat >"$browser_domain_exclude" <<'LOG'
+compme: domain=docs.google.com (com.google.Chrome)
+compme: request blocked gen=8 prompt_chars=44 app=com.google.Chrome app_allows=true terminal_ok=true domain_ready=true prefs_ok=false prompt_marker=true
+LOG
   cat >"$focus_only" <<'LOG'
 compme: focus ax:1
 LOG
@@ -252,6 +319,10 @@ LOG
   self_test_assert "works-request-requires-non-terminal-app" 0 has_works_request "$terminal_request" || failures=$((failures + 1))
   self_test_assert "terminal-nlp-request-requires-terminal-app" 0 has_terminal_nlp_request "$good" || failures=$((failures + 1))
   self_test_assert "terminal-nlp-request-present" 1 has_terminal_nlp_request "$terminal_request" || failures=$((failures + 1))
+  self_test_assert "browser-domain-allow-evidence" 1 has_browser_domain_allow_evidence "$browser_domain_allow" || failures=$((failures + 1))
+  self_test_assert "browser-domain-rejects-raw-url" 0 has_browser_domain_allow_evidence "$browser_domain_raw_url" || failures=$((failures + 1))
+  self_test_assert "browser-domain-exclude-evidence" 1 has_browser_domain_exclude_evidence "$browser_domain_exclude" || failures=$((failures + 1))
+  self_test_assert "browser-domain-exclude-requires-block" 0 has_browser_domain_exclude_evidence "$browser_domain_allow" || failures=$((failures + 1))
   self_test_assert "clipboard-prompt-context" 1 has_clipboard_prompt_context "$good" || failures=$((failures + 1))
   self_test_assert "screen-prompt-context" 1 has_screen_prompt_context "$good" || failures=$((failures + 1))
   self_test_assert "metadata-prompt-context-is-not-raw" 1 has_no_raw_prompt_context_payload "$good" || failures=$((failures + 1))
@@ -310,6 +381,18 @@ OSA
     echo "FAIL self-test-product-exit-status-a2: nonzero compme exit was not observed as failure" >&2
     failures=$((failures + 1))
   fi
+  if matrix_rows_are_unique; then
+    echo "PASS self-test-a2-matrix-row-ids-unique"
+  else
+    echo "FAIL self-test-a2-matrix-row-ids-unique" >&2
+    failures=$((failures + 1))
+  fi
+  if [[ "${#A2_MATRIX_ROWS[@]}" -ge 12 ]]; then
+    echo "PASS self-test-a2-matrix-row-count"
+  else
+    echo "FAIL self-test-a2-matrix-row-count: ${#A2_MATRIX_ROWS[@]}" >&2
+    failures=$((failures + 1))
+  fi
 
   rm -rf "$tmp_dir"
   if [[ "$failures" -gt 0 ]]; then
@@ -320,9 +403,43 @@ OSA
   return 0
 }
 
+run_matrix() {
+  if [[ "$#" -ne 1 ]]; then
+    echo "usage: run-a2-compat-gates.sh matrix" >&2
+    exit 2
+  fi
+  ledger="$LOG_DIR/a2-compat-matrix-$(date +%Y%m%d-%H%M%S).tsv"
+  printf 'row_id\tkind\tapp\tpid\tstatus\texpect\n' >"$ledger"
+  failures=0
+  skipped=0
+  for row in "${A2_MATRIX_ROWS[@]}"; do
+    IFS='|' read -r row_id row_kind row_app row_expect <<<"$row"
+    row_pid="$(matrix_target_pid "$row_id")"
+    if [[ -z "$row_pid" ]]; then
+      printf '%s\t%s\t%s\t\tSKIP\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_expect" >>"$ledger"
+      skipped=$((skipped + 1))
+      if [[ "${COMPME_A2_MATRIX_ALLOW_SKIP:-0}" != "1" ]]; then
+        failures=$((failures + 1))
+      fi
+      continue
+    fi
+    if COMPME_ACCEPTANCE_PID="$row_pid" "$0" "$row_kind"; then
+      printf '%s\t%s\t%s\t%s\tPASS\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" >>"$ledger"
+    else
+      printf '%s\t%s\t%s\t%s\tFAIL\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" >>"$ledger"
+      failures=$((failures + 1))
+    fi
+  done
+  if [[ "$failures" -gt 0 ]]; then
+    echo "FAIL: matrix — failures=$failures skipped=$skipped (ledger: $ledger)" >&2
+    exit 1
+  fi
+  echo "PASS: matrix — ${#A2_MATRIX_ROWS[@]} rows (ledger: $ledger)"
+}
+
 if [[ "$KIND" == "--self-test" ]]; then
   if [[ "$#" -ne 1 ]]; then
-    echo "usage: run-a2-compat-gates.sh [works|unsupported|terminal-cmd|terminal-nlp|clipboard|screen|--self-test]" >&2
+    echo "usage: run-a2-compat-gates.sh [works|unsupported|terminal-cmd|terminal-nlp|clipboard|screen|browser-domain-allow|browser-domain-exclude|matrix|--self-test]" >&2
     exit 2
   fi
   run_self_tests
@@ -358,8 +475,13 @@ LOG
   exit "$status"
 fi
 
+if [[ "$KIND" == "matrix" ]]; then
+  run_matrix "$@"
+  exit 0
+fi
+
 if [[ "$#" -gt 1 ]]; then
-  echo "usage: run-a2-compat-gates.sh [works|unsupported|terminal-cmd|terminal-nlp|clipboard|screen|--self-test]" >&2
+  echo "usage: run-a2-compat-gates.sh [works|unsupported|terminal-cmd|terminal-nlp|clipboard|screen|browser-domain-allow|browser-domain-exclude|matrix|--self-test]" >&2
   exit 2
 fi
 
@@ -384,6 +506,7 @@ fi
 
 clip_env=()
 screen_env=()
+prefs_env=()
 
 if [[ "$KIND" == "clipboard" ]]; then
   /usr/bin/osascript -e 'set the clipboard to "CLIPBOARD-CONTEXT-MARKER"' >/dev/null 2>&1 \
@@ -393,6 +516,14 @@ fi
 
 if [[ "$KIND" == "screen" ]]; then
   screen_env=(COMPME_SCREEN_CONTEXT=1 COMPME_DIAG_CONTEXT=1)
+fi
+
+if [[ "$KIND" == "browser-domain-exclude" ]]; then
+  if [[ -z "${COMPME_A2_BROWSER_EXCLUDED_DOMAIN:-}" ]]; then
+    echo "FAIL: set COMPME_A2_BROWSER_EXCLUDED_DOMAIN to the focused browser host" >&2
+    exit 2
+  fi
+  prefs_env=(COMPME_EXCLUDED_DOMAINS="$COMPME_A2_BROWSER_EXCLUDED_DOMAIN")
 fi
 
 # Seed the field, then run the binary against it with a deterministic stub.
@@ -415,6 +546,7 @@ env \
   COMPME_RUN_MS="$RUN_MS" \
   ${clip_env[@]+"${clip_env[@]}"} \
   ${screen_env[@]+"${screen_env[@]}"} \
+  ${prefs_env[@]+"${prefs_env[@]}"} \
   "$BIN" >"$LOG" 2>&1 &
 BIN_PID=$!
 sleep "$(awk "BEGIN{print ($WARMUP_MS+$RUN_MS)/1000}")"
@@ -458,6 +590,14 @@ case "$KIND" in
       || { grep -Eq 'screen_context=Some\([1-9][0-9]*\)' "$LOG" \
         && fail "OCR ran but no submitted prompt included it (timing) — retry with steadier typing" \
         || fail "expected non-empty screen context; check Screen Recording grant and visible text"; } ;;
+  browser-domain-allow)
+    has_browser_domain_allow_evidence "$LOG" \
+      && pass "browser URL resolved to host-only domain metadata and completion submitted" \
+      || fail "expected host-only browser domain metadata and a submitted request" ;;
+  browser-domain-exclude)
+    has_browser_domain_exclude_evidence "$LOG" \
+      && pass "browser domain exclusion blocked the request" \
+      || fail "expected host-only browser domain metadata and prefs_ok=false blocked-request evidence" ;;
   unsupported)
     has_unsupported_block_evidence "$LOG" || fail "no unsupported-app blocked-request evidence; cannot prove a gated-out request"
     [[ "$requested" == 0 ]] && pass "completion correctly gated out" \
@@ -467,5 +607,5 @@ case "$KIND" in
     [[ "$requested" == 0 ]] && pass "completion correctly gated out" \
       || fail "expected NO completion request, but one was logged" ;;
   *)
-    fail "unknown KIND '$KIND' (works|unsupported|terminal-cmd|terminal-nlp|clipboard|screen)" ;;
+    fail "unknown KIND '$KIND' (works|unsupported|terminal-cmd|terminal-nlp|clipboard|screen|browser-domain-allow|browser-domain-exclude|matrix)" ;;
 esac

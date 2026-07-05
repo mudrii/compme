@@ -57,6 +57,8 @@ pub enum FetchError {
     Http(u16),
     /// Local filesystem failure (.part create/write/rename).
     Io(String),
+    /// Server returned 206 Partial Content without a validated resume range.
+    InvalidRange(String),
     /// Downloaded bytes hash differently than the catalog expects. The part
     /// file is KEPT for inspection; dest is never created.
     HashMismatch { expected: String, actual: String },
@@ -68,6 +70,7 @@ impl std::fmt::Display for FetchError {
             FetchError::Network(msg) => write!(f, "network error: {msg}"),
             FetchError::Http(code) => write!(f, "http error: status {code}"),
             FetchError::Io(msg) => write!(f, "io error: {msg}"),
+            FetchError::InvalidRange(msg) => write!(f, "invalid range response: {msg}"),
             FetchError::HashMismatch { expected, actual } => {
                 write!(f, "sha256 mismatch: expected {expected}, got {actual}")
             }
@@ -144,7 +147,8 @@ fn download_with_agent(
     // Trust a 206 only when its Content-Range start matches OUR offset —
     // a lying/buggy server stitched at the wrong offset would corrupt the
     // file silently (review-c118 CRITICAL). Anything else → safe restart.
-    let resumed = status == 206
+    let resumed = existing > 0
+        && status == 206
         && response
             .header("Content-Range")
             .is_some_and(|cr| cr.starts_with(&format!("bytes {existing}-")));
@@ -160,6 +164,11 @@ fn download_with_agent(
         // rather than recursing into an unbounded re-request.
         std::fs::remove_file(&part).map_err(|e| FetchError::Io(e.to_string()))?;
         return download_with_agent(agent, url, dest, expected_sha256, progress);
+    }
+    if status == 206 && !resumed {
+        return Err(FetchError::InvalidRange(
+            "received 206 Partial Content without a requested resume range".into(),
+        ));
     }
     let total = response
         .header("Content-Length")
@@ -416,6 +425,9 @@ mod tests {
         /// terminated by closing the connection (HTTP/1.0-style). The download
         /// loop can't know the total, so every progress event carries None.
         NoContentLength,
+        /// LIE: reply 206 to an unranged fresh request. A fresh 206 is never a
+        /// validated resume and must not be promoted to dest.
+        Fresh206,
         /// LIE: reply 206 but serve the FULL body from offset 0 with a
         /// Content-Range that contradicts the request (corruption trap).
         Lie,
@@ -453,6 +465,7 @@ mod tests {
                     continue;
                 }
                 let (status, slice, content_range) = match (&mode, requested) {
+                    (RangeMode::Fresh206, None) => ("206 Partial Content", &body[1..], None),
                     (RangeMode::Honor, Some(s)) => (
                         "206 Partial Content",
                         &body[s..],
@@ -500,6 +513,24 @@ mod tests {
 
     fn temp_dest(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("cm-fetch-{tag}-{}.bin", std::process::id()))
+    }
+
+    #[test]
+    fn fresh_unvalidated_206_fails_closed_without_creating_dest() {
+        let url = serve(b"0123456789", RangeMode::Fresh206);
+        let dest = temp_dest("fresh206");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+
+        let err = download_url(&url, &dest, None, |_, _| {}).unwrap_err();
+
+        assert!(matches!(err, FetchError::InvalidRange(_)), "got: {err}");
+        assert!(!dest.exists(), "fresh invalid 206 must not publish dest");
+        assert!(
+            !part.exists(),
+            "fresh invalid 206 must fail before opening part"
+        );
     }
 
     #[test]
@@ -1582,6 +1613,10 @@ mod tests {
         assert_eq!(
             FetchError::Io("disk full".into()).to_string(),
             "io error: disk full"
+        );
+        assert_eq!(
+            FetchError::InvalidRange("bad 206".into()).to_string(),
+            "invalid range response: bad 206"
         );
         assert_eq!(
             FetchError::HashMismatch {

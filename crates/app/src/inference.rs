@@ -8,7 +8,7 @@
 //! joins the thread, and the thread frees the model in deterministic order.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -77,7 +77,7 @@ pub struct WorkerContext {
     pub previous_inputs: PreviousInputs,
     pub clipboard: Arc<Mutex<Option<String>>>,
     pub screen: Arc<Mutex<Option<ScreenContext>>>,
-    pub screen_wait: Duration,
+    pub screen_wait_ms: Arc<AtomicU64>,
     pub max_chars: usize,
     pub diag_context: bool,
 }
@@ -95,6 +95,16 @@ pub(crate) struct ScreenContext {
 }
 
 impl WorkerContext {
+    pub fn screen_wait_cell(duration: Duration) -> Arc<AtomicU64> {
+        Arc::new(AtomicU64::new(
+            duration.as_millis().min(u64::MAX as u128) as u64
+        ))
+    }
+
+    fn screen_wait(&self) -> Duration {
+        Duration::from_millis(self.screen_wait_ms.load(Ordering::Relaxed))
+    }
+
     fn matching_screen_text_now(&self, request: &CompletionRequest) -> Option<String> {
         self.screen
             .lock()
@@ -116,19 +126,25 @@ impl WorkerContext {
         if matches!(request.kind, RequestKind::GrammarFix { .. }) {
             return (request, None);
         }
-        if self.screen_wait.is_zero() {
+        let mut wait = self.screen_wait();
+        if wait.is_zero() {
             let screen_text = self.matching_screen_text_now(&request);
             return (request, screen_text);
         }
 
-        let mut deadline = Instant::now() + self.screen_wait;
+        let mut deadline = Instant::now() + wait;
         loop {
             while let Ok(newer) = requests.try_recv() {
                 request = newer;
                 if matches!(request.kind, RequestKind::GrammarFix { .. }) {
                     return (request, None);
                 }
-                deadline = Instant::now() + self.screen_wait;
+                wait = self.screen_wait();
+                if wait.is_zero() {
+                    let screen_text = self.matching_screen_text_now(&request);
+                    return (request, screen_text);
+                }
+                deadline = Instant::now() + wait;
             }
 
             if let Some(text) = self.matching_screen_text_now(&request) {
@@ -150,7 +166,12 @@ impl WorkerContext {
                     if matches!(request.kind, RequestKind::GrammarFix { .. }) {
                         return (request, None);
                     }
-                    deadline = Instant::now() + self.screen_wait;
+                    wait = self.screen_wait();
+                    if wait.is_zero() {
+                        let screen_text = self.matching_screen_text_now(&request);
+                        return (request, screen_text);
+                    }
+                    deadline = Instant::now() + wait;
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return (request, None),
@@ -646,7 +667,7 @@ mod tests {
                 previous_inputs: previous,
                 clipboard: Arc::new(Mutex::new(Some("clipboard context".into()))),
                 screen,
-                screen_wait: Duration::from_secs(10),
+                screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_secs(10)),
                 max_chars: 500,
                 ..Default::default()
             },
@@ -739,7 +760,7 @@ mod tests {
         let old = request("old typing", 1);
         let grammar = grammar_request("teh", "old teh", CorrectionRange { start: 4, end: 7 }, 2);
         let worker_context = WorkerContext {
-            screen_wait: Duration::from_secs(10),
+            screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_secs(10)),
             ..Default::default()
         };
         let (request_tx, request_rx) = channel();
@@ -1025,7 +1046,7 @@ mod tests {
             1,
             WorkerContext {
                 screen,
-                screen_wait: Duration::from_millis(80),
+                screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_millis(80)),
                 max_chars: 160,
                 ..Default::default()
             },
@@ -1037,6 +1058,49 @@ mod tests {
         assert!(
             outcome.candidates[0].contains("On screen: delayed visible text"),
             "matching delayed screen context should reach prompt: {:?}",
+            outcome.candidates[0]
+        );
+        writer.join().unwrap();
+        inference.shutdown();
+    }
+
+    #[test]
+    fn screen_context_wait_can_be_enabled_after_worker_spawn() {
+        let req = request("typing", 1);
+        let screen = Arc::new(Mutex::new(None));
+        let screen_wait_ms = WorkerContext::screen_wait_cell(Duration::ZERO);
+        let delayed_screen = Arc::clone(&screen);
+        let screen_field = req.field.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            *delayed_screen.lock().unwrap() = Some(ScreenContext {
+                field: screen_field,
+                generation: 1,
+                snapshot: 1,
+                text: "live enabled visible text".to_string(),
+            });
+        });
+        let inference = InferenceHandle::spawn(
+            Box::new(EchoModel),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext {
+                screen,
+                screen_wait_ms: Arc::clone(&screen_wait_ms),
+                max_chars: 160,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        screen_wait_ms.store(80, Ordering::Relaxed);
+        inference.submit(req);
+        let outcome = inference.recv_outcome().expect("outcome");
+
+        assert!(
+            outcome.candidates[0].contains("On screen: live enabled visible text"),
+            "live-enabled screen context should reach prompt: {:?}",
             outcome.candidates[0]
         );
         writer.join().unwrap();
@@ -1063,7 +1127,7 @@ mod tests {
         });
         let worker_context = WorkerContext {
             screen,
-            screen_wait: Duration::from_millis(80),
+            screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_millis(80)),
             max_chars: 160,
             ..Default::default()
         };
@@ -1094,7 +1158,7 @@ mod tests {
         request_tx.send(newest).unwrap();
         let worker_context = WorkerContext {
             screen,
-            screen_wait: Duration::from_millis(80),
+            screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_millis(80)),
             max_chars: 160,
             ..Default::default()
         };
@@ -1119,7 +1183,7 @@ mod tests {
         });
         let worker_context = WorkerContext {
             screen,
-            screen_wait: Duration::from_secs(10),
+            screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_secs(10)),
             max_chars: 160,
             ..Default::default()
         };
@@ -1153,7 +1217,7 @@ mod tests {
             1,
             WorkerContext {
                 screen,
-                screen_wait: Duration::from_millis(5),
+                screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_millis(5)),
                 max_chars: 160,
                 ..Default::default()
             },

@@ -3583,7 +3583,7 @@ pub fn run() -> Result<(), String> {
     // It publishes redacted text into `screen_cell`, which the inference worker
     // waits for briefly off the AppKit loop and accepts only when stamped for
     // the submitted request.
-    let screen_ocr = if screen_active {
+    let mut screen_ocr = if screen_active {
         match ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context) {
             Ok(ocr) => Some(ocr),
             Err(err) => {
@@ -3594,15 +3594,16 @@ pub fn run() -> Result<(), String> {
     } else {
         None
     };
+    let screen_wait_ms = WorkerContext::screen_wait_cell(if screen_ocr.is_some() {
+        Duration::from_millis(SCREEN_CONTEXT_WAIT_MS)
+    } else {
+        Duration::ZERO
+    });
     let worker_context = WorkerContext {
         previous_inputs: previous_inputs.clone(),
         clipboard: Arc::clone(&clipboard_cell),
         screen: Arc::clone(&screen_cell),
-        screen_wait: if screen_ocr.is_some() {
-            Duration::from_millis(SCREEN_CONTEXT_WAIT_MS)
-        } else {
-            Duration::ZERO
-        },
+        screen_wait_ms: Arc::clone(&screen_wait_ms),
         max_chars: context_bound,
         diag_context: config.diag_context,
     };
@@ -4760,9 +4761,9 @@ pub fn run() -> Result<(), String> {
             persist_and_log_switch("COMPME_MIDLINE", "mid-line completions", on);
         }
         // Context-pane watchers. Clipboard context applies live because submit
-        // reads `config.clipboard_context` for each request. Screen OCR cannot
-        // start its worker after launch, but disabling it gates new submissions
-        // immediately (`screen_enabled` also checks config.screen_context).
+        // reads `config.clipboard_context` for each request. Screen OCR also
+        // applies live: enabling starts the worker when Screen Recording is
+        // granted, and disabling drops it plus clears the worker-side wait.
         if let Some(on) = switch_edge(
             &settings_flags.context_clipboard,
             &mut config.clipboard_context,
@@ -4775,6 +4776,26 @@ pub fn run() -> Result<(), String> {
         if let Some(on) = switch_edge(&settings_flags.context_screen, &mut config.screen_context) {
             if !on {
                 *screen_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                screen_ocr = None;
+                screen_wait_ms.store(0, Ordering::Relaxed);
+            } else if screen_recording_permission() {
+                match ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context)
+                {
+                    Ok(ocr) => {
+                        screen_ocr = Some(ocr);
+                        screen_wait_ms.store(SCREEN_CONTEXT_WAIT_MS, Ordering::Relaxed);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "compme: screen OCR worker unavailable: {err}; screen context disabled"
+                        );
+                        screen_ocr = None;
+                        screen_wait_ms.store(0, Ordering::Relaxed);
+                    }
+                }
+            } else {
+                screen_ocr = None;
+                screen_wait_ms.store(0, Ordering::Relaxed);
             }
             persist_and_log_switch("COMPME_SCREEN_CONTEXT", "screen context", on);
             // Poison-recovery: skipping would leave the Setup pane stale after

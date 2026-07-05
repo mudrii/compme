@@ -126,17 +126,20 @@ impl MemoryStore {
         // and the store silently never initializes.
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
+                let parent_existed = parent.exists();
                 std::fs::create_dir_all(parent)?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    if let Err(e) =
-                        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                    {
-                        eprintln!(
-                            "compme: failed to tighten permissions on {}: {e}",
-                            parent.display()
-                        );
+                    if !parent_existed {
+                        if let Err(e) =
+                            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                        {
+                            eprintln!(
+                                "compme: failed to tighten permissions on {}: {e}",
+                                parent.display()
+                            );
+                        }
                     }
                 }
             }
@@ -1300,6 +1303,34 @@ mod tests {
         assert_eq!(
             mode, 0o700,
             "memory parent dir must be owner-only, got {mode:o}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_preserves_a_preexisting_parent_dir_mode() {
+        // Existing parents may be shared app dirs. open() creates missing dirs
+        // securely, but must not silently tighten permissions on a caller-owned
+        // directory that was already present.
+        use std::os::unix::fs::PermissionsExt;
+        let mut suffix = [0u8; 8];
+        getrandom::getrandom(&mut suffix).unwrap();
+        let hex: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
+        let dir = std::env::temp_dir().join(format!("cm-memory-existing-dirmode-{hex}"));
+        let path = dir.join("store.db");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        {
+            let store = MemoryStore::open(&path, &key(61), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "secret").unwrap();
+        }
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            mode, 0o755,
+            "preexisting parent dir permissions must be preserved, got {mode:o}"
         );
     }
 

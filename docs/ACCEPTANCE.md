@@ -361,13 +361,25 @@ Supported kinds:
 - `terminal-nlp`
 - `clipboard`
 - `screen`
+- `browser-domain-allow`
+- `browser-domain-exclude`
+- `matrix`
 
-These are request-path smoke probes for a supplied PID and kind, not a full
-per-app compatibility matrix runner. The `clipboard` and `screen` gates enable
-`COMPME_DIAG_CONTEXT=1`; clipboard requires the marker
-`CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and screen requires
-non-empty OCR context. The screen gate also requires Screen Recording
-permission and visible text on the focused display.
+The per-kind probes still require a supplied PID. `matrix` is the table-driven
+runner: set `COMPME_A2_MATRIX_TARGETS` to comma/space-separated `row_id=pid`
+pairs (for example `textedit=123 terminal-cmd=456`) and it writes a TSV ledger
+under `tools/acceptance/logs/`. Missing rows fail unless
+`COMPME_A2_MATRIX_ALLOW_SKIP=1` is set.
+
+The `clipboard` and `screen` gates enable `COMPME_DIAG_CONTEXT=1`; clipboard
+requires the marker `CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and
+screen requires non-empty OCR context. The screen gate also requires Screen
+Recording permission and visible text on the focused display.
+
+The browser-domain gates assert host-only domain metadata, rejecting raw URLs
+with paths or query strings. `browser-domain-exclude` also requires
+`COMPME_A2_BROWSER_EXCLUDED_DOMAIN=<focused-host>` so the live run can prove
+`prefs_ok=false` blocked the focused browser domain.
 
 ## A2 Local-Replacement Live Gate (emoji / autocorrect / British English)
 

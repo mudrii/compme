@@ -75,7 +75,20 @@ pub fn vet_correction(original: &str, model_output: &str) -> Option<String> {
 }
 
 fn is_ascii_word(value: &str) -> bool {
-    value.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
+    let mut has_alpha = false;
+    let mut previous_apostrophe = false;
+    for (idx, c) in value.chars().enumerate() {
+        match c {
+            '\'' if idx == 0 || previous_apostrophe => return false,
+            '\'' => previous_apostrophe = true,
+            c if c.is_ascii_alphabetic() => {
+                has_alpha = true;
+                previous_apostrophe = false;
+            }
+            _ => return false,
+        }
+    }
+    has_alpha && !previous_apostrophe
 }
 
 // ponytail: capped at MAX_EDIT_DISTANCE, good enough for word-level typo distance.
@@ -216,6 +229,13 @@ mod tests {
         // survives vetting: one insertion, and the original's all-lowercase
         // pattern is reapplied verbatim.
         assert_eq!(vet_correction("dont", "don't").as_deref(), Some("don't"));
+    }
+
+    #[test]
+    fn vet_correction_rejects_apostrophe_only_and_boundary_apostrophes() {
+        for output in ["'", "''", "'the", "the'", "do''nt"] {
+            assert_eq!(vet_correction("teh", output), None, "{output:?}");
+        }
     }
 
     #[test]
