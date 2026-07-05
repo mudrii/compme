@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -93,13 +93,69 @@ jobs:
           cargo test
           cargo build --bins
 
+  windows:
+    name: platform_windows fmt · clippy · test · build (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt -p platform_windows -- --check
+
+      - name: Clippy
+        run: cargo clippy -p platform_windows --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p platform_windows
+
+      - name: Build
+        run: cargo build -p platform_windows
+
+  linux:
+    name: platform_linux fmt · clippy · test · build (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt -p platform_linux -- --check
+
+      - name: Clippy
+        run: cargo clippy -p platform_linux --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p platform_linux
+
+      - name: Build
+        run: cargo build -p platform_linux
+
   release:
     name: Build · bundle · publish (macOS)
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
-    needs: validate
+    needs: [validate, windows, linux]
+    permissions:
+      contents: write
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -152,7 +208,6 @@ jobs:
           COMPME_NOTARYTOOL_APPLE_ID: ${{ secrets.COMPME_NOTARYTOOL_APPLE_ID }}
           COMPME_NOTARYTOOL_PASSWORD: ${{ secrets.COMPME_NOTARYTOOL_PASSWORD }}
           COMPME_NOTARYTOOL_TEAM_ID: ${{ secrets.COMPME_NOTARYTOOL_TEAM_ID }}
-          COMPME_NOTARYTOOL_KEYCHAIN_PROFILE: ${{ secrets.COMPME_NOTARYTOOL_KEYCHAIN_PROFILE }}
         run: tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app"
 
       - name: Package + checksum

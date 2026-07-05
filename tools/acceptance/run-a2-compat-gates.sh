@@ -345,8 +345,22 @@ LOG
     echo "FAIL self-test-a2-rejects-extra-self-test-arg: expected usage missing" >&2
     status=1
   fi
+  if "$0" works unexpected-extra >/dev/null 2>"$tmp_dir/normal-argc.err"; then
+    echo "FAIL self-test-a2-rejects-extra-normal-arg: extra argument passed" >&2
+    status=1
+  elif grep -q 'usage: run-a2-compat-gates.sh' "$tmp_dir/normal-argc.err"; then
+    echo "PASS self-test-a2-rejects-extra-normal-arg"
+  else
+    echo "FAIL self-test-a2-rejects-extra-normal-arg: expected usage missing" >&2
+    status=1
+  fi
   rm -rf "$tmp_dir"
   exit "$status"
+fi
+
+if [[ "$#" -gt 1 ]]; then
+  echo "usage: run-a2-compat-gates.sh [works|unsupported|terminal-cmd|terminal-nlp|clipboard|screen|--self-test]" >&2
+  exit 2
 fi
 
 if [[ -z "$PID" ]]; then

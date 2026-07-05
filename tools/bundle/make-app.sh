@@ -100,6 +100,11 @@ SH
     return 1
   fi
   grep -Fq "usage: tools/bundle/make-app.sh" "$tmp_dir/self-test-argc.err"
+  if "$0" "$tmp_dir/out-extra" unexpected-extra >/dev/null 2>"$tmp_dir/normal-argc.err"; then
+    echo "self-test FAILED: extra normal argument was accepted" >&2
+    return 1
+  fi
+  grep -Fq "usage: tools/bundle/make-app.sh" "$tmp_dir/normal-argc.err"
 
   echo "Self-test passed"
 }
@@ -111,6 +116,11 @@ if [[ "${1:-}" == "--self-test" ]]; then
   fi
   run_self_test
   exit 0
+fi
+
+if [[ "$#" -gt 1 ]]; then
+  echo "usage: tools/bundle/make-app.sh [output-dir] | --self-test" >&2
+  exit 2
 fi
 
 out_dir="${1:-"$repo_root/target/bundle"}"

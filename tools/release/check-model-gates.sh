@@ -289,6 +289,25 @@ end
 RUBY
   }
 
+  check_release_hardening_fixture() {
+    ruby -ryaml - "$1" <<'RUBY'
+workflow = YAML.load_file(ARGV.fetch(0))
+abort("missing release gate: workflow defaults to read-only contents permission") unless workflow.fetch("permissions").fetch("contents") == "read"
+jobs = workflow.fetch("jobs")
+release = jobs.fetch("release")
+needs = Array(release.fetch("needs"))
+%w[validate windows linux].each do |job|
+  abort("missing release gate: release job depends on #{job}") unless needs.include?(job)
+end
+abort("missing release gate: release job has contents write permission") unless release.fetch("permissions").fetch("contents") == "write"
+checkout = release.fetch("steps").find { |step| step["uses"] == "actions/checkout@v4" }
+abort("missing release gate: release checkout") unless checkout
+abort("missing release gate: release checkout fetches full history") unless checkout.fetch("with").fetch("fetch-depth") == 0
+abort("missing release gate: platform_windows release job") unless jobs.fetch("windows").fetch("runs-on") == "windows-latest"
+abort("missing release gate: platform_linux release job") unless jobs.fetch("linux").fetch("runs-on") == "ubuntu-latest"
+RUBY
+  }
+
   good_release="$tmp_dir/good-release.yml"
   cat >"$good_release" <<'YAML'
 jobs:
@@ -421,6 +440,106 @@ YAML
     return 1
   fi
 
+  good_hardened_release="$tmp_dir/good-hardened-release.yml"
+  cat >"$good_hardened_release" <<'YAML'
+permissions:
+  contents: read
+jobs:
+  validate:
+    steps: []
+  windows:
+    runs-on: windows-latest
+    steps: []
+  linux:
+    runs-on: ubuntu-latest
+    steps: []
+  release:
+    needs: [validate, windows, linux]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+YAML
+  check_release_hardening_fixture "$good_hardened_release"
+
+  shallow_release="$tmp_dir/shallow-release.yml"
+  cat >"$shallow_release" <<'YAML'
+permissions:
+  contents: read
+jobs:
+  validate:
+    steps: []
+  windows:
+    runs-on: windows-latest
+    steps: []
+  linux:
+    runs-on: ubuntu-latest
+    steps: []
+  release:
+    needs: [validate, windows, linux]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+YAML
+  if check_release_hardening_fixture "$shallow_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: shallow release checkout was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  broad_write_release="$tmp_dir/broad-write-release.yml"
+  cat >"$broad_write_release" <<'YAML'
+permissions:
+  contents: write
+jobs:
+  validate:
+    steps: []
+  windows:
+    runs-on: windows-latest
+    steps: []
+  linux:
+    runs-on: ubuntu-latest
+    steps: []
+  release:
+    needs: [validate, windows, linux]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+YAML
+  if check_release_hardening_fixture "$broad_write_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: broad workflow write permission was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  missing_matrix_release="$tmp_dir/missing-matrix-release.yml"
+  cat >"$missing_matrix_release" <<'YAML'
+permissions:
+  contents: read
+jobs:
+  validate:
+    steps: []
+  release:
+    needs: validate
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+YAML
+  if check_release_hardening_fixture "$missing_matrix_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: missing release Windows/Linux jobs were accepted" >&2
+    cleanup
+    return 1
+  fi
+
   cleanup
 }
 
@@ -516,8 +635,21 @@ ruby -ryaml -e '
   require_step!(jobs, "linux", "Build", "cargo build -p platform_linux", "platform_linux build job")
 
   workflow = release_workflow
+  abort("missing release gate: workflow defaults to read-only contents permission") unless workflow.fetch("permissions").fetch("contents") == "read"
   release_jobs = workflow.fetch("jobs")
   validate_steps = release_jobs.fetch("validate").fetch("steps")
+  windows = release_jobs.fetch("windows")
+  abort("missing release gate: release platform_windows runs on Windows") unless windows.fetch("runs-on") == "windows-latest"
+  require_step!(release_jobs, "windows", "Format", "cargo fmt -p platform_windows -- --check", "release platform_windows fmt job")
+  require_step!(release_jobs, "windows", "Clippy", "cargo clippy -p platform_windows --all-targets -- -D warnings", "release platform_windows clippy job")
+  require_step!(release_jobs, "windows", "Test", "cargo test -p platform_windows", "release platform_windows test job")
+  require_step!(release_jobs, "windows", "Build", "cargo build -p platform_windows", "release platform_windows build job")
+  linux = release_jobs.fetch("linux")
+  abort("missing release gate: release platform_linux runs on Linux") unless linux.fetch("runs-on") == "ubuntu-latest"
+  require_step!(release_jobs, "linux", "Format", "cargo fmt -p platform_linux -- --check", "release platform_linux fmt job")
+  require_step!(release_jobs, "linux", "Clippy", "cargo clippy -p platform_linux --all-targets -- -D warnings", "release platform_linux clippy job")
+  require_step!(release_jobs, "linux", "Test", "cargo test -p platform_linux", "release platform_linux test job")
+  require_step!(release_jobs, "linux", "Build", "cargo build -p platform_linux", "release platform_linux build job")
   release = release_jobs.fetch("release")
 
   {
@@ -546,8 +678,14 @@ ruby -ryaml -e '
   end
 
   release_needs = Array(release.fetch("needs"))
-  abort("missing release gate: release job depends on validate") unless release_needs.include?("validate")
+  %w[validate windows linux].each do |job|
+    abort("missing release gate: release job depends on #{job}") unless release_needs.include?(job)
+  end
+  abort("missing release gate: release job has contents write permission") unless release.fetch("permissions").fetch("contents") == "write"
   release_steps = release.fetch("steps")
+  checkout = release_steps.find { |step| step["uses"] == "actions/checkout@v4" }
+  abort("missing release gate: release checkout") unless checkout
+  abort("missing release gate: release checkout fetches full history") unless checkout.fetch("with").fetch("fetch-depth") == 0
   import_index = release_steps.index { |step| step["name"] == "Import Developer ID certificate" }
   build_index = release_steps.index { |step| step["name"] == "Build the .app bundle" }
   abort("missing release gate: imports Developer ID certificate") unless import_index

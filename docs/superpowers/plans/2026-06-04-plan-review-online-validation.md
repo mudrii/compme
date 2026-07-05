@@ -285,7 +285,7 @@ Required guardrail:
 - Naming a crate `core` compiles, but it is confusing because Rust has a built-in `core` crate. Prefer `engine_core` or `complete_me_core`. **Done (2026-07-01):** renamed to `engine_core`; no `core` crate remains in the workspace (`Cargo.toml` members are `crates/engine` + `crates/engine_core`).
 - A1a root workspace excludes `tools/spike`; that is good, but the model path in A1a still depends on the spike model location. Make that dependency explicit.
 - The Tauri global-shortcut plugin is useful for configurable hotkeys, but not for plain Tab accept in another app. The plan should say "global shortcut is not a consuming accept path" rather than implying the plugin is broken.
-- Historical Tauri updater research is superseded for macOS. A3 should now plan a native updater, with Sparkle as the leading candidate because Cotypist ships it; any non-Sparkle updater still needs artifact generation, public-key/signing-key handling, endpoint format, manifest strategy, and failure recovery.
+- Historical Tauri/Sparkle updater research is superseded for the current A3 release path. The implemented path is GitHub-release-driven (`compme-<version>-update.json`, notarized zip, `.sha256`, and a menu-bar action that opens the latest GitHub Release); Sparkle/appcast remains only a later possible upgrade. See `docs/RELEASING.md` and `docs/ROADMAP.md` for current authority.
 - `ActivationPolicy::Accessory` is validated for no Dock/no menu bar, but windows can still activate; overlay windows must still use native non-activating panel behavior.
 
 ## Corrected Execution Order

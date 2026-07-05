@@ -168,6 +168,14 @@ SH
     return 1
   fi
   grep -Fq "usage: notarize-app.sh" "$tmp/self-test-argc.err"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$log" \
+    COMPME_NOTARYTOOL_KEYCHAIN_PROFILE="compme-release" \
+    "$0" "$app" unexpected-extra >/dev/null 2>"$tmp/normal-argc.err"; then
+    echo "self-test FAILED: extra normal argument was accepted" >&2
+    return 1
+  fi
+  grep -Fq "usage: notarize-app.sh" "$tmp/normal-argc.err"
 
   echo "Self-test passed"
 }
@@ -179,6 +187,11 @@ if [[ "${1:-}" == "--self-test" ]]; then
   fi
   run_self_test
   exit 0
+fi
+
+if [[ "$#" -ne 1 ]]; then
+  usage
+  exit 2
 fi
 
 app="${1:-}"

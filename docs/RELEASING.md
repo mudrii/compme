@@ -1,15 +1,16 @@
 # Releasing
 
 Compme ships as a macOS `.app` bundle published to GitHub Releases and installed
-through a Homebrew cask. Continuous integration and the release build both run
-on GitHub Actions (Apple Silicon `macos-14` runners).
+through a Homebrew cask after the first signed release. GitHub Actions runs the
+root macOS checks and release build on Apple Silicon `macos-14` runners, and CI
+also runs scoped Windows/Linux adapter jobs.
 
 ## Pipelines
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | branch push / PR / tag `v*` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets -- --test-threads=1`, `cargo build --workspace --all-targets`, plus acceptance/bundle/release script syntax, bundle metadata/version check, bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), A1b/A2/E2E self-tests, missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy (`tools/release/check-model-client-features.sh`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --bins` in `tools/spike`. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | tag `v*` | Runs release validation first: serialized root fmt/clippy/test/build, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), acceptance/bundle/release script syntax + self-tests, missing-model startup product smoke (`tools/acceptance/missing-model-startup.sh`), bundle metadata/version check (`tools/bundle/check-bundle-metadata.sh`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), model-client feature policy (`tools/release/check-model-client-features.sh`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`), and spike fmt/clippy/test/build. Only after validation passes, imports the Developer-ID certificate, builds `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh) with hardened runtime, notarizes + staples it via [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh), zips it with `ditto`, computes the sha256, writes an update manifest, publishes a GitHub Release with the zip, `.sha256`, and manifest, then commits the finalized Homebrew cask checksum back to the default branch via [`tools/release/finalize-cask.sh`](../tools/release/finalize-cask.sh). |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | tag `v*` | Runs release validation first: serialized root fmt/clippy/test/build, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), acceptance/bundle/release script syntax + self-tests, missing-model startup product smoke (`tools/acceptance/missing-model-startup.sh`), bundle metadata/version check (`tools/bundle/check-bundle-metadata.sh`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), model-client feature policy (`tools/release/check-model-client-features.sh`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`), spike fmt/clippy/test/build, and scoped Windows/Linux adapter fmt/clippy/test/build jobs. Only after all release validation jobs pass, imports the Developer-ID certificate, builds `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh) with hardened runtime, notarizes + staples it via [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh), zips it with `ditto`, computes the sha256, writes an update manifest, publishes a GitHub Release with the zip, `.sha256`, and manifest, then commits the finalized Homebrew cask checksum back to the default branch via [`tools/release/finalize-cask.sh`](../tools/release/finalize-cask.sh). |
 
 Model-inference tests (`crates/model_client/tests/latency.rs` and the spike model
 integration test) are `#[ignore]`d because they need a local GGUF and a Metal GPU,
@@ -26,10 +27,14 @@ determinism and the sub-500ms latency budget enforced on the current machine.
 1. Ensure the repository has the release secrets:
    `COMPME_DEVELOPER_ID_P12_BASE64`,
    `COMPME_DEVELOPER_ID_P12_PASSWORD`, `COMPME_CODESIGN_IDENTITY`, plus one
-   notarization credential set accepted by
-   [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh)
-   (App Store Connect API key, keychain profile, or Apple-ID app-specific
-   password).
+   GitHub-runner notarization credential set accepted by
+   [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh): either
+   `COMPME_NOTARYTOOL_KEY_BASE64` + `COMPME_NOTARYTOOL_KEY_ID` +
+   `COMPME_NOTARYTOOL_ISSUER`, or `COMPME_NOTARYTOOL_APPLE_ID` +
+   `COMPME_NOTARYTOOL_PASSWORD` + `COMPME_NOTARYTOOL_TEAM_ID`. A
+   `COMPME_NOTARYTOOL_KEYCHAIN_PROFILE` is supported by the helper for a
+   preconfigured local keychain, but the GitHub-hosted workflow does not create
+   that profile.
 2. Bump the version in `crates/app/Cargo.toml`, `tools/bundle/Info.plist`
    (`CFBundleShortVersionString`), and `Casks/compme.rb` (`version`), then run
    `tools/bundle/check-bundle-metadata.sh`, commit, and push.
@@ -95,6 +100,10 @@ upgrade; the current path is the GitHub-release-driven updater option from the
 roadmap.
 
 ## Installing (for users)
+
+Homebrew cask install is available only after the first signed `v*` release
+publishes the artifact and finalizes the cask checksum. Until then, build from
+source as described in the README.
 
 ```sh
 brew tap mudrii/compme https://github.com/mudrii/compme

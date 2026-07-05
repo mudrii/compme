@@ -111,6 +111,12 @@ SH
   fi
   grep -Fq "usage: missing-model-startup.sh" "$tmp_dir/self-test-argc.err"
   echo "PASS self-test-missing-model-startup-argc"
+  if "$0" unexpected-extra >/dev/null 2>"$tmp_dir/normal-argc.err"; then
+    echo "FAIL self-test-missing-model-startup-normal-argc: extra normal argument passed" >&2
+    exit 1
+  fi
+  grep -Fq "usage: missing-model-startup.sh" "$tmp_dir/normal-argc.err"
+  echo "PASS self-test-missing-model-startup-normal-argc"
 
   echo "Missing-model startup self-tests passed"
 }
@@ -122,6 +128,11 @@ if [ "${1:-}" = "--self-test" ]; then
   fi
   run_self_test
   exit 0
+fi
+
+if [ "$#" -ne 0 ]; then
+  echo "usage: missing-model-startup.sh [--self-test]" >&2
+  exit 2
 fi
 
 [ -x "$BIN" ] || fail "binary not built: $BIN (run: cargo build -p app)"
