@@ -5,6 +5,12 @@
 **Companion:** `2026-06-03-engine-macos-mvp-design.md` (Sub-project A)
 **Method:** 3 parallel deep-research agents against current docs/crates (Feb–Jun 2026): Windows UIA stack, Linux AT-SPI/X11/Wayland stack, cross-platform llama.cpp + Tauri shell. Sources inline.
 
+**Current-design correction (2026-07-05):** The macOS accept path now uses the
+`CarbonHotkey` capability (`RegisterEventHotKey`) for transient accept
+interception. `CgEventTap` remains relevant to historical A0 probes and some
+synthetic input examples, but it is not the current production accept-key
+requirement.
+
 ---
 
 ## 0. Executive summary
@@ -28,7 +34,7 @@ Three load-bearing conclusions:
 | Read text + context | AX | UIA TextPattern *(toolkit)* | AT-SPI *(app)* | AT-SPI *(app)* | AT-SPI *(app)* |
 | Caret rect | AXBoundsForRange* | TextPattern2.GetCaretRange* | AT-SPI char-extents | AT-SPI char-extents | AT-SPI char-extents |
 | **Place overlay at caret** | NSPanel ✓ | layered window ✓ | override-redirect ✓ | layer-shell ✓ | **✗ no layer-shell** |
-| **Intercept/swallow accept key** | CGEventTap ✓ | WH_KEYBOARD_LL ✓† | XGrabKey (hotkey only)‡ | **✗ client can't** | **✗ client can't** |
+| **Intercept/swallow accept key** | CarbonHotkey ✓ | WH_KEYBOARD_LL ✓† | XGrabKey (hotkey only)‡ | **✗ client can't** | **✗ client can't** |
 | Inject/insert text | AX-set / CGEvent | SendInput / clipboard / Value | XTEST ✓ / EditableText | wtype/ydotool / EditableText | ydotool / EditableText |
 | Front app id | NSWorkspace ✓ | GetForegroundWindow ✓ | _NET_ACTIVE_WINDOW ✓ | compositor IPC (best-effort) | **extension-only** |
 | Disable native autocomplete | InlinePrediction off | no global API (detect TSF/IME, back off) | n/a | n/a | n/a |
@@ -96,7 +102,7 @@ struct Capabilities {
     multiline: bool,
     toolkit: Toolkit,                  // generalizes is_electron: Cocoa/Win32/WPF/Qt/Gtk3/Gtk4/Electron/Java/Vte/Unknown
     insert_strategy: InsertStrategy,   // EditableTextApi | ValueSet | SyntheticKeys | Clipboard | ImeCommit | None
-    accept_intercept: KeyInterceptMode,// CgEventTap | LowLevelHook | XGrabKey | FocusScopedInhibit | ImeOwnsKey | HotkeyOnly | None
+    accept_intercept: KeyInterceptMode,// CarbonHotkey | CgEventTap | LowLevelHook | XGrabKey | FocusScopedInhibit | ImeOwnsKey | HotkeyOnly | None
     overlay_at_caret: OverlayPlacement,// NativePanel | LayeredWindow | OverrideRedirect | LayerShell | ImeCandidate | None
     coords_global_screen: bool,        // can the caret rect be used for absolute positioning?
 }
@@ -111,7 +117,10 @@ struct Capabilities {
 - **`environment()` with display_server + compositor** — there is no single `LinuxAdapter`; it must detect `XDG_SESSION_TYPE` and the Wayland compositor (Mutter/KWin/wlroots/COSMIC) and advertise very different capabilities.
 - **Threading is implicit but real** — Windows mandates a UIA MTA worker thread; Linux AT-SPI is async D-Bus (zbus/tokio); macOS AX off-main. Each adapter owns its own runtime; trait methods may block (document it) or become `async`.
 
-This expanded trait should be adopted in the **macOS spec now** (macOS implements the rich enum values: `CgEventTap`, `NativePanel`, `EditableTextApi`/`SyntheticKeys`) so B/C slot in without reshaping the contract.
+This expanded trait should be adopted in the **macOS spec now** (macOS implements
+the rich enum values: `CarbonHotkey`, `NativePanel`,
+`EditableTextApi`/`SyntheticKeys`) so B/C slot in without reshaping the
+contract.
 
 ---
 

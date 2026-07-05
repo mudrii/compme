@@ -5,6 +5,12 @@
 **Companions:** `2026-06-03-engine-macos-mvp-design.md`, `2026-06-03-cross-platform-review.md`
 **Method:** 3 parallel agents read real production code (cloned + GitHub) and the product landscape: (1) macOS clones KeyType/Cotabby/GhostType, (2) Espanso + Rust input/AX crate maturity, (3) commercial+OSS landscape and failure modes.
 
+**Current-design correction (2026-07-05):** CGEventTap/Input Monitoring notes
+below are historical A0/prior-art evidence, not the current Compme accept-key
+requirement. Production accept uses transient Carbon hotkeys; Accessibility is
+still required, while Input Monitoring is only covered by historical spike probes
+and the revoked-permission acceptance spot-check.
+
 ---
 
 ## 0. Headline
@@ -72,7 +78,10 @@ Plus: **Retina pixel-vs-point is a second independent bug** — AX text rects so
 ### Distribution / permissions (category's #1 support burden)
 - **App Sandbox MUST be off**; hardened runtime needs `com.apple.security.cs.disable-library-validation` to load the dynamic llama framework → **Mac App Store impossible**; ship Developer-ID DMG + updater.
 - **TCC keys on cert+bundle-id** — a new signing cert under the same bundle id causes an **infinite "grant Accessibility" loop**. Need a **stable signing identity** + a `tccutil reset` recovery path + re-grant detection after OS updates.
-- Needs **both** Accessibility + Input Monitoring. **Secure Input** (triggered by background password managers) can get stuck globally and kills all injection.
+- Historical CGEventTap probes needed **both** Accessibility + Input Monitoring.
+  Current production accept does not require Input Monitoring; **Secure Input**
+  (triggered by background password managers) can still get stuck globally and
+  suppresses completion/accept behavior.
 
 ---
 
@@ -101,7 +110,7 @@ Plus: **Retina pixel-vs-point is a second independent bug** — AX text rects so
 |---|---|---|
 | 1 | Caret via `kAXBoundsForRange` + collapsed-range workaround | **CONFIRMS + major nuance** — 5-tier ladder; collapsed *works* in native; web needs AXTextMarker; Retina scaling; reject container rects |
 | 2 | Focus/text via AXObserver | **CONFIRMS** — + 2 Hz safety poll for under-reporting apps; ~20 ms debounce |
-| 3 | Tab accept via CGEventTap + Input Monitoring | **CONFIRMS + critical nuance** — must be two-tap (listen-only + on-demand consuming); naive single tap stalls other apps |
+| 3 | Historical Tab accept via CGEventTap + Input Monitoring | **CONFIRMS + critical nuance for the A0 probe** — must be two-tap (listen-only + on-demand consuming); current production accept moved to transient Carbon hotkeys |
 | 4 | Non-activating NSPanel overlay | **CONFIRMS exactly** — + need capsule-below-caret mode for mid-line; caret-height font; defensive color |
 | 5 | AX-set / CGEvent / clipboard insertion | **CONFIRMS all three** — per-app planner; tag synthetic events; Unicode codepoint inject |
 | 6 | llama.cpp + Metal, small GGUF first-run | **CONFIRMS exactly** — + hybrid-model KV hazards, exit-abort, token healing |
@@ -139,6 +148,12 @@ Plus: **Retina pixel-vs-point is a second independent bug** — AX text rects so
 ## 6. Net effect on the plan
 
 - **No assumption was wrong.** The architecture stands. The corrections are depth, not direction.
-- **Design-changing items folded into the macOS spec:** two-tap CGEventTap, 5-tier caret ladder + AXTextMarker web path + Retina conversion, 50 ms AX timeout, synthetic-event tagging, AX-on-one-thread, accessory-app pid attribution, hybrid-model KV-cache rules + ggml shutdown + token healing + trailing-whitespace trim, App-Sandbox-off / no-MAS / stable-cert + TCC-reset UX, Secure-Input handling, IME-composition suspend.
+- **Design-changing items folded into the macOS spec:** historical two-tap
+  CGEventTap evidence (later superseded for production accept by transient Carbon
+  hotkeys), 5-tier caret ladder + AXTextMarker web path + Retina conversion, 50
+  ms AX timeout, synthetic-event tagging, AX-on-one-thread, accessory-app pid
+  attribution, hybrid-model KV-cache rules + ggml shutdown + token healing +
+  trailing-whitespace trim, App-Sandbox-off / no-MAS / stable-cert + TCC-reset
+  UX, Secure-Input handling, IME-composition suspend.
 - **A0 spike must now also prove:** the two-tap stall-free design, the caret ladder in a native app + a Chromium app, and warm inference with the chosen model's KV-reuse rules.
 - **Read these before coding:** KeyType `AXCaretGeometryResolver.swift` + ADR log (MIT); Cotabby `AXHelper.swift` + `InputMonitor.swift` (AGPL — learn, don't copy); Espanso `espanso-detect`/`espanso-inject` (GPL — learn).

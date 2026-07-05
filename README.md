@@ -138,7 +138,7 @@ For development, run unbundled with `cargo run -p app`.
 │   ├── webconfig/                     # Signed compme:// deep-link config
 │   └── app/                           # compme binary and run loop
 ├── tools/
-│   ├── acceptance/                    # A1b macOS live acceptance runner
+│   ├── acceptance/                    # A1b live, A2 compat, E2E, and startup gates
 │   ├── bundle/                        # macOS bundle assets (URL scheme, icon)
 │   └── spike/                         # Separate A0 prototype workspace
 └── docs/

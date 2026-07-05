@@ -243,8 +243,8 @@ per-row IDs.
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅ | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅ | OCR quality/perf on a granted desktop + multi-display caret confirm |
 | Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅ | remaining live residual: secure input, snoozed transition, volatile `pid:N` |
-| Per-app memory inspect/delete UI | count/delete_app ✅ | completed live in Apps pane; remaining global delete_all/mode controls tie to Personalization |
-| Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback; optional manual UX confirmation remains part of the broad settings walkthrough |
+| Per-app memory inspect/delete UI | count/delete_app ✅ | completed live in Apps pane; global `delete_all` and memory-mode controls are deferred UI work, not part of the current Personalization pane |
+| Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback in deterministic `word-only` mode; real-model E2E must use `full`/`word` because real-model `word-only` fails closed; optional manual UX confirmation remains part of the broad settings walkthrough |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
 | Google Docs / Arc onboarding | `needs_accessibility_setup` ✅ | live Docs round-trip |
 
@@ -454,11 +454,15 @@ blocked anyway (1.1 needs Windows/Linux build+test environments; 1.2 needs an
 Apple Developer ID). Everything below is buildable on the macOS dev host today.
 
 Verified complete-list facts (2026-06-30 plan-review pass): there is **no Tier
-1.3**, and **Tier 2 is a single ✅ DONE item (2.1)** — so the macOS-buildable
-backlog is exactly the six residuals below, nothing hidden. Correction to an
-earlier note: the **F2 insertion-order decision is already shipped** — a fixed
-`AxSet → SyntheticKeys → Clipboard → None` chain (`platform_macos/src/lib.rs`
-`insertion_strategy()`), not paste-first and not per-app configurable.
+1.3**, and **Tier 2 is a single ✅ DONE item (2.1)**. The six rows below were
+the remaining **macOS-buildable code backlog** at that point; the current
+readiness surface is broader because `docs/ACCEPTANCE.md` now pins 14
+manual/live gate IDs for visual LOOK checks, caret-marker calibration,
+Input-Monitoring-revoked Carbon-accept proof, and other live-only evidence.
+Correction to an earlier note: the **F2 insertion-order decision is already
+shipped** — a fixed `AxSet → SyntheticKeys → Clipboard → None` chain
+(`platform_macos/src/lib.rs` `insertion_strategy()`), not paste-first and not
+per-app configurable.
 
 ### Ordered build sequence (lowest-risk / decision-free first)
 

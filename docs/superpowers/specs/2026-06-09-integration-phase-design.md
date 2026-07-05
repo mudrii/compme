@@ -97,7 +97,8 @@ to record `replace_left` for the wiring test.
   helper to widen the splice range left by the typed token's UTF-16 width before
   the existing `splice_text_at_utf16_range`. `extend_range_left` is unit-tested
   (ASCII end-to-end, astral/UTF-16, zero=unchanged, clamp). `replace_left == 0` is
-  byte-identical (the 164 existing platform_macos tests pass unchanged). **Live AX
+  byte-identical (the then-current platform_macos regression suite passed
+  unchanged; the exact count is historical). **Live AX
   deletion CONFIRMED (step 6, 2026-06-10):** the typed token is physically deleted
   and replaced in TextEdit.
 - **`platform_macos` honoring — SyntheticKeys / Clipboard:** cannot read-modify-write

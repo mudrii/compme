@@ -88,7 +88,11 @@ Startup flow in `run()`:
 2. The tray exposes **Open Accessibility Settings** when blocked; the action sets `open_settings_requested`, and the run loop runs `open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"` (via `std::process::Command`, no AppKit).
 3. Secure input **and trust** are re-polled on the same ~500ms throttle (every ~40 heartbeats) and fed into the status derivation. Re-polling trust matters: if the user grants Accessibility while the app is running (via the prompt or the tray's settings affordance), `Blocked(Permission)` clears without a restart. (Per-field secure state continues to be handled by the engine via `Capabilities` on focus.)
 
-Input Monitoring has no public prompt API; failure to install the accept tap already surfaces as a `PlatformError` at startup and is logged with guidance — no extra UI in P1.
+Input Monitoring has no public prompt API and is not required for the production
+accept path: current accept handling uses transient Carbon hotkeys. The remaining
+Input-Monitoring coverage is the explicit revoked-permission spot-check in
+`docs/ACCEPTANCE.md` (`input-monitoring-revoked-carbon-accept`), which verifies
+accept keys still work without that permission.
 
 Screen Recording is intentionally not requested in P1. Cotypist uses it optionally for screen-aware context; Compme should add that in A2+ with local-only processing, a clear off path, and a field-only fallback when the permission is denied.
 
