@@ -272,8 +272,9 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   when domain rules exist, stale cached-domain refresh, non-empty selection
   rejection, and AxSet fail-closed gate.
 
-**Acceptance:** `cargo test --workspace` green; clippy clean. No FFI touched yet —
-the whole flow is exercised with the fake model + fake overlay.
+**Acceptance:** phase-local fake model + fake overlay tests green. Current
+release-readiness uses the locked workspace gates from `docs/ACCEPTANCE.md` and
+`docs/RELEASING.md`; no FFI is touched in this phase.
 
 ---
 
@@ -386,7 +387,8 @@ checked-in live gate entry added and checked on-device.
 **Tests:** recorder N-role collision; Apps-pane geometry with the new column has no
 overlaps; live rebind persists.
 
-**Acceptance:** `cargo test --workspace` green; Apps-pane + recorder validated.
+**Acceptance:** Apps-pane + recorder validated. Current release-readiness uses
+the locked workspace gates from `docs/ACCEPTANCE.md` and `docs/RELEASING.md`.
 
 ---
 

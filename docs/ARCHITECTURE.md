@@ -262,6 +262,12 @@ live integration), tests use a fixed key. Storage is opt-in —
 `StorageMode::Off` is the default and records nothing; `AcceptedOnly` stores
 accepted completions, `AllMonitored` is the broader opt-in. Records are
 inspectable (`count` / `recent`) and deletable (`delete_all` / `delete_app`).
+`AllMonitored` records only established inserted-text deltas after a baseline;
+it does not scrape pre-existing field text. The run loop blocks collection for
+secure input, disabled/snoozed/excluded policy, stale browser-domain state when
+domain rules exist, terminal command prompts, volatile `pid:N` identities, and
+per-app collection-off settings. Missing store path/key configuration fails
+closed instead of silently writing plaintext.
 
 ### `stats`
 

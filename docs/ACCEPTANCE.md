@@ -175,7 +175,9 @@ the gate), type enough text to show a suggestion, then use a physical keyboard:
 - Option+Tab passes through to the app without accepting; plain-text targets
   insert a literal Tab, while rich targets may apply their native Option+Tab
   behavior such as list indentation
-- revoke Input Monitoring and confirm accept behavior is unchanged
+- when the `input-monitoring-revoked-carbon-accept` gate is applicable, keep
+  Accessibility granted, revoke Input Monitoring, and confirm accept behavior is
+  unchanged
 
 Record the product log line, target app, keyboard action, and resulting field
 contents for each run. These manual runs are supplemental UX confirmation; the
@@ -283,13 +285,13 @@ requires an unlocked macOS GUI session with Accessibility permission:
 - move the caret or edit the field before accepting and confirm the stale
   correction no longer applies
 
-### Settings LOOK Gates
+### Settings & Runtime LOOK Gates
 
 These Settings-window checks are manual because they depend on visible AppKit
 layout and live control interaction. The runner-pinned IDs are
 `apps-policy-toggle-look`, `personalization-pane-look`, `menu-bar-icon-look`,
-`shortcuts-recorder-look`, `setup-model-picker-look`, and
-`nine-tab-settings-walkthrough`:
+`shortcuts-recorder-look`, `always-on-hotkeys-physical-look`,
+`setup-model-picker-look`, and `nine-tab-settings-walkthrough`:
 
 - **Apps policy grid** — open Settings > Apps with at least two rows; verify the
   On / Tab / Mid / AC / GF checkbox columns do not overlap or truncate app names,
@@ -301,8 +303,8 @@ layout and live control interaction. The runner-pinned IDs are
   commits and persists, and confirm the next request uses updated steering
   without relaunch.
 - **Menu bar / Shortcuts / Setup / nine-tab walkthrough** — confirm the tray
-  icon/status, modifier-combo recorder, setup model picker, and all nine panes
-  match the detailed Live UI LOOK checklist below.
+  icon/status, modifier-combo recorder, always-on hotkey dispatch, setup model
+  picker, and all nine panes match the detailed Live UI LOOK checklist below.
 
 ### Useful Options
 

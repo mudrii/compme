@@ -3,15 +3,13 @@
 [![CI](https://github.com/mudrii/compme/actions/workflows/ci.yml/badge.svg)](https://github.com/mudrii/compme/actions/workflows/ci.yml)
 
 Compme is an **open-source, multi-platform** inline text-completion engine
-**inspired by** [Cotypist](https://cotypist.app). It is **not** a clone and does
-**not** aim to replicate all of Cotypist — it borrows the ideas worth having
-(local on-device completion, broad app compatibility, an unobtrusive inline UX)
-and shapes them to its own goals. Where Compme implements a Cotypist-like feature
-it aims for behavioral parity *on that feature*, but the project picks its own
-scope and deliberately leaves parts out — including payment, licensing,
-subscription tiers, and multi-device seats. Every feature that ships is available
-to every user with no pricing gates; the only constraint on which local models are
-offered is hardware capability. macOS ships first; **Windows and Linux are
+**inspired by** [Cotypist](https://cotypist.app). It is **not** a proprietary
+clone, but the plan is to cover Cotypist's non-payment user-facing writing
+workflow while shaping the implementation around open local-first goals.
+Compme deliberately leaves out payment, licensing, subscription tiers, and
+multi-device seats. Every feature that ships is available to every user with no
+pricing gates; the only constraint on which local models are offered is hardware
+capability. macOS ships first; **Windows and Linux are
 committed deliverables** built behind a shared cross-platform `PlatformAdapter`
 contract. All inference is local (llama.cpp), with no proprietary telemetry.
 
@@ -63,7 +61,10 @@ tools/bundle/make-app.sh        # → target/bundle/Compme.app (ad-hoc signed by
 open target/bundle/Compme.app
 ```
 
-For development, run unbundled with `cargo run -p app`.
+After either install path, enable Compme under System Settings → Privacy &
+Security → Accessibility. Source builds should use the bundle for `compme://`
+deep links, Login Items, and a stable TCC identity. For core development, an
+unbundled `cargo run -p app` is still fine.
 
 ## Features
 
@@ -255,6 +256,10 @@ debounce behavior — `COMPME_PROMPT_MODE`, `COMPME_DEBOUNCE_MS`,
 `COMPME_MIN_CONTEXT`, `COMPME_CANDIDATES`. Harness/diagnostic keys
 (`COMPME_ACCEPTANCE_*`, `COMPME_DIAG_*`, `COMPME_DEBUG`, `COMPME_RUN_MS`,
 `COMPME_STUB_COMPLETION`, `COMPME_CONFIG`) are for tests and debugging only.
+Model/release gate overrides such as `COMPME_MODEL_GPU_LAYERS`,
+`COMPME_MODEL_CONTEXT_TOKENS`, `COMPME_REQUIRE_MODEL_TESTS`,
+`COMPME_REQUIRE_MODEL_CONTEXT`, and `COMPME_REQUIRE_LATENCY_BUDGET` are
+documented in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Quick Start
 
@@ -280,7 +285,7 @@ Run the spike workspace checks:
 
 ```sh
 cd tools/spike
-cargo test
+cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked --bins
 ```

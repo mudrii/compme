@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1696 workspace tests; spike separate)
+> **Last updated:** 2026-07-06 (docs/roadmap sync after audit, TDD, and release-pipeline hardening loops) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1696 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -93,8 +93,11 @@ signing + hardened runtime + notarization + a native updater.
   Sparkle/appcast client.
 
 **Effort:** Medium. **Blocked on an Apple Developer ID account ($99/yr) — human-gated.**
-The CI/release/cask glue is already written and validated; only the secrets +
-identity + first tag are missing.
+The CI/release/cask glue is already written and locally validated, including
+locked Cargo gates, pinned toolchain, release preflight checks, A2 matrix ledger
+policy, privacy-policy scan, model-gate policy, draft-release publication,
+cask finalization, and post-cask undraft. Only the signing/notarization secrets,
+identity, and first tag are missing.
 
 ---
 
@@ -242,7 +245,7 @@ folded settings LOOK gates (`personalization-pane-look`,
 | Browser mirror-window | `set_mirror_mode` ✅ | live Firefox/Zen ghost-in-mirror confirmation |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅ | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch | OCR quality/perf on a granted desktop + multi-display caret confirm |
-| Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: secure input, snoozed transition, volatile `pid:N` |
+| Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; records only established inserted-text deltas after a baseline, never pre-existing field text; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: secure input, snoozed transition, volatile `pid:N` |
 | Per-app memory inspect/delete UI | count/delete_app ✅ | completed live in Apps pane; global `delete_all` and memory-mode controls are deferred UI work, not part of the current Personalization pane |
 | Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback in deterministic `word-only` mode; real-model E2E must use `full`/`word` because real-model `word-only` fails closed; optional manual UX confirmation remains part of the broad settings walkthrough |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
@@ -264,7 +267,7 @@ acceptance criteria. Start there for implementation.
 
 **Status (2026-07-02):** G1-G5 are implemented and deterministic validation is
 green. The portable correction pipeline, macOS trigger/accept routing,
-fail-closed range seams, underline/banner presenter, Apps-pane `GrammarFix`
+fail-closed range seams, `overlay-correction-presenter`, Apps-pane `GrammarFix`
 policy column, and grammar-accept recorder/persistence are in code with focused
 tests. The remaining acceptance item is the interactive TextEdit grammar LOOK
 gate emitted by `tools/acceptance/run-a1b-live-gates.sh` and pinned by its
@@ -492,7 +495,8 @@ per-app configurable.
 ### After macOS is complete — longer-term order (unchanged)
 
 1. **Tier 1.2** distribution — wire notarization the moment a Developer ID is
-   available; cut the first `v*` tag (CI/cask glue already written).
+   available; cut the first `v*` tag (CI/release/cask glue already written and
+   locally validated).
 2. **Tier 1.1** cross-platform adapters — a dedicated milestone of their own
    (Windows/UIA, Linux/AT-SPI2, GNOME-Wayland IME path).
 3. **Tier 4** — opportunistic live LOOK gates, whenever a macOS GUI session is

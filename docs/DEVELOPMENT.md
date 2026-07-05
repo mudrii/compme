@@ -216,7 +216,10 @@ native runners: fmt, clippy, test, and build for `platform_windows` on
 `ubuntu-latest`. Those are CI/release-runner gates rather than local macOS
 commands.
 For release-readiness audits with the local GGUF model installed, also run the
-ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md).
+ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md), the A2
+compatibility matrix ledger check, and the A1b manual checklist policy. A
+release-readiness run should fail on missing A2 matrix rows, skip/fail ledger
+rows, unresolved mandatory A1b manual gates, or model-gate policy drift.
 
 For macOS adapter work, also run the live acceptance harness when the GUI state
 is available:
@@ -277,6 +280,7 @@ For `platform_macos` changes:
 
    ```sh
    cargo build --locked -p platform_macos --examples
+   cargo build --locked -p app
    ```
 
 3. Prepare macOS:
@@ -290,7 +294,7 @@ For `platform_macos` changes:
 4. Run:
 
    ```sh
-   tools/acceptance/run-a1b-live-gates.sh
+   tools/acceptance/run-a1b-live-gates.sh --skip-build
    ```
 
 5. Inspect logs under `tools/acceptance/logs/`.

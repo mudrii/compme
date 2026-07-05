@@ -135,7 +135,7 @@ This is the bulk of the AppKit/objc2 glue: **build-verified + live**, not unit-t
 
 - **Pure, unit-tested:** `derive_status` (all branches + priority), `AppStatus` strings + `suggestions_allowed`, `parse_env_file` (comments/blank/whitespace/`=`-in-value), `parse_clamped` (default/clamp/invalid), config layering precedence, `Engine::on_dismiss`.
 - **Build-verified + live:** `MacosTray` (objc2), AX/secure-input FFI, run-loop glue, the settings `open`.
-- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets` stay green.
+- `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets`, and `cargo build --locked --workspace --all-targets` stay green.
 - Live: tray appears in the menu bar, toggle disables suggestions + hides ghost, Quit exits cleanly, blocked state shows when Accessibility is revoked.
 
 ## Live validation — 2026-06-07 (Apple M4 Max, macOS 25.5)
@@ -171,7 +171,7 @@ Specific Cotypist-alignment backlog:
 - Typo/suggested-fix behavior separated from full autocorrect, because current public pages describe both and not all help copy agrees.
 - ~~Product/tier decision~~ **[RESOLVED 2026-06-09 — design spec Project Scope / §15 D15]:** no pricing/feature gates. Quotas, larger models, clipboard awareness, custom instructions, autocorrect, Labs are **all available to every user**; device-count/seat licensing is **dropped**. The only gate is hardware capability. No decision remains.
 - Telemetry policy. **[Scope-locked 2026-06-09]** No proprietary telemetry (Sentry/BigQuery are Cotypist's, not ours). P1 has no network telemetry; default stays **no network analytics**. Any future diagnostics are local-only + opt-in, with explicit payload/provider/region/default/opt-in semantics — never typed/clipboard/OCR/prompt content.
-- Signed/notarized release packaging plus updater artifacts, signing key handling, endpoint format, and failure recovery. A3 chose a GitHub-release-driven update manifest plus release-page handoff; a full Sparkle/appcast client remains optional later.
+- Signed/notarized release packaging plus updater artifacts, signing key handling, endpoint format, and failure recovery. A3 chose a GitHub-release-driven update manifest plus release-page handoff; the current release pipeline builds a draft GitHub Release, finalizes the Homebrew cask checksum with ancestry/version guards, then undrafts after cask finalization succeeds. A full Sparkle/appcast client remains optional later.
 
 ## Decisions (from brainstorming)
 
