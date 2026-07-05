@@ -213,7 +213,8 @@ fn main() {
         .expect("arm accept action");
 
     // Grave accepts the full completion, Tab accepts the next word, and
-    // Option+Tab must pass through to the target app as a literal tab.
+    // Option+Tab must pass through to the target app. Plain-text targets insert
+    // a literal tab; rich TextEdit can handle the same key as list indentation.
     let (accept_keycode, accept_key_label, option_down) = plan.post_key();
     let post_after = env::var("COMPME_ACCEPTANCE_POST_TAB_AFTER_MS")
         .ok()
@@ -263,18 +264,22 @@ fn main() {
     }
     println!("SUMMARY actions={actions:?} insert_results={insert_results:?}");
 
-    let text_matches = matches!(
-        (pre_read.as_ref(), post_read.as_ref()),
-        (Some(before), Some(Ok(after))) if inserted_delta_matches(before, after, &expected_text)
-    );
     let accepted = match &plan {
         RequirementPlan::Accept { action, .. } => {
+            let text_matches = matches!(
+                (pre_read.as_ref(), post_read.as_ref()),
+                (Some(before), Some(Ok(after))) if inserted_delta_matches(before, after, &expected_text)
+            );
             actions == vec![*action]
                 && matches!(insert_results.as_slice(), [Ok(())])
                 && text_matches
         }
         RequirementPlan::Passthrough { .. } => {
-            actions.is_empty() && insert_results.is_empty() && text_matches
+            let passthrough_seen = matches!(
+                (pre_read.as_ref(), post_read.as_ref()),
+                (Some(before), Some(Ok(after))) if native_passthrough_matches(before, after, &expected_text)
+            );
+            actions.is_empty() && insert_results.is_empty() && passthrough_seen
         }
     };
     if !accepted {
@@ -341,6 +346,18 @@ fn inserted_delta_matches(before: &TextContext, after: &TextContext, insert_text
             == before
                 .caret
                 .saturating_add(insert_text.encode_utf16().count())
+}
+
+fn native_passthrough_matches(
+    before: &TextContext,
+    after: &TextContext,
+    insert_text: &str,
+) -> bool {
+    inserted_delta_matches(before, after, insert_text)
+        || after.left != before.left
+        || after.right != before.right
+        || after.selection != before.selection
+        || after.caret != before.caret
 }
 
 fn looks_like_text_field(field: &FieldHandle) -> bool {
@@ -419,6 +436,28 @@ mod tests {
         assert_eq!(plan.action_to_arm(), AcceptAction::Word);
         assert_eq!(plan.expected_text(), "\t");
         assert_eq!(plan.post_key(), (KeyCode::TAB, "OPTION_TAB", true));
+    }
+
+    #[test]
+    fn native_passthrough_accepts_literal_tab_or_textedit_rich_text_transform() {
+        let before = context("probe", "", 5);
+        let literal = context("probe\t", "", 6);
+        let rich_text_list_indent = context("\t\u{2043}\tprobe", "\n", 8);
+
+        assert!(native_passthrough_matches(&before, &literal, "\t"));
+        assert!(native_passthrough_matches(
+            &before,
+            &rich_text_list_indent,
+            "\t"
+        ));
+    }
+
+    #[test]
+    fn native_passthrough_rejects_no_target_side_change() {
+        let before = context("probe", "", 5);
+        let unchanged = context("probe", "", 5);
+
+        assert!(!native_passthrough_matches(&before, &unchanged, "\t"));
     }
 
     #[test]

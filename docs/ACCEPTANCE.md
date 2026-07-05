@@ -128,7 +128,10 @@ intentionally partial target-specific runs.
 `accept-insert-option-tab` is the public TextEdit-backed passthrough gate for
 the Option+Tab contract: the harness arms a visible word suggestion, posts
 Option+Tab, confirms no accept callback fired, and reads the focused TextEdit
-document to prove the native key event inserted a literal tab.
+document to prove the native key event reached TextEdit. Plain-text targets
+insert a literal tab; rich TextEdit may handle the same passed-through key as
+list indentation (`\t⁃\t...`) instead. Both are valid evidence that Compme did
+not consume the Option+Tab or map it to Word accept.
 
 **[2026-06-11] Scripted Carbon gates REBUILT.** The long-standing claim that
 synthetic key posts cannot fire `RegisterEventHotKey` was re-tested and is
@@ -158,7 +161,9 @@ the gate), type enough text to show a suggestion, then use a physical keyboard:
 - Tab accepts the next word and leaves the remainder visible
 - Esc hides the suggestion and suppresses that field until refocus/edit
 - Down cycles candidates without insertion
-- Option+Tab passes a literal Tab through to the app
+- Option+Tab passes through to the app without accepting; plain-text targets
+  insert a literal Tab, while rich targets may apply their native Option+Tab
+  behavior such as list indentation
 - revoke Input Monitoring and confirm accept behavior is unchanged
 
 Record the product log line, target app, keyboard action, and resulting field
