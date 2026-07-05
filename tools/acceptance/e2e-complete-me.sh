@@ -38,8 +38,8 @@ fail() {
 
 configure_e2e_mode() {
   case "$ACCEPT_MODE" in
-    full|word) ;;
-    *) fail "COMPME_E2E_ACCEPT must be full or word" ;;
+    full|word|word-only) ;;
+    *) fail "COMPME_E2E_ACCEPT must be full, word, or word-only" ;;
   esac
 
   case "$(printf '%s' "$REAL_MODEL" | tr '[:upper:]' '[:lower:]')" in
@@ -49,6 +49,9 @@ configure_e2e_mode() {
   esac
 
   if [ "$REAL_MODEL" -eq 1 ]; then
+    if [ "$ACCEPT_MODE" = "word-only" ]; then
+      fail "COMPME_E2E_REAL_MODEL=1 cannot use COMPME_E2E_ACCEPT=word-only; use deterministic stub mode for exact single-word readback"
+    fi
     if [ "${COMPME_E2E_STUB+x}" = "x" ]; then
       fail "COMPME_E2E_REAL_MODEL=1 cannot be combined with COMPME_E2E_STUB"
     fi
@@ -63,6 +66,8 @@ configure_e2e_mode() {
     STUB="$COMPME_E2E_STUB"
   elif [ "$ACCEPT_MODE" = "word" ]; then
     STUB=" jumps over"
+  elif [ "$ACCEPT_MODE" = "word-only" ]; then
+    STUB=" jumps"
   else
     STUB=" jumps-$(date +%H%M%S)"
   fi
@@ -75,6 +80,23 @@ sleep_ms() {
   esac
   [ "$ms" -gt 0 ] || return 0
   sleep "$(awk "BEGIN { printf \"%.3f\", $ms / 1000 }")"
+}
+
+accept_key_sequence() {
+  case "$1" in
+    full) printf '%s\n' 50 ;;
+    word) printf '%s\n' 48 50 ;;
+    word-only) printf '%s\n' 48 ;;
+    *) return 1 ;;
+  esac
+}
+
+post_accept_keycode() {
+  case "$1" in
+    48) osascript -e 'tell application "System Events" to key code 48' >/dev/null 2>&1 ;; # Tab = next word
+    50) osascript -e 'tell application "System Events" to key code 50' >/dev/null 2>&1 ;; # grave = full
+    *) return 1 ;;
+  esac
 }
 
 wait_for_app_status() {
@@ -137,6 +159,9 @@ assert_pipeline_evidence() {
         echo "E2E: document growth exceeded completion length [FAIL]"
         ok=0
       fi
+    elif [ "$accept_mode" = "word-only" ]; then
+      echo "E2E: real-model word-only validation is unsupported; use deterministic stub readback [FAIL]"
+      ok=0
     elif [ "$document_delta" -eq "$candidate_bytes" ]; then
       echo "E2E: document grew by full completion length [PASS]"
     else
@@ -177,7 +202,7 @@ assert_pipeline_evidence() {
     ok=0
   fi
 
-  if [ "$accept_mode" = "word" ]; then
+  if [ "$accept_mode" = "word" ] || [ "$accept_mode" = "word-only" ]; then
     if grep -Eq '^compme: accept Word$' "$log_file"; then
       echo "E2E: stage present: 'accept Word' [PASS]"
     else
@@ -185,14 +210,28 @@ assert_pipeline_evidence() {
       ok=0
     fi
   fi
-  if grep -Eq '^compme: accept Full$' "$log_file"; then
-    echo "E2E: stage present: 'accept Full' [PASS]"
-  else
-    echo "E2E: stage missing: 'accept Full' [FAIL]"
-    ok=0
+  if [ "$accept_mode" = "full" ] || [ "$accept_mode" = "word" ]; then
+    if grep -Eq '^compme: accept Full$' "$log_file"; then
+      echo "E2E: stage present: 'accept Full' [PASS]"
+    else
+      echo "E2E: stage missing: 'accept Full' [FAIL]"
+      ok=0
+    fi
   fi
 
   [ "$ok" -eq 1 ]
+}
+
+assert_document_suffix() {
+  document_text="$1"
+  expected_suffix="$2"
+  label="$3"
+  if [ -z "$expected_suffix" ] || [[ "$document_text" == *"$expected_suffix" ]]; then
+    echo "E2E: $label suffix matched [PASS]"
+    return 0
+  fi
+  echo "E2E: $label suffix missing [FAIL]"
+  return 1
 }
 
 run_self_tests() {
@@ -236,6 +275,37 @@ run_self_tests() {
     echo "PASS self-test-e2e-word-default-has-remainder"
   else
     echo "FAIL self-test-e2e-word-default-has-remainder: word mode default stub must contain at least two words" >&2
+    failures=$((failures + 1))
+  fi
+  if (
+    unset COMPME_E2E_STUB COMPME_STUB_COMPLETION
+    ACCEPT_MODE=word-only
+    REAL_MODEL=0
+    STUB=""
+    configure_e2e_mode
+    [ "$(printf '%s\n' "$STUB" | awk '{print NF}')" -eq 1 ]
+  ); then
+    echo "PASS self-test-e2e-word-only-default-is-single-word"
+  else
+    echo "FAIL self-test-e2e-word-only-default-is-single-word: word-only mode default stub must contain exactly one word" >&2
+    failures=$((failures + 1))
+  fi
+  if [ "$(accept_key_sequence full)" = "50" ]; then
+    echo "PASS self-test-e2e-full-key-sequence"
+  else
+    echo "FAIL self-test-e2e-full-key-sequence" >&2
+    failures=$((failures + 1))
+  fi
+  if [ "$(accept_key_sequence word)" = "$(printf '48\n50')" ]; then
+    echo "PASS self-test-e2e-word-key-sequence"
+  else
+    echo "FAIL self-test-e2e-word-key-sequence" >&2
+    failures=$((failures + 1))
+  fi
+  if [ "$(accept_key_sequence word-only)" = "48" ]; then
+    echo "PASS self-test-e2e-word-only-key-sequence"
+  else
+    echo "FAIL self-test-e2e-word-only-key-sequence" >&2
     failures=$((failures + 1))
   fi
   if (
@@ -284,6 +354,36 @@ run_self_tests() {
     failures=$((failures + 1))
   else
     echo "PASS self-test-e2e-pipeline-evidence-real-rejects-unrelated-growth"
+  fi
+  word_only_pipeline_log="$tmp_dir/word-only-pipeline.log"
+  printf '%s\n' \
+    'compme: focus TextEdit' \
+    'compme: request gen=9 prompt_chars=32 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true' \
+    'compme: completion gen=9 candidate_count=1 candidate_lengths=[6]' \
+    'compme: accept Word' >"$word_only_pipeline_log"
+  if assert_pipeline_evidence 'prompt baseline trail ' ' trail' "$word_only_pipeline_log" word-only 0 >/dev/null; then
+    echo "PASS self-test-e2e-pipeline-evidence-word-only-success"
+  else
+    echo "FAIL self-test-e2e-pipeline-evidence-word-only-success" >&2
+    failures=$((failures + 1))
+  fi
+  if assert_pipeline_evidence 'prompt baseline too much' 'prompt baseline' "$word_only_pipeline_log" word-only 0 real >/dev/null; then
+    echo "FAIL self-test-e2e-pipeline-evidence-real-word-only-rejects-unsupported-mode" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-pipeline-evidence-real-word-only-rejects-unsupported-mode"
+  fi
+  if assert_document_suffix 'prompt baseline trail ' ' trail ' 'trailing-space' >/dev/null; then
+    echo "PASS self-test-e2e-document-suffix-success"
+  else
+    echo "FAIL self-test-e2e-document-suffix-success" >&2
+    failures=$((failures + 1))
+  fi
+  if assert_document_suffix 'prompt baseline trail' ' trail ' 'trailing-space' >/dev/null; then
+    echo "FAIL self-test-e2e-document-suffix-rejects-missing-space" >&2
+    failures=$((failures + 1))
+  else
+    echo "PASS self-test-e2e-document-suffix-rejects-missing-space"
   fi
   word_pipeline_log="$tmp_dir/word-pipeline.log"
   printf '%s\n' \
@@ -422,6 +522,23 @@ run_self_tests() {
     echo "FAIL self-test-e2e-real-model-configures-without-stub" >&2
     failures=$((failures + 1))
   fi
+  real_mode_word_only_log="$tmp_dir/real-mode-word-only.log"
+  if (
+    ACCEPT_MODE=word-only
+    REAL_MODEL=1
+    STUB=""
+    unset COMPME_E2E_STUB
+    unset COMPME_STUB_COMPLETION
+    configure_e2e_mode
+  ) >"$real_mode_word_only_log" 2>&1; then
+    echo "FAIL self-test-e2e-real-model-rejects-word-only: unsupported word-only real mode passed" >&2
+    failures=$((failures + 1))
+  elif grep -q 'COMPME_E2E_REAL_MODEL=1 cannot use COMPME_E2E_ACCEPT=word-only' "$real_mode_word_only_log"; then
+    echo "PASS self-test-e2e-real-model-rejects-word-only"
+  else
+    echo "FAIL self-test-e2e-real-model-rejects-word-only: expected error missing" >&2
+    failures=$((failures + 1))
+  fi
   real_mode_stub_log="$tmp_dir/real-mode-stub-completion.log"
   if (
     ACCEPT_MODE=full
@@ -449,7 +566,7 @@ run_self_tests() {
   ) >"$invalid_accept_log" 2>&1; then
     echo "FAIL self-test-e2e-rejects-invalid-accept-mode: invalid accept mode passed" >&2
     failures=$((failures + 1))
-  elif grep -q 'COMPME_E2E_ACCEPT must be full or word' "$invalid_accept_log"; then
+  elif grep -q 'COMPME_E2E_ACCEPT must be full, word, or word-only' "$invalid_accept_log"; then
     echo "PASS self-test-e2e-rejects-invalid-accept-mode"
   else
     echo "FAIL self-test-e2e-rejects-invalid-accept-mode: expected error missing" >&2
@@ -551,13 +668,14 @@ osascript -e 'tell application "System Events" to key code 119' >/dev/null 2>&1 
 #    Tab (key code 48) = accept next word, grave/backtick (key code 50) = accept
 #    full. Word mode accepts the first word with Tab, then the remainder with grave.
 sleep_ms "$TAB_AFTER_MS"
-if [ "$ACCEPT_MODE" = "word" ]; then
-  osascript -e 'tell application "System Events" to key code 48' >/dev/null 2>&1 # Tab = next word
-  sleep_ms "$SECOND_TAB_AFTER_MS"
-  osascript -e 'tell application "System Events" to key code 50' >/dev/null 2>&1 # grave = full (remaining)
-else
-  osascript -e 'tell application "System Events" to key code 50' >/dev/null 2>&1 # grave = full
-fi
+posted_accept_keys=0
+for accept_keycode in $(accept_key_sequence "$ACCEPT_MODE"); do
+  if [ "$posted_accept_keys" -gt 0 ]; then
+    sleep_ms "$SECOND_TAB_AFTER_MS"
+  fi
+  post_accept_keycode "$accept_keycode" || fail "unsupported accept keycode: $accept_keycode"
+  posted_accept_keys=$((posted_accept_keys + 1))
+done
 
 # 5. Wait for the bounded run to finish on its own (COMPME_RUN_MS).
 wait_for_app_status "$APP_PID"
@@ -575,6 +693,11 @@ if [ "$REAL_MODEL" -eq 1 ]; then
 else
   if ! assert_pipeline_evidence "$RESULT" "$STUB" "$LOG" "$ACCEPT_MODE" "$app_status"; then
     ok=0
+  fi
+  if [ -n "${COMPME_E2E_EXPECT_SUFFIX:-}" ]; then
+    if ! assert_document_suffix "$RESULT" "$COMPME_E2E_EXPECT_SUFFIX" "expected readback"; then
+      ok=0
+    fi
   fi
 fi
 

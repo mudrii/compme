@@ -109,6 +109,7 @@ By default the runner builds the `platform_macos` examples, builds the
 - `accept-insert-option-tab`
 - `e2e-compme-pipeline`
 - `e2e-compme-word-remainder`
+- `e2e-compme-trailing-space`
 - `accept-tap-inactive`
 - `accept-tap-full`
 - `accept-tap-word`

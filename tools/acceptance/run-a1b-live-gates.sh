@@ -192,6 +192,26 @@ run_e2e_gate() {
     "$E2E_SCRIPT"
 }
 
+run_trailing_space_e2e_gate() {
+  e2e_config="$LOG_DIR/e2e-trailing-space-config.env"
+  : >"$e2e_config"
+  run_gate "e2e-compme-trailing-space" env -i \
+    PATH="$PATH" \
+    HOME="$HOME" \
+    TMPDIR="${TMPDIR:-/tmp}" \
+    RUST_BACKTRACE="${RUST_BACKTRACE:-}" \
+    COMPME_CONFIG="$e2e_config" \
+    COMPME_SCREEN_CONTEXT=0 \
+    COMPME_TRAILING_SPACE=1 \
+    COMPME_ACCEPT_WORD_KEY=48 \
+    COMPME_ACCEPT_FULL_KEY=50 \
+    COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" \
+    COMPME_E2E_ACCEPT=word-only \
+    COMPME_E2E_STUB=" trail" \
+    COMPME_E2E_EXPECT_SUFFIX=" trail " \
+    "$E2E_SCRIPT"
+}
+
 sleep_ms() {
   ms="$1"
   case "$ms" in
@@ -318,6 +338,20 @@ skip_gate() {
 
 skip_e2e_gate() {
   skip_gate "$1" "$2" mandatory
+}
+
+skip_textedit_e2e_gates() {
+  reason="$1"
+  skip_gate "e2e-compme-pipeline" "$reason" mandatory
+  skip_gate "e2e-compme-word-remainder" "$reason" mandatory
+  skip_gate "e2e-compme-trailing-space" "$reason" mandatory
+}
+
+skip_all_e2e_gates() {
+  reason="$1"
+  skip_e2e_gate "e2e-compme-pipeline" "$reason"
+  skip_e2e_gate "e2e-compme-word-remainder" "$reason"
+  skip_e2e_gate "e2e-compme-trailing-space" "$reason"
 }
 
 manual_gate() {
@@ -654,6 +688,7 @@ run_self_tests() {
     accept-insert-option-tab \
     e2e-compme-pipeline \
     e2e-compme-word-remainder \
+    e2e-compme-trailing-space \
     caret-marker-browser-marker \
     popup-fallback-fixture \
     accept-tap-inactive \
@@ -661,76 +696,76 @@ run_self_tests() {
     accept-tap-word \
     accept-tap-escape \
     accept-tap-option-tab \
-	    accept-tap-cycle \
-	    accept-tap-delayed-hide \
-	    overlay-presenter \
-	    overlay-correction-presenter; do
+    accept-tap-cycle \
+    accept-tap-delayed-hide \
+    overlay-presenter \
+    overlay-correction-presenter; do
     assert_log_contains "default-dry-run-gate-$gate" "$dry_run_log" "^== $gate ==$" \
       || self_failures=$((self_failures + 1))
   done
-	  for gate in \
-	    apps-policy-toggle-look \
-	    personalization-pane-look \
-	    menu-bar-icon-look \
-	    shortcuts-recorder-look \
-	    always-on-hotkeys-physical-look \
-	    setup-model-picker-look \
-	    nine-tab-settings-walkthrough \
-	    caret-marker-chromium-forks-calibration \
-	    caret-marker-chrome-marker \
-	    caret-marker-chromium-marker \
-	    caret-marker-electron-marker \
-	    encrypted-memory-all-monitored-live \
-	    grammar-fix-textedit-look \
-	    input-monitoring-revoked-carbon-accept; do
+  for gate in \
+    apps-policy-toggle-look \
+    personalization-pane-look \
+    menu-bar-icon-look \
+    shortcuts-recorder-look \
+    always-on-hotkeys-physical-look \
+    setup-model-picker-look \
+    nine-tab-settings-walkthrough \
+    caret-marker-chromium-forks-calibration \
+    caret-marker-chrome-marker \
+    caret-marker-chromium-marker \
+    caret-marker-electron-marker \
+    encrypted-memory-all-monitored-live \
+    grammar-fix-textedit-look \
+    input-monitoring-revoked-carbon-accept; do
     assert_log_contains "default-dry-run-manual-$gate" "$dry_run_log" "^MANUAL $gate:" \
       || self_failures=$((self_failures + 1))
   done
-	  assert_log_contains "default-dry-run-grammar-fix-look-checklist" "$dry_run_log" \
-	    "^MANUAL grammar-fix-textedit-look: .*COMPME_GRAMMAR_FIX=1.*COMPME_GRAMMAR_CHECK_KEY.*COMPME_GRAMMAR_ACCEPT_KEY.*TextEdit.*teh.*underline/banner.*accept replaces exactly.*caret move/edit stales" \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-correction-overlay-mode" "$dry_run_log" \
-	    'COMPME_OVERLAY_MODE=correction .*COMPME_OVERLAY_W=80 .*COMPME_OVERLAY_TEXT=the .*overlay_presenter_acceptance' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-apps-policy-look-checklist" "$dry_run_log" \
-	    '^MANUAL apps-policy-toggle-look: .*Settings > Apps.*On/Tab/Mid/AC/GF.*Enabled and Grammar fix.*dismiss.*persists' \
-	    || self_failures=$((self_failures + 1))
-	  if grep -Eq '^MANUAL apps-policy-toggle-look: .*GrammarFix' "$dry_run_log"; then
-	    echo "FAIL default-dry-run-apps-policy-look-no-grammarfix-camelcase" >&2
-	    self_failures=$((self_failures + 1))
-	  else
-	    echo "PASS default-dry-run-apps-policy-look-no-grammarfix-camelcase"
-	  fi
-	  assert_log_contains "default-dry-run-personalization-look-checklist" "$dry_run_log" \
-	    '^MANUAL personalization-pane-look: .*Settings > Personalization.*instructions, sender, and strength.*multi-line.*without relaunch' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-menu-bar-icon-look-checklist" "$dry_run_log" \
-	    '^MANUAL menu-bar-icon-look: .*menu bar icon.*status.*fallback title' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-shortcuts-recorder-look-checklist" "$dry_run_log" \
-	    '^MANUAL shortcuts-recorder-look: .*Settings > Shortcuts.*recorder.*modifier-combo.*persists' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-always-on-hotkeys-physical-look-checklist" "$dry_run_log" \
-	    '^MANUAL always-on-hotkeys-physical-look: .*force-activate.*per-app toggle.*global toggle.*grammar-check.*physical keypress' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-setup-model-picker-look-checklist" "$dry_run_log" \
-	    '^MANUAL setup-model-picker-look: .*Settings > Setup.*model picker.*Download.*license.*dest-exists' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-nine-tab-settings-walkthrough-checklist" "$dry_run_log" \
-	    '^MANUAL nine-tab-settings-walkthrough: .*all nine Settings panes.*Setup.*General.*Personalization.*Apps.*Context.*Emoji.*Shortcuts.*Statistics.*About' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-caret-marker-chromium-forks-calibration-checklist" "$dry_run_log" \
-	    '^MANUAL caret-marker-chromium-forks-calibration: .*Brave.*Edge.*Vivaldi.*RECT_IS_LINE_BUNDLE_PREFIXES' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-caret-marker-chrome-marker-checklist" "$dry_run_log" \
-	    '^MANUAL caret-marker-chrome-marker: .*Google Chrome.*MacosCaretRectSource::Marker' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-caret-marker-chromium-marker-checklist" "$dry_run_log" \
-	    '^MANUAL caret-marker-chromium-marker: .*Chromium.*MacosCaretRectSource::Marker' \
-	    || self_failures=$((self_failures + 1))
-	  assert_log_contains "default-dry-run-caret-marker-electron-marker-checklist" "$dry_run_log" \
-	    '^MANUAL caret-marker-electron-marker: .*Electron.*MacosCaretRectSource::Marker' \
-	    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-grammar-fix-look-checklist" "$dry_run_log" \
+    "^MANUAL grammar-fix-textedit-look: .*COMPME_GRAMMAR_FIX=1.*COMPME_GRAMMAR_CHECK_KEY.*COMPME_GRAMMAR_ACCEPT_KEY.*TextEdit.*teh.*underline/banner.*accept replaces exactly.*caret move/edit stales" \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-correction-overlay-mode" "$dry_run_log" \
+    'COMPME_OVERLAY_MODE=correction .*COMPME_OVERLAY_W=80 .*COMPME_OVERLAY_TEXT=the .*overlay_presenter_acceptance' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-apps-policy-look-checklist" "$dry_run_log" \
+    '^MANUAL apps-policy-toggle-look: .*Settings > Apps.*On/Tab/Mid/AC/GF.*Enabled and Grammar fix.*dismiss.*persists' \
+    || self_failures=$((self_failures + 1))
+  if grep -Eq '^MANUAL apps-policy-toggle-look: .*GrammarFix' "$dry_run_log"; then
+    echo "FAIL default-dry-run-apps-policy-look-no-grammarfix-camelcase" >&2
+    self_failures=$((self_failures + 1))
+  else
+    echo "PASS default-dry-run-apps-policy-look-no-grammarfix-camelcase"
+  fi
+  assert_log_contains "default-dry-run-personalization-look-checklist" "$dry_run_log" \
+    '^MANUAL personalization-pane-look: .*Settings > Personalization.*instructions, sender, and strength.*multi-line.*without relaunch' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-menu-bar-icon-look-checklist" "$dry_run_log" \
+    '^MANUAL menu-bar-icon-look: .*menu bar icon.*status.*fallback title' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-shortcuts-recorder-look-checklist" "$dry_run_log" \
+    '^MANUAL shortcuts-recorder-look: .*Settings > Shortcuts.*recorder.*modifier-combo.*persists' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-always-on-hotkeys-physical-look-checklist" "$dry_run_log" \
+    '^MANUAL always-on-hotkeys-physical-look: .*force-activate.*per-app toggle.*global toggle.*grammar-check.*physical keypress' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-setup-model-picker-look-checklist" "$dry_run_log" \
+    '^MANUAL setup-model-picker-look: .*Settings > Setup.*model picker.*Download.*license.*dest-exists' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-nine-tab-settings-walkthrough-checklist" "$dry_run_log" \
+    '^MANUAL nine-tab-settings-walkthrough: .*all nine Settings panes.*Setup.*General.*Personalization.*Apps.*Context.*Emoji.*Shortcuts.*Statistics.*About' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-caret-marker-chromium-forks-calibration-checklist" "$dry_run_log" \
+    '^MANUAL caret-marker-chromium-forks-calibration: .*Brave.*Edge.*Vivaldi.*RECT_IS_LINE_BUNDLE_PREFIXES' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-caret-marker-chrome-marker-checklist" "$dry_run_log" \
+    '^MANUAL caret-marker-chrome-marker: .*Google Chrome.*MacosCaretRectSource::Marker' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-caret-marker-chromium-marker-checklist" "$dry_run_log" \
+    '^MANUAL caret-marker-chromium-marker: .*Chromium.*MacosCaretRectSource::Marker' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-caret-marker-electron-marker-checklist" "$dry_run_log" \
+    '^MANUAL caret-marker-electron-marker: .*Electron.*MacosCaretRectSource::Marker' \
+    || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-manual-all-monitored-residuals" "$dry_run_log" \
     '^MANUAL encrypted-memory-all-monitored-live: .*secure-input.*snoozed.*volatile-pid' \
     || self_failures=$((self_failures + 1))
@@ -748,6 +783,9 @@ run_self_tests() {
     || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-e2e-word-isolates-config" "$dry_run_log" \
     'env -i .*COMPME_CONFIG=.*/e2e-isolated-config\.env .*COMPME_SCREEN_CONTEXT=0 .*COMPME_ACCEPT_WORD_KEY=48 .*COMPME_ACCEPT_FULL_KEY=50 .*COMPME_E2E_ACCEPT=word' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-e2e-trailing-space" "$dry_run_log" \
+    'env -i .*COMPME_CONFIG=.*/e2e-trailing-space-config\.env .*COMPME_SCREEN_CONTEXT=0 .*COMPME_TRAILING_SPACE=1 .*COMPME_E2E_ACCEPT=word-only .*COMPME_E2E_STUB=\\ trail .*COMPME_E2E_EXPECT_SUFFIX=\\ trail\\ ' \
     || self_failures=$((self_failures + 1))
   hostile_env_log="$self_test_dir/hostile-env-dry-run.log"
   COMPME_DISABLED_APPS=com.apple.TextEdit \
@@ -810,9 +848,55 @@ run_self_tests() {
   assert_log_contains "skip-textedit-option-tab-is-mandatory" "$skip_textedit_log" \
     '^SKIP accept-insert-option-tab: --skip-textedit$' \
     || self_failures=$((self_failures + 1))
+  for gate in \
+    e2e-compme-pipeline \
+    e2e-compme-word-remainder \
+    e2e-compme-trailing-space; do
+    assert_log_contains "skip-textedit-skips-$gate" "$skip_textedit_log" \
+      "^SKIP $gate: --skip-textedit$" \
+      || self_failures=$((self_failures + 1))
+  done
   assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
     '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=14 logs=' \
     || self_failures=$((self_failures + 1))
+
+  skip_e2e_log="$self_test_dir/skip-e2e-dry-run.log"
+  A1B_LOG_DIR="$self_test_dir/skip-e2e-dry-run-logs" "$0" --dry-run --skip-e2e --textedit-pid 12345 >"$skip_e2e_log" 2>&1
+  skip_e2e_status=$?
+  if [ "$skip_e2e_status" -eq 0 ]; then
+    echo "PASS skip-e2e-dry-run-exits-zero"
+  else
+    echo "FAIL skip-e2e-dry-run-exits-zero: $skip_e2e_status" >&2
+    self_failures=$((self_failures + 1))
+  fi
+  for gate in \
+    e2e-compme-pipeline \
+    e2e-compme-word-remainder \
+    e2e-compme-trailing-space; do
+    assert_log_contains "skip-e2e-dry-run-skips-$gate" "$skip_e2e_log" \
+      "^SKIP $gate: --skip-e2e$" \
+      || self_failures=$((self_failures + 1))
+  done
+  assert_log_contains "skip-e2e-counts-all-e2e-incomplete" "$skip_e2e_log" \
+    '^Summary: pass=[0-9]+ fail=0 skip=[0-9]+ incomplete=[3-9][0-9]* manual=14 logs=' \
+    || self_failures=$((self_failures + 1))
+
+  skip_helper_log="$self_test_dir/e2e-skip-helper.log"
+  (
+    skip_textedit_e2e_gates "TextEdit is not running"
+    skip_all_e2e_gates "compme binary not built (run: cargo build -p app)"
+  ) >"$skip_helper_log"
+  for gate in \
+    e2e-compme-pipeline \
+    e2e-compme-word-remainder \
+    e2e-compme-trailing-space; do
+    assert_log_contains "skip-helper-textedit-missing-$gate" "$skip_helper_log" \
+      "^SKIP $gate: TextEdit is not running$" \
+      || self_failures=$((self_failures + 1))
+    assert_log_contains "skip-helper-binary-missing-$gate" "$skip_helper_log" \
+      "^SKIP $gate: compme binary not built \\(run: cargo build -p app\\)$" \
+      || self_failures=$((self_failures + 1))
+  done
 
   rm -rf "$self_test_dir"
   failures=0
@@ -898,8 +982,7 @@ if [ "$SKIP_TEXTEDIT" -eq 1 ]; then
   skip_gate "accept-insert-full" "--skip-textedit" mandatory
   skip_gate "accept-insert-word" "--skip-textedit" mandatory
   skip_gate "accept-insert-option-tab" "--skip-textedit" mandatory
-  skip_gate "e2e-compme-pipeline" "--skip-textedit" mandatory
-  skip_gate "e2e-compme-word-remainder" "--skip-textedit" mandatory
+  skip_textedit_e2e_gates "--skip-textedit"
 else
   resolve_textedit_pid
   if [ -z "$TEXTEDIT_PID" ]; then
@@ -911,8 +994,7 @@ else
     skip_gate "accept-insert-full" "TextEdit is not running" mandatory
     skip_gate "accept-insert-word" "TextEdit is not running" mandatory
     skip_gate "accept-insert-option-tab" "TextEdit is not running" mandatory
-    skip_gate "e2e-compme-pipeline" "TextEdit is not running" mandatory
-    skip_gate "e2e-compme-word-remainder" "TextEdit is not running" mandatory
+    skip_textedit_e2e_gates "TextEdit is not running"
   else
     run_retryable_gate "textedit-read" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" "$TEXTEDIT_BIN" "$TIMEOUT_MS" read
     run_retryable_gate "textedit-insert-synthetic" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_INSERT_TEXT="$INSERT_TEXT-synthetic" "$TEXTEDIT_BIN" "$TIMEOUT_MS" synthetic
@@ -923,14 +1005,13 @@ else
     run_retryable_gate "accept-insert-word" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_INSERT_BIN" "$SHORT_TIMEOUT_MS" word
     run_retryable_gate "accept-insert-option-tab" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_ACCEPTANCE_POST_TAB_AFTER_MS="$POST_TAB_AFTER_MS" "$ACCEPT_INSERT_BIN" "$SHORT_TIMEOUT_MS" option-tab
     if [ "$SKIP_E2E" -eq 1 ]; then
-      skip_e2e_gate "e2e-compme-pipeline" "--skip-e2e"
-      skip_e2e_gate "e2e-compme-word-remainder" "--skip-e2e"
+      skip_all_e2e_gates "--skip-e2e"
     elif [ ! -x "$COMPME_BIN" ]; then
-      skip_e2e_gate "e2e-compme-pipeline" "compme binary not built (run: cargo build -p app)"
-      skip_e2e_gate "e2e-compme-word-remainder" "compme binary not built (run: cargo build -p app)"
+      skip_all_e2e_gates "compme binary not built (run: cargo build -p app)"
     else
       run_e2e_gate "e2e-compme-pipeline" full
       run_e2e_gate "e2e-compme-word-remainder" word
+      run_trailing_space_e2e_gate
     fi
   fi
 fi

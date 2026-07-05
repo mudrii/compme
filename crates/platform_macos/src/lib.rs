@@ -1964,6 +1964,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let field = field.clone();
         let app = field.app.clone();
+        let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
         let pid = field
             .pid
             .and_then(|pid| i32::try_from(pid).ok())
@@ -1974,7 +1975,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let result = self
             .worker
-            .run(move || text_range_rect_for_field(pid, field, range))?;
+            .run(move || text_range_rect_for_field(pid, field, range, secure_input_enabled))?;
         self.map_app_exited(pid, app, result)
     }
 
@@ -2023,6 +2024,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let field = field.clone();
         let app = field.app.clone();
+        let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
         let expected_text = expected_text.to_string();
         let text = text.to_string();
         let pid = field
@@ -2035,7 +2037,17 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let result = self
             .worker
-            .run(move || insert_range_for_field(pid, field, expected_text, text, range, strategy))?
+            .run(move || {
+                insert_range_for_field(
+                    pid,
+                    field,
+                    expected_text,
+                    text,
+                    range,
+                    strategy,
+                    secure_input_enabled,
+                )
+            })?
             .and_then(|apply| match apply {
                 AxSetApply::Applied(inserted) => Ok(inserted),
                 AxSetApply::SilentlyIgnored => Err(PlatformError::CannotComplete {
@@ -4865,16 +4877,17 @@ fn text_range_rect_for_field(
     pid: i32,
     field: FieldHandle,
     range: CorrectionRange,
+    secure_input_enabled: Arc<SecureInputProvider>,
 ) -> Result<Option<ScreenRect>, PlatformError> {
+    // TOCTOU re-check before AX identity/text reads, matching the other
+    // `_for_field` workers. Grammar correction geometry must fail closed if
+    // global Secure Input flips on after dispatch.
+    recheck_global_secure_input(&secure_input_enabled)?;
+
     let (element, _owners) = copy_focused_or_app_element(pid)?;
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
-    }
-    if macos_secure_input_enabled() {
-        return Err(PlatformError::SecureInput {
-            state: SecurityState::SecureInputEnabled,
-        });
     }
 
     let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
@@ -4897,16 +4910,17 @@ fn insert_range_for_field(
     text: String,
     range: CorrectionRange,
     strategy: InsertStrategy,
+    secure_input_enabled: Arc<SecureInputProvider>,
 ) -> Result<AxSetApply, PlatformError> {
+    // TOCTOU re-check before AX identity/text reads, matching insert/read/caret
+    // workers. Grammar range replacement must not touch the focused AX element
+    // after global Secure Input turns on.
+    recheck_global_secure_input(&secure_input_enabled)?;
+
     let (element, _owners) = copy_focused_or_app_element(pid)?;
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
-    }
-    if macos_secure_input_enabled() {
-        return Err(PlatformError::SecureInput {
-            state: SecurityState::SecureInputEnabled,
-        });
     }
 
     let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
@@ -8205,7 +8219,7 @@ mod tests {
 
         type FieldWorkerProbe =
             fn(&MacosPlatformAdapter, &FieldHandle) -> Result<(), PlatformError>;
-        let probes: [(&str, FieldWorkerProbe); 5] = [
+        let probes: [(&str, FieldWorkerProbe); 7] = [
             ("capabilities", |adapter, field| {
                 adapter.capabilities(field).map(|_| ())
             }),
@@ -8220,6 +8234,22 @@ mod tests {
             }),
             ("caret_diagnostics", |adapter, field| {
                 adapter.caret_diagnostics(field).map(|_| ())
+            }),
+            ("text_range_rect", |adapter, field| {
+                adapter
+                    .text_range_rect(field, CorrectionRange { start: 0, end: 1 })
+                    .map(|_| ())
+            }),
+            ("insert_replacing_range", |adapter, field| {
+                adapter
+                    .insert_replacing_range(
+                        field,
+                        "a",
+                        "b",
+                        CorrectionRange { start: 0, end: 1 },
+                        InsertStrategy::AxSet,
+                    )
+                    .map(|_| ())
             }),
         ];
 

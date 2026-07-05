@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1681 workspace tests; spike separate)
+> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1682 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -238,13 +238,13 @@ per-row IDs.
 |---|---|---|
 | Browser-domain extraction | code ✅ (`c131`) | 9-item LOOK checklist (Safari/Chrome/Brave detect + exclusion suppress) |
 | Multi-candidate Down-cycle | engine ✅ | physical Down-arrow cycle UX confirmation |
-| Compatibility matrix | classifier ✅ | per-app behavior matches its tier, across the matrix |
+| Compatibility matrix | classifier ✅; smoke gates only | full table-driven per-app matrix runner/live ledger remains pending; current `run-a2-compat-gates.sh` covers request-path smoke kinds, not every app row |
 | Browser mirror-window | `set_mirror_mode` ✅ | live Firefox/Zen ghost-in-mirror confirmation |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅ | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅ | OCR quality/perf on a granted desktop + multi-display caret confirm |
 | Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅ | remaining live residual: secure input, snoozed transition, volatile `pid:N` |
 | Per-app memory inspect/delete UI | count/delete_app ✅ | completed live in Apps pane; remaining global delete_all/mode controls tie to Personalization |
-| Trailing-space toggle | accept-path ✅ | live evidence for exact inserted text |
+| Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback; optional manual UX confirmation remains part of the broad settings walkthrough |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
 | Google Docs / Arc onboarding | `needs_accessibility_setup` ✅ | live Docs round-trip |
 
@@ -440,7 +440,7 @@ physical trigger/accept interaction.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1681 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1682 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

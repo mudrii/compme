@@ -354,10 +354,23 @@ fn native_passthrough_matches(
     insert_text: &str,
 ) -> bool {
     inserted_delta_matches(before, after, insert_text)
-        || after.left != before.left
-        || after.right != before.right
-        || after.selection != before.selection
-        || after.caret != before.caret
+        || textedit_rich_option_tab_transform_matches(before, after)
+}
+
+fn textedit_rich_option_tab_transform_matches(before: &TextContext, after: &TextContext) -> bool {
+    if after.selection.is_some() {
+        return false;
+    }
+
+    ["\t\u{2043}\t", "\t\u{2022}\t", "\t-\t"]
+        .into_iter()
+        .any(|prefix| {
+            let expected_left = format!("{prefix}{}", before.left);
+            let expected_caret = before.caret.saturating_add(prefix.encode_utf16().count());
+            after.left == expected_left
+                && after.caret == expected_caret
+                && (after.right == before.right || (before.right.is_empty() && after.right == "\n"))
+        })
 }
 
 fn looks_like_text_field(field: &FieldHandle) -> bool {
@@ -442,14 +455,19 @@ mod tests {
     fn native_passthrough_accepts_literal_tab_or_textedit_rich_text_transform() {
         let before = context("probe", "", 5);
         let literal = context("probe\t", "", 6);
-        let rich_text_list_indent = context("\t\u{2043}\tprobe", "\n", 8);
 
         assert!(native_passthrough_matches(&before, &literal, "\t"));
-        assert!(native_passthrough_matches(
-            &before,
-            &rich_text_list_indent,
-            "\t"
-        ));
+        for prefix in ["\t\u{2043}\t", "\t\u{2022}\t", "\t-\t"] {
+            let after = context(
+                &format!("{prefix}probe"),
+                "\n",
+                5 + prefix.encode_utf16().count(),
+            );
+            assert!(
+                native_passthrough_matches(&before, &after, "\t"),
+                "TextEdit rich Option+Tab transform should match prefix {prefix:?}"
+            );
+        }
     }
 
     #[test]
@@ -458,6 +476,18 @@ mod tests {
         let unchanged = context("probe", "", 5);
 
         assert!(!native_passthrough_matches(&before, &unchanged, "\t"));
+    }
+
+    #[test]
+    fn native_passthrough_rejects_unrelated_target_side_change() {
+        let before = context("probe", "", 5);
+        let unrelated_mutation = context("probe!", "", 6);
+
+        assert!(!native_passthrough_matches(
+            &before,
+            &unrelated_mutation,
+            "\t"
+        ));
     }
 
     #[test]
