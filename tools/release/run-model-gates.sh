@@ -119,6 +119,17 @@ SH
   test ! -s "$tmp/curl.log"
   grep -q 'env=1 ctx=1 gpu=0 ctx_tokens=256 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
 
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
+    echo "run-model-gates self-test failed: extra --self-test argument was accepted" >&2
+    return 1
+  fi
+  grep -q '^usage: .*run-model-gates\.sh \[--self-test\]$' "$tmp/self-test-argc.err"
+  if "$0" unexpected-extra >/dev/null 2>"$tmp/normal-argc.err"; then
+    echo "run-model-gates self-test failed: extra normal argument was accepted" >&2
+    return 1
+  fi
+  grep -q '^usage: .*run-model-gates\.sh \[--self-test\]$' "$tmp/normal-argc.err"
+
   echo "Self-test passed"
 }
 

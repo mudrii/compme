@@ -41,7 +41,6 @@ allowed_hosts = %w[
   compme
   cotypist.app
   docs.google.com
-  evil.com
   example.com
   example.invalid
   example.test
@@ -86,7 +85,7 @@ end
 paths.each do |path|
   text = File.read(path, invalid: :replace, undef: :replace)
   text.scan(%r{https?://([^/`"'\s)<>{}*]+)}) do |match|
-    host = match.first.downcase.sub(/:\d+\z/, "").gsub("\\.", ".")
+    host = match.first.downcase.sub(/:\d+\z/, "").gsub("\\.", ".").split("@").last
     if denied_host_patterns.any? { |pattern| pattern.match?(host) }
       rel = path.delete_prefix(root + "/")
       abort("privacy policy check failed: denied telemetry host #{host} in #{rel}")
@@ -145,6 +144,25 @@ LOCK
     return 1
   fi
 
+  cp -R "$tmp/good" "$tmp/evil-host"
+  {
+    printf '%s' 'const EVIL_URL: &str = "https:'
+    printf '%s\n' '//evil.com/collect";'
+    cat <<'RS'
+const USERINFO_FIXTURE_URL: &str = "https://evil.com@bank.example/login";
+RS
+  } >"$tmp/evil-host/crates/demo/src/lib.rs"
+  if check_repo "$tmp/evil-host" >/dev/null 2>&1; then
+    echo "privacy policy self-test failed: unreviewed evil.com host was accepted" >&2
+    return 1
+  fi
+
+  cp -R "$tmp/good" "$tmp/userinfo-fixture"
+  cat >"$tmp/userinfo-fixture/crates/demo/src/lib.rs" <<'RS'
+const USERINFO_FIXTURE_URL: &str = "https://evil.com@bank.example/login";
+RS
+  check_repo "$tmp/userinfo-fixture"
+
   cp -R "$tmp/good" "$tmp/unreviewed-host"
   {
     printf '%s' 'const UNKNOWN_URL: &str = "https:'
@@ -154,6 +172,18 @@ LOCK
     echo "privacy policy self-test failed: unreviewed host was accepted" >&2
     return 1
   fi
+
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
+    echo "privacy policy self-test failed: extra --self-test argument was accepted" >&2
+    return 1
+  fi
+  grep -q '^usage: check-privacy-policy\.sh \[--self-test\] \[repo-root\]$' "$tmp/self-test-argc.err"
+
+  if "$0" "$tmp/good" unexpected-extra >/dev/null 2>"$tmp/normal-argc.err"; then
+    echo "privacy policy self-test failed: extra normal argument was accepted" >&2
+    return 1
+  fi
+  grep -q '^usage: check-privacy-policy\.sh \[--self-test\] \[repo-root\]$' "$tmp/normal-argc.err"
 
   echo "Self-test passed"
 }

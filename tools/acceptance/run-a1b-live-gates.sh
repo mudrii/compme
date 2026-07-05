@@ -83,6 +83,17 @@ Input Monitoring.
 USAGE
 }
 
+require_uint_arg() {
+  name="$1"
+  value="$2"
+  case "$value" in
+    ''|*[!0-9]*)
+      echo "$name requires an unsigned integer value" >&2
+      exit 2
+      ;;
+  esac
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
@@ -113,24 +124,28 @@ while [ "$#" -gt 0 ]; do
       ;;
     --timeout-ms)
       [ "$#" -ge 2 ] || { echo "--timeout-ms requires a value" >&2; exit 2; }
+      require_uint_arg "--timeout-ms" "$2"
       TIMEOUT_MS="$2"
       shift 2
       continue
       ;;
     --short-timeout-ms)
       [ "$#" -ge 2 ] || { echo "--short-timeout-ms requires a value" >&2; exit 2; }
+      require_uint_arg "--short-timeout-ms" "$2"
       SHORT_TIMEOUT_MS="$2"
       shift 2
       continue
       ;;
     --retries)
       [ "$#" -ge 2 ] || { echo "--retries requires a value" >&2; exit 2; }
+      require_uint_arg "--retries" "$2"
       RETRIES="$2"
       shift 2
       continue
       ;;
     --gate-pause-ms)
       [ "$#" -ge 2 ] || { echo "--gate-pause-ms requires a value" >&2; exit 2; }
+      require_uint_arg "--gate-pause-ms" "$2"
       GATE_PAUSE_MS="$2"
       shift 2
       continue
@@ -558,6 +573,18 @@ assert_log_contains() {
   return 1
 }
 
+assert_bad_args() {
+  name="$1"
+  expected="$2"
+  shift 2
+  log_file="$self_test_dir/$name.err"
+  if "$0" "$@" >/dev/null 2>"$log_file"; then
+    echo "FAIL $name: accepted invalid arguments" >&2
+    return 1
+  fi
+  assert_log_contains "$name" "$log_file" "$expected"
+}
+
 run_self_tests() {
   self_test_dir="$(mktemp -d "${TMPDIR:-/tmp}/a1b-runner-tests.XXXXXX")"
   self_failures=0
@@ -576,6 +603,14 @@ run_self_tests() {
     "overlay-diagnostics: overlay presenter contract failed" || self_failures=$((self_failures + 1))
   assert_classifies "unknown" 'some unrelated output' \
     "unknown: see log" || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-bad-timeout-ms" '^--timeout-ms requires an unsigned integer value$' \
+    --dry-run --timeout-ms abc || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-bad-short-timeout-ms" '^--short-timeout-ms requires an unsigned integer value$' \
+    --dry-run --short-timeout-ms abc || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-bad-retries" '^--retries requires an unsigned integer value$' \
+    --dry-run --retries abc || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-bad-gate-pause-ms" '^--gate-pause-ms requires an unsigned integer value$' \
+    --dry-run --gate-pause-ms abc || self_failures=$((self_failures + 1))
 
   failures=0
   incomplete_skips=1

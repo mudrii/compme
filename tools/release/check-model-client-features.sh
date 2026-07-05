@@ -140,6 +140,19 @@ llama-cpp-2 feature "vulkan"'
     return 1
   fi
 
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-model-client-features.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
+    echo "model_client feature self-test failed: extra --self-test argument was accepted" >&2
+    return 1
+  fi
+  grep -q '^usage: check-model-client-features\.sh \[--self-test\]$' "$tmp/self-test-argc.err"
+  if "$0" unexpected-extra >/dev/null 2>"$tmp/normal-argc.err"; then
+    echo "model_client feature self-test failed: extra normal argument was accepted" >&2
+    return 1
+  fi
+  grep -q '^usage: check-model-client-features\.sh \[--self-test\]$' "$tmp/normal-argc.err"
+
   echo "Self-test passed"
 }
 

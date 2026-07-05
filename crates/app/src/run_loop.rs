@@ -10370,27 +10370,21 @@ mod tests {
     }
 
     #[test]
-    fn oversized_monitored_insert_is_not_queued_before_buffer_cap() {
+    fn oversized_monitored_insert_persists_no_user_text() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([21u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
         let field = field_with_app("com.apple.TextEdit");
-        let large = "x".repeat(MAX_MONITORED_BUFFER_CHARS + 1);
-        let change = typed_change_after_baseline(&field, "", &large);
-        let mut pending = Vec::new();
-        enqueue_monitored_change(
-            &mut pending,
-            &change,
-            Some("com.apple.TextEdit".into()),
-            None,
-        );
+        let oversized = format!("{} ", "x".repeat(MAX_MONITORED_BUFFER_CHARS + 1));
+        let change = typed_change_after_baseline(&field, "", &oversized);
+        queue_and_flush_monitored(&change, &store, &Prefs::default(), true, false);
+
+        assert_eq!(store.count().unwrap(), 0);
         assert_eq!(
-            pending,
-            vec![PendingMonitoredText {
-                field,
-                inserted: String::new(),
-                oversized: true,
-                app_key: Some("com.apple.TextEdit".into()),
-                domain: None,
-                terminal_ok: true,
-            }]
+            store.recent("com.apple.TextEdit", 10).unwrap(),
+            Vec::<String>::new()
         );
     }
 
