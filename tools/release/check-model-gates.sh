@@ -295,12 +295,21 @@ workflow = YAML.load_file(ARGV.fetch(0))
 abort("missing release gate: workflow defaults to read-only contents permission") unless workflow.fetch("permissions").fetch("contents") == "read"
 jobs = workflow.fetch("jobs")
 release = jobs.fetch("release")
+def full_sha_action_ref?(uses)
+  uses.is_a?(String) && uses.match?(/\A[^@\s]+@[0-9a-f]{40}\z/)
+end
+jobs.each do |job_name, job|
+  Array(job["steps"]).each do |step|
+    next unless step.key?("uses")
+    abort("missing release gate: #{job_name} action is pinned to a full commit SHA") unless full_sha_action_ref?(step["uses"])
+  end
+end
 needs = Array(release.fetch("needs"))
 %w[validate windows linux].each do |job|
   abort("missing release gate: release job depends on #{job}") unless needs.include?(job)
 end
 abort("missing release gate: release job has contents write permission") unless release.fetch("permissions").fetch("contents") == "write"
-checkout = release.fetch("steps").find { |step| step["uses"] == "actions/checkout@v4" }
+checkout = release.fetch("steps").find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
 abort("missing release gate: release checkout") unless checkout
 abort("missing release gate: release checkout fetches full history") unless checkout.fetch("with").fetch("fetch-depth") == 0
 abort("missing release gate: platform_windows release job") unless jobs.fetch("windows").fetch("runs-on") == "windows-latest"
@@ -446,6 +455,33 @@ permissions:
   contents: read
 jobs:
   validate:
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+  release:
+    needs: [validate, windows, linux]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+YAML
+  check_release_hardening_fixture "$good_hardened_release"
+
+  mutable_action_release="$tmp_dir/mutable-action-release.yml"
+  cat >"$mutable_action_release" <<'YAML'
+permissions:
+  contents: read
+jobs:
+  validate:
     steps: []
   windows:
     runs-on: windows-latest
@@ -462,7 +498,40 @@ jobs:
         with:
           fetch-depth: 0
 YAML
-  check_release_hardening_fixture "$good_hardened_release"
+  if check_release_hardening_fixture "$mutable_action_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: mutable release action ref was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  mutable_prereq_action_release="$tmp_dir/mutable-prereq-action-release.yml"
+  cat >"$mutable_prereq_action_release" <<'YAML'
+permissions:
+  contents: read
+jobs:
+  validate:
+    steps:
+      - uses: actions/checkout@v4
+  windows:
+    runs-on: windows-latest
+    steps: []
+  linux:
+    runs-on: ubuntu-latest
+    steps: []
+  release:
+    needs: [validate, windows, linux]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+YAML
+  if check_release_hardening_fixture "$mutable_prereq_action_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: mutable prerequisite action ref was accepted" >&2
+    cleanup
+    return 1
+  fi
 
   shallow_release="$tmp_dir/shallow-release.yml"
   cat >"$shallow_release" <<'YAML'
@@ -482,7 +551,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 YAML
   if check_release_hardening_fixture "$shallow_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: shallow release checkout was accepted" >&2
@@ -508,7 +577,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
 YAML
@@ -530,7 +599,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
 YAML
@@ -651,6 +720,15 @@ ruby -ryaml -e '
   require_step!(release_jobs, "linux", "Test", "cargo test -p platform_linux", "release platform_linux test job")
   require_step!(release_jobs, "linux", "Build", "cargo build -p platform_linux", "release platform_linux build job")
   release = release_jobs.fetch("release")
+  def full_sha_action_ref?(uses)
+    uses.is_a?(String) && uses.match?(/\A[^@\s]+@[0-9a-f]{40}\z/)
+  end
+  release_jobs.each do |job_name, job|
+    Array(job["steps"]).each do |step|
+      next unless step.key?("uses")
+      abort("missing release gate: #{job_name} action is pinned to a full commit SHA") unless full_sha_action_ref?(step["uses"])
+    end
+  end
 
   {
     "release root format" => ["Root format", "cargo fmt --all -- --check"],
@@ -683,7 +761,7 @@ ruby -ryaml -e '
   end
   abort("missing release gate: release job has contents write permission") unless release.fetch("permissions").fetch("contents") == "write"
   release_steps = release.fetch("steps")
-  checkout = release_steps.find { |step| step["uses"] == "actions/checkout@v4" }
+  checkout = release_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
   abort("missing release gate: release checkout") unless checkout
   abort("missing release gate: release checkout fetches full history") unless checkout.fetch("with").fetch("fetch-depth") == 0
   import_index = release_steps.index { |step| step["name"] == "Import Developer ID certificate" }

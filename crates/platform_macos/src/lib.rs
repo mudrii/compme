@@ -6292,14 +6292,10 @@ impl AxElementIdentity {
 
     fn stable_field_key(&self) -> Option<String> {
         let owner_pid = self.owner_pid?;
-        if self.identifier.is_none() && self.role.is_none() && self.subrole.is_none() {
-            return None;
-        }
+        let identifier = self.identifier.as_ref()?;
 
         let mut parts = vec![format!("pid={owner_pid}")];
-        if let Some(identifier) = &self.identifier {
-            parts.push(format!("id={}", escape_identity_component(identifier)));
-        }
+        parts.push(format!("id={}", escape_identity_component(identifier)));
         if let Some(role) = &self.role {
             parts.push(format!("role={}", escape_identity_component(role)));
         }
@@ -7735,6 +7731,24 @@ mod tests {
     }
 
     #[test]
+    fn caret_field_tracker_mints_new_field_for_anonymous_same_role_pointer_change() {
+        // Same pid + same role is not a stable field identity. Anonymous AX
+        // fields in one app commonly share role/subrole, so a pointer change
+        // must mint a new generation rather than reusing a pending insert target.
+        let mut tracker = CaretFieldTracker::new();
+        let first =
+            AxElementIdentity::new("ax:0x111", Some(42), None, Some("AXTextArea".into()), None);
+        let second =
+            AxElementIdentity::new("ax:0x222", Some(42), None, Some("AXTextArea".into()), None);
+
+        let first_field = tracker.field_for_event(42, &first);
+        let second_field = tracker.field_for_event(42, &second);
+
+        assert_ne!(second_field, first_field);
+        assert_ne!(second_field.generation, first_field.generation);
+    }
+
+    #[test]
     fn stable_field_key_is_none_without_owner_pid() {
         let identity = AxElementIdentity::new(
             "ax:0x123",
@@ -7755,7 +7769,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_field_key_builds_key_when_any_attribute_present() {
+    fn stable_field_key_builds_key_when_identifier_present() {
         let identity = AxElementIdentity::new(
             "ax:0x123",
             Some(42),
@@ -7772,10 +7786,7 @@ mod tests {
         let role_only =
             AxElementIdentity::new("ax:0x123", Some(42), None, Some("AXTextArea".into()), None);
 
-        assert_eq!(
-            role_only.stable_field_key(),
-            Some("ax:pid=42|role=AXTextArea".into())
-        );
+        assert_eq!(role_only.stable_field_key(), None);
     }
 
     #[test]
@@ -7838,6 +7849,22 @@ mod tests {
         };
 
         assert!(!field_matches_identity(&field, &identity));
+    }
+
+    #[test]
+    fn field_matches_identity_rejects_anonymous_same_role_pointer_change() {
+        let old_identity =
+            AxElementIdentity::new("ax:0x111", Some(42), None, Some("AXTextArea".into()), None);
+        let new_identity =
+            AxElementIdentity::new("ax:0x222", Some(42), None, Some("AXTextArea".into()), None);
+        let old_field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: old_identity.field_element_id(),
+            generation: 1,
+        };
+
+        assert!(!field_matches_identity(&old_field, &new_identity));
     }
 
     #[test]
