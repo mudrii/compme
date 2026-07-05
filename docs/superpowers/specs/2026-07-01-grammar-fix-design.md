@@ -183,10 +183,10 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   fall back to `caret_rect`/`popup_anchor` only when range bounds return `Ok(None)`,
   then call `overlay.show_correction`. Extend `FakeAdapter`/`FakeOverlay`
   so tests can observe the correction presentation and range.
-- `crates/app/src/run_loop.rs`: add `grammar_fix: bool` to `Config` (:169) parsed as
-  `COMPME_GRAMMAR_FIX` in `from_lookup` (:277). Add the detection helper: on a
+- `crates/app/src/run_loop.rs`: add `grammar_fix: bool` to `Config` parsed as
+  `COMPME_GRAMMAR_FIX` in `from_lookup`. Add the detection helper: on a
   grammar trigger, use `read_context` -> `left/right`, extract the word under the
-  caret (see G1a below), gate via `replacement_decision`-style checks (:533) plus
+  caret (see G1a below), gate via `replacement_decision`-style checks plus
   the new per-app policy, and dispatch the `GrammarFix` request with its
   `CorrectionRange`; on the outcome, call `engine.on_correction`. If browser
   domain exclusion rules are configured, wrap the gate with
@@ -215,9 +215,9 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   for emoji/autocorrect; grammar uses range replacement. Add compile-safe,
   fail-closed impls in `platform_macos`, `platform_linux`, `platform_windows`, and
   every fake adapter in the same phase that extends the trait.
-- `crates/prefs/src/lib.rs`: add `grammar_fix: Option<bool>` to `AppPolicy` (:13),
-  a `grammar_fix_enabled(app, default)` getter (mirror `autocorrect_enabled` :133),
-  and a `AppPolicyField::GrammarFix` variant (:46) for the Apps-pane checkbox.
+- `crates/prefs/src/lib.rs`: add `grammar_fix: Option<bool>` to `AppPolicy`,
+  a `grammar_fix_enabled(app, default)` getter, and a
+  `AppPolicyField::GrammarFix` variant for the Apps-pane checkbox.
 
 **Tests (all headless, fake model + fake adapter):**
 - Worker RED-first tests:
@@ -280,7 +280,7 @@ the whole flow is exercised with the fake model + fake overlay.
 ## Phase G3 — Two keystrokes (registration + routing) · effort M
 
 **New/changed (`platform` + `platform_macos` reference impl):**
-- `crates/platform/src/lib.rs`: add `ShortcutAction::GrammarCheck` (:202) and a
+- `crates/platform/src/lib.rs`: add `ShortcutAction::GrammarCheck` and a
   portable `AcceptAction::Correction`. The shared tap signal remains
   `TapControl::Accept(AcceptAction)`, so Windows/Linux can map their own
   grammar-accept key to the same action without depending on macOS-local binding
@@ -305,9 +305,9 @@ the whole flow is exercised with the fake model + fake overlay.
     in `platform_macos/src/lib.rs`; the swallow/pass behavior matches
     this design and is pinned by tests.
 - `crates/app/src/run_loop.rs`: `Config` gets `grammar_check_key: Option<String>`
-  and `grammar_accept_key: Option<(i64,u32)>`, parsed in `from_lookup` (:289-295)
+  and `grammar_accept_key: Option<(i64,u32)>`, parsed in `from_lookup`
   as `COMPME_GRAMMAR_CHECK_KEY` / `COMPME_GRAMMAR_ACCEPT_KEY`. Add the
-  `HostEvent::Shortcut(GrammarCheck)` arm (:3715) → run G2 detection. Route
+  `HostEvent::Shortcut(GrammarCheck)` arm to run G2 detection. Route
   `HostEvent::Accept(AcceptAction::Correction)` to `engine.on_accept_correction`;
   do not fold it through `Full`.
 

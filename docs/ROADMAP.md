@@ -313,7 +313,7 @@ gate emitted by `tools/acceptance/run-a1b-live-gates.sh` and pinned by its
 - **Snapshot/staleness safety:** model the correction as a `Showing` with
   `presentation = Correction` and `correction_range = Some(..)`; every
   TextChanged/CaretMoved bumps `generation`/`snapshot` so a correction can't
-  apply to stale text (`engine_core/src/lib.rs:193-201`).
+  apply to stale text (`advance_snapshot` in `engine_core/src/lib.rs`).
 - **Word geometry for the underline:** add `PlatformAdapter::text_range_rect` over
   the same scalar `CorrectionRange`. macOS converts scalar offsets to UTF-16 and
   uses `read_ax_bounds_for_range(element, loc, len)` in
@@ -322,18 +322,18 @@ gate emitted by `tools/acceptance/run-a1b-live-gates.sh` and pinned by its
   than its threshold.)
 - **Inference plumbing:** `engine::CompletionRequest` plus app-owned
   `CompletionOutcome` over channels, `LocalModel::complete(prompt, max_tokens)`
-  (`model_client/src/lib.rs:78`), `terse_continuation_prompt` (`:578`) as the
+  (`model_client/src/lib.rs`), `terse_continuation_prompt` as the
   template for a new `grammar_fix_prompt`.
-- **Gates/policy:** `replacement_decision`/`suggestion_gates_pass`
-  (`run_loop.rs:533`); `AppPolicy` tri-state fields (`prefs/src/lib.rs:13`);
-  Apps-pane checkbox enum `AppPolicyField` (`prefs/src/lib.rs:46`).
+- **Gates/policy:** `replacement_decision`/`suggestion_gates_pass` in
+  `crates/app/src/run_loop.rs`; `AppPolicy` tri-state fields and
+  `AppPolicyField` in `crates/prefs/src/lib.rs`.
 - **Keystroke infra:** always-on shortcuts `ShortcutBindings`/`registration_plan`
   in `platform_macos/src/lib.rs`, `ShortcutAction` in `platform/src/lib.rs`;
   ghost/correction-scoped accept keymap `AcceptKeymap`/`binding_for_hotkey_id`
   in `platform_macos/src/lib.rs`; recorder UI `KeyRecorderField` in
   `settings_window.rs`.
 - **Overlay recipe:** the borderless transparent `NSPanel` in `ensure_panel`
-  (`platform_macos/src/lib.rs:776`) + Y-flip in `overlay_frame_for_text` (`:969`).
+  plus Y-flip in `overlay_frame_for_text` in `platform_macos/src/lib.rs`.
 
 ### Build — genuinely new
 1. **Correction engine (LLM):** `model_client::grammar_fix_prompt(word, left_ctx)`
@@ -355,23 +355,23 @@ gate emitted by `tools/acceptance/run-a1b-live-gates.sh` and pinned by its
    1-2px filled underline panel positioned under the word rect, and a small
    background-filled banner panel above it showing the suggestion. New
    `OverlayPresenter` method(s) (e.g. `show_correction(word_rect, suggestion)`)
-   or a sibling presenter; update `FakeOverlay` (`engine/src/lib.rs:554`) and the
+   or a sibling presenter; update `FakeOverlay` in `engine/src/lib.rs` and the
    `ux_mode`/placement plumbing to match. Degrade to a caret-anchored popup when
    `read_ax_bounds_for_range` returns `Ok(None)`.
 3. **Two keystrokes:** **grammar-trigger** = new `ShortcutAction::GrammarCheck`
    (always-on Carbon hotkey, new id 8, config `COMPME_GRAMMAR_CHECK_KEY`,
    startup-string first like the other global shortcuts) — routed at the
-   `HostEvent::Shortcut` match (`run_loop.rs:3715`) to run detection.
+   `HostEvent::Shortcut` match in `crates/app/src/run_loop.rs` to run detection.
    **grammar-accept** = `AcceptBinding::GrammarAccept` with
    `AcceptAction::Correction`; correction mode consumes only GrammarAccept while
    Word/Full pass through. It gets its own Carbon id, config
    `COMPME_GRAMMAR_ACCEPT_KEY`, and is live-rebindable via
    `RecorderRole::GrammarAccept`. Collision detection stays in the existing field
    arrays (`has_internal_collision` / `record_decision`).
-4. **Toggle + policy wiring:** `Config.grammar_fix` (`COMPME_GRAMMAR_FIX`,
-   `run_loop.rs:169/277`), `AppPolicy.grammar_fix: Option<bool>` + a
-   `grammar_fix_enabled(app, default)` getter (`prefs/src/lib.rs:133` mirror), a
-   `AppPolicyField::GrammarFix` Apps-pane column, consulted in the new flow.
+4. **Toggle + policy wiring:** `Config.grammar_fix` (`COMPME_GRAMMAR_FIX`) in
+   `crates/app/src/run_loop.rs`, `AppPolicy.grammar_fix: Option<bool>` +
+   `grammar_fix_enabled(app, default)` and `AppPolicyField::GrammarFix` in
+   `crates/prefs/src/lib.rs`, consulted in the new flow.
 
 ### Ordered build sequence (pure/testable first, novel FFI last)
 | # | Phase | Effort | Notes |

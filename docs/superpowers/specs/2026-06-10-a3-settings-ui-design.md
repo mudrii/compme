@@ -75,7 +75,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
    (global submenu + `DisableArm` in `crates/platform_macos/src/tray.rs`, mapped
    and consumed through `apply_global_disable` in `crates/app/src/run_loop.rs`);
    the per-app disable counterpart also exists
-   (`crates/platform_macos/src/tray.rs:205-221`). Flat Snooze-1h still coexists. Input-collection =
+   (`crates/platform_macos/src/tray.rs`). Flat Snooze-1h still coexists. Input-collection =
    single toggle (works, persists; stateful submenu text is the only polish
    residual). _(Supersedes the stale 2026-06-11 note that claimed the global
    submenu was not built — it predated the 06-11 build.)_**
