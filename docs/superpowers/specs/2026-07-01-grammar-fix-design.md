@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1684 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1687 tests green).
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI
@@ -443,6 +443,7 @@ range bounds and range replacement, not just the existing left-of-caret
 - `cargo build -p platform_macos --examples`
 - `bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh`
 - `tools/bundle/check-bundle-metadata.sh`
+- `tools/bundle/check-bundle-metadata.sh --self-test`
 - `tools/bundle/make-app.sh --self-test`
 - `tools/acceptance/e2e-complete-me.sh --self-test`
 - `tools/acceptance/missing-model-startup.sh --self-test`
@@ -450,13 +451,14 @@ range bounds and range replacement, not just the existing left-of-caret
 - `tools/acceptance/run-a1b-live-gates.sh --self-test`
 - `tools/acceptance/run-a2-compat-gates.sh --self-test`
 - `tools/release/check-model-client-features.sh`
+- `tools/release/check-model-client-features.sh --self-test`
 - `bash tools/release/check-model-gates.sh`
 - `tools/release/run-model-gates.sh --self-test`
 - `tools/release/update-cask.sh --self-test`
 - `tools/release/finalize-cask.sh --self-test`
 - `tools/release/notarize-app.sh --self-test`
 - `tools/release/write-update-manifest.sh --self-test`
-- `COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1`
+- `COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1`
 - `cd tools/spike && cargo fmt -- --check`
 - `cd tools/spike && cargo clippy --all-targets -- -D warnings`
 - `cd tools/spike && cargo test`

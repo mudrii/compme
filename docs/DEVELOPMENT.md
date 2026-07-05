@@ -146,7 +146,7 @@ Build:
 cargo build --workspace --all-targets
 ```
 
-The suite is ~1684 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1687 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -178,6 +178,7 @@ cargo build -p platform_macos --examples
 
 bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 tools/bundle/check-bundle-metadata.sh
+tools/bundle/check-bundle-metadata.sh --self-test
 tools/bundle/make-app.sh --self-test
 tools/acceptance/e2e-complete-me.sh --self-test
 tools/acceptance/missing-model-startup.sh --self-test
@@ -185,6 +186,7 @@ tools/acceptance/missing-model-startup.sh
 tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-a2-compat-gates.sh --self-test
 tools/release/check-model-client-features.sh
+tools/release/check-model-client-features.sh --self-test
 bash tools/release/check-model-gates.sh
 tools/release/run-model-gates.sh --self-test
 tools/release/update-cask.sh --self-test
@@ -200,7 +202,7 @@ cargo test
 cargo build --bins
 ```
 
-The root suite is ~1684 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1687 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance

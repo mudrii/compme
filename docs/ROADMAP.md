@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1684 workspace tests; spike separate)
+> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1687 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -242,7 +242,7 @@ per-row IDs.
 | Browser mirror-window | `set_mirror_mode` ✅ | live Firefox/Zen ghost-in-mirror confirmation |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅ | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅ | OCR quality/perf on a granted desktop + multi-display caret confirm |
-| Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅ | remaining live residual: secure input, snoozed transition, volatile `pid:N` |
+| Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: secure input, snoozed transition, volatile `pid:N` |
 | Per-app memory inspect/delete UI | count/delete_app ✅ | completed live in Apps pane; global `delete_all` and memory-mode controls are deferred UI work, not part of the current Personalization pane |
 | Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback in deterministic `word-only` mode; real-model E2E must use `full`/`word` because real-model `word-only` fails closed; optional manual UX confirmation remains part of the broad settings walkthrough |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
@@ -440,7 +440,7 @@ physical trigger/accept interaction.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1684 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1687 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

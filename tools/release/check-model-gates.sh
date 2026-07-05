@@ -671,6 +671,7 @@ ruby -ryaml -e '
     "CI root build" => ["Build", "cargo build --workspace --all-targets"],
     "CI script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
     "CI bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
+    "CI bundle metadata self-test" => ["Bundle metadata self-test", "tools/bundle/check-bundle-metadata.sh --self-test"],
     "CI bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
     "CI E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
     "CI missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
@@ -678,6 +679,7 @@ ruby -ryaml -e '
     "CI A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
     "CI A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
     "CI model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
+    "CI model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
     "CI release policy" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
     "CI release model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
     "CI cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],
@@ -738,6 +740,7 @@ ruby -ryaml -e '
     "release workflow invokes model gate script" => ["Model-backed release gates", "bash tools/release/run-model-gates.sh"],
     "release script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
     "release bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
+    "release bundle metadata self-test" => ["Bundle metadata self-test", "tools/bundle/check-bundle-metadata.sh --self-test"],
     "release bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
     "release A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
     "release A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
@@ -745,6 +748,7 @@ ruby -ryaml -e '
     "release missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
     "release missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
     "release model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
+    "release model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
     "release policy check" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
     "release model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
     "release cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],
@@ -901,11 +905,12 @@ require_line "$finalize_cask_script" 'git merge-base --is-ancestor "\$GITHUB_SHA
 require_line "$finalize_cask_script" 'refusing to publish a stale or out-of-order cask update' "cask finalizer stale version refusal"
 require_line "$finalize_cask_script" 'COMPME_CASK_ARTIFACT="\$artifact_path" tools/release/update-cask\.sh "\$tag"' "cask finalizer artifact handoff"
 require_line "$finalize_cask_script" 'git push origin "HEAD:\$default_branch"' "cask finalizer push"
-require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
+require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
 require_line "$gate_script" '^  COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"
-require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized root ignored model tests"
+require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized root ignored model tests"
 require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized spike ignored model tests"
 require_line "$acceptance_doc" '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "acceptance docs bundle metadata check"
+require_line "$acceptance_doc" '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "acceptance docs bundle metadata self-test"
 require_line "$acceptance_doc" '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "acceptance docs bundle assembler self-test"
 require_line "$acceptance_doc" '^tools/acceptance/e2e-complete-me\.sh --self-test[[:space:]]*$' "acceptance docs E2E self-test"
 require_line "$acceptance_doc" '^tools/acceptance/missing-model-startup\.sh --self-test[[:space:]]*$' "acceptance docs missing-model startup self-test"
@@ -918,20 +923,23 @@ require_line "$acceptance_doc" '^--allow-manual[[:space:]]*$' "acceptance docs A
 require_line "$acceptance_doc" '^Use `--allow-manual` only after executing and recording the MANUAL checklist$' "acceptance docs A1b allow-manual policy"
 require_line "$acceptance_doc" '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "acceptance docs A2 self-test"
 require_line "$acceptance_doc" '^tools/release/check-model-client-features\.sh[[:space:]]*$' "acceptance docs model client feature policy"
+require_line "$acceptance_doc" '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "acceptance docs model client feature policy self-test"
 require_line "$acceptance_doc" '^tools/release/run-model-gates\.sh --self-test[[:space:]]*$' "acceptance docs model gate self-test"
 require_line "$acceptance_doc" '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "acceptance docs cask updater self-test"
 require_line "$acceptance_doc" '^tools/release/finalize-cask\.sh --self-test[[:space:]]*$' "acceptance docs cask finalizer self-test"
 require_line "$acceptance_doc" '^tools/release/notarize-app\.sh --self-test[[:space:]]*$' "acceptance docs notarization helper self-test"
 require_line "$acceptance_doc" '^tools/release/write-update-manifest\.sh --self-test[[:space:]]*$' "acceptance docs update manifest self-test"
-require_line "$releasing_doc" '^[[:space:]]*COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized root ignored model tests"
+require_line "$releasing_doc" '^[[:space:]]*COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized root ignored model tests"
 require_line "$releasing_doc" '^[[:space:]]*COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized spike ignored model tests"
 require_line "$releasing_doc" 'tools/bundle/check-bundle-metadata\.sh' "release docs bundle metadata check"
+require_line "$releasing_doc" 'tools/bundle/check-bundle-metadata\.sh --self-test' "release docs bundle metadata self-test"
 require_line "$releasing_doc" 'tools/release/run-model-gates\.sh --self-test' "release docs model gate self-test"
 require_line "$releasing_doc" 'tools/release/finalize-cask\.sh --self-test' "release docs cask finalizer self-test"
 require_line "$releasing_doc" 'tools/bundle/make-app\.sh --self-test' "release docs bundle assembler self-test"
 require_line "$releasing_doc" 'tools/acceptance/missing-model-startup\.sh --self-test' "release docs missing-model startup self-test"
 require_line "$releasing_doc" 'tools/acceptance/missing-model-startup\.sh`' "release docs missing-model startup product smoke"
 require_line "$releasing_doc" 'tools/release/check-model-client-features\.sh' "release docs model client feature policy"
+require_line "$releasing_doc" 'tools/release/check-model-client-features\.sh --self-test' "release docs model client feature policy self-test"
 require_line "$releasing_doc" 'tools/release/update-cask\.sh --self-test' "release docs cask updater self-test"
 require_line "$releasing_doc" 'tools/release/notarize-app\.sh --self-test' "release docs notarization helper self-test"
 require_line "$releasing_doc" 'tools/release/write-update-manifest\.sh --self-test' "release docs update manifest self-test"
@@ -959,6 +967,7 @@ for gate in \
   require_line "$manual_validation_doc" "\`$gate\`" "manual validation docs list manual gate $gate"
 done
 require_readme_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "README bundle metadata check"
+require_readme_gate_line '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "README bundle metadata self-test"
 require_readme_gate_line '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "README bundle assembler self-test"
 require_readme_gate_line '^tools/acceptance/e2e-complete-me\.sh --self-test[[:space:]]*$' "README E2E self-test"
 require_readme_gate_line '^tools/acceptance/missing-model-startup\.sh --self-test[[:space:]]*$' "README missing-model startup self-test"
@@ -966,6 +975,7 @@ require_readme_gate_line '^tools/acceptance/missing-model-startup\.sh[[:space:]]
 require_readme_gate_line '^tools/acceptance/run-a1b-live-gates\.sh --self-test[[:space:]]*$' "README A1b self-test"
 require_readme_gate_line '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "README A2 self-test"
 require_readme_gate_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "README model client feature policy"
+require_readme_gate_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "README model client feature policy self-test"
 require_readme_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "README release gate policy check"
 require_readme_gate_line '^tools/release/run-model-gates\.sh --self-test[[:space:]]*$' "README model gate self-test"
 require_readme_gate_line '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "README cask updater self-test"
@@ -975,6 +985,7 @@ require_readme_gate_line '^tools/release/write-update-manifest\.sh --self-test[[
 require_readme_gate_line '^cargo build -p platform_macos --examples[[:space:]]*$' "README platform_macos examples build"
 require_readme_gate_line '^bash tools/release/run-model-gates\.sh[[:space:]]*$' "README model-backed release gate"
 require_development_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "DEVELOPMENT bundle metadata check"
+require_development_gate_line '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "DEVELOPMENT bundle metadata self-test"
 require_development_gate_line '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "DEVELOPMENT bundle assembler self-test"
 require_development_gate_line '^tools/acceptance/e2e-complete-me\.sh --self-test[[:space:]]*$' "DEVELOPMENT E2E self-test"
 require_development_gate_line '^tools/acceptance/missing-model-startup\.sh --self-test[[:space:]]*$' "DEVELOPMENT missing-model startup self-test"
@@ -983,6 +994,7 @@ require_development_gate_line '^tools/acceptance/run-a1b-live-gates\.sh --self-t
 require_line "$development_doc" '^Use `--allow-manual` only after executing and recording the MANUAL checklist$' "DEVELOPMENT A1b allow-manual policy"
 require_development_gate_line '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "DEVELOPMENT A2 self-test"
 require_development_gate_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "DEVELOPMENT model client feature policy"
+require_development_gate_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "DEVELOPMENT model client feature policy self-test"
 require_development_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "DEVELOPMENT release gate policy check"
 require_development_gate_line '^tools/release/run-model-gates\.sh --self-test[[:space:]]*$' "DEVELOPMENT model gate self-test"
 require_development_gate_line '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "DEVELOPMENT cask updater self-test"
@@ -998,6 +1010,7 @@ require_grammar_spec_validation_line '^cargo build --workspace --all-targets[[:s
 require_grammar_spec_validation_line '^cargo build -p platform_macos --examples[[:space:]]*$' "grammar spec platform_macos examples build gate"
 require_grammar_spec_validation_line '^bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh[[:space:]]*$' "grammar spec script syntax gate"
 require_grammar_spec_validation_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "grammar spec bundle metadata gate"
+require_grammar_spec_validation_line '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "grammar spec bundle metadata self-test"
 require_grammar_spec_validation_line '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "grammar spec bundle assembler self-test"
 require_grammar_spec_validation_line '^tools/acceptance/e2e-complete-me\.sh --self-test[[:space:]]*$' "grammar spec E2E self-test"
 require_grammar_spec_validation_line '^tools/acceptance/missing-model-startup\.sh --self-test[[:space:]]*$' "grammar spec missing-model self-test"
@@ -1005,13 +1018,14 @@ require_grammar_spec_validation_line '^tools/acceptance/missing-model-startup\.s
 require_grammar_spec_validation_line '^tools/acceptance/run-a1b-live-gates\.sh --self-test[[:space:]]*$' "grammar spec A1b self-test"
 require_grammar_spec_validation_line '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "grammar spec A2 self-test"
 require_grammar_spec_validation_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "grammar spec model client feature policy"
+require_grammar_spec_validation_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "grammar spec model client feature policy self-test"
 require_grammar_spec_validation_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "grammar spec release policy check"
 require_grammar_spec_validation_line '^tools/release/run-model-gates\.sh --self-test[[:space:]]*$' "grammar spec model gate self-test"
 require_grammar_spec_validation_line '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "grammar spec cask updater self-test"
 require_grammar_spec_validation_line '^tools/release/finalize-cask\.sh --self-test[[:space:]]*$' "grammar spec cask finalizer self-test"
 require_grammar_spec_validation_line '^tools/release/notarize-app\.sh --self-test[[:space:]]*$' "grammar spec notarization helper self-test"
 require_grammar_spec_validation_line '^tools/release/write-update-manifest\.sh --self-test[[:space:]]*$' "grammar spec update manifest self-test"
-require_grammar_spec_validation_line '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "grammar spec root ignored model tests"
+require_grammar_spec_validation_line '^COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "grammar spec root ignored model tests"
 require_grammar_spec_validation_line '^cd tools/spike && cargo fmt -- --check[[:space:]]*$' "grammar spec spike fmt gate"
 require_grammar_spec_validation_line '^cd tools/spike && cargo clippy --all-targets -- -D warnings[[:space:]]*$' "grammar spec spike clippy gate"
 require_grammar_spec_validation_line '^cd tools/spike && cargo test[[:space:]]*$' "grammar spec spike test gate"

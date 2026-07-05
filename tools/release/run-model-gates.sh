@@ -15,7 +15,7 @@ run_self_test() {
   mkdir -p "$fake_bin" "$tmp/model-dir"
   cat >"$fake_bin/cargo" <<'SH'
 #!/usr/bin/env bash
-printf 'cwd=%s env=%s args=%s\n' "$PWD" "${COMPME_REQUIRE_MODEL_TESTS:-}" "$*" >>"$COMPME_MODEL_GATE_CARGO_LOG"
+printf 'cwd=%s env=%s ctx=%s args=%s\n' "$PWD" "${COMPME_REQUIRE_MODEL_TESTS:-}" "${COMPME_REQUIRE_MODEL_CONTEXT:-}" "$*" >>"$COMPME_MODEL_GATE_CARGO_LOG"
 if [ -n "${COMPME_MODEL_GATE_CARGO_FAIL:-}" ]; then
   exit 43
 fi
@@ -51,8 +51,8 @@ SH
     COMPME_MODEL_GATE_CURL_LOG="$tmp/curl.log" \
     "$0" >/dev/null
   test ! -s "$tmp/curl.log"
-  grep -q 'env=1 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
-  grep -q 'tools/spike env=1 args=test --test model_integration -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'env=1 ctx=1 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'tools/spike env=1 ctx= args=test --test model_integration -- --ignored --test-threads=1' "$tmp/cargo.log"
 
   rm -f "$model_path"
   downloaded_sha="$(printf 'downloaded-model' | shasum -a 256 | awk '{print $1}')"
@@ -67,8 +67,8 @@ SH
   "$0" >/dev/null
   grep -q 'curl -L --fail --retry 3 --retry-delay 5 --output' "$tmp/curl.log"
   test "$(cat "$model_path")" = "downloaded-model"
-  grep -q 'env=1 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
-  grep -q 'tools/spike env=1 args=test --test model_integration -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'env=1 ctx=1 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'tools/spike env=1 ctx= args=test --test model_integration -- --ignored --test-threads=1' "$tmp/cargo.log"
 
   rm -f "$model_path"
   if PATH="$fake_bin:$PATH" \
@@ -117,7 +117,7 @@ SH
     return 1
   fi
   test ! -s "$tmp/curl.log"
-  grep -q 'env=1 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'env=1 ctx=1 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
 
   echo "Self-test passed"
 }
@@ -155,7 +155,7 @@ fi
 
 printf '%s  %s\n' "$expected" "$model" | shasum -a 256 -c -
 
-COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 cargo test -p model_client --test latency -- --ignored --test-threads=1
+COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1
 (
   cd "$repo_root/tools/spike"
   COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1

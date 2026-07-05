@@ -3,6 +3,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+usage() {
+  echo "usage: check-bundle-metadata.sh [Info.plist Cargo.toml Cask.rb] | --self-test" >&2
+}
+
 run_self_test() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-bundle-meta-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
@@ -124,6 +128,12 @@ CASK
     *) echo "self-test FAILED: expected OK message, got: $out" >&2; exit 1 ;;
   esac
 
+  if "$0" "$good_plist" "$cargo" "$good_cask" unexpected-extra >/dev/null 2>"$tmp/normal-argc.err"; then
+    echo "self-test FAILED: extra normal argument was accepted" >&2
+    exit 1
+  fi
+  grep -Fq "usage: check-bundle-metadata.sh" "$tmp/normal-argc.err"
+
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
     echo "self-test FAILED: extra self-test argument was accepted" >&2
     exit 1
@@ -135,11 +145,16 @@ CASK
 
 if [ "${1:-}" = "--self-test" ]; then
   if [ "$#" -ne 1 ]; then
-    echo "usage: check-bundle-metadata.sh [Info.plist Cargo.toml Cask.rb] | --self-test" >&2
+    usage
     exit 2
   fi
   run_self_test
   exit 0
+fi
+
+if [ "$#" -ne 0 ] && [ "$#" -ne 3 ]; then
+  usage
+  exit 2
 fi
 
 info_plist="${1:-"$repo_root/tools/bundle/Info.plist"}"

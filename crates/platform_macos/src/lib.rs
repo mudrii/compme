@@ -6425,7 +6425,6 @@ fn page_url_for_pid(pid: i32) -> Result<Option<String>, PlatformError> {
     const MAX_NODES: usize = 256;
     const MAX_WALK: std::time::Duration = std::time::Duration::from_millis(250);
 
-    let started = std::time::Instant::now();
     let (app_element, _app_owner) = create_app_ax_element(pid)?;
     unsafe {
         let Some((window, window_owner)) =
@@ -6433,34 +6432,84 @@ fn page_url_for_pid(pid: i32) -> Result<Option<String>, PlatformError> {
         else {
             return Ok(None);
         };
-        if let Ok(Some(doc)) = read_optional_ax_url_attribute(window, "AXDocument") {
-            return Ok(Some(doc));
-        }
+        let window = AxUrlNode {
+            element: window,
+            _owner: window_owner,
+        };
+        page_url_from_window_tree(
+            window,
+            PageUrlWalkLimits {
+                max_depth: MAX_DEPTH,
+                max_children: MAX_CHILDREN,
+                max_nodes: MAX_NODES,
+                max_walk: MAX_WALK,
+            },
+            |node| read_optional_ax_url_attribute(node.element, "AXDocument"),
+            |node| read_optional_ax_string_attribute(node.element, "AXRole"),
+            |node| read_optional_ax_url_attribute(node.element, "AXURL"),
+            |node, cap| {
+                copy_ax_children(node.element, cap).map(|children| {
+                    children
+                        .into_iter()
+                        .map(|(element, owner)| AxUrlNode {
+                            element,
+                            _owner: owner,
+                        })
+                        .collect()
+                })
+            },
+        )
+    }
+}
 
-        let mut queue: std::collections::VecDeque<(AXUIElementRef, CFType, usize)> =
-            std::collections::VecDeque::new();
-        queue.push_back((window, window_owner, 0));
-        let mut visited = 0usize;
-        while let Some((element, _owner, depth)) = queue.pop_front() {
-            visited += 1;
-            if visited > MAX_NODES || started.elapsed() > MAX_WALK {
-                break;
-            }
-            if let Ok(Some(role)) = read_optional_ax_string_attribute(element, "AXRole") {
-                if role == "AXWebArea" {
-                    if let Ok(Some(url)) = read_optional_ax_url_attribute(element, "AXURL") {
-                        return Ok(Some(url));
-                    }
-                    // A web area without AXURL: keep walking (frames nest).
+struct AxUrlNode {
+    element: AXUIElementRef,
+    _owner: CFType,
+}
+
+#[derive(Clone, Copy)]
+struct PageUrlWalkLimits {
+    max_depth: usize,
+    max_children: usize,
+    max_nodes: usize,
+    max_walk: std::time::Duration,
+}
+
+fn page_url_from_window_tree<N>(
+    window: N,
+    limits: PageUrlWalkLimits,
+    mut read_document: impl FnMut(&N) -> Result<Option<String>, PlatformError>,
+    mut read_role: impl FnMut(&N) -> Result<Option<String>, PlatformError>,
+    mut read_url: impl FnMut(&N) -> Result<Option<String>, PlatformError>,
+    mut copy_children: impl FnMut(&N, usize) -> Result<Vec<N>, PlatformError>,
+) -> Result<Option<String>, PlatformError> {
+    let started = std::time::Instant::now();
+    if let Ok(Some(doc)) = read_document(&window) {
+        return Ok(Some(doc));
+    }
+
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back((window, 0usize));
+    let mut visited = 0usize;
+    while let Some((node, depth)) = queue.pop_front() {
+        visited += 1;
+        if visited > limits.max_nodes || started.elapsed() > limits.max_walk {
+            break;
+        }
+        if let Ok(Some(role)) = read_role(&node) {
+            if role == "AXWebArea" {
+                if let Ok(Some(url)) = read_url(&node) {
+                    return Ok(Some(url));
                 }
+                // A web area without AXURL: keep walking (frames nest).
             }
-            if depth >= MAX_DEPTH {
-                continue;
-            }
-            if let Ok(children) = copy_ax_children(element, MAX_CHILDREN) {
-                for (child, child_owner) in children {
-                    queue.push_back((child, child_owner, depth + 1));
-                }
+        }
+        if depth >= limits.max_depth {
+            continue;
+        }
+        if let Ok(children) = copy_children(&node, limits.max_children) {
+            for child in children {
+                queue.push_back((child, depth + 1));
             }
         }
     }
@@ -7865,6 +7914,130 @@ mod tests {
         };
 
         assert!(!field_matches_identity(&old_field, &new_identity));
+    }
+
+    #[derive(Default)]
+    struct TestAxUrlNode {
+        document: Option<String>,
+        role: Option<String>,
+        url: Option<String>,
+        children: Vec<usize>,
+        role_error: bool,
+        url_error: bool,
+        children_error: bool,
+    }
+
+    fn page_url_from_test_nodes(
+        nodes: &[TestAxUrlNode],
+        root: usize,
+    ) -> Result<Option<String>, PlatformError> {
+        page_url_from_window_tree(
+            root,
+            PageUrlWalkLimits {
+                max_depth: 8,
+                max_children: 64,
+                max_nodes: 256,
+                max_walk: std::time::Duration::from_secs(1),
+            },
+            |idx| Ok(nodes[*idx].document.clone()),
+            |idx| {
+                if nodes[*idx].role_error {
+                    Err(PlatformError::Timeout)
+                } else {
+                    Ok(nodes[*idx].role.clone())
+                }
+            },
+            |idx| {
+                if nodes[*idx].url_error {
+                    Err(PlatformError::Timeout)
+                } else {
+                    Ok(nodes[*idx].url.clone())
+                }
+            },
+            |idx, cap| {
+                if nodes[*idx].children_error {
+                    Err(PlatformError::Timeout)
+                } else {
+                    Ok(nodes[*idx].children.iter().copied().take(cap).collect())
+                }
+            },
+        )
+    }
+
+    #[test]
+    fn page_url_walk_prefers_focused_window_document() {
+        let nodes = vec![
+            TestAxUrlNode {
+                document: Some("https://docs.example.test/path".into()),
+                children: vec![1],
+                ..Default::default()
+            },
+            TestAxUrlNode {
+                role: Some("AXWebArea".into()),
+                url: Some("https://webarea.example.test/".into()),
+                ..Default::default()
+            },
+        ];
+
+        assert_eq!(
+            page_url_from_test_nodes(&nodes, 0).unwrap().as_deref(),
+            Some("https://docs.example.test/path")
+        );
+    }
+
+    #[test]
+    fn page_url_walk_finds_nested_web_area_url() {
+        let nodes = vec![
+            TestAxUrlNode {
+                children: vec![1],
+                ..Default::default()
+            },
+            TestAxUrlNode {
+                role: Some("AXGroup".into()),
+                children: vec![2],
+                ..Default::default()
+            },
+            TestAxUrlNode {
+                role: Some("AXWebArea".into()),
+                url: Some("https://nested.example.test/".into()),
+                ..Default::default()
+            },
+        ];
+
+        assert_eq!(
+            page_url_from_test_nodes(&nodes, 0).unwrap().as_deref(),
+            Some("https://nested.example.test/")
+        );
+    }
+
+    #[test]
+    fn page_url_walk_skips_broken_nodes_and_keeps_searching() {
+        let nodes = vec![
+            TestAxUrlNode {
+                children: vec![1, 2, 3],
+                ..Default::default()
+            },
+            TestAxUrlNode {
+                role: Some("AXWebArea".into()),
+                url_error: true,
+                ..Default::default()
+            },
+            TestAxUrlNode {
+                role_error: true,
+                children_error: true,
+                ..Default::default()
+            },
+            TestAxUrlNode {
+                role: Some("AXWebArea".into()),
+                url: Some("https://healthy.example.test/".into()),
+                ..Default::default()
+            },
+        ];
+
+        assert_eq!(
+            page_url_from_test_nodes(&nodes, 0).unwrap().as_deref(),
+            Some("https://healthy.example.test/")
+        );
     }
 
     #[test]

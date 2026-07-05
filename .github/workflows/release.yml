@@ -46,6 +46,9 @@ jobs:
       - name: Bundle metadata
         run: tools/bundle/check-bundle-metadata.sh
 
+      - name: Bundle metadata self-test
+        run: tools/bundle/check-bundle-metadata.sh --self-test
+
       - name: Bundle assembler self-test
         run: tools/bundle/make-app.sh --self-test
 
@@ -66,6 +69,9 @@ jobs:
 
       - name: Model client feature policy
         run: tools/release/check-model-client-features.sh
+
+      - name: Model client feature policy self-test
+        run: tools/release/check-model-client-features.sh --self-test
 
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh

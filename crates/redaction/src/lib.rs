@@ -10,8 +10,9 @@
 //! When in doubt it OVER-redacts (privacy over fidelity): a Luhn-valid 13–19
 //! digit run is scrubbed even if it is not actually a card, and a 32+ char
 //! mixed-entropy token is scrubbed even if benign. False positives lose a bit
-//! of stored context; false negatives would leak a secret — so the bias is
-//! deliberate and one-directional.
+//! of stored context. The deliberate false-negative boundary is all-one-case
+//! all-letter prose: those runs survive unless a credential key/prefix or other
+//! entropy signal identifies them as secrets.
 
 use std::sync::OnceLock;
 
@@ -47,7 +48,8 @@ fn secret_re() -> &'static Regex {
 
 /// Whether a generic long token looks high-entropy enough to be a secret rather
 /// than a long word: it has a digit, mixed case, or base64 punctuation. (An
-/// all-one-case all-letter 32+ run — rare for a secret — is left alone.)
+/// all-one-case all-letter 32+ run is left alone unless another credential
+/// signal catches it.)
 fn looks_high_entropy(token: &str) -> bool {
     let has_digit = token.chars().any(|c| c.is_ascii_digit());
     let has_upper = token.chars().any(|c| c.is_ascii_uppercase());
@@ -986,8 +988,8 @@ mod tests {
         // ACCEPTED GAP / entropy-heuristic boundary: a 32+ char token matches
         // the generic secret regex, but `looks_high_entropy` leaves an
         // all-one-case, all-letter run alone (no digit, no mixed case, no b64
-        // punctuation) on the theory that it is more likely a long word than a
-        // secret. A 40-char all-lowercase-letter token therefore survives.
+        // punctuation) because the public contract preserves long prose words
+        // unless a credential key/prefix or other entropy signal is present.
         let token = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn"; // 40 letters
         assert_eq!(token.len(), 40);
         assert_eq!(redact(token), token);
