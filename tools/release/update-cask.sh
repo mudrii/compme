@@ -70,6 +70,24 @@ CASK
   grep -q "sha256 \"$expected_sha\"" "$fixture"
   grep -q "version=9.8.7 sha256=$expected_sha" "$tmp/out.log"
 
+  mismatched_artifact="$tmp/compme-0.9.9-macos.zip"
+  printf 'old artifact\n' >"$mismatched_artifact"
+  mismatch_fixture="$tmp/mismatch.rb"
+  cat >"$mismatch_fixture" <<'CASK'
+cask "compme" do
+  version "0.0.0"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+end
+CASK
+  mismatch_golden="$tmp/mismatch.golden"
+  cp "$mismatch_fixture" "$mismatch_golden"
+  if COMPME_CASK_PATH="$mismatch_fixture" COMPME_CASK_ARTIFACT="$mismatched_artifact" "$0" v9.8.7 >"$tmp/mismatch-artifact.log" 2>&1; then
+    echo "mismatched local artifact unexpectedly passed" >&2
+    return 1
+  fi
+  grep -q 'artifact filename mismatch' "$tmp/mismatch-artifact.log"
+  cmp "$mismatch_fixture" "$mismatch_golden"
+
   # Assert the constructed artifact URL: fake curl on PATH captures its -o source
   # URL so we pin the v-prefixed tag + compme-<version>-macos.zip filename.
   fake_bin="$tmp/bin"
@@ -245,6 +263,15 @@ else
   artifact="$tmp/$zip"
   echo "downloading $url"
   curl -fsSL "$url" -o "$artifact"
+fi
+artifact_name="$(basename "$artifact")"
+if [ "$artifact_name" != "$zip" ]; then
+  echo "artifact filename mismatch: expected $zip, got $artifact_name" >&2
+  exit 1
+fi
+if [ ! -f "$artifact" ]; then
+  echo "missing artifact: $artifact" >&2
+  exit 1
 fi
 sha="$(shasum -a 256 "$artifact" | awk '{print $1}')"
 echo "version=$version sha256=$sha"

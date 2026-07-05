@@ -70,7 +70,10 @@ run_self_test() {
   fake_bin="$tmp/bin"
   app="$tmp/Compme.app"
   log="$tmp/commands.log"
-  mkdir -p "$fake_bin" "$app"
+  mkdir -p "$fake_bin" "$app/Contents/MacOS"
+  printf '<plist version="1.0"><dict></dict></plist>\n' >"$app/Contents/Info.plist"
+  printf '#!/usr/bin/env bash\n' >"$app/Contents/MacOS/compme"
+  chmod +x "$app/Contents/MacOS/compme"
 
   cat >"$fake_bin/ditto" <<'SH'
 #!/usr/bin/env bash
@@ -163,6 +166,42 @@ SH
   fi
   grep -Fq "not an app bundle: $tmp/not-an-app" "$tmp/not-an-app.err"
 
+  plain_dir="$tmp/plain-dir"
+  mkdir -p "$plain_dir"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$log" \
+    COMPME_NOTARYTOOL_KEYCHAIN_PROFILE="compme-release" \
+    "$0" "$plain_dir" >"$tmp/plain-dir.out" 2>"$tmp/plain-dir.err"; then
+    echo "self-test FAILED: plain directory should fail" >&2
+    return 1
+  fi
+  grep -Fq "not a Compme.app bundle: $plain_dir" "$tmp/plain-dir.err"
+
+  missing_plist="$tmp/MissingPlist.app"
+  mkdir -p "$missing_plist/Contents/MacOS"
+  printf '#!/usr/bin/env bash\n' >"$missing_plist/Contents/MacOS/compme"
+  chmod +x "$missing_plist/Contents/MacOS/compme"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$log" \
+    COMPME_NOTARYTOOL_KEYCHAIN_PROFILE="compme-release" \
+    "$0" "$missing_plist" >"$tmp/missing-plist.out" 2>"$tmp/missing-plist.err"; then
+    echo "self-test FAILED: missing Info.plist should fail" >&2
+    return 1
+  fi
+  grep -Fq "not a Compme.app bundle: $missing_plist" "$tmp/missing-plist.err"
+
+  missing_executable="$tmp/MissingExecutable.app"
+  mkdir -p "$missing_executable/Contents/MacOS"
+  printf '<plist version="1.0"><dict></dict></plist>\n' >"$missing_executable/Contents/Info.plist"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$log" \
+    COMPME_NOTARYTOOL_KEYCHAIN_PROFILE="compme-release" \
+    "$0" "$missing_executable" >"$tmp/missing-executable.out" 2>"$tmp/missing-executable.err"; then
+    echo "self-test FAILED: missing compme executable should fail" >&2
+    return 1
+  fi
+  grep -Fq "not a Compme.app bundle: $missing_executable" "$tmp/missing-executable.err"
+
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
     echo "self-test FAILED: extra self-test argument was accepted" >&2
     return 1
@@ -201,6 +240,10 @@ if [[ -z "$app" ]]; then
 fi
 if [[ ! -d "$app" ]]; then
   echo "not an app bundle: $app" >&2
+  exit 1
+fi
+if [[ "$app" != *.app || ! -f "$app/Contents/Info.plist" || ! -x "$app/Contents/MacOS/compme" ]]; then
+  echo "not a Compme.app bundle: $app" >&2
   exit 1
 fi
 

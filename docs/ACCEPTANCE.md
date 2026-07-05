@@ -30,6 +30,7 @@ tools/acceptance/run-a2-compat-gates.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
 bash tools/release/check-model-gates.sh
+bash tools/release/run-model-gates.sh
 tools/release/run-model-gates.sh --self-test
 tools/release/update-cask.sh --self-test
 tools/release/finalize-cask.sh --self-test

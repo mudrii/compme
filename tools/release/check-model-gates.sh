@@ -609,6 +609,174 @@ YAML
     return 1
   fi
 
+  check_split_artifact_fixture() {
+    ruby -ryaml - "$1" <<'RUBY'
+def active_shell_lines(run)
+  run.lines.map do |line|
+    stripped = line.strip
+    next if stripped.empty? || stripped.start_with?("#")
+    stripped.sub(/[[:space:]]+#.*$/, "")
+  end.compact
+end
+
+workflow = YAML.load_file(ARGV.fetch(0))
+trigger = workflow["on"] || workflow[true]
+abort("missing release gate: release workflow push trigger is limited to v* tags") unless trigger.fetch("push").fetch("tags") == ["v*"]
+jobs = workflow.fetch("jobs")
+build = jobs.fetch("build_release")
+publish = jobs.fetch("publish_release")
+quote = 39.chr
+tag_guard = "${{ github.ref_type == #{quote}tag#{quote} && startsWith(github.ref_name, #{quote}v#{quote}) }}"
+abort("missing release gate: build_release is limited to v* tag refs") unless build.fetch("if") == tag_guard
+abort("missing release gate: publish_release is limited to v* tag refs") unless publish.fetch("if") == tag_guard
+build_steps = build.fetch("steps")
+publish_steps = publish.fetch("steps")
+publish_checkout = publish_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
+abort("missing release gate: publish_release checkout fetches full history") unless publish_checkout&.fetch("with")&.fetch("fetch-depth") == 0
+build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
+notarize_index = build_steps.index { |step| step["name"] == "Notarize and staple the .app" }
+package_index = build_steps.index { |step| step["name"] == "Package + checksum" }
+manifest_index = build_steps.index { |step| step["name"] == "Write update manifest" }
+upload_index = build_steps.index { |step| step["name"] == "Upload release artifacts" }
+abort("missing release gate: release artifact chain is build -> notarize -> package -> manifest -> upload") unless build_index && notarize_index && package_index && manifest_index && upload_index && build_index < notarize_index && notarize_index < package_index && package_index < manifest_index && manifest_index < upload_index
+package_run = build_steps.fetch(package_index).fetch("run")
+["ditto -c -k --keepParent", "shasum -a 256", "echo \"version=$version\"", "echo \"zip=$zip\"", "echo \"sha256=$sha\""].each do |needle|
+  abort("missing release gate: package step #{needle}") unless package_run.include?(needle)
+end
+manifest_step = build_steps.fetch(manifest_index)
+manifest_env = manifest_step.fetch("env")
+abort("missing release gate: manifest consumes package output VERSION") unless manifest_env.fetch("VERSION") == "${{ steps.pkg.outputs.version }}"
+abort("missing release gate: manifest consumes package output ZIP") unless manifest_env.fetch("ZIP") == "${{ steps.pkg.outputs.zip }}"
+abort("missing release gate: manifest consumes package output SHA256") unless manifest_env.fetch("SHA256") == "${{ steps.pkg.outputs.sha256 }}"
+manifest_run = manifest_step.fetch("run")
+abort("missing release gate: manifest writes update manifest") unless manifest_run.include?("tools/release/write-update-manifest.sh \"$VERSION\" \"$ZIP\" \"$SHA256\" > \"$manifest\"")
+abort("missing release gate: manifest emits manifest output") unless manifest_run.include?("echo \"manifest=$manifest\" >> \"$GITHUB_OUTPUT\"")
+upload_path = build_steps.fetch(upload_index).fetch("with").fetch("path").to_s
+abort("missing release gate: upload includes manifest output") unless upload_path.include?("${{ steps.manifest.outputs.manifest }}")
+download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
+publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
+cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
+abort("missing release gate: downloads artifacts before publishing release") unless download_index && publish_index && download_index < publish_index
+abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index && publish_index < cask_index
+publish_files = publish_steps.fetch(publish_index).fetch("with").fetch("files").to_s
+["release-artifacts/compme-*-macos.zip", "release-artifacts/compme-*-macos.zip.sha256", "release-artifacts/compme-*-update.json"].each do |needle|
+  abort("missing release gate: publishes downloaded artifact #{needle}") unless publish_files.include?(needle)
+end
+cask_lines = active_shell_lines(publish_steps.fetch(cask_index).fetch("run"))
+abort("missing release gate: derives cask ZIP from release version") unless cask_lines.include?("ZIP=\"compme-${VERSION}-macos.zip\"")
+abort("missing release gate: finalizes cask from downloaded release artifact") unless cask_lines.include?("artifact_path=\"$PWD/release-artifacts/$ZIP\"")
+RUBY
+  }
+
+  good_split_release="$tmp_dir/good-split-release.yml"
+  cat >"$good_split_release" <<'YAML'
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build_release:
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    steps:
+      - name: Build the .app bundle
+        run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+      - name: Notarize and staple the .app
+        run: tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app"
+      - name: Package + checksum
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          zip="compme-${version}-macos.zip"
+          ditto -c -k --keepParent "$RUNNER_TEMP/bundle/Compme.app" "$zip"
+          sha="$(shasum -a 256 "$zip" | awk '{print $1}')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+      - name: Write update manifest
+        env:
+          VERSION: ${{ steps.pkg.outputs.version }}
+          ZIP: ${{ steps.pkg.outputs.zip }}
+          SHA256: ${{ steps.pkg.outputs.sha256 }}
+        run: |
+          manifest="compme-${VERSION}-update.json"
+          tools/release/write-update-manifest.sh "$VERSION" "$ZIP" "$SHA256" > "$manifest"
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+      - name: Upload release artifacts
+        with:
+          path: |
+            ${{ steps.pkg.outputs.zip }}
+            ${{ steps.pkg.outputs.zip }}.sha256
+            ${{ steps.manifest.outputs.manifest }}
+  publish_release:
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Download release artifacts
+        with:
+          path: release-artifacts
+      - name: Publish GitHub release
+        with:
+          files: |
+            release-artifacts/compme-*-macos.zip
+            release-artifacts/compme-*-macos.zip.sha256
+            release-artifacts/compme-*-update.json
+      - name: Finalize Homebrew cask
+        run: |
+          ZIP="compme-${VERSION}-macos.zip"
+          artifact_path="$PWD/release-artifacts/$ZIP"
+          tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"
+YAML
+  check_split_artifact_fixture "$good_split_release"
+
+  bad_split="$tmp_dir/bad-split.yml"
+  cp "$good_split_release" "$bad_split"
+  ruby -0pi -e 'sub(/\n      - name: Notarize and staple the \.app\n        run: tools\/release\/notarize-app\.sh "\$RUNNER_TEMP\/bundle\/Compme\.app"\n/, "\n")' "$bad_split"
+  if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
+    echo "release gate self-test failed: missing split notarization was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$good_split_release" "$bad_split"
+  ruby -0pi -e 'sub(/VERSION: \$\{\{ steps\.pkg\.outputs\.version \}\}/, "VERSION: 9.9.9")' "$bad_split"
+  if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
+    echo "release gate self-test failed: manifest env drift was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$good_split_release" "$bad_split"
+  ruby -0pi -e 'sub(/\n            \$\{\{ steps\.manifest\.outputs\.manifest \}\}/, "")' "$bad_split"
+  if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
+    echo "release gate self-test failed: upload missing manifest was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$good_split_release" "$bad_split"
+  ruby -0pi -e 'sub(/release-artifacts\/compme-\*-macos\.zip\.sha256/, "release-artifacts/wrong.sha256")' "$bad_split"
+  if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
+    echo "release gate self-test failed: wrong publish artifact files were accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$good_split_release" "$bad_split"
+  ruby -0pi -e 'sub(/artifact_path="\$PWD\/release-artifacts\/\$ZIP"/, "artifact_path=\"$PWD/$ZIP\"")' "$bad_split"
+  if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
+    echo "release gate self-test failed: wrong cask artifact path was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$good_split_release" "$bad_split"
+  ruby -0pi -e 'sub(/fetch-depth: 0/, "fetch-depth: 1")' "$bad_split"
+  if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
+    echo "release gate self-test failed: shallow publish checkout was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   cleanup
 }
 
@@ -800,6 +968,9 @@ ruby -ryaml -e '
   checkout = build_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
   abort("missing release gate: build_release checkout") unless checkout
   abort("missing release gate: build_release checkout fetches full history") unless checkout.fetch("with").fetch("fetch-depth") == 0
+  publish_checkout = publish_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
+  abort("missing release gate: publish_release checkout") unless publish_checkout
+  abort("missing release gate: publish_release checkout fetches full history") unless publish_checkout.fetch("with").fetch("fetch-depth") == 0
   ancestry_index = build_steps.index { |step| step["name"] == "Verify release tag is on default branch" }
   metadata_index = build_steps.index { |step| step["name"] == "Check release tag matches bundle metadata" }
   import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
@@ -849,6 +1020,20 @@ ruby -ryaml -e '
   abort("missing release gate: notarizes built app bundle") unless notarize_step.fetch("run") == %q(tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app")
   package_step = build_steps.fetch(package_index)
   abort("missing release gate: package step exposes pkg outputs") unless package_step.fetch("id") == "pkg"
+  package_run = package_step.fetch("run")
+  [
+    "version=\"${GITHUB_REF_NAME#v}\"",
+    "zip=\"compme-${version}-macos.zip\"",
+    "ditto -c -k --keepParent \"$RUNNER_TEMP/bundle/Compme.app\" \"$zip\"",
+    "shasum -a 256 \"$zip\"",
+    "printf ",
+    "\"$sha\" \"$zip\" > \"$zip.sha256\"",
+    "echo \"version=$version\"",
+    "echo \"zip=$zip\"",
+    "echo \"sha256=$sha\"",
+  ].each do |needle|
+    abort("missing release gate: package step #{needle}") unless package_run.include?(needle)
+  end
   manifest_step = build_steps.fetch(manifest_index)
   abort("missing release gate: manifest step exposes manifest output") unless manifest_step.fetch("id") == "manifest"
   manifest_env = manifest_step.fetch("env")
@@ -858,6 +1043,14 @@ ruby -ryaml -e '
     "SHA256" => "${{ steps.pkg.outputs.sha256 }}",
   }.each do |key, expected|
     abort("missing release gate: manifest consumes package output #{key}") unless manifest_env.fetch(key) == expected
+  end
+  manifest_run = manifest_step.fetch("run")
+  [
+    "manifest=\"compme-${VERSION}-update.json\"",
+    "tools/release/write-update-manifest.sh \"$VERSION\" \"$ZIP\" \"$SHA256\" > \"$manifest\"",
+    "echo \"manifest=$manifest\" >> \"$GITHUB_OUTPUT\"",
+  ].each do |needle|
+    abort("missing release gate: manifest step #{needle}") unless manifest_run.include?(needle)
   end
   download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
   abort("missing release gate: downloads release artifacts in publish job") unless download_index
@@ -884,10 +1077,22 @@ ruby -ryaml -e '
   abort("missing release gate: downloads artifacts with pinned download-artifact action") unless download_step.fetch("uses").match?(/\Aactions\/download-artifact@[0-9a-f]{40}\z/)
   abort("missing release gate: downloads named release artifact bundle") unless download_with.fetch("name") == "compme-release-artifacts"
   abort("missing release gate: downloads release artifacts into release-artifacts") unless download_with.fetch("path") == "release-artifacts"
+  publish_step = publish_steps.fetch(publish_index)
+  publish_files = publish_step.fetch("with").fetch("files").to_s
+  [
+    "release-artifacts/compme-*-macos.zip",
+    "release-artifacts/compme-*-macos.zip.sha256",
+    "release-artifacts/compme-*-update.json",
+  ].each do |needle|
+    abort("missing release gate: publishes downloaded artifact #{needle}") unless publish_files.include?(needle)
+  end
   abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index > publish_index
   cask_step = publish_steps.fetch(cask_index)
   abort("missing release gate: finalizes Homebrew cask") unless cask_step
   cask_run = cask_step.fetch("run")
+  cask_lines = active_shell_lines(cask_run)
+  abort("missing release gate: derives cask ZIP from release version") unless cask_lines.include?("ZIP=\"compme-${VERSION}-macos.zip\"")
+  abort("missing release gate: finalizes cask from downloaded release artifact") unless cask_lines.include?("artifact_path=\"$PWD/release-artifacts/$ZIP\"")
   require_active_finalizer_command!(cask_run, %q(tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"))
   abort("missing release gate: release tag metadata check") unless step?(
     build_steps,
@@ -1022,6 +1227,7 @@ require_line "$acceptance_doc" '^Use `--allow-manual` only after executing and r
 require_line "$acceptance_doc" '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "acceptance docs A2 self-test"
 require_line "$acceptance_doc" '^tools/release/check-model-client-features\.sh[[:space:]]*$' "acceptance docs model client feature policy"
 require_line "$acceptance_doc" '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "acceptance docs model client feature policy self-test"
+require_line "$acceptance_doc" '^bash tools/release/run-model-gates\.sh[[:space:]]*$' "acceptance docs model-backed release gate"
 require_line "$acceptance_doc" '^tools/release/run-model-gates\.sh --self-test[[:space:]]*$' "acceptance docs model gate self-test"
 require_line "$acceptance_doc" '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "acceptance docs cask updater self-test"
 require_line "$acceptance_doc" '^tools/release/finalize-cask\.sh --self-test[[:space:]]*$' "acceptance docs cask finalizer self-test"
