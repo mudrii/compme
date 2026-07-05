@@ -411,7 +411,7 @@ enum SubscriptionEntry {
     Accept {
         _callback: AcceptCallback,
         _observer_tap: AcceptTapResource,
-        /// Process-lifetime always-on shortcut registration (ids 5/6/7), held
+        /// Process-lifetime always-on shortcut registration (ids 5/6/7/8), held
         /// for the subscription's lifetime so toggles fire with no suggestion
         /// visible (finding C). Dropped on unsubscribe → hotkeys unregistered.
         _shortcut_tap: AcceptTapResource,
@@ -714,7 +714,7 @@ enum AcceptTapKind {
     Consumer,
     CorrectionConsumer,
     /// Process-lifetime always-on shortcut registration (ForceActivate /
-    /// ToggleApp / ToggleGlobal, ids 5/6/7). Installed ONCE per subscription
+    /// ToggleApp / ToggleGlobal, ids 5/6/7/8). Installed ONCE per subscription
     /// — unlike `Consumer`, it is NOT armed/dropped with each visible
     /// suggestion, so a toggle can fire in its primary no-suggestion state.
     Shortcut,
@@ -1756,7 +1756,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
             accept_observer_tap_handler(Arc::clone(&active)),
         )?;
         let accept_action = Arc::new(Mutex::new(None));
-        // Always-on shortcuts (ids 5/6/7) install ONCE here, for the
+        // Always-on shortcuts (ids 5/6/7/8) install ONCE here, for the
         // subscription lifetime — NOT armed/dropped with each visible suggestion
         // like the consumer tap (finding C). The delivery handler is the same
         // consumer handler: it already fires shortcuts before its `active`
@@ -3250,7 +3250,7 @@ fn install_worker_accept_tap_resource(
         // The observer tap is a CGEventTap installed elsewhere; the worker-side
         // resource is a no-op placeholder so the subscription owns *something*.
         AcceptTapKind::Observer => Ok(Box::new(()) as WorkerResource),
-        // Always-on shortcuts (ids 5/6/7) install ONCE per subscription on their
+        // Always-on shortcuts (ids 5/6/7/8) install ONCE per subscription on their
         // own process-lifetime resource — independent of the per-suggestion
         // consumer arm — so a toggle fires before any suggestion appears.
         AcceptTapKind::Shortcut => install_process_shortcut_hotkeys(handler),
@@ -3277,7 +3277,7 @@ fn install_carbon_accept_hotkeys(
     };
     // Accept keys (ids 1-4) ONLY: they matter solely while a suggestion is
     // visible, so they stay tied to this per-arm consumer resource. Always-on
-    // shortcuts (ids 5/6/7) are registered once per subscription on the
+    // shortcuts (ids 5/6/7/8) are registered once per subscription on the
     // process-lifetime shortcut resource (`install_process_shortcut_hotkeys`),
     // NOT here — registering them per arm cycle left them unregistered in the
     // no-suggestion state, their primary moment (review finding C).
@@ -3291,7 +3291,7 @@ fn install_carbon_accept_hotkeys(
 }
 
 /// The swappable delivery handler for the process-lifetime SHORTCUT hotkeys
-/// (ids 5/6/7), kept in its OWN slot so always-on shortcuts dispatch even when
+/// (ids 5/6/7/8), kept in its OWN slot so always-on shortcuts dispatch even when
 /// the accept consumer slot ([`CARBON_HANDLER_SLOT`]) is empty (no suggestion
 /// visible). Mirrors [`CarbonHandlerSlot`]'s id-ownership + poison-recovery
 /// discipline so an out-of-order teardown can never disarm a newer arm.
@@ -3315,7 +3315,7 @@ fn shortcut_plan_minus_accept_collisions(
 }
 
 /// A process-lifetime resource owning the always-on SHORTCUT hotkey
-/// registrations (ids 5/6/7) and the [`SHORTCUT_HANDLER_SLOT`] arm. Mirrors
+/// registrations (ids 5/6/7/8) and the [`SHORTCUT_HANDLER_SLOT`] arm. Mirrors
 /// [`WorkerAcceptTapResource`]: it owns its [`EventHotKeyRef`]s and, on drop,
 /// unregisters each one and disarms only the slot it still owns — so there is
 /// no leak and no double-register across subscriptions.
@@ -3371,12 +3371,17 @@ impl WorkerShortcutResource {
                 reason: format!("failed to register Carbon shortcut {keycode}: status {status}"),
             });
         }
+        if debug_enabled() {
+            eprintln!(
+                "compme: carbon shortcut registered id={id} keycode={keycode} modifiers={modifiers}"
+            );
+        }
         self.hotkeys.push(hotkey_ref);
         Ok(())
     }
 }
 
-/// Install the always-on shortcut hotkeys (ids 5/6/7) ONCE for the
+/// Install the always-on shortcut hotkeys (ids 5/6/7/8) ONCE for the
 /// subscription's lifetime (review finding C). Reuses the shared Carbon handler
 /// (`ensure_carbon_handler_installed`) — which routes shortcut ids to
 /// [`SHORTCUT_HANDLER_SLOT`] — and arms that slot with the supplied delivery
@@ -3566,6 +3571,18 @@ fn shortcut_bindings() -> ShortcutBindings {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Snapshot the active always-on shortcut bindings.
+pub fn effective_shortcut_bindings() -> ShortcutBindings {
+    shortcut_bindings()
+}
+
+/// Restore a previously captured shortcut binding snapshot.
+pub fn set_shortcut_bindings(bindings: ShortcutBindings) {
+    *SHORTCUT_BINDINGS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = bindings;
+}
+
 /// Install the configured always-on shortcuts. Mirrors
 /// [`set_accept_keymap_from_config_with_mods`]: the run loop parses the three
 /// `COMPME_*` shortcut config strings, then lands them here BEFORE the adapter
@@ -3735,7 +3752,7 @@ extern "C" fn carbon_accept_hotkey_handler(
                 keycode
             }
         };
-        // Shortcut ids (5/6/7) read the PROCESS-LIFETIME shortcut slot so they
+        // Shortcut ids (5/6/7/8) read the PROCESS-LIFETIME shortcut slot so they
         // dispatch even when no suggestion is visible (the accept slot is empty
         // in that state — finding C). Accept ids read the per-arm accept slot.
         // Either way the cloned Arc keeps the handler alive through this call
@@ -4561,8 +4578,8 @@ fn normalize_caret_rect(rect: ScreenRect, bundle_id: Option<&str>, is_omnibox: b
 }
 
 /// Popup-mode fallback anchor: the focused field's window frame, used when no
-/// caret geometry is available. Best effort — returns `None` if the element
-/// exposes no `AXWindow`/`AXFrame`.
+/// caret geometry is available. Best effort — returns `None` if neither the
+/// focused element nor its application exposes a focused window frame.
 fn popup_anchor_for_field(
     pid: i32,
     field: FieldHandle,
@@ -4584,13 +4601,39 @@ fn popup_anchor_for_field(
     }
 
     unsafe {
-        let Some((window, _window_owner)) =
-            copy_ax_element_attribute(element, AX_WINDOW_ATTRIBUTE)?
-        else {
-            return Ok(None);
-        };
-        read_ax_cgrect_attribute(window, AX_FRAME_ATTRIBUTE)
+        let element_window = copy_ax_element_attribute(element, AX_WINDOW_ATTRIBUTE)?;
+        let (app_element, _app_owner) = create_app_ax_element(pid)?;
+        let app_window = copy_ax_element_attribute(app_element, "AXFocusedWindow")?;
+        let element_window_ref = element_window.as_ref().map(|(window, _owner)| *window);
+        let app_window_ref = app_window.as_ref().map(|(window, _owner)| *window);
+        first_readable_popup_anchor_rect(
+            popup_anchor_window_sources(element_window_ref, app_window_ref),
+            |window| read_ax_cgrect_attribute(window, AX_FRAME_ATTRIBUTE),
+        )
     }
+}
+
+fn popup_anchor_window_sources(
+    element_window: Option<AXUIElementRef>,
+    app_focused_window: Option<AXUIElementRef>,
+) -> impl Iterator<Item = AXUIElementRef> {
+    element_window.into_iter().chain(app_focused_window)
+}
+
+fn first_readable_popup_anchor_rect<I, F>(
+    windows: I,
+    mut read_frame: F,
+) -> Result<Option<ScreenRect>, PlatformError>
+where
+    I: IntoIterator<Item = AXUIElementRef>,
+    F: FnMut(AXUIElementRef) -> Result<Option<ScreenRect>, PlatformError>,
+{
+    for window in windows {
+        if let Some(rect) = read_frame(window)? {
+            return Ok(Some(rect));
+        }
+    }
+    Ok(None)
 }
 
 /// Copy an AX element-valued attribute (e.g. `AXWindow`). Returns the raw ref
@@ -6970,6 +7013,45 @@ mod tests {
         }
     }
 
+    static SHORTCUT_BINDINGS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct ShortcutBindingsGuard {
+        previous: ShortcutBindings,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ShortcutBindingsGuard {
+        fn set(
+            force_activate: Option<&str>,
+            toggle_app: Option<&str>,
+            toggle_global: Option<&str>,
+            grammar_check: Option<&str>,
+        ) -> Self {
+            let lock = SHORTCUT_BINDINGS_TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let previous = shortcut_bindings();
+            set_shortcut_bindings_from_config(
+                force_activate,
+                toggle_app,
+                toggle_global,
+                grammar_check,
+            );
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ShortcutBindingsGuard {
+        fn drop(&mut self) {
+            *SHORTCUT_BINDINGS
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = self.previous;
+        }
+    }
+
     fn test_adapter(
         frontmost_pid: Option<i32>,
         installs: Arc<Mutex<Vec<FakeObserverInstall>>>,
@@ -8377,6 +8459,58 @@ mod tests {
                 state: SecurityState::SecureField,
             })
         );
+    }
+
+    #[test]
+    fn popup_anchor_window_sources_prefer_element_then_app_focused_window() {
+        let element = 0x11usize as AXUIElementRef;
+        let app = 0x22usize as AXUIElementRef;
+
+        assert_eq!(
+            popup_anchor_window_sources(Some(element), Some(app)).collect::<Vec<_>>(),
+            vec![element, app]
+        );
+        assert_eq!(
+            popup_anchor_window_sources(None, Some(app)).collect::<Vec<_>>(),
+            vec![app]
+        );
+        assert_eq!(
+            popup_anchor_window_sources(Some(element), None).collect::<Vec<_>>(),
+            vec![element]
+        );
+        assert!(popup_anchor_window_sources(None, None)
+            .collect::<Vec<_>>()
+            .is_empty());
+    }
+
+    #[test]
+    fn popup_anchor_rect_falls_back_from_frameless_element_window_to_app_window() {
+        let element = 0x11usize as AXUIElementRef;
+        let app = 0x22usize as AXUIElementRef;
+        let app_rect = ScreenRect {
+            x: 10.0,
+            y: 20.0,
+            w: 300.0,
+            h: 40.0,
+        };
+
+        let rect = first_readable_popup_anchor_rect([element, app], |window| {
+            if window == element {
+                Ok(None)
+            } else {
+                Ok(Some(app_rect))
+            }
+        })
+        .expect("fallback succeeds");
+        assert_eq!(rect, Some(app_rect));
+
+        assert_eq!(
+            first_readable_popup_anchor_rect([element, app], |_| Ok(None)).unwrap(),
+            None
+        );
+
+        let err = first_readable_popup_anchor_rect([element], |_| Err(PlatformError::Timeout));
+        assert_eq!(err, Err(PlatformError::Timeout));
     }
 
     #[test]
@@ -9806,6 +9940,17 @@ mod tests {
         }
     }
 
+    fn shortcut_tap_event(action: ShortcutAction) -> AcceptTapEvent {
+        AcceptTapEvent {
+            event_type: CGEventType::KeyDown,
+            keycode: 0,
+            source_user_data: 0,
+            option_down: false,
+            binding: None,
+            shortcut: Some(action),
+        }
+    }
+
     #[test]
     fn option_tab_passes_through_as_literal_tab() {
         // Option+Tab is Cotypist's per-app Tab bypass: a real Tab reaches the
@@ -10301,7 +10446,7 @@ mod tests {
 
     #[test]
     fn shortcut_plan_drops_chords_colliding_with_accept_keys() {
-        // Finding F: accept keys (ids 1-4) and shortcuts (5/6/7) now register on
+        // Finding F: accept keys (ids 1-4) and shortcuts (5/6/7/8) now register on
         // separate lifecycles, so a shortcut bound to an accept chord would hit
         // eventHotKeyExistsErr. The cross-check drops the colliding shortcut(s)
         // instead of aborting the whole install.
@@ -10347,6 +10492,7 @@ mod tests {
             (CARBON_HOTKEY_FORCE_ACTIVATE, KEYCODE_TAB, 0),
             (CARBON_HOTKEY_TOGGLE_APP, KEYCODE_GRAVE, 0),
             (CARBON_HOTKEY_TOGGLE_GLOBAL, KEYCODE_DOWN, 0),
+            (CARBON_HOTKEY_GRAMMAR_CHECK, KEYCODE_ESCAPE, 0),
         ];
         assert!(shortcut_plan_minus_accept_collisions(all_collide, &accept_chords).is_empty());
 
@@ -10356,6 +10502,11 @@ mod tests {
             (CARBON_HOTKEY_FORCE_ACTIVATE, 96, 0),
             (CARBON_HOTKEY_TOGGLE_APP, 50, CARBON_SHIFT_KEY),
             (CARBON_HOTKEY_TOGGLE_GLOBAL, KEYCODE_TAB, CARBON_CONTROL_KEY),
+            (
+                CARBON_HOTKEY_GRAMMAR_CHECK,
+                KEYCODE_ESCAPE,
+                CARBON_CONTROL_KEY,
+            ),
         ];
         assert_eq!(
             shortcut_plan_minus_accept_collisions(none_collide.clone(), &accept_chords),
@@ -10422,6 +10573,7 @@ mod tests {
 
     #[test]
     fn set_shortcut_bindings_from_config_drops_a_colliding_set_whole() {
+        let _guard = ShortcutBindingsGuard::set(None, None, None, None);
         // A distinct set is stored verbatim and returned for the caller to log.
         let ok =
             set_shortcut_bindings_from_config(Some("96"), None, Some("shift+96"), Some("ctrl+96"));
@@ -11054,6 +11206,43 @@ mod tests {
         assert_eq!(
             accept_tap_installs.lock().unwrap()[3].kind,
             AcceptTapKind::Consumer
+        );
+    }
+
+    #[test]
+    fn subscribe_accept_shortcut_resource_dispatches_configured_grammar_check() {
+        let accept_tap_installs = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.accept_tap_installs = Arc::clone(&accept_tap_installs);
+        let adapter = test_adapter_with_hooks(config);
+        let _guard = ShortcutBindingsGuard::set(None, None, None, Some("ctrl+96"));
+        assert_eq!(
+            shortcut_bindings().grammar_check,
+            Some((96, CARBON_CONTROL_KEY))
+        );
+        let (action_tx, action_rx) = mpsc::channel();
+
+        let _subscription = adapter
+            .subscribe_accept(Arc::new(move |action| {
+                action_tx.send(action).expect("action send");
+            }))
+            .expect("subscribe accept");
+        wait_for_accept_tap_count(&accept_tap_installs, 2);
+        assert_eq!(
+            accept_tap_installs.lock().unwrap()[1].kind,
+            AcceptTapKind::Shortcut
+        );
+
+        let shortcut_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[1].handler);
+        assert_eq!(
+            shortcut_handler(shortcut_tap_event(ShortcutAction::GrammarCheck)),
+            AcceptTapDecision::Shortcut(ShortcutAction::GrammarCheck)
+        );
+        assert_eq!(
+            action_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("grammar shortcut action"),
+            TapControl::Shortcut(ShortcutAction::GrammarCheck)
         );
     }
 

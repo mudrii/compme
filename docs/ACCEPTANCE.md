@@ -270,7 +270,10 @@ requires an unlocked macOS GUI session with Accessibility permission:
 ### Settings LOOK Gates
 
 These Settings-window checks are manual because they depend on visible AppKit
-layout and live control interaction:
+layout and live control interaction. The runner-pinned IDs are
+`apps-policy-toggle-look`, `personalization-pane-look`, `menu-bar-icon-look`,
+`shortcuts-recorder-look`, `setup-model-picker-look`, and
+`nine-tab-settings-walkthrough`:
 
 - **Apps policy grid** — open Settings > Apps with at least two rows; verify the
   On / Tab / Mid / AC / GF checkbox columns do not overlap or truncate app names,
@@ -281,6 +284,9 @@ layout and live control interaction:
   instructions, sender identity, and strength, confirm the multi-line field
   commits and persists, and confirm the next request uses updated steering
   without relaunch.
+- **Menu bar / Shortcuts / Setup / nine-tab walkthrough** — confirm the tray
+  icon/status, modifier-combo recorder, setup model picker, and all nine panes
+  match the detailed Live UI LOOK checklist below.
 
 ### Useful Options
 
@@ -586,6 +592,7 @@ Exact runner-emitted manual gate IDs:
 - `personalization-pane-look`
 - `menu-bar-icon-look`
 - `shortcuts-recorder-look`
+- `always-on-hotkeys-physical-look`
 - `setup-model-picker-look`
 - `nine-tab-settings-walkthrough`
 - `caret-marker-chromium-forks-calibration`

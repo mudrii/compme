@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1661 workspace tests; spike separate)
+> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1674 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -194,14 +194,18 @@ enhancements explicitly called out below.
   available if that redesign is chosen later.
 
 ### 3.4 🔬 Shortcuts pane and always-on hotkeys — code complete, physical LOOK pending
-- **Status:** recorder rows, live rebind, modifier-combo capture, config parsing,
-  internal collision checks, process-lifetime Carbon registration, and run-loop
-  dispatch are implemented for force-activate, per-app toggle, and global toggle.
-  Toggle-app/global mirror the tray policy paths. Force-activate re-shows the
-  currently held suggestion; it deliberately does not start fresh inference.
-- **Remaining:** physical keypress LOOK only: verify configured force/toggle
+- **Status:** recorder rows, live rebind, and modifier-combo capture ship for
+  Word, Full, and Grammar accept. Force-activate, per-app toggle, global toggle,
+  and grammar-check shortcuts are config-backed: parsed, collision-checked,
+  registered through process-lifetime Carbon hotkeys, and dispatched through the
+  run loop. Toggle-app/global mirror the tray policy paths. Force-activate
+  re-shows the currently held suggestion; it deliberately does not start fresh
+  inference.
+- **Remaining:** physical keypress LOOK only, pinned by the A1b
+  `always-on-hotkeys-physical-look` manual gate: verify recorder capture/persistence
+  for Word/Full/Grammar accept, verify configured force/toggle/grammar-check
   shortcuts fire in a granted macOS session, update the focused app/global policy
-  as expected, and that force-activate behaves as the held-suggestion re-show
+  as expected, and confirm force-activate behaves as the held-suggestion re-show
   command.
 
 ### 3.5 ☐ Emoji `includeVanillaVariants` (deferred by design)
@@ -436,7 +440,7 @@ physical trigger/accept interaction.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1661 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1674 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

@@ -533,11 +533,7 @@ mod tests {
             .or_default()
             .enabled = Some(true);
         p.excluded_domains.insert("bank.example.com".into());
-        assert!(!p.should_suggest(
-            Some("com.apple.Safari"),
-            Some("bank.example.com"),
-            1_000
-        ));
+        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("bank.example.com"), 1_000));
         // A non-excluded domain in the same context still suggests.
         assert!(p.should_suggest(Some("com.apple.Safari"), Some("docs.example.com"), 1_000));
     }

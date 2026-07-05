@@ -9,6 +9,9 @@
 pub enum BlockReason {
     /// Accessibility permission not granted.
     Permission,
+    /// Accessibility is granted, but startup event subscriptions degraded before
+    /// the grant and require a relaunch to install real event streams.
+    RelaunchRequired,
     /// Secure input is active (password field / global secure input).
     SecureInput,
     /// The configured model source failed permanently at startup.
@@ -24,22 +27,26 @@ pub enum AppStatus {
     Blocked(BlockReason),
 }
 
-/// Derive the status from the five inputs, most-severe first.
+/// Derive the status from the six inputs, most-severe first.
 ///
-/// A missing permission outranks everything (nothing works without it); secure
-/// input outranks readiness (we must not suggest into a password field); an
-/// unavailable model outranks warm-up/toggle state; an unwarmed model outranks
-/// the user toggle (there is nothing to offer yet); a disabled toggle outranks
-/// `Ready`.
+/// A missing permission outranks everything (nothing works without it);
+/// relaunch-required subscription degradation comes next (the permission is
+/// present, but event streams are still inert); secure input outranks readiness
+/// (we must not suggest into a password field); an unavailable model outranks
+/// warm-up/toggle state; an unwarmed model outranks the user toggle (there is
+/// nothing to offer yet); a disabled toggle outranks `Ready`.
 pub fn derive_status(
-    trusted: bool,
+    accessibility_trusted: bool,
+    subscriptions_require_relaunch: bool,
     secure: bool,
     model_available: bool,
     ready: bool,
     enabled: bool,
 ) -> AppStatus {
-    if !trusted {
+    if !accessibility_trusted {
         AppStatus::Blocked(BlockReason::Permission)
+    } else if subscriptions_require_relaunch {
+        AppStatus::Blocked(BlockReason::RelaunchRequired)
     } else if secure {
         AppStatus::Blocked(BlockReason::SecureInput)
     } else if !model_available {
@@ -81,6 +88,9 @@ impl AppStatus {
             AppStatus::Ready => "Ready",
             AppStatus::Disabled => "Disabled",
             AppStatus::Blocked(BlockReason::Permission) => "Blocked: grant Accessibility",
+            AppStatus::Blocked(BlockReason::RelaunchRequired) => {
+                "Blocked: relaunch to finish Accessibility setup"
+            }
             AppStatus::Blocked(BlockReason::SecureInput) => "Paused: secure input active",
             AppStatus::Blocked(BlockReason::ModelUnavailable) => "Blocked: model unavailable",
         }
@@ -114,12 +124,12 @@ mod tests {
     fn missing_permission_outranks_everything() {
         // Even ready + enabled + not-secure: no trust → Blocked(Permission).
         assert_eq!(
-            derive_status(false, false, true, true, true),
+            derive_status(false, false, false, true, true, true),
             AppStatus::Blocked(BlockReason::Permission)
         );
         // Trust missing wins over secure too.
         assert_eq!(
-            derive_status(false, true, false, false, false),
+            derive_status(false, false, true, false, false, false),
             AppStatus::Blocked(BlockReason::Permission)
         );
     }
@@ -131,7 +141,32 @@ mod tests {
         // false and the model is unavailable/unwarmed/disabled. Pins that the
         // permission check sits strictly first.
         assert_eq!(
-            derive_status(false, false, false, false, false),
+            derive_status(false, false, false, false, false, false),
+            AppStatus::Blocked(BlockReason::Permission)
+        );
+    }
+
+    #[test]
+    fn relaunch_required_is_blocked_without_accessibility_affordance() {
+        assert_eq!(
+            derive_status(true, true, false, true, true, true),
+            AppStatus::Blocked(BlockReason::RelaunchRequired)
+        );
+        assert_eq!(
+            AppStatus::Blocked(BlockReason::RelaunchRequired).status_line(),
+            "Blocked: relaunch to finish Accessibility setup"
+        );
+        assert!(!AppStatus::Blocked(BlockReason::RelaunchRequired).needs_accessibility());
+    }
+
+    #[test]
+    fn relaunch_required_outranks_secure_model_loading_and_disabled_states_after_permission() {
+        assert_eq!(
+            derive_status(true, true, true, false, false, false),
+            AppStatus::Blocked(BlockReason::RelaunchRequired)
+        );
+        assert_eq!(
+            derive_status(false, true, true, false, false, false),
             AppStatus::Blocked(BlockReason::Permission)
         );
     }
@@ -139,7 +174,7 @@ mod tests {
     #[test]
     fn secure_input_outranks_readiness_and_toggle() {
         assert_eq!(
-            derive_status(true, true, true, true, true),
+            derive_status(true, false, true, true, true, true),
             AppStatus::Blocked(BlockReason::SecureInput)
         );
     }
@@ -153,11 +188,11 @@ mod tests {
         // silently surface "Loading model…" while focus sits in a password
         // field, hiding the secure-input pause. The toggle is irrelevant here.
         assert_eq!(
-            derive_status(true, true, true, false, true),
+            derive_status(true, false, true, true, false, true),
             AppStatus::Blocked(BlockReason::SecureInput)
         );
         assert_eq!(
-            derive_status(true, true, true, false, false),
+            derive_status(true, false, true, true, false, false),
             AppStatus::Blocked(BlockReason::SecureInput)
         );
     }
@@ -165,7 +200,7 @@ mod tests {
     #[test]
     fn unavailable_model_is_blocked_not_loading() {
         assert_eq!(
-            derive_status(true, false, false, false, true),
+            derive_status(true, false, false, false, false, true),
             AppStatus::Blocked(BlockReason::ModelUnavailable)
         );
         assert_eq!(
@@ -184,7 +219,7 @@ mod tests {
         // reorder that checked readiness/enabled first would surface "Loading…"
         // or "Disabled" and hide the permanent failure.
         assert_eq!(
-            derive_status(true, false, false, false, false),
+            derive_status(true, false, false, false, false, false),
             AppStatus::Blocked(BlockReason::ModelUnavailable)
         );
     }
@@ -196,7 +231,7 @@ mod tests {
         // an unwarmed model outranks the user toggle (nothing to offer yet), so
         // Loading must win over Disabled.
         assert_eq!(
-            derive_status(true, false, true, false, false),
+            derive_status(true, false, false, true, false, false),
             AppStatus::Loading
         );
     }
@@ -204,7 +239,7 @@ mod tests {
     #[test]
     fn not_ready_is_loading_when_trusted_and_unsecured() {
         assert_eq!(
-            derive_status(true, false, true, false, true),
+            derive_status(true, false, false, true, false, true),
             AppStatus::Loading
         );
     }
@@ -212,7 +247,7 @@ mod tests {
     #[test]
     fn ready_but_disabled_is_disabled() {
         assert_eq!(
-            derive_status(true, false, true, true, false),
+            derive_status(true, false, false, true, true, false),
             AppStatus::Disabled
         );
     }
@@ -220,7 +255,7 @@ mod tests {
     #[test]
     fn all_clear_is_ready() {
         assert_eq!(
-            derive_status(true, false, true, true, true),
+            derive_status(true, false, false, true, true, true),
             AppStatus::Ready
         );
     }
@@ -232,6 +267,7 @@ mod tests {
             AppStatus::Loading,
             AppStatus::Disabled,
             AppStatus::Blocked(BlockReason::Permission),
+            AppStatus::Blocked(BlockReason::RelaunchRequired),
             AppStatus::Blocked(BlockReason::SecureInput),
             AppStatus::Blocked(BlockReason::ModelUnavailable),
         ] {
@@ -242,6 +278,11 @@ mod tests {
     #[test]
     fn only_permission_block_needs_accessibility_affordance() {
         assert!(AppStatus::Blocked(BlockReason::Permission).needs_accessibility());
+        assert_eq!(
+            AppStatus::Blocked(BlockReason::Permission).status_line(),
+            "Blocked: grant Accessibility"
+        );
+        assert!(!AppStatus::Blocked(BlockReason::RelaunchRequired).needs_accessibility());
         assert!(!AppStatus::Blocked(BlockReason::SecureInput).needs_accessibility());
         assert!(!AppStatus::Blocked(BlockReason::ModelUnavailable).needs_accessibility());
         assert!(!AppStatus::Ready.needs_accessibility());
@@ -264,6 +305,7 @@ mod tests {
             AppStatus::Loading,
             AppStatus::Disabled,
             AppStatus::Blocked(BlockReason::Permission),
+            AppStatus::Blocked(BlockReason::RelaunchRequired),
             AppStatus::Blocked(BlockReason::SecureInput),
             AppStatus::Blocked(BlockReason::ModelUnavailable),
         ] {
@@ -279,6 +321,7 @@ mod tests {
             AppStatus::Ready,
             AppStatus::Disabled,
             AppStatus::Blocked(BlockReason::Permission),
+            AppStatus::Blocked(BlockReason::RelaunchRequired),
             AppStatus::Blocked(BlockReason::SecureInput),
             AppStatus::Blocked(BlockReason::ModelUnavailable),
         ];

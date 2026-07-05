@@ -123,8 +123,16 @@ SH
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "usage: $0 [--self-test]" >&2
+    exit 2
+  fi
   run_self_test
   exit 0
+fi
+if [ "$#" -ne 0 ]; then
+  echo "usage: $0 [--self-test]" >&2
+  exit 2
 fi
 
 cd "$repo_root"

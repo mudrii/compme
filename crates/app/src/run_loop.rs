@@ -2606,18 +2606,27 @@ fn build_settings_flags(
 
 /// The Setup tab's current rows as display lines: probe permissions and the
 /// model file NOW (cheap queries) and render through `setup_row_line`.
-fn compose_setup_lines(config: &Config, model_ready: bool) -> Vec<String> {
-    crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
+fn compose_setup_lines(
+    config: &Config,
+    model_ready: bool,
+    ax_relaunch_required: bool,
+) -> Vec<String> {
+    setup_lines_from_checks(crate::setup_state::SetupChecks {
         // Probed fresh here (cheap), not the loop's 480ms-stale copy —
         // review-c107: rows must not flip at different cadences.
         ax_trusted: accessibility_trusted(),
+        ax_relaunch_required,
         screen_context_enabled: config.screen_context,
         screen_recording: screen_recording_permission(),
         model_ready,
     })
-    .iter()
-    .map(setup_row_line)
-    .collect()
+}
+
+fn setup_lines_from_checks(checks: crate::setup_state::SetupChecks) -> Vec<String> {
+    crate::setup_state::setup_rows(checks)
+        .iter()
+        .map(setup_row_line)
+        .collect()
 }
 
 /// One Setup-tab row: readiness glyph + label (the pane's display form of
@@ -3130,7 +3139,10 @@ fn status_drops_pending_requests(status: AppStatus) -> bool {
         status,
         AppStatus::Disabled
             | AppStatus::Blocked(
-                BlockReason::Permission | BlockReason::SecureInput | BlockReason::ModelUnavailable,
+                BlockReason::Permission
+                    | BlockReason::RelaunchRequired
+                    | BlockReason::SecureInput
+                    | BlockReason::ModelUnavailable,
             )
     )
 }
@@ -3146,6 +3158,73 @@ fn subscription_error_action(trusted: bool, err: &PlatformError) -> Subscription
         PlatformError::PermissionMissing { .. } => SubscriptionErrorAction::NoopUntilPermission,
         _ if !trusted => SubscriptionErrorAction::NoopUntilPermission,
         _ => SubscriptionErrorAction::Fatal(format!("{err:?}")),
+    }
+}
+
+fn runtime_trusted(accessibility_trusted: bool, subscriptions_require_relaunch: bool) -> bool {
+    accessibility_trusted && !subscriptions_require_relaunch
+}
+
+fn apply_startup_key_bindings(config: &Config) {
+    // Rebound accept keys (cycle-13 residual): set the process-wide keymap
+    // before suggestions can arm accept handling, so the Carbon registration,
+    // the decision logic, and the handler's id->keycode inverse all read one
+    // source. Collision/invalid -> fail soft to defaults.
+    if config.accept_word_key.is_some()
+        || config.accept_full_key.is_some()
+        || config.grammar_accept_key.is_some()
+    {
+        match platform_macos::set_accept_keymap_from_config_with_mods(
+            config.accept_word_key,
+            config.accept_full_key,
+            config.grammar_accept_key,
+        ) {
+            Ok(()) => eprintln!(
+                "compme: accept keys rebound (word={:?} full={:?} grammar={:?})",
+                config.accept_word_key, config.accept_full_key, config.grammar_accept_key
+            ),
+            Err(err) => {
+                eprintln!("compme: accept-key rebind invalid ({err:?}); using defaults")
+            }
+        }
+    }
+
+    // Always-on (global) shortcuts must be configured before subscribe_accept():
+    // that subscription installs their process-lifetime Carbon hotkeys once.
+    // Setting this afterward logs plausible bindings but leaves no registered
+    // shortcut until relaunch.
+    if config.force_activate_key.is_some()
+        || config.toggle_app_key.is_some()
+        || config.toggle_global_key.is_some()
+        || config.grammar_check_key.is_some()
+    {
+        let bindings = platform_macos::set_shortcut_bindings_from_config(
+            config.force_activate_key.as_deref(),
+            config.toggle_app_key.as_deref(),
+            config.toggle_global_key.as_deref(),
+            config.grammar_check_key.as_deref(),
+        );
+        eprintln!("compme: global shortcuts configured ({bindings:?})");
+    }
+}
+
+fn subscribe_accept_after_startup_key_bindings(
+    config: &Config,
+    trusted: bool,
+    subscribe: impl FnOnce() -> Result<AcceptSubscription, PlatformError>,
+) -> Result<(AcceptSubscription, bool), String> {
+    apply_startup_key_bindings(config);
+    match subscribe() {
+        Ok(sub) => Ok((sub, false)),
+        Err(err) => match subscription_error_action(trusted, &err) {
+            SubscriptionErrorAction::NoopUntilPermission => {
+                eprintln!(
+                    "compme: accept subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
+                );
+                Ok((noop_accept_subscription(), true))
+            }
+            SubscriptionErrorAction::Fatal(message) => Err(format!("subscribe accept: {message}")),
+        },
     }
 }
 
@@ -3274,9 +3353,10 @@ pub fn run() -> Result<(), String> {
     install_signal_handlers();
 
     // Permissions: if Accessibility isn't granted, fire the system prompt once.
-    // The app keeps running and reflects the Blocked state in the tray. Trust is
-    // re-polled in the loop so granting it mid-session clears Blocked without a
-    // restart.
+    // The app keeps running and reflects the Blocked state in the tray. Focus,
+    // caret, and accept subscriptions are installed once at startup; if any of
+    // them degrade to no-op while permission is missing, granting Accessibility
+    // later still requires a relaunch to install real event streams.
     let mut trusted = accessibility_trusted();
     if !trusted {
         eprintln!("compme: Accessibility not granted — requesting permission");
@@ -3330,21 +3410,23 @@ pub fn run() -> Result<(), String> {
     let tx: Arc<Mutex<Sender<HostEvent>>> = Arc::new(Mutex::new(tx));
 
     let focus_tx = Arc::clone(&tx);
-    let focus_sub = match adapter.subscribe_focus(Arc::new(move |field| {
-        // best-effort: a poisoned send-mutex only happens if a prior sender
-        // panicked while shutting down; the receiver is gone then too, so
-        // dropping this event is the correct shutdown-race behavior.
-        if let Ok(tx) = focus_tx.lock() {
-            let _ = tx.send(HostEvent::Focus(field));
-        }
-    })) {
-        Ok(sub) => sub,
+    let (focus_sub, focus_subscription_requires_relaunch) = match adapter.subscribe_focus(Arc::new(
+        move |field| {
+            // best-effort: a poisoned send-mutex only happens if a prior sender
+            // panicked while shutting down; the receiver is gone then too, so
+            // dropping this event is the correct shutdown-race behavior.
+            if let Ok(tx) = focus_tx.lock() {
+                let _ = tx.send(HostEvent::Focus(field));
+            }
+        },
+    )) {
+        Ok(sub) => (sub, false),
         Err(err) => match subscription_error_action(trusted, &err) {
             SubscriptionErrorAction::NoopUntilPermission => {
                 eprintln!(
                     "compme: focus subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
                 );
-                Subscription::new(0)
+                (Subscription::new(0), true)
             }
             SubscriptionErrorAction::Fatal(message) => {
                 return Err(format!("subscribe focus: {message}"));
@@ -3353,20 +3435,22 @@ pub fn run() -> Result<(), String> {
     };
 
     let caret_tx = Arc::clone(&tx);
-    let caret_sub = match adapter.subscribe_caret(Arc::new(move |field, rect| {
-        // best-effort: poisoned send-mutex means a sender panicked during
-        // shutdown; the receiver is gone, so dropping the event is correct.
-        if let Ok(tx) = caret_tx.lock() {
-            let _ = tx.send(HostEvent::Caret(field, rect));
-        }
-    })) {
-        Ok(sub) => sub,
+    let (caret_sub, caret_subscription_requires_relaunch) = match adapter.subscribe_caret(Arc::new(
+        move |field, rect| {
+            // best-effort: poisoned send-mutex means a sender panicked during
+            // shutdown; the receiver is gone, so dropping the event is correct.
+            if let Ok(tx) = caret_tx.lock() {
+                let _ = tx.send(HostEvent::Caret(field, rect));
+            }
+        },
+    )) {
+        Ok(sub) => (sub, false),
         Err(err) => match subscription_error_action(trusted, &err) {
             SubscriptionErrorAction::NoopUntilPermission => {
                 eprintln!(
                     "compme: caret subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
                 );
-                Subscription::new(0)
+                (Subscription::new(0), true)
             }
             SubscriptionErrorAction::Fatal(message) => {
                 return Err(format!("subscribe caret: {message}"));
@@ -3375,32 +3459,25 @@ pub fn run() -> Result<(), String> {
     };
 
     let accept_tx = Arc::clone(&tx);
-    let accept_sub = match adapter.subscribe_accept(Arc::new(move |control| {
-        let event = match control {
-            TapControl::Accept(action) => HostEvent::Accept(action),
-            TapControl::Dismiss => HostEvent::Dismiss,
-            TapControl::Cycle => HostEvent::Cycle,
-            TapControl::Shortcut(action) => HostEvent::Shortcut(action),
-        };
-        // best-effort: poisoned send-mutex means a sender panicked during
-        // shutdown; the receiver is gone, so dropping the event is correct.
-        if let Ok(tx) = accept_tx.lock() {
-            let _ = tx.send(event);
-        }
-    })) {
-        Ok(sub) => sub,
-        Err(err) => match subscription_error_action(trusted, &err) {
-            SubscriptionErrorAction::NoopUntilPermission => {
-                eprintln!(
-                    "compme: accept subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
-                );
-                noop_accept_subscription()
-            }
-            SubscriptionErrorAction::Fatal(message) => {
-                return Err(format!("subscribe accept: {message}"));
-            }
-        },
-    };
+    let (accept_sub, accept_subscription_requires_relaunch) =
+        subscribe_accept_after_startup_key_bindings(&config, trusted, || {
+            adapter.subscribe_accept(Arc::new(move |control| {
+                let event = match control {
+                    TapControl::Accept(action) => HostEvent::Accept(action),
+                    TapControl::Dismiss => HostEvent::Dismiss,
+                    TapControl::Cycle => HostEvent::Cycle,
+                    TapControl::Shortcut(action) => HostEvent::Shortcut(action),
+                };
+                // best-effort: poisoned send-mutex means a sender panicked during
+                // shutdown; the receiver is gone, so dropping the event is correct.
+                if let Ok(tx) = accept_tx.lock() {
+                    let _ = tx.send(event);
+                }
+            }))
+        })?;
+    let subscriptions_require_relaunch = focus_subscription_requires_relaunch
+        || caret_subscription_requires_relaunch
+        || accept_subscription_requires_relaunch;
     engine.set_accept_subscription(accept_sub);
 
     let model = match load_model(resolve_source(
@@ -3420,6 +3497,7 @@ pub fn run() -> Result<(), String> {
     // ghosts won't appear (missing permission, missing model file).
     for row in crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
         ax_trusted: trusted,
+        ax_relaunch_required: subscriptions_require_relaunch,
         screen_context_enabled: config.screen_context,
         screen_recording: screen_recording_permission(),
         model_ready: model_available,
@@ -3438,47 +3516,6 @@ pub fn run() -> Result<(), String> {
         // The grant takes effect on the NEXT launch (macOS shows the prompt async
         // and re-reads TCC at startup), so screen context is inactive this run.
         eprintln!("compme: restart after granting Screen Recording to enable screen context");
-    }
-
-    // Rebound accept keys (cycle-13 residual): set the process-wide keymap
-    // before suggestions can arm accept handling, so the Carbon registration,
-    // the decision logic, and the handler's id→keycode inverse all read one
-    // source. Collision/invalid → fail soft to defaults.
-    if config.accept_word_key.is_some()
-        || config.accept_full_key.is_some()
-        || config.grammar_accept_key.is_some()
-    {
-        match platform_macos::set_accept_keymap_from_config_with_mods(
-            config.accept_word_key,
-            config.accept_full_key,
-            config.grammar_accept_key,
-        ) {
-            Ok(()) => eprintln!(
-                "compme: accept keys rebound (word={:?} full={:?} grammar={:?})",
-                config.accept_word_key, config.accept_full_key, config.grammar_accept_key
-            ),
-            Err(err) => {
-                eprintln!("compme: accept-key rebind invalid ({err:?}); using defaults")
-            }
-        }
-    }
-
-    // Always-on (global) shortcuts: land the parsed bindings into the
-    // process-wide static BEFORE accept handling arms, so the same arm cycle
-    // registers them alongside the accept keys (mirrors the accept-key apply
-    // above). A colliding set is dropped whole inside the setter with a log.
-    if config.force_activate_key.is_some()
-        || config.toggle_app_key.is_some()
-        || config.toggle_global_key.is_some()
-        || config.grammar_check_key.is_some()
-    {
-        let bindings = platform_macos::set_shortcut_bindings_from_config(
-            config.force_activate_key.as_deref(),
-            config.toggle_app_key.as_deref(),
-            config.toggle_global_key.as_deref(),
-            config.grammar_check_key.as_deref(),
-        );
-        eprintln!("compme: global shortcuts configured ({bindings:?})");
     }
 
     // compme:// deep-link reception (web-driven config §8/§16): Launch
@@ -4267,7 +4304,8 @@ pub fn run() -> Result<(), String> {
             *settings_flags
                 .setup_lines
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(&config, model_available);
+                .unwrap_or_else(|e| e.into_inner()) =
+                compose_setup_lines(&config, model_available, subscriptions_require_relaunch);
             last_setup_poll_ms = Some(now_ms);
             // Apps tab: per-app counts straight from the store (plaintext
             // GROUP BY, no decryption). Unlike setup_lines these are
@@ -4688,7 +4726,8 @@ pub fn run() -> Result<(), String> {
             *settings_flags
                 .setup_lines
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(&config, model_available);
+                .unwrap_or_else(|e| e.into_inner()) =
+                compose_setup_lines(&config, model_available, subscriptions_require_relaunch);
             settings_window.refresh_setup_labels();
         }
         // General-tab Autocorrect watcher: persist + apply on the edge. The
@@ -4743,7 +4782,8 @@ pub fn run() -> Result<(), String> {
             *settings_flags
                 .setup_lines
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(&config, model_available);
+                .unwrap_or_else(|e| e.into_inner()) =
+                compose_setup_lines(&config, model_available, subscriptions_require_relaunch);
             settings_window.refresh_setup_labels();
         }
         // Emoji-pane watcher: the replacement path reads config.emoji on each
@@ -4904,6 +4944,7 @@ pub fn run() -> Result<(), String> {
                 None => eprintln!("compme: disable-in-app ignored — no focused app to resolve"),
             }
         }
+        let effective_trusted = runtime_trusted(trusted, subscriptions_require_relaunch);
         let enabled = flags.enabled.load(Ordering::Relaxed);
         flush_monitored_changes_after_secure_recheck(
             &mut pending_monitored,
@@ -4917,13 +4958,14 @@ pub fn run() -> Result<(), String> {
             MonitoredFlushRuntime {
                 monitored_memory_active,
                 enabled,
-                trusted,
+                trusted: effective_trusted,
                 now_ms,
             },
             secure_input_enabled,
         );
         let status = derive_status(
             trusted,
+            subscriptions_require_relaunch,
             secure,
             model_available,
             inference.is_ready(),
@@ -4932,7 +4974,7 @@ pub fn run() -> Result<(), String> {
         // Secure input is a true engine-state transition, not only a UI state:
         // clear queued work and invalidate the machine so held requests cannot
         // submit after the secure block clears.
-        match secure_edge(prev_secure, secure, trusted) {
+        match secure_edge(prev_secure, secure, effective_trusted) {
             SecureEdge::Enter => {
                 clear_monitored_state_for_policy_transition(
                     &mut pending_monitored,
@@ -5233,6 +5275,22 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
+
+    struct ShortcutBindingsGuard(platform_macos::ShortcutBindings);
+
+    impl ShortcutBindingsGuard {
+        fn reset() -> Self {
+            let previous = platform_macos::effective_shortcut_bindings();
+            platform_macos::set_shortcut_bindings_from_config(None, None, None, None);
+            Self(previous)
+        }
+    }
+
+    impl Drop for ShortcutBindingsGuard {
+        fn drop(&mut self) {
+            platform_macos::set_shortcut_bindings(self.0);
+        }
+    }
 
     /// Build a lookup closure from a list of key/value pairs.
     fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -6405,6 +6463,7 @@ mod tests {
         // against the REAL const, not a drifting literal.
         let rows = crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
             ax_trusted: true,
+            ax_relaunch_required: false,
             screen_context_enabled: true,
             screen_recording: true,
             model_ready: true,
@@ -6427,6 +6486,70 @@ mod tests {
         };
         assert_eq!(setup_row_line(&ready), "\u{2713} Accessibility");
         assert_eq!(setup_row_line(&missing), "\u{2717} Model file");
+    }
+
+    #[test]
+    fn setup_lines_from_checks_renders_relaunch_required_after_accessibility_grant() {
+        let lines = setup_lines_from_checks(crate::setup_state::SetupChecks {
+            ax_trusted: true,
+            ax_relaunch_required: true,
+            screen_context_enabled: false,
+            screen_recording: false,
+            model_ready: true,
+        });
+        assert_eq!(
+            lines,
+            vec![
+                "\u{2717} Relaunch app".to_string(),
+                "\u{2713} Model file".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_key_bindings_apply_global_shortcuts_from_config() {
+        let _guard = ShortcutBindingsGuard::reset();
+        let config = Config::from_lookup(lookup(&[
+            ("COMPME_FORCE_ACTIVATE_KEY", "cmd+96"),
+            ("COMPME_TOGGLE_APP_KEY", "option+96"),
+            ("COMPME_TOGGLE_GLOBAL_KEY", "shift+96"),
+            ("COMPME_GRAMMAR_CHECK_KEY", "control+96"),
+        ]));
+
+        apply_startup_key_bindings(&config);
+
+        let bindings = platform_macos::effective_shortcut_bindings();
+        assert_eq!(bindings.force_activate, Some((96, 256)));
+        assert_eq!(bindings.toggle_app, Some((96, 2048)));
+        assert_eq!(bindings.toggle_global, Some((96, 512)));
+        assert_eq!(bindings.grammar_check, Some((96, 4096)));
+    }
+
+    #[test]
+    fn accept_subscription_observes_startup_shortcuts_before_installing() {
+        let _guard = ShortcutBindingsGuard::reset();
+        let config = Config::from_lookup(lookup(&[
+            ("COMPME_FORCE_ACTIVATE_KEY", "cmd+96"),
+            ("COMPME_TOGGLE_APP_KEY", "option+96"),
+            ("COMPME_TOGGLE_GLOBAL_KEY", "shift+96"),
+            ("COMPME_GRAMMAR_CHECK_KEY", "control+96"),
+        ]));
+        let observed = RefCell::new(None);
+
+        let (sub, requires_relaunch) =
+            subscribe_accept_after_startup_key_bindings(&config, true, || {
+                *observed.borrow_mut() = Some(platform_macos::effective_shortcut_bindings());
+                Ok(noop_accept_subscription())
+            })
+            .expect("subscription setup succeeds");
+
+        assert!(!requires_relaunch);
+        drop(sub);
+        let observed = observed.into_inner().expect("subscribe closure ran");
+        assert_eq!(observed.force_activate, Some((96, 256)));
+        assert_eq!(observed.toggle_app, Some((96, 2048)));
+        assert_eq!(observed.toggle_global, Some((96, 512)));
+        assert_eq!(observed.grammar_check, Some((96, 4096)));
     }
 
     #[test]
@@ -10572,6 +10695,56 @@ mod tests {
     }
 
     #[test]
+    fn monitored_flush_blocks_relaunch_required_effective_untrusted_runtime() {
+        let store = memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([25u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("open in-memory store");
+        let field = field_with_app("com.apple.TextEdit");
+        let change = typed_change_after_baseline(&field, "", "ordinary typed text ");
+        let mut pending = Vec::new();
+        enqueue_monitored_change(
+            &mut pending,
+            &change,
+            Some("com.apple.TextEdit".into()),
+            None,
+        );
+        let mut buffers = HashMap::new();
+        let mut secure = true;
+        let mut last_secure_poll_ms = None;
+        let mut probe_called = false;
+
+        flush_monitored_changes_after_secure_recheck(
+            &mut pending,
+            &mut buffers,
+            Some(&store),
+            &Prefs::default(),
+            MonitoredFlushState {
+                secure: &mut secure,
+                last_secure_poll_ms: &mut last_secure_poll_ms,
+            },
+            MonitoredFlushRuntime {
+                monitored_memory_active: true,
+                enabled: true,
+                trusted: runtime_trusted(true, true),
+                now_ms: 1_004,
+            },
+            || {
+                probe_called = true;
+                false
+            },
+        );
+
+        assert!(probe_called);
+        assert!(!secure);
+        assert_eq!(last_secure_poll_ms, Some(1_004));
+        assert!(pending.is_empty());
+        assert!(buffers.is_empty());
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
     fn monitored_flush_skips_secure_recheck_without_pending_work() {
         let store = memory::MemoryStore::open_in_memory(
             &memory::StaticKey([20u8; 32]),
@@ -12329,6 +12502,7 @@ mod tests {
         for status in [
             AppStatus::Disabled,
             AppStatus::Blocked(BlockReason::Permission),
+            AppStatus::Blocked(BlockReason::RelaunchRequired),
             AppStatus::Blocked(BlockReason::SecureInput),
             AppStatus::Blocked(BlockReason::ModelUnavailable),
         ] {
@@ -12375,6 +12549,14 @@ mod tests {
             SubscriptionErrorAction::Fatal(m) => assert!(m.contains("Timeout"), "{m}"),
             other => panic!("expected Fatal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn degraded_startup_subscriptions_keep_runtime_permission_blocked() {
+        assert!(runtime_trusted(true, false));
+        assert!(!runtime_trusted(false, false));
+        assert!(!runtime_trusted(true, true));
+        assert!(!runtime_trusted(false, true));
     }
 
     #[test]

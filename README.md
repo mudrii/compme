@@ -39,20 +39,21 @@ are configured.
 
 ### Homebrew (macOS)
 
-Tagged releases ship a `Compme.app` bundle through a Homebrew cask:
+Homebrew cask install is not available until the first signed `v*` release
+publishes the artifact and finalizes the cask checksum. Until then, build from
+source.
+
+Once the first release is published, install with:
 
 ```sh
 brew tap mudrii/compme https://github.com/mudrii/compme
 brew install --cask compme
 ```
 
-Release artifacts are Developer-ID signed and notarized by the tag workflow.
+Release artifacts are Developer-ID signed and notarized by the tag workflow once
+release secrets are configured (see [docs/RELEASING.md](docs/RELEASING.md)).
 Enable Compme under System Settings → Privacy & Security → Accessibility. All
 inference is local; nothing leaves the machine.
-
-> The cask resolves once a tagged release workflow publishes the artifact and
-> finalizes the cask checksum (see [docs/RELEASING.md](docs/RELEASING.md)).
-> Until then, build from source.
 
 ### From source
 
@@ -296,7 +297,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,661 tests:
+suite is roughly 1,674 tests:
 
 ```sh
 cargo fmt --all -- --check

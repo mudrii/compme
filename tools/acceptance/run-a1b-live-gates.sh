@@ -173,6 +173,25 @@ print_cmd() {
   printf '\n'
 }
 
+run_e2e_gate() {
+  name="$1"
+  accept="$2"
+  e2e_config="$LOG_DIR/e2e-isolated-config.env"
+  : >"$e2e_config"
+  run_gate "$name" env -i \
+    PATH="$PATH" \
+    HOME="$HOME" \
+    TMPDIR="${TMPDIR:-/tmp}" \
+    RUST_BACKTRACE="${RUST_BACKTRACE:-}" \
+    COMPME_CONFIG="$e2e_config" \
+    COMPME_SCREEN_CONTEXT=0 \
+    COMPME_ACCEPT_WORD_KEY=48 \
+    COMPME_ACCEPT_FULL_KEY=50 \
+    COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" \
+    COMPME_E2E_ACCEPT="$accept" \
+    "$E2E_SCRIPT"
+}
+
 sleep_ms() {
   ms="$1"
   case "$ms" in
@@ -654,6 +673,7 @@ run_self_tests() {
 	    personalization-pane-look \
 	    menu-bar-icon-look \
 	    shortcuts-recorder-look \
+	    always-on-hotkeys-physical-look \
 	    setup-model-picker-look \
 	    nine-tab-settings-walkthrough \
 	    caret-marker-chromium-forks-calibration \
@@ -690,6 +710,9 @@ run_self_tests() {
 	  assert_log_contains "default-dry-run-shortcuts-recorder-look-checklist" "$dry_run_log" \
 	    '^MANUAL shortcuts-recorder-look: .*Settings > Shortcuts.*recorder.*modifier-combo.*persists' \
 	    || self_failures=$((self_failures + 1))
+	  assert_log_contains "default-dry-run-always-on-hotkeys-physical-look-checklist" "$dry_run_log" \
+	    '^MANUAL always-on-hotkeys-physical-look: .*force-activate.*per-app toggle.*global toggle.*grammar-check.*physical keypress' \
+	    || self_failures=$((self_failures + 1))
 	  assert_log_contains "default-dry-run-setup-model-picker-look-checklist" "$dry_run_log" \
 	    '^MANUAL setup-model-picker-look: .*Settings > Setup.*model picker.*Download.*license.*dest-exists' \
 	    || self_failures=$((self_failures + 1))
@@ -720,16 +743,60 @@ run_self_tests() {
   assert_log_contains "default-dry-run-input-monitoring-revoked-word-harness" "$dry_run_log" \
     'COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED=1 .*accept_tap_acceptance .* word' \
     || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-e2e-isolates-config" "$dry_run_log" \
+    'env -i .*COMPME_CONFIG=.*/e2e-isolated-config\.env .*COMPME_SCREEN_CONTEXT=0 .*COMPME_ACCEPT_WORD_KEY=48 .*COMPME_ACCEPT_FULL_KEY=50 .*COMPME_E2E_ACCEPT=full' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-e2e-word-isolates-config" "$dry_run_log" \
+    'env -i .*COMPME_CONFIG=.*/e2e-isolated-config\.env .*COMPME_SCREEN_CONTEXT=0 .*COMPME_ACCEPT_WORD_KEY=48 .*COMPME_ACCEPT_FULL_KEY=50 .*COMPME_E2E_ACCEPT=word' \
+    || self_failures=$((self_failures + 1))
+  hostile_env_log="$self_test_dir/hostile-env-dry-run.log"
+  COMPME_DISABLED_APPS=com.apple.TextEdit \
+    COMPME_EXCLUDED_APPS=com.apple.TextEdit \
+    COMPME_MEMORY=all \
+    COMPME_MEMORY_PATH=/tmp/hostile-compme-memory.sqlite \
+    A1B_LOG_DIR="$self_test_dir/hostile-env-dry-run-logs" \
+    "$0" --dry-run --textedit-pid 12345 >"$hostile_env_log" 2>&1
+  assert_log_contains "hostile-env-e2e-uses-env-i" "$hostile_env_log" \
+    '^  env -i ' \
+    || self_failures=$((self_failures + 1))
+  if grep -Eq 'COMPME_(DISABLED_APPS|EXCLUDED_APPS|MEMORY|MEMORY_PATH)' "$hostile_env_log"; then
+    echo "FAIL hostile-env-e2e-scrubs-inherited-compme-env" >&2
+    self_failures=$((self_failures + 1))
+  else
+    echo "PASS hostile-env-e2e-scrubs-inherited-compme-env"
+  fi
   help_log="$self_test_dir/help.log"
   "$0" --help >"$help_log" 2>&1
   assert_log_contains "help-lists-allow-manual" "$help_log" '^  --allow-manual[[:space:]]' \
     || self_failures=$((self_failures + 1))
 
   acceptance_doc="$ROOT_DIR/docs/ACCEPTANCE.md"
+  emitted_manual_ids="$self_test_dir/emitted-manual-ids.txt"
+  documented_manual_ids="$self_test_dir/documented-manual-ids.txt"
+  sed -n 's/^MANUAL \([^:]*\):.*/\1/p' "$dry_run_log" | sort -u >"$emitted_manual_ids"
+  awk '
+    /^Exact runner-emitted manual gate IDs:/ { in_list = 1; next }
+    in_list && /^- `/ {
+      line = $0
+      sub(/^- `/, "", line)
+      sub(/`.*/, "", line)
+      print line
+      seen = 1
+      next
+    }
+    in_list && seen && /^$/ { exit }
+  ' "$acceptance_doc" | sort -u >"$documented_manual_ids"
   while IFS= read -r gate; do
     assert_log_contains "acceptance-doc-lists-manual-$gate" "$acceptance_doc" "(^|[^[:alnum:]_-])$gate([^[:alnum:]_-]|$)" \
       || self_failures=$((self_failures + 1))
-  done < <(grep -E '^[[:space:]]*manual_gate "' "$0" | sed -E 's/.*manual_gate "([^"]+)".*/\1/')
+  done <"$emitted_manual_ids"
+  if diff -u "$emitted_manual_ids" "$documented_manual_ids" >/dev/null; then
+    echo "PASS acceptance-doc-manual-ledger-exact"
+  else
+    echo "FAIL acceptance-doc-manual-ledger-exact" >&2
+    diff -u "$emitted_manual_ids" "$documented_manual_ids" >&2 || true
+    self_failures=$((self_failures + 1))
+  fi
 
   skip_textedit_log="$self_test_dir/skip-textedit-dry-run.log"
   A1B_LOG_DIR="$self_test_dir/skip-textedit-dry-run-logs" "$0" --dry-run --skip-textedit >"$skip_textedit_log" 2>&1
@@ -744,7 +811,7 @@ run_self_tests() {
     '^SKIP accept-insert-option-tab: --skip-textedit$' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
-    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=13 logs=' \
+    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=14 logs=' \
     || self_failures=$((self_failures + 1))
 
   rm -rf "$self_test_dir"
@@ -862,8 +929,8 @@ else
       skip_e2e_gate "e2e-compme-pipeline" "compme binary not built (run: cargo build -p app)"
       skip_e2e_gate "e2e-compme-word-remainder" "compme binary not built (run: cargo build -p app)"
     else
-      run_gate "e2e-compme-pipeline" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_E2E_ACCEPT=full "$E2E_SCRIPT"
-      run_gate "e2e-compme-word-remainder" env COMPME_ACCEPTANCE_PID="$TEXTEDIT_PID" COMPME_E2E_ACCEPT=word "$E2E_SCRIPT"
+      run_e2e_gate "e2e-compme-pipeline" full
+      run_e2e_gate "e2e-compme-word-remainder" word
     fi
   fi
 fi
@@ -899,6 +966,7 @@ manual_gate "apps-policy-toggle-look" "open Settings > Apps with at least two ro
 manual_gate "personalization-pane-look" "open Settings > Personalization; edit instructions, sender, and strength, confirm multi-line commit/persistence and that the next request uses updated steering without relaunch"
 manual_gate "menu-bar-icon-look" "verify the menu bar icon renders crisply in light/dark appearances, status changes are visible, and the fallback title remains readable when the icon is unavailable"
 manual_gate "shortcuts-recorder-look" "open Settings > Shortcuts; click a recorder box, press a modifier-combo accept key, confirm the resolved chord displays, live rebind works, and the value persists after reopening Settings"
+manual_gate "always-on-hotkeys-physical-look" "with shortcuts configured, press force-activate, per-app toggle, global toggle, and grammar-check as physical keypress hotkeys; confirm each dispatches without reopening Settings and persists across relaunch"
 manual_gate "setup-model-picker-look" "open Settings > Setup; verify model picker rows show fit suffixes, Download uses the selected row, license prompts appear before encumbered fetches, and dest-exists blocks re-fetch"
 manual_gate "nine-tab-settings-walkthrough" "walk all nine Settings panes: Setup, General, Personalization, Apps, Context, Emoji, Shortcuts, Statistics, and About; verify controls fit, reflect current state, and live-apply where documented"
 manual_gate "caret-marker-chromium-forks-calibration" "on a granted desktop, type in Brave, Edge, and Vivaldi; confirm whether each ghost lands one line low before adding any bundle prefix to RECT_IS_LINE_BUNDLE_PREFIXES"

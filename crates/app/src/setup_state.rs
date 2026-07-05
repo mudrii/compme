@@ -11,6 +11,10 @@
 pub struct SetupChecks {
     /// `AXIsProcessTrusted()` — Accessibility permission.
     pub ax_trusted: bool,
+    /// Startup subscriptions fell back to no-op before Accessibility was
+    /// granted. The permission may now be present, but event streams need a
+    /// relaunch.
+    pub ax_relaunch_required: bool,
     /// `COMPME_SCREEN_CONTEXT` is on — only then is the Screen Recording
     /// permission a setup requirement at all (default-off feature must not
     /// nag for a permission it will never use).
@@ -46,8 +50,12 @@ pub struct SetupRow {
 /// otherwise).
 pub fn setup_rows(checks: SetupChecks) -> Vec<SetupRow> {
     let mut rows = vec![SetupRow {
-        label: "Accessibility",
-        ready: checks.ax_trusted,
+        label: if checks.ax_trusted && checks.ax_relaunch_required {
+            "Relaunch app"
+        } else {
+            "Accessibility"
+        },
+        ready: checks.ax_trusted && !checks.ax_relaunch_required,
         action: (!checks.ax_trusted).then_some(SetupAction::GrantAccessibility),
     }];
     if checks.screen_context_enabled {
@@ -75,6 +83,7 @@ mod tests {
         // when the feature is on, so a default-config run must not nag.
         let rows = setup_rows(SetupChecks {
             ax_trusted: true,
+            ax_relaunch_required: false,
             screen_context_enabled: false,
             screen_recording: false,
             model_ready: true,
@@ -88,6 +97,7 @@ mod tests {
         // All good: no permission prompts, model still revealable.
         let ready = setup_rows(SetupChecks {
             ax_trusted: true,
+            ax_relaunch_required: false,
             screen_context_enabled: true,
             screen_recording: true,
             model_ready: true,
@@ -116,6 +126,7 @@ mod tests {
         // Nothing granted, model missing: prompts offered, nothing to reveal.
         let missing = setup_rows(SetupChecks {
             ax_trusted: false,
+            ax_relaunch_required: false,
             screen_context_enabled: true,
             screen_recording: false,
             model_ready: false,
@@ -139,6 +150,44 @@ mod tests {
                     action: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn setup_rows_show_relaunch_without_permission_prompt_after_degraded_startup() {
+        let rows = setup_rows(SetupChecks {
+            ax_trusted: true,
+            ax_relaunch_required: true,
+            screen_context_enabled: false,
+            screen_recording: false,
+            model_ready: true,
+        });
+        assert_eq!(
+            rows[0],
+            SetupRow {
+                label: "Relaunch app",
+                ready: false,
+                action: None,
+            }
+        );
+    }
+
+    #[test]
+    fn setup_rows_keep_accessibility_prompt_before_relaunch_when_permission_is_missing() {
+        let rows = setup_rows(SetupChecks {
+            ax_trusted: false,
+            ax_relaunch_required: true,
+            screen_context_enabled: false,
+            screen_recording: false,
+            model_ready: true,
+        });
+        assert_eq!(
+            rows[0],
+            SetupRow {
+                label: "Accessibility",
+                ready: false,
+                action: Some(SetupAction::GrantAccessibility),
+            }
         );
     }
 }

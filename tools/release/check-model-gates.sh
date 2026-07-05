@@ -17,6 +17,7 @@ releasing_doc="$repo_root/docs/RELEASING.md"
 readme_doc="$repo_root/README.md"
 roadmap_doc="$repo_root/docs/ROADMAP.md"
 grammar_spec="$repo_root/docs/superpowers/specs/2026-07-01-grammar-fix-design.md"
+cask_file="$repo_root/Casks/compme.rb"
 
 require_line() {
   file="$1"
@@ -53,6 +54,32 @@ require_readme_gate_line() {
     in_section { print }
   ' "$readme_doc" | grep -Eq "$pattern"; then
     echo "missing release gate: $label" >&2
+    return 1
+  fi
+}
+
+require_readme_homebrew_line() {
+  pattern="$1"
+  label="$2"
+  if ! awk '
+    /^### Homebrew \(macOS\)$/ { in_section = 1; next }
+    in_section && /^### / { in_section = 0 }
+    in_section { print }
+  ' "$readme_doc" | grep -Eq "$pattern"; then
+    echo "missing release gate: $label" >&2
+    return 1
+  fi
+}
+
+reject_readme_homebrew_line() {
+  pattern="$1"
+  label="$2"
+  if awk '
+    /^### Homebrew \(macOS\)$/ { in_section = 1; next }
+    in_section && /^### / { in_section = 0 }
+    in_section { print }
+  ' "$readme_doc" | grep -Eq "$pattern"; then
+    echo "stale release gate: $label" >&2
     return 1
   fi
 }
@@ -151,6 +178,43 @@ MD
 
   readme_doc="$old_readme_doc"
 
+  old_readme_doc="$readme_doc"
+  readme_doc="$tmp_dir/good-homebrew-readme.md"
+  cat >"$readme_doc" <<'MD'
+# Fixture
+
+### Homebrew (macOS)
+
+Homebrew cask install is not available until the first signed `v*` release
+publishes the artifact and finalizes the cask checksum. Until then, build from
+source.
+
+### From source
+MD
+  require_readme_homebrew_line 'Homebrew cask install is not available until the first signed' "fixture README Homebrew blocked status"
+  require_readme_homebrew_line 'Until then, build from' "fixture README source fallback"
+
+  readme_doc="$tmp_dir/bad-homebrew-readme.md"
+  cat >"$readme_doc" <<'MD'
+# Fixture
+
+Homebrew cask install is not available until the first signed `v*` release.
+
+### Homebrew (macOS)
+
+brew install --cask compme
+
+### From source
+MD
+  if require_readme_homebrew_line 'Homebrew cask install is not available until the first signed' "fixture README Homebrew blocked status" >/dev/null 2>&1; then
+    echo "release gate self-test failed: README Homebrew blocked wording outside the Homebrew section was accepted" >&2
+    readme_doc="$old_readme_doc"
+    cleanup
+    return 1
+  fi
+
+  readme_doc="$old_readme_doc"
+
   rust_helper_fixture="$tmp_dir/helper-only.rs"
   cat >"$rust_helper_fixture" <<'RS'
 fn accept_correction_emits_replace_range() {}
@@ -196,6 +260,31 @@ abort("missing release gate: finalizes Homebrew cask") unless cask_index
 abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index > publish_index
 cask_run = release_steps.fetch(cask_index).fetch("run")
 require_active_finalizer_command!(cask_run, "tools/release/finalize-cask.sh \"$TAG\" \"$artifact_path\" \"$VERSION\" \"$DEFAULT_BRANCH\"")
+RUBY
+  }
+
+  check_developer_id_fixture() {
+    ruby -ryaml - "$1" <<'RUBY'
+workflow = YAML.load_file(ARGV.fetch(0))
+release_steps = workflow.fetch("jobs").fetch("release").fetch("steps")
+import_index = release_steps.index { |step| step["name"] == "Import Developer ID certificate" }
+build_index = release_steps.index { |step| step["name"] == "Build the .app bundle" }
+abort("missing release gate: imports Developer ID certificate") unless import_index
+abort("missing release gate: builds app bundle") unless build_index
+abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
+import_step = release_steps.fetch(import_index)
+import_env = import_step.fetch("env")
+{
+  "P12_BASE64" => "secrets.COMPME_DEVELOPER_ID_P12_BASE64",
+  "P12_PASSWORD" => "secrets.COMPME_DEVELOPER_ID_P12_PASSWORD",
+  "SIGNING_IDENTITY" => "secrets.COMPME_CODESIGN_IDENTITY",
+}.each do |key, needle|
+  abort("missing release gate: Developer ID secret #{key}") unless import_env.fetch(key).include?(needle)
+end
+import_run = import_step.fetch("run")
+["for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY", "missing required release secret", "exit 1", "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY"].each do |needle|
+  abort("missing release gate: Developer ID import policy") unless import_run.include?(needle)
+end
 RUBY
   }
 
@@ -281,13 +370,71 @@ YAML
     return 1
   fi
 
+  good_developer_id_release="$tmp_dir/good-developer-id-release.yml"
+  cat >"$good_developer_id_release" <<'YAML'
+jobs:
+  release:
+    steps:
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.COMPME_DEVELOPER_ID_P12_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.COMPME_CODESIGN_IDENTITY }}
+        run: |
+          for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY; do
+            if [ -z "${!name:-}" ]; then
+              echo "missing required release secret: $name" >&2
+              exit 1
+            fi
+          done
+          echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+      - name: Build the .app bundle
+        run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+YAML
+  check_developer_id_fixture "$good_developer_id_release"
+
+  missing_identity_export_release="$tmp_dir/missing-identity-export-release.yml"
+  cat >"$missing_identity_export_release" <<'YAML'
+jobs:
+  release:
+    steps:
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.COMPME_DEVELOPER_ID_P12_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.COMPME_CODESIGN_IDENTITY }}
+        run: |
+          for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY; do
+            if [ -z "${!name:-}" ]; then
+              echo "missing required release secret: $name" >&2
+              exit 1
+            fi
+          done
+          echo "COMPME_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      - name: Build the .app bundle
+        run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+YAML
+  if check_developer_id_fixture "$missing_identity_export_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: missing Developer ID identity export was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   cleanup
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
+  if [ "$#" -ne 1 ]; then
+    echo "usage: $0 [--self-test] [release-workflow.yml]" >&2
+    exit 2
+  fi
   run_self_test
   echo "Self-test passed"
   exit 0
+fi
+if [ "$#" -gt 1 ]; then
+  echo "usage: $0 [--self-test] [release-workflow.yml]" >&2
+  exit 2
 fi
 
 run_self_test >/dev/null
@@ -400,6 +547,25 @@ ruby -ryaml -e '
   release_needs = Array(release.fetch("needs"))
   abort("missing release gate: release job depends on validate") unless release_needs.include?("validate")
   release_steps = release.fetch("steps")
+  import_index = release_steps.index { |step| step["name"] == "Import Developer ID certificate" }
+  build_index = release_steps.index { |step| step["name"] == "Build the .app bundle" }
+  abort("missing release gate: imports Developer ID certificate") unless import_index
+  abort("missing release gate: builds app bundle") unless build_index
+  abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
+  import_step = release_steps.fetch(import_index)
+  import_env = import_step.fetch("env")
+  {
+    "P12_BASE64" => "secrets.COMPME_DEVELOPER_ID_P12_BASE64",
+    "P12_PASSWORD" => "secrets.COMPME_DEVELOPER_ID_P12_PASSWORD",
+    "SIGNING_IDENTITY" => "secrets.COMPME_CODESIGN_IDENTITY",
+  }.each do |key, needle|
+    abort("missing release gate: Developer ID secret #{key}") unless import_env.fetch(key).include?(needle)
+  end
+  import_run = import_step.fetch("run")
+  ["for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY", "missing required release secret", "exit 1"].each do |needle|
+    abort("missing release gate: Developer ID missing-secret failure loop") unless import_run.include?(needle)
+  end
+  abort("missing release gate: Developer ID identity exported to bundle build") unless import_run.include?("COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY")
   publish_index = release_steps.index { |step| step["name"] == "Publish GitHub release" }
   cask_index = release_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
   abort("missing release gate: publishes GitHub release") unless publish_index
@@ -441,6 +607,14 @@ require_line "$development_doc" "~${workspace_test_count}[[:space:]]+tests" "DEV
 require_line "$roadmap_doc" "≈${workspace_test_count}[[:space:]]+workspace tests" "ROADMAP workspace test count"
 require_line "$roadmap_doc" "${workspace_test_count}[[:space:]]+tests, clippy clean" "ROADMAP readiness test count"
 require_line "$grammar_spec" "≈${workspace_test_count}[[:space:]]+tests green" "grammar spec prerequisite test count"
+if grep -Eq 'sha256 "0{64}"' "$cask_file"; then
+  require_line "$roadmap_doc" 'first real release' "ROADMAP first release pending status"
+  require_readme_homebrew_line 'Homebrew cask install is not available until the first signed `v\*` release' "README Homebrew pre-release blocked status"
+  require_readme_homebrew_line 'Until then, build from' "README Homebrew source fallback"
+else
+  reject_readme_homebrew_line 'Homebrew cask install is not available until the first signed `v\*` release' "README Homebrew pre-release blocked status after first tag"
+  reject_readme_homebrew_line 'Until then, build from' "README Homebrew source fallback after first tag"
+fi
 require_line "$grammar_spec" 'grammar_fix_prompt_is_single_line_and_includes_word_and_left_context' "grammar spec G1 prompt RED-first test"
 require_line "$grammar_spec" 'vet_correction_accepts_one_edit_and_preserves_case' "grammar spec G1 vet accept RED-first test"
 require_line "$grammar_spec" 'vet_correction_rejects_empty_identical_multi_word_large_edit_and_non_ascii' "grammar spec G1 vet reject RED-first test"

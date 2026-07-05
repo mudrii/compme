@@ -882,16 +882,20 @@ fn setup_action_available(lines: &[String], label: &str, ready: bool) -> bool {
 }
 
 fn refresh_setup_action_buttons(buttons: &[Retained<NSButton>], lines: &[String]) {
-    let available = [
-        setup_action_available(lines, "Accessibility", false),
-        setup_action_available(lines, "Screen Recording", false),
-        setup_action_available(lines, "Model file", true),
-        true,
-    ];
+    let available = setup_action_button_availability(lines);
     for (button, available) in buttons.iter().zip(available) {
         button.setHidden(!available);
         button.setEnabled(available);
     }
+}
+
+fn setup_action_button_availability(lines: &[String]) -> [bool; 4] {
+    [
+        setup_action_available(lines, "Accessibility", false),
+        setup_action_available(lines, "Screen Recording", false),
+        setup_action_available(lines, "Model file", true),
+        true,
+    ]
 }
 
 pub struct MacosSettingsWindow {
@@ -2337,6 +2341,47 @@ mod tests {
     }
 
     #[test]
+    fn setup_action_button_availability_tracks_rows_and_button_order() {
+        let all_ready = vec![
+            "\u{2713} Accessibility".to_string(),
+            "\u{2713} Screen Recording".to_string(),
+            "\u{2713} Model file".to_string(),
+        ];
+        assert_eq!(
+            setup_action_button_availability(&all_ready),
+            [false, false, true, true]
+        );
+
+        let all_missing = vec![
+            "\u{2717} Accessibility".to_string(),
+            "\u{2717} Screen Recording".to_string(),
+            "\u{2717} Model file".to_string(),
+        ];
+        assert_eq!(
+            setup_action_button_availability(&all_missing),
+            [true, true, false, true]
+        );
+
+        let screen_context_off = vec![
+            "\u{2713} Accessibility".to_string(),
+            "\u{2713} Model file".to_string(),
+        ];
+        assert_eq!(
+            setup_action_button_availability(&screen_context_off),
+            [false, false, true, true]
+        );
+
+        let missing_model = vec![
+            "\u{2713} Accessibility".to_string(),
+            "\u{2717} Model file".to_string(),
+        ];
+        assert_eq!(
+            setup_action_button_availability(&missing_model),
+            [false, false, false, true]
+        );
+    }
+
+    #[test]
     fn pane_titles_are_fixed_and_ordered() {
         // Tab order is part of the settings UX contract (Cotypist order):
         // Setup first, About last. New panes insert between, never around.
@@ -2685,7 +2730,11 @@ mod tests {
                 panic!("label {label:?} maps from both keycode {prev} and {code}");
             }
         }
-        assert!(seen.len() > 50, "expected the full named table, got {}", seen.len());
+        assert!(
+            seen.len() > 50,
+            "expected the full named table, got {}",
+            seen.len()
+        );
     }
 
     #[test]

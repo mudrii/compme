@@ -49,6 +49,8 @@ invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visibl
 
 ## Tier 5 grammar/spell-fix LOOK gate (pending live evidence)
 
+Runner ID: `grammar-fix-textedit-look`.
+
 > Deterministic coverage is green for grammar request routing, correction
 > vetting, scalar-range tracking, correction-only accept handling, and fail-closed
 > platform stubs. This checklist records the remaining on-device visual pass
@@ -70,6 +72,8 @@ invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visibl
 
 ## Caret-rect calibration — Chromium forks (pending live evidence)
 
+Runner ID: `caret-marker-chromium-forks-calibration`.
+
 > The `RECT_IS_LINE_BUNDLE_PREFIXES` list (platform_macos `normalize_caret_rect`)
 > is **evidence-only** ("extend per app on evidence, never by guess") — Chrome,
 > Chromium, iTerm2 and Safari's WebKit search fields were each added from live
@@ -86,6 +90,9 @@ invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visibl
       evidence, exactly as Chrome/Safari were.
 
 ## Caret-rect source — live-Chrome AXTextMarker path (`source=Marker`)
+
+Runner IDs: `caret-marker-chrome-marker`, `caret-marker-chromium-marker`,
+`caret-marker-electron-marker`.
 
 > The web caret path (`AXSelectedTextMarkerRange` → `AXBoundsForTextMarkerRange`,
 > in `read_ax_bounds_for_selected_text_marker_range`) is first-class and
@@ -120,6 +127,9 @@ the set. Walkthrough detail lives in the ledger entries.
       (multiline field) and visibly re-steer output without relaunch.
 - [ ] `shortcuts-recorder-look` — physical modifier-combo capture, live rebind,
       persistence across reopen.
+- [ ] `always-on-hotkeys-physical-look` — configured force-activate, per-app
+      toggle, global toggle, and grammar-check hotkeys dispatch from physical
+      keypresses without reopening Settings and persist across relaunch.
 - [ ] `nine-tab-settings-walkthrough` — all nine panes fit, hold state, and
       live-apply.
 - [ ] `menu-bar-icon-look` — caret + double-chevron template icon renders

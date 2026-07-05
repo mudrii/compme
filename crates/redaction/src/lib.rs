@@ -166,7 +166,9 @@ fn already_redacted(value: &str) -> bool {
     };
     !rest[..end].is_empty()
         && rest[..end].bytes().all(|b| b.is_ascii_lowercase())
-        && rest[end + 1..].chars().all(|c| matches!(c, '}' | ']' | ')'))
+        && rest[end + 1..]
+            .chars()
+            .all(|c| matches!(c, '}' | ']' | ')'))
 }
 
 fn should_redact_whitespace_credential(prefix: &str, value: &str) -> bool {
@@ -412,7 +414,10 @@ mod tests {
         // pasted credential snippets often arrive curly-quoted; the key and
         // value quote classes must both tolerate the typographic glyphs.
         let out = redact("“password”: “hunter2”");
-        assert!(!out.contains("hunter2"), "smart-quoted password leaked: {out}");
+        assert!(
+            !out.contains("hunter2"),
+            "smart-quoted password leaked: {out}"
+        );
 
         let mixed = redact("password: “hunter2 trailing”");
         assert!(
@@ -449,7 +454,10 @@ mod tests {
             "passwd ‘letmein’",
         ] {
             let out = redact(input);
-            assert!(!out.contains("letmein"), "weak password leaked: {input} -> {out}");
+            assert!(
+                !out.contains("letmein"),
+                "weak password leaked: {input} -> {out}"
+            );
             assert!(out.contains("[redacted-secret]"), "no placeholder: {out}");
         }
     }
