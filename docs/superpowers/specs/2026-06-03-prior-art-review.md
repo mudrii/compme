@@ -76,7 +76,7 @@ Plus: **Retina pixel-vs-point is a second independent bug** — AX text rects so
 - Suspend auto-trigger while a non-ASCII IME (JP/CN/KR) is composing (watch `kTISNotifySelectedKeyboardInputSourceChanged`); only trigger for ASCII-capable layouts.
 
 ### Distribution / permissions (category's #1 support burden)
-- **App Sandbox MUST be off**; hardened runtime needs `com.apple.security.cs.disable-library-validation` to load the dynamic llama framework → **Mac App Store impossible**; ship Developer-ID DMG + updater.
+- **App Sandbox MUST be off**; hardened runtime needs `com.apple.security.cs.disable-library-validation` to load the dynamic llama framework → **Mac App Store impossible**; current release path ships a Developer-ID signed/notarized `.app` zip plus GitHub Release manifest, then finalizes the Homebrew cask.
 - **TCC keys on cert+bundle-id** — a new signing cert under the same bundle id causes an **infinite "grant Accessibility" loop**. Need a **stable signing identity** + a `tccutil reset` recovery path + re-grant detection after OS updates.
 - Historical CGEventTap probes needed **both** Accessibility + Input Monitoring.
   Current production accept does not require Input Monitoring; **Secure Input**

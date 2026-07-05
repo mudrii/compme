@@ -174,6 +174,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets -- --test-threads=1
 cargo build --workspace --all-targets
+cargo build -p platform_macos --examples
 
 bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 tools/bundle/check-bundle-metadata.sh

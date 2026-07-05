@@ -104,6 +104,7 @@ By default the runner builds the `platform_macos` examples, builds the
 - `textedit-insert-clipboard`
 - `textedit-insert-axset`
 - `caret-marker-textedit-any`
+- `caret-marker-browser-marker` (skipped unless `--browser-pid` is supplied)
 - `accept-insert-full`
 - `accept-insert-word`
 - `accept-insert-option-tab`

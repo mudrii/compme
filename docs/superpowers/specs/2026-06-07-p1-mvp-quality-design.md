@@ -171,7 +171,7 @@ Specific Cotypist-alignment backlog:
 - Typo/suggested-fix behavior separated from full autocorrect, because current public pages describe both and not all help copy agrees.
 - ~~Product/tier decision~~ **[RESOLVED 2026-06-09 — design spec Project Scope / §15 D15]:** no pricing/feature gates. Quotas, larger models, clipboard awareness, custom instructions, autocorrect, Labs are **all available to every user**; device-count/seat licensing is **dropped**. The only gate is hardware capability. No decision remains.
 - Telemetry policy. **[Scope-locked 2026-06-09]** No proprietary telemetry (Sentry/BigQuery are Cotypist's, not ours). P1 has no network telemetry; default stays **no network analytics**. Any future diagnostics are local-only + opt-in, with explicit payload/provider/region/default/opt-in semantics — never typed/clipboard/OCR/prompt content.
-- Signed/notarized release packaging plus native updater artifacts, signing key handling, endpoint format, and failure recovery. Sparkle is the leading candidate because Cotypist ships Sparkle; any non-Sparkle updater needs an explicit A3 decision.
+- Signed/notarized release packaging plus updater artifacts, signing key handling, endpoint format, and failure recovery. A3 chose a GitHub-release-driven update manifest plus release-page handoff; a full Sparkle/appcast client remains optional later.
 
 ## Decisions (from brainstorming)
 
