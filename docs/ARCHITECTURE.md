@@ -189,11 +189,12 @@ surface exists. Mirrors Cotypist's `featureThesaurusAutoMode` today and keeps
 
 `emoji` suggests an emoji when the user types a `:shortcode`, honoring
 skin-tone (Fitzpatrick U+1F3FB..U+1F3FF) and gender preferences. Pure:
-detection + table lookup + modifier application. The host reads
-`COMPME_EMOJI` / `_SKIN_TONE` / `_GENDER`, offers the emoji ghost through the
-local-replacement path, and performs the actual replacement. Combining skin
-tone *and* gender (full ZWJ assembly) is deferred — a gendered match keeps the
-default skin tone.
+detection + table lookup + modifier application, including insertion of the
+skin-tone modifier into gendered ZWJ sequences. The host reads `COMPME_EMOJI` /
+`_SKIN_TONE` / `_GENDER`, offers the emoji ghost through the local-replacement
+path, and performs the actual replacement. Emitting extra vanilla variants
+alongside the preferred skin-tone/gender rendering remains future work because
+the host does not yet have a multi-candidate replacement display.
 
 ### `textcase`
 
@@ -230,10 +231,13 @@ per-domain instruction maps), a 6-stop strength slider, and sender identity.
 The app config parser fills the maps from target-list keys plus sanitized
 per-target instruction keys; request-time app and domain steering are live, with
 browser domains copied onto completion requests before inference builds the
-preamble. The remaining personalization work is the settings editor surface for
-mode/instructions/strength, not runtime steering. Pure and dependency-free —
-no ML, no I/O. The 6 strength stops have full reach for every user; Cotypist's
-Free/Plus/Pro caps are paywall artifacts deliberately not cloned.
+preamble. The macOS Personalization settings tab edits global instructions,
+sender identity, and the 6-stop strength slider, applies changes live through
+the inference profile, and persists them. Per-app/per-domain instruction editing
+remains a follow-up editor surface; runtime steering already supports those
+maps. Pure and dependency-free — no ML, no I/O. The 6 strength stops have full
+reach for every user; Cotypist's Free/Plus/Pro caps are paywall artifacts
+deliberately not cloned.
 
 ### `redaction`
 

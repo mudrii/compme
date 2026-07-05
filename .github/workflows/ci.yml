@@ -86,6 +86,12 @@ jobs:
       - name: Model client feature policy self-test
         run: tools/release/check-model-client-features.sh --self-test
 
+      - name: Privacy policy
+        run: tools/release/check-privacy-policy.sh
+
+      - name: Privacy policy self-test
+        run: tools/release/check-privacy-policy.sh --self-test
+
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh
 

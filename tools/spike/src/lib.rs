@@ -280,6 +280,36 @@ pub mod completion {
         let prompt = trim_prefix(&left_context(value, caret)).to_string();
         cap_words(&c.complete(&prompt), max_words)
     }
+
+    pub fn quality_flags(raw: &str, capped: &str, prefix: &str) -> String {
+        let mut flags = Vec::new();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            flags.push("empty");
+        }
+        if raw.contains("<|") || raw.contains("Complete this text") || raw.contains("Text:") {
+            flags.push("prompt_leak");
+        }
+        if raw.contains('\u{fffd}')
+            || raw
+                .chars()
+                .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
+        {
+            flags.push("garbage_unicode");
+        }
+        if raw.contains('\n') || raw.contains('>') {
+            flags.push("chat_or_markdown");
+        }
+        let prefix_tail = prefix.split_whitespace().last().unwrap_or("");
+        if !prefix_tail.is_empty() && capped.split_whitespace().any(|word| word == prefix_tail) {
+            flags.push("prefix_repetition");
+        }
+        if flags.is_empty() {
+            "ok".to_string()
+        } else {
+            flags.join("|")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -331,6 +361,68 @@ mod completion_tests {
         assert_eq!(
             suggest("x", 1, &Fixed("one two three four five"), 3),
             "one two three"
+        );
+    }
+
+    #[test]
+    fn quality_flags_empty_output() {
+        assert_eq!(quality_flags("  ", "", "The next"), "empty");
+    }
+
+    #[test]
+    fn quality_flags_prompt_leaks() {
+        assert_eq!(
+            quality_flags("<|fim_prefix|>The next", "fim", "The next"),
+            "prompt_leak|chat_or_markdown"
+        );
+        assert_eq!(
+            quality_flags("Complete this text inline. Text: hi", "hi", "The next"),
+            "prompt_leak"
+        );
+    }
+
+    #[test]
+    fn quality_flags_garbage_unicode() {
+        assert_eq!(
+            quality_flags("bad \u{fffd}", "bad", "The next"),
+            "garbage_unicode"
+        );
+        assert_eq!(quality_flags("继续", "继续", "The next"), "garbage_unicode");
+    }
+
+    #[test]
+    fn quality_flags_chat_or_markdown() {
+        assert_eq!(
+            quality_flags("Sure:\n- item", "Sure:", "The next"),
+            "chat_or_markdown"
+        );
+        assert_eq!(
+            quality_flags("> quoted", "quoted", "The next"),
+            "chat_or_markdown"
+        );
+    }
+
+    #[test]
+    fn quality_flags_prefix_repetition() {
+        assert_eq!(
+            quality_flags(
+                "should happen",
+                "should happen",
+                "The next milestone should"
+            ),
+            "prefix_repetition"
+        );
+    }
+
+    #[test]
+    fn quality_flags_clean_output_is_ok() {
+        assert_eq!(
+            quality_flags(
+                " be shipped soon",
+                "be shipped soon",
+                "The next milestone should"
+            ),
+            "ok"
         );
     }
 }

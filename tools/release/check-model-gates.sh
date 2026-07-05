@@ -6,6 +6,7 @@ release_workflow="${1:-$repo_root/.github/workflows/release.yml}"
 ci_workflow="$repo_root/.github/workflows/ci.yml"
 gate_script="$repo_root/tools/release/run-model-gates.sh"
 feature_script="$repo_root/tools/release/check-model-client-features.sh"
+privacy_script="$repo_root/tools/release/check-privacy-policy.sh"
 bundle_metadata_script="$repo_root/tools/bundle/check-bundle-metadata.sh"
 make_app_script="$repo_root/tools/bundle/make-app.sh"
 finalize_cask_script="$repo_root/tools/release/finalize-cask.sh"
@@ -870,6 +871,8 @@ ruby -ryaml -e '
     "CI A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
     "CI model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
     "CI model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
+    "CI privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],
+    "CI privacy policy self-test" => ["Privacy policy self-test", "tools/release/check-privacy-policy.sh --self-test"],
     "CI release policy" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
     "CI release model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
     "CI cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],
@@ -945,6 +948,8 @@ ruby -ryaml -e '
     "release missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
     "release model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
     "release model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
+    "release privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],
+    "release privacy policy self-test" => ["Privacy policy self-test", "tools/release/check-privacy-policy.sh --self-test"],
     "release policy check" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
     "release model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
     "release cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],
@@ -1107,6 +1112,7 @@ workspace_test_count_commas="$(ruby -e 'puts ARGV.fetch(0).reverse.gsub(/(\d{3})
 
 bash -n "$gate_script"
 bash -n "$feature_script"
+bash -n "$privacy_script"
 bash -n "$bundle_metadata_script"
 bash -n "$make_app_script"
 bash -n "$finalize_cask_script"
@@ -1115,6 +1121,8 @@ bash -n "$update_manifest_script"
 "$bundle_metadata_script" >/dev/null
 "$make_app_script" --self-test >/dev/null
 "$gate_script" --self-test >/dev/null
+"$privacy_script" >/dev/null
+"$privacy_script" --self-test >/dev/null
 "$finalize_cask_script" --self-test >/dev/null
 "$notarize_script" --self-test >/dev/null
 "$update_manifest_script" --self-test >/dev/null
@@ -1195,6 +1203,14 @@ require_line "$feature_script" 'llama-cpp-2 feature "dynamic-backends"' "model_c
 require_line "$feature_script" 'llama-cpp-2 feature "vulkan"' "model_client non-macOS Vulkan feature assertion"
 require_line "$feature_script" 'llama-cpp-2 feature "default"' "model_client default feature denial"
 require_line "$feature_script" 'spike macOS' "spike feature policy assertion"
+require_line "$privacy_script" 'sentry' "privacy policy denied package assertion"
+require_line "$privacy_script" 'segment\.io' "privacy policy denied host self-test"
+require_readme_gate_line '^tools/release/check-privacy-policy\.sh[[:space:]]*$' "README privacy policy gate"
+require_readme_gate_line '^tools/release/check-privacy-policy\.sh --self-test[[:space:]]*$' "README privacy policy self-test gate"
+require_development_gate_line '^tools/release/check-privacy-policy\.sh[[:space:]]*$' "DEVELOPMENT privacy policy gate"
+require_development_gate_line '^tools/release/check-privacy-policy\.sh --self-test[[:space:]]*$' "DEVELOPMENT privacy policy self-test gate"
+require_line "$acceptance_doc" '^tools/release/check-privacy-policy\.sh[[:space:]]*$' "acceptance docs privacy policy gate"
+require_line "$acceptance_doc" '^tools/release/check-privacy-policy\.sh --self-test[[:space:]]*$' "acceptance docs privacy policy self-test gate"
 require_line "$bundle_metadata_script" 'release tag version is empty' "bundle metadata empty release-tag version rejection"
 require_line "$gate_script" '^model="\$\{COMPME_MODEL_GATE_PATH:-tools/spike/models/qwen2\.5-0\.5b-q4_k_m\.gguf\}"[[:space:]]*$' "pinned base GGUF model path"
 require_line "$gate_script" '^url="\$\{COMPME_MODEL_GATE_URL:-https://huggingface\.co/Brianpuz/Qwen2\.5-0\.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2\.5-0\.5b-q4_k_m\.gguf\}"[[:space:]]*$' "pinned base GGUF download URL"

@@ -14,7 +14,7 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
-use spike::completion::{cap_words, trim_prefix};
+use spike::completion::{cap_words, quality_flags, trim_prefix};
 use spike::context::left_context;
 
 const N_TOKENS: usize = 12;
@@ -204,36 +204,6 @@ fn model_path(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("models")
         .join(file)
-}
-
-fn quality_flags(raw: &str, capped: &str, prefix: &str) -> String {
-    let mut flags = Vec::new();
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        flags.push("empty");
-    }
-    if raw.contains("<|") || raw.contains("Complete this text") || raw.contains("Text:") {
-        flags.push("prompt_leak");
-    }
-    if raw.contains('\u{fffd}')
-        || raw
-            .chars()
-            .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
-    {
-        flags.push("garbage_unicode");
-    }
-    if raw.contains('\n') || raw.contains('>') {
-        flags.push("chat_or_markdown");
-    }
-    let prefix_tail = prefix.split_whitespace().last().unwrap_or("");
-    if !prefix_tail.is_empty() && capped.split_whitespace().any(|word| word == prefix_tail) {
-        flags.push("prefix_repetition");
-    }
-    if flags.is_empty() {
-        "ok".to_string()
-    } else {
-        flags.join("|")
-    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

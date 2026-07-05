@@ -39,7 +39,7 @@ WARMUP_MS="${COMPME_WARMUP_MS:-1200}"
 PREFIX="${COMPME_PREFIX:-Dear team, I wanted to }"
 STUB="${COMPME_STUB:- follow up about the }"
 PROMPT_MARKER="${COMPME_PROMPT_MARKER:-compme a2 marker ${KIND} $$}"
-LOG_DIR="$ROOT_DIR/tools/acceptance/logs"
+LOG_DIR="${COMPME_A2_LOG_DIR:-$ROOT_DIR/tools/acceptance/logs}"
 LOG="$LOG_DIR/a2-compat-${KIND}-$(date +%Y%m%d-%H%M%S).log"
 mkdir -p "$LOG_DIR"
 
@@ -392,6 +392,31 @@ OSA
     echo "PASS self-test-a2-matrix-row-count"
   else
     echo "FAIL self-test-a2-matrix-row-count: ${#A2_MATRIX_ROWS[@]}" >&2
+    failures=$((failures + 1))
+  fi
+  matrix_fail_dir="$tmp_dir/matrix-fail"
+  mkdir -p "$matrix_fail_dir"
+  if COMPME_A2_LOG_DIR="$matrix_fail_dir" COMPME_A2_MATRIX_TARGETS="" "$0" matrix >/dev/null 2>"$matrix_fail_dir/matrix.err"; then
+    echo "FAIL self-test-a2-matrix-missing-targets-fail: missing target rows passed without COMPME_A2_MATRIX_ALLOW_SKIP=1" >&2
+    failures=$((failures + 1))
+  elif grep -Eq 'failures=[1-9][0-9]* skipped=[1-9][0-9]*' "$matrix_fail_dir/matrix.err"; then
+    echo "PASS self-test-a2-matrix-missing-targets-fail"
+  else
+    echo "FAIL self-test-a2-matrix-missing-targets-fail: failure output did not report skipped rows" >&2
+    failures=$((failures + 1))
+  fi
+  matrix_skip_dir="$tmp_dir/matrix-skip"
+  mkdir -p "$matrix_skip_dir"
+  if COMPME_A2_LOG_DIR="$matrix_skip_dir" COMPME_A2_MATRIX_TARGETS="" COMPME_A2_MATRIX_ALLOW_SKIP=1 "$0" matrix >/dev/null 2>"$matrix_skip_dir/matrix.err"; then
+    ledger="$(ls "$matrix_skip_dir"/a2-compat-matrix-*.tsv 2>/dev/null | tail -n 1)"
+    if [[ -n "$ledger" ]] && awk -F '\t' -v expected="${#A2_MATRIX_ROWS[@]}" 'NR > 1 && $5 == "SKIP" { skip++ } END { exit skip == expected ? 0 : 1 }' "$ledger"; then
+      echo "PASS self-test-a2-matrix-allow-skip-ledger"
+    else
+      echo "FAIL self-test-a2-matrix-allow-skip-ledger: SKIP ledger did not cover every row" >&2
+      failures=$((failures + 1))
+    fi
+  else
+    echo "FAIL self-test-a2-matrix-allow-skip-ledger: COMPME_A2_MATRIX_ALLOW_SKIP=1 still failed" >&2
     failures=$((failures + 1))
   fi
 

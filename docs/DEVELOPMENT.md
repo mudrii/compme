@@ -187,6 +187,8 @@ tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-a2-compat-gates.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
+tools/release/check-privacy-policy.sh
+tools/release/check-privacy-policy.sh --self-test
 bash tools/release/check-model-gates.sh
 tools/release/run-model-gates.sh --self-test
 tools/release/update-cask.sh --self-test
