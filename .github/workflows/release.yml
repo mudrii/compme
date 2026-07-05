@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# Serialize every release run under one fixed group (not per-ref): finalize-cask.sh
+# pushes a cask commit to main, so two concurrent tag releases would race that push.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -216,6 +222,11 @@ jobs:
           git fetch origin "$DEFAULT_BRANCH"
           git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
 
+      # Last authenticated git op in this job is the ancestry check above; drop
+      # the checkout-persisted token before any third-party build code runs.
+      - name: Scrub persisted git credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader || true
+
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
@@ -226,6 +237,14 @@ jobs:
 
       - name: Check release tag matches bundle metadata
         run: COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh
+
+      # Compile the full dependency tree BEFORE the signing keychain exists:
+      # build.rs / proc-macro code from third-party crates must never run while
+      # the Developer-ID identity is importable. make-app.sh's own cargo build
+      # (same --locked --release -p app, default target dir) then hits a fresh
+      # cache and runs no third-party code.
+      - name: Prebuild release binary (before signing identity exists)
+        run: cargo build --locked --release -p app
 
       - name: Import Developer ID certificate
         env:
@@ -248,6 +267,7 @@ jobs:
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
           security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           {
@@ -332,6 +352,7 @@ jobs:
         with:
           draft: true
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             release-artifacts/compme-*-macos.zip
             release-artifacts/compme-*-macos.zip.sha256

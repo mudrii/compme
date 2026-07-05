@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main, "spike/**"]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 

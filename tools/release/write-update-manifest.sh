@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Write the GitHub-release update manifest consumed by the app's Check for
-# Updates surface and by Homebrew/cask release notes.
+# Write the GitHub-release update manifest: informational release metadata
+# published alongside the artifact for tooling and humans. Nothing consumes it
+# in-app yet (the app's Check for Updates just opens the releases page); any
+# future auto-updater must add signature verification before trusting it.
 #
 # Usage: tools/release/write-update-manifest.sh VERSION ZIP SHA256 > manifest.json
 #        tools/release/write-update-manifest.sh --self-test

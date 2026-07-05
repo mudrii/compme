@@ -20,6 +20,7 @@ run_self_test() {
     executable="${5:-compme}"
     version="${6:-1.2.3}"
     lsui="${7:-true}"
+    bundle_version="${8:-$version}"
     case "$lsui" in
       true) lsui_xml='<key>LSUIElement</key><true/>' ;;
       false) lsui_xml='<key>LSUIElement</key><false/>' ;;
@@ -33,6 +34,7 @@ run_self_test() {
   <key>CFBundleIdentifier</key><string>${bundle_id}</string>
   <key>CFBundleExecutable</key><string>${executable}</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
+  <key>CFBundleVersion</key><string>${bundle_version}</string>
   <key>LSMinimumSystemVersion</key><string>${min_version}</string>
   ${lsui_xml}
   <key>CFBundleURLTypes</key>
@@ -74,6 +76,8 @@ CASK
   write_plist "$bad_lsui_missing_plist" compme 14.0 com.compme.app compme 1.2.3 missing
   bad_plist_version="$tmp/bad-plist-version.plist"
   write_plist "$bad_plist_version" compme 14.0 com.compme.app compme 9.9.9
+  bad_bundle_version_plist="$tmp/bad-bundle-version.plist"
+  write_plist "$bad_bundle_version_plist" compme 14.0 com.compme.app compme 1.2.3 true 9.9.9
   good_cask="$tmp/good.rb"
   write_cask "$good_cask" 1.2.3
   drift_cask="$tmp/drift.rb"
@@ -198,6 +202,16 @@ CASK
     *) echo "self-test FAILED: expected plist version error, got: $out" >&2; exit 1 ;;
   esac
 
+  if out="$("$0" "$bad_bundle_version_plist" "$cargo" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: CFBundleVersion drift should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"CFBundleVersion"*) ;;
+    *) echo "self-test FAILED: expected CFBundleVersion drift error, got: $out" >&2; exit 1 ;;
+  esac
+
   # (f) all-consistent fixtures -> exits 0 with OK message.
   if ! out="$("$0" "$good_plist" "$cargo" "$good_cask" 2>&1)"; then
     echo "self-test FAILED: consistent fixtures should pass, got: $out" >&2
@@ -290,6 +304,7 @@ ruby -rrexml/document -e '
   cask_version = cask_text[/^\s*version\s+"([^"]+)"/, 1]
   cask_macos = cask_text[/^\s*depends_on\s+macos:\s+">=\s*:(\w+)"/, 1]
   plist_version = value_after.call("CFBundleShortVersionString")
+  expect.call("CFBundleVersion", value_after.call("CFBundleVersion"), plist_version)
   errors << "crates/app Cargo.toml: missing package version" unless cargo_version
   errors << "Casks/compme.rb: missing cask version" unless cask_version
   errors << "Casks/compme.rb: macOS floor must be >= :sonoma" unless cask_macos == "sonoma"
