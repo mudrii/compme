@@ -77,10 +77,11 @@ signing + hardened runtime + notarization + a native updater.
   validates the staple. The tag workflow imports the Developer-ID `.p12`, fails
   closed when signing/notarization secrets are missing, notarizes before zipping,
   and uploads the notarized zip.
-- The updater path is GitHub-release-driven: the tray has **Check for Updates…**
-  and the release workflow uploads `compme-<version>-update.json` next to the
-  zip and checksum. A full Sparkle/appcast client remains an optional later
-  upgrade.
+- The updater path is GitHub-release-driven: the tray's **Check for Updates…**
+  opens the releases page, and the release workflow uploads an informational
+  `compme-<version>-update.json` next to the zip and checksum (nothing consumes
+  it in-app yet; a future auto-updater must add signature verification before
+  trusting it). A full Sparkle/appcast client remains an optional later upgrade.
 - **No `v*` git tags** yet (`git tag -l 'v*'` empty), so the first real release
   still needs the external Developer-ID secrets plus a maintainer-created tag.
 
@@ -96,7 +97,12 @@ signing + hardened runtime + notarization + a native updater.
 The CI/release/cask glue is already written and locally validated, including
 locked Cargo gates, pinned toolchain, release preflight checks, A2 matrix ledger
 policy, privacy-policy scan, model-gate policy, draft-release publication,
-cask finalization, and post-cask undraft. Only the signing/notarization secrets,
+cask finalization, post-cask undraft, and the supply-chain hardening added
+2026-07-06 (`9a3e4a1`): third-party crates are prebuilt before the signing
+keychain exists, the decoded `.p12` is deleted right after import, the
+checkout-persisted git token is scrubbed before any build code runs, release
+runs are serialized under one fixed concurrency group, and the draft-release
+upload fails closed on unmatched files. Only the signing/notarization secrets,
 identity, and first tag are missing.
 
 ---

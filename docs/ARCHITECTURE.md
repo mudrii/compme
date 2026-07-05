@@ -112,9 +112,10 @@ Key concepts:
 
 - `left_context`
 - `right_context`
-- `left_tail`
 - `word_at_caret`
-- `trim_prefix`
+- `tail_chars`
+- `trim_trailing`
+- `build_context_block`
 
 These helpers avoid platform dependencies and are tested with Unicode-safe
 cases.
