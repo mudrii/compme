@@ -18,6 +18,11 @@ finalize_cask() {
   version="$3"
   default_branch="$4"
 
+  if [ "$tag" != "v$version" ]; then
+    echo "tag/version mismatch: $tag != v$version" >&2
+    return 1
+  fi
+
   cd "$repo_root"
   git fetch origin "$default_branch"
   if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$default_branch"; then
@@ -160,6 +165,19 @@ SH
     return 1
   fi
   grep -q "refusing to publish a stale or out-of-order cask update" "$tmp/mismatch.err"
+
+  make_fixture_repo "$tmp/tag-version-mismatch" noop
+  tag_version_mismatch_sha="$(git -C "$tmp/tag-version-mismatch/work" rev-parse HEAD)"
+  before_count="$(git -C "$tmp/tag-version-mismatch/work" rev-list --count origin/main)"
+  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/tag-version-mismatch/work" \
+    GITHUB_SHA="$tag_version_mismatch_sha" \
+    "$0" v9.8.8 "$tmp/artifact.zip" 9.8.7 main >/dev/null 2>"$tmp/tag-version-mismatch.err"; then
+    echo "finalize-cask self-test failed: tag/version mismatch was accepted" >&2
+    return 1
+  fi
+  after_count="$(git -C "$tmp/tag-version-mismatch/work" rev-list --count origin/main)"
+  test "$before_count" = "$after_count"
+  grep -q "tag/version mismatch" "$tmp/tag-version-mismatch.err"
 
   make_fixture_repo "$tmp/ancestor" noop
   bad_sha="$(git -C "$tmp/ancestor/work" -c user.name=t -c user.email=t@example.test commit-tree "$(git -C "$tmp/ancestor/work" rev-parse HEAD^{tree})" -m detached)"

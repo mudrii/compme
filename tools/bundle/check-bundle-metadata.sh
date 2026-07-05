@@ -16,15 +16,25 @@ run_self_test() {
 
   write_plist() {
     min_version="${3:-14.0}"
+    bundle_id="${4:-com.compme.app}"
+    executable="${5:-compme}"
+    version="${6:-1.2.3}"
+    lsui="${7:-true}"
+    case "$lsui" in
+      true) lsui_xml='<key>LSUIElement</key><true/>' ;;
+      false) lsui_xml='<key>LSUIElement</key><false/>' ;;
+      missing) lsui_xml='' ;;
+      *) echo "invalid test LSUIElement fixture: $lsui" >&2; exit 1 ;;
+    esac
     cat >"$1" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key><string>com.compme.app</string>
-  <key>CFBundleExecutable</key><string>compme</string>
-  <key>CFBundleShortVersionString</key><string>1.2.3</string>
+  <key>CFBundleIdentifier</key><string>${bundle_id}</string>
+  <key>CFBundleExecutable</key><string>${executable}</string>
+  <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>LSMinimumSystemVersion</key><string>${min_version}</string>
-  <key>LSUIElement</key><true/>
+  ${lsui_xml}
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
@@ -54,6 +64,16 @@ CASK
   write_plist "$bad_scheme_plist" notcompme
   bad_min_plist="$tmp/bad-min-version.plist"
   write_plist "$bad_min_plist" compme 13.0
+  bad_id_plist="$tmp/bad-id.plist"
+  write_plist "$bad_id_plist" compme 14.0 com.example.compme
+  bad_executable_plist="$tmp/bad-executable.plist"
+  write_plist "$bad_executable_plist" compme 14.0 com.compme.app Compme
+  bad_lsui_false_plist="$tmp/bad-lsui-false.plist"
+  write_plist "$bad_lsui_false_plist" compme 14.0 com.compme.app compme 1.2.3 false
+  bad_lsui_missing_plist="$tmp/bad-lsui-missing.plist"
+  write_plist "$bad_lsui_missing_plist" compme 14.0 com.compme.app compme 1.2.3 missing
+  bad_plist_version="$tmp/bad-plist-version.plist"
+  write_plist "$bad_plist_version" compme 14.0 com.compme.app compme 9.9.9
   good_cask="$tmp/good.rb"
   write_cask "$good_cask" 1.2.3
   drift_cask="$tmp/drift.rb"
@@ -116,6 +136,56 @@ CASK
   case "$out" in
     *"macOS floor must be >= :sonoma"*) ;;
     *) echo "self-test FAILED: expected macOS-floor error, got: $out" >&2; exit 1 ;;
+  esac
+
+  if out="$("$0" "$bad_id_plist" "$cargo" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: bad bundle identifier should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"CFBundleIdentifier"*) ;;
+    *) echo "self-test FAILED: expected bundle identifier error, got: $out" >&2; exit 1 ;;
+  esac
+
+  if out="$("$0" "$bad_executable_plist" "$cargo" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: bad bundle executable should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"CFBundleExecutable"*) ;;
+    *) echo "self-test FAILED: expected bundle executable error, got: $out" >&2; exit 1 ;;
+  esac
+
+  if out="$("$0" "$bad_lsui_false_plist" "$cargo" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: false LSUIElement should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"LSUIElement"*) ;;
+    *) echo "self-test FAILED: expected LSUIElement error, got: $out" >&2; exit 1 ;;
+  esac
+
+  if out="$("$0" "$bad_lsui_missing_plist" "$cargo" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: missing LSUIElement should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"LSUIElement"*) ;;
+    *) echo "self-test FAILED: expected missing LSUIElement error, got: $out" >&2; exit 1 ;;
+  esac
+
+  if out="$("$0" "$bad_plist_version" "$cargo" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: bad plist version should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"CFBundleShortVersionString"*) ;;
+    *) echo "self-test FAILED: expected plist version error, got: $out" >&2; exit 1 ;;
   esac
 
   # (f) all-consistent fixtures -> exits 0 with OK message.

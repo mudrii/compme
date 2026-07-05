@@ -82,7 +82,10 @@ llama-cpp-2 feature "vulkan"'
   check_non_macos_tree "self-test non-macOS" "$non_macos_tree" >/dev/null
 
   macos_with_default="$(printf '%s\n%s\n' "$macos_tree" 'llama-cpp-2 feature "default"')"
+  macos_with_dynamic_backends="$(printf '%s\n%s\n' "$macos_tree" 'llama-cpp-2 feature "dynamic-backends"')"
+  macos_with_vulkan="$(printf '%s\n%s\n' "$macos_tree" 'llama-cpp-2 feature "vulkan"')"
   non_macos_with_metal="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "metal"')"
+  non_macos_with_default="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "default"')"
   macos_with_openmp="$(printf '%s\n%s\n' "$macos_tree" 'llama-cpp-2 feature "openmp"')"
   macos_with_android="$(printf '%s\n%s\n' "$macos_tree" 'llama-cpp-2 feature "android"')"
   non_macos_with_openmp="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "openmp"')"
@@ -90,6 +93,14 @@ llama-cpp-2 feature "vulkan"'
 
   if check_macos_tree "self-test macOS forbidden default" "$macos_with_default" >/dev/null 2>&1; then
     echo "model_client feature self-test failed: macOS default feature passed" >&2
+    return 1
+  fi
+  if check_macos_tree "self-test macOS forbidden dynamic-backends" "$macos_with_dynamic_backends" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: macOS dynamic-backends feature passed" >&2
+    return 1
+  fi
+  if check_macos_tree "self-test macOS forbidden vulkan" "$macos_with_vulkan" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: macOS Vulkan feature passed" >&2
     return 1
   fi
   if check_macos_tree "self-test macOS missing metal" 'llama-cpp-2 feature "accelerate"' >/dev/null 2>&1; then
@@ -114,6 +125,10 @@ llama-cpp-2 feature "vulkan"'
   fi
   if check_non_macos_tree "self-test non-macOS forbidden metal" "$non_macos_with_metal" >/dev/null 2>&1; then
     echo "model_client feature self-test failed: non-macOS Metal feature passed" >&2
+    return 1
+  fi
+  if check_non_macos_tree "self-test non-macOS forbidden default" "$non_macos_with_default" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: non-macOS default feature passed" >&2
     return 1
   fi
   if check_non_macos_tree "self-test non-macOS forbidden openmp" "$non_macos_with_openmp" >/dev/null 2>&1; then

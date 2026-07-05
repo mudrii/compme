@@ -151,17 +151,25 @@ jobs:
       - name: Build
         run: cargo build -p platform_linux
 
-  release:
-    name: Build · bundle · publish (macOS)
+  build_release:
+    name: Build · bundle · package (macOS)
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     needs: [validate, windows, linux]
     permissions:
-      contents: write
+      contents: read
     runs-on: macos-14
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+
+      - name: Verify release tag is on default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$DEFAULT_BRANCH"
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -244,25 +252,53 @@ jobs:
           tools/release/write-update-manifest.sh "$VERSION" "$ZIP" "$SHA256" > "$manifest"
           echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
 
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: compme-release-artifacts
+          if-no-files-found: error
+          path: |
+            ${{ steps.pkg.outputs.zip }}
+            ${{ steps.pkg.outputs.zip }}.sha256
+            ${{ steps.manifest.outputs.manifest }}
+
+  publish_release:
+    name: Publish release · finalize cask
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    needs: [build_release]
+    permissions:
+      contents: write
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: compme-release-artifacts
+          path: release-artifacts
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           generate_release_notes: true
           files: |
-            ${{ steps.pkg.outputs.zip }}
-            ${{ steps.pkg.outputs.zip }}.sha256
-            ${{ steps.manifest.outputs.manifest }}
+            release-artifacts/compme-*-macos.zip
+            release-artifacts/compme-*-macos.zip.sha256
+            release-artifacts/compme-*-update.json
 
       # The cask's sha256 can only be known after the artifact is built. Finalize
       # it from the just-published artifact so Homebrew users do not see the
       # placeholder checksum after the first release tag lands.
       - name: Finalize Homebrew cask
         env:
-          VERSION: ${{ steps.pkg.outputs.version }}
-          ZIP: ${{ steps.pkg.outputs.zip }}
-          TAG: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          artifact_path="$PWD/$ZIP"
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          ZIP="compme-${VERSION}-macos.zip"
+          artifact_path="$PWD/release-artifacts/$ZIP"
           tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"

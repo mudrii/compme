@@ -663,6 +663,15 @@ ruby -ryaml -e '
   ci_workflow = YAML.load_file(ARGV.fetch(1))
 
   jobs = ci_workflow.fetch("jobs")
+  def full_sha_action_ref?(uses)
+    uses.is_a?(String) && uses.match?(/\A[^@\s]+@[0-9a-f]{40}\z/)
+  end
+  jobs.each do |job_name, job|
+    Array(job["steps"]).each do |step|
+      next unless step.key?("uses")
+      abort("missing release gate: CI #{job_name} action is pinned to a full commit SHA") unless full_sha_action_ref?(step["uses"])
+    end
+  end
   ci_steps = jobs.fetch("check").fetch("steps")
   {
     "CI root format" => ["Format", "cargo fmt --all -- --check"],
@@ -721,10 +730,8 @@ ruby -ryaml -e '
   require_step!(release_jobs, "linux", "Clippy", "cargo clippy -p platform_linux --all-targets -- -D warnings", "release platform_linux clippy job")
   require_step!(release_jobs, "linux", "Test", "cargo test -p platform_linux", "release platform_linux test job")
   require_step!(release_jobs, "linux", "Build", "cargo build -p platform_linux", "release platform_linux build job")
-  release = release_jobs.fetch("release")
-  def full_sha_action_ref?(uses)
-    uses.is_a?(String) && uses.match?(/\A[^@\s]+@[0-9a-f]{40}\z/)
-  end
+  build_release = release_jobs.fetch("build_release")
+  publish_release = release_jobs.fetch("publish_release")
   release_jobs.each do |job_name, job|
     Array(job["steps"]).each do |step|
       next unless step.key?("uses")
@@ -759,21 +766,32 @@ ruby -ryaml -e '
     abort("missing release gate: #{label}") unless step?(validate_steps, name, run)
   end
 
-  release_needs = Array(release.fetch("needs"))
+  build_release_needs = Array(build_release.fetch("needs"))
   %w[validate windows linux].each do |job|
-    abort("missing release gate: release job depends on #{job}") unless release_needs.include?(job)
+    abort("missing release gate: build_release job depends on #{job}") unless build_release_needs.include?(job)
   end
-  abort("missing release gate: release job has contents write permission") unless release.fetch("permissions").fetch("contents") == "write"
-  release_steps = release.fetch("steps")
-  checkout = release_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
-  abort("missing release gate: release checkout") unless checkout
-  abort("missing release gate: release checkout fetches full history") unless checkout.fetch("with").fetch("fetch-depth") == 0
-  import_index = release_steps.index { |step| step["name"] == "Import Developer ID certificate" }
-  build_index = release_steps.index { |step| step["name"] == "Build the .app bundle" }
+  publish_release_needs = Array(publish_release.fetch("needs"))
+  abort("missing release gate: publish_release job depends on build_release") unless publish_release_needs.include?("build_release")
+  abort("missing release gate: build_release job has read-only contents permission") unless build_release.fetch("permissions").fetch("contents") == "read"
+  abort("missing release gate: publish_release job has contents write permission") unless publish_release.fetch("permissions").fetch("contents") == "write"
+  build_steps = build_release.fetch("steps")
+  publish_steps = publish_release.fetch("steps")
+  checkout = build_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
+  abort("missing release gate: build_release checkout") unless checkout
+  abort("missing release gate: build_release checkout fetches full history") unless checkout.fetch("with").fetch("fetch-depth") == 0
+  ancestry_index = build_steps.index { |step| step["name"] == "Verify release tag is on default branch" }
+  import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
+  build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
+  abort("missing release gate: verifies tag ancestry before secrets") unless ancestry_index
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
+  abort("missing release gate: verifies tag ancestry before Developer ID secrets") unless ancestry_index < import_index
   abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
-  import_step = release_steps.fetch(import_index)
+  ancestry_run = build_steps.fetch(ancestry_index).fetch("run")
+  ["git fetch origin \"$DEFAULT_BRANCH\"", "git merge-base --is-ancestor \"$GITHUB_SHA\" \"origin/$DEFAULT_BRANCH\""].each do |needle|
+    abort("missing release gate: early default-branch ancestry check") unless ancestry_run.include?(needle)
+  end
+  import_step = build_steps.fetch(import_index)
   import_env = import_step.fetch("env")
   {
     "P12_BASE64" => "secrets.COMPME_DEVELOPER_ID_P12_BASE64",
@@ -787,17 +805,21 @@ ruby -ryaml -e '
     abort("missing release gate: Developer ID missing-secret failure loop") unless import_run.include?(needle)
   end
   abort("missing release gate: Developer ID identity exported to bundle build") unless import_run.include?("COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY")
-  publish_index = release_steps.index { |step| step["name"] == "Publish GitHub release" }
-  cask_index = release_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
+  upload_index = build_steps.index { |step| step["name"] == "Upload release artifacts" }
+  download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
+  abort("missing release gate: uploads release artifacts from read-only build job") unless upload_index
+  abort("missing release gate: downloads release artifacts in publish job") unless download_index
+  publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
+  cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
   abort("missing release gate: publishes GitHub release") unless publish_index
   abort("missing release gate: finalizes Homebrew cask") unless cask_index
   abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index > publish_index
-  cask_step = release_steps.fetch(cask_index)
+  cask_step = publish_steps.fetch(cask_index)
   abort("missing release gate: finalizes Homebrew cask") unless cask_step
   cask_run = cask_step.fetch("run")
   require_active_finalizer_command!(cask_run, %q(tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"))
   abort("missing release gate: release tag metadata check") unless step?(
-    release_steps,
+    build_steps,
     "Check release tag matches bundle metadata",
     "COMPME_EXPECTED_VERSION=\"${GITHUB_REF_NAME#v}\" tools/bundle/check-bundle-metadata.sh"
   )
@@ -901,7 +923,10 @@ require_line "$gate_script" '^model="\$\{COMPME_MODEL_GATE_PATH:-tools/spike/mod
 require_line "$gate_script" '^url="\$\{COMPME_MODEL_GATE_URL:-https://huggingface\.co/Brianpuz/Qwen2\.5-0\.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2\.5-0\.5b-q4_k_m\.gguf\}"[[:space:]]*$' "pinned base GGUF download URL"
 require_line "$gate_script" '^expected="\$\{COMPME_MODEL_GATE_SHA256:-ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484\}"[[:space:]]*$' "pinned base GGUF sha256"
 require_line "$gate_script" 'COMPME_MODEL_GATE_CURL_BODY="wrong-model"' "model gate checksum failure self-test"
+require_line "$gate_script" 'gpu=0 ctx_tokens=256 args=test -p model_client --test latency' "model gate root env self-test"
+require_line "$gate_script" 'tools/spike env=1 ctx= gpu= ctx_tokens= args=test --test model_integration' "model gate spike env self-test"
 require_line "$finalize_cask_script" 'git merge-base --is-ancestor "\$GITHUB_SHA" "origin/\$default_branch"' "cask finalizer ancestry check"
+require_line "$finalize_cask_script" 'tag/version mismatch' "cask finalizer tag/version guard"
 require_line "$finalize_cask_script" 'refusing to publish a stale or out-of-order cask update' "cask finalizer stale version refusal"
 require_line "$finalize_cask_script" 'COMPME_CASK_ARTIFACT="\$artifact_path" tools/release/update-cask\.sh "\$tag"' "cask finalizer artifact handoff"
 require_line "$finalize_cask_script" 'git push origin "HEAD:\$default_branch"' "cask finalizer push"
