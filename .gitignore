@@ -2,3 +2,9 @@
 /tools/acceptance/logs/
 /graphify-out/
 .tokensave
+.gsd/
+.serena/
+.bg-shell/
+.gsd/
+.serena/
+.bg-shell/
