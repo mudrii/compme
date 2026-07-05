@@ -12,6 +12,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets -- --test-threads=1
 cargo build --workspace --all-targets
+cargo build -p platform_macos --examples
 ```
 
 Acceptance harness syntax and deterministic self-tests:
@@ -53,7 +54,7 @@ macOS pasteboard checks share process-wide OS state.
 Model-backed local gates:
 
 ```sh
-COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1
+COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1
 cd tools/spike
 COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1
 ```

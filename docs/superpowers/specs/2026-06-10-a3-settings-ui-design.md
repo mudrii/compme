@@ -30,8 +30,8 @@ live tray flags.
 - **No telemetry toggle** — Cotypist's "share anonymous usage statistics"
   pane has no compme equivalent because nothing is ever sent (local-only).
   The About pane states this instead.
-- **No Sparkle/Check-for-Updates initially** — updater is its own A3 ship
-  item (engine-macos §9).
+- **No Sparkle auto-updater initially** — GitHub-release **Check for Updates...**
+  handoff is shipped; Sparkle/appcast remains optional later.
 
 ## Phase S1 — Tray menu extensions (loop-doable now)
 
@@ -104,7 +104,8 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 8. Out of scope here: model catalog/download manager (§15 D14; since shipped
    into the Setup tab — download button c122, sha verify c126, license gate
    c127 **[2026-06-12]**), accessory
-   floating button, updater — separate items.
+   floating button, Sparkle/appcast auto-update client — separate; GitHub
+   Release handoff + update manifest are shipped.
 
 GUI panes are live-LOOK validated (human or scripted screenshot reads);
 underlying toggles stay env/config-file-backed so every behavior remains

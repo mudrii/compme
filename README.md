@@ -140,11 +140,13 @@ For development, run unbundled with `cargo run -p app`.
 ├── tools/
 │   ├── acceptance/                    # A1b live, A2 compat, E2E, and startup gates
 │   ├── bundle/                        # macOS bundle assets (URL scheme, icon)
+│   ├── release/                       # Release gates, cask, notarization, update manifest
 │   └── spike/                         # Separate A0 prototype workspace
 └── docs/
     ├── ARCHITECTURE.md
     ├── DEVELOPMENT.md
     ├── ACCEPTANCE.md
+    ├── RELEASING.md
     └── superpowers/                   # Detailed planning and validation notes
 ```
 
@@ -331,6 +333,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --bins
 ```
+
+CI and the tag release workflow also run scoped Windows/Linux adapter gates on
+native runners: fmt, clippy, test, and build for `platform_windows` on
+`windows-latest`, and the same four commands for `platform_linux` on
+`ubuntu-latest`. They are CI/release-runner gates, not part of the local macOS
+gate above.
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full development workflow
 and [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for live macOS validation.

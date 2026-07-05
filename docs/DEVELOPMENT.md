@@ -207,6 +207,11 @@ root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
 surface and several macOS pasteboard checks share process-wide OS state.
+CI and the tag release workflow also run scoped Windows/Linux adapter gates on
+native runners: fmt, clippy, test, and build for `platform_windows` on
+`windows-latest`, and the same four commands for `platform_linux` on
+`ubuntu-latest`. Those are CI/release-runner gates rather than local macOS
+commands.
 For release-readiness audits with the local GGUF model installed, also run the
 ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md).
 

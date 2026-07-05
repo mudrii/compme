@@ -286,13 +286,13 @@ the whole flow is exercised with the fake model + fake overlay.
   grammar-accept key to the same action without depending on macOS-local binding
   names.
 - `crates/platform_macos/src/lib.rs`:
-  - **trigger:** `CARBON_HOTKEY_GRAMMAR_CHECK: u32 = 8` (:118 area); add
-    `grammar_check: Option<(i64,u32)>` to `ShortcutBindings` (:2521), wire into
-    `from_config`, `has_internal_collision` (:2548), `registration_plan` (:2568),
-    and `shortcut_action_for_hotkey_id` (:2586). Always-on, like ForceActivate.
+  - **trigger:** `CARBON_HOTKEY_GRAMMAR_CHECK: u32 = 8`; add
+    `grammar_check: Option<(i64,u32)>` to `ShortcutBindings`, wire into
+    `from_config`, `has_internal_collision`, `registration_plan`, and
+    `shortcut_action_for_hotkey_id`. Always-on, like ForceActivate.
   - **accept:** add a macOS-local `AcceptBinding::GrammarAccept`, new Carbon id,
-    and a `grammar` slot in `AcceptKeymap` (:3142). Extend `binding_for_hotkey_id`
-    (:3425) so the fired id maps to `GrammarAccept`, then map that binding to
+    and a `grammar` slot in `AcceptKeymap`. Extend `binding_for_hotkey_id` so the
+    fired id maps to `GrammarAccept`, then map that binding to
     `AcceptAction::Correction`.
   - Extend the accept-arm state instead of relying on today's
     `action.is_some()` visibility gate. Use an explicit arm mode such as
@@ -302,7 +302,7 @@ the whole flow is exercised with the fake model + fake overlay.
     ghost mode, grammar-accept passes through.
     **As built:** no `AcceptArm` enum was needed — correction-scoped dispatch
     checks `binding == Some(AcceptBinding::GrammarAccept)` directly
-    (`platform_macos/src/lib.rs:3141-3153`); the swallow/pass behavior matches
+    in `platform_macos/src/lib.rs`; the swallow/pass behavior matches
     this design and is pinned by tests.
 - `crates/app/src/run_loop.rs`: `Config` gets `grammar_check_key: Option<String>`
   and `grammar_accept_key: Option<(i64,u32)>`, parsed in `from_lookup` (:289-295)
@@ -458,7 +458,7 @@ range bounds and range replacement, not just the existing left-of-caret
 - `tools/release/finalize-cask.sh --self-test`
 - `tools/release/notarize-app.sh --self-test`
 - `tools/release/write-update-manifest.sh --self-test`
-- `COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1`
+- `COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1`
 - `cd tools/spike && cargo fmt -- --check`
 - `cd tools/spike && cargo clippy --all-targets -- -D warnings`
 - `cd tools/spike && cargo test`

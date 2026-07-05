@@ -267,8 +267,8 @@ green. The portable correction pipeline, macOS trigger/accept routing,
 fail-closed range seams, underline/banner presenter, Apps-pane `GrammarFix`
 policy column, and grammar-accept recorder/persistence are in code with focused
 tests. The remaining acceptance item is the interactive TextEdit grammar LOOK
-gate emitted by `tools/acceptance/run-a1b-live-gates.sh --self-test`, which
-requires a granted macOS GUI session.
+gate emitted by `tools/acceptance/run-a1b-live-gates.sh` and pinned by its
+`--self-test`, which requires a granted macOS GUI session.
 
 **Decisions settled (with the requester, 2026-07-01):**
 0. **Cross-platform by construction — Linux, Windows, and macOS.** No part of the
@@ -307,7 +307,8 @@ requires a granted macOS GUI session.
   scalar `CorrectionRange` at the `platform` boundary, carry that same range
   through the request/outcome/showing state, and emit `Command::ReplaceRange` →
   `insert_replacing_range`. `replace_left` remains for emoji/autocorrect only.
-  **Same `InsertStrategy::AxSet` gate** applies (`engine_core/src/lib.rs:791`):
+  **Same `InsertStrategy::AxSet` gate** applies (see the `InsertStrategy::AxSet`
+  correction branch in `engine_core/src/lib.rs`):
   on non-AxSet fields offer nothing (degrade), exactly as replacements do today.
 - **Snapshot/staleness safety:** model the correction as a `Showing` with
   `presentation = Correction` and `correction_range = Some(..)`; every
@@ -315,7 +316,8 @@ requires a granted macOS GUI session.
   apply to stale text (`engine_core/src/lib.rs:193-201`).
 - **Word geometry for the underline:** add `PlatformAdapter::text_range_rect` over
   the same scalar `CorrectionRange`. macOS converts scalar offsets to UTF-16 and
-  uses `read_ax_bounds_for_range(element, loc, len)` (`platform_macos/src/lib.rs:4559`).
+  uses `read_ax_bounds_for_range(element, loc, len)` in
+  `platform_macos/src/lib.rs`.
   (Do **not** reuse the thin-caret `usable_caret_rect` guard — a word is wider
   than its threshold.)
 - **Inference plumbing:** `engine::CompletionRequest` plus app-owned
@@ -326,10 +328,10 @@ requires a granted macOS GUI session.
   (`run_loop.rs:533`); `AppPolicy` tri-state fields (`prefs/src/lib.rs:13`);
   Apps-pane checkbox enum `AppPolicyField` (`prefs/src/lib.rs:46`).
 - **Keystroke infra:** always-on shortcuts `ShortcutBindings`/`registration_plan`
-  (`platform_macos/src/lib.rs:2521/2568`), `ShortcutAction` (`platform/src/lib.rs:202`);
-  ghost-scoped accept keymap `AcceptKeymap`/`binding_for_hotkey_id`
-  (`platform_macos/src/lib.rs:3142/3425`); recorder UI `KeyRecorderField`
-  (`settings_window.rs:692`).
+  in `platform_macos/src/lib.rs`, `ShortcutAction` in `platform/src/lib.rs`;
+  ghost/correction-scoped accept keymap `AcceptKeymap`/`binding_for_hotkey_id`
+  in `platform_macos/src/lib.rs`; recorder UI `KeyRecorderField` in
+  `settings_window.rs`.
 - **Overlay recipe:** the borderless transparent `NSPanel` in `ensure_panel`
   (`platform_macos/src/lib.rs:776`) + Y-flip in `overlay_frame_for_text` (`:969`).
 
@@ -360,13 +362,12 @@ requires a granted macOS GUI session.
    (always-on Carbon hotkey, new id 8, config `COMPME_GRAMMAR_CHECK_KEY`,
    startup-string first like the other global shortcuts) — routed at the
    `HostEvent::Shortcut` match (`run_loop.rs:3715`) to run detection.
-   **grammar-accept** = new `AcceptBinding::GrammarAccept` role with explicit
-   accept-arm modes: `AcceptArm::Correction` swallows only GrammarAccept while
-   Word/Full pass through, and `AcceptArm::Ghost` keeps the existing Word/Full
-   behavior while GrammarAccept passes through. It gets a new Carbon id, config
-   `COMPME_GRAMMAR_ACCEPT_KEY`, and is live-rebindable via a third
-   `RecorderRole` later. Collision detection stays in the existing field arrays
-   (`has_internal_collision` / `record_decision`).
+   **grammar-accept** = `AcceptBinding::GrammarAccept` with
+   `AcceptAction::Correction`; correction mode consumes only GrammarAccept while
+   Word/Full pass through. It gets its own Carbon id, config
+   `COMPME_GRAMMAR_ACCEPT_KEY`, and is live-rebindable via
+   `RecorderRole::GrammarAccept`. Collision detection stays in the existing field
+   arrays (`has_internal_collision` / `record_decision`).
 4. **Toggle + policy wiring:** `Config.grammar_fix` (`COMPME_GRAMMAR_FIX`,
    `run_loop.rs:169/277`), `AppPolicy.grammar_fix: Option<bool>` + a
    `grammar_fix_enabled(app, default)` getter (`prefs/src/lib.rs:133` mirror), a
