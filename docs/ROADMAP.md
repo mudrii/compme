@@ -214,10 +214,10 @@ enhancements explicitly called out below.
   exists. Spec: `a3-settings-ui-design.md:64`.
 
 > **Corrected 2026-06-15:** the global disable submenu (For 1 Hour / Until
-> Relaunch / Always) is **✅ DONE** (`crates/platform_macos/src/tray.rs:247-256`,
-> `DisableArm` `:53-59`; mapped through the `apply_global_disable` fn in
-> `run_loop.rs`, dispatched from the tray global-disable submenu handler
-> (symbol anchors — line numbers here drifted three times)). The older "NOT built — only flat Snooze-1h" note is
+> Relaunch / Always) is **✅ DONE** (global submenu in
+> `crates/platform_macos/src/tray.rs`, `DisableArm`; mapped through the
+> `apply_global_disable` fn in `crates/app/src/run_loop.rs`, dispatched from the
+> tray global-disable submenu handler). The older "NOT built — only flat Snooze-1h" note is
 > superseded by the current corrected A3 status.
 
 ---

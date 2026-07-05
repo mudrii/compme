@@ -62,7 +62,7 @@ type-ahead.
 
 ```
 grammar-trigger key (per-OS hotkey)
-  → HostEvent::Shortcut(ShortcutAction::GrammarCheck)     [run_loop match ~3715]
+  → HostEvent::Shortcut(ShortcutAction::GrammarCheck)     [run_loop shortcut dispatch]
   → run_loop: read_context(field) → word-under-caret + left_ctx + CorrectionRange
   → gate: grammar_fix_enabled(app) && suggestion_gates_pass && caps.AxSet
   → dispatch CompletionRequest{ kind: GrammarFix, word, left_ctx, correction_range }
@@ -91,7 +91,7 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
 **New/changed:**
 - `crates/model_client/src/lib.rs`: add
   `pub fn grammar_fix_prompt(word: &str, left_ctx: &str) -> String` next to
-  `terse_continuation_prompt` (:578). Instruction-style prompt that asks for the
+  `terse_continuation_prompt`. Instruction-style prompt that asks for the
   single corrected word only (or the word unchanged), with the left context for
   disambiguation. Keep it terse; the caller uses a small `max_tokens`.
   (Hardened 2026-07-04: the host tail-bounds `left_ctx` to
@@ -163,25 +163,25 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   must not wait for screen OCR, call `shape_prompt`, prepend
   personalization/context blocks, or use `complete_n`; those are
   completion-specific and would turn a grammar prompt into an inline-continuation
-  request. `recv_latest` (:266) coalescing still applies (a newer trigger
+  request. `recv_latest` coalescing still applies (a newer trigger
   supersedes an older one).
 - `crates/engine_core/src/lib.rs`: add a `presentation: Presentation` field
-  (`enum Presentation { Ghost, Correction }`, default `Ghost`) to `Showing` (:172
-  area) plus `correction_range: Option<platform::CorrectionRange>`. Thread it
+  (`enum Presentation { Ghost, Correction }`, default `Ghost`) to `Showing` plus
+  `correction_range: Option<platform::CorrectionRange>`. Thread it
   from a new `offer_correction(field, suggestion, correction_range)` that
-  mirrors `offer_replacement_multi` (:780) but sets `presentation = Correction`
+  mirrors `offer_replacement_multi` but sets `presentation = Correction`
   and emits `Command::ShowCorrection { field, correction_range, suggestion }`
   instead of `ShowGhost`. Add an explicit `Event::AcceptCorrection` arm that only
   commits a `Showing { presentation: Correction, .. }` and emits
   `Command::ReplaceRange { field, text, correction_range }`. Do not reuse
   `AcceptFull`/`AcceptWord`: those commit the existing `replace_left` model and
   can only delete characters immediately left of the caret. Same
-  `InsertStrategy::AxSet` gate (:791).
+  `InsertStrategy::AxSet` gate.
 - `crates/engine/src/lib.rs`: add `pub fn on_correction(...)` wrapping
-  `offer_correction` (mirror `on_replacement` :283). Extend dispatch for
+  `offer_correction` (mirror `on_replacement`). Extend dispatch for
   `ShowCorrection`: resolve `adapter.text_range_rect(field, correction_range)`,
   fall back to `caret_rect`/`popup_anchor` only when range bounds return `Ok(None)`,
-  then call `overlay.show_correction`. Extend `FakeAdapter`/`FakeOverlay` (:554)
+  then call `overlay.show_correction`. Extend `FakeAdapter`/`FakeOverlay`
   so tests can observe the correction presentation and range.
 - `crates/app/src/run_loop.rs`: add `grammar_fix: bool` to `Config` (:169) parsed as
   `COMPME_GRAMMAR_FIX` in `from_lookup` (:277). Add the detection helper: on a
@@ -336,19 +336,19 @@ to G4 validation.
 The genuinely new UI. No underline/banner/attributed-string primitive exists today.
 
 **New/changed:**
-- `crates/platform/src/lib.rs`: add to `OverlayPresenter` (:526)
+- `crates/platform/src/lib.rs`: add to `OverlayPresenter`
   `fn show_correction(&mut self, word_rect: ScreenRect, suggestion: &str) ->
   Result<(), PlatformError>` (or a sibling `CorrectionPresenter` trait). `hide()`
   reused. The word rect comes from the new `PlatformAdapter::text_range_rect`
   seam, not from the overlay presenter.
 - `crates/platform_macos/src/lib.rs`: implement `show_correction` by cloning the
-  `ensure_panel` recipe (:776) into **two** borderless, mouse-transparent panels:
+  `ensure_panel` recipe into **two** borderless, mouse-transparent panels:
   (1) a 1–2px filled underline panel under the word rect (from
-  `text_range_rect`, backed by `read_ax_bounds_for_range` :4559 with scalar to
+  `text_range_rect`, backed by `read_ax_bounds_for_range` with scalar to
   UTF-16 conversion; do **not** apply the thin-caret `usable_caret_rect` guard),
   (2) a small background-filled banner panel anchored just above the word rect
   showing `suggestion`. Use a correction-specific frame helper that shares the
-  AX-to-Cocoa Y-flip math from `overlay_frame_for_text` (:969) but does not apply
+  AX-to-Cocoa Y-flip math from `overlay_frame_for_text` but does not apply
   caret-width heuristics or ghost text width clamps. Degrade to a caret-anchored
   popup when the word rect is `Ok(None)`.
 - Wire `Command::ShowCorrection` (G2) → `show_correction`.
@@ -368,12 +368,12 @@ checked-in live gate entry added and checked on-device.
 ## Phase G5 — Settings surface · effort M
 
 - `crates/platform_macos/src/settings_window.rs`: add `RecorderRole::GrammarAccept`
-  (:37) + a recorder row (reuse `KeyRecorderField` :692); widen `record_decision`
-  (:66), `rebind_request_for`, and the persisted accept-key config writer from
+  + a recorder row (reuse `KeyRecorderField`); widen `record_decision`,
+  `rebind_request_for`, and the persisted accept-key config writer from
   2-role to N-role collision/keymap handling. Add the `GrammarFix` checkbox
   column to the Apps-pane grid (`apps_layout`, geometry test updated for the
   extra column).
-- `crates/app/src/run_loop.rs`: handle the new `RebindRequest` role (:4002) →
+- `crates/app/src/run_loop.rs`: handle the new `RebindRequest` role →
   live-rebind the grammar-accept key. Surface `grammar_fix` in the General/Apps
   panes. Keep the field-index plumbing synchronized across `APP_POLICY_FIELDS`,
   Apps-pane titles/headers, `apps_policy_field_from_index`,
