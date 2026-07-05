@@ -131,19 +131,19 @@ cargo fmt --all -- --check
 Lint:
 
 ```sh
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
 Test:
 
 ```sh
-cargo test --workspace --all-targets -- --test-threads=1
+cargo test --locked --workspace --all-targets -- --test-threads=1
 ```
 
 Build:
 
 ```sh
-cargo build --workspace --all-targets
+cargo build --locked --workspace --all-targets
 ```
 
 The suite is ~1696 tests. Use `--all-targets` for clippy, test, and build so
@@ -157,9 +157,9 @@ Run from `tools/spike`:
 ```sh
 cargo fmt
 cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo build --bins
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked --bins
 ```
 
 The spike package is intentionally separate from the root workspace. Root
@@ -171,10 +171,10 @@ Run this before considering a change ready for review:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets -- --test-threads=1
-cargo build --workspace --all-targets
-cargo build -p platform_macos --examples
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets -- --test-threads=1
+cargo build --locked --workspace --all-targets
+cargo build --locked -p platform_macos --examples
 
 bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 tools/bundle/check-bundle-metadata.sh
@@ -185,6 +185,7 @@ tools/acceptance/missing-model-startup.sh --self-test
 tools/acceptance/missing-model-startup.sh
 tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-a2-compat-gates.sh --self-test
+tools/release/check-a2-matrix-ledger.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
 tools/release/check-privacy-policy.sh
@@ -199,14 +200,14 @@ bash tools/release/run-model-gates.sh
 
 cd tools/spike
 cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo build --bins
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked --bins
 ```
 
 The root suite is ~1696 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
-The full gate uses `cargo test --workspace --all-targets -- --test-threads=1`
+The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
 surface and several macOS pasteboard checks share process-wide OS state.
 CI and the tag release workflow also run scoped Windows/Linux adapter gates on
@@ -253,7 +254,7 @@ Root workspace coverage includes:
 
 The macOS example tests are important because they verify behavior used by live
 acceptance binaries. Compile them via the `--all-targets` gate; run them with
-`cargo test --workspace --all-targets -- --test-threads=1`.
+`cargo test --locked --workspace --all-targets -- --test-threads=1`.
 
 **Known flake.** A small number of `platform_macos` tests share the process-wide
 general `NSPasteboard`, so running them in parallel can intermittently fail when
@@ -275,7 +276,7 @@ For `platform_macos` changes:
 2. Build example binaries:
 
    ```sh
-   cargo build -p platform_macos --examples
+   cargo build --locked -p platform_macos --examples
    ```
 
 3. Prepare macOS:

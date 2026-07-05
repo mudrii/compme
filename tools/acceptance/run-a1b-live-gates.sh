@@ -1102,6 +1102,9 @@ if ! final_status; then
   if [ "$failures" -eq 0 ] && [ "$incomplete_skips" -gt 0 ]; then
     echo "FAIL incomplete: mandatory gates skipped; rerun with TextEdit ready or pass --allow-incomplete intentionally" >&2
   fi
+  if [ "$failures" -eq 0 ] && [ "$incomplete_skips" -eq 0 ] && [ "$manuals" -gt 0 ] && [ "$ALLOW_MANUAL" -eq 0 ]; then
+    echo "FAIL manual: unresolved MANUAL gates; use --allow-manual only after executing and recording the checklist" >&2
+  fi
   exit 1
 fi
 exit 0

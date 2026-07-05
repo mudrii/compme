@@ -9,10 +9,10 @@ Root workspace:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets -- --test-threads=1
-cargo build --workspace --all-targets
-cargo build -p platform_macos --examples
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets -- --test-threads=1
+cargo build --locked --workspace --all-targets
+cargo build --locked -p platform_macos --examples
 ```
 
 Acceptance harness syntax and deterministic self-tests:
@@ -27,6 +27,7 @@ tools/acceptance/missing-model-startup.sh --self-test
 tools/acceptance/missing-model-startup.sh
 tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-a2-compat-gates.sh --self-test
+tools/release/check-a2-matrix-ledger.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
 tools/release/check-privacy-policy.sh
@@ -45,9 +46,9 @@ Spike workspace:
 ```sh
 cd tools/spike
 cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo build --bins
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked --bins
 ```
 
 The root test gate must use `--all-targets` because `platform_macos` keeps
@@ -57,9 +58,9 @@ macOS pasteboard checks share process-wide OS state.
 Model-backed local gates:
 
 ```sh
-COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1
+COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1
 cd tools/spike
-COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1
+COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1
 ```
 
 These ignored suites need the GGUF files and Metal GPU. Without
@@ -373,6 +374,14 @@ pairs (for example `textedit=123 terminal-cmd=456`) and it writes a TSV ledger
 under `tools/acceptance/logs/`. Missing rows fail unless
 `COMPME_A2_MATRIX_ALLOW_SKIP=1` is set.
 
+Before tagging a release, validate the fresh matrix ledger without skip/fail
+rows:
+
+```sh
+ledger="tools/acceptance/logs/a2-compat-matrix-YYYYMMDD-HHMMSS.tsv"
+tools/release/check-a2-matrix-ledger.sh "$ledger"
+```
+
 The `clipboard` and `screen` gates enable `COMPME_DIAG_CONTEXT=1`; clipboard
 requires the marker `CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and
 screen requires non-empty OCR context. The screen gate also requires Screen
@@ -589,7 +598,7 @@ The live runner uses `platform_macos` examples:
 Build them with:
 
 ```sh
-cargo build -p platform_macos --examples
+cargo build --locked -p platform_macos --examples
 ```
 
 ## Spike Manual Acceptance

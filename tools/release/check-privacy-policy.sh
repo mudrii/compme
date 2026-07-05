@@ -40,7 +40,9 @@ allowed_hosts = %w[
   ai.google.dev
   compme
   cotypist.app
+  developer.apple.com
   docs.google.com
+  docs.rs
   example.com
   example.invalid
   example.test
@@ -48,6 +50,7 @@ allowed_hosts = %w[
   huggingface.co
   localhost
   opensource.org
+  v2.tauri.app
   www.apache.org
   www.llama.com
   x.com
@@ -73,7 +76,6 @@ paths = []
     Dir.glob(File.join(path, "**", "*"), File::FNM_DOTMATCH).each do |candidate|
       next unless File.file?(candidate)
       next if candidate.include?("/target/") || candidate.include?("/tools/acceptance/logs/")
-      next if candidate.include?("/docs/superpowers/")
       next unless candidate.match?(/\.(rs|sh|yml|yaml|md|rb|toml)\z/)
       paths << candidate
     end
@@ -141,6 +143,18 @@ LOCK
   } >"$tmp/denied-host/crates/demo/src/lib.rs"
   if check_repo "$tmp/denied-host" >/dev/null 2>&1; then
     echo "privacy policy self-test failed: denied analytics host was accepted" >&2
+    return 1
+  fi
+
+  cp -R "$tmp/good" "$tmp/denied-spec-host"
+  mkdir -p "$tmp/denied-spec-host/docs/superpowers/specs"
+  {
+    printf '%s' 'Design note: https:'
+    printf '%s' '//api.'
+    printf '%s\n' 'segment.io/v1/track'
+  } >"$tmp/denied-spec-host/docs/superpowers/specs/network.md"
+  if check_repo "$tmp/denied-spec-host" >/dev/null 2>&1; then
+    echo "privacy policy self-test failed: denied docs/superpowers host was accepted" >&2
     return 1
   fi
 

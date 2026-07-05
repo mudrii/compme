@@ -9,7 +9,7 @@ also runs scoped Windows/Linux adapter jobs.
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | branch push / PR / tag `v*` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets -- --test-threads=1`, `cargo build --workspace --all-targets`, `cargo build -p platform_macos --examples`, plus acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), A1b/A2/E2E self-tests, missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --bins` in `tools/spike`. |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | branch push / PR / tag `v*` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, plus acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), A1b/A2/E2E self-tests, missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. |
 | [`.github/workflows/release.yml`](../.github/workflows/release.yml) | tag `v*` | Runs release validation first: serialized root fmt/clippy/test/build, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), acceptance/bundle/release script syntax + self-tests, missing-model startup product smoke (`tools/acceptance/missing-model-startup.sh`), bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`), spike fmt/clippy/test/build, and scoped Windows/Linux adapter fmt/clippy/test/build jobs. Only after all release validation jobs pass, imports the Developer-ID certificate, builds `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh) with hardened runtime, notarizes + staples it via [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh), zips it with `ditto`, computes the sha256, writes an update manifest, publishes a GitHub Release with the zip, `.sha256`, and manifest, then commits the finalized Homebrew cask checksum back to the default branch via [`tools/release/finalize-cask.sh`](../tools/release/finalize-cask.sh). |
 
 Workflow permissions default to `contents: read`; only the publish job receives
@@ -51,10 +51,21 @@ determinism and the sub-500ms latency budget enforced on the current machine.
    be fetched or verified:
 
    ```sh
-   COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1
+   COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1
    cd tools/spike
-   COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1
+   COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1
    cd ../..
+   ```
+
+   In the same live macOS session, run the A2 compatibility matrix against the
+   required target apps and validate the produced ledger has every row passing
+   before tagging:
+
+   ```sh
+   COMPME_A2_MATRIX_TARGETS="textedit=123 notes=124 mail=125 word=126 safari=127 chrome=128 brave=129 browser-exclude=130 terminal-cmd=131 terminal-nlp=132 unsupported=133 clipboard=134 screen=135" \
+     tools/acceptance/run-a2-compat-gates.sh matrix
+   ledger="tools/acceptance/logs/a2-compat-matrix-YYYYMMDD-HHMMSS.tsv"
+   tools/release/check-a2-matrix-ledger.sh "$ledger"
    ```
 
 4. Ensure the release commit is on the up-to-date default branch, then tag and
@@ -74,13 +85,18 @@ determinism and the sub-500ms latency budget enforced on the current machine.
    `compme-0.1.0-update.json` to the `v0.1.0` GitHub Release.
 5. Confirm the workflow's **Finalize Homebrew cask** step committed the cask
    sha256 back to the default branch. If branch protection blocks that bot push
-   or you need to recover manually, run:
+   or you need to recover manually, use the guarded finalizer path from a
+   checkout at the release tag commit so tag/version, default-branch ancestry,
+   and stale-version checks still run:
 
    ```sh
-   tools/release/update-cask.sh v0.1.0
-   git add Casks/compme.rb
-   git commit -m "chore(release): cask v0.1.0"
-   git push
+   git fetch origin main
+   GITHUB_SHA="$(git rev-parse v0.1.0)" \
+     tools/release/finalize-cask.sh \
+       v0.1.0 \
+       "$PWD/release-artifacts/compme-0.1.0-macos.zip" \
+       0.1.0 \
+       main
    ```
 
    Release helpers are strict about arity; use the documented command forms

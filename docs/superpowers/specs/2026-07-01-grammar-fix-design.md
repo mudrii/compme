@@ -437,10 +437,10 @@ range bounds and range replacement, not just the existing left-of-caret
 
 ## Validation commands
 - `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace --all-targets -- --test-threads=1`
-- `cargo build --workspace --all-targets`
-- `cargo build -p platform_macos --examples`
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`
+- `cargo test --locked --workspace --all-targets -- --test-threads=1`
+- `cargo build --locked --workspace --all-targets`
+- `cargo build --locked -p platform_macos --examples`
 - `bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh`
 - `tools/bundle/check-bundle-metadata.sh`
 - `tools/bundle/check-bundle-metadata.sh --self-test`
@@ -450,6 +450,7 @@ range bounds and range replacement, not just the existing left-of-caret
 - `tools/acceptance/missing-model-startup.sh`
 - `tools/acceptance/run-a1b-live-gates.sh --self-test`
 - `tools/acceptance/run-a2-compat-gates.sh --self-test`
+- `tools/release/check-a2-matrix-ledger.sh --self-test`
 - `tools/release/check-model-client-features.sh`
 - `tools/release/check-model-client-features.sh --self-test`
 - `bash tools/release/check-model-gates.sh`
@@ -458,12 +459,12 @@ range bounds and range replacement, not just the existing left-of-caret
 - `tools/release/finalize-cask.sh --self-test`
 - `tools/release/notarize-app.sh --self-test`
 - `tools/release/write-update-manifest.sh --self-test`
-- `COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1`
+- `COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1`
 - `cd tools/spike && cargo fmt -- --check`
-- `cd tools/spike && cargo clippy --all-targets -- -D warnings`
-- `cd tools/spike && cargo test`
-- `cd tools/spike && cargo build --bins`
-- `cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1`
+- `cd tools/spike && cargo clippy --locked --all-targets -- -D warnings`
+- `cd tools/spike && cargo test --locked`
+- `cd tools/spike && cargo build --locked --bins`
+- `cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1`
 
 ## Definition of done (macOS reference)
 Code-complete criteria are met: G1–G5 landed, the validation command set above is

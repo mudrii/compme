@@ -40,7 +40,7 @@ PREFIX="${COMPME_PREFIX:-Dear team, I wanted to }"
 STUB="${COMPME_STUB:- follow up about the }"
 PROMPT_MARKER="${COMPME_PROMPT_MARKER:-compme a2 marker ${KIND} $$}"
 LOG_DIR="${COMPME_A2_LOG_DIR:-$ROOT_DIR/tools/acceptance/logs}"
-LOG="$LOG_DIR/a2-compat-${KIND}-$(date +%Y%m%d-%H%M%S).log"
+LOG="${COMPME_A2_LOG:-$LOG_DIR/a2-compat-${KIND}-$(date +%Y%m%d-%H%M%S).log}"
 mkdir -p "$LOG_DIR"
 
 REQUEST_LINE_PREFIX='^compme: request gen=[0-9][0-9]* prompt_chars=[1-9][0-9]* app='
@@ -409,7 +409,7 @@ OSA
   mkdir -p "$matrix_skip_dir"
   if COMPME_A2_LOG_DIR="$matrix_skip_dir" COMPME_A2_MATRIX_TARGETS="" COMPME_A2_MATRIX_ALLOW_SKIP=1 "$0" matrix >/dev/null 2>"$matrix_skip_dir/matrix.err"; then
     ledger="$(ls "$matrix_skip_dir"/a2-compat-matrix-*.tsv 2>/dev/null | tail -n 1)"
-    if [[ -n "$ledger" ]] && awk -F '\t' -v expected="${#A2_MATRIX_ROWS[@]}" 'NR > 1 && $5 == "SKIP" { skip++ } END { exit skip == expected ? 0 : 1 }' "$ledger"; then
+    if [[ -n "$ledger" ]] && awk -F '\t' -v expected="${#A2_MATRIX_ROWS[@]}" 'NR == 1 && $7 == "log_path" { header = 1 } NR > 1 && $5 == "SKIP" && $7 == "" { skip++ } END { exit header && skip == expected ? 0 : 1 }' "$ledger"; then
       echo "PASS self-test-a2-matrix-allow-skip-ledger"
     else
       echo "FAIL self-test-a2-matrix-allow-skip-ledger: SKIP ledger did not cover every row" >&2
@@ -434,25 +434,27 @@ run_matrix() {
     echo "usage: run-a2-compat-gates.sh matrix" >&2
     exit 2
   fi
-  ledger="$LOG_DIR/a2-compat-matrix-$(date +%Y%m%d-%H%M%S).tsv"
-  printf 'row_id\tkind\tapp\tpid\tstatus\texpect\n' >"$ledger"
+  matrix_stamp="$(date +%Y%m%d-%H%M%S)"
+  ledger="$LOG_DIR/a2-compat-matrix-$matrix_stamp.tsv"
+  printf 'row_id\tkind\tapp\tpid\tstatus\texpect\tlog_path\n' >"$ledger"
   failures=0
   skipped=0
   for row in "${A2_MATRIX_ROWS[@]}"; do
     IFS='|' read -r row_id row_kind row_app row_expect <<<"$row"
     row_pid="$(matrix_target_pid "$row_id")"
+    row_log="$LOG_DIR/a2-compat-matrix-$matrix_stamp-$row_id.log"
     if [[ -z "$row_pid" ]]; then
-      printf '%s\t%s\t%s\t\tSKIP\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_expect" >>"$ledger"
+      printf '%s\t%s\t%s\t\tSKIP\t%s\t\n' "$row_id" "$row_kind" "$row_app" "$row_expect" >>"$ledger"
       skipped=$((skipped + 1))
       if [[ "${COMPME_A2_MATRIX_ALLOW_SKIP:-0}" != "1" ]]; then
         failures=$((failures + 1))
       fi
       continue
     fi
-    if COMPME_ACCEPTANCE_PID="$row_pid" "$0" "$row_kind"; then
-      printf '%s\t%s\t%s\t%s\tPASS\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" >>"$ledger"
+    if COMPME_A2_LOG="$row_log" COMPME_ACCEPTANCE_PID="$row_pid" "$0" "$row_kind"; then
+      printf '%s\t%s\t%s\t%s\tPASS\t%s\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" "$row_log" >>"$ledger"
     else
-      printf '%s\t%s\t%s\t%s\tFAIL\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" >>"$ledger"
+      printf '%s\t%s\t%s\t%s\tFAIL\t%s\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" "$row_log" >>"$ledger"
       failures=$((failures + 1))
     fi
   done

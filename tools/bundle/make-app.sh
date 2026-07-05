@@ -35,9 +35,11 @@ run_self_test() {
   cat >"$fake_bin/cargo" <<'SH'
 #!/usr/bin/env bash
 printf 'cargo %s\n' "$*" >>"$COMPME_BUNDLE_SELF_TEST_LOG"
-mkdir -p "$COMPME_BUNDLE_REPO_ROOT/target/release"
-printf '#!/usr/bin/env bash\nexit 0\n' >"$COMPME_BUNDLE_REPO_ROOT/target/release/compme"
-chmod +x "$COMPME_BUNDLE_REPO_ROOT/target/release/compme"
+target_dir="${CARGO_TARGET_DIR:-$COMPME_BUNDLE_REPO_ROOT/target}"
+marker="${COMPME_BUNDLE_BINARY_MARKER:-default-binary}"
+mkdir -p "$target_dir/release"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' "$marker" >"$target_dir/release/compme"
+chmod +x "$target_dir/release/compme"
 SH
   cat >"$fake_bin/plutil" <<'SH'
 #!/usr/bin/env bash
@@ -69,11 +71,22 @@ SH
   test -d "$app/Contents/Resources"
   cmp "$fixture_root/tools/bundle/Info.plist" "$app/Contents/Info.plist" >/dev/null
   test -x "$app/Contents/MacOS/compme"
-  grep -Fq "cargo build --release -p app --manifest-path $fixture_root/Cargo.toml" "$log"
+  grep -Fq "cargo build --locked --release -p app --manifest-path $fixture_root/Cargo.toml" "$log"
   grep -Fq "plutil -lint $app/Contents/Info.plist" "$log"
   grep -Fq "codesign --force --sign - $app" "$log"
   grep -Fq "codesign --verify --strict $app" "$log"
   grep -Fq "lsregister -f $app" "$log"
+
+  custom_target="$tmp_dir/custom-target"
+  custom_out="$tmp_dir/out-custom-target"
+  PATH="$fake_bin:$PATH" \
+    CARGO_TARGET_DIR="$custom_target" \
+    COMPME_BUNDLE_BINARY_MARKER="custom-target-binary" \
+    COMPME_BUNDLE_SELF_TEST_LOG="$log" \
+    COMPME_BUNDLE_REPO_ROOT="$fixture_root" \
+    COMPME_BUNDLE_LSREGISTER="$fake_bin/lsregister" \
+    "$0" "$custom_out" >"$tmp_dir/stdout-custom-target"
+  "$custom_out/Compme.app/Contents/MacOS/compme" | grep -Fxq "custom-target-binary"
 
   signed_out="$tmp_dir/out-signed"
   PATH="$fake_bin:$PATH" \
@@ -127,13 +140,14 @@ out_dir="${1:-"$repo_root/target/bundle"}"
 app="$out_dir/Compme.app"
 
 echo "building release binary…"
-cargo build --release -p app --manifest-path "$repo_root/Cargo.toml"
+bundle_target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
+CARGO_TARGET_DIR="$bundle_target_dir" cargo build --locked --release -p app --manifest-path "$repo_root/Cargo.toml"
 
 echo "assembling $app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$repo_root/tools/bundle/Info.plist" "$app/Contents/Info.plist"
-cp "$repo_root/target/release/compme" "$app/Contents/MacOS/compme"
+cp "$bundle_target_dir/release/compme" "$app/Contents/MacOS/compme"
 
 plutil -lint "$app/Contents/Info.plist"
 

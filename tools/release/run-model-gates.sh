@@ -51,8 +51,8 @@ SH
     COMPME_MODEL_GATE_CURL_LOG="$tmp/curl.log" \
     "$0" >/dev/null
   test ! -s "$tmp/curl.log"
-  grep -q 'env=1 ctx=1 gpu=0 ctx_tokens=256 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
-  grep -q 'tools/spike env=1 ctx= gpu= ctx_tokens= args=test --test model_integration -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'env=1 ctx=1 gpu=0 ctx_tokens=256 args=test --locked -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'tools/spike env=1 ctx= gpu= ctx_tokens= args=test --locked --test model_integration -- --ignored --test-threads=1' "$tmp/cargo.log"
 
   rm -f "$model_path"
   downloaded_sha="$(printf 'downloaded-model' | shasum -a 256 | awk '{print $1}')"
@@ -67,8 +67,8 @@ SH
   "$0" >/dev/null
   grep -q 'curl -L --fail --retry 3 --retry-delay 5 --output' "$tmp/curl.log"
   test "$(cat "$model_path")" = "downloaded-model"
-  grep -q 'env=1 ctx=1 gpu=0 ctx_tokens=256 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
-  grep -q 'tools/spike env=1 ctx= gpu= ctx_tokens= args=test --test model_integration -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'env=1 ctx=1 gpu=0 ctx_tokens=256 args=test --locked -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'tools/spike env=1 ctx= gpu= ctx_tokens= args=test --locked --test model_integration -- --ignored --test-threads=1' "$tmp/cargo.log"
 
   rm -f "$model_path"
   if PATH="$fake_bin:$PATH" \
@@ -117,7 +117,7 @@ SH
     return 1
   fi
   test ! -s "$tmp/curl.log"
-  grep -q 'env=1 ctx=1 gpu=0 ctx_tokens=256 args=test -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'env=1 ctx=1 gpu=0 ctx_tokens=256 args=test --locked -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
 
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
     echo "run-model-gates self-test failed: extra --self-test argument was accepted" >&2
@@ -166,8 +166,8 @@ fi
 
 printf '%s  %s\n' "$expected" "$model" | shasum -a 256 -c -
 
-COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1
+COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1
 (
   cd "$repo_root/tools/spike"
-  COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1
+  COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1
 )

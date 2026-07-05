@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 release_workflow="${1:-$repo_root/.github/workflows/release.yml}"
 ci_workflow="$repo_root/.github/workflows/ci.yml"
 gate_script="$repo_root/tools/release/run-model-gates.sh"
+a2_matrix_ledger_script="$repo_root/tools/release/check-a2-matrix-ledger.sh"
 feature_script="$repo_root/tools/release/check-model-client-features.sh"
 privacy_script="$repo_root/tools/release/check-privacy-policy.sh"
 bundle_metadata_script="$repo_root/tools/bundle/check-bundle-metadata.sh"
@@ -844,7 +845,13 @@ ruby -ryaml -e '
   release_workflow = YAML.load_file(ARGV.fetch(0))
   ci_workflow = YAML.load_file(ARGV.fetch(1))
 
+  def rust_toolchain_step_valid?(step)
+    step["uses"].to_s.start_with?("dtolnay/rust-toolchain@") &&
+      step.fetch("with").fetch("toolchain") == "1.96.1"
+  end
+
   jobs = ci_workflow.fetch("jobs")
+  abort("missing release gate: CI workflow defaults to read-only contents permission") unless ci_workflow.fetch("permissions").fetch("contents") == "read"
   def full_sha_action_ref?(uses)
     uses.is_a?(String) && uses.match?(/\A[^@\s]+@[0-9a-f]{40}\z/)
   end
@@ -854,12 +861,16 @@ ruby -ryaml -e '
       abort("missing release gate: CI #{job_name} action is pinned to a full commit SHA") unless full_sha_action_ref?(step["uses"])
     end
   end
+  jobs.each do |job_name, job|
+    next unless %w[check spike windows linux].include?(job_name)
+    abort("missing release gate: CI #{job_name} pins Rust toolchain") unless Array(job["steps"]).any? { |step| step.is_a?(Hash) && rust_toolchain_step_valid?(step) }
+  end
   ci_steps = jobs.fetch("check").fetch("steps")
   {
     "CI root format" => ["Format", "cargo fmt --all -- --check"],
-    "CI root clippy" => ["Clippy (deny warnings)", "cargo clippy --workspace --all-targets -- -D warnings"],
-    "CI root test" => ["Test", "cargo test --workspace --all-targets -- --test-threads=1"],
-    "CI root build" => ["Build", "cargo build --workspace --all-targets"],
+    "CI root clippy" => ["Clippy (deny warnings)", "cargo clippy --locked --workspace --all-targets -- -D warnings"],
+    "CI root test" => ["Test", "cargo test --locked --workspace --all-targets -- --test-threads=1"],
+    "CI root build" => ["Build", "cargo build --locked --workspace --all-targets"],
     "CI script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
     "CI bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
     "CI bundle metadata self-test" => ["Bundle metadata self-test", "tools/bundle/check-bundle-metadata.sh --self-test"],
@@ -869,6 +880,7 @@ ruby -ryaml -e '
     "CI missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
     "CI A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
     "CI A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
+    "CI A2 matrix ledger self-test" => ["A2 matrix ledger policy self-test", "tools/release/check-a2-matrix-ledger.sh --self-test"],
     "CI model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
     "CI model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
     "CI privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],
@@ -879,7 +891,7 @@ ruby -ryaml -e '
     "CI cask finalizer" => ["Release cask finalizer self-test", "tools/release/finalize-cask.sh --self-test"],
     "CI notarization helper" => ["Notarization helper self-test", "tools/release/notarize-app.sh --self-test"],
     "CI update manifest" => ["Update manifest self-test", "tools/release/write-update-manifest.sh --self-test"],
-    "CI platform_macos examples build" => ["Build macOS acceptance examples", "cargo build -p platform_macos --examples"],
+    "CI platform_macos examples build" => ["Build macOS acceptance examples", "cargo build --locked -p platform_macos --examples"],
   }.each do |label, (name, run)|
     abort("missing release gate: #{label}") unless step?(ci_steps, name, run)
   end
@@ -887,16 +899,16 @@ ruby -ryaml -e '
   windows = jobs.fetch("windows")
   abort("missing release gate: platform_windows runs on Windows") unless windows.fetch("runs-on") == "windows-latest"
   require_step!(jobs, "windows", "Format", "cargo fmt -p platform_windows -- --check", "platform_windows fmt job")
-  require_step!(jobs, "windows", "Clippy (deny warnings)", "cargo clippy -p platform_windows --all-targets -- -D warnings", "platform_windows clippy job")
-  require_step!(jobs, "windows", "Test", "cargo test -p platform_windows", "platform_windows test job")
-  require_step!(jobs, "windows", "Build", "cargo build -p platform_windows", "platform_windows build job")
+  require_step!(jobs, "windows", "Clippy (deny warnings)", "cargo clippy --locked -p platform_windows --all-targets -- -D warnings", "platform_windows clippy job")
+  require_step!(jobs, "windows", "Test", "cargo test --locked -p platform_windows", "platform_windows test job")
+  require_step!(jobs, "windows", "Build", "cargo build --locked -p platform_windows", "platform_windows build job")
 
   linux = jobs.fetch("linux")
   abort("missing release gate: platform_linux runs on Linux") unless linux.fetch("runs-on") == "ubuntu-latest"
   require_step!(jobs, "linux", "Format", "cargo fmt -p platform_linux -- --check", "platform_linux fmt job")
-  require_step!(jobs, "linux", "Clippy (deny warnings)", "cargo clippy -p platform_linux --all-targets -- -D warnings", "platform_linux clippy job")
-  require_step!(jobs, "linux", "Test", "cargo test -p platform_linux", "platform_linux test job")
-  require_step!(jobs, "linux", "Build", "cargo build -p platform_linux", "platform_linux build job")
+  require_step!(jobs, "linux", "Clippy (deny warnings)", "cargo clippy --locked -p platform_linux --all-targets -- -D warnings", "platform_linux clippy job")
+  require_step!(jobs, "linux", "Test", "cargo test --locked -p platform_linux", "platform_linux test job")
+  require_step!(jobs, "linux", "Build", "cargo build --locked -p platform_linux", "platform_linux build job")
 
   workflow = release_workflow
   trigger = workflow["on"] || workflow[true]
@@ -905,19 +917,41 @@ ruby -ryaml -e '
   abort("missing release gate: release workflow push trigger is limited to v* tags") unless push_trigger.is_a?(Hash) && push_trigger.keys == ["tags"] && push_trigger.fetch("tags") == ["v*"]
   abort("missing release gate: workflow defaults to read-only contents permission") unless workflow.fetch("permissions").fetch("contents") == "read"
   release_jobs = workflow.fetch("jobs")
+  preflight = release_jobs.fetch("preflight")
+  abort("missing release gate: release preflight runs before expensive jobs") unless preflight.fetch("runs-on") == "ubuntu-latest"
+  preflight_steps = preflight.fetch("steps")
+  preflight_checkout = preflight_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
+  abort("missing release gate: preflight checkout fetches full history") unless preflight_checkout && preflight_checkout.fetch("with").fetch("fetch-depth") == 0
+  preflight_tag = preflight_steps.find { |step| step["name"] == "Verify release tag is semver and on default branch" }
+  abort("missing release gate: preflight verifies tag ancestry") unless preflight_tag
+  preflight_run = preflight_tag.fetch("run")
+  ["release tag must look like vX.Y.Z", "git fetch origin \"$DEFAULT_BRANCH\"", "git merge-base --is-ancestor \"$GITHUB_SHA\" \"origin/$DEFAULT_BRANCH\""].each do |needle|
+    abort("missing release gate: preflight #{needle}") unless preflight_run.include?(needle)
+  end
+  abort("missing release gate: preflight checks release tag metadata") unless step?(
+    preflight_steps,
+    "Check release tag matches bundle metadata",
+    "COMPME_EXPECTED_VERSION=\"${GITHUB_REF_NAME#v}\" tools/bundle/check-bundle-metadata.sh"
+  )
+  %w[validate windows linux].each do |job|
+    abort("missing release gate: #{job} waits for release preflight") unless Array(release_jobs.fetch(job).fetch("needs")).include?("preflight")
+  end
   validate_steps = release_jobs.fetch("validate").fetch("steps")
+  %w[validate windows linux build_release].each do |job_name|
+    abort("missing release gate: release #{job_name} pins Rust toolchain") unless Array(release_jobs.fetch(job_name).fetch("steps")).any? { |step| step.is_a?(Hash) && rust_toolchain_step_valid?(step) }
+  end
   windows = release_jobs.fetch("windows")
   abort("missing release gate: release platform_windows runs on Windows") unless windows.fetch("runs-on") == "windows-latest"
   require_step!(release_jobs, "windows", "Format", "cargo fmt -p platform_windows -- --check", "release platform_windows fmt job")
-  require_step!(release_jobs, "windows", "Clippy", "cargo clippy -p platform_windows --all-targets -- -D warnings", "release platform_windows clippy job")
-  require_step!(release_jobs, "windows", "Test", "cargo test -p platform_windows", "release platform_windows test job")
-  require_step!(release_jobs, "windows", "Build", "cargo build -p platform_windows", "release platform_windows build job")
+  require_step!(release_jobs, "windows", "Clippy", "cargo clippy --locked -p platform_windows --all-targets -- -D warnings", "release platform_windows clippy job")
+  require_step!(release_jobs, "windows", "Test", "cargo test --locked -p platform_windows", "release platform_windows test job")
+  require_step!(release_jobs, "windows", "Build", "cargo build --locked -p platform_windows", "release platform_windows build job")
   linux = release_jobs.fetch("linux")
   abort("missing release gate: release platform_linux runs on Linux") unless linux.fetch("runs-on") == "ubuntu-latest"
   require_step!(release_jobs, "linux", "Format", "cargo fmt -p platform_linux -- --check", "release platform_linux fmt job")
-  require_step!(release_jobs, "linux", "Clippy", "cargo clippy -p platform_linux --all-targets -- -D warnings", "release platform_linux clippy job")
-  require_step!(release_jobs, "linux", "Test", "cargo test -p platform_linux", "release platform_linux test job")
-  require_step!(release_jobs, "linux", "Build", "cargo build -p platform_linux", "release platform_linux build job")
+  require_step!(release_jobs, "linux", "Clippy", "cargo clippy --locked -p platform_linux --all-targets -- -D warnings", "release platform_linux clippy job")
+  require_step!(release_jobs, "linux", "Test", "cargo test --locked -p platform_linux", "release platform_linux test job")
+  require_step!(release_jobs, "linux", "Build", "cargo build --locked -p platform_linux", "release platform_linux build job")
   build_release = release_jobs.fetch("build_release")
   publish_release = release_jobs.fetch("publish_release")
   quote = 39.chr
@@ -933,9 +967,9 @@ ruby -ryaml -e '
 
   {
     "release root format" => ["Root format", "cargo fmt --all -- --check"],
-    "release root clippy" => ["Root clippy", "cargo clippy --workspace --all-targets -- -D warnings"],
-    "release root test" => ["Root tests", "cargo test --workspace --all-targets -- --test-threads=1"],
-    "release root build" => ["Root build", "cargo build --workspace --all-targets"],
+    "release root clippy" => ["Root clippy", "cargo clippy --locked --workspace --all-targets -- -D warnings"],
+    "release root test" => ["Root tests", "cargo test --locked --workspace --all-targets -- --test-threads=1"],
+    "release root build" => ["Root build", "cargo build --locked --workspace --all-targets"],
     "release workflow invokes model gate script" => ["Model-backed release gates", "bash tools/release/run-model-gates.sh"],
     "release script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
     "release bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
@@ -943,6 +977,7 @@ ruby -ryaml -e '
     "release bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
     "release A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
     "release A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
+    "release A2 matrix ledger self-test" => ["A2 matrix ledger policy self-test", "tools/release/check-a2-matrix-ledger.sh --self-test"],
     "release E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
     "release missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
     "release missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
@@ -1083,6 +1118,7 @@ ruby -ryaml -e '
   abort("missing release gate: downloads named release artifact bundle") unless download_with.fetch("name") == "compme-release-artifacts"
   abort("missing release gate: downloads release artifacts into release-artifacts") unless download_with.fetch("path") == "release-artifacts"
   publish_step = publish_steps.fetch(publish_index)
+  abort("missing release gate: publishes GitHub release as draft until cask finalizes") unless publish_step.fetch("with").fetch("draft") == true
   publish_files = publish_step.fetch("with").fetch("files").to_s
   [
     "release-artifacts/compme-*-macos.zip",
@@ -1092,6 +1128,11 @@ ruby -ryaml -e '
     abort("missing release gate: publishes downloaded artifact #{needle}") unless publish_files.include?(needle)
   end
   abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index > publish_index
+  undraft_index = publish_steps.index { |step| step["name"] == "Undraft GitHub release" }
+  abort("missing release gate: undrafts GitHub release after cask finalization") unless undraft_index && undraft_index > cask_index
+  undraft_step = publish_steps.fetch(undraft_index)
+  abort("missing release gate: undraft uses GitHub token") unless undraft_step.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
+  abort("missing release gate: undrafts current tag") unless undraft_step.fetch("run") == %q(gh release edit "$GITHUB_REF_NAME" --draft=false)
   cask_step = publish_steps.fetch(cask_index)
   abort("missing release gate: finalizes Homebrew cask") unless cask_step
   cask_run = cask_step.fetch("run")
@@ -1107,10 +1148,11 @@ ruby -ryaml -e '
 ' "$release_workflow" "$ci_workflow"
 
 workspace_members_count="$(cargo metadata --format-version 1 --no-deps | ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("workspace_members").length')"
-workspace_test_count="$(cargo test --workspace --all-targets -- --list | awk '/: test$/ { count++ } END { print count + 0 }')"
+workspace_test_count="$(cargo test --locked --workspace --all-targets -- --list | awk '/: test$/ { count++ } END { print count + 0 }')"
 workspace_test_count_commas="$(ruby -e 'puts ARGV.fetch(0).reverse.gsub(/(\d{3})(?=\d)/, "\\1,").reverse' "$workspace_test_count")"
 
 bash -n "$gate_script"
+bash -n "$a2_matrix_ledger_script"
 bash -n "$feature_script"
 bash -n "$privacy_script"
 bash -n "$bundle_metadata_script"
@@ -1120,6 +1162,7 @@ bash -n "$notarize_script"
 bash -n "$update_manifest_script"
 "$bundle_metadata_script" >/dev/null
 "$make_app_script" --self-test >/dev/null
+"$a2_matrix_ledger_script" --self-test >/dev/null
 "$gate_script" --self-test >/dev/null
 "$privacy_script" >/dev/null
 "$privacy_script" --self-test >/dev/null
@@ -1216,18 +1259,18 @@ require_line "$gate_script" '^model="\$\{COMPME_MODEL_GATE_PATH:-tools/spike/mod
 require_line "$gate_script" '^url="\$\{COMPME_MODEL_GATE_URL:-https://huggingface\.co/Brianpuz/Qwen2\.5-0\.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2\.5-0\.5b-q4_k_m\.gguf\}"[[:space:]]*$' "pinned base GGUF download URL"
 require_line "$gate_script" '^expected="\$\{COMPME_MODEL_GATE_SHA256:-ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484\}"[[:space:]]*$' "pinned base GGUF sha256"
 require_line "$gate_script" 'COMPME_MODEL_GATE_CURL_BODY="wrong-model"' "model gate checksum failure self-test"
-require_line "$gate_script" 'gpu=0 ctx_tokens=256 args=test -p model_client --test latency' "model gate root env self-test"
-require_line "$gate_script" 'tools/spike env=1 ctx= gpu= ctx_tokens= args=test --test model_integration' "model gate spike env self-test"
+require_line "$gate_script" 'gpu=0 ctx_tokens=256 args=test --locked -p model_client --test latency' "model gate root env self-test"
+require_line "$gate_script" 'tools/spike env=1 ctx= gpu= ctx_tokens= args=test --locked --test model_integration' "model gate spike env self-test"
 require_line "$finalize_cask_script" 'git merge-base --is-ancestor "\$GITHUB_SHA" "origin/\$default_branch"' "cask finalizer ancestry check"
 require_line "$finalize_cask_script" 'tag/version mismatch' "cask finalizer tag/version guard"
 require_line "$finalize_cask_script" 'refusing to publish a stale or out-of-order cask update' "cask finalizer stale version refusal"
 require_line "$finalize_cask_script" 'COMPME_CASK_ARTIFACT="\$artifact_path" tools/release/update-cask\.sh "\$tag"' "cask finalizer artifact handoff"
 require_line "$finalize_cask_script" 'git push origin "HEAD:\$default_branch"' "cask finalizer push"
-require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
-require_line "$gate_script" '^  COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"
-require_line "$acceptance_doc" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized root ignored model tests"
-require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized spike ignored model tests"
-require_line "$acceptance_doc" '^cargo build -p platform_macos --examples[[:space:]]*$' "acceptance docs platform_macos examples build"
+require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
+require_line "$gate_script" '^  COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"
+require_line "$acceptance_doc" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized root ignored model tests"
+require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized spike ignored model tests"
+require_line "$acceptance_doc" '^cargo build --locked -p platform_macos --examples[[:space:]]*$' "acceptance docs platform_macos examples build"
 require_line "$acceptance_doc" '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "acceptance docs bundle metadata check"
 require_line "$acceptance_doc" '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "acceptance docs bundle metadata self-test"
 require_line "$acceptance_doc" '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "acceptance docs bundle assembler self-test"
@@ -1249,8 +1292,8 @@ require_line "$acceptance_doc" '^tools/release/update-cask\.sh --self-test[[:spa
 require_line "$acceptance_doc" '^tools/release/finalize-cask\.sh --self-test[[:space:]]*$' "acceptance docs cask finalizer self-test"
 require_line "$acceptance_doc" '^tools/release/notarize-app\.sh --self-test[[:space:]]*$' "acceptance docs notarization helper self-test"
 require_line "$acceptance_doc" '^tools/release/write-update-manifest\.sh --self-test[[:space:]]*$' "acceptance docs update manifest self-test"
-require_line "$releasing_doc" '^[[:space:]]*COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized root ignored model tests"
-require_line "$releasing_doc" '^[[:space:]]*COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized spike ignored model tests"
+require_line "$releasing_doc" '^[[:space:]]*COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized root ignored model tests"
+require_line "$releasing_doc" '^[[:space:]]*COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "release docs serialized spike ignored model tests"
 require_line "$releasing_doc" 'tools/bundle/check-bundle-metadata\.sh' "release docs bundle metadata check"
 require_line "$releasing_doc" 'tools/bundle/check-bundle-metadata\.sh --self-test' "release docs bundle metadata self-test"
 require_line "$releasing_doc" 'tools/release/run-model-gates\.sh --self-test' "release docs model gate self-test"
@@ -1263,10 +1306,14 @@ require_line "$releasing_doc" 'tools/release/check-model-client-features\.sh --s
 require_line "$releasing_doc" 'tools/release/update-cask\.sh --self-test' "release docs cask updater self-test"
 require_line "$releasing_doc" 'tools/release/notarize-app\.sh --self-test' "release docs notarization helper self-test"
 require_line "$releasing_doc" 'tools/release/write-update-manifest\.sh --self-test' "release docs update manifest self-test"
-require_line "$releasing_doc" 'cargo build -p platform_macos --examples' "release docs platform_macos examples build"
+require_line "$releasing_doc" 'cargo build --locked -p platform_macos --examples' "release docs platform_macos examples build"
 require_line "$releasing_doc" 'git pull --ff-only origin main' "release docs require up-to-date default branch before tag"
 require_line "$releasing_doc" 'cask finalizer refuses to update `main`' "release docs cask finalizer ancestry guard"
 require_line "$repo_root/tools/acceptance/run-a1b-live-gates.sh" 'overlay-correction-presenter' "A1b runner correction overlay gate"
+require_line "$a2_matrix_ledger_script" 'status != "PASS"' "A2 matrix ledger rejects non-pass rows"
+require_line "$a2_matrix_ledger_script" 'missing A2 matrix row' "A2 matrix ledger requires complete row coverage"
+require_line "$acceptance_doc" '^tools/release/check-a2-matrix-ledger\.sh "\$ledger"[[:space:]]*$' "acceptance docs A2 matrix ledger validation"
+require_line "$releasing_doc" 'tools/release/check-a2-matrix-ledger\.sh "\$ledger"' "release docs A2 matrix ledger validation"
 for gate in \
   apps-policy-toggle-look \
   personalization-pane-look \
@@ -1294,6 +1341,7 @@ require_readme_gate_line '^tools/acceptance/missing-model-startup\.sh --self-tes
 require_readme_gate_line '^tools/acceptance/missing-model-startup\.sh[[:space:]]*$' "README missing-model startup product smoke"
 require_readme_gate_line '^tools/acceptance/run-a1b-live-gates\.sh --self-test[[:space:]]*$' "README A1b self-test"
 require_readme_gate_line '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "README A2 self-test"
+require_readme_gate_line '^tools/release/check-a2-matrix-ledger\.sh --self-test[[:space:]]*$' "README A2 matrix ledger self-test"
 require_readme_gate_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "README model client feature policy"
 require_readme_gate_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "README model client feature policy self-test"
 require_readme_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "README release gate policy check"
@@ -1302,7 +1350,7 @@ require_readme_gate_line '^tools/release/update-cask\.sh --self-test[[:space:]]*
 require_readme_gate_line '^tools/release/finalize-cask\.sh --self-test[[:space:]]*$' "README cask finalizer self-test"
 require_readme_gate_line '^tools/release/notarize-app\.sh --self-test[[:space:]]*$' "README notarization helper self-test"
 require_readme_gate_line '^tools/release/write-update-manifest\.sh --self-test[[:space:]]*$' "README update manifest self-test"
-require_readme_gate_line '^cargo build -p platform_macos --examples[[:space:]]*$' "README platform_macos examples build"
+require_readme_gate_line '^cargo build --locked -p platform_macos --examples[[:space:]]*$' "README platform_macos examples build"
 require_readme_gate_line '^bash tools/release/run-model-gates\.sh[[:space:]]*$' "README model-backed release gate"
 require_development_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "DEVELOPMENT bundle metadata check"
 require_development_gate_line '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "DEVELOPMENT bundle metadata self-test"
@@ -1313,6 +1361,7 @@ require_development_gate_line '^tools/acceptance/missing-model-startup\.sh[[:spa
 require_development_gate_line '^tools/acceptance/run-a1b-live-gates\.sh --self-test[[:space:]]*$' "DEVELOPMENT A1b self-test"
 require_line "$development_doc" '^Use `--allow-manual` only after executing and recording the MANUAL checklist$' "DEVELOPMENT A1b allow-manual policy"
 require_development_gate_line '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "DEVELOPMENT A2 self-test"
+require_development_gate_line '^tools/release/check-a2-matrix-ledger\.sh --self-test[[:space:]]*$' "DEVELOPMENT A2 matrix ledger self-test"
 require_development_gate_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "DEVELOPMENT model client feature policy"
 require_development_gate_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "DEVELOPMENT model client feature policy self-test"
 require_development_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "DEVELOPMENT release gate policy check"
@@ -1321,13 +1370,13 @@ require_development_gate_line '^tools/release/update-cask\.sh --self-test[[:spac
 require_development_gate_line '^tools/release/finalize-cask\.sh --self-test[[:space:]]*$' "DEVELOPMENT cask finalizer self-test"
 require_development_gate_line '^tools/release/notarize-app\.sh --self-test[[:space:]]*$' "DEVELOPMENT notarization helper self-test"
 require_development_gate_line '^tools/release/write-update-manifest\.sh --self-test[[:space:]]*$' "DEVELOPMENT update manifest self-test"
-require_development_gate_line '^cargo build -p platform_macos --examples[[:space:]]*$' "DEVELOPMENT platform_macos examples build"
+require_development_gate_line '^cargo build --locked -p platform_macos --examples[[:space:]]*$' "DEVELOPMENT platform_macos examples build"
 require_development_gate_line '^bash tools/release/run-model-gates\.sh[[:space:]]*$' "DEVELOPMENT model-backed release gate"
 require_grammar_spec_validation_line '^cargo fmt --all -- --check[[:space:]]*$' "grammar spec fmt gate"
-require_grammar_spec_validation_line '^cargo clippy --workspace --all-targets -- -D warnings[[:space:]]*$' "grammar spec clippy gate"
-require_grammar_spec_validation_line '^cargo test --workspace --all-targets -- --test-threads=1[[:space:]]*$' "grammar spec workspace test gate"
-require_grammar_spec_validation_line '^cargo build --workspace --all-targets[[:space:]]*$' "grammar spec workspace build gate"
-require_grammar_spec_validation_line '^cargo build -p platform_macos --examples[[:space:]]*$' "grammar spec platform_macos examples build gate"
+require_grammar_spec_validation_line '^cargo clippy --locked --workspace --all-targets -- -D warnings[[:space:]]*$' "grammar spec clippy gate"
+require_grammar_spec_validation_line '^cargo test --locked --workspace --all-targets -- --test-threads=1[[:space:]]*$' "grammar spec workspace test gate"
+require_grammar_spec_validation_line '^cargo build --locked --workspace --all-targets[[:space:]]*$' "grammar spec workspace build gate"
+require_grammar_spec_validation_line '^cargo build --locked -p platform_macos --examples[[:space:]]*$' "grammar spec platform_macos examples build gate"
 require_grammar_spec_validation_line '^bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh[[:space:]]*$' "grammar spec script syntax gate"
 require_grammar_spec_validation_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "grammar spec bundle metadata gate"
 require_grammar_spec_validation_line '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "grammar spec bundle metadata self-test"
@@ -1337,6 +1386,7 @@ require_grammar_spec_validation_line '^tools/acceptance/missing-model-startup\.s
 require_grammar_spec_validation_line '^tools/acceptance/missing-model-startup\.sh[[:space:]]*$' "grammar spec missing-model product smoke"
 require_grammar_spec_validation_line '^tools/acceptance/run-a1b-live-gates\.sh --self-test[[:space:]]*$' "grammar spec A1b self-test"
 require_grammar_spec_validation_line '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "grammar spec A2 self-test"
+require_grammar_spec_validation_line '^tools/release/check-a2-matrix-ledger\.sh --self-test[[:space:]]*$' "grammar spec A2 matrix ledger self-test"
 require_grammar_spec_validation_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "grammar spec model client feature policy"
 require_grammar_spec_validation_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "grammar spec model client feature policy self-test"
 require_grammar_spec_validation_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "grammar spec release policy check"
@@ -1345,9 +1395,9 @@ require_grammar_spec_validation_line '^tools/release/update-cask\.sh --self-test
 require_grammar_spec_validation_line '^tools/release/finalize-cask\.sh --self-test[[:space:]]*$' "grammar spec cask finalizer self-test"
 require_grammar_spec_validation_line '^tools/release/notarize-app\.sh --self-test[[:space:]]*$' "grammar spec notarization helper self-test"
 require_grammar_spec_validation_line '^tools/release/write-update-manifest\.sh --self-test[[:space:]]*$' "grammar spec update manifest self-test"
-require_grammar_spec_validation_line '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "grammar spec root ignored model tests"
+require_grammar_spec_validation_line '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "grammar spec root ignored model tests"
 require_grammar_spec_validation_line '^cd tools/spike && cargo fmt -- --check[[:space:]]*$' "grammar spec spike fmt gate"
-require_grammar_spec_validation_line '^cd tools/spike && cargo clippy --all-targets -- -D warnings[[:space:]]*$' "grammar spec spike clippy gate"
-require_grammar_spec_validation_line '^cd tools/spike && cargo test[[:space:]]*$' "grammar spec spike test gate"
-require_grammar_spec_validation_line '^cd tools/spike && cargo build --bins[[:space:]]*$' "grammar spec spike build gate"
-require_grammar_spec_validation_line '^cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "grammar spec spike ignored model tests"
+require_grammar_spec_validation_line '^cd tools/spike && cargo clippy --locked --all-targets -- -D warnings[[:space:]]*$' "grammar spec spike clippy gate"
+require_grammar_spec_validation_line '^cd tools/spike && cargo test --locked[[:space:]]*$' "grammar spec spike test gate"
+require_grammar_spec_validation_line '^cd tools/spike && cargo build --locked --bins[[:space:]]*$' "grammar spec spike build gate"
+require_grammar_spec_validation_line '^cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "grammar spec spike ignored model tests"
