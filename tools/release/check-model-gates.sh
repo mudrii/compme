@@ -728,6 +728,10 @@ ruby -ryaml -e '
   require_step!(jobs, "linux", "Build", "cargo build -p platform_linux", "platform_linux build job")
 
   workflow = release_workflow
+  trigger = workflow["on"] || workflow[true]
+  abort("missing release gate: release workflow is triggered only by push tags") unless trigger.is_a?(Hash) && trigger.keys == ["push"]
+  push_trigger = trigger.fetch("push")
+  abort("missing release gate: release workflow push trigger is limited to v* tags") unless push_trigger.is_a?(Hash) && push_trigger.keys == ["tags"] && push_trigger.fetch("tags") == ["v*"]
   abort("missing release gate: workflow defaults to read-only contents permission") unless workflow.fetch("permissions").fetch("contents") == "read"
   release_jobs = workflow.fetch("jobs")
   validate_steps = release_jobs.fetch("validate").fetch("steps")
@@ -745,6 +749,10 @@ ruby -ryaml -e '
   require_step!(release_jobs, "linux", "Build", "cargo build -p platform_linux", "release platform_linux build job")
   build_release = release_jobs.fetch("build_release")
   publish_release = release_jobs.fetch("publish_release")
+  quote = 39.chr
+  tag_job_guard = "${{ github.ref_type == #{quote}tag#{quote} && startsWith(github.ref_name, #{quote}v#{quote}) }}"
+  abort("missing release gate: build_release is limited to v* tag refs") unless build_release.fetch("if") == tag_job_guard
+  abort("missing release gate: publish_release is limited to v* tag refs") unless publish_release.fetch("if") == tag_job_guard
   release_jobs.each do |job_name, job|
     Array(job["steps"]).each do |step|
       next unless step.key?("uses")
@@ -796,16 +804,26 @@ ruby -ryaml -e '
   metadata_index = build_steps.index { |step| step["name"] == "Check release tag matches bundle metadata" }
   import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
   build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
+  notarize_index = build_steps.index { |step| step["name"] == "Notarize and staple the .app" }
+  package_index = build_steps.index { |step| step["name"] == "Package + checksum" }
+  manifest_index = build_steps.index { |step| step["name"] == "Write update manifest" }
+  upload_index = build_steps.index { |step| step["name"] == "Upload release artifacts" }
   abort("missing release gate: verifies tag ancestry before secrets") unless ancestry_index
   abort("missing release gate: checks release tag metadata") unless metadata_index
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
+  abort("missing release gate: notarizes and staples app") unless notarize_index
+  abort("missing release gate: packages release artifact") unless package_index
+  abort("missing release gate: writes update manifest") unless manifest_index
+  abort("missing release gate: uploads release artifacts from read-only build job") unless upload_index
   abort("missing release gate: verifies tag ancestry before Developer ID secrets") unless ancestry_index < import_index
   abort("missing release gate: checks release tag metadata before Developer ID secrets") unless metadata_index < import_index
   abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
+  abort("missing release gate: release artifact chain is build -> notarize -> package -> manifest -> upload") unless build_index < notarize_index && notarize_index < package_index && package_index < manifest_index && manifest_index < upload_index
   build_steps.each_with_index do |step, idx|
     next unless contains_secret_reference?(step)
     abort("missing release gate: verifies tag ancestry before secret-bearing build step #{step["name"] || idx}") unless ancestry_index < idx
+    abort("missing release gate: checks release tag metadata before secret-bearing build step #{step["name"] || idx}") unless metadata_index < idx
   end
   ancestry_run = build_steps.fetch(ancestry_index).fetch("run")
   ["git fetch origin \"$DEFAULT_BRANCH\"", "git merge-base --is-ancestor \"$GITHUB_SHA\" \"origin/$DEFAULT_BRANCH\""].each do |needle|
@@ -825,9 +843,23 @@ ruby -ryaml -e '
     abort("missing release gate: Developer ID missing-secret failure loop") unless import_run.include?(needle)
   end
   abort("missing release gate: Developer ID identity exported to bundle build") unless import_run.include?("COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY")
-  upload_index = build_steps.index { |step| step["name"] == "Upload release artifacts" }
+  build_step = build_steps.fetch(build_index)
+  abort("missing release gate: builds release app with bundle assembler") unless build_step.fetch("run") == %q(tools/bundle/make-app.sh "$RUNNER_TEMP/bundle")
+  notarize_step = build_steps.fetch(notarize_index)
+  abort("missing release gate: notarizes built app bundle") unless notarize_step.fetch("run") == %q(tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app")
+  package_step = build_steps.fetch(package_index)
+  abort("missing release gate: package step exposes pkg outputs") unless package_step.fetch("id") == "pkg"
+  manifest_step = build_steps.fetch(manifest_index)
+  abort("missing release gate: manifest step exposes manifest output") unless manifest_step.fetch("id") == "manifest"
+  manifest_env = manifest_step.fetch("env")
+  {
+    "VERSION" => "${{ steps.pkg.outputs.version }}",
+    "ZIP" => "${{ steps.pkg.outputs.zip }}",
+    "SHA256" => "${{ steps.pkg.outputs.sha256 }}",
+  }.each do |key, expected|
+    abort("missing release gate: manifest consumes package output #{key}") unless manifest_env.fetch(key) == expected
+  end
   download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
-  abort("missing release gate: uploads release artifacts from read-only build job") unless upload_index
   abort("missing release gate: downloads release artifacts in publish job") unless download_index
   publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
   cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
