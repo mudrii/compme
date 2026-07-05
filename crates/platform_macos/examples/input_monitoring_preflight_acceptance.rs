@@ -13,6 +13,13 @@ struct ModeDecision {
     exit_code: i32,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct CliOutput {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+}
+
 fn decide_mode(mode: &str, granted: bool) -> ModeDecision {
     match mode {
         "print" => ModeDecision {
@@ -36,20 +43,33 @@ fn decide_mode(mode: &str, granted: bool) -> ModeDecision {
     }
 }
 
+fn render_output(granted: bool, decision: &ModeDecision) -> CliOutput {
+    let mut stdout = format!("INPUT_MONITORING granted={granted}\n");
+    if let Some(revoked) = decision.revoked_summary {
+        stdout.push_str(&format!("SUMMARY input_monitoring_revoked={revoked}\n"));
+    }
+    let stderr = if decision.usage_error {
+        "usage: input_monitoring_preflight_acceptance [print|revoked]\n".to_string()
+    } else {
+        String::new()
+    };
+    CliOutput {
+        stdout,
+        stderr,
+        exit_code: decision.exit_code,
+    }
+}
+
 fn main() {
     let mode = env::args().nth(1).unwrap_or_else(|| "print".into());
     let granted = unsafe { CGPreflightListenEventAccess() };
-    println!("INPUT_MONITORING granted={granted}");
-
     let decision = decide_mode(&mode, granted);
-    if let Some(revoked) = decision.revoked_summary {
-        println!("SUMMARY input_monitoring_revoked={revoked}");
-    }
-    if decision.usage_error {
-        eprintln!("usage: input_monitoring_preflight_acceptance [print|revoked]");
-    }
-    if decision.exit_code != 0 {
-        process::exit(decision.exit_code);
+
+    let output = render_output(granted, &decision);
+    print!("{}", output.stdout);
+    eprint!("{}", output.stderr);
+    if output.exit_code != 0 {
+        process::exit(output.exit_code);
     }
 }
 
@@ -59,11 +79,12 @@ mod tests {
 
     #[test]
     fn print_mode_reports_permission_without_summary_or_exit() {
+        let decision = decide_mode("print", true);
         assert_eq!(
-            decide_mode("print", true),
-            ModeDecision {
-                revoked_summary: None,
-                usage_error: false,
+            render_output(true, &decision),
+            CliOutput {
+                stdout: "INPUT_MONITORING granted=true\n".to_string(),
+                stderr: String::new(),
                 exit_code: 0,
             }
         );
@@ -71,11 +92,13 @@ mod tests {
 
     #[test]
     fn revoked_mode_passes_when_preflight_is_not_granted() {
+        let decision = decide_mode("revoked", false);
         assert_eq!(
-            decide_mode("revoked", false),
-            ModeDecision {
-                revoked_summary: Some(true),
-                usage_error: false,
+            render_output(false, &decision),
+            CliOutput {
+                stdout: "INPUT_MONITORING granted=false\nSUMMARY input_monitoring_revoked=true\n"
+                    .to_string(),
+                stderr: String::new(),
                 exit_code: 0,
             }
         );
@@ -83,11 +106,13 @@ mod tests {
 
     #[test]
     fn revoked_mode_fails_when_preflight_is_granted() {
+        let decision = decide_mode("revoked", true);
         assert_eq!(
-            decide_mode("revoked", true),
-            ModeDecision {
-                revoked_summary: Some(false),
-                usage_error: false,
+            render_output(true, &decision),
+            CliOutput {
+                stdout: "INPUT_MONITORING granted=true\nSUMMARY input_monitoring_revoked=false\n"
+                    .to_string(),
+                stderr: String::new(),
                 exit_code: 1,
             }
         );
@@ -95,11 +120,13 @@ mod tests {
 
     #[test]
     fn invalid_mode_reports_usage_and_exit_2() {
+        let decision = decide_mode("other", false);
         assert_eq!(
-            decide_mode("other", false),
-            ModeDecision {
-                revoked_summary: None,
-                usage_error: true,
+            render_output(false, &decision),
+            CliOutput {
+                stdout: "INPUT_MONITORING granted=false\n".to_string(),
+                stderr: "usage: input_monitoring_preflight_acceptance [print|revoked]\n"
+                    .to_string(),
                 exit_code: 2,
             }
         );

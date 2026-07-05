@@ -27,6 +27,28 @@ pub fn resume_range_header(existing_len: u64) -> Option<String> {
     (existing_len > 0).then(|| format!("bytes={existing_len}-"))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ContentRange {
+    start: u64,
+    end: u64,
+}
+
+impl ContentRange {
+    fn parse(header: &str) -> Option<Self> {
+        let range = header.strip_prefix("bytes ")?;
+        let (span, total) = range.split_once('/')?;
+        let (start, end) = span.split_once('-')?;
+        let start = start.parse::<u64>().ok()?;
+        let end = end.parse::<u64>().ok()?;
+        let total = total.parse::<u64>().ok()?;
+        (start <= end && end < total).then_some(Self { start, end })
+    }
+
+    fn body_len(self) -> u64 {
+        self.end - self.start + 1
+    }
+}
+
 /// Hex SHA-256 of everything `reader` yields, streamed in 64KB chunks —
 /// the fetch loop verifies multi-GB model files with this; `sha256_hex`
 /// stays the in-memory primitive for small buffers and tests.
@@ -147,11 +169,15 @@ fn download_with_agent(
     // Trust a 206 only when its Content-Range start matches OUR offset —
     // a lying/buggy server stitched at the wrong offset would corrupt the
     // file silently (review-c118 CRITICAL). Anything else → safe restart.
-    let resumed = existing > 0
-        && status == 206
-        && response
-            .header("Content-Range")
-            .is_some_and(|cr| cr.starts_with(&format!("bytes {existing}-")));
+    let resumed_range = (existing > 0 && status == 206)
+        .then(|| {
+            response
+                .header("Content-Range")
+                .and_then(ContentRange::parse)
+        })
+        .flatten()
+        .filter(|range| range.start == existing);
+    let resumed = resumed_range.is_some();
     // A 206 we could NOT validate after a ranged request is doubly suspect:
     // its body may genuinely be the tail slice we asked for (a server that
     // honors Range but omits Content-Range), so consuming it down the
@@ -170,14 +196,24 @@ fn download_with_agent(
             "received 206 Partial Content without a requested resume range".into(),
         ));
     }
-    let total = response
+    let body_len = response
         .header("Content-Length")
-        .and_then(|h| h.parse::<u64>().ok())
+        .and_then(|h| h.parse::<u64>().ok());
+    if let (Some(range), Some(body_len)) = (resumed_range, body_len) {
+        if body_len != range.body_len() {
+            return Err(FetchError::InvalidRange(format!(
+                "Content-Length {body_len} does not match Content-Range body length {}",
+                range.body_len()
+            )));
+        }
+    }
+    let total = body_len
         // saturating: Content-Length is attacker-controlled; a value near u64::MAX
         // plus the resume offset would overflow (a debug-build panic) for a number
         // that only ever feeds the progress bar. The SHA-256 verify-before-rename
         // is the real integrity gate, so a clamped total is harmless.
         .map(|body_len| body_len.saturating_add(if resumed { existing } else { 0 }));
+    let resumed_expected_written = resumed_range.map(|range| existing + range.body_len());
 
     // 206 → append to the part; anything else → truncate (fresh or the
     // server-ignored-Range restart).
@@ -206,6 +242,14 @@ fn download_with_agent(
             Ok(0) => break,
             Ok(n) => {
                 use std::io::Write as _;
+                if let Some(expected) = resumed_expected_written {
+                    if written.saturating_add(n as u64) > expected {
+                        return Err(FetchError::InvalidRange(format!(
+                            "206 body exceeded Content-Range body length {}",
+                            expected - existing
+                        )));
+                    }
+                }
                 file.write_all(&buf[..n])
                     .map_err(|e| FetchError::Io(e.to_string()))?;
                 written += n as u64;
@@ -221,6 +265,15 @@ fn download_with_agent(
     // On failure the part file is kept as the resume base.
     file.sync_all().map_err(|e| FetchError::Io(e.to_string()))?;
     drop(file);
+    if let Some(expected) = resumed_expected_written {
+        if written != expected {
+            return Err(FetchError::InvalidRange(format!(
+                "206 body length {} did not match Content-Range body length {}",
+                written.saturating_sub(existing),
+                expected - existing
+            )));
+        }
+    }
     // Verify BEFORE the rename: dest must never exist with wrong bytes. A
     // mismatch keeps the part for inspection (resume would re-download from
     // its end and mismatch again — the caller decides whether to delete).
@@ -428,6 +481,9 @@ mod tests {
         /// LIE: reply 206 to an unranged fresh request. A fresh 206 is never a
         /// validated resume and must not be promoted to dest.
         Fresh206,
+        /// LIE: reply 206 with the requested Content-Range start but a body
+        /// length that does not match the declared range.
+        CorrectStartWrongBody,
         /// LIE: reply 206 but serve the FULL body from offset 0 with a
         /// Content-Range that contradicts the request (corruption trap).
         Lie,
@@ -474,6 +530,11 @@ mod tests {
                     (RangeMode::HonorNoHeader, Some(s)) => {
                         ("206 Partial Content", &body[s..], None)
                     }
+                    (RangeMode::CorrectStartWrongBody, Some(s)) => (
+                        "206 Partial Content",
+                        body,
+                        Some(format!("bytes {s}-{}/{}", body.len() - 1, body.len())),
+                    ),
                     (RangeMode::Lie, Some(_)) => (
                         "206 Partial Content",
                         body,
@@ -531,6 +592,27 @@ mod tests {
             !part.exists(),
             "fresh invalid 206 must fail before opening part"
         );
+    }
+
+    #[test]
+    fn correct_start_wrong_body_206_fails_closed_without_promoting_dest() {
+        let url = serve(b"0123456789", RangeMode::CorrectStartWrongBody);
+        let dest = temp_dest("correct-start-wrong-body");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        std::fs::write(&part, b"0123").unwrap();
+
+        let err = download_url(&url, &dest, None, |_, _| {}).unwrap_err();
+
+        assert!(matches!(err, FetchError::InvalidRange(_)), "got: {err}");
+        assert!(!dest.exists(), "invalid resumed 206 must not publish dest");
+        assert_eq!(
+            std::fs::read(&part).unwrap(),
+            b"0123",
+            "part should remain the original resume base when validation fails before writing"
+        );
+        let _ = std::fs::remove_file(&part);
     }
 
     #[test]

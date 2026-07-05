@@ -324,6 +324,7 @@ LOG
   self_test_assert "browser-domain-exclude-evidence" 1 has_browser_domain_exclude_evidence "$browser_domain_exclude" || failures=$((failures + 1))
   self_test_assert "browser-domain-exclude-requires-block" 0 has_browser_domain_exclude_evidence "$browser_domain_allow" || failures=$((failures + 1))
   self_test_assert "clipboard-prompt-context" 1 has_clipboard_prompt_context "$good" || failures=$((failures + 1))
+  self_test_assert "clipboard-prompt-context-varied-length" 1 has_clipboard_prompt_context "$varied_clipboard" || failures=$((failures + 1))
   self_test_assert "screen-prompt-context" 1 has_screen_prompt_context "$good" || failures=$((failures + 1))
   self_test_assert "metadata-prompt-context-is-not-raw" 1 has_no_raw_prompt_context_payload "$good" || failures=$((failures + 1))
   self_test_assert "raw-prompt-context-detected" 1 has_raw_prompt_context_payload "$raw_prompt_context" || failures=$((failures + 1))
@@ -445,14 +446,6 @@ if [[ "$KIND" == "--self-test" ]]; then
   run_self_tests
   status=$?
   tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t compme-a2-clipboard-self-test)"
-  varied_clipboard="$tmp_dir/varied-clipboard.log"
-  cat >"$varied_clipboard" <<'LOG'
-compme: clipboard_context=Some(chars=17 marker=true)
-compme: prompt_context=Some("sources=clipboard chars=17 clipboard_chars=17")
-LOG
-  if ! has_clipboard_prompt_context "$varied_clipboard"; then
-    status=1
-  fi
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp_dir/self-test-argc.err"; then
     echo "FAIL self-test-a2-rejects-extra-self-test-arg: extra argument passed" >&2
     status=1
