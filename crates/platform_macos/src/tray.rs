@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Sel};
 use objc2::MainThreadMarker;
 use objc2::{define_class, sel, AnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
@@ -60,6 +60,31 @@ pub enum DisableArm {
     UntilRelaunch,
     /// Permanently exclude this app (persisted).
     Always,
+}
+
+/// Public tray actions that cross the AppKit target/action seam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayAction {
+    CheckUpdates,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrayMenuActionSpec {
+    pub title: &'static str,
+    pub action: TrayAction,
+}
+
+pub fn tray_menu_action_specs() -> &'static [TrayMenuActionSpec] {
+    &[TrayMenuActionSpec {
+        title: "Check for Updates…",
+        action: TrayAction::CheckUpdates,
+    }]
+}
+
+fn tray_action_selector(action: TrayAction) -> Sel {
+    match action {
+        TrayAction::CheckUpdates => sel!(checkUpdates:),
+    }
 }
 
 #[derive(Clone)]
@@ -305,11 +330,15 @@ impl MacosTray {
         // GitHub-release updater surface. The release workflow publishes a
         // machine-readable manifest next to the zip; opening the latest release
         // is the native menu affordance until a Sparkle/appcast client lands.
+        let check_updates_spec = tray_menu_action_specs()
+            .iter()
+            .find(|spec| spec.action == TrayAction::CheckUpdates)
+            .expect("check updates tray action is present");
         let check_updates_item = NSMenuItem::new(mtm);
-        check_updates_item.setTitle(&NSString::from_str("Check for Updates…"));
+        check_updates_item.setTitle(&NSString::from_str(check_updates_spec.title));
         unsafe {
             check_updates_item.setTarget(Some(target_as_any(&target)));
-            check_updates_item.setAction(Some(sel!(checkUpdates:)));
+            check_updates_item.setAction(Some(tray_action_selector(check_updates_spec.action)));
         }
         menu.addItem(&check_updates_item);
 
@@ -422,5 +451,17 @@ mod tests {
     fn tray_button_title_uses_status_text_only_when_icon_is_unavailable() {
         assert_eq!(tray_button_title(true, "CM\u{26a0}"), "CM\u{26a0}");
         assert_eq!(tray_button_title(false, "CM\u{26a0}"), "");
+    }
+
+    #[test]
+    fn tray_action_specs_include_check_for_updates() {
+        assert!(tray_menu_action_specs().contains(&TrayMenuActionSpec {
+            title: "Check for Updates…",
+            action: TrayAction::CheckUpdates,
+        }));
+        assert_eq!(
+            tray_action_selector(TrayAction::CheckUpdates),
+            sel!(checkUpdates:)
+        );
     }
 }

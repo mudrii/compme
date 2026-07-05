@@ -177,10 +177,20 @@ SH
   fi
   grep -q "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH" "$tmp/usage.err"
 
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
+    echo "finalize-cask self-test failed: extra self-test argument was accepted" >&2
+    return 1
+  fi
+  grep -q "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH" "$tmp/self-test-argc.err"
+
   echo "Self-test passed"
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+  if [ "$#" -ne 1 ]; then
+    usage
+    exit 2
+  fi
   run_self_test
   exit 0
 fi

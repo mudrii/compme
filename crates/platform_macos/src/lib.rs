@@ -1364,6 +1364,7 @@ impl MacosPlatformAdapter {
 
         let field = field.clone();
         let app = field.app.clone();
+        let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
         let pid = field
             .pid
             .and_then(|pid| i32::try_from(pid).ok())
@@ -1374,7 +1375,7 @@ impl MacosPlatformAdapter {
 
         let result = self
             .worker
-            .run(move || caret_diagnostics_for_field(pid, field))?;
+            .run(move || caret_diagnostics_for_field(pid, field, secure_input_enabled))?;
         self.map_app_exited(pid, app, result)
     }
 
@@ -1759,10 +1760,9 @@ impl PlatformAdapter for MacosPlatformAdapter {
         // Always-on shortcuts (ids 5/6/7/8) install ONCE here, for the
         // subscription lifetime — NOT armed/dropped with each visible suggestion
         // like the consumer tap (finding C). The delivery handler is the same
-        // consumer handler: it already fires shortcuts before its `active`
-        // early-return, so a toggle works with no suggestion showing. Accept
-        // decisions read `accept_action`, but shortcut events carry their action
-        // and bypass it, so sharing the controller's slot is sound.
+        // consumer handler: `active` is still the subscription-lifetime guard,
+        // but shortcut events work with no suggestion showing because they carry
+        // their action and do not require an armed `accept_action`.
         let shortcut_tap = installer(
             AcceptTapKind::Shortcut,
             accept_consumer_tap_handler(
@@ -1827,6 +1827,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let field = field.clone();
         let app = field.app.clone();
+        let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
         let pid = field
             .pid
             .and_then(|pid| i32::try_from(pid).ok())
@@ -1837,7 +1838,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let result = self
             .worker
-            .run(move || capabilities_for_field(pid, field))?;
+            .run(move || capabilities_for_field(pid, field, secure_input_enabled))?;
         self.map_app_exited(pid, app, result)
     }
 
@@ -1855,6 +1856,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let field = field.clone();
         let app = field.app.clone();
+        let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
         let pid = field
             .pid
             .and_then(|pid| i32::try_from(pid).ok())
@@ -1865,7 +1867,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let result = self
             .worker
-            .run(move || read_context_for_field(pid, field))?;
+            .run(move || read_context_for_field(pid, field, secure_input_enabled))?;
         self.map_app_exited(pid, app, result)
     }
 
@@ -1883,6 +1885,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let field = field.clone();
         let app = field.app.clone();
+        let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
         let pid = field
             .pid
             .and_then(|pid| i32::try_from(pid).ok())
@@ -1891,7 +1894,9 @@ impl PlatformAdapter for MacosPlatformAdapter {
                 reason: "no pid available for caret_rect".into(),
             })?;
 
-        let result = self.worker.run(move || caret_rect_for_field(pid, field))?;
+        let result = self
+            .worker
+            .run(move || caret_rect_for_field(pid, field, secure_input_enabled))?;
         self.map_app_exited(pid, app, result)
     }
 
@@ -1926,6 +1931,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let field = field.clone();
         let app = field.app.clone();
+        let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
         let pid = field
             .pid
             .and_then(|pid| i32::try_from(pid).ok())
@@ -1936,7 +1942,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
 
         let result = self
             .worker
-            .run(move || popup_anchor_for_field(pid, field))?;
+            .run(move || popup_anchor_for_field(pid, field, secure_input_enabled))?;
         self.map_app_exited(pid, app, result)
     }
 
@@ -2622,12 +2628,13 @@ fn accept_consumer_tap_handler(
     accept_action: Arc<Mutex<Option<AcceptAction>>>,
 ) -> Arc<AcceptTapHandler> {
     Arc::new(move |event| {
-        // Always-on shortcuts fire even when accept interception is inactive
-        // (no suggestion showing) — gate them BEFORE the `active` early-return.
-        if event.shortcut.is_none() && !active.load(Ordering::Acquire) {
+        if !active.load(Ordering::Acquire) {
             return AcceptTapDecision::Keep;
         }
 
+        // Always-on shortcuts fire even when accept interception is inactive
+        // (no suggestion showing), but only while the subscription still owns
+        // the installed shortcut resource.
         let action = *accept_action
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -4431,7 +4438,16 @@ fn resolve_focused_or_app_event(
     })
 }
 
-fn capabilities_for_field(pid: i32, field: FieldHandle) -> Result<Capabilities, PlatformError> {
+fn capabilities_for_field(
+    pid: i32,
+    field: FieldHandle,
+    secure_input_enabled: Arc<SecureInputProvider>,
+) -> Result<Capabilities, PlatformError> {
+    // TOCTOU re-check before any worker-thread AX read. The public
+    // `capabilities` entry point checks secure input on the caller thread, but
+    // secure input can turn on before this worker reaches AX.
+    recheck_global_secure_input(&secure_input_enabled)?;
+
     let (element, _owners) = copy_focused_or_app_element(pid)?;
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
@@ -4464,26 +4480,37 @@ fn capabilities_for_field(pid: i32, field: FieldHandle) -> Result<Capabilities, 
     ))
 }
 
-fn read_context_for_field(pid: i32, field: FieldHandle) -> Result<TextContext, PlatformError> {
+fn secure_input_recheck_result(enabled: bool) -> Result<(), PlatformError> {
+    if enabled {
+        Err(PlatformError::SecureInput {
+            state: SecurityState::SecureInputEnabled,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn recheck_global_secure_input(
+    secure_input_enabled: &Arc<SecureInputProvider>,
+) -> Result<(), PlatformError> {
+    secure_input_recheck_result(secure_input_enabled.as_ref()())
+}
+
+fn read_context_for_field(
+    pid: i32,
+    field: FieldHandle,
+    secure_input_enabled: Arc<SecureInputProvider>,
+) -> Result<TextContext, PlatformError> {
+    // TOCTOU re-check, mirroring the insert path's `recheck_secure_input`. The
+    // dispatch-site guard in `read_context` samples global secure input once on
+    // the calling thread; secure input can turn on before this worker reaches
+    // AX. Re-checking here keeps the window as narrow as possible.
+    recheck_global_secure_input(&secure_input_enabled)?;
+
     let (element, _owners) = copy_focused_or_app_element(pid)?;
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
-    }
-
-    // TOCTOU re-check, mirroring the insert path's `recheck_secure_input`. The
-    // dispatch-site guard in `read_context` samples global secure input once on
-    // the calling thread; secure input can turn on in the window before this
-    // worker thread reads `kAXValueAttribute` (e.g. an out-of-process password
-    // prompt arms secure input mid-read). The `StaleField` guard above only
-    // catches focus moving to a DIFFERENT element, not the same focused element
-    // while global secure input flips on. Re-checking here keeps the window as
-    // narrow as possible. `IsSecureEventInputEnabled()` is a global C call safe
-    // from any thread.
-    if macos_secure_input_enabled() {
-        return Err(PlatformError::SecureInput {
-            state: SecurityState::SecureInputEnabled,
-        });
     }
 
     let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
@@ -4491,21 +4518,19 @@ fn read_context_for_field(pid: i32, field: FieldHandle) -> Result<TextContext, P
     Ok(text_context_from_value(field, value, selected_range))
 }
 
-fn caret_rect_for_field(pid: i32, field: FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+fn caret_rect_for_field(
+    pid: i32,
+    field: FieldHandle,
+    secure_input_enabled: Arc<SecureInputProvider>,
+) -> Result<Option<ScreenRect>, PlatformError> {
+    // TOCTOU re-check on the worker thread, mirroring `read_context_for_field`
+    // and the insert path's `recheck_secure_input`.
+    recheck_global_secure_input(&secure_input_enabled)?;
+
     let (element, _owners) = copy_focused_or_app_element(pid)?;
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
-    }
-
-    // TOCTOU re-check on the worker thread, mirroring `read_context_for_field`
-    // and the insert path's `recheck_secure_input`. Lower sensitivity than the
-    // value read (geometry, not plaintext), but fixed for consistency so both
-    // field-read workers share the fail-closed posture.
-    if macos_secure_input_enabled() {
-        return Err(PlatformError::SecureInput {
-            state: SecurityState::SecureInputEnabled,
-        });
     }
 
     let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
@@ -4583,21 +4608,18 @@ fn normalize_caret_rect(rect: ScreenRect, bundle_id: Option<&str>, is_omnibox: b
 fn popup_anchor_for_field(
     pid: i32,
     field: FieldHandle,
+    secure_input_enabled: Arc<SecureInputProvider>,
 ) -> Result<Option<ScreenRect>, PlatformError> {
-    let (element, _owners) = copy_focused_or_app_element(pid)?;
-    let identity = unsafe { resolve_ax_element_identity(element) }?;
-    if !field_matches_identity(&field, &identity) {
-        return Err(PlatformError::StaleField);
-    }
-
     // TOCTOU re-check on the worker thread, uniform with the other four
     // `_for_field` workers. Lowest sensitivity of the set (window-chrome
     // `AXFrame` geometry, never field text/caret), but re-checked anyway so all
     // five `_for_field` workers share the fail-closed posture with no straggler.
-    if macos_secure_input_enabled() {
-        return Err(PlatformError::SecureInput {
-            state: SecurityState::SecureInputEnabled,
-        });
+    recheck_global_secure_input(&secure_input_enabled)?;
+
+    let (element, _owners) = copy_focused_or_app_element(pid)?;
+    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    if !field_matches_identity(&field, &identity) {
+        return Err(PlatformError::StaleField);
     }
 
     unsafe {
@@ -4678,23 +4700,17 @@ unsafe fn read_ax_cgrect_attribute(
 fn caret_diagnostics_for_field(
     pid: i32,
     field: FieldHandle,
+    secure_input_enabled: Arc<SecureInputProvider>,
 ) -> Result<MacosCaretDiagnostics, PlatformError> {
+    // TOCTOU re-check on the worker thread, mirroring `caret_rect_for_field`.
+    // Geometry-only (no plaintext), but kept uniform across all `_for_field`
+    // worker fns so they share the fail-closed posture before any AX read.
+    recheck_global_secure_input(&secure_input_enabled)?;
+
     let (element, _owners) = copy_focused_or_app_element(pid)?;
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
-    }
-
-    // TOCTOU re-check on the worker thread, mirroring `caret_rect_for_field`.
-    // Geometry-only (no plaintext), but kept uniform across all `_for_field`
-    // worker fns so they share the fail-closed posture: the dispatch-site guard
-    // samples global secure input once on the calling thread, and the
-    // `StaleField` guard above only catches focus moving to a DIFFERENT element,
-    // not the same focused element while global secure input flips on.
-    if macos_secure_input_enabled() {
-        return Err(PlatformError::SecureInput {
-            state: SecurityState::SecureInputEnabled,
-        });
     }
 
     let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
@@ -7070,6 +7086,16 @@ mod tests {
         test_adapter_with_hooks(config)
     }
 
+    fn test_adapter_with_secure_input_flipping_on_worker(
+    ) -> (MacosPlatformAdapter, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider_calls = Arc::clone(&calls);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.secure_input_enabled =
+            Arc::new(move || provider_calls.fetch_add(1, Ordering::SeqCst) > 0);
+        (test_adapter_with_hooks(config), calls)
+    }
+
     fn test_adapter_with_hooks(config: TestAdapterConfig) -> MacosPlatformAdapter {
         let TestAdapterConfig {
             frontmost_pid,
@@ -8155,6 +8181,64 @@ mod tests {
             .expect("secure input capabilities");
 
         assert_eq!(caps.security_state, SecurityState::SecureInputEnabled);
+    }
+
+    #[test]
+    fn capabilities_worker_secure_input_recheck_is_fail_closed() {
+        assert_eq!(
+            secure_input_recheck_result(true),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
+        assert_eq!(secure_input_recheck_result(false), Ok(()));
+    }
+
+    #[test]
+    fn field_workers_fail_closed_when_secure_input_flips_before_ax() {
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        type FieldWorkerProbe =
+            fn(&MacosPlatformAdapter, &FieldHandle) -> Result<(), PlatformError>;
+        let probes: [(&str, FieldWorkerProbe); 5] = [
+            ("capabilities", |adapter, field| {
+                adapter.capabilities(field).map(|_| ())
+            }),
+            ("read_context", |adapter, field| {
+                adapter.read_context(field).map(|_| ())
+            }),
+            ("caret_rect", |adapter, field| {
+                adapter.caret_rect(field).map(|_| ())
+            }),
+            ("popup_anchor", |adapter, field| {
+                adapter.popup_anchor(field).map(|_| ())
+            }),
+            ("caret_diagnostics", |adapter, field| {
+                adapter.caret_diagnostics(field).map(|_| ())
+            }),
+        ];
+
+        for (name, probe) in probes {
+            let (adapter, secure_input_calls) = test_adapter_with_secure_input_flipping_on_worker();
+
+            assert_eq!(
+                probe(&adapter, &field),
+                Err(PlatformError::SecureInput {
+                    state: SecurityState::SecureInputEnabled,
+                }),
+                "{name} must fail closed when secure input flips on after dispatch",
+            );
+            assert_eq!(
+                secure_input_calls.load(Ordering::SeqCst),
+                2,
+                "{name} should check once at dispatch and once on the worker"
+            );
+        }
     }
 
     #[test]
@@ -11243,6 +11327,34 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("grammar shortcut action"),
             TapControl::Shortcut(ShortcutAction::GrammarCheck)
+        );
+    }
+
+    #[test]
+    fn subscribe_accept_shortcut_handler_stops_after_subscription_drop() {
+        let accept_tap_installs = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.accept_tap_installs = Arc::clone(&accept_tap_installs);
+        let adapter = test_adapter_with_hooks(config);
+        let (action_tx, action_rx) = mpsc::channel();
+
+        let subscription = adapter
+            .subscribe_accept(Arc::new(move |action| {
+                action_tx.send(action).expect("action send");
+            }))
+            .expect("subscribe accept");
+        wait_for_accept_tap_count(&accept_tap_installs, 2);
+        let shortcut_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[1].handler);
+
+        drop(subscription);
+
+        assert_eq!(
+            shortcut_handler(shortcut_tap_event(ShortcutAction::GrammarCheck)),
+            AcceptTapDecision::Keep
+        );
+        assert!(
+            action_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "dropped subscriptions must not dispatch shortcut callbacks"
         );
     }
 

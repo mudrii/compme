@@ -12,6 +12,7 @@ finalize_cask_script="$repo_root/tools/release/finalize-cask.sh"
 notarize_script="$repo_root/tools/release/notarize-app.sh"
 update_manifest_script="$repo_root/tools/release/write-update-manifest.sh"
 acceptance_doc="$repo_root/docs/ACCEPTANCE.md"
+manual_validation_doc="$repo_root/docs/MANUAL-VALIDATION.md"
 development_doc="$repo_root/docs/DEVELOPMENT.md"
 releasing_doc="$repo_root/docs/RELEASING.md"
 readme_doc="$repo_root/README.md"
@@ -721,8 +722,25 @@ require_line "$releasing_doc" 'tools/release/write-update-manifest\.sh --self-te
 require_line "$releasing_doc" 'git pull --ff-only origin main' "release docs require up-to-date default branch before tag"
 require_line "$releasing_doc" 'cask finalizer refuses to update `main`' "release docs cask finalizer ancestry guard"
 require_line "$repo_root/tools/acceptance/run-a1b-live-gates.sh" 'overlay-correction-presenter' "A1b runner correction overlay gate"
-require_line "$repo_root/tools/acceptance/run-a1b-live-gates.sh" 'apps-policy-toggle-look' "A1b runner Apps policy LOOK gate"
-require_line "$repo_root/tools/acceptance/run-a1b-live-gates.sh" 'personalization-pane-look' "A1b runner Personalization LOOK gate"
+for gate in \
+  apps-policy-toggle-look \
+  personalization-pane-look \
+  menu-bar-icon-look \
+  shortcuts-recorder-look \
+  always-on-hotkeys-physical-look \
+  setup-model-picker-look \
+  nine-tab-settings-walkthrough \
+  caret-marker-chromium-forks-calibration \
+  caret-marker-chrome-marker \
+  caret-marker-chromium-marker \
+  caret-marker-electron-marker \
+  encrypted-memory-all-monitored-live \
+  grammar-fix-textedit-look \
+  input-monitoring-revoked-carbon-accept; do
+  require_line "$repo_root/tools/acceptance/run-a1b-live-gates.sh" "$gate" "A1b runner emits manual gate $gate"
+  require_line "$acceptance_doc" "^- \`$gate\`[[:space:]]*$" "acceptance docs list manual gate $gate"
+  require_line "$manual_validation_doc" "\`$gate\`" "manual validation docs list manual gate $gate"
+done
 require_readme_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "README bundle metadata check"
 require_readme_gate_line '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "README bundle assembler self-test"
 require_readme_gate_line '^tools/acceptance/e2e-complete-me\.sh --self-test[[:space:]]*$' "README E2E self-test"

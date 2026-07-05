@@ -104,10 +104,19 @@ run_self_test() {
     return 1
   fi
   grep -Fq "usage: write-update-manifest.sh" "$tmp/argc.err"
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
+    echo "self-test FAILED: extra self-test argument was accepted" >&2
+    return 1
+  fi
+  grep -Fq "usage: write-update-manifest.sh" "$tmp/self-test-argc.err"
   echo "Self-test passed"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
+  if [[ "$#" -ne 1 ]]; then
+    usage
+    exit 2
+  fi
   run_self_test
   exit 0
 fi

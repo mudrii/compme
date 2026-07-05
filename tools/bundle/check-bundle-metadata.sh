@@ -124,10 +124,20 @@ CASK
     *) echo "self-test FAILED: expected OK message, got: $out" >&2; exit 1 ;;
   esac
 
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
+    echo "self-test FAILED: extra self-test argument was accepted" >&2
+    exit 1
+  fi
+  grep -Fq "usage: check-bundle-metadata.sh" "$tmp/self-test-argc.err"
+
   echo "Self-test passed"
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "usage: check-bundle-metadata.sh [Info.plist Cargo.toml Cask.rb] | --self-test" >&2
+    exit 2
+  fi
   run_self_test
   exit 0
 fi

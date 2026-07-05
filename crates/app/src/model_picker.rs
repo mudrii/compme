@@ -88,18 +88,15 @@ mod tests {
             "qwen2.5-0.5b-q4_k_m \u{b7} tight \u{2014} may swap under load",
             "3 GiB → smallest model is tight"
         );
-        for available in [0, 3, 64] {
-            for (title, entry) in model_menu_titles(available).iter().zip(catalog()) {
-                assert_eq!(
-                    title,
-                    &format!(
-                        "{} \u{b7} {}",
-                        entry.name,
-                        ram_verdict(entry, available).advice()
-                    )
-                );
-            }
-        }
+        assert_eq!(
+            model_menu_titles(3),
+            vec![
+                "qwen2.5-0.5b-q4_k_m \u{b7} tight \u{2014} may swap under load",
+                "llama-3.2-1b-q4_k_m \u{b7} exceeds available memory",
+                "qwen2.5-1.5b-q4_k_m \u{b7} exceeds available memory",
+                "gemma-2-2b-q4_k_m \u{b7} exceeds available memory",
+            ]
+        );
     }
 
     #[test]

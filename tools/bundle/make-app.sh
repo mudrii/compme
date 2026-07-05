@@ -94,10 +94,21 @@ SH
     return 1
   fi
   grep -Fq "lsregister_fail -f $tmp_dir/out-fail/Compme.app" "$log"
+
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp_dir/self-test-argc.err"; then
+    echo "self-test FAILED: extra self-test argument was accepted" >&2
+    return 1
+  fi
+  grep -Fq "usage: tools/bundle/make-app.sh" "$tmp_dir/self-test-argc.err"
+
   echo "Self-test passed"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
+  if [[ "$#" -ne 1 ]]; then
+    echo "usage: tools/bundle/make-app.sh [output-dir] | --self-test" >&2
+    exit 2
+  fi
   run_self_test
   exit 0
 fi

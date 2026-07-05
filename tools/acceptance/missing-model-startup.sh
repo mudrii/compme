@@ -105,10 +105,21 @@ SH
   assert_missing_line_rejected omit-setup 'missing setup model-not-ready log' setup-log-required
   assert_missing_line_rejected omit-status 'missing blocked status log' status-log-required
 
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp_dir/self-test-argc.err"; then
+    echo "FAIL self-test-missing-model-startup-argc: extra self-test argument passed" >&2
+    exit 1
+  fi
+  grep -Fq "usage: missing-model-startup.sh" "$tmp_dir/self-test-argc.err"
+  echo "PASS self-test-missing-model-startup-argc"
+
   echo "Missing-model startup self-tests passed"
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "usage: missing-model-startup.sh [--self-test]" >&2
+    exit 2
+  fi
   run_self_test
   exit 0
 fi

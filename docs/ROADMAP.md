@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1674 workspace tests; spike separate)
+> **Last updated:** 2026-07-05 (full plan-vs-code sync audit, 4 parallel validators) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1679 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -149,7 +149,7 @@ tabs (Setup, General, Personalization, Apps, Context, Emoji, Shortcuts,
 Statistics, About). The macOS-buildable Tier 3 controls have landed in code and
 deterministic tests; the remaining work is the live visual/physical LOOK pass —
 the authoritative pass/fail ledger is [`ACCEPTANCE.md`](ACCEPTANCE.md)'s
-Manual/Live Gate Ledger (13 runner-pinned gate IDs); detailed walkthroughs live
+Manual/Live Gate Ledger (14 runner-pinned gate IDs); detailed walkthroughs live
 in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md) — plus optional UX
 enhancements explicitly called out below.
 
@@ -440,7 +440,7 @@ physical trigger/accept interaction.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1674 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1679 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

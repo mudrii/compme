@@ -470,13 +470,30 @@ run_self_tests() {
     echo "FAIL self-test-e2e-rejects-invalid-real-model: expected error missing" >&2
     failures=$((failures + 1))
   fi
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp_dir/self-test-argc.err"; then
+    echo "FAIL self-test-e2e-rejects-extra-self-test-arg: extra argument passed" >&2
+    rm -rf "$tmp_dir"
+    return 1
+  elif grep -q 'usage: e2e-complete-me.sh' "$tmp_dir/self-test-argc.err"; then
+    echo "PASS self-test-e2e-rejects-extra-self-test-arg"
+  else
+    echo "FAIL self-test-e2e-rejects-extra-self-test-arg: expected usage missing" >&2
+    failures=$((failures + 1))
+  fi
+  if [ "$failures" -ne 0 ]; then
+    rm -rf "$tmp_dir"
+    return 1
+  fi
   rm -rf "$tmp_dir"
-  [ "$failures" -eq 0 ] || return 1
   echo "E2E self-tests passed"
   return 0
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "usage: e2e-complete-me.sh [--self-test]" >&2
+    exit 2
+  fi
   run_self_tests
   exit $?
 fi

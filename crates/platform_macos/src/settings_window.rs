@@ -20,13 +20,15 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSButtonType,
-    NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton, NSResponder, NSSwitch, NSTabView,
-    NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSControlStateValue, NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton, NSResponder,
+    NSSwitch, NSTabView, NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
 
 pub type KeyWithMods = (i64, u32);
+pub type AppsPolicyEdit = (usize, usize, bool);
+type AppsPolicyEditSlot = Arc<Mutex<Option<AppsPolicyEdit>>>;
 
 /// A requested accept-key rebind: `(word, full, grammar_accept)` as `(keycode,
 /// Carbon modifier mask)` pairs. `None` means reset word/full to defaults and
@@ -388,7 +390,7 @@ pub struct SettingsFlags {
     /// run loop maps it to `prefs::AppPolicyField` and calls
     /// `set_app_policy_field` on the row's app id (apps_delete_row pattern; the
     /// "index crosses the seam" idiom of setup_model_index/stat_range_index).
-    pub apps_edit: Arc<Mutex<Option<(usize, usize, bool)>>>,
+    pub apps_edit: AppsPolicyEditSlot,
     /// Shortcuts text (current bindings + how to change them). Behind a
     /// Mutex since recorder 5b: a live rebind recomposes it and the window
     /// refreshes the label on every show (stats_lines pattern).
@@ -526,19 +528,11 @@ define_class!(
                 // mirroring deleteAppRow's row-in-tag. The run loop unpacks it,
                 // resolves row -> app id via apps_row_ids (the SAME cap/order),
                 // maps the field index -> prefs::AppPolicyField, and writes.
-                let packed = checkbox.tag().max(0) as usize;
-                let row = packed / APP_POLICY_FIELDS;
-                let field = packed % APP_POLICY_FIELDS;
-                let on = checkbox.state() == NSControlStateValueOn;
-                // Poison-recovery, like deleteAppRow: the slot is a plain
-                // Option whose bytes stay valid even if a holder panicked.
-                let mut slot = self
-                    .ivars()
-                    .flags
-                    .apps_edit
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                *slot = Some((row, field, on));
+                record_apps_policy_edit(
+                    &self.ivars().flags.apps_edit,
+                    checkbox.tag(),
+                    checkbox.state(),
+                );
             }
         }
 
@@ -1763,7 +1757,7 @@ fn build_window(
                     )
                 };
                 checkbox.setButtonType(NSButtonType::Switch);
-                checkbox.setTag((row * APP_POLICY_FIELDS + field) as isize);
+                checkbox.setTag(pack_apps_policy_tag(row, field));
                 checkbox.setFrame(apps_layout::checkbox_rect(row, field).ns());
                 checkbox.setToolTip(Some(&NSString::from_str(full_title)));
                 checkbox.setHidden(!deletable);
@@ -2149,6 +2143,24 @@ pub const APPS_ROWS: usize = 8;
 /// field`, so this is the modulus the run loop unpacks against.
 pub const APP_POLICY_FIELDS: usize = 5;
 
+fn pack_apps_policy_tag(row: usize, field: usize) -> isize {
+    (row * APP_POLICY_FIELDS + field) as isize
+}
+
+fn unpack_apps_policy_tag(tag: isize) -> (usize, usize) {
+    let packed = tag.max(0) as usize;
+    (packed / APP_POLICY_FIELDS, packed % APP_POLICY_FIELDS)
+}
+
+fn record_apps_policy_edit(apps_edit: &AppsPolicyEditSlot, tag: isize, state: NSControlStateValue) {
+    let (row, field) = unpack_apps_policy_tag(tag);
+    let on = state == NSControlStateValueOn;
+    // Poison-recovery, like deleteAppRow: the slot is a plain Option whose
+    // bytes stay valid even if a holder panicked.
+    let mut slot = apps_edit.lock().unwrap_or_else(|e| e.into_inner());
+    *slot = Some((row, field, on));
+}
+
 /// Checkbox titles for the per-app policy fields, indexed the same as the tag
 /// encoding (and `prefs::AppPolicyField`'s variant order). `TabDisabled` reads
 /// as "Tab key" so the checked state means "Tab is a literal Tab here".
@@ -2404,26 +2416,23 @@ mod tests {
 
     #[test]
     fn apps_policy_tag_packs_and_unpacks_as_an_exact_inverse() {
-        // Each per-row policy checkbox carries a packed tag
-        // `row * APP_POLICY_FIELDS + field` (editAppPolicy:), which the refresh
-        // helpers and the run loop unpack as `tag / APP_POLICY_FIELDS` (row) and
-        // `tag % APP_POLICY_FIELDS` (field). The two must be exact inverses over
-        // every seeded checkbox, INCLUDING the last row (a base mismatch or a
-        // `/`<->`%` swap would mis-route the highest rows silently).
+        // Production assigns tags with `pack_apps_policy_tag` and decodes
+        // editAppPolicy: through `unpack_apps_policy_tag`; this pins the shared
+        // contract instead of recomputing row-major arithmetic only in test.
         for row in 0..APPS_ROWS {
             for field in 0..APP_POLICY_FIELDS {
-                let tag = row * APP_POLICY_FIELDS + field;
-                assert_eq!(tag / APP_POLICY_FIELDS, row, "row of tag {tag}");
-                assert_eq!(tag % APP_POLICY_FIELDS, field, "field of tag {tag}");
+                let tag = pack_apps_policy_tag(row, field);
+                assert_eq!(unpack_apps_policy_tag(tag), (row, field), "tag {tag}");
             }
         }
+        assert_eq!(unpack_apps_policy_tag(-12), (0, 0));
 
         // The pack is a bijection: the row-major sweep visits 0..ROWS*FIELDS once
         // each with no gaps or collisions, so two distinct (row, field) cells can
         // never share a tag (which would alias two checkboxes onto one app slot).
         let mut tags: Vec<usize> = (0..APPS_ROWS)
             .flat_map(|row| {
-                (0..APP_POLICY_FIELDS).map(move |field| row * APP_POLICY_FIELDS + field)
+                (0..APP_POLICY_FIELDS).map(move |field| pack_apps_policy_tag(row, field) as usize)
             })
             .collect();
         let count = tags.len();
@@ -2431,6 +2440,25 @@ mod tests {
         tags.dedup();
         assert_eq!(tags.len(), count, "tags must be unique across all cells");
         assert_eq!(tags, (0..APPS_ROWS * APP_POLICY_FIELDS).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn apps_policy_action_records_decoded_tag_and_state() {
+        let apps_edit = Arc::new(Mutex::new(None));
+
+        record_apps_policy_edit(
+            &apps_edit,
+            pack_apps_policy_tag(2, 4),
+            NSControlStateValueOn,
+        );
+        assert_eq!(*apps_edit.lock().unwrap(), Some((2, 4, true)));
+
+        record_apps_policy_edit(
+            &apps_edit,
+            pack_apps_policy_tag(APPS_ROWS - 1, 0),
+            objc2_app_kit::NSControlStateValueOff,
+        );
+        assert_eq!(*apps_edit.lock().unwrap(), Some((APPS_ROWS - 1, 0, false)));
     }
 
     #[test]

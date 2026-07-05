@@ -321,6 +321,10 @@ OSA
 }
 
 if [[ "$KIND" == "--self-test" ]]; then
+  if [[ "$#" -ne 1 ]]; then
+    echo "usage: run-a2-compat-gates.sh [works|unsupported|terminal-cmd|terminal-nlp|clipboard|screen|--self-test]" >&2
+    exit 2
+  fi
   run_self_tests
   status=$?
   tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t compme-a2-clipboard-self-test)"
@@ -330,6 +334,15 @@ compme: clipboard_context=Some(chars=17 marker=true)
 compme: prompt_context=Some("sources=clipboard chars=17 clipboard_chars=17")
 LOG
   if ! has_clipboard_prompt_context "$varied_clipboard"; then
+    status=1
+  fi
+  if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp_dir/self-test-argc.err"; then
+    echo "FAIL self-test-a2-rejects-extra-self-test-arg: extra argument passed" >&2
+    status=1
+  elif grep -q 'usage: run-a2-compat-gates.sh' "$tmp_dir/self-test-argc.err"; then
+    echo "PASS self-test-a2-rejects-extra-self-test-arg"
+  else
+    echo "FAIL self-test-a2-rejects-extra-self-test-arg: expected usage missing" >&2
     status=1
   fi
   rm -rf "$tmp_dir"
