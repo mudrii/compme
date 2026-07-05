@@ -177,6 +177,9 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
 
+      - name: Check release tag matches bundle metadata
+        run: COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh
+
       - name: Import Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
@@ -210,9 +213,6 @@ jobs:
       # scheme, launch-at-login) -> Developer-ID hardened-runtime signature.
       - name: Build the .app bundle
         run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
-
-      - name: Check release tag matches bundle metadata
-        run: COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh
 
       - name: Notarize and staple the .app
         env:

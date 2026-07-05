@@ -160,7 +160,7 @@ SH
   mismatch_sha="$(git -C "$tmp/version-mismatch/work" rev-parse HEAD)"
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/version-mismatch/work" \
     GITHUB_SHA="$mismatch_sha" \
-    "$0" v9.8.7 "$tmp/artifact.zip" 9.9.9 main >/dev/null 2>"$tmp/mismatch.err"; then
+    "$0" v9.9.9 "$tmp/artifact.zip" 9.9.9 main >/dev/null 2>"$tmp/mismatch.err"; then
     echo "finalize-cask self-test failed: version mismatch was accepted" >&2
     return 1
   fi

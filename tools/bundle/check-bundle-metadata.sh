@@ -105,6 +105,16 @@ CASK
     *) echo "self-test FAILED: expected release-tag drift error, got: $out" >&2; exit 1 ;;
   esac
 
+  if out="$(COMPME_EXPECTED_VERSION= "$0" "$good_plist" "$cargo" "$tag_drift_cask" 2>&1)"; then
+    echo "self-test FAILED: empty release tag version should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"release tag version is empty"*) ;;
+    *) echo "self-test FAILED: expected empty release-tag version error, got: $out" >&2; exit 1 ;;
+  esac
+
   # (c) missing 'compme' CFBundleURLScheme -> non-zero.
   if out="$("$0" "$bad_scheme_plist" "$cargo" "$good_cask" 2>&1)"; then
     echo "self-test FAILED: missing scheme should have failed" >&2
@@ -287,9 +297,12 @@ ruby -rrexml/document -e '
     expect.call("CFBundleShortVersionString", plist_version, cargo_version)
     errors << "version drift: cask #{cask_version.inspect} != app #{cargo_version.inspect}" unless cask_version == cargo_version
   end
-  expected_version = ENV["COMPME_EXPECTED_VERSION"]
-  if expected_version && !expected_version.empty? && plist_version != expected_version
-    errors << "release tag version drift: expected #{expected_version.inspect}, got #{plist_version.inspect}"
+  if ENV.key?("COMPME_EXPECTED_VERSION")
+    expected_version = ENV["COMPME_EXPECTED_VERSION"].to_s
+    errors << "release tag version is empty" if expected_version.empty?
+    if !expected_version.empty? && plist_version != expected_version
+      errors << "release tag version drift: expected #{expected_version.inspect}, got #{plist_version.inspect}"
+    end
   end
 
   unless errors.empty?

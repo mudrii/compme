@@ -659,6 +659,19 @@ ruby -ryaml -e '
     abort("missing release gate: finalizes Homebrew cask command #{needle}") unless found
   end
 
+  def contains_secret_reference?(value)
+    case value
+    when String
+      value.include?("secrets.")
+    when Hash
+      value.any? { |_, child| contains_secret_reference?(child) }
+    when Array
+      value.any? { |child| contains_secret_reference?(child) }
+    else
+      false
+    end
+  end
+
   release_workflow = YAML.load_file(ARGV.fetch(0))
   ci_workflow = YAML.load_file(ARGV.fetch(1))
 
@@ -780,13 +793,20 @@ ruby -ryaml -e '
   abort("missing release gate: build_release checkout") unless checkout
   abort("missing release gate: build_release checkout fetches full history") unless checkout.fetch("with").fetch("fetch-depth") == 0
   ancestry_index = build_steps.index { |step| step["name"] == "Verify release tag is on default branch" }
+  metadata_index = build_steps.index { |step| step["name"] == "Check release tag matches bundle metadata" }
   import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
   build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
   abort("missing release gate: verifies tag ancestry before secrets") unless ancestry_index
+  abort("missing release gate: checks release tag metadata") unless metadata_index
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
   abort("missing release gate: verifies tag ancestry before Developer ID secrets") unless ancestry_index < import_index
+  abort("missing release gate: checks release tag metadata before Developer ID secrets") unless metadata_index < import_index
   abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
+  build_steps.each_with_index do |step, idx|
+    next unless contains_secret_reference?(step)
+    abort("missing release gate: verifies tag ancestry before secret-bearing build step #{step["name"] || idx}") unless ancestry_index < idx
+  end
   ancestry_run = build_steps.fetch(ancestry_index).fetch("run")
   ["git fetch origin \"$DEFAULT_BRANCH\"", "git merge-base --is-ancestor \"$GITHUB_SHA\" \"origin/$DEFAULT_BRANCH\""].each do |needle|
     abort("missing release gate: early default-branch ancestry check") unless ancestry_run.include?(needle)
@@ -813,6 +833,25 @@ ruby -ryaml -e '
   cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
   abort("missing release gate: publishes GitHub release") unless publish_index
   abort("missing release gate: finalizes Homebrew cask") unless cask_index
+  abort("missing release gate: downloads artifacts before publishing release") unless download_index < publish_index
+  upload_step = build_steps.fetch(upload_index)
+  upload_with = upload_step.fetch("with")
+  abort("missing release gate: uploads artifacts with pinned upload-artifact action") unless upload_step.fetch("uses").match?(/\Aactions\/upload-artifact@[0-9a-f]{40}\z/)
+  abort("missing release gate: uploads named release artifact bundle") unless upload_with.fetch("name") == "compme-release-artifacts"
+  abort("missing release gate: upload fails if release artifact is missing") unless upload_with.fetch("if-no-files-found") == "error"
+  upload_path = upload_with.fetch("path").to_s
+  [
+    "${{ steps.pkg.outputs.zip }}",
+    "${{ steps.pkg.outputs.zip }}.sha256",
+    "${{ steps.manifest.outputs.manifest }}",
+  ].each do |needle|
+    abort("missing release gate: upload includes #{needle}") unless upload_path.include?(needle)
+  end
+  download_step = publish_steps.fetch(download_index)
+  download_with = download_step.fetch("with")
+  abort("missing release gate: downloads artifacts with pinned download-artifact action") unless download_step.fetch("uses").match?(/\Aactions\/download-artifact@[0-9a-f]{40}\z/)
+  abort("missing release gate: downloads named release artifact bundle") unless download_with.fetch("name") == "compme-release-artifacts"
+  abort("missing release gate: downloads release artifacts into release-artifacts") unless download_with.fetch("path") == "release-artifacts"
   abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index > publish_index
   cask_step = publish_steps.fetch(cask_index)
   abort("missing release gate: finalizes Homebrew cask") unless cask_step
@@ -919,6 +958,7 @@ require_line "$feature_script" 'llama-cpp-2 feature "dynamic-backends"' "model_c
 require_line "$feature_script" 'llama-cpp-2 feature "vulkan"' "model_client non-macOS Vulkan feature assertion"
 require_line "$feature_script" 'llama-cpp-2 feature "default"' "model_client default feature denial"
 require_line "$feature_script" 'spike macOS' "spike feature policy assertion"
+require_line "$bundle_metadata_script" 'release tag version is empty' "bundle metadata empty release-tag version rejection"
 require_line "$gate_script" '^model="\$\{COMPME_MODEL_GATE_PATH:-tools/spike/models/qwen2\.5-0\.5b-q4_k_m\.gguf\}"[[:space:]]*$' "pinned base GGUF model path"
 require_line "$gate_script" '^url="\$\{COMPME_MODEL_GATE_URL:-https://huggingface\.co/Brianpuz/Qwen2\.5-0\.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2\.5-0\.5b-q4_k_m\.gguf\}"[[:space:]]*$' "pinned base GGUF download URL"
 require_line "$gate_script" '^expected="\$\{COMPME_MODEL_GATE_SHA256:-ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484\}"[[:space:]]*$' "pinned base GGUF sha256"
