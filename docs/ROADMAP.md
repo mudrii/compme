@@ -7,7 +7,7 @@
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
 > with symbol/function/gate anchors re-reviewed 2026-07-06 through `d1f9118`,
-> `baf0c6e`, and `9aa3c20`.
+> `baf0c6e`, `9aa3c20`, `f44f00c`, and `b1c9264`.
 
 ## Status legend
 
@@ -78,8 +78,9 @@ signing + hardened runtime + notarization + a native updater.
   validates the staple. The tag workflow imports the Developer-ID `.p12`, fails
   closed when signing/notarization secrets are missing, requires a protected
   `v*` tag plus the protected `release` environment, notarizes before zipping,
-  deletes the signing keychain before packaging/upload, and uploads the
-  notarized zip.
+  deletes the signing keychain before packaging/upload, uploads the notarized
+  zip plus `.sha256`, and verifies the downloaded artifact checksum before
+  publishing the GitHub release.
 - The updater path is GitHub-release-driven: the tray's **Check for Updates…**
   opens the releases page, and the release workflow uploads an informational
   `compme-<version>-update.json` next to the zip and checksum (nothing consumes
@@ -96,8 +97,9 @@ signing + hardened runtime + notarization + a native updater.
   tracked row logs, and set `COMPME_A2_MATRIX_LEDGER` to that repo-relative TSV
   path.
 - Run the first tag build and verify the notarized zip, `.sha256`, and update
-  manifest publish correctly, and that the workflow commits the finalized
-  `Casks/compme.rb` checksum back to the default branch.
+  manifest publish correctly after the pre-publish checksum verification step,
+  and that the workflow commits the finalized `Casks/compme.rb` checksum back
+  to the default branch.
 - Optional later upgrade: replace the GitHub-release menu handoff with a full
   Sparkle/appcast client.
 
@@ -106,15 +108,17 @@ The CI/release/cask glue is already written and locally validated, including
 locked Cargo gates, pinned toolchain, release preflight checks, A2 matrix ledger
 policy, privacy-policy scan, model-gate policy, draft-release publication,
 cask finalization, post-cask undraft, and the supply-chain/release hardening
-through `9aa3c20`: protected `v*` tag ruleset check via `github.ref_protected`,
+through `b1c9264`: protected `v*` tag ruleset check via `github.ref_protected`,
 protected `release` environments for build/publish jobs, third-party crates
 prebuilt before the signing keychain exists, checkout-token scrub before build
 code, decoded `.p12` deletion plus signing-keychain deletion before packaging,
 fixed release concurrency, fail-closed artifact upload, and the
 committed-A2-evidence policy (checker + CI wiring; the evidence itself under
-`tools/acceptance/evidence/a2/` is still to be produced). First release now waits on the
-signing/notarization secrets and identity, committed A2 matrix ledger evidence
-plus the repo variable that points at it, and the maintainer-created first tag.
+`tools/acceptance/evidence/a2/` is still to be produced), catalog-recommended
+model-gate artifact/path pinning, and pre-publish release artifact checksum
+verification. First release now waits on the signing/notarization secrets and
+identity, committed A2 matrix ledger evidence plus the repo variable that points
+at it, and the maintainer-created first tag.
 
 ---
 
@@ -206,14 +210,17 @@ live pass — plus optional UX enhancements explicitly called out below.
   A Context appearance sub-toggle remains a future visual option, not a current
   blocking item.
 
-### 3.3 ✅ Statistics range / group / metric controls — current scope complete
+### 3.3 ✅ Statistics range / group chart controls — current scope complete
 - **Range picker ✅:** Last 7/14/30 days drives the bucket span.
 - **Grouping picker ✅:** Daily/Weekly re-buckets rows through the shared stats
   grouping path.
 - **Metric selector closed by design:** the pane already renders separate
   sparkline rows for shown, accepted, and words. A single metric selector would
-  be a redesign, not a missing control. The pure metric selection model remains
-  available if that redesign is chosen later.
+  be a redesign, not a missing control; the current code intentionally has no
+  metric picker enum/control.
+- **Coverage:** `stat_picker_enums_expose_menu_order_labels_and_index_decode`
+  pins the range/group picker menu order, item labels, selected-index decode,
+  and out-of-range clamp behavior.
 
 ### 3.4 🔬 Shortcuts pane and always-on hotkeys — code complete, physical LOOK pending
 - **Status:** recorder rows, live rebind, and modifier-combo capture ship for

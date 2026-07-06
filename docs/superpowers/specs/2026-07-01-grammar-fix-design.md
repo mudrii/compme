@@ -467,7 +467,7 @@ range bounds and range replacement, not just the existing left-of-caret
 - `cd tools/spike && cargo clippy --locked --all-targets -- -D warnings`
 - `cd tools/spike && cargo test --locked`
 - `cd tools/spike && cargo build --locked --bins`
-- `cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1`
+- `cd tools/spike && COMPME_SPIKE_MODEL_PATH="$PWD/models/qwen2.5-0.5b-q4_k_m.gguf" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1`
 
 ## Definition of done (macOS reference)
 Code-complete criteria are met: G1–G5 landed, the validation command set above is
