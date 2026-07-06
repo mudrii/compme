@@ -156,6 +156,14 @@ mod tests {
         fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
             Err(PlatformError::StaleField)
         }
+        fn popup_anchor(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+            Ok(Some(ScreenRect {
+                x: 9.0,
+                y: 8.0,
+                w: 7.0,
+                h: 6.0,
+            }))
+        }
         fn focused_page_url(&self, _field: &FieldHandle) -> Result<Option<String>, PlatformError> {
             Ok(Some("https://bank.example/login".into()))
         }
@@ -219,6 +227,21 @@ mod tests {
             element_id: "f".into(),
             generation: 1,
         }
+    }
+
+    #[test]
+    fn shared_adapter_forwards_popup_anchor_instead_of_inheriting_default() {
+        let shared = SharedAdapter::new(Arc::new(RecordingInner::default()));
+        assert_eq!(
+            shared.popup_anchor(&field()).unwrap(),
+            Some(ScreenRect {
+                x: 9.0,
+                y: 8.0,
+                w: 7.0,
+                h: 6.0,
+            }),
+            "SharedAdapter must forward popup_anchor, not return the default None"
+        );
     }
 
     #[test]

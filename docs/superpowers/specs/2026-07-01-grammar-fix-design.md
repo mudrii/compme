@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1721 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1726 tests green).
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI
@@ -462,12 +462,12 @@ range bounds and range replacement, not just the existing left-of-caret
 - `tools/release/finalize-cask.sh --self-test`
 - `tools/release/notarize-app.sh --self-test`
 - `tools/release/write-update-manifest.sh --self-test`
-- `COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1`
+- `COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1`
 - `cd tools/spike && cargo fmt -- --check`
 - `cd tools/spike && cargo clippy --locked --all-targets -- -D warnings`
 - `cd tools/spike && cargo test --locked`
 - `cd tools/spike && cargo build --locked --bins`
-- `cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1`
+- `cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1`
 
 ## Definition of done (macOS reference)
 Code-complete criteria are met: G1–G5 landed, the validation command set above is

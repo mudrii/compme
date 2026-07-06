@@ -443,6 +443,12 @@ EOF
   fi
   grep -q 'invalid COMPME_A2_LEDGER_MAX_AGE_SECONDS' "$tmp/bad-age.err"
 
+  if COMPME_A2_LEDGER_MAX_FUTURE_SKEW_SECONDS=abc check_ledger "$good" >/dev/null 2>"$tmp/bad-future-skew.err"; then
+    echo "A2 matrix ledger self-test failed: invalid future skew was accepted" >&2
+    return 1
+  fi
+  grep -q 'invalid COMPME_A2_LEDGER_MAX_FUTURE_SKEW_SECONDS' "$tmp/bad-future-skew.err"
+
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
     echo "A2 matrix ledger self-test failed: extra self-test argument was accepted" >&2
     return 1

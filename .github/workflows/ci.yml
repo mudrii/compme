@@ -74,6 +74,9 @@ jobs:
       - name: Missing-model startup product smoke
         run: tools/acceptance/missing-model-startup.sh
 
+      - name: UI-assisted session self-test
+        run: tools/acceptance/run-ui-assisted-session.sh --self-test
+
       - name: A1b runner self-test
         run: tools/acceptance/run-a1b-live-gates.sh --self-test
 

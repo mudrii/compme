@@ -2006,11 +2006,6 @@ impl PlatformAdapter for MacosPlatformAdapter {
         range: CorrectionRange,
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError> {
-        if strategy != InsertStrategy::AxSet {
-            return Err(PlatformError::UnsupportedField {
-                reason: "range replacement requires AxSet".into(),
-            });
-        }
         if (self.secure_input_enabled)() {
             return Err(PlatformError::SecureInput {
                 state: SecurityState::SecureInputEnabled,
@@ -2019,6 +2014,11 @@ impl PlatformAdapter for MacosPlatformAdapter {
         if field_has_secure_text_subrole(field) {
             return Err(PlatformError::SecureInput {
                 state: SecurityState::SecureField,
+            });
+        }
+        if strategy != InsertStrategy::AxSet {
+            return Err(PlatformError::UnsupportedField {
+                reason: "range replacement requires AxSet".into(),
             });
         }
 
@@ -9199,6 +9199,30 @@ mod tests {
             })
         );
         assert!(posted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn insert_replacing_range_secure_input_wins_even_for_non_axset_strategy() {
+        let adapter = test_adapter_with_secure_input(true);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: pointer_identity("ax:0x123").field_element_id(),
+            generation: 1,
+        };
+
+        assert_eq!(
+            adapter.insert_replacing_range(
+                &field,
+                "teh",
+                "the",
+                CorrectionRange { start: 0, end: 3 },
+                InsertStrategy::SyntheticKeys,
+            ),
+            Err(PlatformError::SecureInput {
+                state: SecurityState::SecureInputEnabled,
+            })
+        );
     }
 
     fn keep_handler(log: Arc<Mutex<Vec<i64>>>) -> Arc<AcceptTapHandler> {

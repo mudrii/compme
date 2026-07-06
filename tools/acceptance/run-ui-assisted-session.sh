@@ -45,16 +45,32 @@ run_self_test() {
     fi
   done
 
-  COMPME_DEBUG=0 COMPME_GRAMMAR_FIX=0 build_launch_env
+  COMPME_DEBUG=0 \
+    COMPME_STUB_COMPLETION=" custom stub" \
+    COMPME_EMOJI=0 \
+    COMPME_AUTOCORRECT=0 \
+    COMPME_BRITISH_ENGLISH=0 \
+    COMPME_THESAURUS=0 \
+    COMPME_GRAMMAR_FIX=0 \
+    COMPME_GRAMMAR_CHECK_KEY="control+shift+42" \
+    COMPME_GRAMMAR_ACCEPT_KEY="option+17" \
+    build_launch_env
   launch_env_lines="$(printf '%s\n' "${launch_env[@]}")"
-  if ! grep -Eq '^COMPME_DEBUG=0$' <<<"$launch_env_lines"; then
-    echo "self-test failed: COMPME_DEBUG override was not preserved" >&2
-    return 1
-  fi
-  if ! grep -Eq '^COMPME_GRAMMAR_FIX=0$' <<<"$launch_env_lines"; then
-    echo "self-test failed: COMPME_GRAMMAR_FIX override was not preserved" >&2
-    return 1
-  fi
+  for pair in \
+    "COMPME_DEBUG=0" \
+    "COMPME_STUB_COMPLETION= custom stub" \
+    "COMPME_EMOJI=0" \
+    "COMPME_AUTOCORRECT=0" \
+    "COMPME_BRITISH_ENGLISH=0" \
+    "COMPME_THESAURUS=0" \
+    "COMPME_GRAMMAR_FIX=0" \
+    "COMPME_GRAMMAR_CHECK_KEY=control+shift+42" \
+    "COMPME_GRAMMAR_ACCEPT_KEY=option+17"; do
+    if ! grep -Fxq "$pair" <<<"$launch_env_lines"; then
+      echo "self-test failed: override was not preserved: $pair" >&2
+      return 1
+    fi
+  done
 
   echo "Self-test passed"
 }

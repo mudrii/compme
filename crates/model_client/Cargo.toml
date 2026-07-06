@@ -17,3 +17,6 @@ llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["met
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["dynamic-backends", "vulkan"] }
+
+[dev-dependencies]
+grammar = { path = "../grammar" }

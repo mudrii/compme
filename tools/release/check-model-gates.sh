@@ -955,6 +955,7 @@ ruby -ryaml -e '
     "CI E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
     "CI missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
     "CI missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
+    "CI UI-assisted session self-test" => ["UI-assisted session self-test", "tools/acceptance/run-ui-assisted-session.sh --self-test"],
     "CI A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
     "CI A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
     "CI A2 matrix ledger self-test" => ["A2 matrix ledger policy self-test", "tools/release/check-a2-matrix-ledger.sh --self-test"],
@@ -1063,6 +1064,7 @@ ruby -ryaml -e '
     "release E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
     "release missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
     "release missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
+    "release UI-assisted session self-test" => ["UI-assisted session self-test", "tools/acceptance/run-ui-assisted-session.sh --self-test"],
     "release model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
     "release model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
     "release agent brief alignment" => ["Agent brief alignment", "tools/release/check-agent-briefs.sh"],
@@ -1376,17 +1378,17 @@ require_line "$gate_script" '^model="\$\{COMPME_MODEL_GATE_PATH:-tools/spike/mod
 require_line "$gate_script" '^url="\$\{COMPME_MODEL_GATE_URL:-https://huggingface\.co/Brianpuz/Qwen2\.5-0\.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2\.5-0\.5b-q4_k_m\.gguf\}"[[:space:]]*$' "pinned base GGUF download URL"
 require_line "$gate_script" '^expected="\$\{COMPME_MODEL_GATE_SHA256:-ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484\}"[[:space:]]*$' "pinned base GGUF sha256"
 require_line "$gate_script" 'COMPME_MODEL_GATE_CURL_BODY="wrong-model"' "model gate checksum failure self-test"
-require_line "$gate_script" 'gpu=0 ctx_tokens=256 args=test --locked -p model_client --test latency' "model gate root env self-test"
-require_line "$gate_script" 'tools/spike env=1 ctx= gpu= ctx_tokens= args=test --locked --test model_integration' "model gate spike env self-test"
+require_line "$gate_script" 'latency=1 gpu=0 ctx_tokens=256 args=test --locked -p model_client --test latency' "model gate root env self-test"
+require_line "$gate_script" 'tools/spike env=1 ctx= latency=1 gpu= ctx_tokens= args=test --locked --test model_integration' "model gate spike env self-test"
 require_line "$finalize_cask_script" 'git merge-base --is-ancestor "\$GITHUB_SHA" "origin/\$default_branch"' "cask finalizer ancestry check"
 require_line "$finalize_cask_script" 'tag/version mismatch' "cask finalizer tag/version guard"
 require_line "$finalize_cask_script" 'refusing to publish a stale or out-of-order cask update' "cask finalizer stale version refusal"
 require_line "$finalize_cask_script" 'COMPME_CASK_ARTIFACT="\$artifact_path" tools/release/update-cask\.sh "\$tag"' "cask finalizer artifact handoff"
 require_line "$finalize_cask_script" 'git push origin "HEAD:\$default_branch"' "cask finalizer push"
-require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
-require_line "$gate_script" '^  COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"
-require_line "$acceptance_doc" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized root ignored model tests"
-require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized spike ignored model tests"
+require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
+require_line "$gate_script" '^  COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"
+require_line "$acceptance_doc" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized root ignored model tests"
+require_line "$acceptance_doc" '^COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized spike ignored model tests"
 require_line "$acceptance_doc" '^cargo build --locked -p platform_macos --examples[[:space:]]*$' "acceptance docs platform_macos examples build"
 require_line "$acceptance_doc" '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "acceptance docs bundle metadata check"
 require_line "$acceptance_doc" '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "acceptance docs bundle metadata self-test"
@@ -1528,9 +1530,9 @@ require_grammar_spec_validation_line '^tools/release/update-cask\.sh --self-test
 require_grammar_spec_validation_line '^tools/release/finalize-cask\.sh --self-test[[:space:]]*$' "grammar spec cask finalizer self-test"
 require_grammar_spec_validation_line '^tools/release/notarize-app\.sh --self-test[[:space:]]*$' "grammar spec notarization helper self-test"
 require_grammar_spec_validation_line '^tools/release/write-update-manifest\.sh --self-test[[:space:]]*$' "grammar spec update manifest self-test"
-require_grammar_spec_validation_line '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "grammar spec root ignored model tests"
+require_grammar_spec_validation_line '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "grammar spec root ignored model tests"
 require_grammar_spec_validation_line '^cd tools/spike && cargo fmt -- --check[[:space:]]*$' "grammar spec spike fmt gate"
 require_grammar_spec_validation_line '^cd tools/spike && cargo clippy --locked --all-targets -- -D warnings[[:space:]]*$' "grammar spec spike clippy gate"
 require_grammar_spec_validation_line '^cd tools/spike && cargo test --locked[[:space:]]*$' "grammar spec spike test gate"
 require_grammar_spec_validation_line '^cd tools/spike && cargo build --locked --bins[[:space:]]*$' "grammar spec spike build gate"
-require_grammar_spec_validation_line '^cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "grammar spec spike ignored model tests"
+require_grammar_spec_validation_line '^cd tools/spike && COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "grammar spec spike ignored model tests"

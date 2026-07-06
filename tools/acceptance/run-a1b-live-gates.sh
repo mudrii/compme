@@ -94,6 +94,15 @@ require_uint_arg() {
   esac
 }
 
+require_value_arg() {
+  name="$1"
+  label="$2"
+  if [ "$#" -lt 3 ] || [ -z "${3:-}" ] || [ "${3#--}" != "$3" ]; then
+    echo "$name requires a $label" >&2
+    exit 2
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
@@ -105,53 +114,53 @@ while [ "$#" -gt 0 ]; do
     --allow-manual) ALLOW_MANUAL=1 ;;
     --self-test) SELF_TEST=1 ;;
     --textedit-pid)
-      [ "$#" -ge 2 ] || { echo "--textedit-pid requires a pid" >&2; exit 2; }
+      require_value_arg "--textedit-pid" "pid" "${2:-}"
       TEXTEDIT_PID="$2"
       shift 2
       continue
       ;;
     --popup-pid)
-      [ "$#" -ge 2 ] || { echo "--popup-pid requires a pid" >&2; exit 2; }
+      require_value_arg "--popup-pid" "pid" "${2:-}"
       POPUP_PID="$2"
       shift 2
       continue
       ;;
     --browser-pid)
-      [ "$#" -ge 2 ] || { echo "--browser-pid requires a pid" >&2; exit 2; }
+      require_value_arg "--browser-pid" "pid" "${2:-}"
       BROWSER_PID="$2"
       shift 2
       continue
       ;;
     --timeout-ms)
-      [ "$#" -ge 2 ] || { echo "--timeout-ms requires a value" >&2; exit 2; }
+      require_value_arg "--timeout-ms" "value" "${2:-}"
       require_uint_arg "--timeout-ms" "$2"
       TIMEOUT_MS="$2"
       shift 2
       continue
       ;;
     --short-timeout-ms)
-      [ "$#" -ge 2 ] || { echo "--short-timeout-ms requires a value" >&2; exit 2; }
+      require_value_arg "--short-timeout-ms" "value" "${2:-}"
       require_uint_arg "--short-timeout-ms" "$2"
       SHORT_TIMEOUT_MS="$2"
       shift 2
       continue
       ;;
     --retries)
-      [ "$#" -ge 2 ] || { echo "--retries requires a value" >&2; exit 2; }
+      require_value_arg "--retries" "value" "${2:-}"
       require_uint_arg "--retries" "$2"
       RETRIES="$2"
       shift 2
       continue
       ;;
     --gate-pause-ms)
-      [ "$#" -ge 2 ] || { echo "--gate-pause-ms requires a value" >&2; exit 2; }
+      require_value_arg "--gate-pause-ms" "value" "${2:-}"
       require_uint_arg "--gate-pause-ms" "$2"
       GATE_PAUSE_MS="$2"
       shift 2
       continue
       ;;
     --log-dir)
-      [ "$#" -ge 2 ] || { echo "--log-dir requires a directory" >&2; exit 2; }
+      require_value_arg "--log-dir" "directory" "${2:-}"
       LOG_DIR="$2"
       shift 2
       continue
@@ -611,6 +620,24 @@ run_self_tests() {
     --dry-run --retries abc || self_failures=$((self_failures + 1))
   assert_bad_args "rejects-bad-gate-pause-ms" '^--gate-pause-ms requires an unsigned integer value$' \
     --dry-run --gate-pause-ms abc || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-missing-textedit-pid" '^--textedit-pid requires a pid$' \
+    --dry-run --textedit-pid || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-flag-as-textedit-pid" '^--textedit-pid requires a pid$' \
+    --textedit-pid --dry-run || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-missing-popup-pid" '^--popup-pid requires a pid$' \
+    --dry-run --popup-pid || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-missing-browser-pid" '^--browser-pid requires a pid$' \
+    --dry-run --browser-pid || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-missing-timeout-ms" '^--timeout-ms requires a value$' \
+    --dry-run --timeout-ms || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-missing-short-timeout-ms" '^--short-timeout-ms requires a value$' \
+    --dry-run --short-timeout-ms || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-missing-retries" '^--retries requires a value$' \
+    --dry-run --retries || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-missing-gate-pause-ms" '^--gate-pause-ms requires a value$' \
+    --dry-run --gate-pause-ms || self_failures=$((self_failures + 1))
+  assert_bad_args "rejects-missing-log-dir" '^--log-dir requires a directory$' \
+    --dry-run --log-dir || self_failures=$((self_failures + 1))
 
   failures=0
   incomplete_skips=1

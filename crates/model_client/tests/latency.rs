@@ -16,7 +16,8 @@ fn require_latency_budget() -> bool {
     )
 }
 
-use model_client::{terse_continuation_prompt, LlamaModel, LocalModel};
+use grammar::vet_correction;
+use model_client::{grammar_fix_prompt, terse_continuation_prompt, LlamaModel, LocalModel};
 
 fn model_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -257,6 +258,43 @@ fn complete_n_returns_real_model_candidates() {
         distinct.len() > 1,
         "expected diverging candidates but all were identical: {candidates:?}"
     );
+
+    Box::new(model).shutdown();
+}
+
+#[test]
+#[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
+fn grammar_fix_real_model_output_is_vetted() {
+    if !require_model_tests() {
+        return;
+    }
+
+    let path = model_path();
+    if !ensure_model_exists(&path) {
+        return;
+    }
+
+    let Some(model) = load_model_or_skip(&path) else {
+        return;
+    };
+    model.warm_up().expect("warm up");
+    let prompt = grammar_fix_prompt("teh", "Please fix");
+    let raw = model.complete(&prompt, 4).expect("grammar fix");
+    let vetted = vet_correction("teh", &raw);
+    assert!(
+        !raw.trim().is_empty(),
+        "real model grammar prompt produced no output"
+    );
+    if let Some(correction) = vetted {
+        assert_ne!(
+            correction, "teh",
+            "accepted correction must change the word"
+        );
+        assert!(
+            correction.is_ascii() && !correction.contains(char::is_whitespace),
+            "accepted correction must be a single ASCII token: {correction:?}"
+        );
+    }
 
     Box::new(model).shutdown();
 }

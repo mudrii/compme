@@ -122,6 +122,22 @@ SH
   grep -Fq "xcrun notarytool submit --wait --timeout 45m --key $key_file --key-id ABC123DEFG --issuer 00000000-0000-0000-0000-000000000000" "$log"
   grep -Fq "PRIVATE KEY" "$key_file"
 
+  PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$log" \
+    COMPME_NOTARYTOOL_KEY_PATH="$tmp/AuthKey_PATH.p8" \
+    COMPME_NOTARYTOOL_KEY_ID="PATH123456" \
+    COMPME_NOTARYTOOL_ISSUER="11111111-1111-1111-1111-111111111111" \
+    "$0" "$app" >"$tmp/stdout-key-path"
+  grep -Fq "xcrun notarytool submit --wait --timeout 30m --key $tmp/AuthKey_PATH.p8 --key-id PATH123456 --issuer 11111111-1111-1111-1111-111111111111" "$log"
+
+  PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$log" \
+    COMPME_NOTARYTOOL_APPLE_ID="release@example.test" \
+    COMPME_NOTARYTOOL_PASSWORD="app-specific-password" \
+    COMPME_NOTARYTOOL_TEAM_ID="TEAM123456" \
+    "$0" "$app" >"$tmp/stdout-apple-id"
+  grep -Fq "xcrun notarytool submit --wait --timeout 30m --apple-id release@example.test --password app-specific-password --team-id TEAM123456" "$log"
+
   notary_fail_log="$tmp/notary-fail.log"
   if PATH="$fake_bin:$PATH" \
     COMPME_NOTARIZE_SELF_TEST_LOG="$notary_fail_log" \

@@ -119,6 +119,18 @@ run_self_test() {
   grep -q "already matches v9.8.7" "$tmp/noop.out"
   grep -Fxq "$tmp/artifact.zip" "$tmp/artifacts.log"
 
+  make_fixture_repo "$tmp/summary" noop
+  summary_sha="$(git -C "$tmp/summary/work" rev-parse HEAD)"
+  detach_release_checkout "$tmp/summary/work" "$summary_sha"
+  summary_file="$tmp/github-step-summary.md"
+  COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/summary/work" \
+    GITHUB_SHA="$summary_sha" \
+    GITHUB_STEP_SUMMARY="$summary_file" \
+    "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main >/dev/null
+  grep -Fxq "## Homebrew cask" "$summary_file"
+  grep -Fxq 'Finalized `Casks/compme.rb` for `v9.8.7` on `main`.' "$summary_file"
+  grep -Fxq 'version: `9.8.7`' "$summary_file"
+
   make_fixture_repo "$tmp/modify" modify
   modify_sha="$(git -C "$tmp/modify/work" rev-parse HEAD)"
   detach_release_checkout "$tmp/modify/work" "$modify_sha"

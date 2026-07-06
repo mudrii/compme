@@ -61,16 +61,18 @@ macOS pasteboard checks share process-wide OS state.
 Model-backed local gates:
 
 ```sh
-COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1
+COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1
 cd tools/spike
-COMPME_REQUIRE_MODEL_TESTS=1 cargo test --locked --test model_integration -- --ignored --test-threads=1
+COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1
 ```
 
 These ignored suites need the GGUF files and Metal GPU. Without
 `COMPME_REQUIRE_MODEL_TESTS=1` they skip absent models for developer convenience;
 with it, a missing model is a failed acceptance gate. The root model-client gate
 also sets `COMPME_REQUIRE_MODEL_CONTEXT=1` so model load/context initialization
-failures cannot skip silently.
+failures cannot skip silently, and both ignored suites set
+`COMPME_REQUIRE_LATENCY_BUDGET=1` so warm-completion latency assertions cannot
+be skipped.
 
 The Release workflow must invoke `tools/release/run-model-gates.sh` before
 publishing a tag; `tools/release/check-model-gates.sh` is the machine check that

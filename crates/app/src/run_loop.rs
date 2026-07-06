@@ -2617,6 +2617,18 @@ fn stats_pane_lines(buckets: &[stats::DayBucket]) -> Vec<String> {
         .collect()
 }
 
+fn compose_stats_lines(
+    usage: &stats::Stats,
+    wall_ms: u64,
+    range_index: usize,
+    group_index: usize,
+) -> Vec<String> {
+    let days = stats::StatRange::from_index(range_index).days();
+    let grouping = stats::StatGrouping::from_index(group_index);
+    let buckets = stats::group_buckets(&usage.daily_buckets(wall_ms, days), grouping);
+    stats_pane_lines(&buckets)
+}
+
 /// Whether the Setup tab's permission re-probe is due: only while the
 /// settings window is visible (hidden windows must cost nothing), at most
 /// every `SECURE_POLL_INTERVAL_MS`.
@@ -4579,15 +4591,12 @@ pub fn run() -> Result<(), String> {
                     .unwrap_or_else(|e| e.into_inner());
                 // Span + bucketing chosen by the Statistics range/group pickers
                 // (defaults: 7 days, Daily → identity bucketing).
-                let days = stats::StatRange::from_index(
+                *lines = compose_stats_lines(
+                    &usage,
+                    wall_ms,
                     settings_flags.stat_range_index.load(Ordering::Relaxed),
-                )
-                .days();
-                let grouping = stats::StatGrouping::from_index(
                     settings_flags.stat_group_index.load(Ordering::Relaxed),
                 );
-                let buckets = stats::group_buckets(&usage.daily_buckets(wall_ms, days), grouping);
-                *lines = stats_pane_lines(&buckets);
                 // Grow-only session totals, NOT window-derived counts: past
                 // 30 days the window prunes and the row would regress — and
                 // it must agree with what the periodic flush writes to disk.
@@ -6178,25 +6187,26 @@ mod tests {
     }
 
     #[test]
-    fn web_override_persist_round_trips_all_four_overrides_on_one_app() {
-        // A single app carrying ALL FOUR per-app overrides at once — enabled +
-        // tab_disabled + mid_line + autocorrect — must survive
+    fn web_override_persist_round_trips_all_five_overrides_on_one_app() {
+        // A single app carrying ALL FIVE editable per-app overrides at once —
+        // enabled + tab_disabled + mid_line + autocorrect + grammar_fix — must survive
         // persist_web_override_prefs -> build_prefs with every field intact and
         // INDEPENDENT. The existing feature-only round-trip pins mid_line/
-        // autocorrect/tab_disabled but deliberately keeps `enabled == None` to
+        // autocorrect/grammar_fix/tab_disabled but deliberately keeps `enabled == None` to
         // prove independence; no test rounds the `enabled` key alongside the
-        // three feature keys on the SAME app. Because each field serializes to a
+        // four feature keys on the SAME app. Because each field serializes to a
         // *separate* comma-list key, a regression where the enabled write (or its
         // reload) clobbered or dropped a co-resident feature override — or vice
         // versa — would pass every existing round-trip yet corrupt an app that a
         // user configured fully in the Apps pane.
         use prefs::AppPolicyField::*;
-        let app = "com.foo.allfour";
+        let app = "com.foo.allfive";
         let mut prefs = Prefs::default();
         prefs.set_app_policy_field(app, Enabled, false); // -> COMPME_DISABLED_APPS
         prefs.set_app_policy_field(app, TabDisabled, true); // -> COMPME_TAB_DISABLED_APPS
         prefs.set_app_policy_field(app, MidLine, true); // -> COMPME_MIDLINE_ON_APPS
         prefs.set_app_policy_field(app, Autocorrect, false); // -> COMPME_AUTOCORRECT_OFF_APPS
+        prefs.set_app_policy_field(app, GrammarFix, true); // -> COMPME_GRAMMAR_FIX_ON_APPS
 
         let dir = std::env::temp_dir().join(format!(
             "compme-web-override-allfour-persist-test-{}",
@@ -6217,6 +6227,10 @@ mod tests {
             map.get("COMPME_AUTOCORRECT_OFF_APPS"),
             Some(&app.to_string())
         );
+        assert_eq!(
+            map.get("COMPME_GRAMMAR_FIX_ON_APPS"),
+            Some(&app.to_string())
+        );
 
         let reloaded = build_prefs(&|key| map.get(key).cloned());
         let p = &reloaded.per_app[app];
@@ -6224,6 +6238,7 @@ mod tests {
         assert!(p.tab_disabled, "tab_disabled override lost");
         assert_eq!(p.mid_line, Some(true), "mid_line override lost");
         assert_eq!(p.autocorrect, Some(false), "autocorrect override lost");
+        assert_eq!(p.grammar_fix, Some(true), "grammar_fix override lost");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -7180,6 +7195,29 @@ mod tests {
                 "Shown    \u{2581}\u{2585}\u{2588}  6",
                 "Accepted \u{2581}\u{2588}\u{2588}  2",
                 "Words    \u{2581}\u{2584}\u{2588}  7",
+            ]
+        );
+    }
+
+    #[test]
+    fn stats_range_group_indices_select_window_and_bucket_rows() {
+        let now = 1_800_000_000_000;
+        let mut usage = stats::Stats::default();
+        usage.record(now - 13 * stats::DAY_MS, stats::Outcome::Shown);
+        usage.record(
+            now - 12 * stats::DAY_MS,
+            stats::Outcome::Accepted { words: 2 },
+        );
+        usage.record(now - 2 * stats::DAY_MS, stats::Outcome::Shown);
+        usage.record(now - stats::DAY_MS, stats::Outcome::Shown);
+        usage.record(now, stats::Outcome::Accepted { words: 5 });
+
+        assert_eq!(
+            compose_stats_lines(&usage, now, 1, 1),
+            vec![
+                "Shown    \u{2585}\u{2588}  3",
+                "Accepted \u{2588}\u{2588}  2",
+                "Words    \u{2584}\u{2588}  7",
             ]
         );
     }

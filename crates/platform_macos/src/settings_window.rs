@@ -2773,6 +2773,24 @@ mod tests {
     }
 
     #[test]
+    fn apps_policy_titles_and_headers_match_tag_order() {
+        assert_eq!(APP_POLICY_FIELDS, 5);
+        assert_eq!(
+            APP_POLICY_FIELD_TITLES,
+            [
+                "Enabled",
+                "Tab key",
+                "Mid-line",
+                "Autocorrect",
+                "Grammar fix"
+            ]
+        );
+        assert_eq!(APP_POLICY_COLUMN_HEADERS, ["On", "Tab", "Mid", "AC", "GF"]);
+        assert_eq!(APP_POLICY_FIELD_TITLES.len(), APP_POLICY_FIELDS);
+        assert_eq!(APP_POLICY_COLUMN_HEADERS.len(), APP_POLICY_FIELDS);
+    }
+
+    #[test]
     fn apps_policy_action_records_decoded_tag_and_state() {
         let apps_edit = Arc::new(Mutex::new(None));
 
