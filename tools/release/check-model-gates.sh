@@ -1130,38 +1130,42 @@ ruby -ryaml -e '
     abort("missing release gate: CI #{job_name} pins Rust toolchain") unless Array(job["steps"]).any? { |step| step.is_a?(Hash) && rust_toolchain_step_valid?(step) }
   end
   ci_steps = jobs.fetch("check").fetch("steps")
+  # Gate steps required verbatim in BOTH the CI check job and the release
+  # validate job; per-workflow extras are merged in at each call site.
+  shared_gate_steps = {
+    "script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
+    "bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
+    "bundle metadata self-test" => ["Bundle metadata self-test", "tools/bundle/check-bundle-metadata.sh --self-test"],
+    "bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
+    "E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
+    "missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
+    "missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
+    "UI-assisted session self-test" => ["UI-assisted session self-test", "tools/acceptance/run-ui-assisted-session.sh --self-test"],
+    "A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
+    "A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
+    "A2 matrix ledger self-test" => ["A2 matrix ledger policy self-test", "tools/release/check-a2-matrix-ledger.sh --self-test"],
+    "model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
+    "model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
+    "agent brief alignment" => ["Agent brief alignment", "tools/release/check-agent-briefs.sh"],
+    "agent brief alignment self-test" => ["Agent brief alignment self-test", "tools/release/check-agent-briefs.sh --self-test"],
+    "privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],
+    "privacy policy self-test" => ["Privacy policy self-test", "tools/release/check-privacy-policy.sh --self-test"],
+    "model gate policy" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
+    "model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
+    "cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],
+    "cask finalizer" => ["Release cask finalizer self-test", "tools/release/finalize-cask.sh --self-test"],
+    "notarization helper" => ["Notarization helper self-test", "tools/release/notarize-app.sh --self-test"],
+    "update manifest" => ["Update manifest self-test", "tools/release/write-update-manifest.sh --self-test"],
+  }
   {
     "CI root format" => ["Format", "cargo fmt --all -- --check"],
     "CI root clippy" => ["Clippy (deny warnings)", "cargo clippy --locked --workspace --all-targets -- -D warnings"],
     "CI root test" => ["Test", "cargo test --locked --workspace --all-targets -- --test-threads=1"],
     "CI root build" => ["Build", "cargo build --locked --workspace --all-targets"],
-    "CI script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
-    "CI bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
-    "CI bundle metadata self-test" => ["Bundle metadata self-test", "tools/bundle/check-bundle-metadata.sh --self-test"],
-    "CI bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
     "CI bundle smoke" => ["Bundle smoke", "tools/bundle/bundle-smoke.sh"],
     "CI bundle smoke self-test" => ["Bundle smoke self-test", "tools/bundle/bundle-smoke.sh --self-test"],
-    "CI E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
-    "CI missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
-    "CI missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
-    "CI UI-assisted session self-test" => ["UI-assisted session self-test", "tools/acceptance/run-ui-assisted-session.sh --self-test"],
-    "CI A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
-    "CI A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
-    "CI A2 matrix ledger self-test" => ["A2 matrix ledger policy self-test", "tools/release/check-a2-matrix-ledger.sh --self-test"],
-    "CI model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
-    "CI model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
-    "CI agent brief alignment" => ["Agent brief alignment", "tools/release/check-agent-briefs.sh"],
-    "CI agent brief alignment self-test" => ["Agent brief alignment self-test", "tools/release/check-agent-briefs.sh --self-test"],
-    "CI privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],
-    "CI privacy policy self-test" => ["Privacy policy self-test", "tools/release/check-privacy-policy.sh --self-test"],
-    "CI release policy" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
-    "CI release model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
-    "CI cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],
-    "CI cask finalizer" => ["Release cask finalizer self-test", "tools/release/finalize-cask.sh --self-test"],
-    "CI notarization helper" => ["Notarization helper self-test", "tools/release/notarize-app.sh --self-test"],
-    "CI update manifest" => ["Update manifest self-test", "tools/release/write-update-manifest.sh --self-test"],
     "CI platform_macos examples build" => ["Build macOS acceptance examples", "cargo build --locked -p platform_macos --examples"],
-  }.each do |label, (name, run)|
+  }.merge(shared_gate_steps.transform_keys { |key| "CI #{key}" }).each do |label, (name, run)|
     abort("missing release gate: #{label}") unless step?(ci_steps, name, run)
   end
 
@@ -1243,30 +1247,7 @@ ruby -ryaml -e '
     "release root test" => ["Root tests", "cargo test --locked --workspace --all-targets -- --test-threads=1"],
     "release root build" => ["Root build", "cargo build --locked --workspace --all-targets"],
     "release workflow invokes model gate script" => ["Model-backed release gates", "bash tools/release/run-model-gates.sh"],
-    "release script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
-    "release bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
-    "release bundle metadata self-test" => ["Bundle metadata self-test", "tools/bundle/check-bundle-metadata.sh --self-test"],
-    "release bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
-    "release A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
-    "release A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
-    "release A2 matrix ledger self-test" => ["A2 matrix ledger policy self-test", "tools/release/check-a2-matrix-ledger.sh --self-test"],
-    "release E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
-    "release missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
-    "release missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
-    "release UI-assisted session self-test" => ["UI-assisted session self-test", "tools/acceptance/run-ui-assisted-session.sh --self-test"],
-    "release model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
-    "release model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
-    "release agent brief alignment" => ["Agent brief alignment", "tools/release/check-agent-briefs.sh"],
-    "release agent brief alignment self-test" => ["Agent brief alignment self-test", "tools/release/check-agent-briefs.sh --self-test"],
-    "release privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],
-    "release privacy policy self-test" => ["Privacy policy self-test", "tools/release/check-privacy-policy.sh --self-test"],
-    "release policy check" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
-    "release model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
-    "release cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],
-    "release cask finalizer" => ["Release cask finalizer self-test", "tools/release/finalize-cask.sh --self-test"],
-    "release notarization helper" => ["Notarization helper self-test", "tools/release/notarize-app.sh --self-test"],
-    "release update manifest" => ["Update manifest self-test", "tools/release/write-update-manifest.sh --self-test"],
-  }.each do |label, (name, run)|
+  }.merge(shared_gate_steps.transform_keys { |key| "release #{key}" }).each do |label, (name, run)|
     abort("missing release gate: #{label}") unless step?(validate_steps, name, run)
   end
   require_live_a2_ledger_step!(validate_steps)
