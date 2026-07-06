@@ -457,10 +457,7 @@ define_class!(
 
         #[unsafe(method(downloadModel:))]
         fn download_model(&self, _sender: Option<&NSButton>) {
-            self.ivars()
-                .flags
-                .setup_download_model
-                .store(true, Ordering::Relaxed);
+            record_setup_download(&self.ivars().flags.setup_download_model);
         }
 
         #[unsafe(method(selectModel:))]
@@ -470,11 +467,10 @@ define_class!(
                 // always populated, but clamp negatives to 0 defensively. The
                 // run loop resolves this index through selected_catalog_entry,
                 // which falls back to recommended on any out-of-range value.
-                let index = popup.indexOfSelectedItem().max(0) as usize;
-                self.ivars()
-                    .flags
-                    .setup_model_index
-                    .store(index, Ordering::Relaxed);
+                record_setup_model_selection(
+                    &self.ivars().flags.setup_model_index,
+                    popup.indexOfSelectedItem(),
+                );
             }
         }
 
@@ -679,12 +675,7 @@ impl SettingsTarget {
     /// Park a Personalization edit for the run loop (last-writer-wins; the loop
     /// `take()`s it each tick). Poison-tolerant like the other flag writers.
     fn record_personalization_edit(&self, edit: PersonalizationEdit) {
-        *self
-            .ivars()
-            .flags
-            .personalization_edit
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(edit);
+        record_personalization_edit_slot(&self.ivars().flags.personalization_edit, edit);
     }
 }
 
@@ -2166,6 +2157,21 @@ fn record_apps_policy_edit(apps_edit: &AppsPolicyEditSlot, tag: isize, state: NS
     *slot = Some((row, field, on));
 }
 
+fn record_setup_download(slot: &Arc<AtomicBool>) {
+    slot.store(true, Ordering::Relaxed);
+}
+
+fn record_setup_model_selection(slot: &Arc<AtomicUsize>, raw_index: isize) {
+    slot.store(raw_index.max(0) as usize, Ordering::Relaxed);
+}
+
+fn record_personalization_edit_slot(
+    slot: &Arc<Mutex<Option<PersonalizationEdit>>>,
+    edit: PersonalizationEdit,
+) {
+    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(edit);
+}
+
 /// Checkbox titles for the per-app policy fields, indexed the same as the tag
 /// encoding (and `prefs::AppPolicyField`'s variant order). `TabDisabled` reads
 /// as "Tab key" so the checked state means "Tab is a literal Tab here".
@@ -2395,6 +2401,44 @@ mod tests {
         assert_eq!(
             setup_action_button_availability(&missing_model),
             [false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn settings_action_helpers_record_setup_and_personalization_slots() {
+        let model_index = Arc::new(AtomicUsize::new(9));
+        record_setup_model_selection(&model_index, -1);
+        assert_eq!(model_index.load(Ordering::Relaxed), 0);
+        record_setup_model_selection(&model_index, 3);
+        assert_eq!(model_index.load(Ordering::Relaxed), 3);
+
+        let download = Arc::new(AtomicBool::new(false));
+        record_setup_download(&download);
+        assert!(download.load(Ordering::Relaxed));
+
+        let personalization = Arc::new(Mutex::new(None));
+        record_personalization_edit_slot(
+            &personalization,
+            PersonalizationEdit::GlobalInstructions("Use terse replies".into()),
+        );
+        assert_eq!(
+            *personalization.lock().unwrap(),
+            Some(PersonalizationEdit::GlobalInstructions(
+                "Use terse replies".into()
+            ))
+        );
+        record_personalization_edit_slot(
+            &personalization,
+            PersonalizationEdit::SenderEmail("ada@example.test".into()),
+        );
+        assert_eq!(
+            *personalization.lock().unwrap(),
+            Some(PersonalizationEdit::SenderEmail("ada@example.test".into()))
+        );
+        record_personalization_edit_slot(&personalization, PersonalizationEdit::StrengthStop(4));
+        assert_eq!(
+            *personalization.lock().unwrap(),
+            Some(PersonalizationEdit::StrengthStop(4))
         );
     }
 

@@ -48,6 +48,18 @@ SH
   cat >"$fake_bin/codesign" <<'SH'
 #!/usr/bin/env bash
 printf 'codesign %s\n' "$*" >>"$COMPME_BUNDLE_SELF_TEST_LOG"
+case "${COMPME_BUNDLE_CODESIGN_FAIL:-}" in
+  sign)
+    case " $* " in
+      *" --force "*) exit 31 ;;
+    esac
+    ;;
+  verify)
+    case " $* " in
+      *" --verify "*) exit 32 ;;
+    esac
+    ;;
+esac
 SH
   cat >"$fake_bin/lsregister" <<'SH'
 #!/usr/bin/env bash
@@ -107,6 +119,38 @@ SH
     return 1
   fi
   grep -Fq "lsregister_fail -f $tmp_dir/out-fail/Compme.app" "$log"
+
+  sign_fail_log="$tmp_dir/sign-fail.log"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_BUNDLE_SELF_TEST_LOG="$sign_fail_log" \
+    COMPME_BUNDLE_REPO_ROOT="$fixture_root" \
+    COMPME_BUNDLE_LSREGISTER="$fake_bin/lsregister" \
+    COMPME_BUNDLE_CODESIGN_FAIL=sign \
+    "$0" "$tmp_dir/out-sign-fail" >"$tmp_dir/stdout-sign-fail" 2>"$tmp_dir/stderr-sign-fail"; then
+    echo "codesign signing failure was accepted" >&2
+    return 1
+  fi
+  grep -Fq "codesign --force --sign - $tmp_dir/out-sign-fail/Compme.app" "$sign_fail_log"
+  if grep -Fq "lsregister -f $tmp_dir/out-sign-fail/Compme.app" "$sign_fail_log"; then
+    echo "self-test FAILED: lsregister ran after codesign signing failure" >&2
+    return 1
+  fi
+
+  verify_fail_log="$tmp_dir/verify-fail.log"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_BUNDLE_SELF_TEST_LOG="$verify_fail_log" \
+    COMPME_BUNDLE_REPO_ROOT="$fixture_root" \
+    COMPME_BUNDLE_LSREGISTER="$fake_bin/lsregister" \
+    COMPME_BUNDLE_CODESIGN_FAIL=verify \
+    "$0" "$tmp_dir/out-verify-fail" >"$tmp_dir/stdout-verify-fail" 2>"$tmp_dir/stderr-verify-fail"; then
+    echo "codesign verify failure was accepted" >&2
+    return 1
+  fi
+  grep -Fq "codesign --verify --strict $tmp_dir/out-verify-fail/Compme.app" "$verify_fail_log"
+  if grep -Fq "lsregister -f $tmp_dir/out-verify-fail/Compme.app" "$verify_fail_log"; then
+    echo "self-test FAILED: lsregister ran after codesign verify failure" >&2
+    return 1
+  fi
 
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp_dir/self-test-argc.err"; then
     echo "self-test FAILED: extra self-test argument was accepted" >&2

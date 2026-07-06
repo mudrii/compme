@@ -1522,6 +1522,123 @@ fn manual_grammar_request_for_current_field(
     )
 }
 
+#[derive(Debug)]
+enum GrammarCheckShortcutOutcome {
+    NoField,
+    BlockedBeforeRead,
+    ReadContextError(PlatformError),
+    CapabilitiesError(PlatformError),
+    BlockedAfterRead,
+    NotArmed,
+    Armed(CompletionRequest),
+}
+
+struct GrammarCheckShortcutArgs<
+    'a,
+    ResolveAppKey,
+    FocusedPageUrl,
+    ReadContext,
+    ReadCapabilities,
+    ArmGrammarRequest,
+> {
+    current_field: Option<FieldHandle>,
+    config: &'a Config,
+    prefs: &'a Prefs,
+    enabled: bool,
+    now_ms: u64,
+    last_domain: &'a mut Option<(String, String)>,
+    resolve_app_key: ResolveAppKey,
+    focused_page_url: FocusedPageUrl,
+    read_context: ReadContext,
+    capabilities: ReadCapabilities,
+    arm_manual_grammar_request: ArmGrammarRequest,
+}
+
+fn handle_grammar_check_shortcut<
+    ResolveAppKey,
+    FocusedPageUrl,
+    ReadContext,
+    ReadCapabilities,
+    ArmGrammarRequest,
+>(
+    args: GrammarCheckShortcutArgs<
+        '_,
+        ResolveAppKey,
+        FocusedPageUrl,
+        ReadContext,
+        ReadCapabilities,
+        ArmGrammarRequest,
+    >,
+) -> GrammarCheckShortcutOutcome
+where
+    ResolveAppKey: FnMut(FieldHandle) -> Option<String>,
+    FocusedPageUrl: FnMut(FieldHandle) -> Option<String>,
+    ReadContext: FnOnce(FieldHandle) -> Result<TextContext, PlatformError>,
+    ReadCapabilities: FnOnce(FieldHandle) -> Result<Capabilities, PlatformError>,
+    ArmGrammarRequest: FnOnce(FieldHandle) -> Option<(u64, u64)>,
+{
+    let GrammarCheckShortcutArgs {
+        current_field,
+        config,
+        prefs,
+        enabled,
+        now_ms,
+        last_domain,
+        mut resolve_app_key,
+        mut focused_page_url,
+        read_context,
+        capabilities,
+        arm_manual_grammar_request,
+    } = args;
+    let Some(field) = current_field else {
+        return GrammarCheckShortcutOutcome::NoField;
+    };
+    let app_key = resolve_app_key(field.clone());
+    if !grammar_pre_read_policy_passes(
+        config,
+        prefs,
+        app_key.as_deref(),
+        enabled,
+        now_ms,
+        last_domain,
+        || focused_page_url(field.clone()),
+    ) {
+        return GrammarCheckShortcutOutcome::BlockedBeforeRead;
+    }
+
+    let ctx = match read_context(field.clone()) {
+        Ok(ctx) => ctx,
+        Err(err) => return GrammarCheckShortcutOutcome::ReadContextError(err),
+    };
+    let caps = match capabilities(field.clone()) {
+        Ok(caps) => caps,
+        Err(err) => return GrammarCheckShortcutOutcome::CapabilitiesError(err),
+    };
+    let Some(mut request) = manual_grammar_request_for_current_field(
+        ManualGrammarRequestInputs {
+            field: &field,
+            ctx: &ctx,
+            caps: &caps,
+            config,
+            prefs,
+            app_key: app_key.as_deref(),
+            enabled,
+            now_ms,
+        },
+        last_domain,
+        || focused_page_url(field.clone()),
+    ) else {
+        return GrammarCheckShortcutOutcome::BlockedAfterRead;
+    };
+
+    let Some((generation, snapshot)) = arm_manual_grammar_request(field) else {
+        return GrammarCheckShortcutOutcome::NotArmed;
+    };
+    request.generation = generation;
+    request.snapshot = snapshot;
+    GrammarCheckShortcutOutcome::Armed(request)
+}
+
 fn enqueue_monitored_change_for_current_domain(
     pending: &mut Vec<PendingMonitoredText>,
     last_domain: &mut Option<(String, String)>,
@@ -4110,59 +4227,49 @@ pub fn run() -> Result<(), String> {
                             eprintln!("compme: shortcut grammar-check: no focused field");
                             continue;
                         };
-                        let app_key = effective_app_key(&field, bundle_id_for_pid);
-                        if !grammar_pre_read_policy_passes(
-                            &config,
-                            &prefs,
-                            app_key.as_deref(),
-                            flags.enabled.load(Ordering::Relaxed),
+                        match handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
+                            current_field: Some(field),
+                            config: &config,
+                            prefs: &prefs,
+                            enabled: flags.enabled.load(Ordering::Relaxed),
                             now_ms,
-                            &mut last_domain,
-                            || adapter.focused_page_url(&field).ok().flatten(),
-                        ) {
-                            eprintln!("compme: shortcut grammar-check blocked before text read");
-                            continue;
-                        }
-                        let ctx = match adapter.read_context(&field) {
-                            Ok(ctx) => ctx,
-                            Err(err) => {
-                                eprintln!("compme: grammar-check read_context error: {err:?}");
-                                continue;
-                            }
-                        };
-                        let caps = match adapter.capabilities(&field) {
-                            Ok(caps) => caps,
-                            Err(err) => {
-                                eprintln!("compme: grammar-check capabilities error: {err:?}");
-                                continue;
-                            }
-                        };
-                        latest.clear();
-                        if let Some(mut request) = manual_grammar_request_for_current_field(
-                            ManualGrammarRequestInputs {
-                                field: &field,
-                                ctx: &ctx,
-                                caps: &caps,
-                                config: &config,
-                                prefs: &prefs,
-                                app_key: app_key.as_deref(),
-                                enabled: flags.enabled.load(Ordering::Relaxed),
-                                now_ms,
+                            last_domain: &mut last_domain,
+                            resolve_app_key: |field| effective_app_key(&field, bundle_id_for_pid),
+                            focused_page_url: |field| {
+                                adapter.focused_page_url(&field).ok().flatten()
                             },
-                            &mut last_domain,
-                            || adapter.focused_page_url(&field).ok().flatten(),
-                        ) {
-                            if let Some((generation, snapshot)) =
+                            read_context: |field| adapter.read_context(&field),
+                            capabilities: |field| adapter.capabilities(&field),
+                            arm_manual_grammar_request: |field| {
                                 engine.arm_manual_grammar_request(&field)
-                            {
-                                request.generation = generation;
-                                request.snapshot = snapshot;
-                                manual_grammar_request = Some(request);
-                            } else {
+                            },
+                        }) {
+                            GrammarCheckShortcutOutcome::NoField => {
+                                eprintln!("compme: shortcut grammar-check: no focused field");
+                            }
+                            GrammarCheckShortcutOutcome::BlockedBeforeRead => {
+                                eprintln!(
+                                    "compme: shortcut grammar-check blocked before text read"
+                                );
+                            }
+                            GrammarCheckShortcutOutcome::ReadContextError(err) => {
+                                eprintln!("compme: grammar-check read_context error: {err:?}");
+                            }
+                            GrammarCheckShortcutOutcome::CapabilitiesError(err) => {
+                                eprintln!("compme: grammar-check capabilities error: {err:?}");
+                            }
+                            GrammarCheckShortcutOutcome::BlockedAfterRead => {
+                                latest.clear();
+                                eprintln!("compme: shortcut grammar-check blocked");
+                            }
+                            GrammarCheckShortcutOutcome::NotArmed => {
+                                latest.clear();
                                 eprintln!("compme: shortcut grammar-check not armed");
                             }
-                        } else {
-                            eprintln!("compme: shortcut grammar-check blocked");
+                            GrammarCheckShortcutOutcome::Armed(request) => {
+                                latest.clear();
+                                manual_grammar_request = Some(request);
+                            }
                         }
                     }
                 },
@@ -9898,6 +10005,94 @@ mod tests {
             },
         ));
         assert_eq!(url_reads.get(), 1);
+    }
+
+    fn grammar_shortcut_probe(
+        config: &Config,
+        prefs: &Prefs,
+        enabled: bool,
+        app: &str,
+        now_ms: u64,
+        cached_domain_entry: Option<(String, String)>,
+        focused_url: Option<&str>,
+    ) -> (GrammarCheckShortcutOutcome, usize, usize, usize) {
+        let field = field_with_app(app);
+        let mut cache = cached_domain_entry;
+        let read_count = std::cell::Cell::new(0);
+        let caps_count = std::cell::Cell::new(0);
+        let url_count = std::cell::Cell::new(0);
+        let outcome = handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
+            current_field: Some(field.clone()),
+            config,
+            prefs,
+            enabled,
+            now_ms,
+            last_domain: &mut cache,
+            resolve_app_key: |field: FieldHandle| Some(field.app.clone()),
+            focused_page_url: |_: FieldHandle| {
+                url_count.set(url_count.get() + 1);
+                focused_url.map(str::to_string)
+            },
+            read_context: |field: FieldHandle| {
+                read_count.set(read_count.get() + 1);
+                Ok(text_context_with_right(&field, "teh", ""))
+            },
+            capabilities: |_: FieldHandle| {
+                caps_count.set(caps_count.get() + 1);
+                Ok(writable_axset_caps())
+            },
+            arm_manual_grammar_request: |_: FieldHandle| Some((77, 88)),
+        });
+        (outcome, read_count.get(), caps_count.get(), url_count.get())
+    }
+
+    #[test]
+    fn grammar_check_shortcut_blocks_policy_before_read_context() {
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+
+        let (_, reads, caps, urls) =
+            grammar_shortcut_probe(&config, &config.prefs, false, "TextEdit", 0, None, None);
+        assert_eq!((reads, caps, urls), (0, 0, 0));
+
+        let mut prefs = config.prefs.clone();
+        prefs.set_app_policy_field("TextEdit", prefs::AppPolicyField::GrammarFix, false);
+        let (_, reads, caps, urls) =
+            grammar_shortcut_probe(&config, &prefs, true, "TextEdit", 0, None, None);
+        assert_eq!((reads, caps, urls), (0, 0, 0));
+
+        let mut prefs = config.prefs.clone();
+        prefs.snooze_app("TextEdit", 0, 60);
+        let (_, reads, caps, urls) =
+            grammar_shortcut_probe(&config, &prefs, true, "TextEdit", 1, None, None);
+        assert_eq!((reads, caps, urls), (0, 0, 0));
+
+        let mut prefs = config.prefs.clone();
+        prefs.excluded_domains.insert("blocked.example".into());
+        let (_, reads, caps, urls) = grammar_shortcut_probe(
+            &config,
+            &prefs,
+            true,
+            "com.google.Chrome",
+            0,
+            Some((
+                "com.google.Chrome".to_string(),
+                "allowed.example".to_string(),
+            )),
+            Some("https://blocked.example/doc"),
+        );
+        assert_eq!((reads, caps, urls), (0, 0, 1));
+
+        let (outcome, reads, caps, urls) =
+            grammar_shortcut_probe(&config, &config.prefs, true, "TextEdit", 0, None, None);
+        assert_eq!((reads, caps, urls), (1, 1, 0));
+        match outcome {
+            GrammarCheckShortcutOutcome::Armed(request) => {
+                assert_eq!(request.generation, 77);
+                assert_eq!(request.snapshot, 88);
+                assert!(matches!(request.kind, RequestKind::GrammarFix { .. }));
+            }
+            other => panic!("expected armed grammar request, got {other:?}"),
+        }
     }
 
     #[test]

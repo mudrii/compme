@@ -84,6 +84,18 @@ SH
   cat >"$fake_bin/xcrun" <<'SH'
 #!/usr/bin/env bash
 printf 'xcrun %s\n' "$*" >>"$COMPME_NOTARIZE_SELF_TEST_LOG"
+case "${COMPME_NOTARIZE_XCRUN_FAIL:-}" in
+  notarytool)
+    [ "${1:-}" = "notarytool" ] && exit 41
+    ;;
+  staple)
+    [ "${1:-}" = "stapler" ] && [ "${2:-}" = "staple" ] && exit 42
+    ;;
+  validate)
+    [ "${1:-}" = "stapler" ] && [ "${2:-}" = "validate" ] && exit 43
+    ;;
+esac
+exit 0
 SH
   chmod +x "$fake_bin/ditto" "$fake_bin/xcrun"
 
@@ -109,6 +121,47 @@ SH
     "$0" "$app" >"$tmp/stdout-api"
   grep -Fq "xcrun notarytool submit --wait --timeout 45m --key $key_file --key-id ABC123DEFG --issuer 00000000-0000-0000-0000-000000000000" "$log"
   grep -Fq "PRIVATE KEY" "$key_file"
+
+  notary_fail_log="$tmp/notary-fail.log"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$notary_fail_log" \
+    COMPME_NOTARIZE_XCRUN_FAIL=notarytool \
+    COMPME_NOTARYTOOL_KEYCHAIN_PROFILE="compme-release" \
+    "$0" "$app" >"$tmp/notary-fail.out" 2>"$tmp/notary-fail.err"; then
+    echo "self-test FAILED: notarytool failure should fail" >&2
+    return 1
+  fi
+  grep -Fq "xcrun notarytool submit" "$notary_fail_log"
+  if grep -Fq "xcrun stapler staple $app" "$notary_fail_log"; then
+    echo "self-test FAILED: stapler ran after notarytool failure" >&2
+    return 1
+  fi
+
+  staple_fail_log="$tmp/staple-fail.log"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$staple_fail_log" \
+    COMPME_NOTARIZE_XCRUN_FAIL=staple \
+    COMPME_NOTARYTOOL_KEYCHAIN_PROFILE="compme-release" \
+    "$0" "$app" >"$tmp/staple-fail.out" 2>"$tmp/staple-fail.err"; then
+    echo "self-test FAILED: stapler staple failure should fail" >&2
+    return 1
+  fi
+  grep -Fq "xcrun stapler staple $app" "$staple_fail_log"
+  if grep -Fq "xcrun stapler validate $app" "$staple_fail_log"; then
+    echo "self-test FAILED: validate ran after stapler staple failure" >&2
+    return 1
+  fi
+
+  validate_fail_log="$tmp/validate-fail.log"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$validate_fail_log" \
+    COMPME_NOTARIZE_XCRUN_FAIL=validate \
+    COMPME_NOTARYTOOL_KEYCHAIN_PROFILE="compme-release" \
+    "$0" "$app" >"$tmp/validate-fail.out" 2>"$tmp/validate-fail.err"; then
+    echo "self-test FAILED: stapler validate failure should fail" >&2
+    return 1
+  fi
+  grep -Fq "xcrun stapler validate $app" "$validate_fail_log"
 
   if PATH="$fake_bin:$PATH" "$0" "$app" >"$tmp/no-creds.out" 2>"$tmp/no-creds.err"; then
     echo "self-test FAILED: missing credentials should fail" >&2

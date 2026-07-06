@@ -27,10 +27,10 @@ validate_log() {
   grep -q '^compme: setup: Model file not ready$' "$log_file" \
     || fail "missing setup model-not-ready log (log: $log_file)"
   # A missing model must leave the app Blocked (no suggestions). On a live,
-  # untrusted run the higher-ranked Blocked(Permission) wins over
-  # Blocked(ModelUnavailable) (derive_status ordering), so accept either —
-  # both prove the app is blocked. The self-test fake emits ModelUnavailable.
-  grep -Eq '^compme: status=Blocked\((ModelUnavailable|Permission)\)' "$log_file" \
+  # untrusted run a higher-ranked environmental block can win over
+  # Blocked(ModelUnavailable) (derive_status ordering), so accept those too;
+  # startup/recovery logs above still prove the missing model path was exercised.
+  grep -Eq '^compme: status=Blocked\((ModelUnavailable|Permission|SecureInput)\)' "$log_file" \
     || fail "missing blocked status log (log: $log_file)"
   if grep -Eq '^compme: request gen=' "$log_file"; then
     fail "completion request was submitted without a model (log: $log_file)"
@@ -47,7 +47,11 @@ mode="${COMPME_FAKE_MODE:-ok}"
 [ "$mode" = omit-startup ] || printf '%s\n' 'compme: model unavailable at startup: model file not found: /tmp/missing.gguf'
 [ "$mode" = omit-recovery ] || printf '%s\n' 'compme: setup remains available; download or select a model, then relaunch'
 [ "$mode" = omit-setup ] || printf '%s\n' 'compme: setup: Model file not ready'
-[ "$mode" = omit-status ] || printf '%s\n' 'compme: status=Blocked(ModelUnavailable) enabled=false snoozed=false'
+case "$mode" in
+  secure-input) printf '%s\n' 'compme: status=Blocked(SecureInput) enabled=false snoozed=false' ;;
+  omit-status) ;;
+  *) printf '%s\n' 'compme: status=Blocked(ModelUnavailable) enabled=false snoozed=false' ;;
+esac
 case "$mode" in
   request) printf '%s\n' 'compme: request gen=1 prompt_chars=10' ;;
   bad-exit) exit 7 ;;
@@ -59,6 +63,12 @@ SH
     echo "PASS self-test-missing-model-startup-success"
   else
     echo "FAIL self-test-missing-model-startup-success" >&2
+    exit 1
+  fi
+  if COMPME_FAKE_MODE=secure-input COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/secure-input.log" "$0" >/dev/null; then
+    echo "PASS self-test-missing-model-startup-secure-input-status"
+  else
+    echo "FAIL self-test-missing-model-startup-secure-input-status" >&2
     exit 1
   fi
 

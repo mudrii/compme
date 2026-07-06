@@ -752,6 +752,9 @@ run_self_tests() {
     caret-marker-electron-marker \
     encrypted-memory-all-monitored-live \
     grammar-fix-textedit-look \
+    mirror-window-firefox-zen-look \
+    setup-needed-docs-arc-onboarding \
+    multi-candidate-cycle-physical-look \
     input-monitoring-revoked-carbon-accept; do
     assert_log_contains "default-dry-run-manual-$gate" "$dry_run_log" "^MANUAL $gate:" \
       || self_failures=$((self_failures + 1))
@@ -773,6 +776,15 @@ run_self_tests() {
   fi
   assert_log_contains "default-dry-run-personalization-look-checklist" "$dry_run_log" \
     '^MANUAL personalization-pane-look: .*Settings > Personalization.*instructions, sender, and strength.*multi-line.*without relaunch' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-mirror-window-checklist" "$dry_run_log" \
+    '^MANUAL mirror-window-firefox-zen-look: .*Firefox.*Zen.*ghost appears in the mirror window.*focused text field' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-docs-arc-onboarding-checklist" "$dry_run_log" \
+    '^MANUAL setup-needed-docs-arc-onboarding: .*Google Docs.*Arc.*setup-needed onboarding.*Accessibility' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-multi-candidate-cycle-checklist" "$dry_run_log" \
+    '^MANUAL multi-candidate-cycle-physical-look: .*physical Down-arrow.*cycles candidates.*accept inserts selected candidate' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-menu-bar-icon-look-checklist" "$dry_run_log" \
     '^MANUAL menu-bar-icon-look: .*menu bar icon.*status.*fallback title' \
@@ -892,7 +904,7 @@ run_self_tests() {
       || self_failures=$((self_failures + 1))
   done
   assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
-    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=14 logs=' \
+    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=17 logs=' \
     || self_failures=$((self_failures + 1))
 
   skip_e2e_log="$self_test_dir/skip-e2e-dry-run.log"
@@ -913,7 +925,7 @@ run_self_tests() {
       || self_failures=$((self_failures + 1))
   done
   assert_log_contains "skip-e2e-counts-all-e2e-incomplete" "$skip_e2e_log" \
-    '^Summary: pass=[0-9]+ fail=0 skip=[0-9]+ incomplete=[3-9][0-9]* manual=14 logs=' \
+    '^Summary: pass=[0-9]+ fail=0 skip=[0-9]+ incomplete=[3-9][0-9]* manual=17 logs=' \
     || self_failures=$((self_failures + 1))
 
   skip_helper_log="$self_test_dir/e2e-skip-helper.log"
@@ -1091,6 +1103,9 @@ manual_gate "caret-marker-chromium-marker" "focus a Chromium build textarea or c
 manual_gate "caret-marker-electron-marker" "focus an Electron app text field such as VS Code; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics"
 manual_gate "encrypted-memory-all-monitored-live" "remaining residual after 2026-06-17 TextEdit and Chrome product-loop proofs: confirm secure-input, snoozed policy transition, and volatile-pid cases add no rows"
 manual_gate "grammar-fix-textedit-look" "launch compme with COMPME_GRAMMAR_FIX=1 plus COMPME_GRAMMAR_CHECK_KEY and COMPME_GRAMMAR_ACCEPT_KEY; in TextEdit verify 'teh' shows underline/banner, accept replaces exactly, and caret move/edit stales the correction"
+manual_gate "mirror-window-firefox-zen-look" "focus Firefox and Zen text fields with mirror-window mode enabled; confirm the ghost appears in the mirror window aligned to the focused text field and never in the source app window"
+manual_gate "setup-needed-docs-arc-onboarding" "focus Google Docs in Arc with Accessibility missing or unsupported element state; confirm setup-needed onboarding appears, names the missing Accessibility/setup action, and no completion request is submitted"
+manual_gate "multi-candidate-cycle-physical-look" "with a multi-candidate suggestion visible, press the physical Down-arrow; confirm it cycles candidates in order, wraps predictably, and accept inserts selected candidate"
 run_input_monitoring_revoked_carbon_gate
 
 echo

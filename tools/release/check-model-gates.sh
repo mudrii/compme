@@ -271,9 +271,12 @@ RUBY
 workflow = YAML.load_file(ARGV.fetch(0))
 release_steps = workflow.fetch("jobs").fetch("release").fetch("steps")
 import_index = release_steps.index { |step| step["name"] == "Import Developer ID certificate" }
+prebuild_index = release_steps.index { |step| step["name"] == "Prebuild release binary (before signing identity exists)" }
 build_index = release_steps.index { |step| step["name"] == "Build the .app bundle" }
 abort("missing release gate: imports Developer ID certificate") unless import_index
+abort("missing release gate: prebuilds release binary before signing identity exists") unless prebuild_index
 abort("missing release gate: builds app bundle") unless build_index
+abort("missing release gate: prebuilds release binary before Developer ID import") unless prebuild_index < import_index
 abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
 import_step = release_steps.fetch(import_index)
 import_env = import_step.fetch("env")
@@ -406,6 +409,8 @@ YAML
 jobs:
   release:
     steps:
+      - name: Prebuild release binary (before signing identity exists)
+        run: cargo build --locked --release -p app
       - name: Import Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
@@ -424,11 +429,42 @@ jobs:
 YAML
   check_developer_id_fixture "$good_developer_id_release"
 
+  post_secret_prebuild_release="$tmp_dir/post-secret-prebuild-release.yml"
+  cat >"$post_secret_prebuild_release" <<'YAML'
+jobs:
+  release:
+    steps:
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.COMPME_DEVELOPER_ID_P12_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.COMPME_CODESIGN_IDENTITY }}
+        run: |
+          for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY; do
+            if [ -z "${!name:-}" ]; then
+              echo "missing required release secret: $name" >&2
+              exit 1
+            fi
+          done
+          echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+      - name: Prebuild release binary (before signing identity exists)
+        run: cargo build --locked --release -p app
+      - name: Build the .app bundle
+        run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+YAML
+  if check_developer_id_fixture "$post_secret_prebuild_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: post-secret prebuild was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   missing_identity_export_release="$tmp_dir/missing-identity-export-release.yml"
   cat >"$missing_identity_export_release" <<'YAML'
 jobs:
   release:
     steps:
+      - name: Prebuild release binary (before signing identity exists)
+        run: cargo build --locked --release -p app
       - name: Import Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
@@ -1028,6 +1064,7 @@ ruby -ryaml -e '
   abort("missing release gate: publish_release checkout fetches full history") unless publish_checkout.fetch("with").fetch("fetch-depth") == 0
   ancestry_index = build_steps.index { |step| step["name"] == "Verify release tag is on default branch" }
   metadata_index = build_steps.index { |step| step["name"] == "Check release tag matches bundle metadata" }
+  prebuild_index = build_steps.index { |step| step["name"] == "Prebuild release binary (before signing identity exists)" }
   import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
   build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
   notarize_index = build_steps.index { |step| step["name"] == "Notarize and staple the .app" }
@@ -1036,6 +1073,7 @@ ruby -ryaml -e '
   upload_index = build_steps.index { |step| step["name"] == "Upload release artifacts" }
   abort("missing release gate: verifies tag ancestry before secrets") unless ancestry_index
   abort("missing release gate: checks release tag metadata") unless metadata_index
+  abort("missing release gate: prebuilds release binary before signing identity exists") unless prebuild_index
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
   abort("missing release gate: notarizes and staples app") unless notarize_index
@@ -1044,6 +1082,7 @@ ruby -ryaml -e '
   abort("missing release gate: uploads release artifacts from read-only build job") unless upload_index
   abort("missing release gate: verifies tag ancestry before Developer ID secrets") unless ancestry_index < import_index
   abort("missing release gate: checks release tag metadata before Developer ID secrets") unless metadata_index < import_index
+  abort("missing release gate: prebuilds release binary before Developer ID import") unless prebuild_index < import_index
   abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
   abort("missing release gate: release artifact chain is build -> notarize -> package -> manifest -> upload") unless build_index < notarize_index && notarize_index < package_index && package_index < manifest_index && manifest_index < upload_index
   build_steps.each_with_index do |step, idx|

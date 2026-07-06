@@ -6,6 +6,11 @@ usage() {
 }
 
 expected_rows='textedit notes mail word safari chrome brave browser-exclude terminal-cmd terminal-nlp unsupported clipboard screen'
+ledger_max_age_seconds="${COMPME_A2_LEDGER_MAX_AGE_SECONDS:-86400}"
+
+file_mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+}
 
 check_ledger() {
   ledger="$1"
@@ -13,8 +18,22 @@ check_ledger() {
     echo "missing A2 matrix ledger: $ledger" >&2
     return 1
   fi
+  now="$(date +%s)"
+  mtime="$(file_mtime "$ledger")"
+  if [ -z "$mtime" ]; then
+    echo "cannot stat A2 matrix ledger: $ledger" >&2
+    return 1
+  fi
+  age=$((now - mtime))
+  if [ "$age" -lt 0 ]; then
+    age=0
+  fi
+  if [ "$age" -gt "$ledger_max_age_seconds" ]; then
+    echo "stale A2 matrix ledger: $ledger age=${age}s max=${ledger_max_age_seconds}s" >&2
+    return 1
+  fi
 
-  awk -F '\t' -v expected_rows="$expected_rows" '
+  if ! awk -F '\t' -v expected_rows="$expected_rows" '
     BEGIN {
       split(expected_rows, rows, " ")
       for (i in rows) {
@@ -65,7 +84,22 @@ check_ledger() {
       }
       exit failed ? 1 : 0
     }
-  ' "$ledger"
+  ' "$ledger"; then
+    return 1
+  fi
+
+  old_ifs="$IFS"
+  while IFS="$(printf '\t')" read -r row_id _kind _app _pid _status _expect log_path; do
+    if [ "$row_id" = "row_id" ]; then
+      continue
+    fi
+    if [ ! -f "$log_path" ]; then
+      IFS="$old_ifs"
+      echo "A2 matrix row log_path missing on disk: $row_id path=$log_path" >&2
+      return 1
+    fi
+  done <"$ledger"
+  IFS="$old_ifs"
 }
 
 run_self_test() {
@@ -76,7 +110,8 @@ run_self_test() {
   {
     printf 'row_id\tkind\tapp\tpid\tstatus\texpect\tlog_path\n'
     for row in $expected_rows; do
-      printf '%s\tworks\tfixture\t123\tPASS\trequest\t/tmp/%s.log\n' "$row" "$row"
+      printf 'log for %s\n' "$row" >"$tmp/$row.log"
+      printf '%s\tworks\tfixture\t123\tPASS\trequest\t%s/%s.log\n' "$row" "$tmp" "$row"
     done
   } >"$good"
   check_ledger "$good"
@@ -106,6 +141,25 @@ run_self_test() {
     return 1
   fi
   grep -q 'unexpected A2 matrix row: surprise' "$tmp/extra.err"
+
+  missing_log="$tmp/missing-log.tsv"
+  cp "$good" "$missing_log"
+  rm -f "$tmp/textedit.log"
+  if check_ledger "$missing_log" >/dev/null 2>"$tmp/missing-log.err"; then
+    echo "A2 matrix ledger self-test failed: nonexistent log_path was accepted" >&2
+    return 1
+  fi
+  grep -q 'A2 matrix row log_path missing on disk: textedit' "$tmp/missing-log.err"
+  printf 'log for textedit\n' >"$tmp/textedit.log"
+
+  stale="$tmp/stale.tsv"
+  cp "$good" "$stale"
+  touch -t 200001010000 "$stale"
+  if COMPME_A2_LEDGER_MAX_AGE_SECONDS=60 check_ledger "$stale" >/dev/null 2>"$tmp/stale.err"; then
+    echo "A2 matrix ledger self-test failed: stale ledger was accepted" >&2
+    return 1
+  fi
+  grep -q 'stale A2 matrix ledger:' "$tmp/stale.err"
 
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
     echo "A2 matrix ledger self-test failed: extra self-test argument was accepted" >&2

@@ -394,6 +394,14 @@ with paths or query strings. `browser-domain-exclude` also requires
 `COMPME_A2_BROWSER_EXCLUDED_DOMAIN=<focused-host>` so the live run can prove
 `prefs_ok=false` blocked the focused browser domain.
 
+The broad A1b live gate also pins manual residuals that cannot be proven by the
+A2 submit ledger alone:
+
+- `mirror-window-firefox-zen-look` covers Firefox/Zen mirror-window placement.
+- `setup-needed-docs-arc-onboarding` covers Google Docs in Arc setup-needed UX.
+- `multi-candidate-cycle-physical-look` covers physical Down-arrow candidate
+  cycling and accept of the selected candidate.
+
 ## A2 Local-Replacement Live Gate (emoji / autocorrect / British English)
 
 The local-replacement pipeline (`offer_replacement` → `Command::Replace` → AxSet
@@ -639,6 +647,9 @@ Exact runner-emitted manual gate IDs:
 - `caret-marker-electron-marker`
 - `encrypted-memory-all-monitored-live`
 - `grammar-fix-textedit-look`
+- `mirror-window-firefox-zen-look`
+- `setup-needed-docs-arc-onboarding`
+- `multi-candidate-cycle-physical-look`
 - `input-monitoring-revoked-carbon-accept`
 
 - **Settings timed/behavioral gate (completed 2026-06-17):** live AppKit runs

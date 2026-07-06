@@ -47,7 +47,7 @@ fn main() {
         );
         let diagnostics = presenter.diagnostics_for_acceptance();
         println!("CORRECTION_SHOW_DIAG {diagnostics:?}");
-        if !correction_diagnostics_ok(diagnostics) {
+        if !correction_diagnostics_ok(diagnostics, rect) {
             eprintln!("CORRECTION_SHOW_DIAG_ERROR {diagnostics:?}");
             process::exit(1);
         }
@@ -137,17 +137,41 @@ fn shown_diagnostics_ok(diagnostics: MacosOverlayDiagnostics) -> bool {
         && diagnostics.level == 101
 }
 
-fn correction_diagnostics_ok(diagnostics: MacosOverlayDiagnostics) -> bool {
+fn correction_diagnostics_ok(diagnostics: MacosOverlayDiagnostics, word_rect: ScreenRect) -> bool {
+    let Some(panel) = diagnostics.panel_frame else {
+        return false;
+    };
+    let Some(underline) = diagnostics.underline_frame else {
+        return false;
+    };
     shown_diagnostics_ok(diagnostics)
         && diagnostics.has_underline_panel
         && diagnostics.underline_visible
-        && diagnostics.panel_frame.is_some()
-        && diagnostics.underline_frame.is_some()
+        && approx_eq(panel.x, word_rect.x)
+        && approx_eq(underline.x, word_rect.x)
+        && approx_eq(underline.w, word_rect.w.max(8.0))
+        && approx_eq(underline.h, 2.0)
+        && approx_eq(panel.y - underline.y, word_rect.h + 6.0)
+        && panel.w >= word_rect.w
+        && (20.0..=52.0).contains(&panel.h)
+}
+
+fn approx_eq(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 0.5
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn word_rect() -> ScreenRect {
+        ScreenRect {
+            x: 1.0,
+            y: 240.0,
+            w: 12.0,
+            h: 18.0,
+        }
+    }
 
     fn valid_shown_diagnostics() -> MacosOverlayDiagnostics {
         MacosOverlayDiagnostics {
@@ -161,16 +185,16 @@ mod tests {
             fullscreen_auxiliary: true,
             panel_frame: Some(ScreenRect {
                 x: 1.0,
-                y: 2.0,
-                w: 3.0,
-                h: 4.0,
+                y: 26.0,
+                w: 96.0,
+                h: 26.0,
             }),
             has_underline_panel: true,
             underline_visible: true,
             underline_frame: Some(ScreenRect {
                 x: 1.0,
-                y: 20.0,
-                w: 3.0,
+                y: 2.0,
+                w: 12.0,
                 h: 2.0,
             }),
         }
@@ -191,14 +215,37 @@ mod tests {
 
     #[test]
     fn correction_diagnostics_require_space_collection_behavior() {
-        assert!(correction_diagnostics_ok(valid_shown_diagnostics()));
+        assert!(correction_diagnostics_ok(
+            valid_shown_diagnostics(),
+            word_rect()
+        ));
 
         let mut missing_spaces = valid_shown_diagnostics();
         missing_spaces.joins_all_spaces = false;
-        assert!(!correction_diagnostics_ok(missing_spaces));
+        assert!(!correction_diagnostics_ok(missing_spaces, word_rect()));
 
         let mut missing_fullscreen = valid_shown_diagnostics();
         missing_fullscreen.fullscreen_auxiliary = false;
-        assert!(!correction_diagnostics_ok(missing_fullscreen));
+        assert!(!correction_diagnostics_ok(missing_fullscreen, word_rect()));
+    }
+
+    #[test]
+    fn correction_diagnostics_rejects_misplaced_banner_or_underline() {
+        assert!(correction_diagnostics_ok(
+            valid_shown_diagnostics(),
+            word_rect()
+        ));
+
+        let mut moved_banner = valid_shown_diagnostics();
+        moved_banner.panel_frame.as_mut().unwrap().x += 10.0;
+        assert!(!correction_diagnostics_ok(moved_banner, word_rect()));
+
+        let mut floating_underline = valid_shown_diagnostics();
+        floating_underline.underline_frame.as_mut().unwrap().y += 8.0;
+        assert!(!correction_diagnostics_ok(floating_underline, word_rect()));
+
+        let mut narrow_underline = valid_shown_diagnostics();
+        narrow_underline.underline_frame.as_mut().unwrap().w = 4.0;
+        assert!(!correction_diagnostics_ok(narrow_underline, word_rect()));
     }
 }
