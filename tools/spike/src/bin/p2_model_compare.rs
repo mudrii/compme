@@ -14,8 +14,7 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
-use spike::completion::{cap_words, quality_flags, trim_prefix};
-use spike::context::left_context;
+use spike::model_compare::{build_report_row, prompt_for_case, ReportTiming, CASES, MODES};
 
 const N_TOKENS: usize = 12;
 
@@ -32,77 +31,6 @@ const MODELS: &[ModelSpec] = &[
     ModelSpec {
         label: "base",
         file: "qwen2.5-0.5b-q4_k_m.gguf",
-    },
-];
-
-struct PromptCase {
-    name: &'static str,
-    value: &'static str,
-    max_words: usize,
-}
-
-struct PromptMode {
-    name: &'static str,
-    build: fn(&str) -> String,
-}
-
-fn raw_prefix(prefix: &str) -> String {
-    prefix.to_string()
-}
-
-fn fim_empty_suffix(prefix: &str) -> String {
-    format!("<|fim_prefix|>{prefix}<|fim_suffix|><|fim_middle|>")
-}
-
-fn terse_instruction(prefix: &str) -> String {
-    format!("Complete this text inline. Return only the continuation.\nText: {prefix}")
-}
-
-const MODES: &[PromptMode] = &[
-    PromptMode {
-        name: "raw",
-        build: raw_prefix,
-    },
-    PromptMode {
-        name: "fim_empty_suffix",
-        build: fim_empty_suffix,
-    },
-    PromptMode {
-        name: "terse_instruction",
-        build: terse_instruction,
-    },
-];
-
-const CASES: &[PromptCase] = &[
-    PromptCase {
-        name: "email_followup",
-        value: "Dear team, I wanted to ",
-        max_words: 4,
-    },
-    PromptCase {
-        name: "product_plan",
-        value: "The next milestone should ",
-        max_words: 5,
-    },
-    PromptCase {
-        name: "bug_report",
-        value: "When I click the button, ",
-        max_words: 5,
-    },
-    PromptCase {
-        name: "meeting_note",
-        value: "The meeting starts at ",
-        max_words: 4,
-    },
-    PromptCase {
-        name: "code_comment",
-        value: "Return early if the ",
-        max_words: 5,
-    },
-    PromptCase {
-        name: "unicode_note",
-        value: "Please send résumé feedback to ",
-        max_words: 5,
     },
 ];
 
@@ -196,10 +124,6 @@ impl LlamaCompleter {
     }
 }
 
-fn escaped(s: &str) -> String {
-    s.replace('\n', "\\n").replace('\t', "\\t")
-}
-
 fn model_path(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("models")
@@ -219,28 +143,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = completer.complete_timed("warm up");
 
         for mode in MODES {
-            println!("--- mode={} ---", mode.name);
-            for case in CASES {
-                let caret = case.value.chars().count();
-                let prefix = trim_prefix(&left_context(case.value, caret)).to_string();
-                let prompt = (mode.build)(&prefix);
+            println!("--- mode={} ---", mode.name());
+            for case in CASES.iter().copied() {
+                let (prefix, prompt) = prompt_for_case(*mode, case);
                 let timing = completer.complete_timed(&prompt);
-                let capped = cap_words(&timing.raw, case.max_words);
-                let flags = quality_flags(&timing.raw, &capped, &prefix);
+                let report_timing = ReportTiming {
+                    context_init_ms: timing.context_init_ms,
+                    prompt_eval_ms: timing.prompt_eval_ms,
+                    ttft_ms: timing.ttft_ms,
+                    decode_ms: timing.decode_ms,
+                    total_ms: timing.total_ms,
+                    emitted_tokens: timing.emitted_tokens,
+                };
                 println!(
-                    "mode={} case={} context_init_ms={} prompt_eval_ms={} ttft_ms={} decode_ms={} total_ms={} emitted_tokens={} quality_flags={} prefix={:?} raw={:?} capped={:?}",
-                    mode.name,
-                    case.name,
-                    timing.context_init_ms,
-                    timing.prompt_eval_ms,
-                    timing.ttft_ms,
-                    timing.decode_ms,
-                    timing.total_ms,
-                    timing.emitted_tokens,
-                    flags,
-                    escaped(&prefix),
-                    escaped(&timing.raw),
-                    escaped(&capped)
+                    "{}",
+                    build_report_row(*mode, case, &report_timing, &prefix, &timing.raw)
                 );
             }
         }

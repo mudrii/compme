@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1719 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1721 tests green).
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI
@@ -450,6 +450,7 @@ range bounds and range replacement, not just the existing left-of-caret
 - `tools/acceptance/e2e-complete-me.sh --self-test`
 - `tools/acceptance/missing-model-startup.sh --self-test`
 - `tools/acceptance/missing-model-startup.sh`
+- `tools/acceptance/run-ui-assisted-session.sh --self-test`
 - `tools/acceptance/run-a1b-live-gates.sh --self-test`
 - `tools/acceptance/run-a2-compat-gates.sh --self-test`
 - `tools/release/check-a2-matrix-ledger.sh --self-test`

@@ -312,6 +312,213 @@ pub mod completion {
     }
 }
 
+pub mod model_compare {
+    use crate::completion::{cap_words, quality_flags, trim_prefix};
+    use crate::context::left_context;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PromptCase {
+        pub name: &'static str,
+        pub value: &'static str,
+        pub max_words: usize,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum PromptMode {
+        Raw,
+        FimEmptySuffix,
+        TerseInstruction,
+    }
+
+    impl PromptMode {
+        pub fn name(self) -> &'static str {
+            match self {
+                Self::Raw => "raw",
+                Self::FimEmptySuffix => "fim_empty_suffix",
+                Self::TerseInstruction => "terse_instruction",
+            }
+        }
+
+        pub fn build(self, prefix: &str) -> String {
+            match self {
+                Self::Raw => prefix.to_string(),
+                Self::FimEmptySuffix => {
+                    format!("<|fim_prefix|>{prefix}<|fim_suffix|><|fim_middle|>")
+                }
+                Self::TerseInstruction => {
+                    format!(
+                        "Complete this text inline. Return only the continuation.\nText: {prefix}"
+                    )
+                }
+            }
+        }
+    }
+
+    pub const MODES: &[PromptMode] = &[
+        PromptMode::Raw,
+        PromptMode::FimEmptySuffix,
+        PromptMode::TerseInstruction,
+    ];
+
+    pub const CASES: &[PromptCase] = &[
+        PromptCase {
+            name: "email_followup",
+            value: "Dear team, I wanted to ",
+            max_words: 4,
+        },
+        PromptCase {
+            name: "product_plan",
+            value: "The next milestone should ",
+            max_words: 5,
+        },
+        PromptCase {
+            name: "bug_report",
+            value: "When I click the button, ",
+            max_words: 5,
+        },
+        PromptCase {
+            name: "meeting_note",
+            value: "The meeting starts at ",
+            max_words: 4,
+        },
+        PromptCase {
+            name: "code_comment",
+            value: "Return early if the ",
+            max_words: 5,
+        },
+        PromptCase {
+            name: "unicode_note",
+            value: "Please send résumé feedback to ",
+            max_words: 5,
+        },
+    ];
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ReportTiming {
+        pub context_init_ms: u128,
+        pub prompt_eval_ms: u128,
+        pub ttft_ms: u128,
+        pub decode_ms: u128,
+        pub total_ms: u128,
+        pub emitted_tokens: usize,
+    }
+
+    pub fn prompt_for_case(mode: PromptMode, case: PromptCase) -> (String, String) {
+        let caret = case.value.chars().count();
+        let prefix = trim_prefix(&left_context(case.value, caret)).to_string();
+        let prompt = mode.build(&prefix);
+        (prefix, prompt)
+    }
+
+    pub fn escaped(s: &str) -> String {
+        s.replace('\n', "\\n").replace('\t', "\\t")
+    }
+
+    pub fn build_report_row(
+        mode: PromptMode,
+        case: PromptCase,
+        timing: &ReportTiming,
+        prefix: &str,
+        raw: &str,
+    ) -> String {
+        let capped = cap_words(raw, case.max_words);
+        let flags = quality_flags(raw, &capped, prefix);
+        format!(
+            "mode={} case={} context_init_ms={} prompt_eval_ms={} ttft_ms={} decode_ms={} total_ms={} emitted_tokens={} quality_flags={} prefix={:?} raw={:?} capped={:?}",
+            mode.name(),
+            case.name,
+            timing.context_init_ms,
+            timing.prompt_eval_ms,
+            timing.ttft_ms,
+            timing.decode_ms,
+            timing.total_ms,
+            timing.emitted_tokens,
+            flags,
+            escaped(prefix),
+            escaped(raw),
+            escaped(&capped)
+        )
+    }
+}
+
+#[cfg(test)]
+mod model_compare_tests {
+    use super::model_compare::*;
+
+    #[test]
+    fn prompt_modes_have_stable_names() {
+        assert_eq!(
+            MODES.iter().map(|mode| mode.name()).collect::<Vec<_>>(),
+            vec!["raw", "fim_empty_suffix", "terse_instruction"]
+        );
+    }
+
+    #[test]
+    fn prompt_modes_build_expected_prompts() {
+        assert_eq!(PromptMode::Raw.build("hello"), "hello");
+        assert_eq!(
+            PromptMode::FimEmptySuffix.build("hello"),
+            "<|fim_prefix|>hello<|fim_suffix|><|fim_middle|>"
+        );
+        assert_eq!(
+            PromptMode::TerseInstruction.build("hello"),
+            "Complete this text inline. Return only the continuation.\nText: hello"
+        );
+    }
+
+    #[test]
+    fn cases_include_unicode_probe() {
+        assert!(CASES
+            .iter()
+            .any(|case| case.name == "unicode_note" && case.value.contains("résumé")));
+    }
+
+    #[test]
+    fn prompt_for_case_trims_trailing_prefix_whitespace() {
+        let case = PromptCase {
+            name: "tmp",
+            value: "hello ",
+            max_words: 1,
+        };
+        let (prefix, prompt) = prompt_for_case(PromptMode::Raw, case);
+        assert_eq!(prefix, "hello");
+        assert_eq!(prompt, "hello");
+    }
+
+    #[test]
+    fn escaped_protects_row_schema_from_tabs_and_newlines() {
+        assert_eq!(escaped("a\tb\nc"), "a\\tb\\nc");
+    }
+
+    #[test]
+    fn report_row_has_stable_columns_and_caps_output() {
+        let case = PromptCase {
+            name: "tmp",
+            value: "The next ",
+            max_words: 2,
+        };
+        let timing = ReportTiming {
+            context_init_ms: 1,
+            prompt_eval_ms: 2,
+            ttft_ms: 3,
+            decode_ms: 4,
+            total_ms: 5,
+            emitted_tokens: 6,
+        };
+        let row = build_report_row(
+            PromptMode::Raw,
+            case,
+            &timing,
+            "The next",
+            " milestone ships\nsoon",
+        );
+        assert_eq!(
+            row,
+            "mode=raw case=tmp context_init_ms=1 prompt_eval_ms=2 ttft_ms=3 decode_ms=4 total_ms=5 emitted_tokens=6 quality_flags=chat_or_markdown prefix=\"The next\" raw=\" milestone ships\\\\nsoon\" capped=\"milestone ships\""
+        );
+    }
+}
+
 #[cfg(test)]
 mod completion_tests {
     use super::completion::*;

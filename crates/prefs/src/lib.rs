@@ -234,6 +234,17 @@ impl Prefs {
         self.per_app.entry(app.to_string()).or_default().enabled = Some(true);
     }
 
+    /// Clear domain hard-blocks that would still cover `domain` after a user
+    /// explicitly enables/includes it. The current domain model is a deny-list,
+    /// not a true allow/deny precedence tree, so include must remove both exact
+    /// and suffix-covering rules to avoid a successful-looking no-op.
+    fn clear_domain_exclusions_covering(&mut self, domain: &str) {
+        let domain = domain.to_ascii_lowercase();
+        self.excluded_domains.retain(|rule| {
+            !host_matches_domain_rule(&domain, rule) && !host_matches_domain_rule(rule, &domain)
+        });
+    }
+
     /// Set one editable field of an app's per-app override (Settings "Apps" pane).
     ///
     /// Creates the entry if absent, like `apply_override` — same in-memory model
@@ -294,7 +305,7 @@ impl Prefs {
                 self.excluded_domains.insert(domain.to_ascii_lowercase());
             }
             (Scope::Domain(domain), Enable | Include) => {
-                self.excluded_domains.remove(&domain.to_ascii_lowercase());
+                self.clear_domain_exclusions_covering(domain);
             }
         }
     }
@@ -695,24 +706,22 @@ mod tests {
 
     #[test]
     fn web_override_domain_enable_clears_a_parent_rule_that_blocks_a_subdomain() {
-        // The sibling test excludes then re-includes the *exact same* host
-        // (`docs.google.com`). This drives the harder case: exclude a *parent*
-        // domain (`google.com`) — which blocks every subdomain via the
-        // dot-boundary matcher — then re-include the parent and assert a
-        // *subdomain* host (`www.google.com`) becomes suggestable again. Pins
-        // that domain-Enable removes the covering parent rule, not just an
-        // exact-host entry, end-to-end through should_suggest's suffix match.
+        // Excluding a parent (`google.com`) blocks every subdomain via the
+        // dot-boundary matcher. Enabling a concrete subdomain must clear the
+        // covering parent rule too; otherwise the deep link succeeds but
+        // suggestions remain blocked.
         let mut p = Prefs::default();
         apply(
             &mut p,
             "compme://setOverride?domain=google.com&excluded=true",
         );
-        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("www.google.com"), 0));
+        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("docs.google.com"), 0));
         apply(
             &mut p,
-            "compme://setOverride?domain=google.com&enabled=true",
+            "compme://setOverride?domain=docs.google.com&enabled=true",
         );
-        assert!(p.should_suggest(Some("com.apple.Safari"), Some("www.google.com"), 0));
+        assert!(!p.excluded_domains.contains("google.com"));
+        assert!(p.should_suggest(Some("com.apple.Safari"), Some("docs.google.com"), 0));
     }
 
     #[test]
