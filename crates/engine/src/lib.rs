@@ -1178,6 +1178,25 @@ mod tests {
     }
 
     #[test]
+    fn shown_correction_is_invalidated_by_caret_move_before_accept() {
+        let (mut engine, adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+        engine.on_correction(&request, "the".into(), range).unwrap();
+        overlay.calls.lock().unwrap().clear();
+
+        engine.on_caret_moved(field(), 2).unwrap();
+        engine.on_accept(AcceptAction::Correction).unwrap();
+
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+        assert!(
+            adapter.range_replacing_inserts.lock().unwrap().is_empty(),
+            "a correction invalidated by caret movement must not replace text"
+        );
+    }
+
+    #[test]
     fn on_replacement_gated_after_suppress_records_no_show() {
         // Engine-layer gate: after Esc-suppress in the focused field, a
         // replacement offer must be swallowed by the machine guard — the overlay

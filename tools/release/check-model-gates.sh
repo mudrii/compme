@@ -1476,6 +1476,7 @@ bash -n "$update_manifest_script"
 "$bundle_metadata_script" >/dev/null
 "$make_app_script" --self-test >/dev/null
 "$a2_matrix_ledger_script" --self-test >/dev/null
+GITHUB_ACTIONS=true GITHUB_REF_TYPE=tag COMPME_MODEL_GATE_PATH=/tmp/compme-poisoned-model.gguf "$gate_script" --self-test >/dev/null
 "$gate_script" --self-test >/dev/null
 "$privacy_script" >/dev/null
 "$privacy_script" --self-test >/dev/null

@@ -756,6 +756,30 @@ mod tests {
     }
 
     #[test]
+    fn grammar_fix_rejected_outputs_emit_no_correction_for_all_vet_classes() {
+        for output in ["teh", "", "the cat", "alphabet", "thé"] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let inference = InferenceHandle::spawn(
+                Box::new(GrammarEchoModel { output, seen }),
+                PromptMode::Raw,
+                PersonalizationProfile::default(),
+                1,
+                WorkerContext::default(),
+            )
+            .unwrap();
+            let range = CorrectionRange { start: 0, end: 3 };
+
+            assert!(inference.submit(grammar_request("teh", "teh", range, 3)));
+            let outcome = inference.recv_outcome().expect("outcome");
+
+            assert_eq!(outcome.correction, None, "{output:?} must be rejected");
+            assert_eq!(outcome.correction_range, Some(range));
+            assert!(outcome.candidates.is_empty());
+            inference.shutdown();
+        }
+    }
+
+    #[test]
     fn screen_wait_switches_to_newer_grammar_request_without_waiting_for_ocr() {
         let old = request("old typing", 1);
         let grammar = grammar_request("teh", "old teh", CorrectionRange { start: 4, end: 7 }, 2);

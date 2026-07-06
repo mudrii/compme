@@ -5919,6 +5919,35 @@ mod tests {
     }
 
     #[test]
+    fn screen_context_enable_starts_worker_and_sets_wait() {
+        let ui_flag = AtomicBool::new(true);
+        let screen_cell = Mutex::new(None);
+        let mut config_screen_context = true;
+        let mut screen_ocr: Option<&str> = None;
+        let wait_ms = RefCell::new(Vec::new());
+
+        let edge = apply_screen_context_edge(
+            true,
+            ScreenContextToggleState {
+                config_screen_context: &mut config_screen_context,
+                ui_flag: &ui_flag,
+                screen_cell: &screen_cell,
+                screen_ocr: &mut screen_ocr,
+            },
+            |ms| wait_ms.borrow_mut().push(ms),
+            || true,
+            || Ok("new-worker"),
+        );
+
+        assert_eq!(edge, ScreenContextEdge::Enabled);
+        assert!(config_screen_context);
+        assert!(ui_flag.load(Ordering::Relaxed));
+        assert_eq!(*screen_cell.lock().unwrap(), None);
+        assert_eq!(screen_ocr, Some("new-worker"));
+        assert_eq!(wait_ms.into_inner(), vec![SCREEN_CONTEXT_WAIT_MS]);
+    }
+
+    #[test]
     fn strength_falls_back_to_default_when_compme_strength_is_unparseable() {
         // COMPME_STRENGTH is present but cannot parse as u8: a non-numeric value
         // and a numeric value that overflows u8 both leave the default stop in
@@ -10474,6 +10503,52 @@ mod tests {
             ),
         )
         .is_none());
+    }
+
+    #[test]
+    fn grammar_detection_allows_per_app_on_override_when_global_default_is_off() {
+        let field = host_field("grammar-app-override");
+        let config = Config::from_lookup(lookup(&[]));
+        let ctx = text_context_with_right(&field, "teh", "");
+
+        assert!(
+            grammar_fix_request(
+                &field,
+                &ctx,
+                grammar_gate(
+                    &config,
+                    &config.prefs,
+                    Some("TextEdit"),
+                    None,
+                    true,
+                    &writable_axset_caps(),
+                    0,
+                ),
+            )
+            .is_none(),
+            "global grammar off with no app override must block"
+        );
+
+        let mut prefs = config.prefs.clone();
+        prefs.set_app_policy_field("TextEdit", prefs::AppPolicyField::GrammarFix, true);
+
+        assert!(
+            grammar_fix_request(
+                &field,
+                &ctx,
+                grammar_gate(
+                    &config,
+                    &prefs,
+                    Some("TextEdit"),
+                    None,
+                    true,
+                    &writable_axset_caps(),
+                    0,
+                ),
+            )
+            .is_some(),
+            "Apps-pane grammar override must enable the focused app even when the global default is off"
+        );
     }
 
     #[test]

@@ -22,8 +22,6 @@ reject_release_overrides() {
   fi
 }
 
-reject_release_overrides
-
 model="${COMPME_MODEL_GATE_PATH:-$default_model}"
 url="${COMPME_MODEL_GATE_URL:-$default_url}"
 expected="${COMPME_MODEL_GATE_SHA256:-$default_expected}"
@@ -31,6 +29,9 @@ expected="${COMPME_MODEL_GATE_SHA256:-$default_expected}"
 run_self_test() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-model-gates.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
+  unset GITHUB_ACTIONS GITHUB_REF_TYPE COMPME_ALLOW_MODEL_GATE_OVERRIDE
+  unset COMPME_MODEL_GATE_PATH COMPME_MODEL_GATE_URL COMPME_MODEL_GATE_SHA256
+  unset COMPME_MODEL_GATE_CARGO_FAIL COMPME_MODEL_GATE_CURL_FAIL COMPME_MODEL_GATE_CURL_BODY
 
   fake_bin="$tmp/bin"
   mkdir -p "$fake_bin" "$tmp/model-dir"
@@ -194,6 +195,8 @@ if [ "$#" -ne 0 ]; then
   echo "usage: $0 [--self-test]" >&2
   exit 2
 fi
+
+reject_release_overrides
 
 cd "$repo_root"
 
