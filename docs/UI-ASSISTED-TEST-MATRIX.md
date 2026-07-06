@@ -73,7 +73,22 @@ Check:
 - Shortcut recorders capture modifier combos, reject reserved Down, cancel on Esc,
   show collision feedback, and persist on reopen.
 
-Status: not started.
+Findings from 2026-07-06 user-assisted pass:
+- General toggles persisted after close/reopen.
+- Emoji skin tone and gender persisted after close/reopen.
+- Personalization text fields did not save reliably after editing.
+- Shortcut recorder captured F5/F6 but lost the held Shift modifier.
+- Selected tab highlight had a tight/cropped top edge in the native tab strip.
+
+Fix in progress:
+- Queue all pending Personalization edits instead of last-writer-wins.
+- Flush visible Personalization text fields while Settings is open.
+- Track `flagsChanged:` modifier state in the recorder and fall back to it when
+  function-key `keyDown:` events omit Shift.
+- Inset the tab view inside a content wrapper to give selected tabs top/side
+  breathing room.
+
+Status: fixes pending validation.
 
 ## Batch 3 — TextEdit Completion Flow
 

@@ -2850,7 +2850,7 @@ fn build_settings_flags(
             Arc::new(Mutex::new(shortcuts_text(word, full, grammar_accept)))
         },
         shortcuts_rebind_request: Arc::new(Mutex::new(None)),
-        personalization_edit: Arc::new(Mutex::new(None)),
+        personalization_edit: Arc::new(Mutex::new(Vec::new())),
         // Seed the pane from the current source profile so its fields/popup
         // reflect config on open (the about_text / emoji-index pattern).
         personalization_instructions: Arc::new(Mutex::new(
@@ -4858,12 +4858,14 @@ pub fn run() -> Result<(), String> {
         // PersonalizationProfile that should gate the MemoryStore, wire it to
         // open_memory_store / store.close() here; today the profile has no such
         // knob, so the steering edit must not touch `memory`.
-        let pers_edit = settings_flags
+        settings_window.flush_personalization_edits();
+        let pers_edits = settings_flags
             .personalization_edit
             .lock()
-            .ok()
-            .and_then(|mut slot| slot.take());
-        if let Some(edit) = pers_edit {
+            .map(|mut slot| std::mem::take(&mut *slot))
+            .unwrap_or_else(|poisoned| std::mem::take(&mut *poisoned.into_inner()));
+        for edit in pers_edits {
+            let edit_for_flags = edit.clone();
             let (key, _value, persist_result) = apply_live_personalization_edit(
                 &mut config.personalization,
                 edit,
@@ -4879,6 +4881,36 @@ pub fn run() -> Result<(), String> {
             eprintln!("compme: personalization {key} updated");
             if let Err(err) = persist_result {
                 eprintln!("compme: failed to persist {key}: {err}");
+            }
+            use platform_macos::PersonalizationEdit as E;
+            match edit_for_flags {
+                E::GlobalInstructions(_) => {
+                    *settings_flags
+                        .personalization_instructions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) =
+                        config.personalization.global_instructions.clone();
+                }
+                E::SenderName(_) => {
+                    *settings_flags
+                        .personalization_sender_name
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) =
+                        config.personalization.sender.name.clone();
+                }
+                E::SenderEmail(_) => {
+                    *settings_flags
+                        .personalization_sender_email
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) =
+                        config.personalization.sender.email.clone();
+                }
+                E::StrengthStop(_) => {
+                    settings_flags.personalization_strength_index.store(
+                        personalization_strength_index(config.personalization.strength),
+                        Ordering::Relaxed,
+                    );
+                }
             }
         }
         // Setup "Download Model": fetch the model the picker has selected

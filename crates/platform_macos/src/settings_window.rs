@@ -12,6 +12,7 @@
 //! and live-verified, not unit-tested (tray convention); the policy-edge
 //! decision is the unit-tested pure part.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -400,11 +401,11 @@ pub struct SettingsFlags {
     /// the edge and runs the keymap-first/rearm-second/persist-last sequence
     /// (apps_delete_row pattern).
     pub shortcuts_rebind_request: Arc<Mutex<Option<RebindRequest>>>,
-    /// The latest Personalization-pane edit (text-field commit or strength
-    /// popup). Last-writer-wins per tick: the run loop consumes the edge,
-    /// applies the variant to its source `PersonalizationProfile`, calls
-    /// `inference.set_profile`, and persists (apps_edit pattern).
-    pub personalization_edit: Arc<Mutex<Option<PersonalizationEdit>>>,
+    /// Pending Personalization-pane edits (text-field commit, visible-field
+    /// flush, or strength popup). A queue is required because one manual pass can
+    /// change instructions, name, email, and strength before the run loop ticks;
+    /// a single Option would keep only the last edit.
+    pub personalization_edit: Arc<Mutex<Vec<PersonalizationEdit>>>,
     /// Personalization initial values, composed by the run loop from the source
     /// profile so the pane's fields/popup reflect the current config on open
     /// (the about_text / setup_model_index pattern — render-only seed strings).
@@ -658,8 +659,9 @@ impl SettingsTarget {
         unsafe { objc2::msg_send![super(this), init] }
     }
 
-    /// Park a Personalization edit for the run loop (last-writer-wins; the loop
-    /// `take()`s it each tick). Poison-tolerant like the other flag writers.
+    /// Park a Personalization edit for the run loop. Edits are queued so a
+    /// single manual pass can change multiple fields before the next tick.
+    /// Poison-tolerant like the other flag writers.
     fn record_personalization_edit(&self, edit: PersonalizationEdit) {
         record_personalization_edit_slot(&self.ivars().flags.personalization_edit, edit);
     }
@@ -673,6 +675,10 @@ struct KeyRecorderFieldIvars {
     /// Child label that renders the key text — a bare NSView has no
     /// `setStringValue`, so the visible string lives on this passive subview.
     label: Retained<NSTextField>,
+    /// Last seen live Carbon modifier mask from `flagsChanged:`. Some function
+    /// key `keyDown:` events arrive without the held Shift bit; keep the current
+    /// modifier state so Shift+F5/F6 records as masked instead of bare F5/F6.
+    modifier_mask: Cell<u32>,
 }
 
 define_class!(
@@ -737,7 +743,13 @@ define_class!(
             // NSEvent reports them in high bits, mapped to the Carbon mask the
             // accept stack registers.
             let keycode = event.keyCode() as i64;
-            let mask = crate::ns_modifier_flags_to_carbon_mask(event.modifierFlags().0 as u64);
+            let event_mask =
+                crate::ns_modifier_flags_to_carbon_mask(event.modifierFlags().0 as u64);
+            let mask = if event_mask == 0 {
+                self.ivars().modifier_mask.get()
+            } else {
+                event_mask
+            };
             if crate::debug_enabled() {
                 eprintln!(
                     "compme: recorder keyDown role={:?} keycode={keycode} mask={mask}",
@@ -773,6 +785,18 @@ define_class!(
             }
         }
 
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, event: &NSEvent) {
+            let mask = crate::ns_modifier_flags_to_carbon_mask(event.modifierFlags().0 as u64);
+            self.ivars().modifier_mask.set(mask);
+            if crate::debug_enabled() {
+                eprintln!(
+                    "compme: recorder flagsChanged role={:?} mask={mask}",
+                    self.ivars().role
+                );
+            }
+        }
+
     }
 );
 
@@ -789,6 +813,7 @@ impl KeyRecorderField {
             role,
             rebind_slot,
             label,
+            modifier_mask: Cell::new(0),
         });
         // set_ivars BEFORE init (the SettingsTarget pattern); NSView's
         // designated initializer is initWithFrame:.
@@ -1035,6 +1060,61 @@ impl MacosSettingsWindow {
             window.orderFrontRegardless();
         }
         Ok(())
+    }
+
+    /// Push the visible Personalization text-field values into the edit queue
+    /// while the window is open. NSTextField target/action is not reliable on
+    /// tab switch/window close for the multi-line field, so the run loop polls
+    /// this before draining edits.
+    pub fn flush_personalization_edits(&self) {
+        if !self.is_visible() {
+            return;
+        }
+        if let Some(field) = &self.personalization_instructions_field {
+            let value = field.stringValue().to_string();
+            let current = self
+                .flags
+                .personalization_instructions
+                .lock()
+                .map(|v| v.clone())
+                .unwrap_or_else(|e| e.into_inner().clone());
+            if value != current {
+                record_personalization_edit_slot(
+                    &self.flags.personalization_edit,
+                    PersonalizationEdit::GlobalInstructions(value),
+                );
+            }
+        }
+        if let Some(field) = &self.personalization_name_field {
+            let value = field.stringValue().to_string();
+            let current = self
+                .flags
+                .personalization_sender_name
+                .lock()
+                .map(|v| v.clone())
+                .unwrap_or_else(|e| e.into_inner().clone());
+            if value != current {
+                record_personalization_edit_slot(
+                    &self.flags.personalization_edit,
+                    PersonalizationEdit::SenderName(value),
+                );
+            }
+        }
+        if let Some(field) = &self.personalization_email_field {
+            let value = field.stringValue().to_string();
+            let current = self
+                .flags
+                .personalization_sender_email
+                .lock()
+                .map(|v| v.clone())
+                .unwrap_or_else(|e| e.into_inner().clone());
+            if value != current {
+                record_personalization_edit_slot(
+                    &self.flags.personalization_edit,
+                    PersonalizationEdit::SenderEmail(value),
+                );
+            }
+        }
     }
 
     /// Re-render all switches from their atomics while the window stays open.
@@ -1429,7 +1509,16 @@ fn build_window(
     // pane_titles() entry. Tab content is ~500x350; per-pane coordinates are
     // local to their tab view, so panes never collide with each other again
     // (the c103/c104 overlap class is structurally gone).
+    let content = NSView::new(mtm);
+    content.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(680.0, 420.0),
+    ));
     let tabs = NSTabView::new(mtm);
+    tabs.setFrame(NSRect::new(
+        NSPoint::new(6.0, 8.0),
+        NSSize::new(668.0, 398.0),
+    ));
     let pane_views: Vec<Retained<NSView>> = pane_titles()
         .iter()
         .map(|title| {
@@ -2136,7 +2225,8 @@ fn build_window(
         about.setEditable(false);
         about_view.addSubview(&about);
     }
-    window.setContentView(Some(&tabs));
+    content.addSubview(&tabs);
+    window.setContentView(Some(&content));
     let _ = &pane_views; // pane views are retained by their tab items
                          // Keep the instance alive across closes: AppKit's default releases a
                          // window on close, which would dangle our Retained pointer.
@@ -2237,10 +2327,10 @@ fn record_apps_delete_row(slot: &Arc<Mutex<Option<usize>>>, raw_tag: isize) {
 }
 
 fn record_personalization_edit_slot(
-    slot: &Arc<Mutex<Option<PersonalizationEdit>>>,
+    slot: &Arc<Mutex<Vec<PersonalizationEdit>>>,
     edit: PersonalizationEdit,
 ) {
-    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(edit);
+    slot.lock().unwrap_or_else(|e| e.into_inner()).push(edit);
 }
 
 /// Checkbox titles for the per-app policy fields, indexed the same as the tag
@@ -2497,29 +2587,24 @@ mod tests {
         record_setup_download(&download);
         assert!(download.load(Ordering::Relaxed));
 
-        let personalization = Arc::new(Mutex::new(None));
+        let personalization = Arc::new(Mutex::new(Vec::new()));
         record_personalization_edit_slot(
             &personalization,
             PersonalizationEdit::GlobalInstructions("Use terse replies".into()),
-        );
-        assert_eq!(
-            *personalization.lock().unwrap(),
-            Some(PersonalizationEdit::GlobalInstructions(
-                "Use terse replies".into()
-            ))
         );
         record_personalization_edit_slot(
             &personalization,
             PersonalizationEdit::SenderEmail("ada@example.test".into()),
         );
-        assert_eq!(
-            *personalization.lock().unwrap(),
-            Some(PersonalizationEdit::SenderEmail("ada@example.test".into()))
-        );
         record_personalization_edit_slot(&personalization, PersonalizationEdit::StrengthStop(4));
         assert_eq!(
             *personalization.lock().unwrap(),
-            Some(PersonalizationEdit::StrengthStop(4))
+            vec![
+                PersonalizationEdit::GlobalInstructions("Use terse replies".into()),
+                PersonalizationEdit::SenderEmail("ada@example.test".into()),
+                PersonalizationEdit::StrengthStop(4)
+            ],
+            "personalization edits are queued, not last-writer-wins"
         );
     }
 
