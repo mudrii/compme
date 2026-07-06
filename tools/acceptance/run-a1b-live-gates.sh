@@ -296,9 +296,22 @@ run_gate() {
   fi
 }
 
-run_retryable_gate() {
-  name="$1"
-  shift
+# Retry predicates: given an attempt's log file, return 0 when that failure
+# is worth another attempt.
+ax_transient_setup_failure() {
+  grep -Eq 'AX cannot complete request|failed to subscribe focus|failed to subscribe caret' "$1" \
+    && ! grep -Eq '^(INSERT|POST_INSERT_READ)' "$1"
+}
+
+accept_tap_run_completed() {
+  grep -q '^SUMMARY controls=' "$1"
+}
+
+run_gate_with_retry() {
+  retry_predicate="$1"
+  retry_reason="$2"
+  name="$3"
+  shift 3
   attempts="$RETRIES"
   case "$attempts" in
     ''|*[!0-9]*) attempts=1 ;;
@@ -333,10 +346,8 @@ run_retryable_gate() {
       return 0
     fi
 
-    if [ "$attempt" -lt "$attempts" ] \
-      && grep -Eq 'AX cannot complete request|failed to subscribe focus|failed to subscribe caret' "$log_file" \
-      && ! grep -Eq '^(INSERT|POST_INSERT_READ)' "$log_file"; then
-      echo "RETRY $name ($status): transient AX observer setup failure"
+    if [ "$attempt" -lt "$attempts" ] && "$retry_predicate" "$log_file"; then
+      echo "RETRY $name ($status): $retry_reason"
       attempt=$((attempt + 1))
       continue
     fi
@@ -345,6 +356,10 @@ run_retryable_gate() {
     failures=$((failures + 1))
     return "$status"
   done
+}
+
+run_retryable_gate() {
+  run_gate_with_retry ax_transient_setup_failure "transient AX observer setup failure" "$@"
 }
 
 skip_gate() {
@@ -387,58 +402,15 @@ manual_gate() {
   manuals=$((manuals + 1))
 }
 
+# The accept gates assert an EXACT control set, and the Carbon hotkeys are
+# system-wide — any Tab/grave/Esc/Down pressed on the machine during the gate
+# window lands in the captured controls. A run that completed (SUMMARY
+# printed) but mismatched is retried; a genuine wrong-control bug fails every
+# attempt the same way.
 run_accept_tap_gate() {
-  name="$1"
-  shift
-  attempts="$RETRIES"
-  case "$attempts" in
-    ''|*[!0-9]*) attempts=1 ;;
-  esac
-  [ "$attempts" -ge 1 ] || attempts=1
-
-  echo
-  echo "== $name =="
-  print_cmd "$@"
-
-  if [ "$DRY_RUN" -eq 1 ]; then
-    return 0
-  fi
-
-  attempt=1
-  while [ "$attempt" -le "$attempts" ]; do
-    sleep_ms "$GATE_PAUSE_MS"
-    if [ "$attempts" -gt 1 ]; then
-      log_file="$LOG_DIR/$name.attempt-$attempt.log"
-      echo "-- attempt $attempt/$attempts --"
-    else
-      log_file="$LOG_DIR/$name.log"
-    fi
-
-    "$@" >"$log_file" 2>&1
-    status=$?
-    cat "$log_file"
-
-    if [ "$status" -eq 0 ]; then
-      echo "PASS $name"
-      passes=$((passes + 1))
-      return 0
-    fi
-
-    # The accept gates assert an EXACT control set, and the Carbon hotkeys
-    # are system-wide — any Tab/grave/Esc/Down pressed on the machine during
-    # the gate window lands in the captured controls. A run that completed
-    # (SUMMARY printed) but mismatched is retried; a genuine wrong-control
-    # bug fails every attempt the same way.
-    if [ "$attempt" -lt "$attempts" ] && grep -q '^SUMMARY controls=' "$log_file"; then
-      echo "RETRY $name ($status): control set mismatched — ambient key presses contaminate the system-wide hotkeys; keep hands off the keyboard"
-      attempt=$((attempt + 1))
-      continue
-    fi
-
-    echo "FAIL $name ($status): $(classify_blocker "$log_file")"
-    failures=$((failures + 1))
-    return "$status"
-  done
+  run_gate_with_retry accept_tap_run_completed \
+    "control set mismatched — ambient key presses contaminate the system-wide hotkeys; keep hands off the keyboard" \
+    "$@"
 }
 
 run_input_monitoring_revoked_carbon_gate() {
