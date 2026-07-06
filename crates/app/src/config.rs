@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+const ESCAPED_VALUE_PREFIX: &str = "__COMPME_ESCAPED__:";
+
 /// Parse dotenv-style `KEY=VALUE` content into ordered pairs.
 ///
 /// Rules: blank lines and `#` comment lines are ignored; surrounding whitespace
@@ -27,9 +29,57 @@ pub fn parse_env_file(contents: &str) -> Vec<(String, String)> {
         if key.is_empty() {
             continue;
         }
-        pairs.push((key.to_string(), value.trim().to_string()));
+        pairs.push((key.to_string(), decode_env_value(value.trim())));
     }
     pairs
+}
+
+fn encode_env_value(value: &str) -> String {
+    if !value
+        .chars()
+        .any(|ch| matches!(ch, '\\' | '\n' | '\r' | '\t'))
+        && !value.starts_with(ESCAPED_VALUE_PREFIX)
+    {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len());
+    out.push_str(ESCAPED_VALUE_PREFIX);
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn decode_env_value(value: &str) -> String {
+    let Some(value) = value.strip_prefix(ESCAPED_VALUE_PREFIX) else {
+        return value.to_string();
+    };
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// Parse a value, falling back to `default` when absent or unparseable, then
@@ -93,6 +143,7 @@ pub fn load_file_map(path: &Path) -> HashMap<String, String> {
 /// appended as a final `key=value` line.
 pub fn update_env_file_contents(contents: &str, key: &str, value: &str) -> String {
     let mut found = false;
+    let encoded_value = encode_env_value(value);
     let mut lines: Vec<String> = contents
         .lines()
         .map(|line| {
@@ -101,7 +152,7 @@ pub fn update_env_file_contents(contents: &str, key: &str, value: &str) -> Strin
                 if let Some((k, _)) = trimmed.split_once('=') {
                     if k.trim() == key {
                         found = true;
-                        return format!("{key}={value}");
+                        return format!("{key}={encoded_value}");
                     }
                 }
             }
@@ -109,7 +160,7 @@ pub fn update_env_file_contents(contents: &str, key: &str, value: &str) -> Strin
         })
         .collect();
     if !found {
-        lines.push(format!("{key}={value}"));
+        lines.push(format!("{key}={encoded_value}"));
     }
     let mut out = lines.join("\n");
     out.push('\n');
@@ -330,6 +381,39 @@ mod tests {
     }
 
     #[test]
+    fn parses_explicitly_escaped_multiline_values() {
+        let pairs = parse_env_file(
+            "COMPME_INSTRUCTIONS=__COMPME_ESCAPED__:first line\\nsecond line\\tindented\\\\tail",
+        );
+        assert_eq!(
+            pairs,
+            vec![(
+                "COMPME_INSTRUCTIONS".to_string(),
+                "first line\nsecond line\tindented\\tail".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn leaves_legacy_backslash_values_literal() {
+        let pairs = parse_env_file("MODEL=C:\\new\\tmodel.gguf");
+        assert_eq!(
+            pairs,
+            vec![("MODEL".to_string(), "C:\\new\\tmodel.gguf".to_string())]
+        );
+    }
+
+    #[test]
+    fn escaped_prefix_value_round_trips_without_being_stripped() {
+        let value = "__COMPME_ESCAPED__:literal";
+        let updated = update_env_file_contents("", "COMPME_INSTRUCTIONS", value);
+        assert_eq!(
+            parse_env_file(&updated),
+            vec![("COMPME_INSTRUCTIONS".to_string(), value.to_string())]
+        );
+    }
+
+    #[test]
     fn skips_lines_without_equals_or_empty_key() {
         let pairs = parse_env_file("no equals here\n=novalue\nGOOD=1");
         assert_eq!(pairs, vec![("GOOD".to_string(), "1".to_string())]);
@@ -360,6 +444,26 @@ mod tests {
         assert_eq!(
             update_env_file_contents("K=old1\nOTHER=x\nK=old2\n", "K", "new"),
             "K=new\nOTHER=x\nK=new\n"
+        );
+    }
+
+    #[test]
+    fn update_escapes_multiline_values_so_they_reload_as_one_setting() {
+        let updated = update_env_file_contents(
+            "COMPME_INSTRUCTIONS=old\n",
+            "COMPME_INSTRUCTIONS",
+            "first line\nsecond line\\tail",
+        );
+        assert_eq!(
+            updated,
+            "COMPME_INSTRUCTIONS=__COMPME_ESCAPED__:first line\\nsecond line\\\\tail\n"
+        );
+        assert_eq!(
+            parse_env_file(&updated),
+            vec![(
+                "COMPME_INSTRUCTIONS".to_string(),
+                "first line\nsecond line\\tail".to_string()
+            )]
         );
     }
 

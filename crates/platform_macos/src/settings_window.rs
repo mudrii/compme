@@ -480,11 +480,10 @@ define_class!(
                 // indexOfSelectedItem is -1 only on an empty menu; clamp
                 // defensively. The run loop resolves it via StatRange::from_index,
                 // which is total over an out-of-range value.
-                let index = popup.indexOfSelectedItem().max(0) as usize;
-                self.ivars()
-                    .flags
-                    .stat_range_index
-                    .store(index, Ordering::Relaxed);
+                record_stat_selection(
+                    &self.ivars().flags.stat_range_index,
+                    popup.indexOfSelectedItem(),
+                );
             }
         }
 
@@ -492,11 +491,10 @@ define_class!(
         fn select_stat_group(&self, sender: Option<&NSPopUpButton>) {
             if let Some(popup) = sender {
                 // Resolved by StatGrouping::from_index (total over OOB).
-                let index = popup.indexOfSelectedItem().max(0) as usize;
-                self.ivars()
-                    .flags
-                    .stat_group_index
-                    .store(index, Ordering::Relaxed);
+                record_stat_selection(
+                    &self.ivars().flags.stat_group_index,
+                    popup.indexOfSelectedItem(),
+                );
             }
         }
 
@@ -2165,6 +2163,10 @@ fn record_setup_model_selection(slot: &Arc<AtomicUsize>, raw_index: isize) {
     slot.store(raw_index.max(0) as usize, Ordering::Relaxed);
 }
 
+fn record_stat_selection(slot: &Arc<AtomicUsize>, raw_index: isize) {
+    slot.store(raw_index.max(0) as usize, Ordering::Relaxed);
+}
+
 fn record_personalization_edit_slot(
     slot: &Arc<Mutex<Option<PersonalizationEdit>>>,
     edit: PersonalizationEdit,
@@ -2411,6 +2413,18 @@ mod tests {
         assert_eq!(model_index.load(Ordering::Relaxed), 0);
         record_setup_model_selection(&model_index, 3);
         assert_eq!(model_index.load(Ordering::Relaxed), 3);
+
+        let stat_range = Arc::new(AtomicUsize::new(9));
+        record_stat_selection(&stat_range, -1);
+        assert_eq!(stat_range.load(Ordering::Relaxed), 0);
+        record_stat_selection(&stat_range, 2);
+        assert_eq!(stat_range.load(Ordering::Relaxed), 2);
+
+        let stat_group = Arc::new(AtomicUsize::new(9));
+        record_stat_selection(&stat_group, -1);
+        assert_eq!(stat_group.load(Ordering::Relaxed), 0);
+        record_stat_selection(&stat_group, 99);
+        assert_eq!(stat_group.load(Ordering::Relaxed), 99);
 
         let download = Arc::new(AtomicBool::new(false));
         record_setup_download(&download);

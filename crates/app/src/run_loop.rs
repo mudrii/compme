@@ -11,12 +11,11 @@
 //!   engine, submits the newest pending request, then pumps the CFRunLoop for one
 //!   heartbeat (which paces the loop and services the overlay).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -60,6 +59,10 @@ const SCREEN_CONTEXT_WAIT_MS: u64 = 250;
 const DEFAULT_CONTEXT_MAX_CHARS: usize = 160;
 const MAX_MONITORED_BUFFER_CHARS: usize = 512;
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
+const MAX_DEEP_LINK_URL_CHARS: usize = 4096;
+const MAX_DEEP_LINK_QUEUE: usize = 8;
+const MAX_HOST_EVENT_QUEUE: usize = 1024;
+const MAX_HOST_EVENTS_PER_TICK: usize = 256;
 /// Re-poll secure input + Accessibility trust at most this often (wall-clock ms).
 const SECURE_POLL_INTERVAL_MS: u64 = 480;
 /// Periodic lifetime-stats flush cadence (c102 follow-up): bounds crash loss
@@ -157,6 +160,61 @@ fn coalesce_caret_reads(events: Vec<HostEvent>) -> Vec<HostEvent> {
         out.push(event);
     }
     out
+}
+
+struct HostEventDrain {
+    events: Vec<HostEvent>,
+    backlog_remaining: bool,
+}
+
+fn host_event_is_backpressure_droppable(event: &HostEvent) -> bool {
+    matches!(event, HostEvent::Focus(_) | HostEvent::Caret(_, _))
+}
+
+fn enqueue_host_event(queue: &mut VecDeque<HostEvent>, event: HostEvent) -> bool {
+    if queue.len() >= MAX_HOST_EVENT_QUEUE {
+        let Some(drop_index) = queue.iter().position(host_event_is_backpressure_droppable) else {
+            return false;
+        };
+        queue.remove(drop_index);
+    }
+    queue.push_back(event);
+    true
+}
+
+fn push_host_event(queue: &Mutex<VecDeque<HostEvent>>, event: HostEvent) -> bool {
+    let mut queue = queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    enqueue_host_event(&mut queue, event)
+}
+
+fn drain_host_events(queue: &Mutex<VecDeque<HostEvent>>) -> HostEventDrain {
+    let mut queue = queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut events = Vec::new();
+    for _ in 0..MAX_HOST_EVENTS_PER_TICK {
+        let Some(event) = queue.pop_front() else {
+            break;
+        };
+        events.push(event);
+    }
+    HostEventDrain {
+        events,
+        backlog_remaining: !queue.is_empty(),
+    }
+}
+
+fn enqueue_deep_link(queue: &mut Vec<String>, url: String) -> bool {
+    if url.chars().count() > MAX_DEEP_LINK_URL_CHARS {
+        return false;
+    }
+    if queue.len() >= MAX_DEEP_LINK_QUEUE {
+        queue.remove(0);
+    }
+    queue.push(url);
+    true
 }
 
 fn host_event_invalidates_pending_request(event: &HostEvent) -> bool {
@@ -1184,6 +1242,77 @@ fn apply_personalization_edit(
             let stop = stop.min(u8::MAX as usize) as u8;
             profile.strength = Strength::from_stop(stop);
             ("COMPME_STRENGTH", stop.to_string())
+        }
+    }
+}
+
+fn apply_live_personalization_edit(
+    profile: &mut PersonalizationProfile,
+    edit: platform_macos::PersonalizationEdit,
+    set_profile: impl FnOnce(PersonalizationProfile),
+    persist: impl FnOnce(&'static str, &str) -> std::io::Result<()>,
+) -> (&'static str, String, std::io::Result<()>) {
+    let (key, value) = apply_personalization_edit(profile, edit);
+    set_profile(profile.clone());
+    let persist_result = persist(key, &value);
+    (key, value, persist_result)
+}
+
+fn apply_clipboard_context_edge(on: bool, clipboard_cell: &Mutex<Option<String>>) {
+    if !on {
+        *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ScreenContextEdge {
+    Disabled,
+    Enabled,
+    RevertedDenied,
+    RevertedSpawnFailed,
+}
+
+struct ScreenContextToggleState<'a, T> {
+    config_screen_context: &'a mut bool,
+    ui_flag: &'a AtomicBool,
+    screen_cell: &'a Mutex<Option<ScreenContext>>,
+    screen_ocr: &'a mut Option<T>,
+}
+
+fn apply_screen_context_edge<T>(
+    on: bool,
+    state: ScreenContextToggleState<'_, T>,
+    mut set_wait_ms: impl FnMut(u64),
+    screen_recording_permission: impl FnOnce() -> bool,
+    spawn_screen_ocr: impl FnOnce() -> Result<T, String>,
+) -> ScreenContextEdge {
+    if !on {
+        *state.screen_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *state.screen_ocr = None;
+        set_wait_ms(0);
+        return ScreenContextEdge::Disabled;
+    }
+
+    if !screen_recording_permission() {
+        *state.config_screen_context = false;
+        state.ui_flag.store(false, Ordering::Relaxed);
+        *state.screen_ocr = None;
+        set_wait_ms(0);
+        return ScreenContextEdge::RevertedDenied;
+    }
+
+    match spawn_screen_ocr() {
+        Ok(ocr) => {
+            *state.screen_ocr = Some(ocr);
+            set_wait_ms(SCREEN_CONTEXT_WAIT_MS);
+            ScreenContextEdge::Enabled
+        }
+        Err(_) => {
+            *state.config_screen_context = false;
+            state.ui_flag.store(false, Ordering::Relaxed);
+            *state.screen_ocr = None;
+            set_wait_ms(0);
+            ScreenContextEdge::RevertedSpawnFailed
         }
     }
 }
@@ -3539,20 +3668,14 @@ pub fn run() -> Result<(), String> {
     .with_trigger_gates(config.min_context_chars, config.allow_mid_word)
     .with_trailing_space(config.trailing_space);
 
-    // Callbacks fire on the dispatcher thread; mpsc::Sender is !Sync, so share it
-    // through a Mutex (the callbacks must be Send + Sync).
-    let (tx, rx) = channel::<HostEvent>();
-    let tx: Arc<Mutex<Sender<HostEvent>>> = Arc::new(Mutex::new(tx));
+    // Callbacks fire on the dispatcher thread; keep enqueueing non-blocking and
+    // bounded so a burst cannot grow memory without limit.
+    let host_events: Arc<Mutex<VecDeque<HostEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-    let focus_tx = Arc::clone(&tx);
+    let focus_events = Arc::clone(&host_events);
     let (focus_sub, focus_subscription_requires_relaunch) = match adapter.subscribe_focus(Arc::new(
         move |field| {
-            // best-effort: a poisoned send-mutex only happens if a prior sender
-            // panicked while shutting down; the receiver is gone then too, so
-            // dropping this event is the correct shutdown-race behavior.
-            if let Ok(tx) = focus_tx.lock() {
-                let _ = tx.send(HostEvent::Focus(field));
-            }
+            let _ = push_host_event(&focus_events, HostEvent::Focus(field));
         },
     )) {
         Ok(sub) => (sub, false),
@@ -3569,14 +3692,10 @@ pub fn run() -> Result<(), String> {
         },
     };
 
-    let caret_tx = Arc::clone(&tx);
+    let caret_events = Arc::clone(&host_events);
     let (caret_sub, caret_subscription_requires_relaunch) = match adapter.subscribe_caret(Arc::new(
         move |field, rect| {
-            // best-effort: poisoned send-mutex means a sender panicked during
-            // shutdown; the receiver is gone, so dropping the event is correct.
-            if let Ok(tx) = caret_tx.lock() {
-                let _ = tx.send(HostEvent::Caret(field, rect));
-            }
+            let _ = push_host_event(&caret_events, HostEvent::Caret(field, rect));
         },
     )) {
         Ok(sub) => (sub, false),
@@ -3593,7 +3712,7 @@ pub fn run() -> Result<(), String> {
         },
     };
 
-    let accept_tx = Arc::clone(&tx);
+    let accept_events = Arc::clone(&host_events);
     let (accept_sub, accept_subscription_requires_relaunch) =
         subscribe_accept_after_startup_key_bindings(&config, trusted, || {
             adapter.subscribe_accept(Arc::new(move |control| {
@@ -3603,10 +3722,8 @@ pub fn run() -> Result<(), String> {
                     TapControl::Cycle => HostEvent::Cycle,
                     TapControl::Shortcut(action) => HostEvent::Shortcut(action),
                 };
-                // best-effort: poisoned send-mutex means a sender panicked during
-                // shutdown; the receiver is gone, so dropping the event is correct.
-                if let Ok(tx) = accept_tx.lock() {
-                    let _ = tx.send(event);
+                if !push_host_event(&accept_events, event) {
+                    eprintln!("compme: host control event dropped: queue full");
                 }
             }))
         })?;
@@ -3660,10 +3777,12 @@ pub fn run() -> Result<(), String> {
     let deep_links: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let deep_links_in_handler = Arc::clone(&deep_links);
     let _url_handler = match platform_macos::install_url_event_handler(Arc::new(move |url| {
-        deep_links_in_handler
+        let mut queue = deep_links_in_handler
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(url);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !enqueue_deep_link(&mut queue, url) {
+            eprintln!("compme: deep-link event dropped: URL too large");
+        }
     })) {
         Ok(handler) => Some(handler),
         Err(err) => {
@@ -3871,8 +3990,12 @@ pub fn run() -> Result<(), String> {
         // context (executes on the adapter's AX worker), diff into a TextChange.
         // Drain the queue first, then collapse bursts of same-field caret reads so
         // we issue at most one AX round-trip per field per heartbeat.
-        let drained: Vec<HostEvent> = rx.try_iter().collect();
-        for event in coalesce_caret_reads(drained) {
+        let drained = drain_host_events(&host_events);
+        let host_event_backlog_remaining = drained.backlog_remaining;
+        if host_event_backlog_remaining {
+            latest.clear();
+        }
+        for event in coalesce_caret_reads(drained.events) {
             if host_event_invalidates_pending_request(&event) {
                 latest.clear();
             }
@@ -4705,15 +4828,21 @@ pub fn run() -> Result<(), String> {
             .ok()
             .and_then(|mut slot| slot.take());
         if let Some(edit) = pers_edit {
-            let (key, value) = apply_personalization_edit(&mut config.personalization, edit);
-            // LIVE: the worker reads the profile per request through its shared
-            // Arc<Mutex<_>>, so this applies without a respawn.
-            inference.set_profile(config.personalization.clone());
+            let (key, _value, persist_result) = apply_live_personalization_edit(
+                &mut config.personalization,
+                edit,
+                |profile| inference.set_profile(profile),
+                |key, value| {
+                    if let Some(path) = config::config_file_path() {
+                        config::persist_setting(&path, key, value)
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
             eprintln!("compme: personalization {key} updated");
-            if let Some(path) = config::config_file_path() {
-                if let Err(err) = config::persist_setting(&path, key, &value) {
-                    eprintln!("compme: failed to persist {key}: {err}");
-                }
+            if let Err(err) = persist_result {
+                eprintln!("compme: failed to persist {key}: {err}");
             }
         }
         // Setup "Download Model": fetch the model the picker has selected
@@ -4907,42 +5036,27 @@ pub fn run() -> Result<(), String> {
             &settings_flags.context_clipboard,
             &mut config.clipboard_context,
         ) {
-            if !on {
-                *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            }
+            apply_clipboard_context_edge(on, &clipboard_cell);
             persist_and_log_switch("COMPME_CLIPBOARD_CONTEXT", "clipboard context", on);
         }
         if let Some(on) = switch_edge(&settings_flags.context_screen, &mut config.screen_context) {
-            if !on {
-                *screen_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                screen_ocr = None;
-                screen_wait_ms.store(0, Ordering::Relaxed);
-            } else if screen_recording_permission() {
-                match ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context)
-                {
-                    Ok(ocr) => {
-                        screen_ocr = Some(ocr);
-                        screen_wait_ms.store(SCREEN_CONTEXT_WAIT_MS, Ordering::Relaxed);
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "compme: screen OCR worker unavailable: {err}; screen context disabled"
-                        );
-                        config.screen_context = false;
-                        settings_flags
-                            .context_screen
-                            .store(false, Ordering::Relaxed);
-                        screen_ocr = None;
-                        screen_wait_ms.store(0, Ordering::Relaxed);
-                    }
-                }
-            } else {
-                config.screen_context = false;
-                settings_flags
-                    .context_screen
-                    .store(false, Ordering::Relaxed);
-                screen_ocr = None;
-                screen_wait_ms.store(0, Ordering::Relaxed);
+            let context_edge = apply_screen_context_edge(
+                on,
+                ScreenContextToggleState {
+                    config_screen_context: &mut config.screen_context,
+                    ui_flag: &settings_flags.context_screen,
+                    screen_cell: &screen_cell,
+                    screen_ocr: &mut screen_ocr,
+                },
+                |ms| screen_wait_ms.store(ms, Ordering::Relaxed),
+                screen_recording_permission,
+                || {
+                    ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context)
+                        .map_err(|err| err.to_string())
+                },
+            );
+            if context_edge == ScreenContextEdge::RevertedSpawnFailed {
+                eprintln!("compme: screen OCR worker unavailable; screen context disabled");
             }
             persist_and_log_switch(
                 "COMPME_SCREEN_CONTEXT",
@@ -5242,7 +5356,12 @@ pub fn run() -> Result<(), String> {
 
         // 5. Submit the newest pending request only when suggestions are allowed
         // (Ready ⇒ trusted + not secure + warm + enabled).
-        if status.suggestions_allowed() {
+        if host_event_backlog_remaining {
+            latest.clear();
+            if manual_grammar_request.take().is_some() {
+                eprintln!("compme: shortcut grammar-check dropped — host event backlog");
+            }
+        } else if status.suggestions_allowed() {
             if let Some(request) = manual_grammar_request.take() {
                 let app_key = effective_app_key(&request.field, bundle_id_for_pid);
                 let domain = cached_domain(&last_domain, app_key.as_deref());
@@ -5545,6 +5664,141 @@ mod tests {
             personalization_strength_titles().len(),
             Strength::STOPS.len()
         );
+    }
+
+    #[test]
+    fn live_personalization_edit_updates_worker_profile_and_persists_value() {
+        use platform_macos::PersonalizationEdit as E;
+        let mut profile = PersonalizationProfile::default();
+        let applied_profile = RefCell::new(None);
+        let persisted = RefCell::new(None);
+
+        let (key, value, persist_result) = apply_live_personalization_edit(
+            &mut profile,
+            E::GlobalInstructions("Use short direct completions.".into()),
+            |profile| *applied_profile.borrow_mut() = Some(profile),
+            |key, value| {
+                *persisted.borrow_mut() = Some((key, value.to_string()));
+                Ok(())
+            },
+        );
+
+        assert!(persist_result.is_ok());
+        assert_eq!(key, "COMPME_INSTRUCTIONS");
+        assert_eq!(value, "Use short direct completions.");
+        assert_eq!(profile.global_instructions, "Use short direct completions.");
+        assert_eq!(
+            applied_profile
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .global_instructions,
+            "Use short direct completions."
+        );
+        assert_eq!(
+            persisted.into_inner(),
+            Some((
+                "COMPME_INSTRUCTIONS",
+                "Use short direct completions.".to_string()
+            ))
+        );
+    }
+
+    fn test_screen_context() -> ScreenContext {
+        ScreenContext {
+            field: host_field("screen-field"),
+            generation: 1,
+            snapshot: 2,
+            text: "screen text".into(),
+        }
+    }
+
+    #[test]
+    fn context_toggle_off_clears_clipboard_screen_worker_and_wait() {
+        let clipboard_cell = Mutex::new(Some("clipboard text".to_string()));
+        apply_clipboard_context_edge(false, &clipboard_cell);
+        assert_eq!(*clipboard_cell.lock().unwrap(), None);
+
+        let mut config_screen_context = false;
+        let ui_flag = AtomicBool::new(false);
+        let screen_cell = Mutex::new(Some(test_screen_context()));
+        let mut screen_ocr = Some("worker");
+        let wait_ms = RefCell::new(Vec::new());
+
+        let edge = apply_screen_context_edge(
+            false,
+            ScreenContextToggleState {
+                config_screen_context: &mut config_screen_context,
+                ui_flag: &ui_flag,
+                screen_cell: &screen_cell,
+                screen_ocr: &mut screen_ocr,
+            },
+            |ms| wait_ms.borrow_mut().push(ms),
+            || true,
+            || Ok("new-worker"),
+        );
+
+        assert_eq!(edge, ScreenContextEdge::Disabled);
+        assert_eq!(*screen_cell.lock().unwrap(), None);
+        assert_eq!(screen_ocr, None);
+        assert_eq!(wait_ms.into_inner(), vec![0]);
+    }
+
+    #[test]
+    fn screen_context_enable_reverts_false_when_permission_denied_or_spawn_fails() {
+        let denied_flag = AtomicBool::new(true);
+        let denied_cell = Mutex::new(None);
+        let mut denied_context = true;
+        let mut denied_ocr: Option<&str> = Some("old-worker");
+        let denied_wait = RefCell::new(Vec::new());
+
+        let denied = apply_screen_context_edge(
+            true,
+            ScreenContextToggleState {
+                config_screen_context: &mut denied_context,
+                ui_flag: &denied_flag,
+                screen_cell: &denied_cell,
+                screen_ocr: &mut denied_ocr,
+            },
+            |ms| denied_wait.borrow_mut().push(ms),
+            || false,
+            || Ok("new-worker"),
+        );
+        let denied_persist_value = denied_context;
+
+        assert_eq!(denied, ScreenContextEdge::RevertedDenied);
+        assert!(!denied_context);
+        assert!(!denied_persist_value);
+        assert!(!denied_flag.load(Ordering::Relaxed));
+        assert_eq!(denied_ocr, None);
+        assert_eq!(denied_wait.into_inner(), vec![0]);
+
+        let failed_flag = AtomicBool::new(true);
+        let failed_cell = Mutex::new(None);
+        let mut failed_context = true;
+        let mut failed_ocr: Option<&str> = Some("old-worker");
+        let failed_wait = RefCell::new(Vec::new());
+
+        let failed = apply_screen_context_edge(
+            true,
+            ScreenContextToggleState {
+                config_screen_context: &mut failed_context,
+                ui_flag: &failed_flag,
+                screen_cell: &failed_cell,
+                screen_ocr: &mut failed_ocr,
+            },
+            |ms| failed_wait.borrow_mut().push(ms),
+            || true,
+            || Err("spawn failed".to_string()),
+        );
+        let failed_persist_value = failed_context;
+
+        assert_eq!(failed, ScreenContextEdge::RevertedSpawnFailed);
+        assert!(!failed_context);
+        assert!(!failed_persist_value);
+        assert!(!failed_flag.load(Ordering::Relaxed));
+        assert_eq!(failed_ocr, None);
+        assert_eq!(failed_wait.into_inner(), vec![0]);
     }
 
     #[test]
@@ -13417,6 +13671,60 @@ mod tests {
         assert!(!host_event_invalidates_pending_request(
             &HostEvent::Shortcut(ShortcutAction::GrammarCheck)
         ));
+    }
+
+    #[test]
+    fn host_event_queue_drops_old_caret_to_preserve_control_event() {
+        let mut queue = VecDeque::new();
+        for i in 0..MAX_HOST_EVENT_QUEUE {
+            assert!(enqueue_host_event(
+                &mut queue,
+                HostEvent::Caret(host_field(&format!("field-{i}")), rect(i as f64))
+            ));
+        }
+
+        assert!(enqueue_host_event(
+            &mut queue,
+            HostEvent::Accept(AcceptAction::Full)
+        ));
+
+        assert_eq!(queue.len(), MAX_HOST_EVENT_QUEUE);
+        assert!(queue
+            .iter()
+            .any(|event| matches!(event, HostEvent::Accept(AcceptAction::Full))));
+        assert!(!queue.iter().any(
+            |event| matches!(event, HostEvent::Caret(field, _) if field.element_id == "field-0")
+        ));
+    }
+
+    #[test]
+    fn host_event_queue_refuses_when_only_control_events_remain() {
+        let mut queue = VecDeque::new();
+        for _ in 0..MAX_HOST_EVENT_QUEUE {
+            assert!(enqueue_host_event(
+                &mut queue,
+                HostEvent::Accept(AcceptAction::Full)
+            ));
+        }
+
+        assert!(!enqueue_host_event(&mut queue, HostEvent::Dismiss));
+        assert_eq!(queue.len(), MAX_HOST_EVENT_QUEUE);
+    }
+
+    #[test]
+    fn host_event_drain_reports_backlog() {
+        let queue = Mutex::new(VecDeque::new());
+        for i in 0..(MAX_HOST_EVENTS_PER_TICK + 1) {
+            assert!(push_host_event(
+                &queue,
+                HostEvent::Caret(host_field(&format!("field-{i}")), rect(i as f64))
+            ));
+        }
+
+        let drained = drain_host_events(&queue);
+
+        assert_eq!(drained.events.len(), MAX_HOST_EVENTS_PER_TICK);
+        assert!(drained.backlog_remaining);
     }
 
     #[test]

@@ -1044,6 +1044,8 @@ ruby -ryaml -e '
     "release missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
     "release model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
     "release model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
+    "release agent brief alignment" => ["Agent brief alignment", "tools/release/check-agent-briefs.sh"],
+    "release agent brief alignment self-test" => ["Agent brief alignment self-test", "tools/release/check-agent-briefs.sh --self-test"],
     "release privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],
     "release privacy policy self-test" => ["Privacy policy self-test", "tools/release/check-privacy-policy.sh --self-test"],
     "release policy check" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
@@ -1364,6 +1366,8 @@ require_line "$acceptance_doc" '^Use `--allow-manual` only after executing and r
 require_line "$acceptance_doc" '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "acceptance docs A2 self-test"
 require_line "$acceptance_doc" '^tools/release/check-model-client-features\.sh[[:space:]]*$' "acceptance docs model client feature policy"
 require_line "$acceptance_doc" '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "acceptance docs model client feature policy self-test"
+require_line "$acceptance_doc" '^tools/release/check-agent-briefs\.sh[[:space:]]*$' "acceptance docs agent brief alignment"
+require_line "$acceptance_doc" '^tools/release/check-agent-briefs\.sh --self-test[[:space:]]*$' "acceptance docs agent brief alignment self-test"
 require_line "$acceptance_doc" '^bash tools/release/run-model-gates\.sh[[:space:]]*$' "acceptance docs model-backed release gate"
 require_line "$acceptance_doc" '^tools/release/run-model-gates\.sh --self-test[[:space:]]*$' "acceptance docs model gate self-test"
 require_line "$acceptance_doc" '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "acceptance docs cask updater self-test"
@@ -1383,6 +1387,8 @@ require_line "$releasing_doc" 'tools/acceptance/missing-model-startup\.sh --self
 require_line "$releasing_doc" 'tools/acceptance/missing-model-startup\.sh`' "release docs missing-model startup product smoke"
 require_line "$releasing_doc" 'tools/release/check-model-client-features\.sh' "release docs model client feature policy"
 require_line "$releasing_doc" 'tools/release/check-model-client-features\.sh --self-test' "release docs model client feature policy self-test"
+require_line "$releasing_doc" 'tools/release/check-agent-briefs\.sh' "release docs agent brief alignment"
+require_line "$releasing_doc" 'tools/release/check-agent-briefs\.sh --self-test' "release docs agent brief alignment self-test"
 require_line "$releasing_doc" 'tools/release/update-cask\.sh --self-test' "release docs cask updater self-test"
 require_line "$releasing_doc" 'tools/release/notarize-app\.sh --self-test' "release docs notarization helper self-test"
 require_line "$releasing_doc" 'tools/release/write-update-manifest\.sh --self-test' "release docs update manifest self-test"

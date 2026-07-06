@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-06 (docs/roadmap sync after audit, TDD, and release-pipeline hardening loops) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1700 workspace tests; spike separate)
+> **Last updated:** 2026-07-06 (docs/roadmap sync after audit, TDD, and release-pipeline hardening loops) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1710 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -162,7 +162,7 @@ tabs (Setup, General, Personalization, Apps, Context, Emoji, Shortcuts,
 Statistics, About). The macOS-buildable Tier 3 controls have landed in code and
 deterministic tests; the remaining work is the live visual/physical LOOK pass —
 the authoritative pass/fail ledger is [`ACCEPTANCE.md`](ACCEPTANCE.md)'s
-Manual/Live Gate Ledger (14 runner-pinned gate IDs); detailed walkthroughs live
+Manual/Live Gate Ledger (17 runner-pinned gate IDs); detailed walkthroughs live
 in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md) — plus optional UX
 enhancements explicitly called out below.
 
@@ -454,7 +454,7 @@ physical trigger/accept interaction.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1700 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1710 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is
@@ -470,7 +470,7 @@ Apple Developer ID). Everything below is buildable on the macOS dev host today.
 Verified complete-list facts (2026-06-30 plan-review pass): there is **no Tier
 1.3**, and **Tier 2 is a single ✅ DONE item (2.1)**. The six rows below were
 the remaining **macOS-buildable code backlog** at that point; the current
-readiness surface is broader because `docs/ACCEPTANCE.md` now pins 14
+readiness surface is broader because `docs/ACCEPTANCE.md` now pins 17
 manual/live gate IDs for visual LOOK checks, caret-marker calibration,
 Input-Monitoring-revoked Carbon-accept proof, and other live-only evidence.
 Correction to an earlier note: the **F2 insertion-order decision is already
