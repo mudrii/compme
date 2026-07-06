@@ -952,17 +952,25 @@ fn apply_live_accept_keymap(
     set_map(word, full, grammar_accept).map_err(|err| format!("rejected keymap: {err:?}"))?;
     if let Err(err) = rearm() {
         // Best-effort revert. The previous pair was validated when it
-        // registered, so this set_map cannot fail in practice; if it ever
-        // did, the map would claim the NEW keys while the OLD stay armed —
-        // the c123 desync — hence revert-then-error, never error-then-leave.
-        // The revert is the LAST line of defense against that desync, so a
-        // failure here must not be SILENT: nothing else would surface that
-        // the keymap and the registered hotkeys now disagree. Reverting with
-        // the masks intact restores the EXACT prior registration.
-        if let Err(revert_err) = set_map(Some(previous.0), Some(previous.1), previous.2) {
-            eprintln!(
-                "compme: accept-keymap re-arm failed and revert to {previous:?} also failed: {revert_err:?}"
-            );
+        // registered, so this set_map cannot fail in practice. Reverting the
+        // map alone is not enough: the failed rearm may have already dropped
+        // the old consumer tap, so try one more rearm after restoring the old
+        // map to put the consumer-tap registration back too.
+        match set_map(Some(previous.0), Some(previous.1), previous.2) {
+            Ok(()) => {
+                if let Err(restore_err) = rearm() {
+                    eprintln!(
+                        "compme: accept-keymap re-arm failed and old keymap {previous:?} \
+                         could not be re-armed: {restore_err:?}"
+                    );
+                }
+            }
+            Err(revert_err) => {
+                eprintln!(
+                    "compme: accept-keymap re-arm failed and revert to {previous:?} \
+                     also failed: {revert_err:?}"
+                );
+            }
         }
         return Err(format!("re-arm failed: {err:?}"));
     }
@@ -8657,6 +8665,8 @@ mod tests {
         let l1 = std::rc::Rc::clone(&log);
         let l2 = std::rc::Rc::clone(&log);
         let l3 = std::rc::Rc::clone(&log);
+        let rearm_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls = std::rc::Rc::clone(&rearm_calls);
         let err = apply_live_accept_keymap(
             Some((35, 0)),
             Some((38, 0)),
@@ -8666,8 +8676,14 @@ mod tests {
                 Ok(())
             },
             || {
+                let call = calls.get() + 1;
+                calls.set(call);
                 l2.borrow_mut().push("rearm".into());
-                Err(PlatformError::Timeout)
+                if call == 1 {
+                    Err(PlatformError::Timeout)
+                } else {
+                    Ok(())
+                }
             },
             |w, f, g| l3.borrow_mut().push(format!("persist:{w:?},{f:?},{g:?}")),
             || ((48, 0), (50, 0), Some((96, 512))), // the pre-swap registered truth
@@ -8679,8 +8695,9 @@ mod tests {
                 "set:Some((35, 0)),Some((38, 0)),Some((96, 0))".to_string(),
                 "rearm".to_string(),
                 "set:Some((48, 0)),Some((50, 0)),Some((96, 512))".to_string(), // revert (masks intact)
+                "rearm".to_string(), // restore the old consumer tap
             ],
-            "no persist after a failed re-arm"
+            "restore the previous keymap/tap and do not persist after a failed re-arm"
         );
 
         // Failure path where the REVERT set_map ALSO fails: the function still
@@ -8825,6 +8842,70 @@ mod tests {
             log.borrow().last().unwrap(),
             &format!("persist:(48, {SHIFT}),(50, 0),Some((96, {SHIFT}))"),
             "persist receives the resolved registered pair — the Shift mask survives to disk"
+        );
+    }
+
+    #[test]
+    fn live_rebind_failure_rearms_the_previous_keymap_after_revert() {
+        let registered = std::rc::Rc::new(std::cell::RefCell::new((
+            (48_i64, 512_u32),
+            (50_i64, 0_u32),
+            Some((96_i64, 512_u32)),
+        )));
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let rearm_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+
+        let r_set = std::rc::Rc::clone(&registered);
+        let l_set = std::rc::Rc::clone(&log);
+        let l_rearm = std::rc::Rc::clone(&log);
+        let calls = std::rc::Rc::clone(&rearm_calls);
+        let r_eff = std::rc::Rc::clone(&registered);
+        let l_persist = std::rc::Rc::clone(&log);
+        let applied = apply_live_accept_keymap(
+            Some((60, 0)),
+            Some((61, 0)),
+            Some((62, 0)),
+            move |w, f, g| {
+                *r_set.borrow_mut() = (w.unwrap_or((48, 0)), f.unwrap_or((50, 0)), g);
+                l_set
+                    .borrow_mut()
+                    .push(format!("set:{:?}", *r_set.borrow()));
+                Ok(())
+            },
+            move || {
+                let call = calls.get() + 1;
+                calls.set(call);
+                l_rearm.borrow_mut().push(format!("rearm:{call}"));
+                if call == 1 {
+                    Err(PlatformError::Timeout)
+                } else {
+                    Ok(())
+                }
+            },
+            move |w, f, g| {
+                l_persist
+                    .borrow_mut()
+                    .push(format!("persist:{w:?},{f:?},{g:?}"))
+            },
+            move || *r_eff.borrow(),
+        );
+
+        assert!(applied.is_err());
+        assert_eq!(
+            log.borrow().as_slice(),
+            [
+                "set:((60, 0), (61, 0), Some((62, 0)))",
+                "rearm:1",
+                "set:((48, 512), (50, 0), Some((96, 512)))",
+                "rearm:2",
+            ],
+            "failure restores the old map and re-arms against it without persisting"
+        );
+        assert_eq!(rearm_calls.get(), 2);
+        assert_eq!(
+            *registered.borrow(),
+            ((48, 512), (50, 0), Some((96, 512))),
+            "effective keymap reports the previous registered truth"
         );
     }
 

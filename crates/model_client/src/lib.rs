@@ -725,7 +725,7 @@ pub fn generation_range(prompt_len: usize, max_tokens: usize) -> (i32, i32) {
 /// without a real `LlamaContext`. llama.cpp positions are `i32`; the cast
 /// saturates so an overflowing sum can never wrap to a negative position.
 pub fn prompt_suffix_position(reuse: usize, index: usize) -> i32 {
-    i32::try_from(reuse + index).unwrap_or(i32::MAX)
+    i32::try_from(reuse.saturating_add(index)).unwrap_or(i32::MAX)
 }
 
 /// Compute the [`DecodePlan`] for `current` prompt tokens against the `prev`
@@ -1297,6 +1297,7 @@ mod tests {
         // A pathological reuse/index whose sum exceeds i32::MAX must saturate to
         // i32::MAX rather than wrap to a negative llama.cpp position.
         assert_eq!(prompt_suffix_position(usize::MAX, 0), i32::MAX);
+        assert_eq!(prompt_suffix_position(usize::MAX, 1), i32::MAX);
         assert_eq!(prompt_suffix_position(i32::MAX as usize, 1), i32::MAX);
     }
 
