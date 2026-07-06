@@ -378,22 +378,30 @@ pairs (for example `textedit=123 terminal-cmd=456`) and it writes a TSV ledger
 under `tools/acceptance/logs/`. Missing rows fail unless
 `COMPME_A2_MATRIX_ALLOW_SKIP=1` is set.
 
-Before tagging a release, validate the fresh matrix ledger without skip/fail
-rows:
+Before tagging a release, write the fresh matrix ledger under committed release
+evidence and validate it without skip/fail rows:
 
 ```sh
-ledger="tools/acceptance/logs/a2-compat-matrix-YYYYMMDD-HHMMSS.tsv"
+run_id="v0.1.0-$(date +%Y%m%d-%H%M%S)"
+evidence_dir="tools/acceptance/evidence/a2/$run_id"
+mkdir -p "$evidence_dir"
+COMPME_A2_BROWSER_EXCLUDED_DOMAIN="example.test" \
+COMPME_A2_LOG_DIR="$evidence_dir" \
+COMPME_A2_MATRIX_TARGETS="textedit=123 notes=124 mail=125 word=126 safari=127 chrome=128 brave=129 browser-exclude=130 terminal-cmd=131 terminal-nlp=132 unsupported=133 clipboard=134 screen=135" \
+  tools/acceptance/run-a2-compat-gates.sh matrix
+ledger="$(ls -t "$evidence_dir"/a2-compat-matrix-*.tsv | head -n 1)"
+git add "$evidence_dir"
 tools/release/check-a2-matrix-ledger.sh "$ledger"
 ```
 
 For release evidence that must pass on GitHub-hosted runners, set
-`COMPME_A2_LOG_DIR` to a committed directory under
-`tools/acceptance/evidence/a2/` before running `matrix`, commit the TSV and its
-row logs, then set the repository variable `COMPME_A2_MATRIX_LEDGER` to that
-repo-relative TSV path. The checker rejects missing row log files, row logs
-that do not prove the expected app/domain/context behavior, stale ledgers older
-than `COMPME_A2_LEDGER_MAX_AGE_SECONDS` (default `86400`), and future-dated
-ledgers beyond `COMPME_A2_LEDGER_MAX_FUTURE_SKEW_SECONDS` (default `300`).
+`COMPME_A2_LOG_DIR` under `tools/acceptance/evidence/a2/` before running
+`matrix`, commit the TSV and every row log file, then set the repository
+variable `COMPME_A2_MATRIX_LEDGER` to that repo-relative TSV path. The checker
+rejects unsafe or untracked `log_path` entries, missing row log files, row logs
+that do not prove the expected app/domain/context behavior, stale ledgers older than
+`COMPME_A2_LEDGER_MAX_AGE_SECONDS` (default `86400`), and future-dated ledgers
+beyond `COMPME_A2_LEDGER_MAX_FUTURE_SKEW_SECONDS` (default `300`).
 
 The `clipboard` and `screen` gates enable `COMPME_DIAG_CONTEXT=1`; clipboard
 requires the marker `CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and
@@ -615,6 +623,9 @@ The live runner uses `platform_macos` examples:
 - `input_monitoring_preflight_acceptance`
 - `popup_fallback_acceptance`
 - `overlay_presenter_acceptance`
+
+`overlay_presenter_acceptance` also backs `overlay-correction-presenter` via
+`COMPME_OVERLAY_MODE=correction`.
 
 Build them with:
 

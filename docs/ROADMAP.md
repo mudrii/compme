@@ -6,7 +6,8 @@
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function anchors re-reviewed 2026-07-04.
+> with symbol/function/gate anchors re-reviewed 2026-07-06 through `d1f9118`,
+> `baf0c6e`, and `9aa3c20`.
 
 ## Status legend
 
@@ -75,8 +76,10 @@ signing + hardened runtime + notarization + a native updater.
 - `tools/release/notarize-app.sh` submits the signed app archive with
   `xcrun notarytool submit --wait`, staples the ticket with `xcrun stapler`, and
   validates the staple. The tag workflow imports the Developer-ID `.p12`, fails
-  closed when signing/notarization secrets are missing, notarizes before zipping,
-  and uploads the notarized zip.
+  closed when signing/notarization secrets are missing, requires a protected
+  `v*` tag plus the protected `release` environment, notarizes before zipping,
+  deletes the signing keychain before packaging/upload, and uploads the
+  notarized zip.
 - The updater path is GitHub-release-driven: the tray's **Check for Updates…**
   opens the releases page, and the release workflow uploads an informational
   `compme-<version>-update.json` next to the zip and checksum (nothing consumes
@@ -86,10 +89,12 @@ signing + hardened runtime + notarization + a native updater.
   still needs the external Developer-ID secrets plus a maintainer-created tag.
 
 **Pending:**
-- Configure GitHub Secrets for Developer-ID signing and notarization.
+- Configure the protected `release` environment, protected `v*` tag ruleset, and
+  GitHub Secrets for Developer-ID signing and notarization.
 - Run the A2 compatibility matrix in a granted live macOS session with
   `COMPME_A2_LOG_DIR` under `tools/acceptance/evidence/a2/`, commit the TSV plus
-  row logs, and set `COMPME_A2_MATRIX_LEDGER` to that repo-relative TSV path.
+  tracked row logs, and set `COMPME_A2_MATRIX_LEDGER` to that repo-relative TSV
+  path.
 - Run the first tag build and verify the notarized zip, `.sha256`, and update
   manifest publish correctly, and that the workflow commits the finalized
   `Casks/compme.rb` checksum back to the default branch.
@@ -100,12 +105,13 @@ signing + hardened runtime + notarization + a native updater.
 The CI/release/cask glue is already written and locally validated, including
 locked Cargo gates, pinned toolchain, release preflight checks, A2 matrix ledger
 policy, privacy-policy scan, model-gate policy, draft-release publication,
-cask finalization, post-cask undraft, and the supply-chain hardening added
-2026-07-06 (`9a3e4a1`): third-party crates are prebuilt before the signing
-keychain exists, the decoded `.p12` is deleted right after import, the
-checkout-persisted git token is scrubbed before any build code runs, release
-runs are serialized under one fixed concurrency group, and the draft-release
-upload fails closed on unmatched files. First release now waits on the
+cask finalization, post-cask undraft, and the supply-chain/release hardening
+through `9aa3c20`: protected `v*` tag ruleset check via `github.ref_protected`,
+protected `release` environments for build/publish jobs, third-party crates
+prebuilt before the signing keychain exists, checkout-token scrub before build
+code, decoded `.p12` deletion plus signing-keychain deletion before packaging,
+fixed release concurrency, fail-closed artifact upload, and committed A2
+evidence under `tools/acceptance/evidence/a2/`. First release now waits on the
 signing/notarization secrets and identity, committed A2 matrix ledger evidence
 plus the repo variable that points at it, and the maintainer-created first tag.
 

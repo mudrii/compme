@@ -74,8 +74,8 @@ determinism and the sub-500ms latency budget enforced on the current machine.
    COMPME_A2_MATRIX_TARGETS="textedit=123 notes=124 mail=125 word=126 safari=127 chrome=128 brave=129 browser-exclude=130 terminal-cmd=131 terminal-nlp=132 unsupported=133 clipboard=134 screen=135" \
      tools/acceptance/run-a2-compat-gates.sh matrix
    ledger="$(ls -t "$evidence_dir"/a2-compat-matrix-*.tsv | head -n 1)"
-   tools/release/check-a2-matrix-ledger.sh "$ledger"
    git add "$evidence_dir"
+   tools/release/check-a2-matrix-ledger.sh "$ledger"
    ```
 
    Commit the TSV plus its per-row log files. The tag release workflow fails
@@ -92,9 +92,11 @@ determinism and the sub-500ms latency budget enforced on the current machine.
    visible text on the focused display so OCR can produce non-empty context.
 
 4. Ensure the release commit is on the up-to-date default branch, then tag and
-   push. The cask finalizer refuses to update `main` if the tag commit is not an
-   ancestor of the default branch or if the default-branch cask version has
-   already moved past the tag version:
+   push. The repository must have a tag ruleset that protects `v*` tags; the
+   preflight job exits before validation if GitHub reports the tag ref is not
+   protected. The cask finalizer refuses to update `main` if the tag commit is
+   not an ancestor of the default branch or if the default-branch cask version
+   has already moved past the tag version:
 
    ```sh
    git checkout main
@@ -148,7 +150,8 @@ signing identity is imported; after import, `make-app.sh` runs with
 Developer-ID keychain is available. It fails closed if signing/notarization
 secrets are absent, then submits the signed `.app` archive with
 `xcrun notarytool submit --wait`, staples the ticket with `xcrun stapler
-staple`, validates the staple, and only then packages the release zip.
+staple`, validates the staple, deletes the signing keychain and clears the
+signing env values, and only then packages the release zip.
 
 ## Updates
 

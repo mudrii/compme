@@ -167,7 +167,7 @@ workspace commands do not validate it.
 
 ## Full Local Gate
 
-Run this before considering a change ready for review:
+Run this before committing a change to main or treating local validation as complete:
 
 ```sh
 cargo fmt --all -- --check
@@ -219,9 +219,16 @@ native runners: fmt, clippy, test, and build for `platform_windows` on
 commands.
 For release-readiness audits with the local GGUF model installed, also run the
 ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md), the A2
-compatibility matrix ledger check, and the A1b manual checklist policy. A
-release-readiness run should fail on missing A2 matrix rows, skip/fail ledger
-rows, unresolved mandatory A1b manual gates, or model-gate policy drift.
+compatibility matrix ledger check against committed/tracked evidence, and the
+A1b manual checklist policy. A release-readiness run should fail on missing A2
+matrix rows, skip/fail ledger rows, unsafe or untracked A2 row logs, unresolved
+mandatory A1b manual gates, or model-gate policy drift.
+
+```sh
+tools/release/check-a2-matrix-ledger.sh "$ledger"
+# For tagged release workflow:
+COMPME_A2_MATRIX_LEDGER="$ledger"
+```
 
 For macOS adapter work, also run the live acceptance harness when the GUI state
 is available:
@@ -348,9 +355,13 @@ implemented — see design spec §15 G3.)
 When changing behavior, update the relevant docs:
 
 - `README.md`: entrypoint, high-level commands, status.
+- `AGENTS.md`: canonical agent brief; keep `CLAUDE.md`, `GEMINI.md`, and
+  `QWEN.md` symlinked to it.
 - `docs/ARCHITECTURE.md`: crate responsibilities and runtime design.
 - `docs/DEVELOPMENT.md`: commands, gates, workflow.
 - `docs/ACCEPTANCE.md`: live macOS validation and harness behavior.
+- `docs/RELEASING.md`: release workflow, model gates, cask finalization,
+  signing, notarization, and update-manifest behavior.
 - `docs/superpowers/*`: detailed plans, decisions, and evidence.
 
 Do not replace detailed planning evidence with summaries. Keep summaries in the

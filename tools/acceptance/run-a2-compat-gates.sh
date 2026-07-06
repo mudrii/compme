@@ -21,13 +21,15 @@
 #   browser-domain-exclude
 #                same browser-domain proof, but COMPME_EXCLUDED_DOMAINS blocks.
 #   matrix       table-driven runner over COMPME_A2_MATRIX_TARGETS row_id=pid
-#                entries; writes a per-row ledger under tools/acceptance/logs.
+#                entries; writes a per-row ledger under COMPME_A2_LOG_DIR.
 #
 # This is the executable form of the §16 compatibility-matrix gate. It needs a
 # console GUI session, Accessibility granted, the relevant apps installed/focused,
 # and the target pid in COMPME_ACCEPTANCE_PID. The `screen` gate also needs
 # Screen Recording permission.
-# Per-app coverage is recorded in tools/acceptance/logs/ when run.
+# Default logs go under tools/acceptance/logs/. For release evidence, set
+# COMPME_A2_LOG_DIR=tools/acceptance/evidence/a2/<run>, then commit the TSV and
+# every row log referenced by the ledger.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
