@@ -415,7 +415,7 @@ OSA
   mkdir -p "$matrix_skip_dir"
   if COMPME_A2_LOG_DIR="$matrix_skip_dir" COMPME_A2_MATRIX_TARGETS="" COMPME_A2_MATRIX_ALLOW_SKIP=1 "$0" matrix >/dev/null 2>"$matrix_skip_dir/matrix.err"; then
     ledger="$(ls "$matrix_skip_dir"/a2-compat-matrix-*.tsv 2>/dev/null | tail -n 1)"
-    if [[ -n "$ledger" ]] && awk -F '\t' -v expected="${#A2_MATRIX_ROWS[@]}" 'NR == 1 && $7 == "log_path" { header = 1 } NR > 1 && $5 == "SKIP" && $7 == "" { skip++ } END { exit header && skip == expected ? 0 : 1 }' "$ledger"; then
+    if [[ -n "$ledger" ]] && awk -F '\t' -v expected="${#A2_MATRIX_ROWS[@]}" 'NR == 1 && $8 == "log_path" { header = 1 } NR > 1 && $6 == "SKIP" && $8 == "" { skip++ } END { exit header && skip == expected ? 0 : 1 }' "$ledger"; then
       echo "PASS self-test-a2-matrix-allow-skip-ledger"
     else
       echo "FAIL self-test-a2-matrix-allow-skip-ledger: SKIP ledger did not cover every row" >&2
@@ -441,8 +441,9 @@ run_matrix() {
     exit 2
   fi
   matrix_stamp="$(date +%Y%m%d-%H%M%S)"
+  matrix_started_at="$(date +%s)"
   ledger="$LOG_DIR/a2-compat-matrix-$matrix_stamp.tsv"
-  printf 'row_id\tkind\tapp\tpid\tstatus\texpect\tlog_path\n' >"$ledger"
+  printf 'generated_at_epoch\trow_id\tkind\tapp\tpid\tstatus\texpect\tlog_path\n' >"$ledger"
   failures=0
   skipped=0
   for row in "${A2_MATRIX_ROWS[@]}"; do
@@ -450,7 +451,7 @@ run_matrix() {
     row_pid="$(matrix_target_pid "$row_id")"
     row_log="$LOG_DIR/a2-compat-matrix-$matrix_stamp-$row_id.log"
     if [[ -z "$row_pid" ]]; then
-      printf '%s\t%s\t%s\t\tSKIP\t%s\t\n' "$row_id" "$row_kind" "$row_app" "$row_expect" >>"$ledger"
+      printf '%s\t%s\t%s\t%s\t\tSKIP\t%s\t\n' "$matrix_started_at" "$row_id" "$row_kind" "$row_app" "$row_expect" >>"$ledger"
       skipped=$((skipped + 1))
       if [[ "${COMPME_A2_MATRIX_ALLOW_SKIP:-0}" != "1" ]]; then
         failures=$((failures + 1))
@@ -458,9 +459,9 @@ run_matrix() {
       continue
     fi
     if COMPME_A2_LOG="$row_log" COMPME_ACCEPTANCE_PID="$row_pid" "$0" "$row_kind"; then
-      printf '%s\t%s\t%s\t%s\tPASS\t%s\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" "$row_log" >>"$ledger"
+      printf '%s\t%s\t%s\t%s\t%s\tPASS\t%s\t%s\n' "$matrix_started_at" "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" "$row_log" >>"$ledger"
     else
-      printf '%s\t%s\t%s\t%s\tFAIL\t%s\t%s\n' "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" "$row_log" >>"$ledger"
+      printf '%s\t%s\t%s\t%s\t%s\tFAIL\t%s\t%s\n' "$matrix_started_at" "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" "$row_log" >>"$ledger"
       failures=$((failures + 1))
     fi
   done

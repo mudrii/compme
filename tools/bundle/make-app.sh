@@ -9,6 +9,10 @@
 # hardened-runtime, timestamped release signature; notarization is handled by
 # tools/release/notarize-app.sh after packaging.
 #
+# Set COMPME_BUNDLE_SKIP_BUILD=1 to assemble/sign from an already-built
+# target/release/compme without invoking cargo (release workflow imports the
+# Developer-ID identity only after prebuilding).
+#
 # Usage: tools/bundle/make-app.sh [output-dir]   (default: target/bundle)
 #        tools/bundle/make-app.sh --self-test
 set -euo pipefail
@@ -100,6 +104,25 @@ SH
     "$0" "$custom_out" >"$tmp_dir/stdout-custom-target"
   "$custom_out/Compme.app/Contents/MacOS/compme" | grep -Fxq "custom-target-binary"
 
+  prebuilt_target="$tmp_dir/prebuilt-target"
+  prebuilt_out="$tmp_dir/out-prebuilt"
+  prebuilt_log="$tmp_dir/prebuilt.log"
+  mkdir -p "$prebuilt_target/release"
+  printf '#!/usr/bin/env bash\nprintf "prebuilt-binary\\n"\n' >"$prebuilt_target/release/compme"
+  chmod +x "$prebuilt_target/release/compme"
+  PATH="$fake_bin:$PATH" \
+    CARGO_TARGET_DIR="$prebuilt_target" \
+    COMPME_BUNDLE_SKIP_BUILD=1 \
+    COMPME_BUNDLE_SELF_TEST_LOG="$prebuilt_log" \
+    COMPME_BUNDLE_REPO_ROOT="$fixture_root" \
+    COMPME_BUNDLE_LSREGISTER="$fake_bin/lsregister" \
+    "$0" "$prebuilt_out" >"$tmp_dir/stdout-prebuilt"
+  "$prebuilt_out/Compme.app/Contents/MacOS/compme" | grep -Fxq "prebuilt-binary"
+  if grep -Fq "cargo build" "$prebuilt_log"; then
+    echo "self-test FAILED: prebuilt bundle mode invoked cargo" >&2
+    return 1
+  fi
+
   signed_out="$tmp_dir/out-signed"
   PATH="$fake_bin:$PATH" \
     COMPME_BUNDLE_SELF_TEST_LOG="$log" \
@@ -185,7 +208,15 @@ app="$out_dir/Compme.app"
 
 echo "building release binary…"
 bundle_target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
-CARGO_TARGET_DIR="$bundle_target_dir" cargo build --locked --release -p app --manifest-path "$repo_root/Cargo.toml"
+if [[ "${COMPME_BUNDLE_SKIP_BUILD:-0}" == "1" ]]; then
+  echo "using prebuilt release binary…"
+  if [[ ! -x "$bundle_target_dir/release/compme" ]]; then
+    echo "missing prebuilt release binary: $bundle_target_dir/release/compme" >&2
+    exit 1
+  fi
+else
+  CARGO_TARGET_DIR="$bundle_target_dir" cargo build --locked --release -p app --manifest-path "$repo_root/Cargo.toml"
+fi
 
 echo "assembling $app"
 rm -rf "$app"

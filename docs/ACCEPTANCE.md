@@ -384,6 +384,15 @@ ledger="tools/acceptance/logs/a2-compat-matrix-YYYYMMDD-HHMMSS.tsv"
 tools/release/check-a2-matrix-ledger.sh "$ledger"
 ```
 
+For release evidence that must pass on GitHub-hosted runners, set
+`COMPME_A2_LOG_DIR` to a committed directory under
+`tools/acceptance/evidence/a2/` before running `matrix`, commit the TSV and its
+row logs, then set the repository variable `COMPME_A2_MATRIX_LEDGER` to that
+repo-relative TSV path. The checker rejects missing row log files, row logs
+that do not prove the expected app/domain/context behavior, stale ledgers older
+than `COMPME_A2_LEDGER_MAX_AGE_SECONDS` (default `86400`), and future-dated
+ledgers beyond `COMPME_A2_LEDGER_MAX_FUTURE_SKEW_SECONDS` (default `300`).
+
 The `clipboard` and `screen` gates enable `COMPME_DIAG_CONTEXT=1`; clipboard
 requires the marker `CLIPBOARD-CONTEXT-MARKER` to reach the submit path, and
 screen requires non-empty OCR context. The screen gate also requires Screen

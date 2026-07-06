@@ -22,6 +22,10 @@ finalize_cask() {
     echo "tag/version mismatch: $tag != v$version" >&2
     return 1
   fi
+  if [ -z "${GITHUB_SHA:-}" ]; then
+    echo "GITHUB_SHA is required" >&2
+    return 1
+  fi
 
   cd "$repo_root"
   git fetch origin "$default_branch"
@@ -188,6 +192,14 @@ SH
     return 1
   fi
   grep -q "is not on origin/main" "$tmp/ancestor.err"
+
+  make_fixture_repo "$tmp/missing-sha" noop
+  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/missing-sha/work" \
+    "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main >/dev/null 2>"$tmp/missing-sha.err"; then
+    echo "finalize-cask self-test failed: missing GITHUB_SHA was accepted" >&2
+    return 1
+  fi
+  grep -q "GITHUB_SHA is required" "$tmp/missing-sha.err"
 
   if "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 >/dev/null 2>"$tmp/usage.err"; then
     echo "finalize-cask self-test failed: wrong argument count was accepted" >&2

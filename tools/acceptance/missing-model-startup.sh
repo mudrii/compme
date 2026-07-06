@@ -93,6 +93,12 @@ SH
     cat "$tmp_dir/bad-exit.out" >&2
     exit 1
   fi
+  if grep -Fq 'env -i' "$0"; then
+    echo "PASS self-test-missing-model-startup-env-isolated"
+  else
+    echo "FAIL self-test-missing-model-startup-env-isolated: product launch does not use env -i" >&2
+    exit 1
+  fi
 
   assert_missing_line_rejected() {
     mode="$1"
@@ -157,7 +163,12 @@ mkdir -p "$(dirname "$LOG")"
 missing_model="$tmp_dir/missing.gguf"
 
 status=0
-env -u COMPME_STUB_COMPLETION \
+env -i \
+  PATH="$PATH" \
+  HOME="$HOME" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  RUST_BACKTRACE="${RUST_BACKTRACE:-}" \
+  COMPME_FAKE_MODE="${COMPME_FAKE_MODE:-}" \
   COMPME_MODEL_PATH="$missing_model" \
   COMPME_RUN_MS="$RUN_MS" \
   COMPME_ENABLED=false \

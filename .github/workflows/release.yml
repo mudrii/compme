@@ -106,9 +106,16 @@ jobs:
           set -euo pipefail
           if [ -z "${COMPME_A2_MATRIX_LEDGER:-}" ]; then
             echo "missing required release variable: COMPME_A2_MATRIX_LEDGER" >&2
-            echo "Run tools/acceptance/run-a2-compat-gates.sh matrix in a live macOS session and point this variable at the produced TSV ledger." >&2
+            echo "Run tools/acceptance/run-a2-compat-gates.sh matrix with COMPME_A2_LOG_DIR under tools/acceptance/evidence/a2/, commit the TSV + row logs, and set this variable to that repo-relative TSV path." >&2
             exit 1
           fi
+          case "$COMPME_A2_MATRIX_LEDGER" in
+            tools/acceptance/evidence/a2/*.tsv) ;;
+            *)
+              echo "COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/: $COMPME_A2_MATRIX_LEDGER" >&2
+              exit 1
+              ;;
+          esac
           tools/release/check-a2-matrix-ledger.sh "$COMPME_A2_MATRIX_LEDGER"
 
       - name: E2E runner self-test
@@ -252,9 +259,8 @@ jobs:
 
       # Compile the full dependency tree BEFORE the signing keychain exists:
       # build.rs / proc-macro code from third-party crates must never run while
-      # the Developer-ID identity is importable. make-app.sh's own cargo build
-      # (same --locked --release -p app, default target dir) then hits a fresh
-      # cache and runs no third-party code.
+      # the Developer-ID identity is importable. make-app.sh then assembles from
+      # this prebuilt binary with COMPME_BUNDLE_SKIP_BUILD=1.
       - name: Prebuild release binary (before signing identity exists)
         run: cargo build --locked --release -p app
 
@@ -291,7 +297,7 @@ jobs:
       # build exactly: release binary -> Compme.app (Info.plist, compme://
       # scheme, launch-at-login) -> Developer-ID hardened-runtime signature.
       - name: Build the .app bundle
-        run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+        run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 
       - name: Notarize and staple the .app
         env:

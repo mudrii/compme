@@ -25,6 +25,11 @@ validate_sha() {
   [[ "$sha" =~ ^[0-9a-f]{64}$ ]]
 }
 
+validate_published_at() {
+  local published_at="$1"
+  [[ "$published_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+}
+
 json_escape() {
   ruby -rjson -e 'print ARGV[0].to_json' "$1"
 }
@@ -43,6 +48,10 @@ write_manifest() {
   }
   validate_sha "$sha" || {
     echo "invalid sha256: $sha" >&2
+    return 1
+  }
+  validate_published_at "$pub_date" || {
+    echo "invalid published_at: $pub_date" >&2
     return 1
   }
   case "$zip" in
@@ -85,6 +94,11 @@ run_self_test() {
     return 1
   fi
   grep -Fq "invalid version" "$tmp/bad.err"
+  if COMPME_UPDATE_PUBLISHED_AT="not-a-date" "$0" 1.2.3 compme-1.2.3-macos.zip "$sha" >"$tmp/bad-date.out" 2>"$tmp/bad-date.err"; then
+    echo "self-test FAILED: bad published_at passed" >&2
+    return 1
+  fi
+  grep -Fq "invalid published_at" "$tmp/bad-date.err"
   upper_sha="$(printf '%s' "$sha" | tr '[:lower:]' '[:upper:]')"
   if "$0" 1.2.3 compme-1.2.3-macos.zip "$upper_sha" >"$tmp/upper-sha.out" 2>"$tmp/upper-sha.err"; then
     echo "self-test FAILED: uppercase sha passed" >&2

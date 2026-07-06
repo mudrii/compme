@@ -60,20 +60,29 @@ determinism and the sub-500ms latency budget enforced on the current machine.
    ```
 
    In the same live macOS session, run the A2 compatibility matrix against the
-   required target apps and validate the produced ledger has every row passing
-   before tagging:
+   required target apps into a committed evidence directory, then validate the
+   produced ledger has every row passing before tagging:
 
    ```sh
+   evidence_dir="tools/acceptance/evidence/a2/v0.1.0-$(date +%Y%m%d-%H%M%S)"
+   mkdir -p "$evidence_dir"
    COMPME_A2_BROWSER_EXCLUDED_DOMAIN="example.test" \
+   COMPME_A2_LOG_DIR="$evidence_dir" \
    COMPME_A2_MATRIX_TARGETS="textedit=123 notes=124 mail=125 word=126 safari=127 chrome=128 brave=129 browser-exclude=130 terminal-cmd=131 terminal-nlp=132 unsupported=133 clipboard=134 screen=135" \
      tools/acceptance/run-a2-compat-gates.sh matrix
-   ledger="tools/acceptance/logs/a2-compat-matrix-YYYYMMDD-HHMMSS.tsv"
+   ledger="$(ls -t "$evidence_dir"/a2-compat-matrix-*.tsv | head -n 1)"
    tools/release/check-a2-matrix-ledger.sh "$ledger"
+   git add "$evidence_dir"
    ```
 
-   The tag release workflow also fails closed unless `COMPME_A2_MATRIX_LEDGER`
-   points at that fresh TSV ledger in the runner workspace, then validates it
-   with the same checker.
+   Commit the TSV plus its per-row log files. The tag release workflow fails
+   closed unless `COMPME_A2_MATRIX_LEDGER` is set to that repo-relative TSV path
+   under `tools/acceptance/evidence/a2/`, then validates it with the same
+   checker. The committed row logs matter: the checker rejects ledgers whose
+   `log_path` entries are missing on the GitHub runner, logs that do not prove
+   the expected app/domain/context behavior, stale ledgers older than
+   `COMPME_A2_LEDGER_MAX_AGE_SECONDS` (default `86400`), and future-dated
+   ledgers beyond `COMPME_A2_LEDGER_MAX_FUTURE_SKEW_SECONDS` (default `300`).
 
    Set `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` to the host focused in the
    browser-exclude row. The `screen` row requires Screen Recording permission and
@@ -130,10 +139,13 @@ identity to produce a hardened-runtime, timestamped signature; optionally set
 `COMPME_CODESIGN_ENTITLEMENTS` when a future release needs an entitlements file.
 
 The tag workflow requires a Developer-ID `.p12` certificate and notarization
-credentials in GitHub Secrets. It fails closed if those secrets are absent, then
-submits the signed `.app` archive with `xcrun notarytool submit --wait`, staples
-the ticket with `xcrun stapler staple`, validates the staple, and only then
-packages the release zip.
+credentials in GitHub Secrets. It prebuilds `target/release/compme` before the
+signing identity is imported; after import, `make-app.sh` runs with
+`COMPME_BUNDLE_SKIP_BUILD=1` so no `cargo` build scripts execute while the
+Developer-ID keychain is available. It fails closed if signing/notarization
+secrets are absent, then submits the signed `.app` archive with
+`xcrun notarytool submit --wait`, staples the ticket with `xcrun stapler
+staple`, validates the staple, and only then packages the release zip.
 
 ## Updates
 

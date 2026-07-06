@@ -138,5 +138,11 @@ the set. Walkthrough detail lives in the ledger entries.
       and dest-exists skip behave.
 - [ ] `encrypted-memory-all-monitored-live` — residual legs: secure-input
       suppression, snoozed policy transition, volatile `pid:N` adds no rows.
+- [ ] `mirror-window-firefox-zen-look` — Firefox/Zen mirror-window placement
+      keeps the ghost out of mirrored monitor captures.
+- [ ] `setup-needed-docs-arc-onboarding` — Google Docs in Arc shows setup-needed
+      onboarding instead of silently suppressing suggestions.
+- [ ] `multi-candidate-cycle-physical-look` — physical Down-arrow cycles visible
+      candidates in order, wraps predictably, and accept inserts the selection.
 - [ ] `input-monitoring-revoked-carbon-accept` — accept keys still fire with
       Input Monitoring revoked (Carbon path).

@@ -258,6 +258,12 @@ run_self_tests() {
   else
     echo "PASS self-test-e2e-no-raw-output"
   fi
+  if grep -Fq 'product_env=(env -i PATH="$PATH" HOME="$HOME"' "$0"; then
+    echo "PASS self-test-e2e-product-env-isolated"
+  else
+    echo "FAIL self-test-e2e-product-env-isolated: product launch does not use env -i" >&2
+    failures=$((failures + 1))
+  fi
   if grep -Eq '^[[:space:]]*echo .*prefix=.*\$PREFIX|^[[:space:]]*echo .*stub=.*\$STUB' "$0"; then
     echo "FAIL self-test-e2e-no-raw-banner: live gate prints raw prefix or stub output" >&2
     failures=$((failures + 1))
@@ -642,6 +648,19 @@ PREFIX="${PREFIX}${PROMPT_MARKER} "
 prefix_chars="$(printf '%s' "$PREFIX" | wc -m | tr -d '[:space:]')"
 stub_chars="$(printf '%s' "$STUB" | wc -m | tr -d '[:space:]')"
 echo "E2E compme: prefix_chars=$prefix_chars stub_chars=$stub_chars pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE real_model=$REAL_MODEL"
+product_env=(env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}")
+if [ -n "${RUST_BACKTRACE:-}" ]; then
+  product_env+=(RUST_BACKTRACE="$RUST_BACKTRACE")
+fi
+if [ -n "${COMPME_MODEL_PATH:-}" ]; then
+  product_env+=(COMPME_MODEL_PATH="$COMPME_MODEL_PATH")
+fi
+if [ -n "${COMPME_MODEL_GPU_LAYERS:-}" ]; then
+  product_env+=(COMPME_MODEL_GPU_LAYERS="$COMPME_MODEL_GPU_LAYERS")
+fi
+if [ -n "${COMPME_MODEL_CONTEXT_TOKENS:-}" ]; then
+  product_env+=(COMPME_MODEL_CONTEXT_TOKENS="$COMPME_MODEL_CONTEXT_TOKENS")
+fi
 
 # 1. Seed TextEdit with a known prefix and bring it to the front.
 osascript - "$PREFIX" <<'OSA' || fail "could not seed TextEdit"
@@ -660,13 +679,14 @@ sleep_ms 400
 # 2. Launch the product binary against TextEdit. The default deterministic gate
 #    uses the stub model; COMPME_E2E_REAL_MODEL=1 exercises LlamaModel instead.
 if [ "$REAL_MODEL" -eq 1 ]; then
-  env -u COMPME_STUB_COMPLETION \
+  "${product_env[@]}" \
     COMPME_ACCEPTANCE_PID="$PID" \
     COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \
     COMPME_RUN_MS="$RUN_MS" \
     "$BIN" >"$LOG" 2>&1 &
 else
-  COMPME_ACCEPTANCE_PID="$PID" \
+  "${product_env[@]}" \
+    COMPME_ACCEPTANCE_PID="$PID" \
     COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \
     COMPME_STUB_COMPLETION="$STUB" \
     COMPME_RUN_MS="$RUN_MS" \

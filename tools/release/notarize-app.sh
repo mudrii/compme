@@ -230,6 +230,20 @@ SH
   fi
   grep -Fq "not a Compme.app bundle: $plain_dir" "$tmp/plain-dir.err"
 
+  wrong_name="$tmp/Foo.app"
+  mkdir -p "$wrong_name/Contents/MacOS"
+  printf '<plist version="1.0"><dict></dict></plist>\n' >"$wrong_name/Contents/Info.plist"
+  printf '#!/usr/bin/env bash\n' >"$wrong_name/Contents/MacOS/compme"
+  chmod +x "$wrong_name/Contents/MacOS/compme"
+  if PATH="$fake_bin:$PATH" \
+    COMPME_NOTARIZE_SELF_TEST_LOG="$log" \
+    COMPME_NOTARYTOOL_KEYCHAIN_PROFILE="compme-release" \
+    "$0" "$wrong_name" >"$tmp/wrong-name.out" 2>"$tmp/wrong-name.err"; then
+    echo "self-test FAILED: wrong bundle name should fail" >&2
+    return 1
+  fi
+  grep -Fq "not a Compme.app bundle: $wrong_name" "$tmp/wrong-name.err"
+
   missing_plist="$tmp/MissingPlist.app"
   mkdir -p "$missing_plist/Contents/MacOS"
   printf '#!/usr/bin/env bash\n' >"$missing_plist/Contents/MacOS/compme"
@@ -295,7 +309,7 @@ if [[ ! -d "$app" ]]; then
   echo "not an app bundle: $app" >&2
   exit 1
 fi
-if [[ "$app" != *.app || ! -f "$app/Contents/Info.plist" || ! -x "$app/Contents/MacOS/compme" ]]; then
+if [[ "$(basename "$app")" != "Compme.app" || "$app" != *.app || ! -f "$app/Contents/Info.plist" || ! -x "$app/Contents/MacOS/compme" ]]; then
   echo "not a Compme.app bundle: $app" >&2
   exit 1
 fi

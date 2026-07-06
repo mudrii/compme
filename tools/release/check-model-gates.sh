@@ -278,6 +278,13 @@ abort("missing release gate: prebuilds release binary before signing identity ex
 abort("missing release gate: builds app bundle") unless build_index
 abort("missing release gate: prebuilds release binary before Developer ID import") unless prebuild_index < import_index
 abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
+build_run = release_steps.fetch(build_index).fetch("run")
+abort("missing release gate: bundle build skips cargo after Developer ID import") unless build_run == %q(COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle")
+release_steps.each_with_index do |step, idx|
+  next unless idx > import_index
+  run = step["run"].to_s
+  abort("missing release gate: no cargo command after Developer ID import") if run.match?(/(^|[;&|[:space:]])cargo[[:space:]]/)
+end
 import_step = release_steps.fetch(import_index)
 import_env = import_step.fetch("env")
 {
@@ -425,7 +432,7 @@ jobs:
           done
           echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
       - name: Build the .app bundle
-        run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+        run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 YAML
   check_developer_id_fixture "$good_developer_id_release"
 
@@ -450,7 +457,7 @@ jobs:
       - name: Prebuild release binary (before signing identity exists)
         run: cargo build --locked --release -p app
       - name: Build the .app bundle
-        run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+        run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 YAML
   if check_developer_id_fixture "$post_secret_prebuild_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: post-secret prebuild was accepted" >&2
@@ -479,7 +486,7 @@ jobs:
           done
           echo "COMPME_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
       - name: Build the .app bundle
-        run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+        run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 YAML
   if check_developer_id_fixture "$missing_identity_export_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: missing Developer ID identity export was accepted" >&2
@@ -716,7 +723,7 @@ jobs:
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     steps:
       - name: Build the .app bundle
-        run: tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+        run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
       - name: Notarize and staple the .app
         run: tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app"
       - name: Package + checksum
@@ -856,6 +863,7 @@ ruby -ryaml -e '
     run = step.fetch("run")
     [
       "missing required release variable: COMPME_A2_MATRIX_LEDGER",
+      "COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/",
       "tools/release/check-a2-matrix-ledger.sh \"$COMPME_A2_MATRIX_LEDGER\"",
     ].each do |needle|
       abort("missing release gate: release A2 live ledger #{needle}") unless run.include?(needle)
@@ -966,6 +974,9 @@ ruby -ryaml -e '
   push_trigger = trigger.fetch("push")
   abort("missing release gate: release workflow push trigger is limited to v* tags") unless push_trigger.is_a?(Hash) && push_trigger.keys == ["tags"] && push_trigger.fetch("tags") == ["v*"]
   abort("missing release gate: workflow defaults to read-only contents permission") unless workflow.fetch("permissions").fetch("contents") == "read"
+  concurrency = workflow.fetch("concurrency")
+  abort("missing release gate: release workflow serializes every tag run") unless concurrency.fetch("group") == "release"
+  abort("missing release gate: release workflow does not cancel in-progress release") unless concurrency.fetch("cancel-in-progress") == false
   release_jobs = workflow.fetch("jobs")
   preflight = release_jobs.fetch("preflight")
   abort("missing release gate: release preflight runs before expensive jobs") unless preflight.fetch("runs-on") == "ubuntu-latest"
@@ -1063,7 +1074,9 @@ ruby -ryaml -e '
   abort("missing release gate: publish_release checkout") unless publish_checkout
   abort("missing release gate: publish_release checkout fetches full history") unless publish_checkout.fetch("with").fetch("fetch-depth") == 0
   ancestry_index = build_steps.index { |step| step["name"] == "Verify release tag is on default branch" }
+  scrub_index = build_steps.index { |step| step["name"] == "Scrub persisted git credentials" }
   metadata_index = build_steps.index { |step| step["name"] == "Check release tag matches bundle metadata" }
+  rust_index = build_steps.index { |step| step["name"] == "Install Rust (stable)" }
   prebuild_index = build_steps.index { |step| step["name"] == "Prebuild release binary (before signing identity exists)" }
   import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
   build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
@@ -1072,6 +1085,8 @@ ruby -ryaml -e '
   manifest_index = build_steps.index { |step| step["name"] == "Write update manifest" }
   upload_index = build_steps.index { |step| step["name"] == "Upload release artifacts" }
   abort("missing release gate: verifies tag ancestry before secrets") unless ancestry_index
+  abort("missing release gate: scrubs persisted git credentials") unless scrub_index
+  abort("missing release gate: installs Rust in build_release") unless rust_index
   abort("missing release gate: checks release tag metadata") unless metadata_index
   abort("missing release gate: prebuilds release binary before signing identity exists") unless prebuild_index
   abort("missing release gate: imports Developer ID certificate") unless import_index
@@ -1081,9 +1096,18 @@ ruby -ryaml -e '
   abort("missing release gate: writes update manifest") unless manifest_index
   abort("missing release gate: uploads release artifacts from read-only build job") unless upload_index
   abort("missing release gate: verifies tag ancestry before Developer ID secrets") unless ancestry_index < import_index
+  abort("missing release gate: scrubs persisted git credentials after ancestry check") unless ancestry_index < scrub_index
+  abort("missing release gate: scrubs persisted git credentials before Rust/build code") unless scrub_index < rust_index
   abort("missing release gate: checks release tag metadata before Developer ID secrets") unless metadata_index < import_index
   abort("missing release gate: prebuilds release binary before Developer ID import") unless prebuild_index < import_index
   abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
+  scrub_run = build_steps.fetch(scrub_index).fetch("run")
+  abort("missing release gate: scrub removes checkout extraheader") unless scrub_run.include?("git config --local --unset-all http.https://github.com/.extraheader")
+  build_steps.each_with_index do |step, idx|
+    next unless idx > import_index
+    run = step["run"].to_s
+    abort("missing release gate: no cargo command after Developer ID import") if run.match?(/(^|[;&|[:space:]])cargo[[:space:]]/)
+  end
   abort("missing release gate: release artifact chain is build -> notarize -> package -> manifest -> upload") unless build_index < notarize_index && notarize_index < package_index && package_index < manifest_index && manifest_index < upload_index
   build_steps.each_with_index do |step, idx|
     next unless contains_secret_reference?(step)
@@ -1109,7 +1133,7 @@ ruby -ryaml -e '
   end
   abort("missing release gate: Developer ID identity exported to bundle build") unless import_run.include?("COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY")
   build_step = build_steps.fetch(build_index)
-  abort("missing release gate: builds release app with bundle assembler") unless build_step.fetch("run") == %q(tools/bundle/make-app.sh "$RUNNER_TEMP/bundle")
+  abort("missing release gate: builds release app with prebuilt bundle assembler") unless build_step.fetch("run") == %q(COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle")
   notarize_step = build_steps.fetch(notarize_index)
   abort("missing release gate: notarizes built app bundle") unless notarize_step.fetch("run") == %q(tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app")
   package_step = build_steps.fetch(package_index)
@@ -1369,6 +1393,8 @@ require_line "$a2_matrix_ledger_script" 'missing A2 matrix row' "A2 matrix ledge
 require_line "$acceptance_doc" '^tools/release/check-a2-matrix-ledger\.sh "\$ledger"[[:space:]]*$' "acceptance docs A2 matrix ledger validation"
 require_line "$releasing_doc" 'tools/release/check-a2-matrix-ledger\.sh "\$ledger"' "release docs A2 matrix ledger validation"
 require_line "$releasing_doc" 'COMPME_A2_MATRIX_LEDGER' "release docs A2 live ledger workflow variable"
+require_line "$releasing_doc" 'tools/acceptance/evidence/a2/' "release docs committed A2 evidence directory"
+require_line "$acceptance_doc" 'COMPME_A2_LOG_DIR' "acceptance docs A2 evidence log dir"
 for gate in \
   apps-policy-toggle-look \
   personalization-pane-look \
@@ -1383,6 +1409,9 @@ for gate in \
   caret-marker-electron-marker \
   encrypted-memory-all-monitored-live \
   grammar-fix-textedit-look \
+  mirror-window-firefox-zen-look \
+  setup-needed-docs-arc-onboarding \
+  multi-candidate-cycle-physical-look \
   input-monitoring-revoked-carbon-accept; do
   require_line "$repo_root/tools/acceptance/run-a1b-live-gates.sh" "$gate" "A1b runner emits manual gate $gate"
   require_line "$acceptance_doc" "^- \`$gate\`[[:space:]]*$" "acceptance docs list manual gate $gate"
