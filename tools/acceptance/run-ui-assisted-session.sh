@@ -27,6 +27,9 @@ COMPME_AUTOCORRECT="${COMPME_AUTOCORRECT:-1}" \
 COMPME_BRITISH_ENGLISH="${COMPME_BRITISH_ENGLISH:-1}" \
 COMPME_THESAURUS="${COMPME_THESAURUS:-1}" \
 COMPME_GRAMMAR_FIX="${COMPME_GRAMMAR_FIX:-1}" \
-COMPME_GRAMMAR_CHECK_KEY="${COMPME_GRAMMAR_CHECK_KEY:-shift+96}" \
+# Keep the global grammar-check shortcut away from Shift+F5: Batch 2 records
+# Shift+F5 in the Shortcuts pane, and a registered Carbon shortcut consumes the
+# chord before the recorder's NSView receives keyDown.
+COMPME_GRAMMAR_CHECK_KEY="${COMPME_GRAMMAR_CHECK_KEY:-control+option+111}" \
 COMPME_GRAMMAR_ACCEPT_KEY="${COMPME_GRAMMAR_ACCEPT_KEY:-shift+97}" \
 cargo run -p app 2>&1 | tee "$log_path"

@@ -80,6 +80,9 @@ Findings from 2026-07-06 user-assisted pass:
 - Shortcut recorder captured F5/F6 but lost the held Shift modifier.
 - Follow-up validation found Shift+F6/F7 working, but Shift+F5 still sometimes
   arrived as Shift down, Shift up, then bare F5 in AppKit recorder events.
+- Second follow-up found the assisted launcher was registering global
+  grammar-check as Shift+F5, so Carbon consumed that chord before the recorder
+  saw `keyDown`.
 - Selected tab highlight had a tight/cropped top edge in the native tab strip.
 
 Fix in progress:
@@ -89,6 +92,8 @@ Fix in progress:
   function-key `keyDown:` events omit Shift.
 - Keep a one-key nonzero-modifier grace cache for function keys so Shift+F5
   survives the transient zero `flagsChanged:` event.
+- Move the assisted launcher's grammar-check shortcut away from Shift+F5 so
+  Batch 2 can record Shift+F5 without a global-hotkey collision.
 - Inset the tab view inside a content wrapper to give selected tabs top/side
   breathing room.
 
