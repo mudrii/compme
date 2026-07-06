@@ -98,7 +98,7 @@ Fix in progress:
   Batch 2 can record Shift+F5 without a global-hotkey collision.
 - Inset the tab view inside a content wrapper to give selected tabs top/side
   breathing room.
-- Hide the native `NSTabView` tab strip and use an explicit stable button row
+- Hide the native `NSTabView` tab strip and use a single `NSSegmentedControl`
   for tab selection while keeping `NSTabView` only for pane switching.
 
 Status: fixes pending validation.

@@ -20,10 +20,10 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezelStyle, NSButton,
-    NSButtonType, NSControlStateValue, NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton,
-    NSResponder, NSSwitch, NSTabView, NSTabViewItem, NSTabViewType, NSTextField, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSButtonType,
+    NSControlStateValue, NSControlStateValueOn, NSEvent, NSFocusRingType, NSFont, NSPopUpButton,
+    NSResponder, NSSegmentSwitchTracking, NSSegmentedControl, NSSwitch, NSTabView, NSTabViewItem,
+    NSTabViewType, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
@@ -452,7 +452,7 @@ struct SettingsTargetIvars {
 
 struct TabControls {
     tabs: Retained<NSTabView>,
-    buttons: Vec<Retained<NSButton>>,
+    segmented: Retained<NSSegmentedControl>,
 }
 
 define_class!(
@@ -467,20 +467,14 @@ define_class!(
 
     impl SettingsTarget {
         #[unsafe(method(selectSettingsTab:))]
-        fn select_settings_tab(&self, sender: Option<&NSButton>) {
-            let Some(button) = sender else {
+        fn select_settings_tab(&self, sender: Option<&NSSegmentedControl>) {
+            let Some(segmented) = sender else {
                 return;
             };
-            let index = button.tag().max(0);
+            let index = segmented.selectedSegment().max(0);
             if let Some(controls) = &*self.ivars().tabs.borrow() {
                 controls.tabs.selectTabViewItemAtIndex(index);
-                for tab_button in &controls.buttons {
-                    tab_button.setState(if tab_button.tag() == index {
-                        NSControlStateValueOn
-                    } else {
-                        objc2_app_kit::NSControlStateValueOff
-                    });
-                }
+                controls.segmented.setSelectedSegment(index);
             }
         }
 
@@ -711,8 +705,12 @@ impl SettingsTarget {
         unsafe { objc2::msg_send![super(this), init] }
     }
 
-    fn install_tab_controls(&self, tabs: Retained<NSTabView>, buttons: Vec<Retained<NSButton>>) {
-        *self.ivars().tabs.borrow_mut() = Some(TabControls { tabs, buttons });
+    fn install_tab_controls(
+        &self,
+        tabs: Retained<NSTabView>,
+        segmented: Retained<NSSegmentedControl>,
+    ) {
+        *self.ivars().tabs.borrow_mut() = Some(TabControls { tabs, segmented });
     }
 
     /// Park a Personalization edit for the run loop. Edits are queued so a
@@ -1600,36 +1598,27 @@ fn build_window(
         })
         .collect();
     let tab_widths = [58.0, 66.0, 112.0, 50.0, 64.0, 54.0, 82.0, 84.0, 50.0];
-    let mut tab_buttons: Vec<Retained<NSButton>> = Vec::new();
-    let mut tab_x = 16.0;
+    let segmented = NSSegmentedControl::initWithFrame(
+        NSSegmentedControl::alloc(mtm),
+        NSRect::new(NSPoint::new(16.0, 376.0), NSSize::new(636.0, 24.0)),
+    );
+    segmented.setSegmentCount(PANE_COUNT as isize);
+    segmented.setTrackingMode(NSSegmentSwitchTracking::SelectOne);
+    segmented.setSelectedSegment(0);
+    segmented.setFocusRingType(NSFocusRingType::None);
+    segmented.setRefusesFirstResponder(true);
+    segmented.setFont(Some(&NSFont::systemFontOfSize(12.0)));
     for (index, (title, width)) in pane_titles().iter().zip(tab_widths).enumerate() {
-        let button = unsafe {
-            let any: &AnyObject = target.as_ref();
-            NSButton::buttonWithTitle_target_action(
-                &NSString::from_str(title),
-                Some(any),
-                Some(sel!(selectSettingsTab:)),
-                mtm,
-            )
-        };
-        button.setFrame(NSRect::new(
-            NSPoint::new(tab_x, 376.0),
-            NSSize::new(width, 24.0),
-        ));
-        button.setButtonType(NSButtonType::PushOnPushOff);
-        button.setBezelStyle(NSBezelStyle::AccessoryBar);
-        button.setFont(Some(&NSFont::systemFontOfSize(12.0)));
-        button.setTag(index as isize);
-        button.setState(if index == 0 {
-            NSControlStateValueOn
-        } else {
-            objc2_app_kit::NSControlStateValueOff
-        });
-        content.addSubview(&button);
-        tab_buttons.push(button);
-        tab_x += width + 2.0;
+        segmented.setLabel_forSegment(&NSString::from_str(title), index as isize);
+        segmented.setWidth_forSegment(width, index as isize);
     }
-    target.install_tab_controls(tabs.clone(), tab_buttons);
+    unsafe {
+        let any: &AnyObject = target.as_ref();
+        segmented.setTarget(Some(any));
+        segmented.setAction(Some(sel!(selectSettingsTab:)));
+    }
+    content.addSubview(&segmented);
+    target.install_tab_controls(tabs.clone(), segmented);
 
     // Setup tab: readiness rows (permissions, model file). Strings come
     // from the run loop via flags.setup_lines; show() refreshes them on
