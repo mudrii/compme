@@ -6,8 +6,8 @@
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-06 through `d1f9118`,
-> `baf0c6e`, `9aa3c20`, `f44f00c`, and `b1c9264`.
+> with symbol/function/gate anchors re-reviewed 2026-07-06 through current
+> `706c61b` (`d2beda1`, `e282fd9`, `9ede926`, and `706c61b` since `b1c9264`).
 
 ## Status legend
 
@@ -92,10 +92,11 @@ signing + hardened runtime + notarization + a native updater.
 **Pending:**
 - Configure the protected `release` environment, protected `v*` tag ruleset, and
   GitHub Secrets for Developer-ID signing and notarization.
-- Run the A2 compatibility matrix in a granted live macOS session with
-  `COMPME_A2_LOG_DIR` under `tools/acceptance/evidence/a2/`, commit the TSV plus
-  tracked row logs, and set `COMPME_A2_MATRIX_LEDGER` to that repo-relative TSV
-  path.
+- Run all 13 A2 compatibility matrix rows in a granted live macOS session with
+  `COMPME_A2_LOG_DIR` under `tools/acceptance/evidence/a2/` and no skipped rows;
+  commit the pass-only TSV plus tracked row logs, validate it with
+  `tools/release/check-a2-matrix-ledger.sh`, and set `COMPME_A2_MATRIX_LEDGER`
+  to that repo-relative TSV path.
 - Run the first tag build and verify the notarized zip, `.sha256`, and update
   manifest publish correctly after the pre-publish checksum verification step,
   and that the workflow commits the finalized `Casks/compme.rb` checksum back
@@ -108,17 +109,18 @@ The CI/release/cask glue is already written and locally validated, including
 locked Cargo gates, pinned toolchain, release preflight checks, A2 matrix ledger
 policy, privacy-policy scan, model-gate policy, draft-release publication,
 cask finalization, post-cask undraft, and the supply-chain/release hardening
-through `b1c9264`: protected `v*` tag ruleset check via `github.ref_protected`,
-protected `release` environments for build/publish jobs, third-party crates
-prebuilt before the signing keychain exists, checkout-token scrub before build
-code, decoded `.p12` deletion plus signing-keychain deletion before packaging,
-fixed release concurrency, fail-closed artifact upload, and the
-committed-A2-evidence policy (checker + CI wiring; the evidence itself under
-`tools/acceptance/evidence/a2/` is still to be produced), catalog-recommended
-model-gate artifact/path pinning, and pre-publish release artifact checksum
-verification. First release now waits on the signing/notarization secrets and
-identity, committed A2 matrix ledger evidence plus the repo variable that points
-at it, and the maintainer-created first tag.
+through `706c61b`: protected SemVer `v*` tag ruleset check via
+`github.ref_protected`, protected `release` environments for build/publish jobs,
+third-party crates prebuilt before the signing keychain exists, checkout-token
+scrub before build code, decoded `.p12` deletion plus signing-keychain deletion
+before packaging, fixed release concurrency, fail-closed artifact upload,
+committed A2 evidence policy with pass-only 13-row kind/app/expect/log proof
+(the evidence itself under `tools/acceptance/evidence/a2/` is still to be
+produced), release-context model-gate override rejection unless explicitly
+allowed, catalog-recommended model-gate artifact/path pinning, and pre-publish
+release artifact checksum verification. First release now waits on the
+signing/notarization secrets and identity, committed A2 matrix ledger evidence
+plus the repo variable that points at it, and the maintainer-created first tag.
 
 ---
 
@@ -267,7 +269,7 @@ folded settings LOOK gates (`personalization-pane-look`,
 |---|---|---|
 | Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking | run against live Safari/Chrome/Brave PIDs with focused hosts; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
 | Multi-candidate Down-cycle | engine ✅; `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before release |
-| Compatibility matrix | classifier ✅; `run-a2-compat-gates.sh matrix` provides table-driven row execution and TSV ledger | supply live row PID map via `COMPME_A2_MATRIX_TARGETS` for all committed app rows; missing rows fail unless explicitly skipped |
+| Compatibility matrix | classifier ✅; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger | supply live row PID map via `COMPME_A2_MATRIX_TARGETS`; local dry runs may explicitly allow skips, but release evidence must pass every row and satisfy `check-a2-matrix-ledger.sh` |
 | Browser mirror-window | `set_mirror_mode` ✅; `mirror-window-firefox-zen-look` manual gate pins Firefox/Zen ghost-in-mirror confirmation | run the manual gate in a granted desktop session |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅ | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch | OCR quality/perf on a granted desktop + multi-display caret confirm |
@@ -294,9 +296,10 @@ acceptance criteria. Start there for implementation.
 **Status (2026-07-02):** G1-G5 are implemented and deterministic validation is
 green. The portable correction pipeline, macOS trigger/accept routing,
 fail-closed range seams, `overlay-correction-presenter`, Apps-pane `GrammarFix`
-policy column, and grammar-accept recorder/persistence are in code with focused
-tests. The remaining acceptance item is the interactive TextEdit grammar LOOK
-gate emitted by `tools/acceptance/run-a1b-live-gates.sh` and pinned by its
+policy column, grammar-accept recorder/persistence, and correction-accept tap
+isolation are in code with focused tests plus `accept_tap_acceptance` correction
+requirements. The remaining acceptance item is the interactive TextEdit grammar
+LOOK gate emitted by `tools/acceptance/run-a1b-live-gates.sh` and pinned by its
 `--self-test`, which requires a granted macOS GUI session.
 
 **Decisions settled (with the requester, 2026-07-01):**

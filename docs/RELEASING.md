@@ -32,7 +32,7 @@ model-client gate.
 
 ## Cutting a release
 
-1. Ensure the repository has the release secrets:
+1. Ensure the repository has the release secrets and variables:
    `COMPME_DEVELOPER_ID_P12_BASE64`,
    `COMPME_DEVELOPER_ID_P12_PASSWORD`, `COMPME_CODESIGN_IDENTITY`, plus one
    GitHub-runner notarization credential set accepted by
@@ -42,12 +42,16 @@ model-client gate.
    `COMPME_NOTARYTOOL_PASSWORD` + `COMPME_NOTARYTOOL_TEAM_ID`. A
    `COMPME_NOTARYTOOL_KEYCHAIN_PROFILE` is supported by the helper for a
    preconfigured local keychain, but the GitHub-hosted workflow does not create
-   that profile.
+   that profile. The release repository variable `COMPME_A2_MATRIX_LEDGER` must
+   point at the committed repo-relative TSV under `tools/acceptance/evidence/a2/`.
 2. Bump the version in `crates/app/Cargo.toml`, `tools/bundle/Info.plist`
    (both `CFBundleShortVersionString` and `CFBundleVersion` to the same value —
    `check-bundle-metadata.sh` enforces equality), and `Casks/compme.rb`
    (`version`), then run `tools/bundle/check-bundle-metadata.sh`, commit, and
-   push.
+   push. Use a SemVer release version only: `X.Y.Z`, optionally with
+   prerelease/build metadata. The pushed tag must be `v<version>` and must match
+   bundle metadata; the release preflight runs
+   `COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh`.
 3. On a model-capable Mac, run the release model-gate wrapper before tagging.
    It downloads and hash-verifies the GGUF when needed, runs the ignored
    model-backed gates, and fails closed if the model cannot be fetched or
@@ -73,7 +77,9 @@ model-client gate.
    produced ledger has every row passing before tagging:
 
    ```sh
-   evidence_dir="tools/acceptance/evidence/a2/v0.1.0-$(date +%Y%m%d-%H%M%S)"
+   release_tag="vX.Y.Z" # match the protected tag you will push
+   run_id="$release_tag-$(date +%Y%m%d-%H%M%S)"
+   evidence_dir="tools/acceptance/evidence/a2/$run_id"
    mkdir -p "$evidence_dir"
    COMPME_A2_BROWSER_EXCLUDED_DOMAIN="example.test" \
    COMPME_A2_LOG_DIR="$evidence_dir" \
@@ -98,9 +104,10 @@ model-client gate.
    visible text on the focused display so OCR can produce non-empty context.
 
 4. Ensure the release commit is on the up-to-date default branch, then tag and
-   push. The repository must have a tag ruleset that protects `v*` tags; the
-   preflight job exits before validation if GitHub reports the tag ref is not
-   protected. The cask finalizer refuses to update `main` if the tag commit is
+   push. Use a protected SemVer `v*` tag from the current default branch. The
+   preflight fails before release validation if the tag is unprotected, not
+   SemVer, not on `origin/<default-branch>`, or does not match the bundle
+   metadata. The cask finalizer refuses to update `main` if the tag commit is
    not an ancestor of the default branch or if the default-branch cask version
    has already moved past the tag version:
 

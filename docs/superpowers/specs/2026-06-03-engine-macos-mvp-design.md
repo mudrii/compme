@@ -473,11 +473,14 @@ A feature is not "Cotypist parity" until its gate below passes (automated where 
 | Inspect + delete | Record count shown; delete-all works; per-app and per-domain deletion works; disable+erase removes the store |
 | Sender identity | Name/email feed signature/contact awareness in prompt; editable |
 
-**2026-06-09 test-audit status:** current code has deterministic coverage for
+**2026-07-06 test-audit status:** current code has deterministic coverage for
 prompt construction, per-request app-scoped personalization, redaction, and
-memory core behavior. Accepted-only keychain + on-disk validation is complete;
-§16 acceptance stays partial until settings persistence, AllMonitored live
-GUI/privacy validation, and live before/after completion diffs are recorded.
+memory core behavior. Accepted-only keychain + ciphertext-only validation is
+complete. AllMonitored live evidence covers TextEdit product-loop privacy,
+runtime-disable, per-app disable/exclude/collection-off, and Chrome
+domain-exclude paths. §16 acceptance remains open for secure input, snoozed
+transition, volatile `pid:N`, global `delete_all` / memory-mode controls, and
+live before/after completion diffs.
 
 ### Context-source parity (A2)
 | Feature | Acceptance gate |
@@ -498,11 +501,14 @@ GUI/privacy validation, and live before/after completion diffs are recorded.
 | **Not supported** (Thunderbird/Pages/Scrivener/Ghostty/Warp…) | Explicitly disabled/listed; no misfire |
 | Terminal/iTerm AI-agent prompt | Activates only in intended natural-language prompt contexts, not arbitrary shell input |
 
-**2026-06-09 test-audit status:** `tools/acceptance/run-a2-compat-gates.sh`
-is request-path smoke evidence for selected compatibility/context paths. It is
-not a full replacement for the per-family live matrix above, especially setup
-needed browsers, mirror-only apps, sidebar-only AI panels, insertion behavior,
-and onboarding copy.
+**2026-07-06 test-audit status:** `tools/acceptance/run-a2-compat-gates.sh`
+is still request-path smoke evidence for selected compatibility/context paths.
+Release evidence now also requires a table-driven matrix ledger with every
+committed row passing, paired TSV/log artifacts under
+`tools/acceptance/evidence/a2/`, and `COMPME_A2_MATRIX_LEDGER` pointing at the
+reviewed TSV. It is not a full replacement for the per-family live matrix above,
+especially setup-needed browsers, mirror-only apps, sidebar-only AI panels,
+insertion behavior, and onboarding copy.
 
 ### Other in-scope features — now with gates (close D16's "loosely deferred")
 | Feature | Phase | Acceptance gate |
@@ -521,7 +527,7 @@ and onboarding copy.
 | Custom model override (`featureCustomModelOverride`) | A3 | User points at own GGUF; loads behind `LocalModel`; surfaces the model's license (ties to D14 manual-placement) |
 | Per-app display overrides (`featurePerAppFontStyleOverrides`, smart-quotes, text-mirroring, size-thresholds) | A3 | Each override persists, applies per app, and has an observable effect; size-threshold suppresses suggestions in tiny fields |
 | Labs / experimental (`featureCotypistLabsAccess`) | A3 | Labs flags are user-toggleable and surfaced; no tier gating present (all open per Project Scope) |
-| Local stats / menu-bar word count (`shouldShowCompletedWordCountInMenuBar`) | A3 | 30-day shown/accepted/dismissed/superseded + latency + words computed and displayable; menu-bar word-count toggle works. **Compute half implemented**: `crates/stats` rolling-30-day accumulator (counts, words_completed, acceptance_rate, latency avg/p95 nearest-rank; time-injected, 20 tests) wired in `app` run loop. All four outcomes now recorded live: Accepted/Dismissed from host inputs; **Shown/Superseded surfaced by `engine_core` (`StatEvent` + `take_stat_events`, with failed-placement `Shown` retraction and completion-replace supersede) and drained each loop turn**. **Latency recorded too**: the run loop times submit→outcome per request generation (`latency_sample`, monotonic-generation pruned, heartbeat-resolution) → `usage.record_latency`; shutdown summary prints all counts + words + latency avg/p95. **Menu-bar display SHIPPED**: `stats::summary_line` (words · accepted (rate%); rate omitted when nothing shown; idle placeholder) rendered as a non-interactive `MacosTray::set_stats_line` menu row, diffed per heartbeat on the wall clock; Statistics range/grouping LOOK and lifetime relaunch validation are recorded in `docs/ACCEPTANCE.md`. Residual (A3): metric picker, display toggle, and any explicit decision to persist the rolling 30-day window itself (lifetime totals DO persist — stats.env, 5-min periodic crash-safe flush + final shutdown flush, c128 **[2026-06-12]**). |
+| Local stats / menu-bar word count (`shouldShowCompletedWordCountInMenuBar`) | A3 | 30-day shown/accepted/dismissed/superseded + latency + words computed and displayable; menu-bar word-count toggle works. **Compute half implemented**: `crates/stats` rolling-30-day accumulator (counts, words_completed, acceptance_rate, latency avg/p95 nearest-rank; time-injected, 20 tests) wired in `app` run loop. All four outcomes now recorded live: Accepted/Dismissed from host inputs; **Shown/Superseded surfaced by `engine_core` (`StatEvent` + `take_stat_events`, with failed-placement `Shown` retraction and completion-replace supersede) and drained each loop turn**. **Latency recorded too**: the run loop times submit→outcome per request generation (`latency_sample`, monotonic-generation pruned, heartbeat-resolution) → `usage.record_latency`; shutdown summary prints all counts + words + latency avg/p95. **Menu-bar display SHIPPED**: `stats::summary_line` (words · accepted (rate%); rate omitted when nothing shown; idle placeholder) rendered as a non-interactive `MacosTray::set_stats_line` menu row, diffed per heartbeat on the wall clock; Statistics range/grouping LOOK and lifetime relaunch validation are recorded in `docs/ACCEPTANCE.md`. Range/grouping pickers ship and shown/accepted/words render separately. Residual (A3): display toggle and any explicit decision to persist the rolling 30-day window itself (lifetime totals DO persist — stats.env, 5-min periodic crash-safe flush + final shutdown flush, c128 **[2026-06-12]**); no metric picker is planned beyond a possible future UX display toggle. |
 | Quality / reuse thresholds (`deepMatchThreshold`, `reuseThreshold`, `meetsQualityThresholds`) | A2/A3 | Internal completion-quality tuning; either surfaced in a Labs/General control or explicitly marked non-user-facing |
 
 **Multi-platform rule:** each gate above is written platform-agnostically; per-platform achievability (✓/◑/⌨/✗) is in `cross-platform-review.md` §7b. A platform claims a feature only when its gate passes there with that platform's mechanism.

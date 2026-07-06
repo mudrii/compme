@@ -385,7 +385,8 @@ Before tagging a release, write the fresh matrix ledger under committed release
 evidence and validate it without skip/fail rows:
 
 ```sh
-run_id="v0.1.0-$(date +%Y%m%d-%H%M%S)"
+release_tag="vX.Y.Z" # match the protected tag you will push
+run_id="$release_tag-$(date +%Y%m%d-%H%M%S)"
 evidence_dir="tools/acceptance/evidence/a2/$run_id"
 mkdir -p "$evidence_dir"
 COMPME_A2_BROWSER_EXCLUDED_DOMAIN="example.test" \
