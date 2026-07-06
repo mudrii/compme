@@ -84,6 +84,8 @@ Findings from 2026-07-06 user-assisted pass:
   grammar-check as Shift+F5, so Carbon consumed that chord before the recorder
   saw `keyDown`.
 - Selected tab highlight had a tight/cropped top edge in the native tab strip.
+- Latest screenshot pass showed the native tab strip still clipped the first
+  selected tab on first open and later degraded to a line-like highlight.
 
 Fix in progress:
 - Queue all pending Personalization edits instead of last-writer-wins.
@@ -96,6 +98,8 @@ Fix in progress:
   Batch 2 can record Shift+F5 without a global-hotkey collision.
 - Inset the tab view inside a content wrapper to give selected tabs top/side
   breathing room.
+- Hide the native `NSTabView` tab strip and use an explicit stable button row
+  for tab selection while keeping `NSTabView` only for pane switching.
 
 Status: fixes pending validation.
 

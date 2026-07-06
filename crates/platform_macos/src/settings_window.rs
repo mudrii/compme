@@ -12,7 +12,7 @@
 //! and live-verified, not unit-tested (tray convention); the policy-edge
 //! decision is the unit-tested pure part.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -20,9 +20,10 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSButtonType,
-    NSControlStateValue, NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton, NSResponder,
-    NSSwitch, NSTabView, NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezelStyle, NSButton,
+    NSButtonType, NSControlStateValue, NSControlStateValueOn, NSEvent, NSFont, NSPopUpButton,
+    NSResponder, NSSwitch, NSTabView, NSTabViewItem, NSTabViewType, NSTextField, NSView, NSWindow,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
@@ -446,6 +447,12 @@ pub struct SettingsFlags {
 
 struct SettingsTargetIvars {
     flags: SettingsFlags,
+    tabs: RefCell<Option<TabControls>>,
+}
+
+struct TabControls {
+    tabs: Retained<NSTabView>,
+    buttons: Vec<Retained<NSButton>>,
 }
 
 define_class!(
@@ -459,6 +466,24 @@ define_class!(
     unsafe impl NSObjectProtocol for SettingsTarget {}
 
     impl SettingsTarget {
+        #[unsafe(method(selectSettingsTab:))]
+        fn select_settings_tab(&self, sender: Option<&NSButton>) {
+            let Some(button) = sender else {
+                return;
+            };
+            let index = button.tag().max(0);
+            if let Some(controls) = &*self.ivars().tabs.borrow() {
+                controls.tabs.selectTabViewItemAtIndex(index);
+                for tab_button in &controls.buttons {
+                    tab_button.setState(if tab_button.tag() == index {
+                        NSControlStateValueOn
+                    } else {
+                        objc2_app_kit::NSControlStateValueOff
+                    });
+                }
+            }
+        }
+
         #[unsafe(method(grantAccessibility:))]
         fn grant_accessibility(&self, _sender: Option<&NSButton>) {
             self.ivars().flags.setup_grant_ax.store(true, Ordering::Relaxed);
@@ -678,9 +703,16 @@ define_class!(
 
 impl SettingsTarget {
     fn new(flags: SettingsFlags, mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(SettingsTargetIvars { flags });
+        let this = Self::alloc(mtm).set_ivars(SettingsTargetIvars {
+            flags,
+            tabs: RefCell::new(None),
+        });
         // SAFETY: NSObject's init signature is correct for this subclass.
         unsafe { objc2::msg_send![super(this), init] }
+    }
+
+    fn install_tab_controls(&self, tabs: Retained<NSTabView>, buttons: Vec<Retained<NSButton>>) {
+        *self.ivars().tabs.borrow_mut() = Some(TabControls { tabs, buttons });
     }
 
     /// Park a Personalization edit for the run loop. Edits are queued so a
@@ -1541,19 +1573,20 @@ fn build_window(
     let personalization_name_field: Option<Retained<NSTextField>>;
     let personalization_email_field: Option<Retained<NSTextField>>;
 
-    // Tab layout (c105): one NSTabView as the content view, one tab per
-    // pane_titles() entry. Tab content is ~500x350; per-pane coordinates are
-    // local to their tab view, so panes never collide with each other again
-    // (the c103/c104 overlap class is structurally gone).
+    // Tab layout (c105): one NSTabView owns pane switching, but its native tab
+    // strip is hidden. The native strip rendered its selected pill clipped on
+    // first open and sometimes degraded to a dark line after focus changes, so
+    // a small explicit button row owns the visible tab affordance instead.
     let content = NSView::new(mtm);
     content.setFrame(NSRect::new(
         NSPoint::new(0.0, 0.0),
         NSSize::new(680.0, 420.0),
     ));
     let tabs = NSTabView::new(mtm);
+    tabs.setTabViewType(NSTabViewType::NoTabsNoBorder);
     tabs.setFrame(NSRect::new(
-        NSPoint::new(6.0, 8.0),
-        NSSize::new(668.0, 398.0),
+        NSPoint::new(14.0, 18.0),
+        NSSize::new(652.0, 350.0),
     ));
     let pane_views: Vec<Retained<NSView>> = pane_titles()
         .iter()
@@ -1566,6 +1599,37 @@ fn build_window(
             view
         })
         .collect();
+    let tab_widths = [58.0, 66.0, 112.0, 50.0, 64.0, 54.0, 82.0, 84.0, 50.0];
+    let mut tab_buttons: Vec<Retained<NSButton>> = Vec::new();
+    let mut tab_x = 16.0;
+    for (index, (title, width)) in pane_titles().iter().zip(tab_widths).enumerate() {
+        let button = unsafe {
+            let any: &AnyObject = target.as_ref();
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(title),
+                Some(any),
+                Some(sel!(selectSettingsTab:)),
+                mtm,
+            )
+        };
+        button.setFrame(NSRect::new(
+            NSPoint::new(tab_x, 376.0),
+            NSSize::new(width, 24.0),
+        ));
+        button.setButtonType(NSButtonType::PushOnPushOff);
+        button.setBezelStyle(NSBezelStyle::AccessoryBar);
+        button.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+        button.setTag(index as isize);
+        button.setState(if index == 0 {
+            NSControlStateValueOn
+        } else {
+            objc2_app_kit::NSControlStateValueOff
+        });
+        content.addSubview(&button);
+        tab_buttons.push(button);
+        tab_x += width + 2.0;
+    }
+    target.install_tab_controls(tabs.clone(), tab_buttons);
 
     // Setup tab: readiness rows (permissions, model file). Strings come
     // from the run loop via flags.setup_lines; show() refreshes them on
