@@ -99,6 +99,18 @@ jobs:
       - name: A2 matrix ledger policy self-test
         run: tools/release/check-a2-matrix-ledger.sh --self-test
 
+      - name: A2 matrix ledger live proof
+        env:
+          COMPME_A2_MATRIX_LEDGER: ${{ vars.COMPME_A2_MATRIX_LEDGER }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COMPME_A2_MATRIX_LEDGER:-}" ]; then
+            echo "missing required release variable: COMPME_A2_MATRIX_LEDGER" >&2
+            echo "Run tools/acceptance/run-a2-compat-gates.sh matrix in a live macOS session and point this variable at the produced TSV ledger." >&2
+            exit 1
+          fi
+          tools/release/check-a2-matrix-ledger.sh "$COMPME_A2_MATRIX_LEDGER"
+
       - name: E2E runner self-test
         run: tools/acceptance/e2e-complete-me.sh --self-test
 

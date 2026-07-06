@@ -314,8 +314,8 @@ pub struct SettingsFlags {
     /// (`COMPME_CLIPBOARD_CONTEXT`). The run loop watches/persists the edge.
     pub context_clipboard: Arc<AtomicBool>,
     /// Context: include screen OCR text as bounded prompt context
-    /// (`COMPME_SCREEN_CONTEXT`). Turning it on persists for the next launch;
-    /// turning it off also gates new OCR submissions in the current run.
+    /// (`COMPME_SCREEN_CONTEXT`). The run loop watches/persists the edge and
+    /// starts or stops OCR live when Screen Recording state allows it.
     pub context_screen: Arc<AtomicBool>,
     /// Emoji: offer :shortcode completions (`COMPME_EMOJI`).
     pub emoji_enabled: Arc<AtomicBool>,
@@ -1045,15 +1045,7 @@ impl MacosSettingsWindow {
                 label.setStringValue(&NSString::from_str(&text));
             }
         }
-        // Switches re-sync from their atomics — enabled can be flipped by
-        // the tray or SIGUSR1 while this window is closed.
-        for (switch, atomic) in &self.switches {
-            switch.setState(if atomic.load(Ordering::Relaxed) {
-                NSControlStateValueOn
-            } else {
-                objc2_app_kit::NSControlStateValueOff
-            });
-        }
+        self.refresh_switches();
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         // Bring the app forward FIRST, then force the window above other apps'
@@ -1066,6 +1058,20 @@ impl MacosSettingsWindow {
             window.orderFrontRegardless();
         }
         Ok(())
+    }
+
+    /// Re-render all switches from their atomics while the window stays open.
+    /// The run loop can reject a live Screen OCR enable after the switch click
+    /// (permission missing or worker spawn failure), so show()-only refresh is
+    /// not enough for every state transition.
+    pub fn refresh_switches(&self) {
+        for (switch, atomic) in &self.switches {
+            switch.setState(if atomic.load(Ordering::Relaxed) {
+                NSControlStateValueOn
+            } else {
+                objc2_app_kit::NSControlStateValueOff
+            });
+        }
     }
 
     /// Re-render the Setup rows from `flags.setup_lines` while the window
@@ -1768,9 +1774,8 @@ fn build_window(
         refresh_apps_policy_checkbox_states(&apps_policy_checkboxes, &initial_bits);
     }
 
-    // Context tab: prompt-context sources. Clipboard applies live; screen OCR is
-    // a persisted opt-in that can be disabled immediately but starts its worker
-    // on the next launch.
+    // Context tab: prompt-context sources. Clipboard applies live; screen OCR
+    // also applies live when Screen Recording is already granted.
     {
         let context = &pane_views[4];
         let rows: [(&str, &Arc<AtomicBool>, objc2::runtime::Sel); 2] = [
@@ -1780,7 +1785,7 @@ fn build_window(
                 sel!(toggleClipboardContext:),
             ),
             (
-                "Screen OCR context (restart to enable)",
+                "Screen OCR context",
                 &flags.context_screen,
                 sel!(toggleScreenContext:),
             ),

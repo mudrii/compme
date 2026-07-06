@@ -1476,6 +1476,25 @@ struct ManualGrammarRequestInputs<'a> {
     now_ms: u64,
 }
 
+fn grammar_pre_read_policy_passes(
+    config: &Config,
+    prefs: &Prefs,
+    app_key: Option<&str>,
+    enabled: bool,
+    now_ms: u64,
+    last_domain: &mut Option<(String, String)>,
+    focused_page_url: impl FnMut() -> Option<String>,
+) -> bool {
+    let observe_domain = domain_observation_enabled(prefs, &config.personalization);
+    let domain =
+        typing_domain_for_current_field(last_domain, app_key, observe_domain, focused_page_url);
+    enabled
+        && prefs.grammar_fix_enabled(app_key, config.grammar_fix)
+        && browser_domain_fresh_enough_for_rules(app_key, domain.as_deref(), prefs)
+        && app_allows_suggestions(app_key)
+        && prefs.should_suggest(app_key, domain.as_deref(), now_ms)
+}
+
 fn manual_grammar_request_for_current_field(
     inputs: ManualGrammarRequestInputs<'_>,
     last_domain: &mut Option<(String, String)>,
@@ -2933,8 +2952,7 @@ fn switch_value(enabled: bool) -> &'static str {
     }
 }
 
-/// How long a tray "Snooze" pauses suggestions. One fixed duration for now
-/// (Cotypist-style pause); a duration submenu is a future settings surface.
+/// How long the tray's fixed "Snooze for 1 hour" action pauses suggestions.
 const SNOOZE_MINUTES: u64 = 60;
 
 /// Apply a consumed tray snooze request: pause all suggestions for
@@ -3588,6 +3606,8 @@ pub fn run() -> Result<(), String> {
             Ok(ocr) => Some(ocr),
             Err(err) => {
                 eprintln!("compme: screen OCR worker unavailable: {err}; screen context disabled");
+                config.screen_context = false;
+                persist_and_log_switch("COMPME_SCREEN_CONTEXT", "screen context", false);
                 None
             }
         }
@@ -4091,6 +4111,18 @@ pub fn run() -> Result<(), String> {
                             continue;
                         };
                         let app_key = effective_app_key(&field, bundle_id_for_pid);
+                        if !grammar_pre_read_policy_passes(
+                            &config,
+                            &prefs,
+                            app_key.as_deref(),
+                            flags.enabled.load(Ordering::Relaxed),
+                            now_ms,
+                            &mut last_domain,
+                            || adapter.focused_page_url(&field).ok().flatten(),
+                        ) {
+                            eprintln!("compme: shortcut grammar-check blocked before text read");
+                            continue;
+                        }
                         let ctx = match adapter.read_context(&field) {
                             Ok(ctx) => ctx,
                             Err(err) => {
@@ -4789,15 +4821,28 @@ pub fn run() -> Result<(), String> {
                         eprintln!(
                             "compme: screen OCR worker unavailable: {err}; screen context disabled"
                         );
+                        config.screen_context = false;
+                        settings_flags
+                            .context_screen
+                            .store(false, Ordering::Relaxed);
                         screen_ocr = None;
                         screen_wait_ms.store(0, Ordering::Relaxed);
                     }
                 }
             } else {
+                config.screen_context = false;
+                settings_flags
+                    .context_screen
+                    .store(false, Ordering::Relaxed);
                 screen_ocr = None;
                 screen_wait_ms.store(0, Ordering::Relaxed);
             }
-            persist_and_log_switch("COMPME_SCREEN_CONTEXT", "screen context", on);
+            persist_and_log_switch(
+                "COMPME_SCREEN_CONTEXT",
+                "screen context",
+                config.screen_context,
+            );
+            settings_window.refresh_switches();
             // Poison-recovery: skipping would leave the Setup pane stale after
             // the screen-context toggle (refresh runs below).
             *settings_flags
@@ -9779,6 +9824,80 @@ mod tests {
             ),
         )
         .is_none());
+    }
+
+    #[test]
+    fn grammar_pre_read_policy_blocks_disabled_paths_before_ax_text() {
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let app = Some("TextEdit");
+        let mut cache = None;
+        assert!(grammar_pre_read_policy_passes(
+            &config,
+            &config.prefs,
+            app,
+            true,
+            0,
+            &mut cache,
+            || None,
+        ));
+
+        let mut cache = None;
+        assert!(!grammar_pre_read_policy_passes(
+            &config,
+            &config.prefs,
+            app,
+            false,
+            0,
+            &mut cache,
+            || None,
+        ));
+
+        let mut prefs = config.prefs.clone();
+        prefs.set_app_policy_field("TextEdit", prefs::AppPolicyField::GrammarFix, false);
+        let mut cache = None;
+        assert!(!grammar_pre_read_policy_passes(
+            &config,
+            &prefs,
+            app,
+            true,
+            0,
+            &mut cache,
+            || None,
+        ));
+
+        let mut prefs = config.prefs.clone();
+        prefs.snooze_app("TextEdit", 0, 60);
+        let mut cache = None;
+        assert!(!grammar_pre_read_policy_passes(
+            &config,
+            &prefs,
+            app,
+            true,
+            1,
+            &mut cache,
+            || None,
+        ));
+
+        let mut prefs = config.prefs.clone();
+        prefs.excluded_domains.insert("blocked.example".into());
+        let url_reads = std::cell::Cell::new(0);
+        let mut cache = Some((
+            "com.google.Chrome".to_string(),
+            "allowed.example".to_string(),
+        ));
+        assert!(!grammar_pre_read_policy_passes(
+            &config,
+            &prefs,
+            Some("com.google.Chrome"),
+            true,
+            0,
+            &mut cache,
+            || {
+                url_reads.set(url_reads.get() + 1);
+                Some("https://blocked.example/doc".to_string())
+            },
+        ));
+        assert_eq!(url_reads.get(), 1);
     }
 
     #[test]

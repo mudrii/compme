@@ -812,6 +812,20 @@ ruby -ryaml -e '
     abort("missing release gate: #{label}") unless step?(steps, name, run)
   end
 
+  def require_live_a2_ledger_step!(steps)
+    step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["name"] == "A2 matrix ledger live proof" }
+    abort("missing release gate: release validates live A2 matrix ledger") unless step
+    env = step.fetch("env")
+    abort("missing release gate: release A2 ledger reads COMPME_A2_MATRIX_LEDGER") unless env.fetch("COMPME_A2_MATRIX_LEDGER").to_s.include?("COMPME_A2_MATRIX_LEDGER")
+    run = step.fetch("run")
+    [
+      "missing required release variable: COMPME_A2_MATRIX_LEDGER",
+      "tools/release/check-a2-matrix-ledger.sh \"$COMPME_A2_MATRIX_LEDGER\"",
+    ].each do |needle|
+      abort("missing release gate: release A2 live ledger #{needle}") unless run.include?(needle)
+    end
+  end
+
   def active_shell_lines(run)
     run.lines.map do |line|
       stripped = line.strip
@@ -994,6 +1008,7 @@ ruby -ryaml -e '
   }.each do |label, (name, run)|
     abort("missing release gate: #{label}") unless step?(validate_steps, name, run)
   end
+  require_live_a2_ledger_step!(validate_steps)
 
   build_release_needs = Array(build_release.fetch("needs"))
   %w[validate windows linux].each do |job|
@@ -1314,6 +1329,7 @@ require_line "$a2_matrix_ledger_script" 'status != "PASS"' "A2 matrix ledger rej
 require_line "$a2_matrix_ledger_script" 'missing A2 matrix row' "A2 matrix ledger requires complete row coverage"
 require_line "$acceptance_doc" '^tools/release/check-a2-matrix-ledger\.sh "\$ledger"[[:space:]]*$' "acceptance docs A2 matrix ledger validation"
 require_line "$releasing_doc" 'tools/release/check-a2-matrix-ledger\.sh "\$ledger"' "release docs A2 matrix ledger validation"
+require_line "$releasing_doc" 'COMPME_A2_MATRIX_LEDGER' "release docs A2 live ledger workflow variable"
 for gate in \
   apps-policy-toggle-look \
   personalization-pane-look \

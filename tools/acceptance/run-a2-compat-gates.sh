@@ -372,6 +372,12 @@ OSA
     echo "FAIL self-test-terminal-cmd-prefix-carries-marker: $terminal_cmd_prefix_value" >&2
     failures=$((failures + 1))
   fi
+  if grep -Eq '^[[:space:]]*env -i[[:space:]]*\\' "$ROOT_DIR/tools/acceptance/run-a2-compat-gates.sh"; then
+    echo "PASS self-test-a2-product-env-isolated"
+  else
+    echo "FAIL self-test-a2-product-env-isolated: product launch must use env -i" >&2
+    failures=$((failures + 1))
+  fi
   ( exit 7 ) &
   fake_pid=$!
   wait_for_product_status "$fake_pid"
@@ -559,7 +565,11 @@ on run argv
 end run
 OSA
 
-env \
+env -i \
+  PATH="${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+  HOME="${HOME:-}" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  RUST_BACKTRACE="${RUST_BACKTRACE:-}" \
   COMPME_STUB_COMPLETION="$STUB" \
   COMPME_ACCEPTANCE_PID="$PID" \
   COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \

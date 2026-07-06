@@ -71,6 +71,10 @@ determinism and the sub-500ms latency budget enforced on the current machine.
    tools/release/check-a2-matrix-ledger.sh "$ledger"
    ```
 
+   The tag release workflow also fails closed unless `COMPME_A2_MATRIX_LEDGER`
+   points at that fresh TSV ledger in the runner workspace, then validates it
+   with the same checker.
+
    Set `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` to the host focused in the
    browser-exclude row. The `screen` row requires Screen Recording permission and
    visible text on the focused display so OCR can produce non-empty context.
