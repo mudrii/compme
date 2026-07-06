@@ -3,7 +3,10 @@
 > A3 settings/tray UI plan (Cotypist-reference, pane-by-pane): `2026-06-10-a3-settings-ui-design.md`.
 
 **Date:** 2026-06-09
-**Status:** In progress. Pure/deterministic features implemented + unit-tested + reviewed; GUI/permission-bound features specified with their §16 acceptance gates (environment-bound, like §15 G7 / Task 5c live residuals).
+**Status:** Code-complete to deterministic/build-verified standard. Pure features
+are implemented, unit-tested, and reviewed; GUI/permission-bound features remain
+live LOOK/evidence residuals under their §16 acceptance gates (environment-bound,
+like §15 G7 / Task 5c live residuals).
 **Live pending status (re-verified 2026-06-15):** see [`docs/ROADMAP.md`](../../ROADMAP.md). The per-app/per-domain instruction-steering item is now code/test complete for config-backed steering: `field.app` is canonicalized to a real bundle id before inference, `build_personalization` populates per-app/per-domain instruction maps from config keys, and inference passes `request.domain` into `build_preamble`. The remaining personalization work is the A3 settings editor surface, not runtime instruction steering.
 **Scope:** A2 from the roadmap (`2026-06-03-engine-macos-mvp-design.md` §9) — prompt-based personalization, per-app/per-domain gating, encrypted local memory, context augmentation, multi-candidate, compatibility surfaces. Acceptance gates are in design spec §16.
 
@@ -51,7 +54,7 @@ features, a persisted UI/control surface.
 | Feature | What's implemented | Live-validation residual |
 |---|---|---|
 | Screen Recording / OCR context | ✅ `platform_macos::screen_recording_permission`/`request_screen_recording_permission` (CGPreflight/Request) + **`screen_context_text`: capture the display containing the caret (fallback main display) → local Vision OCR (`VNRecognizeTextRequest`)**, redacted + bounded, published into a field-tagged `WorkerContext.screen` cell; `COMPME_SCREEN_CONTEXT` opt-in, off by default, degrades to field-only when ungranted. **OCR runs on a dedicated `screen_ocr::ScreenOcr` worker thread** with a bounded latest-slot queue (new requests overwrite stale pending work) so the ~200–800 ms Vision pass never stalls the AppKit run loop / overlay / Carbon accept callbacks (§11 latency floor), and inference rejects stale OCR output when its field no longer matches the completion request. | live OCR quality/perf tuning on a granted desktop, plus multi-display caret-display confirmation. |
-| Google Docs / Arc setup onboarding | ✅ `compat::needs_accessibility_setup` (browser/Arc/Dia + unreadable field; tested) wired on the read-context error path — surfaces setup guidance once per app (the Google-Docs-in-Chrome case). | live Docs round-trip; domain-precise trigger when browser-domain extraction lands. |
+| Google Docs / Arc setup onboarding | ✅ `compat::needs_accessibility_setup` (browser/Arc/Dia + unreadable field; tested) wired on the read-context error path — surfaces setup guidance once per app (the Google-Docs-in-Chrome case). Browser-domain extraction has landed separately. | live `setup-needed-docs-arc-onboarding` manual gate in Arc/Docs. |
 | Browser mirror-window fallback | ✅ `Engine::set_mirror_mode` — MirrorOnly apps (Firefox/Zen) render the ghost in the floating non-activating mirror window (front-app popup anchor) instead of inline; run loop sets it per focused app's tier; engine test pins it. | live Firefox/Zen confirmation. |
 | Terminal/iTerm AI-agent activation | ✅ `compat::terminal_prompt_activates` (sigil-aware; tested) gates terminals to natural-language prompts before submit. | live tuning vs real agent prompts. |
 | Clipboard context | ✅ `read_pasteboard_text` + run-loop refresh (redacted) into `WorkerContext.clipboard`; `COMPME_CLIPBOARD_CONTEXT` opt-in; `COMPME_DIAG_CONTEXT=1` gate proves a marker reaches the submit path. | — |
@@ -62,10 +65,11 @@ Every pure feature is unit-tested (RED→GREEN). FFI is build-verified, and
 acceptance scripts provide GUI smoke evidence where synthetic automation is
 valid. Current Carbon accept consumption, app-family compatibility, onboarding,
 mirror rendering, insertion behavior, and settings persistence require explicit
-live/manual evidence before marking the matching §16 gates closed. `cargo
+live/manual evidence before marking the matching §16 gates closed. Keep
+`cargo fmt --all -- --check`,
 `cargo clippy --locked --workspace --all-targets -- -D warnings`,
-`cargo fmt --all -- --check`, `cargo test --locked --workspace --all-targets`,
-and `cargo build --locked --workspace --all-targets` stay green. Release
+`cargo test --locked --workspace --all-targets -- --test-threads=1`, and
+`cargo build --locked --workspace --all-targets` green. Release
 readiness additionally depends on the A2 matrix ledger, model-gate policy, and
 privacy-policy checks documented in `docs/ACCEPTANCE.md` and
 `docs/RELEASING.md`.

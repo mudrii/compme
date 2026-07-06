@@ -87,6 +87,9 @@ signing + hardened runtime + notarization + a native updater.
 
 **Pending:**
 - Configure GitHub Secrets for Developer-ID signing and notarization.
+- Run the A2 compatibility matrix in a granted live macOS session with
+  `COMPME_A2_LOG_DIR` under `tools/acceptance/evidence/a2/`, commit the TSV plus
+  row logs, and set `COMPME_A2_MATRIX_LEDGER` to that repo-relative TSV path.
 - Run the first tag build and verify the notarized zip, `.sha256`, and update
   manifest publish correctly, and that the workflow commits the finalized
   `Casks/compme.rb` checksum back to the default branch.
@@ -102,8 +105,9 @@ cask finalization, post-cask undraft, and the supply-chain hardening added
 keychain exists, the decoded `.p12` is deleted right after import, the
 checkout-persisted git token is scrubbed before any build code runs, release
 runs are serialized under one fixed concurrency group, and the draft-release
-upload fails closed on unmatched files. Only the signing/notarization secrets,
-identity, and first tag are missing.
+upload fails closed on unmatched files. First release now waits on the
+signing/notarization secrets and identity, committed A2 matrix ledger evidence
+plus the repo variable that points at it, and the maintainer-created first tag.
 
 ---
 

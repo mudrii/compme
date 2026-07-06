@@ -15,7 +15,7 @@ cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
 ```
 
-Acceptance harness syntax and deterministic self-tests:
+Acceptance harness syntax, deterministic self-tests, and release model gate:
 
 ```sh
 bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh

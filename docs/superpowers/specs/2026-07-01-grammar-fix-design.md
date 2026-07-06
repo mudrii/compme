@@ -472,6 +472,7 @@ range bounds and range replacement, not just the existing left-of-caret
 Code-complete criteria are met: G1–G5 landed, the validation command set above is
 green, the grammar LOOK gate is listed in `docs/ACCEPTANCE.md` /
 `tools/acceptance/run-a1b-live-gates.sh --self-test`, and ROADMAP Tier 5 is now
-marked 🟢 with verified anchors. The remaining release-readiness item is
-on-device live LOOK validation of the TextEdit underline/banner and
-grammar-accept replacement flow in a granted macOS GUI session.
+marked 🟢 with verified anchors. The remaining grammar-mode macOS LOOK item is
+on-device validation of the TextEdit underline/banner and grammar-accept
+replacement flow in a granted GUI session; broader release readiness still
+depends on the release checklist in `docs/ROADMAP.md`.
