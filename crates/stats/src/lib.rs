@@ -1268,8 +1268,14 @@ mod tests {
         );
 
         // Labels are human-readable menu titles.
-        assert_eq!(StatRange::Last30Days.label(), "Last 30 days");
-        assert_eq!(StatGrouping::Weekly.label(), "Weekly");
+        assert_eq!(
+            StatRange::ALL.map(StatRange::label),
+            ["Last 7 days", "Last 14 days", "Last 30 days"]
+        );
+        assert_eq!(
+            StatGrouping::ALL.map(StatGrouping::label),
+            ["Daily", "Weekly"]
+        );
 
         // from_index round-trips ALL and clamps out-of-range to the first item.
         for (i, &r) in StatRange::ALL.iter().enumerate() {

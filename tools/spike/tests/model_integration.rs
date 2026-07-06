@@ -11,7 +11,16 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::Instant;
 
-const MODEL: &str = "models/qwen2.5-0.5b-q4_k_m.gguf";
+const DEFAULT_MODEL: &str = "models/qwen2.5-0.5b-q4_k_m.gguf";
+
+fn model_path_from_env(raw: Option<&str>) -> &str {
+    raw.filter(|value| !value.trim().is_empty())
+        .unwrap_or(DEFAULT_MODEL)
+}
+
+fn model_path() -> String {
+    model_path_from_env(std::env::var("COMPME_SPIKE_MODEL_PATH").ok().as_deref()).to_string()
+}
 
 fn model_tests_required(raw: Option<&str>) -> bool {
     matches!(
@@ -40,10 +49,11 @@ fn require_latency_budget() -> bool {
 }
 
 fn ensure_model_exists() -> bool {
-    if Path::new(MODEL).exists() {
+    let model = model_path();
+    if Path::new(&model).exists() {
         return true;
     }
-    let msg = format!("model not downloaded at {MODEL}");
+    let msg = format!("model not downloaded at {model}");
     if require_model_tests() {
         panic!("{msg}");
     }
@@ -52,13 +62,15 @@ fn ensure_model_exists() -> bool {
 }
 
 fn warm_complete_ms(prompt: &str, n: usize) -> Option<u128> {
-    if !Path::new(MODEL).exists() {
+    let model = model_path();
+    let model = Path::new(&model);
+    if !model.exists() {
         return None;
     }
     let backend = LlamaBackend::init().ok()?;
     let model = LlamaModel::load_from_file(
         &backend,
-        MODEL,
+        model,
         &LlamaModelParams::default().with_n_gpu_layers(999),
     )
     .ok()?;
@@ -94,10 +106,11 @@ fn warm_complete_ms(prompt: &str, n: usize) -> Option<u128> {
 }
 
 fn load_model() -> Option<()> {
+    let model = model_path();
     let backend = LlamaBackend::init().ok()?;
     let _model = LlamaModel::load_from_file(
         &backend,
-        MODEL,
+        Path::new(&model),
         &LlamaModelParams::default().with_n_gpu_layers(999),
     )
     .ok()?;
@@ -170,4 +183,14 @@ fn strict_latency_budget_env_parses_truthy_values() {
     ] {
         assert!(!latency_budget_required(value));
     }
+}
+
+#[test]
+fn spike_model_path_defaults_and_honors_wrapper_override() {
+    assert_eq!(model_path_from_env(None), DEFAULT_MODEL);
+    assert_eq!(model_path_from_env(Some("")), DEFAULT_MODEL);
+    assert_eq!(
+        model_path_from_env(Some("/tmp/release-model.gguf")),
+        "/tmp/release-model.gguf"
+    );
 }
