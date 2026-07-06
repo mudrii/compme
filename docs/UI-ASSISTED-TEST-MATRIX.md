@@ -78,6 +78,8 @@ Findings from 2026-07-06 user-assisted pass:
 - Emoji skin tone and gender persisted after close/reopen.
 - Personalization text fields did not save reliably after editing.
 - Shortcut recorder captured F5/F6 but lost the held Shift modifier.
+- Follow-up validation found Shift+F6/F7 working, but Shift+F5 still sometimes
+  arrived as Shift down, Shift up, then bare F5 in AppKit recorder events.
 - Selected tab highlight had a tight/cropped top edge in the native tab strip.
 
 Fix in progress:
@@ -85,6 +87,8 @@ Fix in progress:
 - Flush visible Personalization text fields while Settings is open.
 - Track `flagsChanged:` modifier state in the recorder and fall back to it when
   function-key `keyDown:` events omit Shift.
+- Keep a one-key nonzero-modifier grace cache for function keys so Shift+F5
+  survives the transient zero `flagsChanged:` event.
 - Inset the tab view inside a content wrapper to give selected tabs top/side
   breathing room.
 

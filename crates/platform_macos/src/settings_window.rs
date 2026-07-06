@@ -85,6 +85,30 @@ pub fn record_decision(keycode: i64, mask: u32, other_roles: &[KeyWithMods]) -> 
     }
 }
 
+fn function_key_needing_modifier_grace(keycode: i64) -> bool {
+    matches!(
+        keycode,
+        122 | 120 | 99 | 118 | 96 | 97 | 98 | 100 | 101 | 109 | 103 | 111
+    )
+}
+
+fn recorder_effective_modifier_mask(
+    keycode: i64,
+    event_mask: u32,
+    current_mask: u32,
+    last_nonzero_mask: u32,
+) -> u32 {
+    if event_mask != 0 {
+        event_mask
+    } else if current_mask != 0 {
+        current_mask
+    } else if function_key_needing_modifier_grace(keycode) {
+        last_nonzero_mask
+    } else {
+        0
+    }
+}
+
 /// Build the BOTH-slots request for one captured key. `RebindRequest`'s
 /// `None` means "reset to DEFAULT" (`from_accept_keys` default-fills), NOT
 /// "keep current" — a bare-`None` partial request would silently clobber
@@ -679,6 +703,10 @@ struct KeyRecorderFieldIvars {
     /// key `keyDown:` events arrive without the held Shift bit; keep the current
     /// modifier state so Shift+F5/F6 records as masked instead of bare F5/F6.
     modifier_mask: Cell<u32>,
+    /// Last nonzero modifier seen since the recorder was armed. AppKit can emit
+    /// a zero `flagsChanged:` right before `keyDown:` for Shift+F5, so function
+    /// keys get a one-key grace fallback to this mask.
+    last_nonzero_modifier_mask: Cell<u32>,
 }
 
 define_class!(
@@ -720,6 +748,8 @@ define_class!(
                 let view: &NSView = self;
                 let responder: &NSResponder = view.as_ref();
                 let became = window.makeFirstResponder(Some(responder));
+                self.ivars().modifier_mask.set(0);
+                self.ivars().last_nonzero_modifier_mask.set(0);
                 // Recording feedback: the box shows it's armed. keyDown replaces
                 // this with the captured key; Esc reverts to the current key.
                 self.ivars()
@@ -745,11 +775,13 @@ define_class!(
             let keycode = event.keyCode() as i64;
             let event_mask =
                 crate::ns_modifier_flags_to_carbon_mask(event.modifierFlags().0 as u64);
-            let mask = if event_mask == 0 {
-                self.ivars().modifier_mask.get()
-            } else {
-                event_mask
-            };
+            let mask = recorder_effective_modifier_mask(
+                keycode,
+                event_mask,
+                self.ivars().modifier_mask.get(),
+                self.ivars().last_nonzero_modifier_mask.get(),
+            );
+            self.ivars().last_nonzero_modifier_mask.set(0);
             if crate::debug_enabled() {
                 eprintln!(
                     "compme: recorder keyDown role={:?} keycode={keycode} mask={mask}",
@@ -789,6 +821,9 @@ define_class!(
         fn flags_changed(&self, event: &NSEvent) {
             let mask = crate::ns_modifier_flags_to_carbon_mask(event.modifierFlags().0 as u64);
             self.ivars().modifier_mask.set(mask);
+            if mask != 0 {
+                self.ivars().last_nonzero_modifier_mask.set(mask);
+            }
             if crate::debug_enabled() {
                 eprintln!(
                     "compme: recorder flagsChanged role={:?} mask={mask}",
@@ -814,6 +849,7 @@ impl KeyRecorderField {
             rebind_slot,
             label,
             modifier_mask: Cell::new(0),
+            last_nonzero_modifier_mask: Cell::new(0),
         });
         // set_ivars BEFORE init (the SettingsTarget pattern); NSView's
         // designated initializer is initWithFrame:.
@@ -2772,6 +2808,38 @@ mod tests {
         assert_eq!(record_decision(122, 0, &[(50, 0)]), RecordDecision::Accept); // F1
                                                                                  // Re-recording the role's OWN current key is a harmless no-op rebind.
         assert_eq!(record_decision(48, 0, &[(50, 0)]), RecordDecision::Accept);
+    }
+
+    #[test]
+    fn recorder_modifier_mask_gives_function_keys_one_shift_grace() {
+        assert_eq!(
+            recorder_effective_modifier_mask(96, 0, 0, crate::CARBON_SHIFT_KEY),
+            crate::CARBON_SHIFT_KEY,
+            "Shift+F5 can arrive as Shift down, Shift up, then bare F5"
+        );
+        assert_eq!(
+            recorder_effective_modifier_mask(97, 0, crate::CARBON_SHIFT_KEY, 0),
+            crate::CARBON_SHIFT_KEY
+        );
+    }
+
+    #[test]
+    fn recorder_modifier_mask_does_not_leak_stale_shift_to_letters() {
+        assert_eq!(
+            recorder_effective_modifier_mask(0, 0, 0, crate::CARBON_SHIFT_KEY),
+            0,
+            "one-key grace is restricted to function keys"
+        );
+        assert_eq!(
+            recorder_effective_modifier_mask(
+                96,
+                crate::CARBON_OPTION_KEY,
+                0,
+                crate::CARBON_SHIFT_KEY
+            ),
+            crate::CARBON_OPTION_KEY,
+            "event mask wins when AppKit provides one"
+        );
     }
 
     #[test]
