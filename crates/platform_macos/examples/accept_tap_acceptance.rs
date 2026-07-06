@@ -18,6 +18,7 @@ extern "C" {
 /// Tab accepts the next word, grave accepts the full completion.
 const KEYCODE_GRAVE: u16 = 50;
 const KEYCODE_ESCAPE: u16 = 53;
+const KEYCODE_GRAMMAR_ACCEPT: u16 = 96;
 const KEYCODE_DOWN: u16 = 125;
 
 fn main() {
@@ -75,6 +76,21 @@ fn main() {
                 .set_accept_action(Some(AcceptAction::Full))
                 .expect("arm full accept");
         }
+        "correction" | "correction-tab" | "correction-full" | "correction-escape"
+        | "correction-cycle" => {
+            platform_macos::set_accept_keymap_from_config_with_mods(
+                None,
+                None,
+                Some((KEYCODE_GRAMMAR_ACCEPT.into(), 0)),
+            )
+            .expect("configure grammar accept key");
+            subscription
+                .set_suggestion_visible(true)
+                .expect("show correction");
+            subscription
+                .set_accept_action(Some(AcceptAction::Correction))
+                .expect("arm correction accept");
+        }
         "word" => {
             subscription
                 .set_suggestion_visible(true)
@@ -98,7 +114,7 @@ fn main() {
         }
         other => {
             eprintln!(
-                "unknown requirement {other:?}; expected inactive, full, word, delayed-hide, escape, option-tab, or cycle"
+                "unknown requirement {other:?}; expected inactive, full, word, correction, correction-tab, correction-full, correction-escape, correction-cycle, delayed-hide, escape, option-tab, or cycle"
             );
             process::exit(2);
         }
@@ -155,6 +171,10 @@ fn truthy_value(raw: &str) -> bool {
 fn key_to_post_for_requirement(requirement: &str) -> (u16, &'static str, bool) {
     match requirement {
         "full" => (KEYCODE_GRAVE, "GRAVE", false),
+        "correction" => (KEYCODE_GRAMMAR_ACCEPT, "GRAMMAR_ACCEPT", false),
+        "correction-full" => (KEYCODE_GRAVE, "GRAVE", false),
+        "correction-escape" => (KEYCODE_ESCAPE, "ESCAPE", false),
+        "correction-cycle" => (KEYCODE_DOWN, "DOWN", false),
         "escape" => (KEYCODE_ESCAPE, "ESCAPE", false),
         "option-tab" => (KeyCode::TAB, "OPTION_TAB", true),
         "cycle" => (KEYCODE_DOWN, "DOWN", false),
@@ -165,8 +185,12 @@ fn key_to_post_for_requirement(requirement: &str) -> (u16, &'static str, bool) {
 fn controls_satisfy_requirement(requirement: &str, controls: &[TapControl]) -> bool {
     match requirement {
         "inactive" | "delayed-hide" | "option-tab" => controls.is_empty(),
+        "correction-tab" | "correction-full" | "correction-escape" | "correction-cycle" => {
+            controls.is_empty()
+        }
         "full" => controls == [TapControl::Accept(AcceptAction::Full)],
         "word" => controls == [TapControl::Accept(AcceptAction::Word)],
+        "correction" => controls == [TapControl::Accept(AcceptAction::Correction)],
         "escape" => controls == [TapControl::Dismiss],
         "cycle" => controls == [TapControl::Cycle],
         _ => false,
@@ -202,6 +226,26 @@ mod tests {
         assert_eq!(
             key_to_post_for_requirement("word"),
             (KeyCode::TAB, "TAB", false)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("correction"),
+            (KEYCODE_GRAMMAR_ACCEPT, "GRAMMAR_ACCEPT", false)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("correction-tab"),
+            (KeyCode::TAB, "TAB", false)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("correction-full"),
+            (KEYCODE_GRAVE, "GRAVE", false)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("correction-escape"),
+            (KEYCODE_ESCAPE, "ESCAPE", false)
+        );
+        assert_eq!(
+            key_to_post_for_requirement("correction-cycle"),
+            (KEYCODE_DOWN, "DOWN", false)
         );
         assert_eq!(
             key_to_post_for_requirement("option-tab"),
@@ -265,6 +309,22 @@ mod tests {
         ));
         assert!(controls_satisfy_requirement(
             "word",
+            &[TapControl::Accept(AcceptAction::Word)]
+        ));
+        assert!(controls_satisfy_requirement(
+            "correction",
+            &[TapControl::Accept(AcceptAction::Correction)]
+        ));
+        assert!(!controls_satisfy_requirement(
+            "correction",
+            &[TapControl::Accept(AcceptAction::Full)]
+        ));
+        assert!(controls_satisfy_requirement("correction-tab", &[]));
+        assert!(controls_satisfy_requirement("correction-full", &[]));
+        assert!(controls_satisfy_requirement("correction-escape", &[]));
+        assert!(controls_satisfy_requirement("correction-cycle", &[]));
+        assert!(!controls_satisfy_requirement(
+            "correction-tab",
             &[TapControl::Accept(AcceptAction::Word)]
         ));
         assert!(!controls_satisfy_requirement(

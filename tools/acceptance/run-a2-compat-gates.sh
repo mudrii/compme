@@ -67,6 +67,32 @@ A2_MATRIX_ROWS=(
   "screen|screen|works-app|context-request"
 )
 
+expected_matrix_rows_are_exact() {
+  expected=(
+    "textedit|works|com.apple.TextEdit|request"
+    "notes|works|com.apple.Notes|request"
+    "mail|works|com.apple.mail|request"
+    "word|works|com.microsoft.Word|request"
+    "safari|browser-domain-allow|com.apple.Safari|domain-request"
+    "chrome|browser-domain-allow|com.google.Chrome|domain-request"
+    "brave|browser-domain-allow|com.brave.Browser|domain-request"
+    "browser-exclude|browser-domain-exclude|browser-domain|blocked-prefs"
+    "terminal-cmd|terminal-cmd|terminal|blocked-terminal"
+    "terminal-nlp|terminal-nlp|terminal|request"
+    "unsupported|unsupported|unsupported-app|blocked-app"
+    "clipboard|clipboard|works-app|context-request"
+    "screen|screen|works-app|context-request"
+  )
+  if [[ "${#A2_MATRIX_ROWS[@]}" -ne "${#expected[@]}" ]]; then
+    return 1
+  fi
+  for i in "${!expected[@]}"; do
+    if [[ "${A2_MATRIX_ROWS[$i]}" != "${expected[$i]}" ]]; then
+      return 1
+    fi
+  done
+}
+
 terminal_cmd_prefix() {
   printf 'git status # %s ' "$PROMPT_MARKER"
 }
@@ -396,10 +422,10 @@ OSA
     echo "FAIL self-test-a2-matrix-row-ids-unique" >&2
     failures=$((failures + 1))
   fi
-  if [[ "${#A2_MATRIX_ROWS[@]}" -ge 12 ]]; then
-    echo "PASS self-test-a2-matrix-row-count"
+  if expected_matrix_rows_are_exact; then
+    echo "PASS self-test-a2-matrix-rows-exact"
   else
-    echo "FAIL self-test-a2-matrix-row-count: ${#A2_MATRIX_ROWS[@]}" >&2
+    echo "FAIL self-test-a2-matrix-rows-exact" >&2
     failures=$((failures + 1))
   fi
   matrix_fail_dir="$tmp_dir/matrix-fail"
