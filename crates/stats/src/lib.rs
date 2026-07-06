@@ -123,11 +123,12 @@ pub fn group_buckets(buckets: &[DayBucket], grouping: StatGrouping) -> Vec<DayBu
             .map(|week| {
                 let mut agg = DayBucket::default();
                 for b in week {
-                    agg.counts.shown += b.counts.shown;
-                    agg.counts.accepted += b.counts.accepted;
-                    agg.counts.dismissed += b.counts.dismissed;
-                    agg.counts.superseded += b.counts.superseded;
-                    agg.words += b.words;
+                    agg.counts.shown = agg.counts.shown.saturating_add(b.counts.shown);
+                    agg.counts.accepted = agg.counts.accepted.saturating_add(b.counts.accepted);
+                    agg.counts.dismissed = agg.counts.dismissed.saturating_add(b.counts.dismissed);
+                    agg.counts.superseded =
+                        agg.counts.superseded.saturating_add(b.counts.superseded);
+                    agg.words = agg.words.saturating_add(b.words);
                 }
                 agg
             })
@@ -264,21 +265,19 @@ impl Stats {
     /// The grow-only session totals update here too (never pruned).
     pub fn record(&mut self, now_ms: u64, outcome: Outcome) {
         match outcome {
-            Outcome::Shown => self.session.counts.shown += 1,
-            Outcome::Accepted { words } => {
-                self.session.counts.accepted += 1;
-                // ponytail: bare `+=` (no saturating_add) is deliberate. Unlike
-                // the persisted u64 path — which ingests possibly-corrupt
-                // external file values up to u64::MAX and so must saturate —
-                // `session.words` accumulates ONLY in-process from real
-                // `Accepted` word counts. usize is 64-bit on target platforms,
-                // so overflow needs ~1.8e19 cumulative words; at any plausible
-                // human typing rate that is unreachable within a process
-                // lifetime. Bound: realistic completion word counts.
-                self.session.words += words;
+            Outcome::Shown => {
+                self.session.counts.shown = self.session.counts.shown.saturating_add(1);
             }
-            Outcome::Dismissed => self.session.counts.dismissed += 1,
-            Outcome::Superseded => self.session.counts.superseded += 1,
+            Outcome::Accepted { words } => {
+                self.session.counts.accepted = self.session.counts.accepted.saturating_add(1);
+                self.session.words = self.session.words.saturating_add(words);
+            }
+            Outcome::Dismissed => {
+                self.session.counts.dismissed = self.session.counts.dismissed.saturating_add(1);
+            }
+            Outcome::Superseded => {
+                self.session.counts.superseded = self.session.counts.superseded.saturating_add(1);
+            }
         }
         self.entries.push_back(Entry {
             at_ms: now_ms,
@@ -326,10 +325,10 @@ impl Stats {
             .filter(|e| e.at_ms >= cutoff && e.at_ms <= now_ms)
         {
             match e.outcome {
-                Outcome::Shown => c.shown += 1,
-                Outcome::Accepted { .. } => c.accepted += 1,
-                Outcome::Dismissed => c.dismissed += 1,
-                Outcome::Superseded => c.superseded += 1,
+                Outcome::Shown => c.shown = c.shown.saturating_add(1),
+                Outcome::Accepted { .. } => c.accepted = c.accepted.saturating_add(1),
+                Outcome::Dismissed => c.dismissed = c.dismissed.saturating_add(1),
+                Outcome::Superseded => c.superseded = c.superseded.saturating_add(1),
             }
         }
         c
@@ -339,13 +338,6 @@ impl Stats {
     /// figure).
     pub fn words_completed(&self, now_ms: u64) -> usize {
         let cutoff = Self::cutoff(now_ms);
-        // ponytail: a plain `.sum()` (not a saturating fold) is deliberate. This
-        // sums `Accepted` word counts over the 30-day window ONLY — the entries
-        // are pruned on write, so the addends are bounded by realistic
-        // completions within 30 days, an even tighter bound than the grow-only
-        // `session.words` accumulator. usize is 64-bit on target platforms, so
-        // the sum cannot approach usize::MAX at any plausible interaction rate.
-        // Bound: realistic 30-day completion word counts.
         self.entries
             .iter()
             .filter(|e| e.at_ms >= cutoff && e.at_ms <= now_ms)
@@ -353,7 +345,7 @@ impl Stats {
                 Outcome::Accepted { words } => Some(words),
                 _ => None,
             })
-            .sum()
+            .fold(0usize, usize::saturating_add)
     }
 
     /// Acceptance rate (accepted / shown) over the window, `None` when nothing
@@ -441,13 +433,17 @@ impl Stats {
             let idx = (((e.at_ms - cutoff) / DAY_MS) as usize).min(days - 1);
             let b = &mut buckets[idx];
             match e.outcome {
-                Outcome::Shown => b.counts.shown += 1,
+                Outcome::Shown => b.counts.shown = b.counts.shown.saturating_add(1),
                 Outcome::Accepted { words } => {
-                    b.counts.accepted += 1;
-                    b.words += words;
+                    b.counts.accepted = b.counts.accepted.saturating_add(1);
+                    b.words = b.words.saturating_add(words);
                 }
-                Outcome::Dismissed => b.counts.dismissed += 1,
-                Outcome::Superseded => b.counts.superseded += 1,
+                Outcome::Dismissed => {
+                    b.counts.dismissed = b.counts.dismissed.saturating_add(1);
+                }
+                Outcome::Superseded => {
+                    b.counts.superseded = b.counts.superseded.saturating_add(1);
+                }
             }
         }
         buckets
@@ -1340,25 +1336,64 @@ mod tests {
     }
 
     #[test]
-    fn words_completed_sum_at_large_word_counts_does_not_wrap() {
-        // The usize word-accumulation paths (`record`'s `session.words += words`
-        // and `words_completed`'s `.sum()`) use bare arithmetic, NOT
-        // saturating_add — by design (see the `// ponytail:` bound comments):
-        // they accumulate only in-process from real Accepted word counts, which
-        // are bounded by realistic completions and cannot approach usize::MAX.
-        // This pins that a large-but-realistic-for-arithmetic accumulation sums
-        // correctly without wrapping. Two in-window `usize::MAX / 2` accepts sum
-        // to `usize::MAX - 1` (since usize::MAX is odd) — the largest pair that
-        // stays in range — so a correct add yields exactly that, while any
-        // narrowing/wrap regression would not.
+    fn words_completed_sum_at_large_word_counts_saturates_instead_of_wrapping() {
         let mut s = Stats::new();
         let half = usize::MAX / 2;
         s.record(T0, Outcome::Accepted { words: half });
         s.record(T0, Outcome::Accepted { words: half });
         let expected = usize::MAX - 1; // half + half, no wrap
         assert_eq!(s.words_completed(T0), expected);
-        // The grow-only session accumulator follows the same contract.
         assert_eq!(s.session_totals().words, expected);
+
+        s.record(T0, Outcome::Accepted { words: 10 });
+        assert_eq!(
+            s.words_completed(T0),
+            usize::MAX,
+            "window word totals saturate instead of wrapping"
+        );
+        assert_eq!(
+            s.session_totals().words,
+            usize::MAX,
+            "session word totals saturate instead of wrapping"
+        );
+    }
+
+    #[test]
+    fn grouped_bucket_sums_saturate_instead_of_wrapping() {
+        let mut daily = vec![DayBucket::default(); 2];
+        daily[0] = DayBucket {
+            counts: Counts {
+                shown: usize::MAX,
+                accepted: usize::MAX,
+                dismissed: usize::MAX,
+                superseded: usize::MAX,
+            },
+            words: usize::MAX,
+        };
+        daily[1] = DayBucket {
+            counts: Counts {
+                shown: 1,
+                accepted: 1,
+                dismissed: 1,
+                superseded: 1,
+            },
+            words: 1,
+        };
+
+        let weekly = group_buckets(&daily, StatGrouping::Weekly);
+        assert_eq!(weekly.len(), 1);
+        assert_eq!(
+            weekly[0],
+            DayBucket {
+                counts: Counts {
+                    shown: usize::MAX,
+                    accepted: usize::MAX,
+                    dismissed: usize::MAX,
+                    superseded: usize::MAX,
+                },
+                words: usize::MAX,
+            }
+        );
     }
 
     #[test]
