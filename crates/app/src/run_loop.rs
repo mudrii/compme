@@ -734,15 +734,7 @@ fn clipboard_diagnostic_line(text: Option<&str>, marker: Option<&str>) -> String
 /// Trims and drops empties so hand-edited values normalize on the next
 /// persist; BTreeSet keeps the serialized form deterministic.
 fn parse_license_accepted(raw: Option<String>) -> std::collections::BTreeSet<String> {
-    raw.map(|value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect()
-    })
-    .unwrap_or_default()
+    comma_list(raw).into_iter().collect()
 }
 
 /// Record one license acceptance in the in-memory set (so the same session
