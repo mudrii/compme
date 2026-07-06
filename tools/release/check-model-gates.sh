@@ -218,6 +218,30 @@ MD
 
   readme_doc="$old_readme_doc"
 
+  cask_url_fixture="$tmp_dir/good-cask.rb"
+  cat >"$cask_url_fixture" <<'CASK'
+cask "compme" do
+  version "1.2.3"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
+end
+CASK
+  require_line "$cask_url_fixture" '^  url "https://github\.com/mudrii/compme/releases/download/v#\{version\}/compme-#\{version\}-macos\.zip"$' "fixture cask GitHub release URL"
+
+  cask_bad_url_fixture="$tmp_dir/bad-cask-url.rb"
+  cat >"$cask_bad_url_fixture" <<'CASK'
+cask "compme" do
+  version "1.2.3"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  url "https://evil.example/compme.zip"
+end
+CASK
+  if require_line "$cask_bad_url_fixture" '^  url "https://github\.com/mudrii/compme/releases/download/v#\{version\}/compme-#\{version\}-macos\.zip"$' "fixture cask GitHub release URL" >/dev/null 2>&1; then
+    echo "release gate self-test failed: unexpected cask URL was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   rust_helper_fixture="$tmp_dir/helper-only.rs"
   cat >"$rust_helper_fixture" <<'RS'
 fn accept_correction_emits_replace_range() {}
@@ -1304,6 +1328,7 @@ else
   reject_readme_homebrew_line 'Homebrew cask install is not available until the first signed `v\*` release' "README Homebrew pre-release blocked status after first tag"
   reject_readme_homebrew_line 'Until then, build from' "README Homebrew source fallback after first tag"
 fi
+require_line "$cask_file" '^  url "https://github\.com/mudrii/compme/releases/download/v#\{version\}/compme-#\{version\}-macos\.zip"$' "Homebrew cask GitHub release URL"
 require_line "$grammar_spec" 'grammar_fix_prompt_is_single_line_and_includes_word_and_left_context' "grammar spec G1 prompt RED-first test"
 require_line "$grammar_spec" 'vet_correction_accepts_one_edit_and_preserves_case' "grammar spec G1 vet accept RED-first test"
 require_line "$grammar_spec" 'vet_correction_rejects_empty_identical_multi_word_large_edit_and_non_ascii' "grammar spec G1 vet reject RED-first test"

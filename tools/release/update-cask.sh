@@ -28,6 +28,7 @@ rewrite_cask() {
   cask_path="$1"
   version="$2"
   sha="$3"
+  expected_url='  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"'
 
   if ! grep -Eq '^  version "[^"]+"$' "$cask_path"; then
     echo "missing rewritable version line in $cask_path" >&2
@@ -35,6 +36,10 @@ rewrite_cask() {
   fi
   if ! grep -Eq '^  sha256 "[0-9a-f]{64}"$' "$cask_path"; then
     echo "missing rewritable sha256 line in $cask_path" >&2
+    return 1
+  fi
+  if ! grep -Fxq "$expected_url" "$cask_path"; then
+    echo "missing expected GitHub release url line in $cask_path" >&2
     return 1
   fi
 
@@ -59,6 +64,7 @@ run_self_test() {
 cask "compme" do
   version "0.0.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
 end
 CASK
   printf 'fixture artifact\n' >"$artifact"
@@ -77,6 +83,7 @@ CASK
 cask "compme" do
   version "0.0.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
 end
 CASK
   mismatch_golden="$tmp/mismatch.golden"
@@ -116,6 +123,7 @@ SH
 cask "compme" do
   version "0.0.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
 end
 CASK
 
@@ -172,7 +180,7 @@ CASK
 cask "compme" do
   version "1.2.3"
   sha256 :no_check
-  url "https://example.invalid/old.zip"
+  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
 end
 CASK
   no_check_golden="$tmp/no-check.golden"
@@ -188,7 +196,7 @@ CASK
   cat >"$no_sha" <<'CASK'
 cask "compme" do
   version "1.2.3"
-  url "https://example.invalid/old.zip"
+  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
 end
 CASK
   no_sha_golden="$tmp/no-sha.golden"
@@ -204,7 +212,7 @@ CASK
   cat >"$no_version" <<'CASK'
 cask "compme" do
   sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  url "https://example.invalid/old.zip"
+  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
 end
 CASK
   no_version_golden="$tmp/no-version.golden"
@@ -215,6 +223,23 @@ CASK
   fi
   grep -q 'missing rewritable version line' "$tmp/no-version.log"
   cmp "$no_version" "$no_version_golden"
+
+  hostile_url="$tmp/hostile-url.rb"
+  cat >"$hostile_url" <<'CASK'
+cask "compme" do
+  version "1.2.3"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  url "https://evil.example/compme.zip"
+end
+CASK
+  hostile_url_golden="$tmp/hostile-url.golden"
+  cp "$hostile_url" "$hostile_url_golden"
+  if COMPME_CASK_PATH="$hostile_url" COMPME_CASK_ARTIFACT="$artifact" "$0" v9.8.7 >"$tmp/hostile-url.log" 2>&1; then
+    echo "unexpected cask URL unexpectedly passed" >&2
+    return 1
+  fi
+  grep -q 'missing expected GitHub release url line' "$tmp/hostile-url.log"
+  cmp "$hostile_url" "$hostile_url_golden"
 
   # Regression pin for the historical `sed -i''` mis-parse: BSD sed still
   # substituted correctly (the patterns are BRE-compatible) so content greps
