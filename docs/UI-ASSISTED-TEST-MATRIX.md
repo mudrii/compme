@@ -3,6 +3,12 @@
 Goal: user-assisted screenshots and logs for every user-facing Compme surface.
 Each batch stays open until screenshots/logs prove pass or a fix lands.
 
+Start a test session with:
+
+```sh
+tools/acceptance/run-ui-assisted-session.sh
+```
+
 ## Batch 1 — Launch, Tray, Settings Layout
 
 Evidence required:
