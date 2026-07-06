@@ -394,6 +394,16 @@ jobs:
           name: compme-release-artifacts
           path: release-artifacts
 
+      - name: Verify downloaded artifact checksum
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          ZIP="compme-${VERSION}-macos.zip"
+          cd release-artifacts
+          test -f "$ZIP"
+          test -f "$ZIP.sha256"
+          shasum -a 256 -c "$ZIP.sha256"
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:

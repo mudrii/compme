@@ -737,10 +737,15 @@ abort("missing release gate: manifest emits manifest output") unless manifest_ru
 upload_path = build_steps.fetch(upload_index).fetch("with").fetch("path").to_s
 abort("missing release gate: upload includes manifest output") unless upload_path.include?("${{ steps.manifest.outputs.manifest }}")
 download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
+checksum_index = publish_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
 publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
 cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
-abort("missing release gate: downloads artifacts before publishing release") unless download_index && publish_index && download_index < publish_index
+abort("missing release gate: verifies downloaded artifact checksum before publishing release") unless download_index && checksum_index && publish_index && download_index < checksum_index && checksum_index < publish_index
 abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index && publish_index < cask_index
+checksum_run = publish_steps.fetch(checksum_index).fetch("run")
+["cd release-artifacts", "test -f \"$ZIP\"", "test -f \"$ZIP.sha256\"", "shasum -a 256 -c \"$ZIP.sha256\""].each do |needle|
+  abort("missing release gate: verifies downloaded artifact checksum #{needle}") unless checksum_run.include?(needle)
+end
 publish_files = publish_steps.fetch(publish_index).fetch("with").fetch("files").to_s
 ["release-artifacts/compme-*-macos.zip", "release-artifacts/compme-*-macos.zip.sha256", "release-artifacts/compme-*-update.json"].each do |needle|
   abort("missing release gate: publishes downloaded artifact #{needle}") unless publish_files.include?(needle)
@@ -802,6 +807,14 @@ jobs:
       - name: Download release artifacts
         with:
           path: release-artifacts
+      - name: Verify downloaded artifact checksum
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ZIP="compme-${VERSION}-macos.zip"
+          cd release-artifacts
+          test -f "$ZIP"
+          test -f "$ZIP.sha256"
+          shasum -a 256 -c "$ZIP.sha256"
       - name: Publish GitHub release
         with:
           files: |
@@ -837,6 +850,14 @@ YAML
   ruby -0pi -e 'sub(/\n            \$\{\{ steps\.manifest\.outputs\.manifest \}\}/, "")' "$bad_split"
   if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
     echo "release gate self-test failed: upload missing manifest was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$good_split_release" "$bad_split"
+  ruby -0pi -e 'sub(/\n      - name: Verify downloaded artifact checksum\n        run: \|\n          VERSION="\$\{GITHUB_REF_NAME#v\}"\n          ZIP="compme-\$\{VERSION\}-macos\.zip"\n          cd release-artifacts\n          test -f "\$ZIP"\n          test -f "\$ZIP\.sha256"\n          shasum -a 256 -c "\$ZIP\.sha256"\n/, "\n")' "$bad_split"
+  if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
+    echo "release gate self-test failed: missing downloaded artifact checksum verification was accepted" >&2
     cleanup
     return 1
   fi
@@ -1237,11 +1258,12 @@ ruby -ryaml -e '
   end
   download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
   abort("missing release gate: downloads release artifacts in publish job") unless download_index
+  checksum_index = publish_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
   publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
   cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
   abort("missing release gate: publishes GitHub release") unless publish_index
   abort("missing release gate: finalizes Homebrew cask") unless cask_index
-  abort("missing release gate: downloads artifacts before publishing release") unless download_index < publish_index
+  abort("missing release gate: verifies downloaded artifact checksum before publishing release") unless checksum_index && download_index < checksum_index && checksum_index < publish_index
   upload_step = build_steps.fetch(upload_index)
   upload_with = upload_step.fetch("with")
   abort("missing release gate: uploads artifacts with pinned upload-artifact action") unless upload_step.fetch("uses").match?(/\Aactions\/upload-artifact@[0-9a-f]{40}\z/)
@@ -1260,6 +1282,10 @@ ruby -ryaml -e '
   abort("missing release gate: downloads artifacts with pinned download-artifact action") unless download_step.fetch("uses").match?(/\Aactions\/download-artifact@[0-9a-f]{40}\z/)
   abort("missing release gate: downloads named release artifact bundle") unless download_with.fetch("name") == "compme-release-artifacts"
   abort("missing release gate: downloads release artifacts into release-artifacts") unless download_with.fetch("path") == "release-artifacts"
+  checksum_run = publish_steps.fetch(checksum_index).fetch("run")
+  ["cd release-artifacts", "test -f \"$ZIP\"", "test -f \"$ZIP.sha256\"", "shasum -a 256 -c \"$ZIP.sha256\""].each do |needle|
+    abort("missing release gate: verifies downloaded artifact checksum #{needle}") unless checksum_run.include?(needle)
+  end
   publish_step = publish_steps.fetch(publish_index)
   abort("missing release gate: publishes GitHub release as draft until cask finalizes") unless publish_step.fetch("with").fetch("draft") == true
   publish_files = publish_step.fetch("with").fetch("files").to_s
