@@ -725,6 +725,27 @@ mod tests {
     }
 
     #[test]
+    fn web_override_domain_enable_clears_a_child_rule_when_a_parent_is_enabled() {
+        // The mirror of the parent-blocks-subdomain case: exclude a concrete
+        // child (`docs.google.com`), then enable the PARENT (`google.com`).
+        // `clear_domain_exclusions_covering` must drop the child rule via its
+        // second (reverse) match term — the child is a subdomain of the newly
+        // enabled parent — otherwise the parent enable leaves the child blocked.
+        let mut p = Prefs::default();
+        apply(
+            &mut p,
+            "compme://setOverride?domain=docs.google.com&excluded=true",
+        );
+        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("docs.google.com"), 0));
+        apply(
+            &mut p,
+            "compme://setOverride?domain=google.com&enabled=true",
+        );
+        assert!(!p.excluded_domains.contains("docs.google.com"));
+        assert!(p.should_suggest(Some("com.apple.Safari"), Some("docs.google.com"), 0));
+    }
+
+    #[test]
     fn web_override_app_enable_clears_a_prior_exclude() {
         // Enable must be a true allow: an excluded app becomes suggestable again
         // (excluded_apps short-circuits should_suggest, so a bare per-app enable
@@ -792,6 +813,10 @@ mod tests {
             "compme://setOverride?app=com.foo.bar&excluded=false",
         );
         assert!(p.excluded_apps.is_empty());
+        // A "harmless noop" must also leave per_app untouched: App Include only
+        // un-excludes, it must NOT forge a per_app enabled=true entry the way
+        // App Enable does. Without this a spurious per-app policy would slip by.
+        assert!(p.per_app.is_empty());
         assert!(p.should_suggest(Some("com.foo.bar"), None, 0));
     }
 

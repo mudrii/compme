@@ -14208,6 +14208,33 @@ mod tests {
     }
 
     #[test]
+    fn host_event_queue_drops_old_focus_to_preserve_control_event() {
+        // Focus events are backpressure-droppable too (a superseded focus is as
+        // stale as a superseded caret). A full queue of Focus events must yield
+        // the oldest one to admit a control event, not refuse it.
+        let mut queue = VecDeque::new();
+        for i in 0..MAX_HOST_EVENT_QUEUE {
+            assert!(enqueue_host_event(
+                &mut queue,
+                HostEvent::Focus(host_field(&format!("field-{i}")))
+            ));
+        }
+
+        assert!(enqueue_host_event(
+            &mut queue,
+            HostEvent::Accept(AcceptAction::Full)
+        ));
+
+        assert_eq!(queue.len(), MAX_HOST_EVENT_QUEUE);
+        assert!(queue
+            .iter()
+            .any(|event| matches!(event, HostEvent::Accept(AcceptAction::Full))));
+        assert!(!queue.iter().any(
+            |event| matches!(event, HostEvent::Focus(field) if field.element_id == "field-0")
+        ));
+    }
+
+    #[test]
     fn host_event_queue_refuses_when_only_control_events_remain() {
         let mut queue = VecDeque::new();
         for _ in 0..MAX_HOST_EVENT_QUEUE {

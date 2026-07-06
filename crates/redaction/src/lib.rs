@@ -752,6 +752,27 @@ mod tests {
     }
 
     #[test]
+    fn redacts_all_lowercase_vendor_keyed_token_via_prefix_not_entropy() {
+        // Every token in redacts_vendor_key_prefixes carries a digit or mixed
+        // case, so looks_high_entropy would redact it even if the is_keyed
+        // prefix check were removed. These tokens are all-lowercase, all-letter
+        // (bar the vendor prefix), under 32 chars, and dash/underscore is not a
+        // base64-punct signal — so looks_high_entropy returns false and the
+        // KEY_PREFIXES is_keyed branch is the ONLY thing that redacts them.
+        // Pins that dropping is_keyed would silently leak lowercase vendor keys.
+        for token in [
+            "sk-abcdefghijklmnopqrst",
+            "ghp_abcdefghijklmnopqrst",
+            "glpat-abcdefghijklmnopqr",
+            "whsec_abcdefghijklmnopqr",
+        ] {
+            let out = redact(&format!("key {token} done"));
+            assert!(out.contains("[redacted-secret]"), "{token} -> {out:?}");
+            assert!(!out.contains(token), "{token} leaked -> {out:?}");
+        }
+    }
+
+    #[test]
     fn redacts_sendgrid_prefix_without_generic_length_entropy() {
         // SG. is a documented always-redacted vendor prefix. Keep it covered
         // below the generic 32+ char token branch so the prefix contract is
@@ -941,6 +962,22 @@ mod tests {
         let out = redact(&padded);
         assert!(out.contains("[redacted-card]"), "embedded PAN scrubbed");
         assert!(!out.contains("4242"), "no card digits leak from long input");
+    }
+
+    #[test]
+    fn redacts_every_weak_password_after_a_password_prefix() {
+        // The space-delimited weak-password set (admin/password/qwerty/secret/
+        // welcome, plus the letmein/swordfish already pinned above) is the ONLY
+        // arm that catches these: each value is all-letters, unquoted, has no
+        // digit or punct, and is under 16 chars, so no length/entropy arm fires.
+        // Removing any entry from the list would silently leak that credential.
+        for weak in ["admin", "password", "qwerty", "secret", "welcome"] {
+            assert_eq!(
+                redact(&format!("password {weak}")),
+                "password [redacted-secret]",
+                "weak password {weak} not redacted"
+            );
+        }
     }
 
     #[test]

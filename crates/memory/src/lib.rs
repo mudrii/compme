@@ -1380,11 +1380,10 @@ mod tests {
     }
 
     #[test]
-    fn store_enforces_max_records_bound() {
-        // The production insert path trims to MAX_RECORDS. MAX_RECORDS is large,
-        // so this checks an under-cap store is left untouched by the implicit
-        // trim in store().
-        const { assert!(MAX_RECORDS > 0, "the cap must be a positive bound") };
+    fn store_under_cap_evicts_nothing() {
+        // MAX_RECORDS is large, so an under-cap store must be left fully intact
+        // by the implicit trim in store() — nothing evicted. (Eviction AT the
+        // cap is pinned separately by trim_to_cap_holds_row_count_at_the_cap.)
         let store = MemoryStore::open_in_memory(&key(53), StorageMode::AcceptedOnly).unwrap();
         for i in 0..10 {
             store.remember("app", &format!("row {i}")).unwrap();

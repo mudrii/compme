@@ -794,7 +794,9 @@ mod tests {
         // Signed links ALSO prompt today (no non-reversible commands exist;
         // the silent path is reserved and unreachable until they do).
         let signed = prompt_decision_for_link(&command, LinkTrust::Signed);
-        assert!(matches!(signed, PromptDecision { trust, .. } if trust.contains("signed")));
+        // "unsigned link" also contains the substring "signed", so match on the
+        // exact label to actually distinguish a Signed link from an Unsigned one.
+        assert_eq!(signed.trust, "signed link, verified");
     }
 
     #[test]
@@ -817,10 +819,12 @@ mod tests {
         assert!(trust.contains("unsigned"), "{trust}");
         // Signed domain links ALSO prompt today (silent path still unreachable).
         let signed = prompt_decision_for_link(&command, LinkTrust::Signed);
+        // Exact label, not `contains("signed")` — "unsigned link" contains that
+        // substring too and would not distinguish the two trust levels.
         assert!(matches!(
             signed,
             PromptDecision { scope, trust, .. }
-                if scope == "docs.google.com" && trust.contains("signed")
+                if scope == "docs.google.com" && trust == "signed link, verified"
         ));
     }
 
