@@ -141,13 +141,10 @@ model-client gate.
    Release helpers are strict about arity; use the documented command forms
    exactly, because unexpected positional arguments exit with usage.
 
-   Re-run recovery: if the publish job fails after the draft release was already
-   created (for example the cask push raced a concurrent `main` commit),
-   re-running it can leave an orphaned draft for the tag. Before re-running,
-   check `gh release list` and delete any duplicate draft for that tag with
-   `gh release delete <tag> ...` (target the draft, not a published release),
-   then re-run. The release only goes public — the undraft step — after the cask
-   finalize succeeds, so a failed run always leaves the release still drafted.
+   Re-run recovery: a failed publish job always leaves the release drafted
+   (undraft runs only after cask finalize), but re-running can orphan a
+   duplicate draft — check `gh release list` and delete any extra draft for
+   the tag before re-running.
 
 ## Code signing / notarization
 

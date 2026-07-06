@@ -106,21 +106,11 @@ signing + hardened runtime + notarization + a native updater.
   Sparkle/appcast client.
 
 **Effort:** Medium. **Blocked on an Apple Developer ID account ($99/yr) — human-gated.**
-The CI/release/cask glue is already written and locally validated, including
-locked Cargo gates, pinned toolchain, release preflight checks, A2 matrix ledger
-policy, privacy-policy scan, model-gate policy, draft-release publication,
-cask finalization, post-cask undraft, and the supply-chain/release hardening
-through the current bundle/A2 gate hardening pass: protected SemVer `v*` tag
-ruleset check via
-`github.ref_protected`, protected `release` environments for build/publish jobs,
-third-party crates prebuilt before the signing keychain exists, checkout-token
-scrub before build code, decoded `.p12` deletion plus signing-keychain deletion
-before packaging, fixed release concurrency, fail-closed artifact upload,
-committed A2 evidence policy with pass-only 13-row kind/app/expect/log proof
-(the evidence itself under `tools/acceptance/evidence/a2/` is still to be
-produced), release-context model-gate override rejection unless explicitly
-allowed, catalog-recommended model-gate artifact/path pinning, and pre-publish
-release artifact checksum verification. First release now waits on the
+The CI/release/cask glue is already written and locally validated; every gate
+and supply-chain hardening measure is enumerated (and machine-pinned by
+`tools/release/check-model-gates.sh`) in [`RELEASING.md`](RELEASING.md)'s
+pipelines table. The A2 evidence itself under `tools/acceptance/evidence/a2/`
+is still to be produced. First release now waits on the
 signing/notarization secrets and identity, committed A2 matrix ledger evidence
 plus the repo variable that points at it, and the maintainer-created first tag.
 

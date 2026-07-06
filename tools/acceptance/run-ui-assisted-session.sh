@@ -45,18 +45,11 @@ run_self_test() {
     COMPME_GRAMMAR_ACCEPT_KEY
   )
 
-  if [[ "${#launch_env[@]}" -ne "${#expected[@]}" ]]; then
-    echo "self-test failed: launch env count drifted" >&2
+  if ! diff <(printf '%s\n' "${launch_env[@]}" | cut -d= -f1) \
+    <(printf '%s\n' "${expected[@]}") >&2; then
+    echo "self-test failed: launch env keys drifted" >&2
     return 1
   fi
-
-  launch_env_lines="$(printf '%s\n' "${launch_env[@]}")"
-  for key in "${expected[@]}"; do
-    if ! grep -Eq "^${key}=" <<<"$launch_env_lines"; then
-      echo "self-test failed: missing $key from launch environment" >&2
-      return 1
-    fi
-  done
   base_env_lines="$(printf '%s\n' "${base_env[@]}")"
   for pair in \
     "env" \
