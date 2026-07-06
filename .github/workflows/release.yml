@@ -28,8 +28,13 @@ jobs:
       - name: Verify release tag is semver and on default branch
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
+          if [ "$REF_PROTECTED" != "true" ]; then
+            echo "release tag must match a protected v* ruleset" >&2
+            exit 1
+          fi
           if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
             echo "release tag must look like vX.Y.Z: $GITHUB_REF_NAME" >&2
             exit 1
@@ -231,6 +236,7 @@ jobs:
     name: Build · bundle · package (macOS)
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     needs: [validate, windows, linux]
+    environment: release
     permissions:
       contents: read
     runs-on: macos-14
@@ -315,6 +321,19 @@ jobs:
           COMPME_NOTARYTOOL_TEAM_ID: ${{ secrets.COMPME_NOTARYTOOL_TEAM_ID }}
         run: tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app"
 
+      - name: Delete signing keychain
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${COMPME_SIGNING_KEYCHAIN:-}" ]; then
+            security delete-keychain "$COMPME_SIGNING_KEYCHAIN" || true
+          fi
+          unset COMPME_SIGNING_KEYCHAIN COMPME_CODESIGN_IDENTITY
+          {
+            echo "COMPME_SIGNING_KEYCHAIN="
+            echo "COMPME_CODESIGN_IDENTITY="
+          } >> "$GITHUB_ENV"
+
       - name: Package + checksum
         id: pkg
         run: |
@@ -357,6 +376,7 @@ jobs:
     name: Publish release · finalize cask
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     needs: [build_release]
+    environment: release
     permissions:
       contents: write
     runs-on: macos-14

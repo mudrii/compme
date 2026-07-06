@@ -141,11 +141,12 @@ cask "compme" do
   url "https://example.invalid/old.zip"
 end
 CASK
-  if COMPME_CASK_PATH="$malformed" COMPME_CASK_ARTIFACT="$artifact" "$0" '1.2.3"; system("bad") #' >/tmp/compme-update-cask-invalid.log 2>&1; then
+  invalid_log="$tmp/invalid.log"
+  if COMPME_CASK_PATH="$malformed" COMPME_CASK_ARTIFACT="$artifact" "$0" '1.2.3"; system("bad") #' >"$invalid_log" 2>&1; then
     echo "malformed version unexpectedly passed" >&2
     return 1
   fi
-  grep -q 'invalid version' /tmp/compme-update-cask-invalid.log
+  grep -q 'invalid version' "$invalid_log"
   grep -q 'version "1.2.3"' "$malformed"
   grep -q 'example.invalid/old.zip' "$malformed"
 

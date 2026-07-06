@@ -307,6 +307,7 @@ workflow = YAML.load_file(ARGV.fetch(0))
 abort("missing release gate: workflow defaults to read-only contents permission") unless workflow.fetch("permissions").fetch("contents") == "read"
 jobs = workflow.fetch("jobs")
 release = jobs.fetch("release")
+abort("missing release gate: release job uses protected release environment") unless release.fetch("environment") == "release"
 def full_sha_action_ref?(uses)
   uses.is_a?(String) && uses.match?(/\A[^@\s]+@[0-9a-f]{40}\z/)
 end
@@ -512,6 +513,7 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
   release:
     needs: [validate, windows, linux]
+    environment: release
     permissions:
       contents: write
     steps:
@@ -536,6 +538,7 @@ jobs:
     steps: []
   release:
     needs: [validate, windows, linux]
+    environment: release
     permissions:
       contents: write
     steps:
@@ -565,6 +568,7 @@ jobs:
     steps: []
   release:
     needs: [validate, windows, linux]
+    environment: release
     permissions:
       contents: write
     steps:
@@ -593,6 +597,7 @@ jobs:
     steps: []
   release:
     needs: [validate, windows, linux]
+    environment: release
     permissions:
       contents: write
     steps:
@@ -619,6 +624,7 @@ jobs:
     steps: []
   release:
     needs: [validate, windows, linux]
+    environment: release
     permissions:
       contents: write
     steps:
@@ -641,6 +647,7 @@ jobs:
     steps: []
   release:
     needs: validate
+    environment: release
     permissions:
       contents: write
     steps:
@@ -674,16 +681,23 @@ quote = 39.chr
 tag_guard = "${{ github.ref_type == #{quote}tag#{quote} && startsWith(github.ref_name, #{quote}v#{quote}) }}"
 abort("missing release gate: build_release is limited to v* tag refs") unless build.fetch("if") == tag_guard
 abort("missing release gate: publish_release is limited to v* tag refs") unless publish.fetch("if") == tag_guard
+abort("missing release gate: build_release uses protected release environment") unless build.fetch("environment") == "release"
+abort("missing release gate: publish_release uses protected release environment") unless publish.fetch("environment") == "release"
 build_steps = build.fetch("steps")
 publish_steps = publish.fetch("steps")
 publish_checkout = publish_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
 abort("missing release gate: publish_release checkout fetches full history") unless publish_checkout&.fetch("with")&.fetch("fetch-depth") == 0
 build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
 notarize_index = build_steps.index { |step| step["name"] == "Notarize and staple the .app" }
+cleanup_index = build_steps.index { |step| step["name"] == "Delete signing keychain" }
 package_index = build_steps.index { |step| step["name"] == "Package + checksum" }
 manifest_index = build_steps.index { |step| step["name"] == "Write update manifest" }
 upload_index = build_steps.index { |step| step["name"] == "Upload release artifacts" }
-abort("missing release gate: release artifact chain is build -> notarize -> package -> manifest -> upload") unless build_index && notarize_index && package_index && manifest_index && upload_index && build_index < notarize_index && notarize_index < package_index && package_index < manifest_index && manifest_index < upload_index
+abort("missing release gate: release artifact chain is build -> notarize -> cleanup -> package -> manifest -> upload") unless build_index && notarize_index && cleanup_index && package_index && manifest_index && upload_index && build_index < notarize_index && notarize_index < cleanup_index && cleanup_index < package_index && package_index < manifest_index && manifest_index < upload_index
+cleanup_step = build_steps.fetch(cleanup_index)
+abort("missing release gate: signing keychain cleanup runs always") unless cleanup_step.fetch("if") == "always()"
+cleanup_run = cleanup_step.fetch("run")
+abort("missing release gate: signing keychain cleanup deletes keychain") unless cleanup_run.include?("security delete-keychain \"$COMPME_SIGNING_KEYCHAIN\"")
 package_run = build_steps.fetch(package_index).fetch("run")
 ["ditto -c -k --keepParent", "shasum -a 256", "echo \"version=$version\"", "echo \"zip=$zip\"", "echo \"sha256=$sha\""].each do |needle|
   abort("missing release gate: package step #{needle}") unless package_run.include?(needle)
@@ -721,11 +735,15 @@ on:
 jobs:
   build_release:
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    environment: release
     steps:
       - name: Build the .app bundle
         run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
       - name: Notarize and staple the .app
         run: tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app"
+      - name: Delete signing keychain
+        if: always()
+        run: security delete-keychain "$COMPME_SIGNING_KEYCHAIN"
       - name: Package + checksum
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -752,6 +770,7 @@ jobs:
             ${{ steps.manifest.outputs.manifest }}
   publish_release:
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    environment: release
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -1067,8 +1086,16 @@ ruby -ryaml -e '
   end
   publish_release_needs = Array(publish_release.fetch("needs"))
   abort("missing release gate: publish_release job depends on build_release") unless publish_release_needs.include?("build_release")
+  abort("missing release gate: build_release uses protected release environment") unless build_release.fetch("environment") == "release"
+  abort("missing release gate: publish_release uses protected release environment") unless publish_release.fetch("environment") == "release"
   abort("missing release gate: build_release job has read-only contents permission") unless build_release.fetch("permissions").fetch("contents") == "read"
   abort("missing release gate: publish_release job has contents write permission") unless publish_release.fetch("permissions").fetch("contents") == "write"
+  preflight_steps = release_jobs.fetch("preflight").fetch("steps")
+  protected_tag_step = preflight_steps.find { |step| step["name"] == "Verify release tag is semver and on default branch" }
+  abort("missing release gate: preflight validates protected release tag") unless protected_tag_step
+  abort("missing release gate: protected tag check receives github.ref_protected") unless protected_tag_step.fetch("env").fetch("REF_PROTECTED") == "${{ github.ref_protected }}"
+  protected_tag_run = protected_tag_step.fetch("run")
+  abort("missing release gate: protected tag check fails closed") unless protected_tag_run.include?(%q([ "$REF_PROTECTED" != "true" ])) && protected_tag_run.include?("release tag must match a protected v* ruleset")
   build_steps = build_release.fetch("steps")
   publish_steps = publish_release.fetch("steps")
   checkout = build_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
@@ -1085,6 +1112,7 @@ ruby -ryaml -e '
   import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
   build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
   notarize_index = build_steps.index { |step| step["name"] == "Notarize and staple the .app" }
+  cleanup_index = build_steps.index { |step| step["name"] == "Delete signing keychain" }
   package_index = build_steps.index { |step| step["name"] == "Package + checksum" }
   manifest_index = build_steps.index { |step| step["name"] == "Write update manifest" }
   upload_index = build_steps.index { |step| step["name"] == "Upload release artifacts" }
@@ -1096,6 +1124,7 @@ ruby -ryaml -e '
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
   abort("missing release gate: notarizes and staples app") unless notarize_index
+  abort("missing release gate: deletes signing keychain") unless cleanup_index
   abort("missing release gate: packages release artifact") unless package_index
   abort("missing release gate: writes update manifest") unless manifest_index
   abort("missing release gate: uploads release artifacts from read-only build job") unless upload_index
@@ -1112,7 +1141,7 @@ ruby -ryaml -e '
     run = step["run"].to_s
     abort("missing release gate: no cargo command after Developer ID import") if run.match?(/(^|[;&|[:space:]])cargo[[:space:]]/)
   end
-  abort("missing release gate: release artifact chain is build -> notarize -> package -> manifest -> upload") unless build_index < notarize_index && notarize_index < package_index && package_index < manifest_index && manifest_index < upload_index
+  abort("missing release gate: release artifact chain is build -> notarize -> cleanup -> package -> manifest -> upload") unless build_index < notarize_index && notarize_index < cleanup_index && cleanup_index < package_index && package_index < manifest_index && manifest_index < upload_index
   build_steps.each_with_index do |step, idx|
     next unless contains_secret_reference?(step)
     abort("missing release gate: verifies tag ancestry before secret-bearing build step #{step["name"] || idx}") unless ancestry_index < idx
@@ -1140,6 +1169,12 @@ ruby -ryaml -e '
   abort("missing release gate: builds release app with prebuilt bundle assembler") unless build_step.fetch("run") == %q(COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle")
   notarize_step = build_steps.fetch(notarize_index)
   abort("missing release gate: notarizes built app bundle") unless notarize_step.fetch("run") == %q(tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app")
+  cleanup_step = build_steps.fetch(cleanup_index)
+  abort("missing release gate: signing keychain cleanup runs always") unless cleanup_step.fetch("if") == "always()"
+  cleanup_run = cleanup_step.fetch("run")
+  ["security delete-keychain \"$COMPME_SIGNING_KEYCHAIN\"", "unset COMPME_SIGNING_KEYCHAIN COMPME_CODESIGN_IDENTITY", "COMPME_SIGNING_KEYCHAIN=", "COMPME_CODESIGN_IDENTITY=", ">> \"$GITHUB_ENV\""].each do |needle|
+    abort("missing release gate: signing keychain cleanup #{needle}") unless cleanup_run.include?(needle)
+  end
   package_step = build_steps.fetch(package_index)
   abort("missing release gate: package step exposes pkg outputs") unless package_step.fetch("id") == "pkg"
   package_run = package_step.fetch("run")
