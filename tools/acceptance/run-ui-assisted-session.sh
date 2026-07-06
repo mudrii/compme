@@ -18,8 +18,21 @@ build_launch_env() {
   )
 }
 
+build_base_env() {
+  isolated_config="${COMPME_UI_CONFIG:-${TMPDIR:-/tmp}/compme-ui-assisted-config.env}"
+  : >"$isolated_config"
+  base_env=(
+    env -i
+    "PATH=${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+    "HOME=${HOME:-}"
+    "TMPDIR=${TMPDIR:-/tmp}"
+    "COMPME_CONFIG=$isolated_config"
+  )
+}
+
 run_self_test() {
   build_launch_env
+  build_base_env
   expected=(
     COMPME_DEBUG
     COMPME_STUB_COMPLETION
@@ -41,6 +54,25 @@ run_self_test() {
   for key in "${expected[@]}"; do
     if ! grep -Eq "^${key}=" <<<"$launch_env_lines"; then
       echo "self-test failed: missing $key from launch environment" >&2
+      return 1
+    fi
+  done
+  base_env_lines="$(printf '%s\n' "${base_env[@]}")"
+  for pair in \
+    "env" \
+    "-i" \
+    "PATH=${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    "HOME=${HOME:-}" \
+    "TMPDIR=${TMPDIR:-/tmp}" \
+    "COMPME_CONFIG=$isolated_config"; do
+    if ! grep -Fxq -- "$pair" <<<"$base_env_lines"; then
+      echo "self-test failed: isolated base env missing $pair" >&2
+      return 1
+    fi
+  done
+  for hostile in COMPME_DISABLED_APPS COMPME_EXCLUDED_APPS COMPME_MEMORY_PATH; do
+    if grep -Eq "^${hostile}=" <<<"$base_env_lines"; then
+      echo "self-test failed: hostile $hostile leaked into base env" >&2
       return 1
     fi
   done
@@ -109,4 +141,5 @@ cd "$repo_root"
 # Shift+F5 in the Shortcuts pane, and a registered Carbon shortcut consumes the
 # chord before the recorder's NSView receives keyDown.
 build_launch_env
-env "${launch_env[@]}" cargo run -p app 2>&1 | tee "$log_path"
+build_base_env
+"${base_env[@]}" "${launch_env[@]}" cargo run -p app 2>&1 | tee "$log_path"

@@ -17,7 +17,7 @@ usage() {
 
 validate_version() {
   local version="$1"
-  [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+([.-][0-9A-Za-z]+)*$ ]]
+  [[ "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?([+]([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]
 }
 
 validate_sha() {
@@ -89,6 +89,16 @@ run_self_test() {
     abort "sha256" unless data["sha256"] == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     abort "notes" unless data["release_notes_url"] == "https://github.com/mudrii/compme/releases/tag/v1.2.3"
   ' "$tmp/manifest.json"
+  COMPME_UPDATE_PUBLISHED_AT="2026-07-02T00:00:00Z" "$0" 1.2.3-rc.1 compme-1.2.3-rc.1-macos.zip "$sha" >"$tmp/manifest-rc.json"
+  ruby -rjson -e '
+    data = JSON.parse(File.read(ARGV[0]))
+    abort "version" unless data["version"] == "1.2.3-rc.1"
+  ' "$tmp/manifest-rc.json"
+  if "$0" 1.2.3.4 compme-1.2.3.4-macos.zip "$sha" >"$tmp/four-part.out" 2>"$tmp/four-part.err"; then
+    echo "self-test FAILED: four-part version passed" >&2
+    return 1
+  fi
+  grep -Fq "invalid version" "$tmp/four-part.err"
   if "$0" bad compme-bad-macos.zip "$sha" >"$tmp/bad.out" 2>"$tmp/bad.err"; then
     echo "self-test FAILED: bad version passed" >&2
     return 1

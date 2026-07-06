@@ -600,8 +600,9 @@ mod tests {
     fn model_backed_release_gate_uses_catalog_recommended_artifact() {
         let script = include_str!("../../../tools/release/run-model-gates.sh");
         let recommended = recommended().expect("catalog has a recommended model");
-        let model_path = shell_assignment(script, "model").expect("model assignment");
-        let url = shell_assignment(script, "url").expect("url assignment");
+        let model_path =
+            shell_assignment(script, "default_model").expect("default model assignment");
+        let url = shell_assignment(script, "default_url").expect("default URL assignment");
         assert_eq!(
             model_path.rsplit('/').next(),
             url.rsplit('/').next(),
@@ -613,7 +614,7 @@ mod tests {
             "release model gate must download the catalog recommended artifact"
         );
         assert_eq!(
-            shell_assignment(script, "expected"),
+            shell_assignment(script, "default_expected"),
             recommended.expected_sha256,
             "release model gate hash must match the catalog recommended artifact"
         );

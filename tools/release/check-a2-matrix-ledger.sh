@@ -49,6 +49,32 @@ expected_row_app() {
   esac
 }
 
+expected_row_kind() {
+  case "$1" in
+    textedit|notes|mail|word) printf '%s\n' 'works' ;;
+    safari|chrome|brave) printf '%s\n' 'browser-domain-allow' ;;
+    browser-exclude) printf '%s\n' 'browser-domain-exclude' ;;
+    terminal-cmd) printf '%s\n' 'terminal-cmd' ;;
+    terminal-nlp) printf '%s\n' 'terminal-nlp' ;;
+    unsupported) printf '%s\n' 'unsupported' ;;
+    clipboard) printf '%s\n' 'clipboard' ;;
+    screen) printf '%s\n' 'screen' ;;
+    *) return 1 ;;
+  esac
+}
+
+expected_row_expect() {
+  case "$1" in
+    textedit|notes|mail|word|terminal-nlp) printf '%s\n' 'request' ;;
+    safari|chrome|brave) printf '%s\n' 'domain-request' ;;
+    browser-exclude) printf '%s\n' 'blocked-prefs' ;;
+    terminal-cmd) printf '%s\n' 'blocked-terminal' ;;
+    unsupported) printf '%s\n' 'blocked-app' ;;
+    clipboard|screen) printf '%s\n' 'context-request' ;;
+    *) return 1 ;;
+  esac
+}
+
 app_pattern() {
   case "$1" in
     com.apple.TextEdit) printf '%s\n' 'com\.apple\.TextEdit' ;;
@@ -216,9 +242,29 @@ check_ledger() {
       echo "unexpected A2 matrix row: $row_id" >&2
       return 1
     }
+    expected_kind="$(expected_row_kind "$row_id")" || {
+      IFS="$old_ifs"
+      echo "unexpected A2 matrix row: $row_id" >&2
+      return 1
+    }
+    expected_expect="$(expected_row_expect "$row_id")" || {
+      IFS="$old_ifs"
+      echo "unexpected A2 matrix row: $row_id" >&2
+      return 1
+    }
+    if [ "$row_kind" != "$expected_kind" ]; then
+      IFS="$old_ifs"
+      echo "A2 matrix row kind mismatch: $row_id kind=$row_kind expected=$expected_kind" >&2
+      return 1
+    fi
     if [ "$row_app" != "$expected_app" ]; then
       IFS="$old_ifs"
       echo "A2 matrix row app mismatch: $row_id app=$row_app expected=$expected_app" >&2
+      return 1
+    fi
+    if [ "$row_expect" != "$expected_expect" ]; then
+      IFS="$old_ifs"
+      echo "A2 matrix row expect mismatch: $row_id expect=$row_expect expected=$expected_expect" >&2
       return 1
     fi
     if ! log_path_is_safe_evidence "$log_path"; then
@@ -400,6 +446,22 @@ EOF
     return 1
   fi
   grep -q 'A2 matrix row app mismatch: notes app=com.apple.TextEdit expected=com.apple.Notes' "$tmp/wrong-app.err"
+
+  wrong_kind="$tmp/wrong-kind.tsv"
+  awk -F '\t' 'BEGIN { OFS = FS } $2 == "textedit" { $3 = "unsupported" } { print }' "$good" >"$wrong_kind"
+  if check_ledger "$wrong_kind" >/dev/null 2>"$tmp/wrong-kind.err"; then
+    echo "A2 matrix ledger self-test failed: wrong kind row was accepted" >&2
+    return 1
+  fi
+  grep -q 'A2 matrix row kind mismatch: textedit kind=unsupported expected=works' "$tmp/wrong-kind.err"
+
+  wrong_expect="$tmp/wrong-expect.tsv"
+  awk -F '\t' 'BEGIN { OFS = FS } $2 == "textedit" { $7 = "blocked-app" } { print }' "$good" >"$wrong_expect"
+  if check_ledger "$wrong_expect" >/dev/null 2>"$tmp/wrong-expect.err"; then
+    echo "A2 matrix ledger self-test failed: wrong expect row was accepted" >&2
+    return 1
+  fi
+  grep -q 'A2 matrix row expect mismatch: textedit expect=blocked-app expected=request' "$tmp/wrong-expect.err"
 
   wrong_app_log="$tmp/wrong-app-log.tsv"
   cp "$good" "$wrong_app_log"

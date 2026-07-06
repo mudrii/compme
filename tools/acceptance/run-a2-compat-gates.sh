@@ -562,6 +562,8 @@ fi
 clip_env=()
 screen_env=()
 prefs_env=()
+row_config="$LOG_DIR/a2-compat-${KIND}-config.env"
+: >"$row_config"
 
 if [[ "$KIND" == "clipboard" ]]; then
   /usr/bin/osascript -e 'set the clipboard to "CLIPBOARD-CONTEXT-MARKER"' >/dev/null 2>&1 \
@@ -599,6 +601,7 @@ env -i \
   HOME="${HOME:-}" \
   TMPDIR="${TMPDIR:-/tmp}" \
   RUST_BACKTRACE="${RUST_BACKTRACE:-}" \
+  COMPME_CONFIG="$row_config" \
   COMPME_STUB_COMPLETION="$STUB" \
   COMPME_ACCEPTANCE_PID="$PID" \
   COMPME_ACCEPTANCE_PROMPT_MARKER="$PROMPT_MARKER" \

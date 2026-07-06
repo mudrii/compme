@@ -354,6 +354,29 @@ abort("missing release gate: platform_linux release job") unless jobs.fetch("lin
 RUBY
   }
 
+  check_live_a2_ledger_fixture() {
+    ruby -ryaml - "$1" <<'RUBY'
+def active_shell_lines(run)
+  run.lines.map do |line|
+    stripped = line.strip
+    next if stripped.empty? || stripped.start_with?("#")
+    stripped.sub(/[[:space:]]+#.*$/, "")
+  end.compact
+end
+
+workflow = YAML.load_file(ARGV.fetch(0))
+steps = workflow.fetch("jobs").fetch("validate").fetch("steps")
+step = steps.find { |candidate| candidate["name"] == "A2 matrix ledger live proof" }
+abort("missing release gate: release validates live A2 matrix ledger") unless step
+env = step.fetch("env")
+abort("missing release gate: release A2 ledger reads COMPME_A2_MATRIX_LEDGER") unless env.fetch("COMPME_A2_MATRIX_LEDGER").to_s.include?("COMPME_A2_MATRIX_LEDGER")
+run = step.fetch("run")
+abort("missing release gate: release A2 live ledger variable guard") unless run.include?("missing required release variable: COMPME_A2_MATRIX_LEDGER")
+abort("missing release gate: release A2 live ledger path guard") unless run.include?("COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/")
+abort("missing release gate: release A2 live ledger runs checker") unless active_shell_lines(run).include?("tools/release/check-a2-matrix-ledger.sh \"$COMPME_A2_MATRIX_LEDGER\"")
+RUBY
+  }
+
   good_release="$tmp_dir/good-release.yml"
   cat >"$good_release" <<'YAML'
 jobs:
@@ -432,6 +455,47 @@ jobs:
 YAML
   if check_finalizer_fixture "$missing_finalizer_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: missing cask finalizer command was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  good_a2_live_release="$tmp_dir/good-a2-live-release.yml"
+  cat >"$good_a2_live_release" <<'YAML'
+jobs:
+  validate:
+    steps:
+      - name: A2 matrix ledger live proof
+        env:
+          COMPME_A2_MATRIX_LEDGER: ${{ vars.COMPME_A2_MATRIX_LEDGER }}
+        run: |
+          if [ -z "${COMPME_A2_MATRIX_LEDGER:-}" ]; then
+            echo "missing required release variable: COMPME_A2_MATRIX_LEDGER" >&2
+            exit 1
+          fi
+          echo "COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/"
+          tools/release/check-a2-matrix-ledger.sh "$COMPME_A2_MATRIX_LEDGER"
+YAML
+  check_live_a2_ledger_fixture "$good_a2_live_release"
+
+  echoed_a2_live_release="$tmp_dir/echoed-a2-live-release.yml"
+  cat >"$echoed_a2_live_release" <<'YAML'
+jobs:
+  validate:
+    steps:
+      - name: A2 matrix ledger live proof
+        env:
+          COMPME_A2_MATRIX_LEDGER: ${{ vars.COMPME_A2_MATRIX_LEDGER }}
+        run: |
+          if [ -z "${COMPME_A2_MATRIX_LEDGER:-}" ]; then
+            echo "missing required release variable: COMPME_A2_MATRIX_LEDGER" >&2
+            exit 1
+          fi
+          echo "COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/"
+          # tools/release/check-a2-matrix-ledger.sh "$COMPME_A2_MATRIX_LEDGER"
+          echo 'tools/release/check-a2-matrix-ledger.sh "$COMPME_A2_MATRIX_LEDGER"'
+YAML
+  if check_live_a2_ledger_fixture "$echoed_a2_live_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: commented/echoed A2 ledger command was accepted" >&2
     cleanup
     return 1
   fi
@@ -742,7 +806,7 @@ publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub rel
 cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
 abort("missing release gate: verifies downloaded artifact checksum before publishing release") unless download_index && checksum_index && publish_index && download_index < checksum_index && checksum_index < publish_index
 abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index && publish_index < cask_index
-checksum_run = publish_steps.fetch(checksum_index).fetch("run")
+checksum_run = active_shell_lines(publish_steps.fetch(checksum_index).fetch("run"))
 ["cd release-artifacts", "test -f \"$ZIP\"", "test -f \"$ZIP.sha256\"", "shasum -a 256 -c \"$ZIP.sha256\""].each do |needle|
   abort("missing release gate: verifies downloaded artifact checksum #{needle}") unless checksum_run.include?(needle)
 end
@@ -862,6 +926,82 @@ YAML
     return 1
   fi
 
+  cat >"$bad_split" <<'YAML'
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build_release:
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    environment: release
+    steps:
+      - name: Build the .app bundle
+        run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+      - name: Notarize and staple the .app
+        run: tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app"
+      - name: Delete signing keychain
+        if: always()
+        run: security delete-keychain "$COMPME_SIGNING_KEYCHAIN"
+      - name: Package + checksum
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          zip="compme-${version}-macos.zip"
+          ditto -c -k --keepParent "$RUNNER_TEMP/bundle/Compme.app" "$zip"
+          sha="$(shasum -a 256 "$zip" | awk '{print $1}')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+      - name: Write update manifest
+        env:
+          VERSION: ${{ steps.pkg.outputs.version }}
+          ZIP: ${{ steps.pkg.outputs.zip }}
+          SHA256: ${{ steps.pkg.outputs.sha256 }}
+        run: |
+          manifest="compme-${VERSION}-update.json"
+          tools/release/write-update-manifest.sh "$VERSION" "$ZIP" "$SHA256" > "$manifest"
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+      - name: Upload release artifacts
+        with:
+          path: |
+            ${{ steps.pkg.outputs.zip }}
+            ${{ steps.pkg.outputs.zip }}.sha256
+            ${{ steps.manifest.outputs.manifest }}
+  publish_release:
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    environment: release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Download release artifacts
+        with:
+          path: release-artifacts
+      - name: Verify downloaded artifact checksum
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ZIP="compme-${VERSION}-macos.zip"
+          # cd release-artifacts
+          # test -f "$ZIP"
+          # test -f "$ZIP.sha256"
+          echo 'shasum -a 256 -c "$ZIP.sha256"'
+      - name: Publish GitHub release
+        with:
+          files: |
+            release-artifacts/compme-*-macos.zip
+            release-artifacts/compme-*-macos.zip.sha256
+            release-artifacts/compme-*-update.json
+      - name: Finalize Homebrew cask
+        run: |
+          ZIP="compme-${VERSION}-macos.zip"
+          artifact_path="$PWD/release-artifacts/$ZIP"
+          tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"
+YAML
+  if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
+    echo "release gate self-test failed: commented/echoed checksum verification was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   cp "$good_split_release" "$bad_split"
   ruby -0pi -e 'sub(/release-artifacts\/compme-\*-macos\.zip\.sha256/, "release-artifacts/wrong.sha256")' "$bad_split"
   if check_split_artifact_fixture "$bad_split" >/dev/null 2>&1; then
@@ -925,13 +1065,14 @@ ruby -ryaml -e '
     env = step.fetch("env")
     abort("missing release gate: release A2 ledger reads COMPME_A2_MATRIX_LEDGER") unless env.fetch("COMPME_A2_MATRIX_LEDGER").to_s.include?("COMPME_A2_MATRIX_LEDGER")
     run = step.fetch("run")
+    lines = active_shell_lines(run)
     [
       "missing required release variable: COMPME_A2_MATRIX_LEDGER",
       "COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/",
-      "tools/release/check-a2-matrix-ledger.sh \"$COMPME_A2_MATRIX_LEDGER\"",
     ].each do |needle|
       abort("missing release gate: release A2 live ledger #{needle}") unless run.include?(needle)
     end
+    abort("missing release gate: release A2 live ledger runs checker") unless lines.include?("tools/release/check-a2-matrix-ledger.sh \"$COMPME_A2_MATRIX_LEDGER\"")
   end
 
   def active_shell_lines(run)
@@ -1282,9 +1423,9 @@ ruby -ryaml -e '
   abort("missing release gate: downloads artifacts with pinned download-artifact action") unless download_step.fetch("uses").match?(/\Aactions\/download-artifact@[0-9a-f]{40}\z/)
   abort("missing release gate: downloads named release artifact bundle") unless download_with.fetch("name") == "compme-release-artifacts"
   abort("missing release gate: downloads release artifacts into release-artifacts") unless download_with.fetch("path") == "release-artifacts"
-  checksum_run = publish_steps.fetch(checksum_index).fetch("run")
+  checksum_lines = active_shell_lines(publish_steps.fetch(checksum_index).fetch("run"))
   ["cd release-artifacts", "test -f \"$ZIP\"", "test -f \"$ZIP.sha256\"", "shasum -a 256 -c \"$ZIP.sha256\""].each do |needle|
-    abort("missing release gate: verifies downloaded artifact checksum #{needle}") unless checksum_run.include?(needle)
+    abort("missing release gate: verifies downloaded artifact checksum #{needle}") unless checksum_lines.include?(needle)
   end
   publish_step = publish_steps.fetch(publish_index)
   abort("missing release gate: publishes GitHub release as draft until cask finalizes") unless publish_step.fetch("with").fetch("draft") == true
@@ -1425,9 +1566,11 @@ require_development_gate_line '^tools/release/check-privacy-policy\.sh --self-te
 require_line "$acceptance_doc" '^tools/release/check-privacy-policy\.sh[[:space:]]*$' "acceptance docs privacy policy gate"
 require_line "$acceptance_doc" '^tools/release/check-privacy-policy\.sh --self-test[[:space:]]*$' "acceptance docs privacy policy self-test gate"
 require_line "$bundle_metadata_script" 'release tag version is empty' "bundle metadata empty release-tag version rejection"
-require_line "$gate_script" '^model="\$\{COMPME_MODEL_GATE_PATH:-tools/spike/models/qwen2\.5-0\.5b-q4_k_m\.gguf\}"[[:space:]]*$' "pinned base GGUF model path"
-require_line "$gate_script" '^url="\$\{COMPME_MODEL_GATE_URL:-https://huggingface\.co/Brianpuz/Qwen2\.5-0\.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2\.5-0\.5b-q4_k_m\.gguf\}"[[:space:]]*$' "pinned base GGUF download URL"
-require_line "$gate_script" '^expected="\$\{COMPME_MODEL_GATE_SHA256:-ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484\}"[[:space:]]*$' "pinned base GGUF sha256"
+require_line "$gate_script" '^default_model="tools/spike/models/qwen2\.5-0\.5b-q4_k_m\.gguf"[[:space:]]*$' "pinned base GGUF model path"
+require_line "$gate_script" '^default_url="https://huggingface\.co/Brianpuz/Qwen2\.5-0\.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2\.5-0\.5b-q4_k_m\.gguf"[[:space:]]*$' "pinned base GGUF download URL"
+require_line "$gate_script" '^default_expected="ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484"[[:space:]]*$' "pinned base GGUF sha256"
+require_line "$gate_script" 'COMPME_ALLOW_MODEL_GATE_OVERRIDE' "release-context model gate override escape hatch"
+require_line "$gate_script" 'refusing \$name override in GitHub release context' "release-context model gate override rejection"
 require_line "$gate_script" 'COMPME_MODEL_GATE_CURL_BODY="wrong-model"' "model gate checksum failure self-test"
 require_line "$gate_script" 'latency=1 gpu=0 ctx_tokens=256 spike_model= args=test --locked -p model_client --test latency' "model gate root env self-test"
 require_line "$gate_script" 'tools/spike env=1 ctx= latency=1 gpu= ctx_tokens= spike_model=\$model_path args=test --locked --test model_integration' "model gate spike env self-test"
@@ -1465,10 +1608,12 @@ require_line "$acceptance_doc" '^tools/release/update-cask\.sh --self-test[[:spa
 require_line "$acceptance_doc" '^tools/release/finalize-cask\.sh --self-test[[:space:]]*$' "acceptance docs cask finalizer self-test"
 require_line "$acceptance_doc" '^tools/release/notarize-app\.sh --self-test[[:space:]]*$' "acceptance docs notarization helper self-test"
 require_line "$acceptance_doc" '^tools/release/write-update-manifest\.sh --self-test[[:space:]]*$' "acceptance docs update manifest self-test"
+require_line "$releasing_doc" 'push to `main` / `spike/\*\*`, PR, or `workflow_dispatch`' "release docs CI trigger truth"
 require_line "$releasing_doc" '^[[:space:]]*bash tools/release/run-model-gates\.sh[[:space:]]*$' "release docs model gate wrapper"
 require_line "$releasing_doc" 'COMPME_MODEL_GATE_PATH' "release docs model gate path override"
 require_line "$releasing_doc" 'COMPME_MODEL_GATE_URL' "release docs model gate URL override"
 require_line "$releasing_doc" 'COMPME_MODEL_GATE_SHA256' "release docs model gate SHA override"
+require_line "$releasing_doc" 'COMPME_ALLOW_MODEL_GATE_OVERRIDE' "release docs model gate override escape hatch"
 require_line "$releasing_doc" 'COMPME_SPIKE_MODEL_PATH' "release docs spike model path override"
 require_line "$releasing_doc" 'verifies the zip against its `\.sha256`' "release docs publish checksum verification"
 require_line "$releasing_doc" 'tools/bundle/check-bundle-metadata\.sh' "release docs bundle metadata check"

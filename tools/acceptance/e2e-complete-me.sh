@@ -649,6 +649,9 @@ prefix_chars="$(printf '%s' "$PREFIX" | wc -m | tr -d '[:space:]')"
 stub_chars="$(printf '%s' "$STUB" | wc -m | tr -d '[:space:]')"
 echo "E2E compme: prefix_chars=$prefix_chars stub_chars=$stub_chars pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE real_model=$REAL_MODEL"
 product_env=(env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}")
+if [ -n "${COMPME_CONFIG:-}" ]; then
+  product_env+=(COMPME_CONFIG="$COMPME_CONFIG")
+fi
 if [ -n "${RUST_BACKTRACE:-}" ]; then
   product_env+=(RUST_BACKTRACE="$RUST_BACKTRACE")
 fi

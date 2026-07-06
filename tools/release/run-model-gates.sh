@@ -3,9 +3,30 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
-model="${COMPME_MODEL_GATE_PATH:-tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf}"
-url="${COMPME_MODEL_GATE_URL:-https://huggingface.co/Brianpuz/Qwen2.5-0.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2.5-0.5b-q4_k_m.gguf}"
-expected="${COMPME_MODEL_GATE_SHA256:-ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484}"
+default_model="tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf"
+default_url="https://huggingface.co/Brianpuz/Qwen2.5-0.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2.5-0.5b-q4_k_m.gguf"
+default_expected="ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484"
+
+release_context() {
+  [ "${GITHUB_ACTIONS:-}" = "true" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]
+}
+
+reject_release_overrides() {
+  if release_context && [ "${COMPME_ALLOW_MODEL_GATE_OVERRIDE:-}" != "1" ]; then
+    for name in COMPME_MODEL_GATE_PATH COMPME_MODEL_GATE_URL COMPME_MODEL_GATE_SHA256; do
+      if [ -n "${!name:-}" ]; then
+        echo "refusing $name override in GitHub release context; set COMPME_ALLOW_MODEL_GATE_OVERRIDE=1 for an intentional recovery run" >&2
+        return 1
+      fi
+    done
+  fi
+}
+
+reject_release_overrides
+
+model="${COMPME_MODEL_GATE_PATH:-$default_model}"
+url="${COMPME_MODEL_GATE_URL:-$default_url}"
+expected="${COMPME_MODEL_GATE_SHA256:-$default_expected}"
 
 run_self_test() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-model-gates.XXXXXX")"
@@ -41,6 +62,34 @@ SH
   model_path="$tmp/model-dir/model.gguf"
   printf 'cached-model' >"$model_path"
   cached_sha="$(shasum -a 256 "$model_path" | awk '{print $1}')"
+  if PATH="$fake_bin:$PATH" \
+    GITHUB_ACTIONS=true \
+    GITHUB_REF_TYPE=tag \
+    COMPME_MODEL_GATE_PATH="$model_path" \
+    COMPME_MODEL_GATE_URL="https://example.test/model.gguf" \
+    COMPME_MODEL_GATE_SHA256="$cached_sha" \
+    COMPME_MODEL_GATE_CARGO_LOG="$tmp/cargo.log" \
+    COMPME_MODEL_GATE_CURL_LOG="$tmp/curl.log" \
+    "$0" >/dev/null 2>"$tmp/release-override.err"; then
+    echo "run-model-gates self-test failed: release override was accepted" >&2
+    return 1
+  fi
+  grep -q 'refusing COMPME_MODEL_GATE_PATH override in GitHub release context' "$tmp/release-override.err"
+
+  : >"$tmp/cargo.log"
+  : >"$tmp/curl.log"
+  PATH="$fake_bin:$PATH" \
+    GITHUB_ACTIONS=true \
+    GITHUB_REF_TYPE=tag \
+    COMPME_ALLOW_MODEL_GATE_OVERRIDE=1 \
+    COMPME_MODEL_GATE_PATH="$model_path" \
+    COMPME_MODEL_GATE_URL="https://example.test/model.gguf" \
+    COMPME_MODEL_GATE_SHA256="$cached_sha" \
+    COMPME_MODEL_GATE_CARGO_LOG="$tmp/cargo.log" \
+    COMPME_MODEL_GATE_CURL_LOG="$tmp/curl.log" \
+    "$0" >/dev/null
+  grep -q 'env=1 ctx=1 latency=1 gpu=0 ctx_tokens=256 spike_model= args=test --locked -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
+
   : >"$tmp/cargo.log"
   : >"$tmp/curl.log"
   PATH="$fake_bin:$PATH" \
