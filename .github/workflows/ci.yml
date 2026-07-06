@@ -65,6 +65,12 @@ jobs:
       - name: Bundle assembler self-test
         run: tools/bundle/make-app.sh --self-test
 
+      - name: Bundle smoke
+        run: tools/bundle/bundle-smoke.sh
+
+      - name: Bundle smoke self-test
+        run: tools/bundle/bundle-smoke.sh --self-test
+
       - name: E2E runner self-test
         run: tools/acceptance/e2e-complete-me.sh --self-test
 

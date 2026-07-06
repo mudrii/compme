@@ -153,10 +153,30 @@ log_path_is_safe_evidence() {
   esac
 }
 
+ledger_path_is_safe_evidence() {
+  case "$1" in
+    /*|..|../*|*/../*) return 1 ;;
+    "$evidence_prefix"*.tsv) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 check_ledger() {
   ledger="$1"
   if [ ! -f "$ledger" ]; then
     echo "missing A2 matrix ledger: $ledger" >&2
+    return 1
+  fi
+  case "$ledger" in
+    "$repo_root"/*) ledger_rel="${ledger#"$repo_root"/}" ;;
+    *) ledger_rel="$ledger" ;;
+  esac
+  if ! ledger_path_is_safe_evidence "$ledger_rel"; then
+    echo "A2 matrix ledger must be a committed repo-relative TSV under $evidence_prefix: $ledger" >&2
+    return 1
+  fi
+  if ! git -C "$repo_root" ls-files --error-unmatch "$ledger_rel" >/dev/null 2>&1; then
+    echo "A2 matrix ledger is not tracked: $ledger_rel" >&2
     return 1
   fi
   validate_max_age || return 1
@@ -360,7 +380,7 @@ run_self_test() {
     esac
   }
 
-  good="$tmp/good.tsv"
+  good="$repo_root/$log_dir_rel/good.tsv"
   {
     printf 'generated_at_epoch\trow_id\tkind\tapp\tpid\tstatus\texpect\tlog_path\n'
     for row in $expected_rows; do
@@ -371,37 +391,61 @@ EOF
       printf '%s\t%s\t%s\t%s\t123\tPASS\t%s\t%s/%s.log\n' "$generated_at" "$row" "$kind" "$app" "$expect" "$log_dir_rel" "$row"
     done
   } >"$good"
-  (cd "$repo_root" && git add "$log_dir_rel"/*.log)
+  (cd "$repo_root" && git add "$log_dir_rel"/*.log "$log_dir_rel/good.tsv")
   check_ledger "$good"
 
-  bad_skip="$tmp/bad-skip.tsv"
+  track_ledger() {
+    git -C "$repo_root" add "${1#"$repo_root"/}"
+  }
+
+  untracked_ledger="$repo_root/$log_dir_rel/untracked.tsv"
+  cp "$good" "$untracked_ledger"
+  if check_ledger "$untracked_ledger" >/dev/null 2>"$tmp/untracked-ledger.err"; then
+    echo "A2 matrix ledger self-test failed: untracked ledger was accepted" >&2
+    return 1
+  fi
+  grep -q "A2 matrix ledger is not tracked: $log_dir_rel/untracked.tsv" "$tmp/untracked-ledger.err"
+
+  unsafe_ledger="$tmp/unsafe.tsv"
+  cp "$good" "$unsafe_ledger"
+  if check_ledger "$unsafe_ledger" >/dev/null 2>"$tmp/unsafe-ledger.err"; then
+    echo "A2 matrix ledger self-test failed: unsafe ledger path was accepted" >&2
+    return 1
+  fi
+  grep -q 'A2 matrix ledger must be a committed repo-relative TSV under tools/acceptance/evidence/a2/' "$tmp/unsafe-ledger.err"
+
+  bad_skip="$repo_root/$log_dir_rel/bad-skip.tsv"
   cp "$good" "$bad_skip"
   awk -F '\t' 'BEGIN { OFS = FS } NR == 2 { $6 = "SKIP"; $8 = "" } { print }' "$good" >"$bad_skip"
+  track_ledger "$bad_skip"
   if check_ledger "$bad_skip" >/dev/null 2>"$tmp/bad-skip.err"; then
     echo "A2 matrix ledger self-test failed: SKIP row was accepted" >&2
     return 1
   fi
   grep -q 'status=SKIP' "$tmp/bad-skip.err"
 
-  missing="$tmp/missing.tsv"
+  missing="$repo_root/$log_dir_rel/missing.tsv"
   awk -F '\t' '$2 != "screen"' "$good" >"$missing"
+  track_ledger "$missing"
   if check_ledger "$missing" >/dev/null 2>"$tmp/missing.err"; then
     echo "A2 matrix ledger self-test failed: missing row was accepted" >&2
     return 1
   fi
   grep -q 'missing A2 matrix row: screen' "$tmp/missing.err"
 
-  extra="$tmp/extra.tsv"
+  extra="$repo_root/$log_dir_rel/extra.tsv"
   cp "$good" "$extra"
   printf '%s\tsurprise\tworks\tfixture\t123\tPASS\trequest\t/tmp/surprise.log\n' "$generated_at" >>"$extra"
+  track_ledger "$extra"
   if check_ledger "$extra" >/dev/null 2>"$tmp/extra.err"; then
     echo "A2 matrix ledger self-test failed: unexpected row was accepted" >&2
     return 1
   fi
   grep -q 'unexpected A2 matrix row: surprise' "$tmp/extra.err"
 
-  missing_log="$tmp/missing-log.tsv"
+  missing_log="$repo_root/$log_dir_rel/missing-log.tsv"
   cp "$good" "$missing_log"
+  track_ledger "$missing_log"
   rm -f "$log_dir/textedit.log"
   if check_ledger "$missing_log" >/dev/null 2>"$tmp/missing-log.err"; then
     echo "A2 matrix ledger self-test failed: nonexistent log_path was accepted" >&2
@@ -410,26 +454,29 @@ EOF
   grep -q 'A2 matrix row log_path missing on disk: textedit' "$tmp/missing-log.err"
   write_good_log textedit works com.apple.TextEdit request "$log_dir/textedit.log"
 
-  untracked_log="$tmp/untracked-log.tsv"
+  untracked_log="$repo_root/$log_dir_rel/untracked-log.tsv"
   cp "$good" "$untracked_log"
   write_good_log textedit works com.apple.TextEdit request "$log_dir/untracked.log"
   awk -F '\t' 'BEGIN { OFS = FS } $2 == "textedit" { $8 = path } { print }' path="$log_dir_rel/untracked.log" "$good" >"$untracked_log"
+  track_ledger "$untracked_log"
   if check_ledger "$untracked_log" >/dev/null 2>"$tmp/untracked-log.err"; then
     echo "A2 matrix ledger self-test failed: untracked log_path was accepted" >&2
     return 1
   fi
   grep -q 'A2 matrix row log_path is not tracked: textedit' "$tmp/untracked-log.err"
 
-  unsafe_log_path="$tmp/unsafe-log-path.tsv"
+  unsafe_log_path="$repo_root/$log_dir_rel/unsafe-log-path.tsv"
   awk -F '\t' 'BEGIN { OFS = FS } $2 == "textedit" { $8 = "/tmp/textedit.log" } { print }' "$good" >"$unsafe_log_path"
+  track_ledger "$unsafe_log_path"
   if check_ledger "$unsafe_log_path" >/dev/null 2>"$tmp/unsafe-log-path.err"; then
     echo "A2 matrix ledger self-test failed: unsafe log_path was accepted" >&2
     return 1
   fi
   grep -q 'A2 matrix row log_path must be committed repo evidence: textedit' "$tmp/unsafe-log-path.err"
 
-  tampered_log="$tmp/tampered-log.tsv"
+  tampered_log="$repo_root/$log_dir_rel/tampered-log.tsv"
   cp "$good" "$tampered_log"
+  track_ledger "$tampered_log"
   printf 'no request evidence\n' >"$log_dir/textedit.log"
   if check_ledger "$tampered_log" >/dev/null 2>"$tmp/tampered-log.err"; then
     echo "A2 matrix ledger self-test failed: tampered log_path was accepted" >&2
@@ -438,33 +485,37 @@ EOF
   grep -q 'A2 matrix row log_path lacks proof: textedit' "$tmp/tampered-log.err"
   write_good_log textedit works com.apple.TextEdit request "$log_dir/textedit.log"
 
-  wrong_app="$tmp/wrong-app.tsv"
+  wrong_app="$repo_root/$log_dir_rel/wrong-app.tsv"
   cp "$good" "$wrong_app"
   awk -F '\t' 'BEGIN { OFS = FS } $2 == "notes" { $4 = "com.apple.TextEdit"; $8 = path } { print }' path="$log_dir_rel/textedit.log" "$good" >"$wrong_app"
+  track_ledger "$wrong_app"
   if check_ledger "$wrong_app" >/dev/null 2>"$tmp/wrong-app.err"; then
     echo "A2 matrix ledger self-test failed: wrong app row was accepted" >&2
     return 1
   fi
   grep -q 'A2 matrix row app mismatch: notes app=com.apple.TextEdit expected=com.apple.Notes' "$tmp/wrong-app.err"
 
-  wrong_kind="$tmp/wrong-kind.tsv"
+  wrong_kind="$repo_root/$log_dir_rel/wrong-kind.tsv"
   awk -F '\t' 'BEGIN { OFS = FS } $2 == "textedit" { $3 = "unsupported" } { print }' "$good" >"$wrong_kind"
+  track_ledger "$wrong_kind"
   if check_ledger "$wrong_kind" >/dev/null 2>"$tmp/wrong-kind.err"; then
     echo "A2 matrix ledger self-test failed: wrong kind row was accepted" >&2
     return 1
   fi
   grep -q 'A2 matrix row kind mismatch: textedit kind=unsupported expected=works' "$tmp/wrong-kind.err"
 
-  wrong_expect="$tmp/wrong-expect.tsv"
+  wrong_expect="$repo_root/$log_dir_rel/wrong-expect.tsv"
   awk -F '\t' 'BEGIN { OFS = FS } $2 == "textedit" { $7 = "blocked-app" } { print }' "$good" >"$wrong_expect"
+  track_ledger "$wrong_expect"
   if check_ledger "$wrong_expect" >/dev/null 2>"$tmp/wrong-expect.err"; then
     echo "A2 matrix ledger self-test failed: wrong expect row was accepted" >&2
     return 1
   fi
   grep -q 'A2 matrix row expect mismatch: textedit expect=blocked-app expected=request' "$tmp/wrong-expect.err"
 
-  wrong_app_log="$tmp/wrong-app-log.tsv"
+  wrong_app_log="$repo_root/$log_dir_rel/wrong-app-log.tsv"
   cp "$good" "$wrong_app_log"
+  track_ledger "$wrong_app_log"
   printf 'compme: request gen=7 prompt_chars=44 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true\n' >"$log_dir/notes.log"
   if check_ledger "$wrong_app_log" >/dev/null 2>"$tmp/wrong-app-log.err"; then
     echo "A2 matrix ledger self-test failed: wrong app log was accepted" >&2
@@ -473,8 +524,9 @@ EOF
   grep -q 'A2 matrix row log_path lacks proof: notes' "$tmp/wrong-app-log.err"
   write_good_log notes works com.apple.Notes request "$log_dir/notes.log"
 
-  no_newline="$tmp/no-newline.tsv"
+  no_newline="$repo_root/$log_dir_rel/no-newline.tsv"
   awk -F '\t' 'BEGIN { OFS = FS } { lines[NR] = $0 } END { for (i = 1; i < NR; i++) print lines[i]; printf "%s", lines[NR] }' "$good" >"$no_newline"
+  track_ledger "$no_newline"
   rm -f "$log_dir/screen.log"
   if check_ledger "$no_newline" >/dev/null 2>"$tmp/no-newline.err"; then
     echo "A2 matrix ledger self-test failed: no-newline missing final log was accepted" >&2
@@ -483,16 +535,18 @@ EOF
   grep -q 'A2 matrix row log_path missing on disk: screen' "$tmp/no-newline.err"
   write_good_log screen screen works-app context-request "$log_dir/screen.log"
 
-  stale="$tmp/stale.tsv"
+  stale="$repo_root/$log_dir_rel/stale.tsv"
   awk -F '\t' 'BEGIN { OFS = FS } NR > 1 { $1 = 946684800 } { print }' "$good" >"$stale"
+  track_ledger "$stale"
   if COMPME_A2_LEDGER_MAX_AGE_SECONDS=60 check_ledger "$stale" >/dev/null 2>"$tmp/stale.err"; then
     echo "A2 matrix ledger self-test failed: stale ledger was accepted" >&2
     return 1
   fi
   grep -q 'stale A2 matrix ledger:' "$tmp/stale.err"
 
-  future="$tmp/future.tsv"
+  future="$repo_root/$log_dir_rel/future.tsv"
   awk -F '\t' -v future_epoch="$((generated_at + 3600))" 'BEGIN { OFS = FS } NR > 1 { $1 = future_epoch } { print }' "$good" >"$future"
+  track_ledger "$future"
   if check_ledger "$future" >/dev/null 2>"$tmp/future.err"; then
     echo "A2 matrix ledger self-test failed: future ledger was accepted" >&2
     return 1

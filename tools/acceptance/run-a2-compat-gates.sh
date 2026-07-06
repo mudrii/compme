@@ -134,6 +134,27 @@ has_browser_domain_exclude_evidence() {
     && ! has_request "$1"
 }
 
+concrete_matrix_app_pattern() {
+  case "$1" in
+    com.apple.TextEdit) printf '%s\n' 'com\.apple\.TextEdit' ;;
+    com.apple.Notes) printf '%s\n' 'com\.apple\.Notes' ;;
+    com.apple.mail) printf '%s\n' 'com\.apple\.mail' ;;
+    com.microsoft.Word) printf '%s\n' 'com\.microsoft\.Word' ;;
+    com.apple.Safari) printf '%s\n' 'com\.apple\.Safari' ;;
+    com.google.Chrome) printf '%s\n' 'com\.google\.Chrome' ;;
+    com.brave.Browser) printf '%s\n' 'com\.brave\.Browser' ;;
+    *) return 1 ;;
+  esac
+}
+
+has_expected_matrix_app_evidence() {
+  log_path="$1"
+  expected_app="$2"
+  expected_pattern="$(concrete_matrix_app_pattern "$expected_app")" || return 0
+  grep -Eq "^compme: request (blocked )?gen=[0-9][0-9]* .*app=${expected_pattern} " "$log_path" \
+    || grep -Eq "^compme: domain=[[:alnum:].-]+ \\(${expected_pattern}\\)$" "$log_path"
+}
+
 has_clipboard_prompt_context() {
   grep -Eq 'prompt_context=Some\("sources=[^"]*clipboard[^"]*clipboard_chars=[1-9][0-9]*([^0-9]|")' "$1" \
     && grep -Eq 'clipboard_context=Some\(chars=[1-9][0-9]* marker=true\)' "$1"
@@ -351,6 +372,9 @@ LOG
   self_test_assert "browser-domain-rejects-raw-url" 0 has_browser_domain_allow_evidence "$browser_domain_raw_url" || failures=$((failures + 1))
   self_test_assert "browser-domain-exclude-evidence" 1 has_browser_domain_exclude_evidence "$browser_domain_exclude" || failures=$((failures + 1))
   self_test_assert "browser-domain-exclude-requires-block" 0 has_browser_domain_exclude_evidence "$browser_domain_allow" || failures=$((failures + 1))
+  self_test_assert "matrix-expected-app-textedit" 1 has_expected_matrix_app_evidence "$good" com.apple.TextEdit || failures=$((failures + 1))
+  self_test_assert "matrix-expected-app-rejects-same-class-wrong-app" 0 has_expected_matrix_app_evidence "$good" com.apple.Notes || failures=$((failures + 1))
+  self_test_assert "matrix-generic-app-has-no-extra-exact-check" 1 has_expected_matrix_app_evidence "$good" works-app || failures=$((failures + 1))
   self_test_assert "clipboard-prompt-context" 1 has_clipboard_prompt_context "$good" || failures=$((failures + 1))
   self_test_assert "clipboard-prompt-context-varied-length" 1 has_clipboard_prompt_context "$varied_clipboard" || failures=$((failures + 1))
   self_test_assert "screen-prompt-context" 1 has_screen_prompt_context "$good" || failures=$((failures + 1))
@@ -486,7 +510,7 @@ run_matrix() {
       fi
       continue
     fi
-    if COMPME_A2_LOG="$row_log" COMPME_ACCEPTANCE_PID="$row_pid" "$0" "$row_kind"; then
+    if COMPME_A2_LOG="$row_log" COMPME_A2_EXPECTED_APP="$row_app" COMPME_ACCEPTANCE_PID="$row_pid" "$0" "$row_kind"; then
       printf '%s\t%s\t%s\t%s\t%s\tPASS\t%s\t%s\n' "$matrix_started_at" "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" "$row_log" >>"$ledger"
     else
       printf '%s\t%s\t%s\t%s\t%s\tFAIL\t%s\t%s\n' "$matrix_started_at" "$row_id" "$row_kind" "$row_app" "$row_pid" "$row_expect" "$row_log" >>"$ledger"
@@ -627,6 +651,11 @@ fail() { echo "FAIL: $KIND — $1 (log: $LOG)"; exit 1; }
 
 if ! product_status_ok "$app_status"; then
   fail "compme exited with status $app_status"
+fi
+
+if [[ -n "${COMPME_A2_EXPECTED_APP:-}" ]] \
+  && ! has_expected_matrix_app_evidence "$LOG" "$COMPME_A2_EXPECTED_APP"; then
+  fail "expected matrix row app ${COMPME_A2_EXPECTED_APP}, but log did not prove that app"
 fi
 
 case "$KIND" in

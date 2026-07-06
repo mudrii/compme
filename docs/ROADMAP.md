@@ -6,8 +6,9 @@
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-06 through current
-> `706c61b` (`d2beda1`, `e282fd9`, `9ede926`, and `706c61b` since `b1c9264`).
+> with symbol/function/gate anchors re-reviewed 2026-07-06 through the current
+> bundle/A2 gate hardening pass, starting from baseline `ba4e805`
+> (`d2beda1`, `e282fd9`, `9ede926`, `706c61b`, and `ba4e805` since `b1c9264`).
 
 ## Status legend
 
@@ -109,7 +110,8 @@ The CI/release/cask glue is already written and locally validated, including
 locked Cargo gates, pinned toolchain, release preflight checks, A2 matrix ledger
 policy, privacy-policy scan, model-gate policy, draft-release publication,
 cask finalization, post-cask undraft, and the supply-chain/release hardening
-through `706c61b`: protected SemVer `v*` tag ruleset check via
+through the current bundle/A2 gate hardening pass: protected SemVer `v*` tag
+ruleset check via
 `github.ref_protected`, protected `release` environments for build/publish jobs,
 third-party crates prebuilt before the signing keychain exists, checkout-token
 scrub before build code, decoded `.p12` deletion plus signing-keychain deletion

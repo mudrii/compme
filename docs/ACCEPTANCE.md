@@ -22,6 +22,8 @@ bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
 tools/bundle/check-bundle-metadata.sh
 tools/bundle/check-bundle-metadata.sh --self-test
 tools/bundle/make-app.sh --self-test
+tools/bundle/bundle-smoke.sh
+tools/bundle/bundle-smoke.sh --self-test
 tools/acceptance/e2e-complete-me.sh --self-test
 tools/acceptance/missing-model-startup.sh --self-test
 tools/acceptance/missing-model-startup.sh

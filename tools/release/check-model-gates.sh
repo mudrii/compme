@@ -10,6 +10,7 @@ feature_script="$repo_root/tools/release/check-model-client-features.sh"
 privacy_script="$repo_root/tools/release/check-privacy-policy.sh"
 bundle_metadata_script="$repo_root/tools/bundle/check-bundle-metadata.sh"
 make_app_script="$repo_root/tools/bundle/make-app.sh"
+bundle_smoke_script="$repo_root/tools/bundle/bundle-smoke.sh"
 finalize_cask_script="$repo_root/tools/release/finalize-cask.sh"
 notarize_script="$repo_root/tools/release/notarize-app.sh"
 update_manifest_script="$repo_root/tools/release/write-update-manifest.sh"
@@ -1138,6 +1139,8 @@ ruby -ryaml -e '
     "CI bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
     "CI bundle metadata self-test" => ["Bundle metadata self-test", "tools/bundle/check-bundle-metadata.sh --self-test"],
     "CI bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
+    "CI bundle smoke" => ["Bundle smoke", "tools/bundle/bundle-smoke.sh"],
+    "CI bundle smoke self-test" => ["Bundle smoke self-test", "tools/bundle/bundle-smoke.sh --self-test"],
     "CI E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
     "CI missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
     "CI missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
@@ -1552,6 +1555,9 @@ require_line "$make_app_script" 'grep -Fq "lsregister -f \$app" "\$log"' "bundle
 require_line "$make_app_script" 'COMPME_BUNDLE_LSREGISTER="\$fake_bin/lsregister_fail"' "bundle self-test asserts Launch Services registration failure"
 require_line "$make_app_script" 'lsregister failure was accepted' "bundle self-test rejects masked Launch Services registration failure"
 require_line "$make_app_script" '^[[:space:]]*"\$lsregister" -f "\$app"[[:space:]]*$' "bundle Launch Services registration fails closed"
+require_line "$bundle_smoke_script" 'COMPME_RUN_MS="\${COMPME_RUN_MS:-1500}" COMPME_STUB_COMPLETION="\${COMPME_STUB_COMPLETION:- smoke}" "\$app_bin"' "bundle smoke runs packaged app hermetically"
+require_line "$bundle_smoke_script" 'COMPME_BUNDLE_SMOKE_MAKE_APP' "bundle smoke make-app override"
+require_line "$bundle_smoke_script" 'COMPME_BUNDLE_SMOKE_APP_EXIT=42' "bundle smoke self-test rejects app failure"
 require_line "$feature_script" 'llama-cpp-2 feature "metal"' "model_client macOS Metal feature assertion"
 require_line "$feature_script" 'llama-cpp-2 feature "dynamic-backends"' "model_client non-macOS dynamic backend assertion"
 require_line "$feature_script" 'llama-cpp-2 feature "vulkan"' "model_client non-macOS Vulkan feature assertion"
@@ -1587,6 +1593,8 @@ require_line "$acceptance_doc" '^cargo build --locked -p platform_macos --exampl
 require_line "$acceptance_doc" '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "acceptance docs bundle metadata check"
 require_line "$acceptance_doc" '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "acceptance docs bundle metadata self-test"
 require_line "$acceptance_doc" '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "acceptance docs bundle assembler self-test"
+require_line "$acceptance_doc" '^tools/bundle/bundle-smoke\.sh[[:space:]]*$' "acceptance docs bundle smoke"
+require_line "$acceptance_doc" '^tools/bundle/bundle-smoke\.sh --self-test[[:space:]]*$' "acceptance docs bundle smoke self-test"
 require_line "$acceptance_doc" '^tools/acceptance/e2e-complete-me\.sh --self-test[[:space:]]*$' "acceptance docs E2E self-test"
 require_line "$acceptance_doc" '^tools/acceptance/missing-model-startup\.sh --self-test[[:space:]]*$' "acceptance docs missing-model startup self-test"
 require_line "$acceptance_doc" '^tools/acceptance/missing-model-startup\.sh[[:space:]]*$' "acceptance docs missing-model startup product smoke"
@@ -1666,6 +1674,8 @@ done
 require_readme_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "README bundle metadata check"
 require_readme_gate_line '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "README bundle metadata self-test"
 require_readme_gate_line '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "README bundle assembler self-test"
+require_readme_gate_line '^tools/bundle/bundle-smoke\.sh[[:space:]]*$' "README bundle smoke"
+require_readme_gate_line '^tools/bundle/bundle-smoke\.sh --self-test[[:space:]]*$' "README bundle smoke self-test"
 require_readme_gate_line '^tools/acceptance/e2e-complete-me\.sh --self-test[[:space:]]*$' "README E2E self-test"
 require_readme_gate_line '^tools/acceptance/missing-model-startup\.sh --self-test[[:space:]]*$' "README missing-model startup self-test"
 require_readme_gate_line '^tools/acceptance/missing-model-startup\.sh[[:space:]]*$' "README missing-model startup product smoke"
@@ -1686,6 +1696,8 @@ require_readme_gate_line '^bash tools/release/run-model-gates\.sh[[:space:]]*$' 
 require_development_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "DEVELOPMENT bundle metadata check"
 require_development_gate_line '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "DEVELOPMENT bundle metadata self-test"
 require_development_gate_line '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "DEVELOPMENT bundle assembler self-test"
+require_development_gate_line '^tools/bundle/bundle-smoke\.sh[[:space:]]*$' "DEVELOPMENT bundle smoke"
+require_development_gate_line '^tools/bundle/bundle-smoke\.sh --self-test[[:space:]]*$' "DEVELOPMENT bundle smoke self-test"
 require_development_gate_line '^tools/acceptance/e2e-complete-me\.sh --self-test[[:space:]]*$' "DEVELOPMENT E2E self-test"
 require_development_gate_line '^tools/acceptance/missing-model-startup\.sh --self-test[[:space:]]*$' "DEVELOPMENT missing-model startup self-test"
 require_development_gate_line '^tools/acceptance/missing-model-startup\.sh[[:space:]]*$' "DEVELOPMENT missing-model startup product smoke"
