@@ -135,7 +135,7 @@ instruction maps, with the settings design deferring the editing UI.
   multiple apps/domains (`instruction_map_from_config` in `run_loop.rs`).
 - Inference now calls
   `profile.build_preamble(Some(&request.field.app), request.domain.as_deref())`
-  (`crates/app/src/inference.rs:344-347`), so resolved browser domains can
+  (`crates/app/src/inference.rs`), so resolved browser domains can
   activate per-domain steering.
 - The submit path reads the cached browser domain into `RequestLogContext`, and
   `submit_request_and_track` copies it onto the request before dispatch
@@ -169,8 +169,10 @@ Statistics, About). The macOS-buildable Tier 3 controls have landed in code and
 deterministic tests; the remaining work is the live visual/physical LOOK pass —
 the authoritative pass/fail ledger is [`ACCEPTANCE.md`](ACCEPTANCE.md)'s
 Manual/Live Gate Ledger (17 runner-pinned gate IDs); detailed walkthroughs live
-in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md) — plus optional UX
-enhancements explicitly called out below.
+in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md), and the scripted assisted
+session driver (`tools/acceptance/run-ui-assisted-session.sh`,
+[`UI-ASSISTED-TEST-MATRIX.md`](UI-ASSISTED-TEST-MATRIX.md)) covers part of that
+live pass — plus optional UX enhancements explicitly called out below.
 
 ### 3.1 🔬 Per-app override editing rows (Apps pane) — code complete, LOOK pending
 - **Status:** the Apps pane ships a compact one-line policy grid. Each recorded
@@ -360,7 +362,7 @@ gate emitted by `tools/acceptance/run-a1b-live-gates.sh` and pinned by its
    `engine::CompletionRequest` and a corrected-word/range field on
    `CompletionOutcome`, routed through the existing worker/`recv_latest` loop.
    `left_ctx` is tail-bounded to `GRAMMAR_LEFT_CTX_CHARS` (400 scalars,
-   `run_loop.rs:596` — the AX field value is unbounded input); the correction
+   `run_loop.rs` — the AX field value is unbounded input); the correction
    range stays in full-field coordinates. Like the completion prompt, it is raw
    field text sent only to the local model — never logged or persisted raw.
    Tight prompt: "return the corrected word only, or the word unchanged"; low
