@@ -110,8 +110,9 @@ through `9aa3c20`: protected `v*` tag ruleset check via `github.ref_protected`,
 protected `release` environments for build/publish jobs, third-party crates
 prebuilt before the signing keychain exists, checkout-token scrub before build
 code, decoded `.p12` deletion plus signing-keychain deletion before packaging,
-fixed release concurrency, fail-closed artifact upload, and committed A2
-evidence under `tools/acceptance/evidence/a2/`. First release now waits on the
+fixed release concurrency, fail-closed artifact upload, and the
+committed-A2-evidence policy (checker + CI wiring; the evidence itself under
+`tools/acceptance/evidence/a2/` is still to be produced). First release now waits on the
 signing/notarization secrets and identity, committed A2 matrix ledger evidence
 plus the repo variable that points at it, and the maintainer-created first tag.
 
