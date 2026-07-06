@@ -685,7 +685,9 @@ fn grammar_fix_request(
         domain: gate.domain.map(str::to_string),
         snapshot: field.generation,
         prompt: String::new(),
-        max_tokens: DEFAULT_MAX_TOKENS,
+        // Grammar output is one vetted word — the completion-tuned
+        // DEFAULT_MAX_TOKENS/COMPME_MAX_TOKENS budget does not apply here.
+        max_tokens: crate::inference::GRAMMAR_MAX_TOKENS,
         kind: RequestKind::GrammarFix {
             word: word.word.to_string(),
             // Tail-bounded: the prompt needs the word plus nearby context, and

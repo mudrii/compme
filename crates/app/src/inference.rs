@@ -21,7 +21,10 @@ use platform::{CorrectionRange, FieldHandle};
 
 use crate::model_select::{shape_prompt, PromptMode};
 
-const GRAMMAR_MAX_TOKENS: usize = 8;
+/// Output budget for grammar-fix requests: the vetted result is a single word,
+/// so 8 tokens is ample. Set on the request in the run loop; the worker honors
+/// `request.max_tokens` for every request kind.
+pub(crate) const GRAMMAR_MAX_TOKENS: usize = 8;
 
 /// Per-app bounded rings of recent accepted completions (redacted), shared
 /// between the run loop (which records on accept) and the inference worker (which
@@ -337,7 +340,7 @@ fn run(
         } = request.kind.clone()
         {
             let prompt = model_client::grammar_fix_prompt(&word, &left_ctx);
-            match model.complete(&prompt, GRAMMAR_MAX_TOKENS) {
+            match model.complete(&prompt, request.max_tokens) {
                 Ok(raw) => {
                     let correction = grammar::vet_correction(&word, &raw);
                     if outcomes
