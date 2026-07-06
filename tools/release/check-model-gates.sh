@@ -941,6 +941,8 @@ ruby -ryaml -e '
     "CI A2 matrix ledger self-test" => ["A2 matrix ledger policy self-test", "tools/release/check-a2-matrix-ledger.sh --self-test"],
     "CI model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
     "CI model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
+    "CI agent brief alignment" => ["Agent brief alignment", "tools/release/check-agent-briefs.sh"],
+    "CI agent brief alignment self-test" => ["Agent brief alignment self-test", "tools/release/check-agent-briefs.sh --self-test"],
     "CI privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],
     "CI privacy policy self-test" => ["Privacy policy self-test", "tools/release/check-privacy-policy.sh --self-test"],
     "CI release policy" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],

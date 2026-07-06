@@ -501,17 +501,7 @@ define_class!(
         #[unsafe(method(deleteAppRow:))]
         fn delete_app_row(&self, sender: Option<&NSButton>) {
             if let Some(button) = sender {
-                let row = button.tag().max(0) as usize;
-                // Recover from a poisoned lock rather than silently dropping the
-                // user's Delete click: the slot is a plain `Option<usize>` whose
-                // bytes are valid even if some other holder panicked.
-                let mut slot = self
-                    .ivars()
-                    .flags
-                    .apps_delete_row
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                *slot = Some(row);
+                record_apps_delete_row(&self.ivars().flags.apps_delete_row, button.tag());
             }
         }
 
@@ -604,22 +594,20 @@ define_class!(
         #[unsafe(method(selectEmojiSkinTone:))]
         fn select_emoji_skin_tone(&self, sender: Option<&NSPopUpButton>) {
             if let Some(popup) = sender {
-                let index = popup.indexOfSelectedItem().max(0) as usize;
-                self.ivars()
-                    .flags
-                    .emoji_skin_tone_index
-                    .store(index, Ordering::Relaxed);
+                record_selection_index(
+                    &self.ivars().flags.emoji_skin_tone_index,
+                    popup.indexOfSelectedItem(),
+                );
             }
         }
 
         #[unsafe(method(selectEmojiGender:))]
         fn select_emoji_gender(&self, sender: Option<&NSPopUpButton>) {
             if let Some(popup) = sender {
-                let index = popup.indexOfSelectedItem().max(0) as usize;
-                self.ivars()
-                    .flags
-                    .emoji_gender_index
-                    .store(index, Ordering::Relaxed);
+                record_selection_index(
+                    &self.ivars().flags.emoji_gender_index,
+                    popup.indexOfSelectedItem(),
+                );
             }
         }
 
@@ -1315,6 +1303,87 @@ mod apps_layout {
     }
 }
 
+mod emoji_layout {
+    use super::PaneRect;
+
+    pub const SKIN_LABEL: PaneRect = PaneRect {
+        x: 20.0,
+        y: 280.0,
+        w: 160.0,
+        h: 20.0,
+    };
+    pub const SKIN_POPUP: PaneRect = PaneRect {
+        x: 220.0,
+        y: 276.0,
+        w: 180.0,
+        h: 26.0,
+    };
+    pub const GENDER_LABEL: PaneRect = PaneRect {
+        x: 20.0,
+        y: 244.0,
+        w: 160.0,
+        h: 20.0,
+    };
+    pub const GENDER_POPUP: PaneRect = PaneRect {
+        x: 220.0,
+        y: 240.0,
+        w: 180.0,
+        h: 26.0,
+    };
+    #[cfg(test)]
+    pub const ALL: [(&str, PaneRect); 4] = [
+        ("skin_label", SKIN_LABEL),
+        ("skin_popup", SKIN_POPUP),
+        ("gender_label", GENDER_LABEL),
+        ("gender_popup", GENDER_POPUP),
+    ];
+}
+
+mod stats_layout {
+    use super::PaneRect;
+
+    pub const HEADER: PaneRect = PaneRect {
+        x: 20.0,
+        y: 300.0,
+        w: 220.0,
+        h: 24.0,
+    };
+    pub const RANGE_POPUP: PaneRect = PaneRect {
+        x: 250.0,
+        y: 297.0,
+        w: 108.0,
+        h: 26.0,
+    };
+    pub const GROUP_POPUP: PaneRect = PaneRect {
+        x: 364.0,
+        y: 297.0,
+        w: 108.0,
+        h: 26.0,
+    };
+
+    pub fn row_rect(row: usize) -> PaneRect {
+        PaneRect {
+            x: 20.0,
+            y: 270.0 - row as f64 * 26.0,
+            w: 440.0,
+            h: 20.0,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn all() -> Vec<(&'static str, PaneRect)> {
+        let mut all = vec![
+            ("header", HEADER),
+            ("range_popup", RANGE_POPUP),
+            ("group_popup", GROUP_POPUP),
+        ];
+        for row in 0..super::STATS_ROWS {
+            all.push(("row", row_rect(row)));
+        }
+        all
+    }
+}
+
 fn build_window(
     mtm: MainThreadMarker,
     target: &Retained<SettingsTarget>,
@@ -1846,15 +1915,12 @@ fn build_window(
         switches.push((switch, Arc::clone(&flags.emoji_enabled)));
 
         let tone_label = NSTextField::labelWithString(&NSString::from_str("Skin tone"), mtm);
-        tone_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 280.0),
-            NSSize::new(160.0, 20.0),
-        ));
+        tone_label.setFrame(emoji_layout::SKIN_LABEL.ns());
         emoji.addSubview(&tone_label);
 
         let tone_popup = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(mtm),
-            NSRect::new(NSPoint::new(220.0, 276.0), NSSize::new(180.0, 26.0)),
+            emoji_layout::SKIN_POPUP.ns(),
             false,
         );
         for title in [
@@ -1882,15 +1948,12 @@ fn build_window(
         emoji.addSubview(&tone_popup);
 
         let gender_label = NSTextField::labelWithString(&NSString::from_str("Gender"), mtm);
-        gender_label.setFrame(NSRect::new(
-            NSPoint::new(20.0, 244.0),
-            NSSize::new(160.0, 20.0),
-        ));
+        gender_label.setFrame(emoji_layout::GENDER_LABEL.ns());
         emoji.addSubview(&gender_label);
 
         let gender_popup = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(mtm),
-            NSRect::new(NSPoint::new(220.0, 240.0), NSSize::new(180.0, 26.0)),
+            emoji_layout::GENDER_POPUP.ns(),
             false,
         );
         // Order mirrors the app-side EMOJI_GENDER_VALUES table (index addresses it).
@@ -1986,10 +2049,7 @@ fn build_window(
             NSTextField::labelWithString(&NSString::from_str("This session + lifetime"), mtm);
         // Width 220 (not 300) so the header clears the Range picker's label at
         // x=300; the string is ~150pt at this size so it isn't clipped.
-        stats_header.setFrame(NSRect::new(
-            NSPoint::new(20.0, 300.0),
-            NSSize::new(220.0, 24.0),
-        ));
+        stats_header.setFrame(stats_layout::HEADER.ns());
         stats.addSubview(&stats_header);
 
         // Range + grouping pickers (Tier 3.3): select the trailing span and the
@@ -2000,7 +2060,7 @@ fn build_window(
         {
             let range_popup = NSPopUpButton::initWithFrame_pullsDown(
                 NSPopUpButton::alloc(mtm),
-                NSRect::new(NSPoint::new(250.0, 297.0), NSSize::new(108.0, 26.0)),
+                stats_layout::RANGE_POPUP.ns(),
                 false,
             );
             for title in &flags.stat_range_titles {
@@ -2021,7 +2081,7 @@ fn build_window(
 
             let group_popup = NSPopUpButton::initWithFrame_pullsDown(
                 NSPopUpButton::alloc(mtm),
-                NSRect::new(NSPoint::new(364.0, 297.0), NSSize::new(108.0, 26.0)),
+                stats_layout::GROUP_POPUP.ns(),
                 false,
             );
             for title in &flags.stat_group_titles {
@@ -2053,10 +2113,7 @@ fn build_window(
             let text = initial.get(row).map(String::as_str).unwrap_or("");
             let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
             label.setFont(Some(&mono));
-            label.setFrame(NSRect::new(
-                NSPoint::new(20.0, 270.0 - row as f64 * 26.0),
-                NSSize::new(440.0, 20.0),
-            ));
+            label.setFrame(stats_layout::row_rect(row).ns());
             stats.addSubview(&label);
             stats_labels.push(label);
         }
@@ -2159,12 +2216,24 @@ fn record_setup_download(slot: &Arc<AtomicBool>) {
     slot.store(true, Ordering::Relaxed);
 }
 
-fn record_setup_model_selection(slot: &Arc<AtomicUsize>, raw_index: isize) {
+fn record_selection_index(slot: &Arc<AtomicUsize>, raw_index: isize) {
     slot.store(raw_index.max(0) as usize, Ordering::Relaxed);
 }
 
+fn record_setup_model_selection(slot: &Arc<AtomicUsize>, raw_index: isize) {
+    record_selection_index(slot, raw_index);
+}
+
 fn record_stat_selection(slot: &Arc<AtomicUsize>, raw_index: isize) {
-    slot.store(raw_index.max(0) as usize, Ordering::Relaxed);
+    record_selection_index(slot, raw_index);
+}
+
+fn record_apps_delete_row(slot: &Arc<Mutex<Option<usize>>>, raw_tag: isize) {
+    let row = raw_tag.max(0) as usize;
+    // Recover from a poisoned lock rather than silently dropping the user's
+    // Delete click: the slot is a plain `Option<usize>` whose bytes are valid
+    // even if some other holder panicked.
+    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(row);
 }
 
 fn record_personalization_edit_slot(
@@ -2218,24 +2287,12 @@ pub fn pane_titles() -> [&'static str; PANE_COUNT] {
 mod tests {
     use super::*;
 
-    #[test]
-    fn personalization_pane_layout_has_no_overlaps_within_budget() {
-        // Deterministic layout check for the Personalization pane — the pane can't
-        // be built off the test harness's non-main thread, so this proves the
-        // "visual" property that matters most (no control overlaps another, and
-        // every control stays inside the ~500x350 pane budget) without a running
-        // window server. Regression guard for the multi-line GI_FIELD growth that
-        // pushed the sender/strength rows down: a future edit that overlaps a row
-        // or overflows the pane fails here instead of only showing up on a Mac.
-        let all = pers_layout::ALL;
-
-        // No two controls intersect (same-row label+field are x-disjoint at the
-        // 140->145 gutter; rows are vertically disjoint).
+    fn assert_no_overlaps_within_budget(all: &[(&str, PaneRect)]) {
         for (i, (na, a)) in all.iter().enumerate() {
             for (nb, b) in all.iter().skip(i + 1) {
                 assert!(
                     !a.intersects(*b),
-                    "{na} overlaps {nb}: {na}=({},{},{},{}) {nb}=({},{},{},{})",
+                    "{na} overlaps {nb}: ({},{},{},{}) vs ({},{},{},{})",
                     a.x,
                     a.y,
                     a.w,
@@ -2247,9 +2304,7 @@ mod tests {
                 );
             }
         }
-
-        // Every control is on-pane (non-negative origin, right/top within budget).
-        for (name, r) in all.iter() {
+        for (name, r) in all {
             assert!(r.x >= 0.0 && r.y >= 0.0, "{name} has a negative origin");
             assert!(
                 r.x + r.w <= pers_layout::BUDGET_W,
@@ -2264,6 +2319,20 @@ mod tests {
                 pers_layout::BUDGET_H
             );
         }
+    }
+
+    #[test]
+    fn personalization_pane_layout_has_no_overlaps_within_budget() {
+        // Deterministic layout check for the Personalization pane — the pane can't
+        // be built off the test harness's non-main thread, so this proves the
+        // "visual" property that matters most (no control overlaps another, and
+        // every control stays inside the ~500x350 pane budget) without a running
+        // window server. Regression guard for the multi-line GI_FIELD growth that
+        // pushed the sender/strength rows down: a future edit that overlaps a row
+        // or overflows the pane fails here instead of only showing up on a Mac.
+        let all = pers_layout::ALL;
+
+        assert_no_overlaps_within_budget(&all);
     }
 
     #[test]
@@ -2288,37 +2357,17 @@ mod tests {
             }
         }
 
-        for (i, (na, a)) in all.iter().enumerate() {
-            for (nb, b) in all.iter().skip(i + 1) {
-                assert!(
-                    !a.intersects(*b),
-                    "{na} overlaps {nb}: ({},{},{},{}) vs ({},{},{},{})",
-                    a.x,
-                    a.y,
-                    a.w,
-                    a.h,
-                    b.x,
-                    b.y,
-                    b.w,
-                    b.h
-                );
-            }
-        }
-        for (name, r) in &all {
-            assert!(r.x >= 0.0 && r.y >= 0.0, "{name} has a negative origin");
-            assert!(
-                r.x + r.w <= pers_layout::BUDGET_W,
-                "{name} overflows pane width ({} > {})",
-                r.x + r.w,
-                pers_layout::BUDGET_W
-            );
-            assert!(
-                r.y + r.h <= pers_layout::BUDGET_H,
-                "{name} overflows pane height ({} > {})",
-                r.y + r.h,
-                pers_layout::BUDGET_H
-            );
-        }
+        assert_no_overlaps_within_budget(&all);
+    }
+
+    #[test]
+    fn emoji_pane_picker_layout_has_no_overlaps_within_budget() {
+        assert_no_overlaps_within_budget(&emoji_layout::ALL);
+    }
+
+    #[test]
+    fn statistics_pane_header_pickers_have_no_overlaps_within_budget() {
+        assert_no_overlaps_within_budget(&stats_layout::all());
     }
 
     #[test]
@@ -2426,6 +2475,24 @@ mod tests {
         record_stat_selection(&stat_group, 99);
         assert_eq!(stat_group.load(Ordering::Relaxed), 99);
 
+        let skin_tone = Arc::new(AtomicUsize::new(9));
+        record_selection_index(&skin_tone, -1);
+        assert_eq!(skin_tone.load(Ordering::Relaxed), 0);
+        record_selection_index(&skin_tone, 5);
+        assert_eq!(skin_tone.load(Ordering::Relaxed), 5);
+
+        let gender = Arc::new(AtomicUsize::new(9));
+        record_selection_index(&gender, -1);
+        assert_eq!(gender.load(Ordering::Relaxed), 0);
+        record_selection_index(&gender, 2);
+        assert_eq!(gender.load(Ordering::Relaxed), 2);
+
+        let delete_row = Arc::new(Mutex::new(None));
+        record_apps_delete_row(&delete_row, -1);
+        assert_eq!(*delete_row.lock().unwrap(), Some(0));
+        record_apps_delete_row(&delete_row, 7);
+        assert_eq!(*delete_row.lock().unwrap(), Some(7));
+
         let download = Arc::new(AtomicBool::new(false));
         record_setup_download(&download);
         assert!(download.load(Ordering::Relaxed));
@@ -2454,6 +2521,30 @@ mod tests {
             *personalization.lock().unwrap(),
             Some(PersonalizationEdit::StrengthStop(4))
         );
+    }
+
+    #[test]
+    fn settings_action_helpers_record_emoji_selection_slots() {
+        let skin_tone = Arc::new(AtomicUsize::new(9));
+        record_selection_index(&skin_tone, -1);
+        assert_eq!(skin_tone.load(Ordering::Relaxed), 0);
+        record_selection_index(&skin_tone, 5);
+        assert_eq!(skin_tone.load(Ordering::Relaxed), 5);
+
+        let gender = Arc::new(AtomicUsize::new(9));
+        record_selection_index(&gender, -1);
+        assert_eq!(gender.load(Ordering::Relaxed), 0);
+        record_selection_index(&gender, 2);
+        assert_eq!(gender.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn settings_action_helpers_record_apps_delete_row_slot() {
+        let delete_row = Arc::new(Mutex::new(None));
+        record_apps_delete_row(&delete_row, -1);
+        assert_eq!(*delete_row.lock().unwrap(), Some(0));
+        record_apps_delete_row(&delete_row, 7);
+        assert_eq!(*delete_row.lock().unwrap(), Some(7));
     }
 
     #[test]

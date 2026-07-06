@@ -11069,8 +11069,44 @@ mod tests {
             effective_accept_keys_with_mods(),
             ((35, CARBON_SHIFT_KEY), (KEYCODE_GRAVE, 0))
         );
+
+        set_accept_keymap_from_config_with_mods(
+            Some((35, CARBON_SHIFT_KEY)),
+            None,
+            Some((96, CARBON_OPTION_KEY)),
+        )
+        .unwrap();
+        assert_eq!(
+            effective_accept_keys_with_mods_and_grammar(),
+            (
+                (35, CARBON_SHIFT_KEY),
+                (KEYCODE_GRAVE, 0),
+                Some((96, CARBON_OPTION_KEY))
+            )
+        );
         set_accept_keymap(AcceptKeymap::default());
         assert_eq!(effective_accept_keys(), (48, 50));
+    }
+
+    #[test]
+    fn effective_accept_keys_with_mods_and_grammar_includes_configured_grammar_accept() {
+        set_accept_keymap_from_config_with_mods(
+            Some((35, CARBON_SHIFT_KEY)),
+            None,
+            Some((96, CARBON_OPTION_KEY)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            effective_accept_keys_with_mods_and_grammar(),
+            (
+                (35, CARBON_SHIFT_KEY),
+                (KEYCODE_GRAVE, 0),
+                Some((96, CARBON_OPTION_KEY))
+            )
+        );
+
+        set_accept_keymap(AcceptKeymap::default());
     }
 
     #[test]
@@ -11218,6 +11254,29 @@ mod tests {
         // a word key rebound elsewhere keeps all four bindings.
         let rebound = AcceptKeymap::from_accept_keys(Some(35), None).unwrap();
         assert_eq!(rebound.arm_bindings(true).len(), 4);
+    }
+
+    #[test]
+    fn set_tab_hotkey_suppressed_removes_literal_tab_from_worker_registration() {
+        set_tab_hotkey_suppressed(false);
+        let unsuppressed = accept_keymap().arm_bindings_for_action(
+            AcceptAction::Full,
+            TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed),
+        );
+        assert!(unsuppressed
+            .iter()
+            .any(|&(_, code, mods)| code == KEYCODE_TAB && mods == 0));
+
+        set_tab_hotkey_suppressed(true);
+        let suppressed = accept_keymap().arm_bindings_for_action(
+            AcceptAction::Full,
+            TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed),
+        );
+        assert!(suppressed
+            .iter()
+            .all(|&(_, code, mods)| !(code == KEYCODE_TAB && mods == 0)));
+
+        set_tab_hotkey_suppressed(false);
     }
 
     #[test]

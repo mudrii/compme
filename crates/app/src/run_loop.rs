@@ -3017,6 +3017,42 @@ fn switch_edge(flag: &AtomicBool, current: &mut bool) -> Option<bool> {
     })
 }
 
+fn apply_autocorrect_settings_edge(
+    flag: &AtomicBool,
+    current: &mut bool,
+    persist: impl FnOnce(bool),
+) -> Option<bool> {
+    let on = switch_edge(flag, current)?;
+    persist(on);
+    Some(on)
+}
+
+fn apply_trailing_space_settings_edge(
+    flag: &AtomicBool,
+    current: &mut bool,
+    set_trailing_space: impl FnOnce(bool),
+    persist: impl FnOnce(bool),
+) -> Option<bool> {
+    let on = switch_edge(flag, current)?;
+    set_trailing_space(on);
+    persist(on);
+    Some(on)
+}
+
+fn apply_midline_settings_edge(
+    flag: &AtomicBool,
+    global_mid_word: &mut bool,
+    prefs: &Prefs,
+    focused_app: Option<&str>,
+    set_allow_mid_word: impl FnOnce(bool),
+    persist: impl FnOnce(bool),
+) -> Option<bool> {
+    let on = switch_edge(flag, global_mid_word)?;
+    set_allow_mid_word(prefs.mid_line_enabled(focused_app, on));
+    persist(on);
+    Some(on)
+}
+
 fn apply_emoji_enabled(
     config_emoji: &mut Option<EmojiPrefs>,
     saved_prefs: &mut EmojiPrefs,
@@ -5002,21 +5038,20 @@ pub fn run() -> Result<(), String> {
         // General-tab Autocorrect watcher: persist + apply on the edge. The
         // decision path reads config.autocorrect per offer, so a field write
         // IS the live apply (per-app overrides still win).
-        if let Some(on) = switch_edge(&settings_flags.general_autocorrect, &mut config.autocorrect)
-        {
-            // Live apply = the field write itself (read per offer).
-            persist_and_log_switch("COMPME_AUTOCORRECT", "autocorrect", on);
-        }
+        apply_autocorrect_settings_edge(
+            &settings_flags.general_autocorrect,
+            &mut config.autocorrect,
+            |on| persist_and_log_switch("COMPME_AUTOCORRECT", "autocorrect", on),
+        );
         // General-tab Trailing-space watcher: persist + live engine apply
         // (the flag is baked at build via with_trailing_space, so the c94
         // runtime-setter pattern applies — set_trailing_space).
-        if let Some(on) = switch_edge(
+        apply_trailing_space_settings_edge(
             &settings_flags.general_trailing_space,
             &mut config.trailing_space,
-        ) {
-            engine.set_trailing_space(on);
-            persist_and_log_switch("COMPME_TRAILING_SPACE", "trailing space", on);
-        }
+            |on| engine.set_trailing_space(on),
+            |on| persist_and_log_switch("COMPME_TRAILING_SPACE", "trailing space", on),
+        );
         // Labs-pane watcher: on a switch edge, persist COMPME_MIDLINE and
         // re-apply the engine gate for the current app immediately (per-app
         // overrides still win; the switch changes only the global default).
@@ -5024,10 +5059,14 @@ pub fn run() -> Result<(), String> {
         // wins until relaunch (deliberate graceful degradation, same stance
         // as the instance lock: an IO hiccup must not stall the app, at the
         // cost of config.env staying stale until the next successful write).
-        if let Some(on) = switch_edge(&settings_flags.labs_midline, &mut global_mid_word) {
-            engine.set_allow_mid_word(prefs.mid_line_enabled(last_app_key.as_deref(), on));
-            persist_and_log_switch("COMPME_MIDLINE", "mid-line completions", on);
-        }
+        apply_midline_settings_edge(
+            &settings_flags.labs_midline,
+            &mut global_mid_word,
+            &prefs,
+            last_app_key.as_deref(),
+            |on| engine.set_allow_mid_word(on),
+            |on| persist_and_log_switch("COMPME_MIDLINE", "mid-line completions", on),
+        );
         // Context-pane watchers. Clipboard context applies live because submit
         // reads `config.clipboard_context` for each request. Screen OCR also
         // applies live: enabling starts the worker when Screen Recording is
@@ -6752,6 +6791,76 @@ mod tests {
         assert_eq!(switch_edge(&flag, &mut current), None, "same state: quiet");
         flag.store(false, Ordering::Relaxed);
         assert_eq!(switch_edge(&flag, &mut current), Some(false));
+    }
+
+    #[test]
+    fn general_autocorrect_settings_edge_applies_live_and_persists_once() {
+        let flag = AtomicBool::new(true);
+        let mut current = false;
+        let persisted = RefCell::new(Vec::new());
+
+        assert_eq!(
+            apply_autocorrect_settings_edge(&flag, &mut current, |on| {
+                persisted.borrow_mut().push(on)
+            }),
+            Some(true)
+        );
+        assert!(current);
+        assert_eq!(persisted.borrow().as_slice(), &[true]);
+        assert_eq!(
+            apply_autocorrect_settings_edge(&flag, &mut current, |on| {
+                persisted.borrow_mut().push(on)
+            }),
+            None
+        );
+        assert_eq!(persisted.borrow().as_slice(), &[true]);
+    }
+
+    #[test]
+    fn trailing_space_settings_edge_sets_engine_and_persists_once() {
+        let flag = AtomicBool::new(false);
+        let mut current = true;
+        let live = RefCell::new(Vec::new());
+        let persisted = RefCell::new(Vec::new());
+
+        assert_eq!(
+            apply_trailing_space_settings_edge(
+                &flag,
+                &mut current,
+                |on| live.borrow_mut().push(on),
+                |on| persisted.borrow_mut().push(on),
+            ),
+            Some(false)
+        );
+        assert!(!current);
+        assert_eq!(live.borrow().as_slice(), &[false]);
+        assert_eq!(persisted.borrow().as_slice(), &[false]);
+    }
+
+    #[test]
+    fn midline_settings_edge_applies_effective_app_policy_and_persists_global_default() {
+        let flag = AtomicBool::new(true);
+        let mut global = false;
+        let mut prefs = Prefs::default();
+        prefs.set_app_policy_field("com.override", prefs::AppPolicyField::MidLine, false);
+        let live = RefCell::new(Vec::new());
+        let persisted = RefCell::new(Vec::new());
+
+        assert_eq!(
+            apply_midline_settings_edge(
+                &flag,
+                &mut global,
+                &prefs,
+                Some("com.override"),
+                |on| live.borrow_mut().push(on),
+                |on| persisted.borrow_mut().push(on),
+            ),
+            Some(true)
+        );
+
+        assert!(global);
+        assert_eq!(live.borrow().as_slice(), &[false]);
+        assert_eq!(persisted.borrow().as_slice(), &[true]);
     }
 
     #[test]
