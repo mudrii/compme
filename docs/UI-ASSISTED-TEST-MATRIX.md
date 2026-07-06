@@ -44,13 +44,18 @@ Evidence:
   - `Screenshot 2026-07-06 at 13-56-38.png` — About
 - `/tmp/cm-ui.log` tail showed TextEdit request, ghost, and Carbon hotkey
   registration activity with no crash in the visible tail.
+- Menu screenshots received 2026-07-06 under `~/Pictures/Diff/`:
+  - `Screenshot 2026-07-06 at 14-00-42.png` — menu-bar icon crop
+  - `Screenshot 2026-07-06 at 14-00-54.png` — open tray menu
 
 Result:
 - Settings layout pass: no visible clipping, overlap, or stale labels found in
   the 9 tab screenshots.
-- Missing evidence: menu-bar icon with menu open.
+- Tray/menu pass: icon is image-based rather than `CM...` text fallback, and
+  menu items fit with status, enable, app/input toggles, global disable,
+  snooze, Settings, updates, and Quit visible.
 
-Status: partial pass; waiting for menu screenshot.
+Status: pass.
 
 ## Batch 2 — Settings Interaction And Persistence
 
