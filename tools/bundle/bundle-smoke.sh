@@ -30,30 +30,44 @@ mkdir -p "$app/Contents/MacOS"
 cat >"$app/Contents/MacOS/compme" <<'APP'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'compme COMPME_RUN_MS=%s args=%s\n' "${COMPME_RUN_MS:-}" "$*" >>"$COMPME_BUNDLE_SMOKE_SELF_TEST_LOG"
+printf 'compme COMPME_RUN_MS=%s COMPME_STUB_COMPLETION=%s args=%s\n' "${COMPME_RUN_MS:-}" "${COMPME_STUB_COMPLETION:-}" "$*" >>"$COMPME_BUNDLE_SMOKE_SELF_TEST_LOG"
 exit "${COMPME_BUNDLE_SMOKE_APP_EXIT:-0}"
 APP
 chmod +x "$app/Contents/MacOS/compme"
 SH
   chmod +x "$fake_make_app"
 
-  COMPME_BUNDLE_SMOKE_REPO_ROOT="$fake_repo" \
+  COMPME_RUN_MS= \
+    COMPME_STUB_COMPLETION= \
+    COMPME_BUNDLE_SMOKE_REPO_ROOT="$fake_repo" \
     COMPME_BUNDLE_SMOKE_MAKE_APP="$fake_make_app" \
     COMPME_BUNDLE_SMOKE_SELF_TEST_LOG="$log" \
     "$0" "$tmp_dir/out" >"$tmp_dir/stdout"
   grep -Fq "make-app $tmp_dir/out" "$log"
-  grep -Fq "compme COMPME_RUN_MS=1500 args=" "$log"
+  grep -Fq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= smoke args=" "$log"
 
   custom_log="$tmp_dir/custom.log"
   COMPME_RUN_MS=77 \
+    COMPME_STUB_COMPLETION= \
     COMPME_BUNDLE_SMOKE_REPO_ROOT="$fake_repo" \
     COMPME_BUNDLE_SMOKE_MAKE_APP="$fake_make_app" \
     COMPME_BUNDLE_SMOKE_SELF_TEST_LOG="$custom_log" \
     "$0" "$tmp_dir/custom-out" >"$tmp_dir/stdout-custom"
-  grep -Fq "compme COMPME_RUN_MS=77 args=" "$custom_log"
+  grep -Fq "compme COMPME_RUN_MS=77 COMPME_STUB_COMPLETION= smoke args=" "$custom_log"
+
+  custom_stub_log="$tmp_dir/custom-stub.log"
+  COMPME_RUN_MS= \
+    COMPME_STUB_COMPLETION=" custom" \
+    COMPME_BUNDLE_SMOKE_REPO_ROOT="$fake_repo" \
+    COMPME_BUNDLE_SMOKE_MAKE_APP="$fake_make_app" \
+    COMPME_BUNDLE_SMOKE_SELF_TEST_LOG="$custom_stub_log" \
+    "$0" "$tmp_dir/custom-stub-out" >"$tmp_dir/stdout-custom-stub"
+  grep -Fq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= custom args=" "$custom_stub_log"
 
   fail_log="$tmp_dir/fail.log"
-  if COMPME_BUNDLE_SMOKE_REPO_ROOT="$fake_repo" \
+  if COMPME_RUN_MS= \
+    COMPME_STUB_COMPLETION= \
+    COMPME_BUNDLE_SMOKE_REPO_ROOT="$fake_repo" \
     COMPME_BUNDLE_SMOKE_MAKE_APP="$fake_make_app" \
     COMPME_BUNDLE_SMOKE_SELF_TEST_LOG="$fail_log" \
     COMPME_BUNDLE_SMOKE_APP_EXIT=42 \
@@ -61,7 +75,7 @@ SH
     echo "bundle smoke self-test failed: app failure was accepted" >&2
     return 1
   fi
-  grep -Fq "compme COMPME_RUN_MS=1500 args=" "$fail_log"
+  grep -Fq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= smoke args=" "$fail_log"
 
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp_dir/self-test-argc.err"; then
     echo "bundle smoke self-test failed: extra self-test argument was accepted" >&2

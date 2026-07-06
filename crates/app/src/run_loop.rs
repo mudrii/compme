@@ -3399,6 +3399,29 @@ fn offer_all(latest: &mut LatestRequest, requests: Vec<CompletionRequest>) {
     }
 }
 
+fn apply_grammar_shortcut_pending_effect(
+    latest: &mut LatestRequest,
+    manual_grammar_request: &mut Option<CompletionRequest>,
+    outcome: &GrammarCheckShortcutOutcome,
+) {
+    match outcome {
+        GrammarCheckShortcutOutcome::BlockedAfterRead | GrammarCheckShortcutOutcome::NotArmed => {
+            latest.clear();
+            *manual_grammar_request = None;
+        }
+        GrammarCheckShortcutOutcome::Armed(request) => {
+            latest.clear();
+            *manual_grammar_request = Some(request.clone());
+        }
+        GrammarCheckShortcutOutcome::NoField
+        | GrammarCheckShortcutOutcome::BlockedBeforeRead
+        | GrammarCheckShortcutOutcome::ReadContextError(_)
+        | GrammarCheckShortcutOutcome::CapabilitiesError(_) => {
+            *manual_grammar_request = None;
+        }
+    }
+}
+
 /// The engine-state transition implied by a change in global Secure Input,
 /// derived purely so the run loop's edge handling is unit-testable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4406,7 +4429,7 @@ pub fn run() -> Result<(), String> {
                             eprintln!("compme: shortcut grammar-check: no focused field");
                             continue;
                         };
-                        match handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
+                        let outcome = handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
                             current_field: Some(field),
                             config: &config,
                             prefs: &prefs,
@@ -4422,7 +4445,13 @@ pub fn run() -> Result<(), String> {
                             arm_manual_grammar_request: |field| {
                                 engine.arm_manual_grammar_request(&field)
                             },
-                        }) {
+                        });
+                        apply_grammar_shortcut_pending_effect(
+                            &mut latest,
+                            &mut manual_grammar_request,
+                            &outcome,
+                        );
+                        match outcome {
                             GrammarCheckShortcutOutcome::NoField => {
                                 eprintln!("compme: shortcut grammar-check: no focused field");
                             }
@@ -4438,16 +4467,16 @@ pub fn run() -> Result<(), String> {
                                 eprintln!("compme: grammar-check capabilities error: {err:?}");
                             }
                             GrammarCheckShortcutOutcome::BlockedAfterRead => {
-                                latest.clear();
                                 eprintln!("compme: shortcut grammar-check blocked");
                             }
                             GrammarCheckShortcutOutcome::NotArmed => {
-                                latest.clear();
                                 eprintln!("compme: shortcut grammar-check not armed");
                             }
                             GrammarCheckShortcutOutcome::Armed(request) => {
-                                latest.clear();
-                                manual_grammar_request = Some(request);
+                                debug_assert!(matches!(
+                                    manual_grammar_request.as_ref(),
+                                    Some(armed) if armed.generation == request.generation
+                                ));
                             }
                         }
                     }
@@ -10610,6 +10639,78 @@ mod tests {
     }
 
     #[test]
+    fn grammar_check_shortcut_surfaces_read_context_error_without_capability_or_arm() {
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let field = field_with_app("TextEdit");
+        let mut cache = None;
+        let caps_count = std::cell::Cell::new(0);
+        let arm_count = std::cell::Cell::new(0);
+
+        let outcome = handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
+            current_field: Some(field),
+            config: &config,
+            prefs: &config.prefs,
+            enabled: true,
+            now_ms: 0,
+            last_domain: &mut cache,
+            resolve_app_key: |field: FieldHandle| Some(field.app.clone()),
+            focused_page_url: |_: FieldHandle| None,
+            read_context: |_| Err(PlatformError::Timeout),
+            capabilities: |_| {
+                caps_count.set(caps_count.get() + 1);
+                Ok(writable_axset_caps())
+            },
+            arm_manual_grammar_request: |_| {
+                arm_count.set(arm_count.get() + 1);
+                Some((77, 88))
+            },
+        });
+
+        assert!(matches!(
+            outcome,
+            GrammarCheckShortcutOutcome::ReadContextError(PlatformError::Timeout)
+        ));
+        assert_eq!(caps_count.get(), 0);
+        assert_eq!(arm_count.get(), 0);
+    }
+
+    #[test]
+    fn grammar_check_shortcut_surfaces_capabilities_error_without_arm() {
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let field = field_with_app("TextEdit");
+        let mut cache = None;
+        let read_count = std::cell::Cell::new(0);
+        let arm_count = std::cell::Cell::new(0);
+
+        let outcome = handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
+            current_field: Some(field.clone()),
+            config: &config,
+            prefs: &config.prefs,
+            enabled: true,
+            now_ms: 0,
+            last_domain: &mut cache,
+            resolve_app_key: |field: FieldHandle| Some(field.app.clone()),
+            focused_page_url: |_: FieldHandle| None,
+            read_context: |field: FieldHandle| {
+                read_count.set(read_count.get() + 1);
+                Ok(text_context_with_right(&field, "teh", ""))
+            },
+            capabilities: |_| Err(PlatformError::Timeout),
+            arm_manual_grammar_request: |_| {
+                arm_count.set(arm_count.get() + 1);
+                Some((77, 88))
+            },
+        });
+
+        assert!(matches!(
+            outcome,
+            GrammarCheckShortcutOutcome::CapabilitiesError(PlatformError::Timeout)
+        ));
+        assert_eq!(read_count.get(), 1);
+        assert_eq!(arm_count.get(), 0);
+    }
+
+    #[test]
     fn grammar_detection_rejects_non_empty_selection() {
         let field = host_field("grammar-selection");
         let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
@@ -13629,6 +13730,88 @@ mod tests {
             3,
             "an older generation must not overwrite the retained newest"
         );
+    }
+
+    #[test]
+    fn grammar_check_shortcut_blocked_after_read_clears_pending_completion() {
+        let mut latest = LatestRequest::new();
+        latest.offer(req(9));
+        let mut manual = Some(req(1));
+
+        apply_grammar_shortcut_pending_effect(
+            &mut latest,
+            &mut manual,
+            &GrammarCheckShortcutOutcome::BlockedAfterRead,
+        );
+
+        assert!(latest.take().is_none());
+        assert!(manual.is_none());
+    }
+
+    #[test]
+    fn grammar_check_shortcut_not_armed_clears_pending_completion() {
+        let mut latest = LatestRequest::new();
+        latest.offer(req(9));
+        let mut manual = None;
+
+        apply_grammar_shortcut_pending_effect(
+            &mut latest,
+            &mut manual,
+            &GrammarCheckShortcutOutcome::NotArmed,
+        );
+
+        assert!(latest.take().is_none());
+        assert!(manual.is_none());
+    }
+
+    #[test]
+    fn grammar_check_shortcut_later_failed_press_drops_stale_manual_request() {
+        let mut latest = LatestRequest::new();
+        let mut manual = None;
+
+        apply_grammar_shortcut_pending_effect(
+            &mut latest,
+            &mut manual,
+            &GrammarCheckShortcutOutcome::Armed(req(4)),
+        );
+        apply_grammar_shortcut_pending_effect(
+            &mut latest,
+            &mut manual,
+            &GrammarCheckShortcutOutcome::BlockedAfterRead,
+        );
+
+        assert!(latest.take().is_none());
+        assert!(manual.is_none());
+
+        apply_grammar_shortcut_pending_effect(
+            &mut latest,
+            &mut manual,
+            &GrammarCheckShortcutOutcome::Armed(req(5)),
+        );
+        apply_grammar_shortcut_pending_effect(
+            &mut latest,
+            &mut manual,
+            &GrammarCheckShortcutOutcome::NotArmed,
+        );
+
+        assert!(latest.take().is_none());
+        assert!(manual.is_none());
+    }
+
+    #[test]
+    fn grammar_check_shortcut_non_armed_error_drops_stale_manual_without_completion_clear() {
+        let mut latest = LatestRequest::new();
+        latest.offer(req(9));
+        let mut manual = Some(req(4));
+
+        apply_grammar_shortcut_pending_effect(
+            &mut latest,
+            &mut manual,
+            &GrammarCheckShortcutOutcome::ReadContextError(PlatformError::Timeout),
+        );
+
+        assert_eq!(latest.take().unwrap().generation, 9);
+        assert!(manual.is_none());
     }
 
     #[test]
