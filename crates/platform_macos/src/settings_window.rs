@@ -1747,17 +1747,19 @@ fn build_window(
                 sel!(toggleTrailingSpace:),
             ),
         ];
+        let label_top_y = 310.0;
+        let switch_top_y = 306.0;
         for (row, (title, flag, action)) in rows.into_iter().enumerate() {
             let label = NSTextField::labelWithString(&NSString::from_str(title), mtm);
             label.setFrame(NSRect::new(
-                NSPoint::new(20.0, 340.0 - row as f64 * 40.0),
+                NSPoint::new(20.0, label_top_y - row as f64 * 40.0),
                 NSSize::new(400.0, 20.0),
             ));
             general.addSubview(&label);
 
             let switch = NSSwitch::new(mtm);
             switch.setFrame(NSRect::new(
-                NSPoint::new(420.0, 336.0 - row as f64 * 40.0),
+                NSPoint::new(420.0, switch_top_y - row as f64 * 40.0),
                 NSSize::new(60.0, 26.0),
             ));
             switch.setState(if flag.load(Ordering::Relaxed) {

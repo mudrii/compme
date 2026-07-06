@@ -86,6 +86,8 @@ Findings from 2026-07-06 user-assisted pass:
 - Selected tab highlight had a tight/cropped top edge in the native tab strip.
 - Latest screenshot pass showed the native tab strip still clipped the first
   selected tab on first open and later degraded to a line-like highlight.
+- Follow-up screenshot showed the segmented tab row fixed selection formatting,
+  but General-pane text started too close to the tabs.
 
 Fix in progress:
 - Queue all pending Personalization edits instead of last-writer-wins.
@@ -100,6 +102,8 @@ Fix in progress:
   breathing room.
 - Hide the native `NSTabView` tab strip and use a single `NSSegmentedControl`
   for tab selection while keeping `NSTabView` only for pane switching.
+- Lower the General-pane toggle stack so its first row has breathing room under
+  the segmented tab control.
 
 Status: fixes pending validation.
 
