@@ -31,7 +31,26 @@ Check:
 - Statistics shows session/lifetime rows and range/grouping controls.
 - About shows version/license/no-telemetry/repo/credits text.
 
-Status: waiting for user screenshots.
+Evidence:
+- Settings screenshots received 2026-07-06 under `~/Pictures/Diff/`:
+  - `Screenshot 2026-07-06 at 13-55-38.png` — Setup
+  - `Screenshot 2026-07-06 at 13-55-47.png` — General
+  - `Screenshot 2026-07-06 at 13-55-55.png` — Personalization
+  - `Screenshot 2026-07-06 at 13-56-09.png` — Apps
+  - `Screenshot 2026-07-06 at 13-56-14.png` — Context
+  - `Screenshot 2026-07-06 at 13-56-20.png` — Emoji
+  - `Screenshot 2026-07-06 at 13-56-25.png` — Shortcuts
+  - `Screenshot 2026-07-06 at 13-56-31.png` — Statistics
+  - `Screenshot 2026-07-06 at 13-56-38.png` — About
+- `/tmp/cm-ui.log` tail showed TextEdit request, ghost, and Carbon hotkey
+  registration activity with no crash in the visible tail.
+
+Result:
+- Settings layout pass: no visible clipping, overlap, or stale labels found in
+  the 9 tab screenshots.
+- Missing evidence: menu-bar icon with menu open.
+
+Status: partial pass; waiting for menu screenshot.
 
 ## Batch 2 — Settings Interaction And Persistence
 
