@@ -622,8 +622,50 @@ pub mod win_host {
         use super::*;
         use windows::Win32::Security::Authorization::GetNamedSecurityInfoW;
         use windows::Win32::Security::{
-            AclSizeInformation, GetAclInformation, ACL_SIZE_INFORMATION,
+            AclSizeInformation, CreateWellKnownSid, EqualSid, GetAce, GetAclInformation,
+            WinCreatorOwnerRightsSid, ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, PSID,
+            SECURITY_MAX_SID_SIZE,
         };
+
+        /// The single ACE must grant OWNER_RIGHTS (S-1-3-4) — a SID-flip
+        /// mutation of OWNER_ONLY_SDDL (e.g. `;;;WD` = Everyone) keeps
+        /// AceCount == 1 and would otherwise ship world-full-access green.
+        fn first_ace_is_owner_rights(path: &Path) -> bool {
+            let target = wide(path);
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            let mut sd = PSECURITY_DESCRIPTOR::default();
+            // SAFETY: out-pointers valid; sd freed below; ace points into dacl
+            // which lives inside sd's allocation until the free.
+            unsafe {
+                let err = GetNamedSecurityInfoW(
+                    PCWSTR(target.as_ptr()),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    None,
+                    None,
+                    Some(&mut dacl),
+                    None,
+                    &mut sd,
+                );
+                assert_eq!(err, ERROR_SUCCESS, "GetNamedSecurityInfoW failed");
+                let mut ace: *mut std::ffi::c_void = std::ptr::null_mut();
+                GetAce(dacl, 0, &mut ace).expect("GetAce");
+                let ace = ace as *mut ACCESS_ALLOWED_ACE;
+                let ace_sid = PSID(std::ptr::addr_of_mut!((*ace).SidStart) as *mut _);
+                let mut owner_rights = [0u8; SECURITY_MAX_SID_SIZE as usize];
+                let mut len = owner_rights.len() as u32;
+                CreateWellKnownSid(
+                    WinCreatorOwnerRightsSid,
+                    None,
+                    Some(PSID(owner_rights.as_mut_ptr() as *mut _)),
+                    &mut len,
+                )
+                .expect("CreateWellKnownSid");
+                let equal = EqualSid(ace_sid, PSID(owner_rights.as_mut_ptr() as *mut _)).is_ok();
+                LocalFree(Some(HLOCAL(sd.0)));
+                equal
+            }
+        }
 
         fn ace_count(path: &Path) -> u32 {
             let target = wide(path);
@@ -662,6 +704,10 @@ pub mod win_host {
             std::fs::create_dir_all(&dir).unwrap();
             harden_owner_only(&dir).expect("harden dir");
             assert_eq!(ace_count(&dir), 1, "dir DACL must be the single owner ACE");
+            assert!(
+                first_ace_is_owner_rights(&dir),
+                "the ACE must grant OWNER_RIGHTS, not a world/group SID"
+            );
 
             // A file created AFTER hardening inherits the owner-only ACE.
             let child = dir.join("child.txt");

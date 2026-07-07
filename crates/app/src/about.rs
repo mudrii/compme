@@ -48,8 +48,11 @@ mod tests {
         // Credits: the inference and crypto cornerstones must be named.
         assert!(text.contains("llama-cpp-2"));
         assert!(text.contains("aes-gcm"));
-        // The Apple stack is credited only in macOS builds.
+        // The Apple stack is credited only in macOS builds — and must be
+        // absent everywhere else (those builds do not link it).
         #[cfg(target_os = "macos")]
         assert!(text.contains("objc2"));
+        #[cfg(not(target_os = "macos"))]
+        assert!(!text.contains("objc2"));
     }
 }
