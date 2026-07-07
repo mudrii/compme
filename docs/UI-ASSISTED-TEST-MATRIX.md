@@ -89,23 +89,26 @@ Findings from 2026-07-06 user-assisted pass:
 - Follow-up screenshot showed the segmented tab row fixed selection formatting,
   but General-pane text started too close to the tabs.
 
-Fix in progress:
-- Queue all pending Personalization edits instead of last-writer-wins.
-- Flush visible Personalization text fields while Settings is open.
-- Track `flagsChanged:` modifier state in the recorder and fall back to it when
-  function-key `keyDown:` events omit Shift.
-- Keep a one-key nonzero-modifier grace cache for function keys so Shift+F5
-  survives the transient zero `flagsChanged:` event.
-- Move the assisted launcher's grammar-check shortcut away from Shift+F5 so
-  Batch 2 can record Shift+F5 without a global-hotkey collision.
-- Inset the tab view inside a content wrapper to give selected tabs top/side
-  breathing room.
-- Hide the native `NSTabView` tab strip and use a single `NSSegmentedControl`
-  for tab selection while keeping `NSTabView` only for pane switching.
-- Lower the General-pane toggle stack so its first row has breathing room under
-  the segmented tab control.
+Fixes validated 2026-07-07 (scripted UI-assisted session, screenshots at
+/tmp/cm-tab-*.png + /tmp/cm-reopen-*.png, isolated-config readback as ground
+truth):
+- Segmented tab row renders a proper rounded selection highlight on first open;
+  General first toggle row has clear space under the tabs (all 9 pane
+  screenshots re-taken, no clipping/overlap).
+- General toggles live-persist (`COMPME_MIDLINE=1`, `COMPME_AUTOCORRECT=0`
+  appeared in the isolated config immediately on click).
+- Personalization edits flush on tab-switch without Enter
+  (`COMPME_INSTRUCTIONS` + `COMPME_SENDER_NAME` written; values shown after
+  close/reopen).
+- Emoji skin tone + gender persist (`COMPME_EMOJI_SKIN_TONE=medium`,
+  `COMPME_EMOJI_GENDER=female`).
+- Shift+F5 records with its modifier (`COMPME_ACCEPT_WORD_KEY=shift+96`;
+  recorder + summary show ⇧F5 after reopen). Synthetic keystroke path; the
+  physical-key edge stays covered by `always-on-hotkeys-physical-look`.
+- Note: recorder fields expose no AX sub-elements (custom NSView); labels for
+  the tab segments are exposed via AXDescription — VoiceOver-readable.
 
-Status: fixes pending validation.
+Status: pass.
 
 ## Batch 3 — TextEdit Completion Flow
 
