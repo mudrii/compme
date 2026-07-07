@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-06 (docs/roadmap sync after audit, TDD, and release-pipeline hardening loops) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1747 workspace tests; spike separate)
+> **Last updated:** 2026-07-06 (docs/roadmap sync after audit, TDD, and release-pipeline hardening loops) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1750 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -166,13 +166,16 @@ Per `2026-06-10-a3-settings-ui-design.md`. The settings window now ships as 9
 tabs (Setup, General, Personalization, Apps, Context, Emoji, Shortcuts,
 Statistics, About). The macOS-buildable Tier 3 controls have landed in code and
 deterministic tests; the remaining work is the live visual/physical LOOK pass —
-**Live finding (2026-07-07 assisted-UI session, open):** Chrome web-content
-fields bind (`AXManualAccessibility` wake works, focus lands as `AXTextArea`,
-a request was submitted and 3 candidates returned) but Chrome delivers a fresh
-AX element per focus notification and each bind goes `StaleField` within the
-churn, so the ghost is discarded before rendering. Needs element-identity or
-retry-on-stale handling in the focus bind path before the
-`caret-marker-chrome-marker` gate can pass live. Firefox/Zen mirror-mode
+**Live finding (2026-07-07 assisted-UI session) — FIXED same day:** Chrome
+delivers a fresh AX element ref per focus notification for identifier-less web
+fields, so pointer-based identity churned `StaleField` on every read (661
+stale lines; ghost never rendered). Fixed by adding `CFHash`-based element
+identity (`hash=` segment in `stable_field_key`/`field_element_id`) — the hash
+tracks the underlying AX node across refs while the anonymous wrong-field
+guard stays intact. Live after fix: 0 churn StaleFields; Chrome textarea
+bind→request→completion→ghost→accept→insert end-to-end (" world" inserted with
+seam). Caret precision in Chrome still degrades to the window-rect anchor —
+that remains the `caret-marker-chrome-marker` calibration gate. Firefox/Zen mirror-mode
 ENGAGEMENT is log-proven, but Gecko ignores the advisory accessibility wake,
 so the visual mirror render stays with its LOOK gate.
 
@@ -475,7 +478,7 @@ physical trigger/accept interaction.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1747 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1750 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

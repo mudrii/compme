@@ -175,6 +175,7 @@ static SECURE_INPUT_QUERY_LOCK: Mutex<()> = Mutex::new(());
 
 #[link(name = "Carbon", kind = "framework")]
 extern "C" {
+    fn CFHash(cf: CFTypeRef) -> usize;
     fn IsSecureEventInputEnabled() -> c_uchar;
     fn GetApplicationEventTarget() -> EventTargetRef;
     fn RegisterEventHotKey(
@@ -6242,6 +6243,12 @@ pub struct AxElementIdentity {
     identifier: Option<String>,
     role: Option<String>,
     subrole: Option<String>,
+    /// `CFHash` of the AX element: stable for the same underlying node across
+    /// element refs. Chromium delivers a fresh ref per focus notification for
+    /// identifier-less web fields, so pointer identity churns (live
+    /// 2026-07-07: every post-focus read StaleFielded and the ghost never
+    /// rendered); the hash is the stable substitute.
+    element_hash: Option<u64>,
 }
 
 impl AxElementIdentity {
@@ -6252,7 +6259,13 @@ impl AxElementIdentity {
             identifier: None,
             role: None,
             subrole: None,
+            element_hash: None,
         }
+    }
+
+    fn with_element_hash(mut self, element_hash: Option<u64>) -> Self {
+        self.element_hash = element_hash;
+        self
     }
 
     fn new(
@@ -6268,6 +6281,7 @@ impl AxElementIdentity {
             identifier,
             role,
             subrole,
+            element_hash: None,
         }
     }
 
@@ -6290,6 +6304,9 @@ impl AxElementIdentity {
         if let Some(pid) = self.owner_pid {
             parts.push(format!("pid={pid}"));
         }
+        if let Some(hash) = self.element_hash {
+            parts.push(format!("hash={hash}"));
+        }
         if let Some(identifier) = &self.identifier {
             parts.push(format!("id={}", escape_identity_component(identifier)));
         }
@@ -6305,15 +6322,30 @@ impl AxElementIdentity {
 
     fn stable_field_key(&self) -> Option<String> {
         let owner_pid = self.owner_pid?;
-        let identifier = self.identifier.as_ref()?;
 
         let mut parts = vec![format!("pid={owner_pid}")];
-        parts.push(format!("id={}", escape_identity_component(identifier)));
-        if let Some(role) = &self.role {
-            parts.push(format!("role={}", escape_identity_component(role)));
-        }
-        if let Some(subrole) = &self.subrole {
-            parts.push(format!("subrole={}", escape_identity_component(subrole)));
+        match (&self.identifier, self.element_hash) {
+            // An explicit AXIdentifier is the strongest identity; the hash is
+            // the fallback for identifier-less (e.g. Chromium web) fields.
+            (Some(identifier), _) => {
+                parts.push(format!("id={}", escape_identity_component(identifier)));
+                if let Some(role) = &self.role {
+                    parts.push(format!("role={}", escape_identity_component(role)));
+                }
+                if let Some(subrole) = &self.subrole {
+                    parts.push(format!("subrole={}", escape_identity_component(subrole)));
+                }
+            }
+            (None, Some(hash)) => {
+                parts.push(format!("hash={hash}"));
+                if let Some(role) = &self.role {
+                    parts.push(format!("role={}", escape_identity_component(role)));
+                }
+                if let Some(subrole) = &self.subrole {
+                    parts.push(format!("subrole={}", escape_identity_component(subrole)));
+                }
+            }
+            (None, None) => return None,
         }
 
         Some(format!("ax:{}", parts.join("|")))
@@ -6336,10 +6368,14 @@ unsafe fn resolve_ax_element_identity(
     let identifier = read_optional_ax_string_attribute(element, kAXIdentifierAttribute)?;
     let role = read_optional_ax_string_attribute(element, kAXRoleAttribute)?;
     let subrole = read_optional_ax_string_attribute(element, kAXSubroleAttribute)?;
+    // CFHash equality tracks the underlying AX node, not the ref pointer —
+    // the stable identity for identifier-less fields (Chromium churns refs).
+    let element_hash = Some(CFHash(element as CFTypeRef) as u64);
 
-    Ok(AxElementIdentity::new(
-        pointer_id, owner_pid, identifier, role, subrole,
-    ))
+    Ok(
+        AxElementIdentity::new(pointer_id, owner_pid, identifier, role, subrole)
+            .with_element_hash(element_hash),
+    )
 }
 
 unsafe fn read_ax_element_pid(element: AXUIElementRef) -> Result<Option<u32>, PlatformError> {
@@ -7922,6 +7958,69 @@ mod tests {
         };
 
         assert!(!field_matches_identity(&field, &identity));
+    }
+
+    #[test]
+    fn stable_field_key_uses_element_hash_for_anonymous_fields() {
+        // Chromium web fields carry no AXIdentifier and deliver a fresh
+        // element ref per focus notification (live 2026-07-07: every read
+        // StaleFielded and the ghost never rendered). CFHash of the element is
+        // stable for the same underlying AX node, so it substitutes for the
+        // missing identifier.
+        let identity =
+            AxElementIdentity::new("ax:0x111", Some(42), None, Some("AXTextArea".into()), None)
+                .with_element_hash(Some(777));
+
+        assert_eq!(
+            identity.stable_field_key(),
+            Some("ax:pid=42|hash=777|role=AXTextArea".into())
+        );
+        // An identifier still wins over the hash when both exist.
+        let named = AxElementIdentity::new("ax:0x111", Some(42), Some("editor".into()), None, None)
+            .with_element_hash(Some(777));
+        assert_eq!(named.stable_field_key(), Some("ax:pid=42|id=editor".into()));
+    }
+
+    #[test]
+    fn field_matches_identity_accepts_same_element_hash_across_pointer_churn() {
+        let old_identity =
+            AxElementIdentity::new("ax:0x111", Some(42), None, Some("AXTextArea".into()), None)
+                .with_element_hash(Some(777));
+        let new_identity =
+            AxElementIdentity::new("ax:0x222", Some(42), None, Some("AXTextArea".into()), None)
+                .with_element_hash(Some(777));
+        let old_field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: old_identity.field_element_id(),
+            generation: 1,
+        };
+
+        assert!(field_matches_identity(&old_field, &new_identity));
+
+        // A DIFFERENT hash is a different field — the anonymous wrong-field
+        // guard stays intact.
+        let other_identity =
+            AxElementIdentity::new("ax:0x333", Some(42), None, Some("AXTextArea".into()), None)
+                .with_element_hash(Some(888));
+        assert!(!field_matches_identity(&old_field, &other_identity));
+    }
+
+    #[test]
+    fn caret_field_tracker_reuses_field_across_pointer_churn_with_same_hash() {
+        let mut tracker = CaretFieldTracker::new();
+        let first =
+            AxElementIdentity::new("ax:0x111", Some(42), None, Some("AXTextArea".into()), None)
+                .with_element_hash(Some(777));
+        let second =
+            AxElementIdentity::new("ax:0x222", Some(42), None, Some("AXTextArea".into()), None)
+                .with_element_hash(Some(777));
+
+        let first_field = tracker.field_for_event(42, &first);
+        let second_field = tracker.field_for_event(42, &second);
+
+        assert_eq!(second_field, first_field);
+        assert_eq!(second_field.generation, first_field.generation);
     }
 
     #[test]

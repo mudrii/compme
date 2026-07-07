@@ -212,10 +212,14 @@ purity stays with the runner's physical gates):
   dismiss re-proven in the same run.
 - Chrome (local textarea fixture): AXManualAccessibility wake works, focus
   binds as AXTextArea and a completion request was submitted (3 candidates
-  returned) — but Chrome delivers a fresh AX element per focus notification
-  and every bind goes StaleField within the churn (661 StaleField lines), so
-  the ghost was discarded before rendering. REAL liveness finding, tracked in
-  ROADMAP Tier 4; the caret-marker-chrome-marker gate stays open.
+  returned) — but Chrome delivered a fresh AX element per focus notification
+  and every bind went StaleField within the churn (661 StaleField lines), so
+  the ghost was discarded before rendering. FIXED same day with CFHash-based
+  element identity: live retest shows 0 churn StaleFields and the full
+  bind→request→ghost→accept→insert pipeline in a Chrome textarea (screenshots
+  /tmp/cm-chrome-ghost.png, /tmp/cm-chrome-after.png). Ghost anchors at the
+  window rect (Chrome returns no caret rect on this path) — precise caret
+  anchoring remains the caret-marker-chrome-marker calibration gate.
 - VS Code: Monaco exposes only AXWebArea until VS Code's screen-reader mode is
   on -> fail-closed, no suggestions (matches the unsupported compat class).
 - Firefox/Zen: mirror-mode ENGAGEMENT log-proven for both bundle ids
