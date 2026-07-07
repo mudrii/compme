@@ -106,6 +106,84 @@ impl PlatformAdapter for LinuxAdapter {
     }
 }
 
+/// Linux implementation of `platform::shell::ShellHost` — fail-closed scaffold.
+/// Future real impls: `/proc/meminfo` memory probe, libsecret key storage,
+/// zenity/GTK confirmation dialogs, XDG autostart `.desktop`, and desktop portal
+/// permission/settings hooks where available.
+#[derive(Debug, Default)]
+pub struct LinuxShellHost;
+
+impl LinuxShellHost {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl platform::shell::ShellHost for LinuxShellHost {
+    fn pump_events(&self, heartbeat: std::time::Duration) {
+        std::thread::sleep(heartbeat);
+    }
+
+    fn physical_memory_bytes(&self) -> u64 {
+        0
+    }
+
+    fn open_url(&self, url: &str) -> Result<(), PlatformError> {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(drop)
+            .map_err(|e| PlatformError::CannotComplete {
+                reason: format!("xdg-open {url}: {e}"),
+            })
+    }
+
+    fn open_permission_settings(&self) -> Result<(), PlatformError> {
+        Err(LinuxAdapter::unsupported("open_permission_settings"))
+    }
+
+    fn reveal_file(&self, _path: &std::path::Path) -> Result<(), PlatformError> {
+        Err(LinuxAdapter::unsupported("reveal_file"))
+    }
+
+    fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
+        Err(LinuxAdapter::unsupported("set_launch_at_login"))
+    }
+
+    fn confirm(&self, _prompt: &platform::shell::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
+        Err(LinuxAdapter::unsupported("confirm"))
+    }
+
+    fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
+        Err(LinuxAdapter::unsupported("load_or_create_memory_key"))
+    }
+}
+
+/// Linux ghost overlay scaffold. Future real impl: wlr-layer-shell on Wayland
+/// or an override-redirect X11 window.
+#[derive(Debug, Default)]
+pub struct LinuxOverlayPresenter;
+
+impl LinuxOverlayPresenter {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl platform::OverlayPresenter for LinuxOverlayPresenter {
+    fn show_ghost(&mut self, _anchor: ScreenRect, _text: &str) -> Result<(), PlatformError> {
+        Err(LinuxAdapter::unsupported("show_ghost"))
+    }
+
+    fn update_ghost(&mut self, _text: &str) -> Result<(), PlatformError> {
+        Err(LinuxAdapter::unsupported("update_ghost"))
+    }
+
+    fn hide(&mut self) -> Result<(), PlatformError> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +431,52 @@ mod tests {
             reason.contains("platform_linux::") && reason.contains("insert_replacing"),
             "reason should name crate + `insert_replacing`: {reason:?}"
         );
+    }
+
+    #[test]
+    fn shell_host_is_fail_closed() {
+        use platform::shell::{ConfirmPrompt, ShellHost};
+
+        let h = LinuxShellHost::new();
+        assert!(!h.secure_input_enabled());
+        assert!(!h.screen_capture_permission());
+        assert!(
+            h.load_or_create_memory_key().is_err(),
+            "no key store yet -- must fail closed"
+        );
+        assert!(h
+            .confirm(&ConfirmPrompt {
+                title: "t",
+                message: "m",
+                confirm_label: "c"
+            })
+            .is_err());
+        assert!(h.set_launch_at_login(true).is_err());
+        assert!(h.reveal_file(std::path::Path::new("x")).is_err());
+        assert!(h.open_permission_settings().is_err());
+        let start = std::time::Instant::now();
+        h.pump_events(std::time::Duration::from_millis(5));
+        assert!(start.elapsed() >= std::time::Duration::from_millis(5));
+    }
+
+    #[test]
+    fn overlay_is_fail_closed_and_hide_is_idempotent() {
+        use platform::OverlayPresenter;
+
+        let mut o = LinuxOverlayPresenter::new();
+        assert!(o
+            .show_ghost(
+                ScreenRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0
+                },
+                "g",
+            )
+            .is_err());
+        assert!(o.update_ghost("g").is_err());
+        o.hide().expect("hide is contractually idempotent-success");
+        o.hide().expect("second hide too");
     }
 }

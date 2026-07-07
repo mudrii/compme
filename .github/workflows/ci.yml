@@ -164,7 +164,7 @@ jobs:
         run: cargo build --locked --bins
 
   windows:
-    name: platform_windows fmt · clippy · test · build (Windows)
+    name: portable workspace + platform_windows (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -180,26 +180,23 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
-      # Scoped to the Windows adapter crate (+ its `platform` contract dep): the
-      # rest of the workspace (platform_macos / app / engine / model_client) is
-      # macOS-only and does not build here. Today this gates an inert stub; it
-      # becomes the real gate for the UIA / WH_KEYBOARD_LL / SendInput
-      # implementation once that lands behind `#[cfg(windows)]` (and the Windows
-      # deps are uncommented in crates/platform_windows/Cargo.toml).
-      - name: Format
-        run: cargo fmt -p platform_windows -- --check
+      # The whole workspace minus `platform_macos` (Apple frameworks). This
+      # gates portability leaks in shared crates and proves the app binary
+      # still compiles through its fail-closed Windows facade.
+      - name: Format (workspace)
+        run: cargo fmt --all -- --check
 
-      - name: Clippy (deny warnings)
-        run: cargo clippy --locked -p platform_windows --all-targets -- -D warnings
+      - name: Clippy portable workspace (deny warnings)
+        run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --locked -p platform_windows
+      - name: Test portable workspace
+        run: cargo test --locked --workspace --exclude platform_macos
 
-      - name: Build
-        run: cargo build --locked -p platform_windows
+      - name: Build app binary
+        run: cargo build --locked -p app
 
   linux:
-    name: platform_linux fmt · clippy · test · build (Linux)
+    name: portable workspace + platform_linux (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -215,19 +212,17 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
-      # Scoped to the Linux adapter crate (+ its `platform` contract dep). Today
-      # this gates an inert stub; it becomes the real gate for the AT-SPI2 /
-      # XTEST / wtype / IBus implementation once that lands behind
-      # `#[cfg(target_os = "linux")]`. System libraries (e.g. at-spi2-core,
-      # libxtst) get an apt install step here when the real deps are uncommented.
-      - name: Format
-        run: cargo fmt -p platform_linux -- --check
+      # The whole workspace minus `platform_macos` (Apple frameworks). This
+      # gates portability leaks in shared crates and proves the app binary
+      # still compiles through its fail-closed Linux facade.
+      - name: Format (workspace)
+        run: cargo fmt --all -- --check
 
-      - name: Clippy (deny warnings)
-        run: cargo clippy --locked -p platform_linux --all-targets -- -D warnings
+      - name: Clippy portable workspace (deny warnings)
+        run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --locked -p platform_linux
+      - name: Test portable workspace
+        run: cargo test --locked --workspace --exclude platform_macos
 
-      - name: Build
-        run: cargo build --locked -p platform_linux
+      - name: Build app binary
+        run: cargo build --locked -p app

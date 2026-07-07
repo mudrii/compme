@@ -13,14 +13,13 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSObjectProtocol};
+pub use platform::shell::UrlCallback;
 use platform::PlatformError;
 
 /// `kInternetEventClass` == `kAEGetURL` == 'GURL'.
 const GURL: u32 = 0x4755_524C;
 /// `keyDirectObject` == '----'.
 const KEY_DIRECT_OBJECT: u32 = 0x2D2D_2D2D;
-
-type UrlCallback = dyn Fn(String) + Send + Sync + 'static;
 
 struct UrlTargetIvars {
     on_url: Arc<UrlCallback>,

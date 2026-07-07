@@ -1,12 +1,12 @@
-//! `SharedAdapter` lets the run-loop and the `Engine` share one
-//! `MacosPlatformAdapter`.
+//! `SharedAdapter` lets the run-loop and the `Engine` share one platform
+//! adapter.
 //!
 //! `Engine::new` takes the adapter *by value*, but the binary also needs the
 //! adapter to install focus/caret/accept subscriptions and to `read_context`
-//! inside the caret handler. `MacosPlatformAdapter` is not `Clone`, so we share
-//! it behind an `Arc`. The orphan rule forbids `impl PlatformAdapter for
-//! Arc<MacosPlatformAdapter>` directly (both are foreign), so this local newtype
-//! carries the impl and forwards every method to the inner adapter.
+//! inside the caret handler. The concrete adapter is not `Clone`, so we share it
+//! behind an `Arc`. The orphan rule forbids `impl PlatformAdapter for Arc<A>`
+//! directly (both are foreign), so this local newtype carries the impl and
+//! forwards every method to the inner adapter.
 
 use std::sync::Arc;
 
@@ -15,15 +15,13 @@ use platform::{
     Environment, FieldHandle, FocusCallback, InsertStrategy, Inserted, PlatformAdapter,
     PlatformError, ScreenRect, Subscription, TextContext,
 };
-use platform_macos::MacosPlatformAdapter;
-
 /// A cheaply-cloneable handle to a single shared adapter. Generic over the inner
-/// adapter (defaulting to `MacosPlatformAdapter`, the only production inner) so
-/// the forwarding impl can be exercised against a fake in unit tests — the bare
-/// `SharedAdapter` name and `SharedAdapter::new(arc)` call site are unaffected by
-/// the default type parameter.
+/// adapter (defaulting to the target-selected production adapter) so the
+/// forwarding impl can be exercised against a fake in unit tests — the bare
+/// `SharedAdapter` name and `SharedAdapter::new(arc)` call site are unaffected
+/// by the default type parameter.
 #[derive(Clone)]
-pub struct SharedAdapter<A: PlatformAdapter = MacosPlatformAdapter>(Arc<A>);
+pub struct SharedAdapter<A: PlatformAdapter = crate::shell::PlatformAdapterImpl>(Arc<A>);
 
 impl<A: PlatformAdapter> SharedAdapter<A> {
     pub fn new(inner: Arc<A>) -> Self {

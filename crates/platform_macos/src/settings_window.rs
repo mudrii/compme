@@ -26,22 +26,11 @@ use objc2_app_kit::{
     NSTabViewType, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use platform::shell::{
+    AppsPolicyEditSlot, CurrentAcceptKeys, KeyWithMods, PersonalizationEdit, RebindRequest,
+    SettingsFlags, APPS_ROWS, APP_POLICY_FIELDS, SETUP_ROWS, STATS_ROWS,
+};
 use platform::PlatformError;
-
-pub type KeyWithMods = (i64, u32);
-pub type AppsPolicyEdit = (usize, usize, bool);
-type AppsPolicyEditSlot = Arc<Mutex<Option<AppsPolicyEdit>>>;
-
-/// A requested accept-key rebind: `(word, full, grammar_accept)` as `(keycode,
-/// Carbon modifier mask)` pairs. `None` means reset word/full to defaults and
-/// leave grammar accept unbound. Slice 2's recorder captures the modifier mask
-/// (`event.modifierFlags()`); a bare key carries mask 0.
-pub type RebindRequest = (
-    Option<KeyWithMods>,
-    Option<KeyWithMods>,
-    Option<KeyWithMods>,
-);
-pub type CurrentAcceptKeys = (KeyWithMods, KeyWithMods, Option<KeyWithMods>);
 
 /// Which accept role a recorder field rebinds (recorder 5b slice 4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -298,151 +287,6 @@ pub fn recorder_outcome(
             label: keycode_label_with_mods(keycode, mask),
         },
     }
-}
-
-/// A Personalization-pane edit, carried across the crate seam as PRIMITIVES so
-/// `platform_macos` stays free of a `personalization`/`app` dependency (the
-/// `apps_edit` "index crosses the seam" idiom). The run loop maps each variant
-/// back onto the source `PersonalizationProfile`'s field and calls
-/// `inference.set_profile` live.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PersonalizationEdit {
-    /// Global free-text instructions (`PersonalizationProfile::global_instructions`).
-    GlobalInstructions(String),
-    /// Sender display name (`PersonalizationProfile::sender.name`).
-    SenderName(String),
-    /// Sender email (`PersonalizationProfile::sender.email`).
-    SenderEmail(String),
-    /// Steering-strength stop, the popup row 0..=5 addressing `Strength::from_stop`
-    /// (0 = Off). Carried as a `usize` like `emoji_skin_tone_index`.
-    StrengthStop(usize),
-}
-
-/// Settings-pane toggles, flipped by controls on the main thread and observed
-/// by the run loop (the tray-flags pattern: render-only UI, policy outside).
-#[derive(Clone)]
-pub struct SettingsFlags {
-    /// Master enabled flag — THE SAME Arc as TrayFlags.enabled (one atomic,
-    /// two views: tray checkmark + this switch). The run loop's existing
-    /// enabled-edge handles persist + ghost dismiss; tray and SIGUSR1 also
-    /// write it, which is why switches refresh on every show.
-    pub general_enabled: Arc<AtomicBool>,
-    /// Labs: global mid-line completions (`COMPME_MIDLINE`). The run loop
-    /// watches edges, persists, and re-applies the engine gate live.
-    pub labs_midline: Arc<AtomicBool>,
-    /// General: global typo autocorrect (`COMPME_AUTOCORRECT`). Same watcher
-    /// pattern: the run loop persists and applies on the edge.
-    pub general_autocorrect: Arc<AtomicBool>,
-    /// General: trailing space after single-word accepts
-    /// (`COMPME_TRAILING_SPACE`). Same watcher pattern.
-    pub general_trailing_space: Arc<AtomicBool>,
-    /// Context: include clipboard text as bounded prompt context
-    /// (`COMPME_CLIPBOARD_CONTEXT`). The run loop watches/persists the edge.
-    pub context_clipboard: Arc<AtomicBool>,
-    /// Context: include screen OCR text as bounded prompt context
-    /// (`COMPME_SCREEN_CONTEXT`). The run loop watches/persists the edge and
-    /// starts or stops OCR live when Screen Recording state allows it.
-    pub context_screen: Arc<AtomicBool>,
-    /// Emoji: offer :shortcode completions (`COMPME_EMOJI`).
-    pub emoji_enabled: Arc<AtomicBool>,
-    /// Emoji: selected skin-tone popup row (`COMPME_EMOJI_SKIN_TONE`).
-    /// The run loop maps the index to the app-side `SkinTone` enum and
-    /// persists the config value.
-    pub emoji_skin_tone_index: Arc<AtomicUsize>,
-    /// Emoji: selected gender popup row (`COMPME_EMOJI_GENDER`). The run loop
-    /// maps the index to the app-side `Gender` enum and persists the value.
-    pub emoji_gender_index: Arc<AtomicUsize>,
-    /// Statistics rows, composed by the run loop (`stats_pane_lines`) right
-    /// before each show; the window only renders them (one label per line).
-    pub stats_lines: Arc<Mutex<Vec<String>>>,
-    /// Statistics: selected range-picker row (a `StatRange` index — 7/14/30
-    /// days). The run loop reads it to choose the `daily_buckets` span before
-    /// composing `stats_lines`. Default 0 (Last 7 days) keeps the legacy span.
-    pub stat_range_index: Arc<AtomicUsize>,
-    /// Statistics range-picker item titles, one per `StatRange::ALL` row in
-    /// order (so the index addresses the enum). Composed app-side because the
-    /// window can't see the `stats` crate (the `setup_model_menu_titles` seam).
-    pub stat_range_titles: Vec<String>,
-    /// Statistics: selected grouping-picker row (a `StatGrouping` index —
-    /// Daily/Weekly). The run loop reads it to re-bucket the daily slices via
-    /// `stats::group_buckets` before composing `stats_lines`. Default 0 (Daily)
-    /// is the identity re-bucketing, so the legacy display is unchanged.
-    pub stat_group_index: Arc<AtomicUsize>,
-    /// Statistics grouping-picker item titles, one per `StatGrouping::ALL` row.
-    pub stat_group_titles: Vec<String>,
-    /// About text (version/license/no-telemetry/repo/credits), composed once
-    /// at startup — static for the process lifetime, rendered verbatim.
-    pub about_text: String,
-    /// Setup rows (permission/model readiness), composed by the run loop
-    /// right before each show; one label per line, refreshed like stats.
-    pub setup_lines: Arc<Mutex<Vec<String>>>,
-    /// Setup buttons (tray-flags pattern): the button stores true, the run
-    /// loop consumes the edge and performs the privileged call on its side.
-    pub setup_grant_ax: Arc<AtomicBool>,
-    pub setup_request_screen: Arc<AtomicBool>,
-    pub setup_reveal_model: Arc<AtomicBool>,
-    /// Setup "Download Model" — the run loop spawns the worker for the
-    /// `setup_model_index` target and logs progress.
-    pub setup_download_model: Arc<AtomicBool>,
-    /// Picker: the catalog index the Setup-tab popup selects as the download
-    /// target. Default = the recommended index (set by the run loop), so the
-    /// download is unchanged until the user picks another row. The run loop's
-    /// download edge reads it via `model_picker::selected_catalog_entry`,
-    /// which is total over an out-of-range value.
-    pub setup_model_index: Arc<AtomicUsize>,
-    /// Picker: the popup's item titles, one per catalog row in catalog order
-    /// (so the selected index still addresses the catalog), each suffixed with
-    /// its RAM-fit label (e.g. "qwen2.5-0.5b · fits"). Composed once by the
-    /// run loop (model_catalog + the RAM probe are app-side; the window only
-    /// renders the finished strings). `Exceeds` rows are blocked by the download
-    /// edge.
-    pub setup_model_menu_titles: Vec<String>,
-    /// Apps rows (per-app recorded-input counts), composed by the run loop
-    /// right before each show; refreshed like stats.
-    pub apps_lines: Arc<Mutex<Vec<String>>>,
-    /// Per-Apps-row resolved policy bits `[Enabled, TabDisabled, MidLine,
-    /// Autocorrect]`, composed by the run loop alongside `apps_lines` (same
-    /// order/cap) so each row's checkboxes open reflecting the saved per-app
-    /// override instead of a hard-seeded OFF. Refreshed on every show like
-    /// `apps_lines`. The bool order matches `APP_POLICY_FIELD_TITLES` / the
-    /// `apps_edit` field-index encoding.
-    pub apps_policy_bits: Arc<Mutex<Vec<[bool; APP_POLICY_FIELDS]>>>,
-    /// A clicked Apps-row Delete button: the ROW INDEX (the run loop resolves
-    /// it to an app id via apps_row_ids and performs the delete).
-    pub apps_delete_row: Arc<Mutex<Option<usize>>>,
-    /// A toggled Apps-row policy checkbox: `(row, field_index, on)`. The field
-    /// is carried as a SMALL INDEX (0=Enabled, 1=TabDisabled, 2=MidLine,
-    /// 3=Autocorrect) so this crate stays free of a `prefs` dependency — the
-    /// run loop maps it to `prefs::AppPolicyField` and calls
-    /// `set_app_policy_field` on the row's app id (apps_delete_row pattern; the
-    /// "index crosses the seam" idiom of setup_model_index/stat_range_index).
-    pub apps_edit: AppsPolicyEditSlot,
-    /// Shortcuts text (current bindings + how to change them). Behind a
-    /// Mutex since recorder 5b: a live rebind recomposes it and the window
-    /// refreshes the label on every show (stats_lines pattern).
-    pub shortcuts_text: Arc<Mutex<String>>,
-    /// A requested live rebind: (word, full) raw keycodes, `None` = default.
-    /// The recorder UI (or a debug trigger) writes it; the run loop consumes
-    /// the edge and runs the keymap-first/rearm-second/persist-last sequence
-    /// (apps_delete_row pattern).
-    pub shortcuts_rebind_request: Arc<Mutex<Option<RebindRequest>>>,
-    /// Pending Personalization-pane edits (text-field commit, visible-field
-    /// flush, or strength popup). A queue is required because one manual pass can
-    /// change instructions, name, email, and strength before the run loop ticks;
-    /// a single Option would keep only the last edit.
-    pub personalization_edit: Arc<Mutex<Vec<PersonalizationEdit>>>,
-    /// Personalization initial values, composed by the run loop from the source
-    /// profile so the pane's fields/popup reflect the current config on open
-    /// (the about_text / setup_model_index pattern — render-only seed strings).
-    pub personalization_instructions: Arc<Mutex<String>>,
-    pub personalization_sender_name: Arc<Mutex<String>>,
-    pub personalization_sender_email: Arc<Mutex<String>>,
-    /// Strength popup: the pre-selected stop (0..=5, 0 = Off) and one title per
-    /// stop in `Strength::STOPS` order. Titles cross the seam here because
-    /// `platform_macos` can't see the `personalization` crate (the stat-range
-    /// titles pattern); the selected index addresses `Strength::from_stop`.
-    pub personalization_strength_index: Arc<AtomicUsize>,
-    pub personalization_strength_titles: Vec<String>,
 }
 
 struct SettingsTargetIvars {
@@ -2358,23 +2202,6 @@ struct BuiltWindow {
     personalization_email_field: Option<Retained<NSTextField>>,
 }
 
-/// Max Setup row count (accessibility / screen recording / model file).
-/// Public for the same reason as [`APPS_ROWS`]: the run loop's composer
-/// pins against this count instead of a drifting literal.
-pub const SETUP_ROWS: usize = 3;
-
-/// Max Apps rows (top apps by recorded-input count, plus status lines).
-/// Public: the run loop's line composer caps to this same number
-/// (review-c108 — a drifting duplicate would silently waste label slots).
-pub const APPS_ROWS: usize = 8;
-
-/// Number of editable per-app policy fields rendered as checkboxes on each
-/// Apps row, in tag-encoding order: 0=Enabled, 1=TabDisabled, 2=MidLine,
-/// 3=Autocorrect, 4=GrammarFix. Mirrors `prefs::AppPolicyField`'s variant order; the run
-/// loop maps the index back. A checkbox's tag is `row * APP_POLICY_FIELDS +
-/// field`, so this is the modulus the run loop unpacks against.
-pub const APP_POLICY_FIELDS: usize = 5;
-
 fn pack_apps_policy_tag(row: usize, field: usize) -> isize {
     (row * APP_POLICY_FIELDS + field) as isize
 }
@@ -2439,11 +2266,6 @@ const APP_POLICY_FIELD_TITLES: [&str; APP_POLICY_FIELDS] = [
 /// carry the full [`APP_POLICY_FIELD_TITLES`] as tooltips; these label the
 /// columns in the header row so the toggles are self-explanatory.
 const APP_POLICY_COLUMN_HEADERS: [&str; APP_POLICY_FIELDS] = ["On", "Tab", "Mid", "AC", "GF"];
-
-/// Fixed Statistics row count (shown / accepted / words / lifetime).
-/// Public for the same reason as [`APPS_ROWS`]: the run loop's composer
-/// pins against this count instead of a drifting literal.
-pub const STATS_ROWS: usize = 4;
 
 /// Number of settings tabs.
 pub const PANE_COUNT: usize = 9;

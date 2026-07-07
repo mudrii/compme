@@ -1,5 +1,7 @@
 //! Cross-platform contract shared by the pure engine and platform adapters.
 
+pub mod shell;
+
 use std::sync::Arc;
 use std::time::Duration;
 

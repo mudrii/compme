@@ -17,9 +17,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 use crate::inference::ScreenContext;
-use platform::FieldHandle;
-use platform::ScreenRect;
-use platform_macos::screen_context_text;
+use platform::shell::ShellHost;
+use platform::{FieldHandle, ScreenRect};
 
 /// Handle to the background screen-OCR worker. Dropping it closes the channel,
 /// which lets the worker exit its loop after any in-flight OCR pass.
@@ -87,6 +86,7 @@ impl ScreenOcr {
     /// failure as non-fatal (screen context disabled for the session), matching
     /// the tray-unavailable fallback.
     pub fn spawn(
+        shell: Arc<dyn ShellHost>,
         screen: Arc<Mutex<Option<ScreenContext>>>,
         max_chars: usize,
         diag: bool,
@@ -98,7 +98,7 @@ impl ScreenOcr {
         let worker_queue = Arc::clone(&queue);
         let handle = std::thread::Builder::new()
             .name("compme-screen-ocr".into())
-            .spawn(move || run(worker_queue, screen, max_chars, diag))?;
+            .spawn(move || run(shell, worker_queue, screen, max_chars, diag))?;
         Ok(Self {
             queue: Some(queue),
             handle: Some(handle),
@@ -144,6 +144,7 @@ impl Drop for ScreenOcr {
 /// Worker body: block for the next rect, OCR the display under it, redact, and
 /// publish into the shared cell. Exits when the channel closes.
 fn run(
+    shell: Arc<dyn ShellHost>,
     queue: Arc<LatestRequestQueue>,
     screen: Arc<Mutex<Option<ScreenContext>>>,
     max_chars: usize,
@@ -153,7 +154,7 @@ fn run(
         return;
     }
     while let Some(request) = queue.recv() {
-        let raw = screen_context_text(request.caret_rect, max_chars);
+        let raw = shell.screen_context_text(request.caret_rect, max_chars);
         publish_screen_context(&screen, &request, raw, diag);
     }
 }
@@ -187,6 +188,48 @@ fn publish_screen_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use platform::PlatformError;
+    use std::path::Path;
+    use std::time::Duration;
+
+    struct NoScreenHost;
+
+    impl ShellHost for NoScreenHost {
+        fn pump_events(&self, _heartbeat: Duration) {}
+
+        fn physical_memory_bytes(&self) -> u64 {
+            1
+        }
+
+        fn open_url(&self, _url: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn open_permission_settings(&self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn reveal_file(&self, _path: &Path) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn confirm(
+            &self,
+            _prompt: &platform::shell::ConfirmPrompt<'_>,
+        ) -> Result<bool, PlatformError> {
+            Ok(false)
+        }
+
+        fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
+            Err(PlatformError::UnsupportedField {
+                reason: "test".into(),
+            })
+        }
+    }
 
     fn rect(x: f64) -> Option<ScreenRect> {
         Some(ScreenRect {
@@ -274,7 +317,13 @@ mod tests {
             caret_rect: rect(1.0),
         });
         let screen = Arc::new(Mutex::new(None));
-        run(Arc::clone(&queue), Arc::clone(&screen), 0, false);
+        run(
+            Arc::new(NoScreenHost),
+            Arc::clone(&queue),
+            Arc::clone(&screen),
+            0,
+            false,
+        );
         assert!(
             screen.lock().unwrap().is_none(),
             "disabled worker publishes nothing"

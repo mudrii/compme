@@ -2,7 +2,7 @@
 //!
 //! Threading model (see the P0 design spec):
 //! - This loop runs on the AppKit **main thread**. It owns the `Engine` and the
-//!   `MacosOverlayPresenter`; the engine applies overlay commands internally, and
+//!   `OverlayPresenterImpl`; the engine applies overlay commands internally, and
 //!   the overlay enforces the main thread at runtime.
 //! - Platform focus/caret/accept callbacks fire on the adapter's **dispatcher
 //!   thread**; they only enqueue a `HostEvent` (cheap, no AX work).
@@ -14,25 +14,19 @@
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use emoji::{EmojiPrefs, Gender, SkinTone};
 use engine::{CompletionRequest, Engine, RequestKind, TriggerPolicy};
 use personalization::{PersonalizationProfile, SenderIdentity, Strength};
 use platform::{
-    env_flag_on, AcceptAction, AcceptSubscription, Capabilities, CorrectionRange, FieldHandle,
-    InsertStrategy, KeyInterceptMode, OverlayPlacement, PlatformAdapter, PlatformError, ScreenRect,
-    SecurityState, ShortcutAction, Subscription, TapControl, TextContext, Toolkit,
-};
-use platform_macos::DisableArm;
-use platform_macos::{
-    accessibility_trusted, bundle_id_for_pid, display_scales, prompt_accessibility_trust,
-    read_pasteboard_text, request_screen_recording_permission, screen_recording_permission,
-    secure_input_enabled, MacosOverlayPresenter, MacosPlatformAdapter, MacosTray, TrayFlags,
+    env_flag_on,
+    shell::{DisableArm, TrayFlags},
+    AcceptAction, AcceptSubscription, Capabilities, CorrectionRange, FieldHandle, InsertStrategy,
+    KeyInterceptMode, OverlayPlacement, PlatformAdapter, PlatformError, ScreenRect, SecurityState,
+    ShortcutAction, Subscription, TapControl, TextContext, Toolkit,
 };
 use prefs::Prefs;
 use zeroize::Zeroize;
@@ -68,8 +62,6 @@ const SECURE_POLL_INTERVAL_MS: u64 = 480;
 /// Periodic lifetime-stats flush cadence (c102 follow-up): bounds crash loss
 /// to ≤5 minutes of events; the file is ~120 bytes so the write is free.
 const STATS_FLUSH_INTERVAL_MS: u64 = 5 * 60 * 1000;
-const ACCESSIBILITY_SETTINGS_URL: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 const UPDATES_URL: &str = "https://github.com/mudrii/compme/releases/latest";
 
 /// Set by the SIGINT/SIGTERM handler; observed by the loop to begin shutdown.
@@ -78,15 +70,18 @@ static STOP: AtomicBool = AtomicBool::new(false);
 /// (a headless equivalent of the tray's Enable item, also handy for scripting).
 static TOGGLE: AtomicBool = AtomicBool::new(false);
 
+#[cfg(unix)]
 extern "C" fn on_signal(_sig: libc::c_int) {
     // Async-signal-safe: only a relaxed atomic store.
     STOP.store(true, Ordering::Relaxed);
 }
 
+#[cfg(unix)]
 extern "C" fn on_toggle(_sig: libc::c_int) {
     TOGGLE.store(true, Ordering::Relaxed);
 }
 
+#[cfg(unix)]
 fn install_signal_handlers() {
     let stop = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
     let toggle = on_toggle as extern "C" fn(libc::c_int) as libc::sighandler_t;
@@ -96,6 +91,12 @@ fn install_signal_handlers() {
         libc::signal(libc::SIGTERM, stop);
         libc::signal(libc::SIGUSR1, toggle);
     }
+}
+
+#[cfg(not(unix))]
+fn install_signal_handlers() {
+    // Windows console handlers land with the real Windows adapter. Until then,
+    // shutdown remains controlled by the tray Quit path.
 }
 
 /// What a platform callback enqueues for the main loop to process.
@@ -307,7 +308,7 @@ struct Config {
     accept_full_key: Option<(i64, u32)>,
     grammar_accept_key: Option<(i64, u32)>,
     /// Always-on (global) shortcut chords, raw config strings parsed by
-    /// `platform_macos::set_shortcut_bindings_from_config` (same grammar as the
+    /// `crate::shell::set_shortcut_bindings_from_config` (same grammar as the
     /// accept keys, e.g. `"96"` or `"ctrl+shift+50"`). `None` → that shortcut is
     /// unbound. A colliding set is dropped whole at registration with a log.
     force_activate_key: Option<String>,
@@ -365,11 +366,11 @@ impl Config {
                 .and_then(|raw| webconfig::TrustedKey::from_hex(&raw)),
             license_accepted: parse_license_accepted(lookup("COMPME_LICENSE_ACCEPTED")),
             accept_word_key: lookup("COMPME_ACCEPT_WORD_KEY")
-                .and_then(|raw| platform_macos::parse_accept_key(&raw)),
+                .and_then(|raw| crate::shell::parse_accept_key(&raw)),
             accept_full_key: lookup("COMPME_ACCEPT_FULL_KEY")
-                .and_then(|raw| platform_macos::parse_accept_key(&raw)),
+                .and_then(|raw| crate::shell::parse_accept_key(&raw)),
             grammar_accept_key: lookup("COMPME_GRAMMAR_ACCEPT_KEY")
-                .and_then(|raw| platform_macos::parse_accept_key(&raw)),
+                .and_then(|raw| crate::shell::parse_accept_key(&raw)),
             force_activate_key: lookup("COMPME_FORCE_ACTIVATE_KEY")
                 .or_else(|| lookup("COMPME_FORCE_ACTIVATE"))
                 .filter(|s| !s.is_empty()),
@@ -931,7 +932,7 @@ fn apply_live_accept_keymap(
         Option<KeyWithMods>,
         Option<KeyWithMods>,
         Option<KeyWithMods>,
-    ) -> Result<(), platform_macos::KeymapError>,
+    ) -> Result<(), crate::shell::KeymapError>,
     rearm: impl Fn() -> Result<(), PlatformError>,
     persist: impl Fn(KeyWithMods, KeyWithMods, Option<KeyWithMods>),
     effective: impl Fn() -> (KeyWithMods, KeyWithMods, Option<KeyWithMods>),
@@ -1222,9 +1223,9 @@ fn personalization_strength_index(strength: Strength) -> usize {
 /// `PersonalizationProfile` (the `apps_edit` → `AppPolicyField` pattern).
 fn apply_personalization_edit(
     profile: &mut PersonalizationProfile,
-    edit: platform_macos::PersonalizationEdit,
+    edit: crate::shell::PersonalizationEdit,
 ) -> (&'static str, String) {
-    use platform_macos::PersonalizationEdit as E;
+    use crate::shell::PersonalizationEdit as E;
     match edit {
         E::GlobalInstructions(text) => {
             profile.global_instructions = text.clone();
@@ -1250,7 +1251,7 @@ fn apply_personalization_edit(
 
 fn apply_live_personalization_edit(
     profile: &mut PersonalizationProfile,
-    edit: platform_macos::PersonalizationEdit,
+    edit: crate::shell::PersonalizationEdit,
     set_profile: impl FnOnce(PersonalizationProfile),
     persist: impl FnOnce(&'static str, &str) -> std::io::Result<()>,
 ) -> (&'static str, String, std::io::Result<()>) {
@@ -2689,12 +2690,12 @@ fn apps_pane_lines(counts: &[(String, u64)], collection_on: bool) -> Vec<String>
     }
     counts
         .iter()
-        .take(platform_macos::APPS_ROWS)
+        .take(crate::shell::APPS_ROWS)
         .map(|(app, n)| format!("{app} \u{2014} {n}"))
         .collect()
 }
 
-use platform_macos::keycode_label_with_mods;
+use crate::shell::keycode_label_with_mods;
 
 /// The Shortcuts tab's text (persist-only slice): the EFFECTIVE bindings
 /// (post-validation, from the platform's registered keymap — review-c114:
@@ -2729,7 +2730,7 @@ fn shortcuts_text(
 fn apps_row_ids(counts: &[(String, u64)]) -> Vec<String> {
     counts
         .iter()
-        .take(platform_macos::APPS_ROWS)
+        .take(crate::shell::APPS_ROWS)
         .map(|(app, _)| app.clone())
         .collect()
 }
@@ -2753,7 +2754,7 @@ fn apps_edit_dismisses_focused(
 }
 
 /// Map an Apps-row checkbox field index (the low part of the packed tag, see
-/// `platform_macos::APP_POLICY_FIELDS`) to a `prefs::AppPolicyField`. Returns
+/// `crate::shell::APP_POLICY_FIELDS`) to a `prefs::AppPolicyField`. Returns
 /// `None` for an out-of-range index (a stale/garbled click no-ops, like an
 /// out-of-range delete row). The order MUST match `APP_POLICY_FIELD_TITLES`.
 fn apps_policy_field_from_index(index: usize) -> Option<prefs::AppPolicyField> {
@@ -2772,14 +2773,14 @@ fn apps_policy_field_from_index(index: usize) -> Option<prefs::AppPolicyField> {
 /// MidLine, Autocorrect, GrammarFix]` checkbox bits the settings window seeds from. One
 /// entry per `app_ids` row, in the SAME order/cap as `apps_row_ids` (so the
 /// window can zip it against `apps_lines` row-for-row). The bool order matches
-/// `apps_policy_field_from_index` / `platform_macos::APP_POLICY_FIELD_TITLES`.
+/// `apps_policy_field_from_index` / `crate::shell::APP_POLICY_FIELD_TITLES`.
 fn compose_apps_policy_bits(
     prefs: &prefs::Prefs,
     app_ids: &[String],
     global_mid_line: bool,
     global_autocorrect: bool,
     global_grammar_fix: bool,
-) -> Vec<[bool; platform_macos::APP_POLICY_FIELDS]> {
+) -> Vec<[bool; crate::shell::APP_POLICY_FIELDS]> {
     app_ids
         .iter()
         .map(|app| {
@@ -2806,10 +2807,9 @@ fn compose_apps_policy_bits(
 fn build_settings_flags(
     config: &Config,
     tray_enabled: Arc<AtomicBool>,
-) -> platform_macos::SettingsFlags {
-    let available_ram_gb =
-        model_catalog::bytes_to_whole_gb(platform_macos::physical_memory_bytes());
-    platform_macos::SettingsFlags {
+    available_ram_gb: u32,
+) -> crate::shell::SettingsFlags {
+    crate::shell::SettingsFlags {
         general_enabled: tray_enabled,
         labs_midline: Arc::new(AtomicBool::new(config.allow_mid_word)),
         general_autocorrect: Arc::new(AtomicBool::new(config.autocorrect)),
@@ -2833,7 +2833,7 @@ fn build_settings_flags(
         // Picker download target: start at the recommended index so the
         // default download is byte-identical to before (the popup pre-selects
         // the same row). The names cross the crate boundary here because
-        // platform_macos can't see model_catalog (the about_text pattern).
+        // the platform settings window can't see model_catalog (the about_text pattern).
         setup_model_index: Arc::new(AtomicUsize::new(crate::model_picker::recommended_index())),
         // Item titles carry a RAM-fit label ("name · fits/tight/exceeds")
         // computed against this machine's physical memory, read once here.
@@ -2841,7 +2841,7 @@ fn build_settings_flags(
         // Statistics range picker. Default index 0 = StatRange::ALL[0]
         // (Last 7 days), so the rendered span is byte-identical to the
         // pre-picker `daily_buckets(.., 7)`. Titles cross the seam here because
-        // platform_macos can't see the `stats` crate (the model-picker pattern).
+        // the platform settings window can't see the `stats` crate (the model-picker pattern).
         stat_range_index: Arc::new(AtomicUsize::new(0)),
         stat_range_titles: stats::StatRange::ALL
             .iter()
@@ -2860,7 +2860,7 @@ fn build_settings_flags(
         apps_edit: Arc::new(Mutex::new(None)),
         shortcuts_text: {
             let (word, full, grammar_accept) =
-                platform_macos::effective_accept_keys_with_mods_and_grammar();
+                crate::shell::effective_accept_keys_with_mods_and_grammar();
             Arc::new(Mutex::new(shortcuts_text(word, full, grammar_accept)))
         },
         shortcuts_rebind_request: Arc::new(Mutex::new(None)),
@@ -2889,14 +2889,16 @@ fn compose_setup_lines(
     config: &Config,
     model_ready: bool,
     ax_relaunch_required: bool,
+    ax_trusted: bool,
+    screen_recording: bool,
 ) -> Vec<String> {
     setup_lines_from_checks(crate::setup_state::SetupChecks {
         // Probed fresh here (cheap), not the loop's 480ms-stale copy —
         // review-c107: rows must not flip at different cadences.
-        ax_trusted: accessibility_trusted(),
+        ax_trusted,
         ax_relaunch_required,
         screen_context_enabled: config.screen_context,
-        screen_recording: screen_recording_permission(),
+        screen_recording,
         model_ready,
     })
 }
@@ -3511,7 +3513,7 @@ fn apply_startup_key_bindings(config: &Config) {
         || config.accept_full_key.is_some()
         || config.grammar_accept_key.is_some()
     {
-        match platform_macos::set_accept_keymap_from_config_with_mods(
+        match crate::shell::set_accept_keymap_from_config_with_mods(
             config.accept_word_key,
             config.accept_full_key,
             config.grammar_accept_key,
@@ -3535,7 +3537,7 @@ fn apply_startup_key_bindings(config: &Config) {
         || config.toggle_global_key.is_some()
         || config.grammar_check_key.is_some()
     {
-        let bindings = platform_macos::set_shortcut_bindings_from_config(
+        let bindings = crate::shell::set_shortcut_bindings_from_config(
             config.force_activate_key.as_deref(),
             config.toggle_app_key.as_deref(),
             config.toggle_global_key.as_deref(),
@@ -3688,16 +3690,17 @@ pub fn run() -> Result<(), String> {
     // enabled/trailing-space later) — field writes between heartbeats only.
     let mut config = Config::from_env();
     install_signal_handlers();
+    let shell = crate::shell::make_shell();
 
     // Permissions: if Accessibility isn't granted, fire the system prompt once.
     // The app keeps running and reflects the Blocked state in the tray. Focus,
     // caret, and accept subscriptions are installed once at startup; if any of
     // them degrade to no-op while permission is missing, granting Accessibility
     // later still requires a relaunch to install real event streams.
-    let mut trusted = accessibility_trusted();
+    let mut trusted = shell.accessibility_trusted();
     if !trusted {
         eprintln!("compme: Accessibility not granted — requesting permission");
-        prompt_accessibility_trust();
+        shell.prompt_accessibility_trust();
     }
 
     // Domain-rule transparency (audit c121): a rule pasted as a full URL
@@ -3719,17 +3722,14 @@ pub fn run() -> Result<(), String> {
     }
 
     if config.diag_coords {
-        eprintln!("compme: diag display_scales={:?}", display_scales());
+        eprintln!("compme: diag display_scales={:?}", shell.display_scales());
     }
 
-    let adapter = match config.acceptance_pid {
-        Some(pid) => MacosPlatformAdapter::with_frontmost_pid_override_for_acceptance(pid),
-        None => MacosPlatformAdapter::new(),
-    }
-    .map_err(|err| format!("adapter init: {err:?}"))?;
+    let adapter = crate::shell::make_adapter(config.acceptance_pid)
+        .map_err(|err| format!("adapter init: {err:?}"))?;
     let adapter = Arc::new(adapter);
 
-    let overlay = MacosOverlayPresenter::new().map_err(|err| format!("overlay init: {err:?}"))?;
+    let overlay = crate::shell::make_overlay().map_err(|err| format!("overlay init: {err:?}"))?;
 
     let mut engine = Engine::new(
         SharedAdapter::new(Arc::clone(&adapter)),
@@ -3824,7 +3824,7 @@ pub fn run() -> Result<(), String> {
         ax_trusted: trusted,
         ax_relaunch_required: subscriptions_require_relaunch,
         screen_context_enabled: config.screen_context,
-        screen_recording: screen_recording_permission(),
+        screen_recording: shell.screen_capture_permission(),
         model_ready: model_available,
     }) {
         if !row.ready {
@@ -3835,9 +3835,9 @@ pub fn run() -> Result<(), String> {
     // the user opted in. The app continues with field-only context if denied
     // (the "works without it" requirement); local OCR enrichment rides on this
     // grant.
-    if config.screen_context && !screen_recording_permission() {
+    if config.screen_context && !shell.screen_capture_permission() {
         eprintln!("compme: requesting Screen Recording permission (screen context)");
-        request_screen_recording_permission();
+        shell.request_screen_capture_permission();
         // The grant takes effect on the NEXT launch (macOS shows the prompt async
         // and re-reads TCC at startup), so screen context is inactive this run.
         eprintln!("compme: restart after granting Screen Recording to enable screen context");
@@ -3849,7 +3849,7 @@ pub fn run() -> Result<(), String> {
     // parser. Install failure is non-fatal (deep links just stay inert).
     let deep_links: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let deep_links_in_handler = Arc::clone(&deep_links);
-    let _url_handler = match platform_macos::install_url_event_handler(Arc::new(move |url| {
+    let _url_handler = match crate::shell::install_url_event_handler(Arc::new(move |url| {
         let mut queue = deep_links_in_handler
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3869,7 +3869,7 @@ pub fn run() -> Result<(), String> {
     // (no bundle) is expected to fail here, and the bundled app is the real
     // consumer.
     if let Some(enabled) = config.launch_at_login {
-        match platform_macos::set_launch_at_login(enabled) {
+        match shell.set_launch_at_login(enabled) {
             Ok(()) => eprintln!(
                 "compme: launch at login {}",
                 if enabled { "ON" } else { "OFF" }
@@ -3884,23 +3884,19 @@ pub fn run() -> Result<(), String> {
     // Keychain, generated on first use. Lives on this thread (the rusqlite
     // handle is not Send). AcceptedOnly records Full accepts; AllMonitored also
     // records established non-secure insertion deltas.
-    let memory =
-        open_memory_store(
-            &config.memory,
-            || match platform_macos::keychain::KeychainKeyStore::new().load_or_create_memory_key() {
-                Ok(key) => Some(key),
-                Err(err) => {
-                    eprintln!("compme: keychain memory key unavailable: {err}");
-                    None
-                }
-            },
-        );
+    let memory = open_memory_store(&config.memory, || match shell.load_or_create_memory_key() {
+        Ok(key) => Some(key),
+        Err(err) => {
+            eprintln!("compme: OS key store memory key unavailable: {err}");
+            None
+        }
+    });
     let monitored_memory_active =
         config.memory.mode == memory::StorageMode::AllMonitored && memory.is_some();
     let clipboard_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let screen_cell: Arc<Mutex<Option<ScreenContext>>> = Arc::new(Mutex::new(None));
     // Screen OCR only contributes when the grant is actually present this session.
-    let screen_active = config.screen_context && screen_recording_permission();
+    let screen_active = config.screen_context && shell.screen_capture_permission();
     // Clipboard/screen context work independently of previous-input context.
     // The Settings pane can enable clipboard context after launch, so keep the
     // worker bound positive enough for a later live enable.
@@ -3911,7 +3907,12 @@ pub fn run() -> Result<(), String> {
     // waits for briefly off the AppKit loop and accepts only when stamped for
     // the submitted request.
     let mut screen_ocr = if screen_active {
-        match ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context) {
+        match ScreenOcr::spawn(
+            Arc::clone(&shell),
+            Arc::clone(&screen_cell),
+            context_bound,
+            config.diag_context,
+        ) {
             Ok(ocr) => Some(ocr),
             Err(err) => {
                 eprintln!("compme: screen OCR worker unavailable: {err}; screen context disabled");
@@ -3964,7 +3965,7 @@ pub fn run() -> Result<(), String> {
     // the policy source splits.
     let mut prefs = config.prefs.clone();
     // A tray failure is non-fatal — the engine still runs headless.
-    let tray = match MacosTray::new(flags.clone()) {
+    let tray = match crate::shell::make_tray(flags.clone()) {
         Ok(tray) => Some(tray),
         Err(err) => {
             eprintln!("compme: tray unavailable: {err:?}");
@@ -4003,9 +4004,9 @@ pub fn run() -> Result<(), String> {
     let mut emoji_prefs = config.emoji_prefs;
     let mut emoji_skin_tone_index = emoji_skin_tone_index(emoji_prefs.skin_tone);
     let mut emoji_gender_index = emoji_gender_index(emoji_prefs.gender);
-    let available_ram_gb =
-        model_catalog::bytes_to_whole_gb(platform_macos::physical_memory_bytes());
-    let settings_flags = build_settings_flags(&config, Arc::clone(&flags.enabled));
+    let available_ram_gb = model_catalog::bytes_to_whole_gb(shell.physical_memory_bytes());
+    let settings_flags =
+        build_settings_flags(&config, Arc::clone(&flags.enabled), available_ram_gb);
     // The app ids behind the Apps rows as last rendered (index == row).
     let mut apps_ids: Vec<String> = Vec::new();
     // One downloader per process (model_fetch contract); lazy — spawned on
@@ -4029,7 +4030,7 @@ pub fn run() -> Result<(), String> {
     );
     let mut last_stats_flush_ms: Option<u64> = None;
     let mut last_flushed_session = stats::SessionTotals::default();
-    let mut settings_window = platform_macos::MacosSettingsWindow::new(settings_flags.clone());
+    let mut settings_window = crate::shell::SettingsWindow::new(settings_flags.clone());
     let mut settings_was_visible = false;
     // The most recent focused app key, so settings edges can re-apply per-app
     // gates without waiting for the next Focus event.
@@ -4074,7 +4075,8 @@ pub fn run() -> Result<(), String> {
             }
             match event {
                 HostEvent::Focus(field) => {
-                    let (field, app_key) = canonicalize_field_app(field, bundle_id_for_pid);
+                    let (field, app_key) =
+                        canonicalize_field_app(field, |pid| shell.bundle_id_for_pid(pid));
                     eprintln!("compme: focus {}", field.element_id);
                     clear_monitored_state_for_policy_transition(
                         &mut pending_monitored,
@@ -4095,9 +4097,7 @@ pub fn run() -> Result<(), String> {
                     // Per-app Tab disable (§16): suppress the literal-Tab
                     // hotkey for this app's NEXT arm cycle (hotkeys are
                     // transient — armed per visible suggestion).
-                    platform_macos::set_tab_hotkey_suppressed(
-                        prefs.tab_disabled(app_key.as_deref()),
-                    );
+                    crate::shell::set_tab_hotkey_suppressed(prefs.tab_disabled(app_key.as_deref()));
                     last_app_key = app_key.clone();
                     // Browser-domain detection (c131, slices 2-3 of the c128
                     // design): ONE AX round-trip per browser focus; the
@@ -4145,7 +4145,8 @@ pub fn run() -> Result<(), String> {
                     offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
                 }
                 HostEvent::Caret(field, _rect) => {
-                    let (field, app_key) = canonicalize_field_app(field, bundle_id_for_pid);
+                    let (field, app_key) =
+                        canonicalize_field_app(field, |pid| shell.bundle_id_for_pid(pid));
                     match adapter.read_context(&field) {
                         // One selection-changed notification covers both typing and a
                         // bare cursor move. Typing schedules a completion; a cursor
@@ -4157,7 +4158,7 @@ pub fn run() -> Result<(), String> {
                                 if let Ok(rect) = adapter.caret_rect(&field) {
                                     eprintln!(
                                         "compme: diag caret rect={rect:?} scales={:?}",
-                                        display_scales()
+                                        shell.display_scales()
                                     );
                                 }
                             }
@@ -4269,7 +4270,9 @@ pub fn run() -> Result<(), String> {
                             // Setup-needed onboarding (A2 §16): a browser/Arc/Dia field
                             // that won't read may need Accessibility/Text-Metrics setup
                             // (the Google-Docs-in-Chrome case). Surface guidance once.
-                            if let Some(app) = resolve_app_key(field.pid, bundle_id_for_pid) {
+                            if let Some(app) =
+                                resolve_app_key(field.pid, |pid| shell.bundle_id_for_pid(pid))
+                            {
                                 if compat::needs_accessibility_setup(&app, false)
                                     && hinted_apps.insert(format!("setup:{app}"))
                                 {
@@ -4358,7 +4361,7 @@ pub fn run() -> Result<(), String> {
                         // from the same resolver the app-disable path uses.
                         match current_field
                             .as_ref()
-                            .and_then(|f| effective_app_key(f, bundle_id_for_pid))
+                            .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
                         {
                             Some(app) => {
                                 // Invert the per-app `enabled` baseline (override if
@@ -4430,7 +4433,9 @@ pub fn run() -> Result<(), String> {
                             enabled: flags.enabled.load(Ordering::Relaxed),
                             now_ms,
                             last_domain: &mut last_domain,
-                            resolve_app_key: |field| effective_app_key(&field, bundle_id_for_pid),
+                            resolve_app_key: |field| {
+                                effective_app_key(&field, |pid| shell.bundle_id_for_pid(pid))
+                            },
                             focused_page_url: |field| {
                                 adapter.focused_page_url(&field).ok().flatten()
                             },
@@ -4546,8 +4551,8 @@ pub fn run() -> Result<(), String> {
         if last_secure_poll_ms
             .is_none_or(|last| now_ms.saturating_sub(last) >= SECURE_POLL_INTERVAL_MS)
         {
-            secure = secure_input_enabled();
-            trusted = accessibility_trusted();
+            secure = shell.secure_input_enabled();
+            trusted = shell.accessibility_trusted();
             last_secure_poll_ms = Some(now_ms);
         }
         // SIGUSR1 toggles enable/disable (headless equivalent of the tray item).
@@ -4643,8 +4648,13 @@ pub fn run() -> Result<(), String> {
             *settings_flags
                 .setup_lines
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) =
-                compose_setup_lines(&config, model_available, subscriptions_require_relaunch);
+                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(
+                &config,
+                model_available,
+                subscriptions_require_relaunch,
+                shell.accessibility_trusted(),
+                shell.screen_capture_permission(),
+            );
             last_setup_poll_ms = Some(now_ms);
             // Apps tab: per-app counts straight from the store (plaintext
             // GROUP BY, no decryption). Unlike setup_lines these are
@@ -4679,7 +4689,7 @@ pub fn run() -> Result<(), String> {
         // demote the activation policy back to Accessory exactly once on the
         // visible→hidden edge so no Dock icon is left stranded.
         let settings_visible = settings_window.is_visible();
-        if platform_macos::policy_restore_needed(settings_was_visible, settings_visible) {
+        if crate::shell::policy_restore_needed(settings_was_visible, settings_visible) {
             if let Err(err) = settings_window.restore_accessory_policy() {
                 eprintln!("compme: activation policy restore failed: {err}");
             }
@@ -4688,15 +4698,17 @@ pub fn run() -> Result<(), String> {
         // Setup buttons (tray-flags pattern): consume edges, perform the
         // privileged calls here on the main thread.
         if settings_flags.setup_grant_ax.swap(false, Ordering::Relaxed) {
-            prompt_accessibility_trust();
+            shell.prompt_accessibility_trust();
         }
         if settings_flags
             .setup_request_screen
             .swap(false, Ordering::Relaxed)
         {
-            if should_request_screen_recording(config.screen_context, screen_recording_permission())
-            {
-                request_screen_recording_permission();
+            if should_request_screen_recording(
+                config.screen_context,
+                shell.screen_capture_permission(),
+            ) {
+                shell.request_screen_capture_permission();
             } else {
                 eprintln!("compme: screen recording request ignored; screen context is off or already granted");
             }
@@ -4715,7 +4727,7 @@ pub fn run() -> Result<(), String> {
                     .map(|cwd| cwd.join(&config.model_path))
                     .unwrap_or_else(|_| config.model_path.clone())
             };
-            if let Err(err) = platform_macos::reveal_file_in_finder(&model_abs) {
+            if let Err(err) = shell.reveal_file(&model_abs) {
                 eprintln!("compme: reveal model failed: {err:?}");
             }
         }
@@ -4734,7 +4746,7 @@ pub fn run() -> Result<(), String> {
                 full,
                 grammar_accept,
                 |word, full, grammar_accept| {
-                    platform_macos::set_accept_keymap_from_config_with_mods(
+                    crate::shell::set_accept_keymap_from_config_with_mods(
                         word,
                         full,
                         grammar_accept,
@@ -4749,15 +4761,14 @@ pub fn run() -> Result<(), String> {
                         for (key, value) in
                             [("COMPME_ACCEPT_WORD_KEY", w), ("COMPME_ACCEPT_FULL_KEY", f)]
                         {
-                            let serialized = platform_macos::format_accept_key(value.0, value.1);
+                            let serialized = crate::shell::format_accept_key(value.0, value.1);
                             if let Err(err) = config::persist_setting(&path, key, &serialized) {
                                 eprintln!("compme: failed to persist {key}: {err}");
                             }
                         }
                         match g {
                             Some(value) => {
-                                let serialized =
-                                    platform_macos::format_accept_key(value.0, value.1);
+                                let serialized = crate::shell::format_accept_key(value.0, value.1);
                                 if let Err(err) = config::persist_setting(
                                     &path,
                                     "COMPME_GRAMMAR_ACCEPT_KEY",
@@ -4785,12 +4796,12 @@ pub fn run() -> Result<(), String> {
                         );
                     }
                 },
-                platform_macos::effective_accept_keys_with_mods_and_grammar,
+                crate::shell::effective_accept_keys_with_mods_and_grammar,
             );
             match outcome {
                 Ok(()) => {
                     let (word, full, grammar_accept) =
-                        platform_macos::effective_accept_keys_with_mods_and_grammar();
+                        crate::shell::effective_accept_keys_with_mods_and_grammar();
                     // Recompose the Shortcuts text; show() re-reads it on the
                     // next open (refresh-on-show — the c121 forward trap).
                     if let Ok(mut text) = settings_flags.shortcuts_text.lock() {
@@ -4818,7 +4829,15 @@ pub fn run() -> Result<(), String> {
             if let (Some(store), Some(app)) = (&memory, apps_ids.get(row)) {
                 // Irreversible (secure_delete zeroes freed pages) — confirm
                 // first, Cancel-default (review-c112; deep-link precedent).
-                let confirmed = platform_macos::confirm_delete_app_prompt(app).unwrap_or(false);
+                let confirmed = shell
+                    .confirm(&platform::shell::ConfirmPrompt {
+                        title: "Delete recorded inputs?",
+                        message: &format!(
+                            "All recorded inputs for {app} will be permanently erased."
+                        ),
+                        confirm_label: "Delete",
+                    })
+                    .unwrap_or(false);
                 if !confirmed {
                     eprintln!("compme: delete for {app} cancelled");
                 } else if let Some((lines, ids)) =
@@ -4875,7 +4894,7 @@ pub fn run() -> Result<(), String> {
                 // dismisses the focused field's ghost.
                 let focused_app = current_field
                     .as_ref()
-                    .and_then(|f| effective_app_key(f, bundle_id_for_pid));
+                    .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)));
                 if apps_edit_dismisses_focused(field, on, focused_app.as_deref(), app) {
                     latest.clear();
                     let _ = log_err("on_dismiss", engine.on_dismiss());
@@ -4922,7 +4941,7 @@ pub fn run() -> Result<(), String> {
             if let Err(err) = persist_result {
                 eprintln!("compme: failed to persist {key}: {err}");
             }
-            use platform_macos::PersonalizationEdit as E;
+            use crate::shell::PersonalizationEdit as E;
             match edit_for_flags {
                 E::GlobalInstructions(_) => {
                     *settings_flags
@@ -4972,7 +4991,15 @@ pub fn run() -> Result<(), String> {
                     available_ram_gb,
                     &mut config.license_accepted,
                     |model, license_name, terms_url| {
-                        platform_macos::confirm_license_prompt(model, license_name, terms_url)
+                        shell
+                            .confirm(&platform::shell::ConfirmPrompt {
+                                title: "Accept model license?",
+                                message: &format!(
+                                    "{model} is distributed under the {license_name}.\n\
+                                     Downloading requires accepting its terms:\n{terms_url}"
+                                ),
+                                confirm_label: "Accept",
+                            })
                             .unwrap_or(false)
                     },
                 );
@@ -5103,8 +5130,13 @@ pub fn run() -> Result<(), String> {
             *settings_flags
                 .setup_lines
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) =
-                compose_setup_lines(&config, model_available, subscriptions_require_relaunch);
+                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(
+                &config,
+                model_available,
+                subscriptions_require_relaunch,
+                shell.accessibility_trusted(),
+                shell.screen_capture_permission(),
+            );
             settings_window.refresh_setup_labels();
         }
         // General-tab Autocorrect watcher: persist + apply on the edge. The
@@ -5160,10 +5192,15 @@ pub fn run() -> Result<(), String> {
                     screen_ocr: &mut screen_ocr,
                 },
                 |ms| screen_wait_ms.store(ms, Ordering::Relaxed),
-                screen_recording_permission,
+                || shell.screen_capture_permission(),
                 || {
-                    ScreenOcr::spawn(Arc::clone(&screen_cell), context_bound, config.diag_context)
-                        .map_err(|err| err.to_string())
+                    ScreenOcr::spawn(
+                        Arc::clone(&shell),
+                        Arc::clone(&screen_cell),
+                        context_bound,
+                        config.diag_context,
+                    )
+                    .map_err(|err| err.to_string())
                 },
             );
             if context_edge == ScreenContextEdge::RevertedSpawnFailed {
@@ -5180,8 +5217,13 @@ pub fn run() -> Result<(), String> {
             *settings_flags
                 .setup_lines
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) =
-                compose_setup_lines(&config, model_available, subscriptions_require_relaunch);
+                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(
+                &config,
+                model_available,
+                subscriptions_require_relaunch,
+                shell.accessibility_trusted(),
+                shell.screen_capture_permission(),
+            );
             settings_window.refresh_setup_labels();
         }
         // Emoji-pane watcher: the replacement path reads config.emoji on each
@@ -5240,7 +5282,15 @@ pub fn run() -> Result<(), String> {
                     action,
                     trust,
                 } = decision;
-                platform_macos::confirm_deep_link_prompt(scope, action, trust).unwrap_or(false)
+                shell
+                    .confirm(&platform::shell::ConfirmPrompt {
+                        title: "Allow configuration change?",
+                        message: &format!(
+                            "A compme:// link wants to apply {action} for:\n{scope}\n({trust})"
+                        ),
+                        confirm_label: "Allow",
+                    })
+                    .unwrap_or(false)
             };
             match handle_deep_link(&url, config.trusted_key.as_ref(), &mut prefs, confirm) {
                 Ok(summary) => {
@@ -5268,7 +5318,7 @@ pub fn run() -> Result<(), String> {
             );
             match current_field
                 .as_ref()
-                .and_then(|f| effective_app_key(f, bundle_id_for_pid))
+                .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
             {
                 Some(app) => {
                     let allowed = toggle_app_collection(&mut prefs, &app);
@@ -5320,7 +5370,7 @@ pub fn run() -> Result<(), String> {
             );
             match current_field
                 .as_ref()
-                .and_then(|f| effective_app_key(f, bundle_id_for_pid))
+                .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
             {
                 Some(app) => {
                     apply_app_disable(arm, &app, &mut prefs, now_ms);
@@ -5359,7 +5409,7 @@ pub fn run() -> Result<(), String> {
                 trusted: effective_trusted,
                 now_ms,
             },
-            secure_input_enabled,
+            || shell.secure_input_enabled(),
         );
         let status = derive_status(
             trusted,
@@ -5474,7 +5524,7 @@ pub fn run() -> Result<(), String> {
             }
         } else if status.suggestions_allowed() {
             if let Some(request) = manual_grammar_request.take() {
-                let app_key = effective_app_key(&request.field, bundle_id_for_pid);
+                let app_key = effective_app_key(&request.field, |pid| shell.bundle_id_for_pid(pid));
                 let domain = cached_domain(&last_domain, app_key.as_deref());
                 if request_passes_submit_gates(&request, app_key.as_deref(), domain, &prefs, now_ms)
                 {
@@ -5515,7 +5565,7 @@ pub fn run() -> Result<(), String> {
                 // a transient lookup miss must not fail-open per-app privacy gates.
                 // The domain comes from the Focus arm's cache, guarded on the same
                 // app key (c131).
-                let app_key = effective_app_key(&request.field, bundle_id_for_pid);
+                let app_key = effective_app_key(&request.field, |pid| shell.bundle_id_for_pid(pid));
                 if request_passes_submit_gates(
                     &request,
                     app_key.as_deref(),
@@ -5549,7 +5599,7 @@ pub fn run() -> Result<(), String> {
                             clipboard_cell: &clipboard_cell,
                             screen_enabled,
                         },
-                        read_pasteboard_text,
+                        || shell.read_clipboard_text(),
                         // A fresh AX caret_rect read on the AppKit thread. Bounded:
                         // submits are debounced (not per-keystroke) and the heavy
                         // OCR is offloaded to ScreenOcr's own thread — only this
@@ -5597,17 +5647,12 @@ pub fn run() -> Result<(), String> {
         // 6. Tray actions (menu callbacks fire on this same main thread via the
         // run-loop pump, so Relaxed is sufficient for these flags).
         if flags.open_settings.swap(false, Ordering::Relaxed) {
-            // spawn, not status(): waiting on open(1) would block the
-            // heartbeat, and nothing reads the exit status anyway.
-            if let Err(err) = Command::new("open").arg(ACCESSIBILITY_SETTINGS_URL).spawn() {
+            if let Err(err) = shell.open_permission_settings() {
                 eprintln!("compme: open settings failed: {err}");
             }
         }
         handle_check_updates_flag(&flags.check_updates, |url| {
-            // Same non-blocking stance as Accessibility settings: the release
-            // page carries the uploaded update manifest, zip, checksum, and
-            // generated release notes.
-            if let Err(err) = Command::new("open").arg(url).spawn() {
+            if let Err(err) = shell.open_url(url) {
                 eprintln!("compme: open updates failed: {err}");
             }
         });
@@ -5628,10 +5673,7 @@ pub fn run() -> Result<(), String> {
         // their handler (a bare CFRunLoop pump never dequeues them — live
         // step-6 finding: hotkeys registered, handler never fired); the
         // CFRunLoop pump paces the loop and services the overlay.
-        platform_macos::pump_app_events();
-        // SAFETY: `kCFRunLoopDefaultMode` is a Core Foundation extern static.
-        let mode = unsafe { kCFRunLoopDefaultMode };
-        CFRunLoop::run_in_mode(mode, heartbeat, false);
+        shell.pump_events(heartbeat);
     }
 
     eprintln!("compme: shutting down");
@@ -5679,19 +5721,19 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    struct ShortcutBindingsGuard(platform_macos::ShortcutBindings);
+    struct ShortcutBindingsGuard(crate::shell::ShortcutBindings);
 
     impl ShortcutBindingsGuard {
         fn reset() -> Self {
-            let previous = platform_macos::effective_shortcut_bindings();
-            platform_macos::set_shortcut_bindings_from_config(None, None, None, None);
+            let previous = crate::shell::effective_shortcut_bindings();
+            crate::shell::set_shortcut_bindings_from_config(None, None, None, None);
             Self(previous)
         }
     }
 
     impl Drop for ShortcutBindingsGuard {
         fn drop(&mut self) {
-            platform_macos::set_shortcut_bindings(self.0);
+            crate::shell::set_shortcut_bindings(self.0);
         }
     }
 
@@ -5739,7 +5781,7 @@ mod tests {
         // Each PersonalizationEdit variant the Settings pane records must land on
         // the right profile field AND return the matching (env_key, value) so the
         // run loop persists what it applied. Covers the three steering knobs.
-        use platform_macos::PersonalizationEdit as E;
+        use crate::shell::PersonalizationEdit as E;
         let mut profile = PersonalizationProfile::default();
 
         let (key, val) =
@@ -5779,7 +5821,7 @@ mod tests {
 
     #[test]
     fn live_personalization_edit_updates_worker_profile_and_persists_value() {
-        use platform_macos::PersonalizationEdit as E;
+        use crate::shell::PersonalizationEdit as E;
         let mut profile = PersonalizationProfile::default();
         let applied_profile = RefCell::new(None);
         let persisted = RefCell::new(None);
@@ -6403,7 +6445,7 @@ mod tests {
         // here goes stale silently when the pane grows a row.
         let mut lines = stats_pane_lines(&[stats::DayBucket::default()]);
         lines.push(lifetime_line(&stats::PersistedStats::default()));
-        assert_eq!(lines.len(), platform_macos::STATS_ROWS);
+        assert_eq!(lines.len(), crate::shell::STATS_ROWS);
     }
 
     #[test]
@@ -6591,7 +6633,7 @@ mod tests {
             ("COMPME_STRENGTH", "4"),
         ]));
         let tray_enabled = Arc::new(AtomicBool::new(true));
-        let flags = build_settings_flags(&config, Arc::clone(&tray_enabled));
+        let flags = build_settings_flags(&config, Arc::clone(&tray_enabled), 16);
         assert!(Arc::ptr_eq(&flags.general_enabled, &tray_enabled));
         assert_eq!(
             flags.labs_midline.load(Ordering::Relaxed),
@@ -6620,9 +6662,7 @@ mod tests {
             flags.setup_model_index.load(Ordering::Relaxed),
             crate::model_picker::recommended_index()
         );
-        let available_ram_gb =
-            model_catalog::bytes_to_whole_gb(platform_macos::physical_memory_bytes());
-        let expected_titles = crate::model_picker::model_menu_titles(available_ram_gb);
+        let expected_titles = crate::model_picker::model_menu_titles(16);
         assert!(!flags.setup_model_menu_titles.is_empty());
         assert_eq!(flags.setup_model_menu_titles, expected_titles);
         assert_eq!(
@@ -7008,7 +7048,7 @@ mod tests {
         // deletes the wrong app's history.
         let many: Vec<(String, u64)> = (0..20).map(|i| (format!("app{i:02}"), 20 - i)).collect();
         let ids = apps_row_ids(&many);
-        assert_eq!(ids.len(), platform_macos::APPS_ROWS);
+        assert_eq!(ids.len(), crate::shell::APPS_ROWS);
         assert_eq!(ids[0], "app00");
         assert_eq!(ids.len(), apps_pane_lines(&many, true).len());
         // Status lines carry no deletable rows.
@@ -7020,7 +7060,7 @@ mod tests {
         // The Apps-row checkbox tag packs (row, field); the field index must
         // map back to the SAME AppPolicyField order the AppKit layer renders
         // (APP_POLICY_FIELD_TITLES), or a toggle writes the wrong field. The
-        // index count is pinned to platform_macos::APP_POLICY_FIELDS so a
+        // index count is pinned to crate::shell::APP_POLICY_FIELDS so a
         // drifting duplicate can't silently desync the two sides.
         use prefs::AppPolicyField::*;
         assert_eq!(apps_policy_field_from_index(0), Some(Enabled));
@@ -7030,11 +7070,11 @@ mod tests {
         assert_eq!(apps_policy_field_from_index(4), Some(GrammarFix));
         // One past the last field is out of range (stale/garbled click no-ops).
         assert_eq!(
-            apps_policy_field_from_index(platform_macos::APP_POLICY_FIELDS),
+            apps_policy_field_from_index(crate::shell::APP_POLICY_FIELDS),
             None
         );
         // Every valid index resolves — the map covers all rendered checkboxes.
-        for i in 0..platform_macos::APP_POLICY_FIELDS {
+        for i in 0..crate::shell::APP_POLICY_FIELDS {
             assert!(apps_policy_field_from_index(i).is_some());
         }
     }
@@ -7093,10 +7133,7 @@ mod tests {
         );
         // Capped at the window's row count (shared const, review-c108).
         let many: Vec<(String, u64)> = (0..20).map(|i| (format!("app{i:02}"), 20 - i)).collect();
-        assert_eq!(
-            apps_pane_lines(&many, true).len(),
-            platform_macos::APPS_ROWS
-        );
+        assert_eq!(apps_pane_lines(&many, true).len(), crate::shell::APPS_ROWS);
     }
 
     #[test]
@@ -7111,7 +7148,7 @@ mod tests {
             screen_recording: true,
             model_ready: true,
         });
-        assert!(rows.len() <= platform_macos::SETUP_ROWS);
+        assert!(rows.len() <= crate::shell::SETUP_ROWS);
     }
 
     #[test]
@@ -7161,7 +7198,7 @@ mod tests {
 
         apply_startup_key_bindings(&config);
 
-        let bindings = platform_macos::effective_shortcut_bindings();
+        let bindings = crate::shell::effective_shortcut_bindings();
         assert_eq!(bindings.force_activate, Some((96, 256)));
         assert_eq!(bindings.toggle_app, Some((96, 2048)));
         assert_eq!(bindings.toggle_global, Some((96, 512)));
@@ -7181,7 +7218,7 @@ mod tests {
 
         let (sub, requires_relaunch) =
             subscribe_accept_after_startup_key_bindings(&config, true, || {
-                *observed.borrow_mut() = Some(platform_macos::effective_shortcut_bindings());
+                *observed.borrow_mut() = Some(crate::shell::effective_shortcut_bindings());
                 Ok(noop_accept_subscription())
             })
             .expect("subscription setup succeeds");
@@ -7377,7 +7414,7 @@ mod tests {
             Some("ctrl+49"),
             "documented key spelling wins over the legacy alias"
         );
-        let bindings = platform_macos::ShortcutBindings::from_config(
+        let bindings = crate::shell::ShortcutBindings::from_config(
             config.force_activate_key.as_deref(),
             None,
             None,
@@ -7385,7 +7422,7 @@ mod tests {
         );
         assert_eq!(
             bindings.force_activate,
-            platform_macos::parse_accept_key("ctrl+49")
+            crate::shell::parse_accept_key("ctrl+49")
         );
     }
 
@@ -7398,7 +7435,7 @@ mod tests {
         assert_eq!(config.grammar_check_key.as_deref(), Some("cmd+shift+96"));
         assert_eq!(
             config.grammar_accept_key,
-            platform_macos::parse_accept_key("ctrl+96")
+            crate::shell::parse_accept_key("ctrl+96")
         );
     }
 
@@ -7421,7 +7458,7 @@ mod tests {
         // Thread the keys exactly as run() does (force_activate, toggle_app,
         // toggle_global, grammar_check): distinct chords so a positional swap
         // between the two toggle slots fails.
-        let bindings = platform_macos::ShortcutBindings::from_config(
+        let bindings = crate::shell::ShortcutBindings::from_config(
             None,
             config.toggle_app_key.as_deref(),
             config.toggle_global_key.as_deref(),
@@ -7429,11 +7466,11 @@ mod tests {
         );
         assert_eq!(
             bindings.toggle_app,
-            platform_macos::parse_accept_key("ctrl+48")
+            crate::shell::parse_accept_key("ctrl+48")
         );
         assert_eq!(
             bindings.toggle_global,
-            platform_macos::parse_accept_key("shift+50")
+            crate::shell::parse_accept_key("shift+50")
         );
     }
 
@@ -7594,7 +7631,7 @@ mod tests {
             }
         );
 
-        let flags = build_settings_flags(&config, Arc::new(AtomicBool::new(true)));
+        let flags = build_settings_flags(&config, Arc::new(AtomicBool::new(true)), 16);
         assert_eq!(
             flags.emoji_skin_tone_index.load(Ordering::Relaxed),
             emoji_skin_tone_index(SkinTone::Dark)
@@ -8771,7 +8808,7 @@ mod tests {
                     calls.set(1);
                     Ok(())
                 } else {
-                    Err(platform_macos::KeymapError::Collision(
+                    Err(crate::shell::KeymapError::Collision(
                         w.or(f).map(|(k, _)| k).unwrap_or(0),
                     ))
                 }
@@ -8829,7 +8866,7 @@ mod tests {
             Some((53, 0)),
             None,
             None,
-            |_, _, _| Err(platform_macos::KeymapError::Collision(53)),
+            |_, _, _| Err(crate::shell::KeymapError::Collision(53)),
             || {
                 l2.borrow_mut().push("rearm".into());
                 Ok(())
@@ -8856,7 +8893,7 @@ mod tests {
         let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
         let l1 = std::rc::Rc::clone(&log);
         let l3 = std::rc::Rc::clone(&log);
-        const SHIFT: u32 = 512; // Carbon shiftKey (private to platform_macos)
+        const SHIFT: u32 = 512; // Carbon shiftKey mask used by the macOS keymap facade.
                                 // A stateful registered map so effective() reflects what set_map last
                                 // wrote — this lets the PERSIST leg be asserted (persist reads the
                                 // resolved registered pair via effective(), exactly as the real run
@@ -8980,7 +9017,7 @@ mod tests {
                     match value {
                         Some((code, mask)) => sink.borrow_mut().push(format!(
                             "{key}={}",
-                            platform_macos::format_accept_key(code, mask)
+                            crate::shell::format_accept_key(code, mask)
                         )),
                         None => sink.borrow_mut().push(format!("remove:{key}")),
                     }
@@ -12686,7 +12723,7 @@ mod tests {
         assert!(config.grammar_fix);
         assert_eq!(
             config.grammar_accept_key,
-            platform_macos::parse_accept_key("ctrl+96")
+            crate::shell::parse_accept_key("ctrl+96")
         );
         assert_eq!(config.grammar_check_key.as_deref(), Some("shift+96"));
 

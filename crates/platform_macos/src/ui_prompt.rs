@@ -36,49 +36,17 @@ fn run_confirm(
     Ok(response == NSAlertFirstButtonReturn + 1)
 }
 
-/// Show "Allow this link to <action> for <scope>?" and return whether the
-/// user clicked Allow. Main-thread only. Cancel is the FIRST button (the
-/// default/safe answer — Return key declines).
-pub fn confirm_deep_link_prompt(
-    scope: &str,
-    action: &str,
-    trust: &str,
+/// Generic ShellHost confirmation. Main-thread only; Cancel is the
+/// FIRST/default button (Return declines), matching the named prompts below.
+pub fn confirm_prompt(
+    title: &str,
+    message: &str,
+    confirm_label: &str,
 ) -> Result<bool, PlatformError> {
     run_confirm(
-        "deep-link prompt requires the main thread",
-        "Allow configuration change?",
-        &format!("A compme:// link wants to apply {action} for:\n{scope}\n({trust})"),
-        "Allow",
-    )
-}
-
-/// Click-through license gate before a model download (D14, c95 "once per
-/// model"). Same shape as the other prompts: main-thread only, Cancel is
-/// the FIRST/default button (Return declines), nested run loop while modal.
-pub fn confirm_license_prompt(
-    model: &str,
-    license_name: &str,
-    terms_url: &str,
-) -> Result<bool, PlatformError> {
-    run_confirm(
-        "license prompt requires the main thread",
-        "Accept model license?",
-        &format!(
-            "{model} is distributed under the {license_name}.\n\
-             Downloading requires accepting its terms:\n{terms_url}"
-        ),
-        "Accept",
-    )
-}
-
-/// Confirm deleting one app's recorded-input history (Apps tab Delete —
-/// irreversible: secure_delete zeroes the freed pages). Same shape as the
-/// deep-link prompt: Cancel is the first/default button.
-pub fn confirm_delete_app_prompt(app: &str) -> Result<bool, PlatformError> {
-    run_confirm(
-        "delete prompt requires the main thread",
-        "Delete recorded inputs?",
-        &format!("All recorded inputs for {app} will be permanently erased."),
-        "Delete",
+        "confirm prompt requires the main thread",
+        title,
+        message,
+        confirm_label,
     )
 }

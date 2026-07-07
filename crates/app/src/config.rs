@@ -104,9 +104,9 @@ pub fn stats_file_path() -> Option<PathBuf> {
     config_file_path().map(|p| p.with_file_name("stats.env"))
 }
 
-/// Resolve the config file path: `COMPME_CONFIG` override, else
-/// `$HOME/Library/Application Support/compme/config.env`. `None` if neither
-/// is available.
+/// Resolve the config file path: `COMPME_CONFIG` override, else the per-OS
+/// config home (`~/Library/Application Support` on macOS, XDG on Linux,
+/// `%APPDATA%` on Windows). `None` if the required env var is unavailable.
 pub fn config_file_path() -> Option<PathBuf> {
     config_file_path_from(&|key| std::env::var(key).ok())
 }
@@ -115,16 +115,26 @@ pub fn config_file_path() -> Option<PathBuf> {
 /// pattern): testable without mutating the process environment — `set_var`
 /// races parallel tests and is `unsafe` under edition 2024.
 fn config_file_path_from(lookup: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    config_file_path_for(lookup, std::env::consts::OS)
+}
+
+/// Per-OS config home. `os` is `std::env::consts::OS` in production; injected
+/// so every branch is testable on any host.
+fn config_file_path_for(lookup: &impl Fn(&str) -> Option<String>, os: &str) -> Option<PathBuf> {
     if let Some(path) = lookup("COMPME_CONFIG") {
         if !path.is_empty() {
             return Some(PathBuf::from(path));
         }
     }
-    lookup("HOME").map(|home| {
-        PathBuf::from(home)
-            .join("Library/Application Support/compme")
-            .join("config.env")
-    })
+    let dir = match os {
+        "windows" => PathBuf::from(lookup("APPDATA")?).join("compme"),
+        "macos" => PathBuf::from(lookup("HOME")?).join("Library/Application Support/compme"),
+        _ => match lookup("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+            Some(xdg) => PathBuf::from(xdg).join("compme"),
+            None => PathBuf::from(lookup("HOME")?).join(".config/compme"),
+        },
+    };
+    Some(dir.join("config.env"))
 }
 
 /// Load and parse the config file into a map. Missing/unreadable file → empty
@@ -277,9 +287,8 @@ pub fn remove_setting(path: &Path, key: &str) -> std::io::Result<()> {
     atomic_write(path, &updated)
 }
 
-/// Holds the single-instance flock for the process lifetime; the kernel
-/// releases it on ANY exit (crash included) — the reason this is flock and
-/// not a pid file. Dropping releases explicitly.
+/// Holds the single-instance file lock for the process lifetime; the kernel
+/// releases it on ANY exit (crash included). Dropping releases explicitly.
 #[derive(Debug)]
 pub struct InstanceLock {
     _file: std::fs::File,
@@ -296,16 +305,17 @@ pub enum InstanceLockError {
     Io(String),
 }
 
-/// Try to become THE compme instance: `flock(LOCK_EX | LOCK_NB)` on `path`
-/// (parent dirs created). Launch-method-agnostic: a LaunchServices-spawned
-/// copy and a direct-exec'd binary contend on the same file (the c92 finding
-/// — two instances would double AX observers and hotkey registrations).
+/// Try to become THE compme instance: an exclusive, non-blocking OS file lock
+/// on `path` (parent dirs created). `std::fs::File::try_lock` is
+/// `flock(LOCK_EX | LOCK_NB)` on unix and `LockFileEx` on Windows. Launch-method-
+/// agnostic: a LaunchServices-spawned copy and a direct-exec'd binary contend
+/// on the same file (the c92 finding — two instances would double AX observers
+/// and hotkey registrations).
 ///
 /// On [`InstanceLockError::Io`] the app fails closed before installing AX
 /// observers or hotkeys. Running unguarded can double-observe private context
 /// and double-insert completions.
 pub fn try_acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLockError> {
-    use std::os::unix::io::AsRawFd;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| InstanceLockError::Io(e.to_string()))?;
     }
@@ -315,23 +325,10 @@ pub fn try_acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLo
         .write(true)
         .open(path)
         .map_err(|e| InstanceLockError::Io(e.to_string()))?;
-    // SAFETY: flock on an owned, open fd; no memory contracts involved.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc == 0 {
-        Ok(InstanceLock { _file: file })
-    } else {
-        Err(instance_lock_error_from(std::io::Error::last_os_error()))
-    }
-}
-
-fn instance_lock_error_from(err: std::io::Error) -> InstanceLockError {
-    if err.kind() == std::io::ErrorKind::WouldBlock
-        || err.raw_os_error() == Some(libc::EWOULDBLOCK)
-        || err.raw_os_error() == Some(libc::EAGAIN)
-    {
-        InstanceLockError::Held
-    } else {
-        InstanceLockError::Io(err.to_string())
+    match file.try_lock() {
+        Ok(()) => Ok(InstanceLock { _file: file }),
+        Err(std::fs::TryLockError::WouldBlock) => Err(InstanceLockError::Held),
+        Err(std::fs::TryLockError::Error(err)) => Err(InstanceLockError::Io(err.to_string())),
     }
 }
 
@@ -512,29 +509,6 @@ mod tests {
             Err(InstanceLockError::Io(_))
         ));
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn instance_lock_error_classifies_only_wouldblock_as_held() {
-        assert_eq!(
-            instance_lock_error_from(std::io::Error::from_raw_os_error(libc::EWOULDBLOCK)),
-            InstanceLockError::Held
-        );
-        // The kind-based WouldBlock variant (no raw os errno) is also Held.
-        assert_eq!(
-            instance_lock_error_from(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
-            InstanceLockError::Held
-        );
-        // EAGAIN aliases EWOULDBLOCK on Linux but is a distinct errno on some
-        // platforms; it must also classify as Held.
-        assert_eq!(
-            instance_lock_error_from(std::io::Error::from_raw_os_error(libc::EAGAIN)),
-            InstanceLockError::Held
-        );
-        assert!(matches!(
-            instance_lock_error_from(std::io::Error::from_raw_os_error(libc::EACCES)),
-            InstanceLockError::Io(_)
-        ));
     }
 
     #[test]
@@ -806,6 +780,80 @@ mod tests {
     }
 
     #[test]
+    fn config_path_macos_uses_application_support() {
+        let lookup = |key: &str| match key {
+            "HOME" => Some("/Users/u".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_file_path_for(&lookup, "macos").unwrap(),
+            PathBuf::from("/Users/u/Library/Application Support/compme/config.env")
+        );
+    }
+
+    #[test]
+    fn config_path_linux_prefers_xdg_config_home() {
+        let lookup = |key: &str| match key {
+            "XDG_CONFIG_HOME" => Some("/home/u/.cfg".to_string()),
+            "HOME" => Some("/home/u".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_file_path_for(&lookup, "linux").unwrap(),
+            PathBuf::from("/home/u/.cfg/compme/config.env")
+        );
+    }
+
+    #[test]
+    fn config_path_linux_falls_back_to_dot_config() {
+        let lookup = |key: &str| match key {
+            "XDG_CONFIG_HOME" => Some(String::new()),
+            "HOME" => Some("/home/u".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_file_path_for(&lookup, "linux").unwrap(),
+            PathBuf::from("/home/u/.config/compme/config.env")
+        );
+    }
+
+    #[test]
+    fn config_path_windows_uses_appdata() {
+        let lookup = |key: &str| match key {
+            "APPDATA" => Some(r"C:\Users\u\AppData\Roaming".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            config_file_path_for(&lookup, "windows").unwrap(),
+            PathBuf::from(r"C:\Users\u\AppData\Roaming")
+                .join("compme")
+                .join("config.env")
+        );
+    }
+
+    #[test]
+    fn config_override_wins_on_every_os() {
+        let lookup = |key: &str| match key {
+            "COMPME_CONFIG" => Some("/tmp/override.env".to_string()),
+            _ => None,
+        };
+        for os in ["macos", "linux", "windows"] {
+            assert_eq!(
+                config_file_path_for(&lookup, os).unwrap(),
+                PathBuf::from("/tmp/override.env")
+            );
+        }
+    }
+
+    #[test]
+    fn config_path_none_without_required_home() {
+        let lookup = |_: &str| None;
+        for os in ["macos", "linux", "windows"] {
+            assert!(config_file_path_for(&lookup, os).is_none());
+        }
+    }
+
+    #[test]
     fn config_file_path_covers_all_branches() {
         // Drives the lookup-injected core — mutating the process env here
         // (`set_var`/`remove_var`) raced parallel tests and is `unsafe`
@@ -825,7 +873,7 @@ mod tests {
             Some(PathBuf::from("/some/path"))
         );
 
-        // Branch 2: COMPME_CONFIG empty + HOME set -> path under $HOME.
+        // Branch 2: COMPME_CONFIG empty + HOME set -> path under macOS HOME.
         let path = config_file_path_from(&env(&[("COMPME_CONFIG", ""), ("HOME", "/h")]))
             .expect("HOME branch should yield a path");
         assert!(

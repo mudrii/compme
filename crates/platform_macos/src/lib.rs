@@ -59,17 +59,23 @@ use platform::{
 pub mod keychain;
 mod login_item;
 mod settings_window;
+mod shell_host;
 mod tray;
 mod ui_prompt;
 mod url_events;
 pub use login_item::set_launch_at_login;
+pub use platform::shell::{
+    AppsPolicyEdit, CurrentAcceptKeys, EffectiveAcceptKeys, KeyWithMods, KeymapError,
+    PersonalizationEdit, RebindRequest, SettingsFlags, ShortcutBindings, APPS_ROWS,
+    APP_POLICY_FIELDS, SETUP_ROWS, STATS_ROWS,
+};
 pub use settings_window::{
     keycode_label, keycode_label_with_mods, policy_restore_needed, rebind_request_for,
-    record_decision, MacosSettingsWindow, PersonalizationEdit, RebindRequest, RecordDecision,
-    RecorderRole, SettingsFlags, APPS_ROWS, APP_POLICY_FIELDS, SETUP_ROWS, STATS_ROWS,
+    record_decision, MacosSettingsWindow, RecordDecision, RecorderRole,
 };
+pub use shell_host::MacosShellHost;
 pub use tray::{DisableArm, MacosTray, TrayFlags};
-pub use ui_prompt::{confirm_deep_link_prompt, confirm_delete_app_prompt, confirm_license_prompt};
+pub use ui_prompt::confirm_prompt;
 pub use url_events::{install_url_event_handler, UrlEventHandler};
 
 const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.05;
@@ -100,8 +106,6 @@ const KEYCODE_ESCAPE: i64 = 53;
 /// Down arrow: rotate to the next candidate while a suggestion is visible
 /// (multi-candidate cycle).
 const KEYCODE_DOWN: i64 = 125;
-pub type KeyWithMods = (i64, u32);
-pub type EffectiveAcceptKeys = (KeyWithMods, KeyWithMods, Option<KeyWithMods>);
 const SYNTHETIC_EVENT_TAG: i64 = 0x636d706c746d65;
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(1000);
 const K_EVENT_CLASS_KEYBOARD: OSType = u32::from_be_bytes(*b"keyb");
@@ -2799,82 +2803,16 @@ pub fn format_accept_key(keycode: i64, mask: u32) -> String {
     out
 }
 
-/// The three optional global shortcut hotkeys configurable beyond the accept
-/// keys (A3 Shortcuts pane, ROADMAP Tier 3.4): force a completion now, toggle
-/// completions for the focused app, and toggle completions globally. Each is
-/// `None` until the user binds it — default-off, so no extra global hotkey is
-/// registered. Parsed from the persisted `COMPME_FORCE_ACTIVATE_KEY` /
-/// `COMPME_TOGGLE_APP_KEY` / `COMPME_TOGGLE_GLOBAL_KEY` config strings via
-/// [`parse_accept_key`] (same grammar as the accept keys, so modifier combos
-/// like `ctrl+shift+50` work). The Carbon registration of these always-on
-/// hotkeys and the recorder rows that edit them are a later FFI tick.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ShortcutBindings {
-    pub force_activate: Option<(i64, u32)>,
-    pub toggle_app: Option<(i64, u32)>,
-    pub toggle_global: Option<(i64, u32)>,
-    pub grammar_check: Option<(i64, u32)>,
-}
-
-impl ShortcutBindings {
-    /// Parse the three optional config strings into `(keycode, mask)` bindings.
-    /// A `None`, empty, or malformed string leaves that binding unset, matching
-    /// the accept keys' fail-soft-to-default behavior. Collisions are NOT
-    /// rejected here — call [`Self::has_internal_collision`] before registering.
-    pub fn from_config(
-        force_activate: Option<&str>,
-        toggle_app: Option<&str>,
-        toggle_global: Option<&str>,
-        grammar_check: Option<&str>,
-    ) -> Self {
-        Self {
-            force_activate: force_activate.and_then(parse_accept_key),
-            toggle_app: toggle_app.and_then(parse_accept_key),
-            toggle_global: toggle_global.and_then(parse_accept_key),
-            grammar_check: grammar_check.and_then(parse_accept_key),
-        }
-    }
-
-    /// `true` if any two bound shortcuts share the same `(keycode, mask)` chord.
-    /// A single chord can't register two distinct global hotkeys, so the caller
-    /// must reject/ignore a colliding set before installing them. Same keycode
-    /// with different modifiers is a distinct chord (not a collision).
-    pub fn has_internal_collision(&self) -> bool {
-        let bound: Vec<(i64, u32)> = [
-            self.force_activate,
-            self.toggle_app,
-            self.toggle_global,
-            self.grammar_check,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        for i in 0..bound.len() {
-            for j in (i + 1)..bound.len() {
-                if bound[i] == bound[j] {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// The bound shortcuts as `(carbon_hotkey_id, keycode, modifiers)` triples for
-    /// the Carbon registration loop — unset shortcuts are skipped. Each id is the
-    /// action's `CARBON_HOTKEY_*` constant, so the fired hotkey round-trips through
-    /// [`shortcut_action_for_hotkey_id`] in the handler. Call
-    /// [`Self::has_internal_collision`] first; a colliding set must not be registered.
-    pub fn registration_plan(&self) -> Vec<(u32, i64, u32)> {
-        [
-            (CARBON_HOTKEY_FORCE_ACTIVATE, self.force_activate),
-            (CARBON_HOTKEY_TOGGLE_APP, self.toggle_app),
-            (CARBON_HOTKEY_TOGGLE_GLOBAL, self.toggle_global),
-            (CARBON_HOTKEY_GRAMMAR_CHECK, self.grammar_check),
-        ]
-        .into_iter()
-        .filter_map(|(id, binding)| binding.map(|(keycode, mask)| (id, keycode, mask)))
-        .collect()
-    }
+fn shortcut_registration_plan(bindings: ShortcutBindings) -> Vec<(u32, i64, u32)> {
+    [
+        (CARBON_HOTKEY_FORCE_ACTIVATE, bindings.force_activate),
+        (CARBON_HOTKEY_TOGGLE_APP, bindings.toggle_app),
+        (CARBON_HOTKEY_TOGGLE_GLOBAL, bindings.toggle_global),
+        (CARBON_HOTKEY_GRAMMAR_CHECK, bindings.grammar_check),
+    ]
+    .into_iter()
+    .filter_map(|(id, binding)| binding.map(|(keycode, mask)| (id, keycode, mask)))
+    .collect()
 }
 
 /// Decode a fired Carbon hotkey id into its always-on shortcut action (the
@@ -2936,32 +2874,6 @@ fn ns_modifier_flags_to_carbon_mask(ns_flags: u64) -> u32 {
     }
     mask
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeymapError {
-    /// Two bindings would share the same keycode.
-    Collision(i64),
-    /// A keycode was negative (macOS virtual keycodes are non-negative).
-    InvalidKeycode(i64),
-}
-
-impl std::fmt::Display for KeymapError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            KeymapError::Collision(keycode) => {
-                write!(
-                    f,
-                    "keymap collision: keycode {keycode} bound more than once"
-                )
-            }
-            KeymapError::InvalidKeycode(keycode) => {
-                write!(f, "invalid keycode: {keycode} (must be non-negative)")
-            }
-        }
-    }
-}
-
-impl std::error::Error for KeymapError {}
 
 impl Default for AcceptKeymap {
     fn default() -> Self {
@@ -3448,7 +3360,7 @@ fn install_process_shortcut_hotkeys(
             .into_iter()
             .map(|(_, keycode, mask)| (keycode, mask))
             .collect();
-        shortcut_plan_minus_accept_collisions(shortcuts.registration_plan(), &accept_chords)
+        shortcut_plan_minus_accept_collisions(shortcut_registration_plan(shortcuts), &accept_chords)
     };
 
     for (id, keycode, mask) in plan {
@@ -11019,7 +10931,7 @@ mod tests {
         // Only the two bound shortcuts appear, each under its action's hotkey id;
         // the unset toggle_app is skipped.
         assert_eq!(
-            b.registration_plan(),
+            shortcut_registration_plan(b),
             vec![
                 (CARBON_HOTKEY_FORCE_ACTIVATE, 96, 0),
                 (CARBON_HOTKEY_TOGGLE_GLOBAL, 96, CARBON_SHIFT_KEY),
@@ -11027,7 +10939,7 @@ mod tests {
             ]
         );
         // Every planned id round-trips back to an action.
-        for (id, _, _) in b.registration_plan() {
+        for (id, _, _) in shortcut_registration_plan(b) {
             assert!(shortcut_action_for_hotkey_id(id).is_some());
         }
     }

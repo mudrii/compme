@@ -12,7 +12,6 @@ path = "src/main.rs"
 model_catalog = { path = "../model_catalog" }
 model_fetch = { path = "../model_fetch" }
 platform = { path = "../platform" }
-platform_macos = { path = "../platform_macos" }
 engine = { path = "../engine" }
 model_client = { path = "../model_client" }
 personalization = { path = "../personalization" }
@@ -28,6 +27,16 @@ autocorrect = { path = "../autocorrect" }
 grammar = { path = "../grammar" }
 localize = { path = "../localize" }
 thesaurus = { path = "../thesaurus" }
-core-foundation = "=0.10.1"
-libc = "0.2"
 zeroize = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+platform_macos = { path = "../platform_macos" }
+
+[target.'cfg(windows)'.dependencies]
+platform_windows = { path = "../platform_windows" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+platform_linux = { path = "../platform_linux" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

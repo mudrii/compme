@@ -1,8 +1,8 @@
 //! `compme` — the macOS MVP integration binary.
 //!
 //! Wires the proven-in-isolation parts into one running process:
-//! `MacosPlatformAdapter` (focus/caret/accept + AX reads/inserts),
-//! `MacosOverlayPresenter` (ghost text), `Engine` (the deterministic state
+//! `PlatformAdapterImpl` (focus/caret/accept + AX reads/inserts),
+//! `OverlayPresenterImpl` (ghost text), `Engine` (the deterministic state
 //! machine), and a `LocalModel` (inference on a dedicated thread).
 //!
 //! See `docs/superpowers/specs/2026-06-06-p0-mvp-integration-design.md`.
@@ -16,6 +16,7 @@ mod model_select;
 mod run_loop;
 mod screen_ocr;
 mod setup_state;
+mod shell;
 mod status;
 mod wiring;
 

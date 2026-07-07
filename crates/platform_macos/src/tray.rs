@@ -5,8 +5,7 @@
 //! crate). Menu actions only flip shared [`TrayFlags`] atomics; the run loop
 //! observes them. AppKit/objc2 glue: build- and live-verified, not unit-tested.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
@@ -17,50 +16,8 @@ use objc2_app_kit::{
     NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSData, NSObjectProtocol, NSSize, NSString};
+pub use platform::shell::{DisableArm, TrayFlags};
 use platform::PlatformError;
-
-/// Shared toggles flipped by tray menu actions and observed by the run loop.
-#[derive(Clone)]
-pub struct TrayFlags {
-    /// User enable/disable toggle (suggestions on/off).
-    pub enabled: Arc<AtomicBool>,
-    /// Set when the user picks Quit.
-    pub quit: Arc<AtomicBool>,
-    /// Set when the user picks Open Accessibility Settings.
-    pub open_settings: Arc<AtomicBool>,
-    /// Set when the user picks Snooze; the run loop consumes it (swap false)
-    /// and applies the snooze to its prefs.
-    pub snooze_requested: Arc<AtomicBool>,
-    /// "Disable Completions Globally ▸" arm (run loop consumes; Always is
-    /// routed to the persistent enabled flag there).
-    pub global_disable: Arc<Mutex<Option<DisableArm>>>,
-    /// Set when the user picks "Settings…"; the run loop shows the S2
-    /// settings window (and handles the activation-policy dance).
-    pub open_settings_window: Arc<AtomicBool>,
-    /// Set when the user picks "Check for Updates…"; the run loop opens the
-    /// GitHub Releases updater surface.
-    pub check_updates: Arc<AtomicBool>,
-    /// Set when the user picks "Toggle Input Collection in Current App"; the
-    /// run loop consumes it (swap false) and flips the frontmost app's
-    /// typing-history collection override.
-    pub collection_toggle: Arc<AtomicBool>,
-    /// Set when the user picks a "Disable Completions in Current App" arm;
-    /// the run loop consumes it (take) and applies it to the FRONTMOST app's
-    /// prefs (the tray never resolves app identity itself).
-    pub app_disable: Arc<Mutex<Option<DisableArm>>>,
-}
-
-/// Which "Disable Completions in Current App" arm the user picked
-/// (Cotypist-style tray submenu).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DisableArm {
-    /// Pause in this app for one hour (auto-resumes).
-    Hour,
-    /// Pause in this app until the app relaunches (session-only).
-    UntilRelaunch,
-    /// Permanently exclude this app (persisted).
-    Always,
-}
 
 /// Public tray actions that cross the AppKit target/action seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
