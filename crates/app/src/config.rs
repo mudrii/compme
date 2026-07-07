@@ -218,6 +218,9 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     // sticks) and file, matching the hardening memory::open applies to the
     // same app-support tree — config.env holds no secret today, but the
     // permission shouldn't need revisiting if one is ever added.
+    // Read existence BEFORE create_dir_all; only the unix arm consumes it,
+    // so gate the binding too or non-unix clippy -D warnings rejects it.
+    #[cfg(unix)]
     let created_dir = !dir.exists();
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]

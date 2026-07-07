@@ -6687,6 +6687,10 @@ mod tests {
         );
     }
 
+    // macOS-only: key NAMES come from the macOS arm's keycode label table;
+    // the scaffold arms render numerically until real adapters bring their
+    // own key naming (ROADMAP 1.1).
+    #[cfg(target_os = "macos")]
     #[test]
     fn shortcuts_text_names_known_keycodes_and_falls_back_numerically() {
         // Shortcuts tab (persist-only slice): current bindings by NAME for
