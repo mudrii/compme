@@ -96,6 +96,13 @@ require_readme_homebrew_line() {
 reject_readme_homebrew_line() {
   pattern="$1"
   label="$2"
+  # Self-sufficient fail-loud on a missing README (same reasoning as reject_line):
+  # a vanished file would make the awk|grep pipe no-match and pass silently. Today
+  # earlier require_line "$readme_doc" calls abort first, but don't rely on ordering.
+  if [ ! -f "$readme_doc" ]; then
+    echo "release gate target missing: $label ($readme_doc)" >&2
+    return 1
+  fi
   if awk '
     /^### Homebrew \(macOS\)$/ { in_section = 1; next }
     in_section && /^### / { in_section = 0 }
