@@ -185,7 +185,20 @@ Check:
 - Context features are opt-in and visible in logs.
 - Terminal gating matches command vs natural-language prompt.
 
-Status: not started.
+Status: partial pass (2026-07-07 scripted assisted session):
+- Terminal gating: Terminal.app shell command line -> "request blocked ...
+  terminal_ok=false"; natural-language line -> request submitted
+  (terminal_ok=true). Both legs log-proven. WezTerm exposes no AX text value
+  -> fail-closed (no suggestions), as designed.
+- Clipboard context: opt-in via Context pane (persisted
+  COMPME_CLIPBOARD_CONTEXT=1, "clipboard context enabled" logged); submit-path
+  proof via COMPME_DIAG_CONTEXT=1: prompt_context="sources=clipboard chars=39
+  clipboard_chars=39" matching the copied marker.
+- Screen OCR: permission-gated residual — needs the compme binary's own Screen
+  Recording TCC grant; not scriptable.
+- Browser domain allow/exclude live rows: deferred to the A2 matrix evidence
+  session (browser-domain-allow / browser-domain-exclude rows) — needs live
+  Safari/Chrome typing on real hosts.
 
 ## Batch 7 — Memory, Stats, Setup, Release Update Surface
 
@@ -203,4 +216,17 @@ Check:
 - Model picker target follows selected row and honors license/RAM/dest guards.
 - Update menu opens release page without crashing.
 
-Status: not started.
+Status: pass (2026-07-07 scripted assisted session):
+- Memory: COMPME_MEMORY=accepted + PATH/KEY -> "encrypted memory enabled
+  (mode=AcceptedOnly)"; after a real-model accept the Apps pane shows
+  "com.apple.TextEdit — 1" with the On/Tab/Mid/AC/GF policy row + Delete;
+  Delete opens "Delete recorded inputs?" with Cancel (focused default) /
+  Delete; Cancel preserved the row. Fail-closed proven en route:
+  COMPME_MEMORY without COMPME_MEMORY_PATH logs "memory disabled".
+- Stats: live counts after session accepts (Shown 5 / Accepted 1 / Words 8,
+  Lifetime 21 words · 14 accepted — lifetime carried across relaunches).
+- Setup: checklist + picker with "fits" RAM verdict captured in Batch 1/2
+  passes; no re-download attempted (model already on disk, gate covered
+  deterministically).
+- Check for Updates…: frontmost switched to the default browser (releases
+  page handoff), no crash.
