@@ -2215,6 +2215,18 @@ fn rect_center_is_inside_bounds(rect: ScreenRect, bounds: CGRect) -> bool {
 ///
 /// # Safety
 /// `image_ref` must be a valid `CGImageRef`.
+/// Opaque `CGImage` so `msg_send!` encodes the Vision argument as
+/// `^{CGImage=}`. Passing the ref as `*mut c_void` encodes `^v`, which
+/// objc2's debug-build signature verification rejects with a panic on the
+/// OCR thread (live 2026-07-07: screen context died in every debug build).
+#[repr(C)]
+struct CGImageOpaque([u8; 0]);
+// SAFETY: matches the Objective-C type encoding of `CGImageRef`'s pointee.
+unsafe impl objc2::encode::RefEncode for CGImageOpaque {
+    const ENCODING_REF: objc2::encode::Encoding =
+        objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("CGImage", &[]));
+}
+
 unsafe fn screen_ocr_with_image(image_ref: *mut c_void, max_chars: usize) -> Option<String> {
     // VNRequestTextRecognitionLevelFast — fast recognition keeps this off-the-critical
     // path call cheap; accurate-level full-display OCR would stall the run loop.
@@ -2224,10 +2236,11 @@ unsafe fn screen_ocr_with_image(image_ref: *mut c_void, max_chars: usize) -> Opt
     // they would accumulate for the process lifetime. The owned `String` result
     // is copied out before the pool drains.
     objc2::rc::autoreleasepool(|_| unsafe {
+        let image: *const CGImageOpaque = image_ref.cast();
         let handler_alloc: *mut AnyObject = msg_send![class!(VNImageRequestHandler), alloc];
         let options: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
         let handler: *mut AnyObject =
-            msg_send![handler_alloc, initWithCGImage: image_ref, options: options];
+            msg_send![handler_alloc, initWithCGImage: image, options: options];
         let handler = Retained::from_raw(handler)?;
 
         let request: *mut AnyObject = msg_send![class!(VNRecognizeTextRequest), new];
@@ -6707,6 +6720,17 @@ mod tests {
     use objc2::{define_class, msg_send, AnyThread, DefinedClass};
     use objc2_app_kit::NSPasteboardItemDataProvider;
     use objc2_foundation::{NSObject, NSObjectProtocol};
+
+    #[test]
+    fn cg_image_opaque_encodes_as_vision_expects() {
+        // Pin the Vision argument encoding: objc2's debug-build verification
+        // panics the OCR thread when initWithCGImage: receives '^v' (a bare
+        // void pointer) instead of '^{CGImage=}' (live 2026-07-07).
+        assert_eq!(
+            <*const CGImageOpaque as objc2::encode::Encode>::ENCODING.to_string(),
+            "^{CGImage=}"
+        );
+    }
 
     #[test]
     fn screen_context_text_with_zero_max_chars_returns_none_before_any_ffi() {

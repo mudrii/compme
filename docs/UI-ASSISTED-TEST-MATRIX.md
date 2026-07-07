@@ -185,7 +185,7 @@ Check:
 - Context features are opt-in and visible in logs.
 - Terminal gating matches command vs natural-language prompt.
 
-Status: partial pass (2026-07-07 scripted assisted session):
+Status: pass (2026-07-07 scripted assisted session):
 - Terminal gating: Terminal.app shell command line -> "request blocked ...
   terminal_ok=false"; natural-language line -> request submitted
   (terminal_ok=true). Both legs log-proven. WezTerm exposes no AX text value
@@ -194,11 +194,15 @@ Status: partial pass (2026-07-07 scripted assisted session):
   COMPME_CLIPBOARD_CONTEXT=1, "clipboard context enabled" logged); submit-path
   proof via COMPME_DIAG_CONTEXT=1: prompt_context="sources=clipboard chars=39
   clipboard_chars=39" matching the copied marker.
-- Screen OCR: permission-gated residual — needs the compme binary's own Screen
-  Recording TCC grant; not scriptable.
-- Browser domain allow/exclude live rows: deferred to the A2 matrix evidence
-  session (browser-domain-allow / browser-domain-exclude rows) — needs live
-  Safari/Chrome typing on real hosts.
+- Screen OCR: live pass after a live-found fix — the OCR thread panicked in
+  every debug build (objc2 rejected the CGImageRef passed as a void pointer);
+  after the CGImageOpaque encoding fix, prompt_context="sources=screen
+  chars=160 screen_chars=160" reached the submit path with no panic.
+- Browser domain live rows (Safari on github.com/mudrii/compme):
+  exclude leg — COMPME_EXCLUDED_DOMAINS=github.com -> "request blocked ...
+  prefs_ok=false" with domain=github.com (host-only despite the /mudrii/compme
+  path); allow leg — no exclusion -> request submitted, prefs_ok=true, same
+  host-only domain. Chrome/Brave variants remain with the A2 matrix rows.
 
 ## Batch 7 — Memory, Stats, Setup, Release Update Surface
 
