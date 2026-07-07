@@ -167,6 +167,16 @@ pub enum InsertStrategy {
     None,
 }
 
+impl InsertStrategy {
+    /// Whether accepted text can range-replace (delete left of the caret)
+    /// atomically. Replacement suggestions are gated on this; a new adapter
+    /// strategy that replaces atomically opts in here instead of every gate
+    /// re-encoding `== AxSet`.
+    pub fn supports_atomic_range_replace(self) -> bool {
+        matches!(self, InsertStrategy::AxSet)
+    }
+}
+
 /// How the accept/dismiss keys are intercepted for a field. `HotkeyOnly`
 /// demotes the UX to `UxMode::Hotkey` (no transparent Tab interception);
 /// `None` leaves accept keys entirely to the app.

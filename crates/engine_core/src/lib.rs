@@ -1,9 +1,7 @@
 //! Deterministic suggestion state machine.
 
 use context::{left_context, right_context, trim_trailing};
-use platform::{
-    ux_mode, AcceptAction, Capabilities, CorrectionRange, FieldHandle, InsertStrategy, UxMode,
-};
+use platform::{ux_mode, AcceptAction, Capabilities, CorrectionRange, FieldHandle, UxMode};
 use ranker::{
     cap_words, is_degenerate_repetition, next_word, repetition_penalty, strip_suffix_overlap,
     trim_to_stop_boundary, truncate_at_sentence_end,
@@ -364,10 +362,30 @@ impl SuggestionMachine {
     /// Whether the current value/caret passes the conservative trigger gates:
     /// enough left context, and not mid-word unless configured otherwise.
     fn passes_trigger_gates(&self) -> bool {
-        let left = left_context(&self.value, self.caret);
+        // Single pass over the prefix — equivalent to
+        // `left_context(..).trim().chars().count()` plus a last-char peek,
+        // without allocating the prefix on every keystroke.
+        let mut total = 0usize;
+        let mut leading_ws = 0usize;
+        let mut trailing_ws = 0usize;
+        let mut last = None;
+        for c in self.value.chars().take(self.caret) {
+            total += 1;
+            if c.is_whitespace() {
+                if leading_ws + 1 == total {
+                    leading_ws += 1;
+                }
+                trailing_ws += 1;
+            } else {
+                trailing_ws = 0;
+            }
+            last = Some(c);
+        }
         // Minimum context: count only substantive characters — leading and
-        // trailing whitespace must not satisfy the minimum.
-        if left.trim().chars().count() < self.min_context_chars {
+        // trailing whitespace must not satisfy the minimum. Interior
+        // whitespace still counts, matching `str::trim` semantics.
+        let after_leading = total - leading_ws;
+        if after_leading - trailing_ws.min(after_leading) < self.min_context_chars {
             return false;
         }
         // Mid-word: the caret splits a word only when the characters on *both*
@@ -375,9 +393,8 @@ impl SuggestionMachine {
         // at the start of a word, or at end-of-text) is not mid-word.
         if !self.allow_mid_word {
             let is_word = |c: char| c.is_alphanumeric() || c == '_';
-            let left_is_word = left.chars().next_back().is_some_and(is_word);
-            let right = right_context(&self.value, self.caret);
-            let right_is_word = right.chars().next().is_some_and(is_word);
+            let left_is_word = last.is_some_and(is_word);
+            let right_is_word = self.value.chars().nth(self.caret).is_some_and(is_word);
             if left_is_word && right_is_word {
                 return false;
             }
@@ -858,7 +875,7 @@ impl SuggestionMachine {
             || !self.enabled()
             || self.suppressed
             || offer.suggestion.is_empty()
-            || self.caps.insert_strategy != InsertStrategy::AxSet
+            || !self.caps.insert_strategy.supports_atomic_range_replace()
         {
             return;
         }
@@ -1004,7 +1021,7 @@ impl SuggestionMachine {
             || self.suppressed
             || candidates.is_empty()
             || replace_left == 0
-            || self.caps.insert_strategy != InsertStrategy::AxSet
+            || !self.caps.insert_strategy.supports_atomic_range_replace()
         {
             return out;
         }
@@ -1365,6 +1382,24 @@ mod tests {
         // "ab  " has 4 left-context chars but trims to "ab" (2) < 3 → suppress.
         let mut machine = machine().with_trigger_gates(3, false);
         machine.on_event(text_changed("ab  ", 4, 1000));
+        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+    }
+
+    #[test]
+    fn interior_whitespace_counts_toward_min_context() {
+        // "a b" trims to 3 chars — interior whitespace counts (str::trim
+        // semantics), only leading/trailing is excluded. min=3 must arm.
+        let mut machine = machine().with_trigger_gates(3, false);
+        machine.on_event(text_changed("a b", 3, 1000));
+        assert!(!machine.on_event(Event::Tick { now_ms: 2000 }).is_empty());
+    }
+
+    #[test]
+    fn all_whitespace_context_never_satisfies_min_context() {
+        // "    " trims to "" (0) < 1 → suppress; also pins that the trimmed
+        // count can't underflow when leading and trailing runs overlap.
+        let mut machine = machine().with_trigger_gates(1, false);
+        machine.on_event(text_changed("    ", 4, 1000));
         assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
     }
 

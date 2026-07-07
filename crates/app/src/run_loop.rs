@@ -671,7 +671,7 @@ fn grammar_fix_request(
             gate.prefs,
             gate.now_ms,
         )
-        || gate.caps.insert_strategy != InsertStrategy::AxSet
+        || !gate.caps.insert_strategy.supports_atomic_range_replace()
         || ctx.selection.is_some_and(|range| range.start != range.end)
     {
         return None;

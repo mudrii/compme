@@ -403,12 +403,7 @@ mod tests {
             false,
         );
         // The worker forwarded the request's rect + the configured max_chars.
-        let seen = host
-            .seen
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("screen_context_text was called");
+        let seen = (*host.seen.lock().unwrap()).expect("screen_context_text was called");
         assert_eq!(seen.0.unwrap().x, 5.0);
         assert_eq!(seen.1, 40);
         // And published redacted OCR text under the request stamp.
