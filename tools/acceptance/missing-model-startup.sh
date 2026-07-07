@@ -93,7 +93,7 @@ SH
     cat "$tmp_dir/bad-exit.out" >&2
     exit 1
   fi
-  if grep -Fq 'env -i' "$0"; then
+  if grep -Eq '^[[:space:]]*env -i[[:space:]]*\\' "$0"; then
     echo "PASS self-test-missing-model-startup-env-isolated"
   else
     echo "FAIL self-test-missing-model-startup-env-isolated: product launch does not use env -i" >&2

@@ -465,12 +465,18 @@ OSA
   fi
   matrix_skip_dir="$tmp_dir/matrix-skip"
   mkdir -p "$matrix_skip_dir"
-  if COMPME_A2_LOG_DIR="$matrix_skip_dir" COMPME_A2_MATRIX_TARGETS="" COMPME_A2_MATRIX_ALLOW_SKIP=1 "$0" matrix >/dev/null 2>"$matrix_skip_dir/matrix.err"; then
+  if COMPME_A2_LOG_DIR="$matrix_skip_dir" COMPME_A2_MATRIX_TARGETS="" COMPME_A2_MATRIX_ALLOW_SKIP=1 "$0" matrix >"$matrix_skip_dir/matrix.out" 2>"$matrix_skip_dir/matrix.err"; then
     ledger="$(ls "$matrix_skip_dir"/a2-compat-matrix-*.tsv 2>/dev/null | tail -n 1)"
     if [[ -n "$ledger" ]] && awk -F '\t' -v expected="${#A2_MATRIX_ROWS[@]}" 'NR == 1 && $8 == "log_path" { header = 1 } NR > 1 && $6 == "SKIP" && $8 == "" { skip++ } END { exit header && skip == expected ? 0 : 1 }' "$ledger"; then
       echo "PASS self-test-a2-matrix-allow-skip-ledger"
     else
       echo "FAIL self-test-a2-matrix-allow-skip-ledger: SKIP ledger did not cover every row" >&2
+      failures=$((failures + 1))
+    fi
+    if grep -Fq "PASS: matrix — ran=0 skipped=${#A2_MATRIX_ROWS[@]} " "$matrix_skip_dir/matrix.out"; then
+      echo "PASS self-test-a2-matrix-allow-skip-reports-skipped"
+    else
+      echo "FAIL self-test-a2-matrix-allow-skip-reports-skipped: PASS message must report ran/skipped counts" >&2
       failures=$((failures + 1))
     fi
   else
@@ -521,7 +527,11 @@ run_matrix() {
     echo "FAIL: matrix — failures=$failures skipped=$skipped (ledger: $ledger)" >&2
     exit 1
   fi
-  echo "PASS: matrix — ${#A2_MATRIX_ROWS[@]} rows (ledger: $ledger)"
+  if [[ "$skipped" -gt 0 ]]; then
+    echo "PASS: matrix — ran=$((${#A2_MATRIX_ROWS[@]} - skipped)) skipped=$skipped (ledger: $ledger)"
+  else
+    echo "PASS: matrix — ${#A2_MATRIX_ROWS[@]} rows (ledger: $ledger)"
+  fi
 }
 
 if [[ "$KIND" == "--self-test" ]]; then

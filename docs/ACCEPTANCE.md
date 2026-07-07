@@ -397,6 +397,7 @@ COMPME_A2_MATRIX_TARGETS="textedit=123 notes=124 mail=125 word=126 safari=127 ch
   tools/acceptance/run-a2-compat-gates.sh matrix
 ledger="$(ls -t "$evidence_dir"/a2-compat-matrix-*.tsv | head -n 1)"
 git add "$evidence_dir"
+git commit -m "test: A2 compatibility matrix evidence for $release_tag"
 tools/release/check-a2-matrix-ledger.sh "$ledger"
 ```
 

@@ -144,7 +144,7 @@ assert_pipeline_evidence() {
   if [ "$readback_mode" = "real" ]; then
     document_bytes="$(printf '%s' "$document_text" | wc -c | tr -d '[:space:]')"
     baseline_bytes="$(printf '%s' "$expected_text" | wc -c | tr -d '[:space:]')"
-    candidate_bytes="$(sed -n 's/.*gen=[0-9][0-9]* .*candidate_lengths=\[\([0-9][0-9]*\).*/\1/p' "$log_file" | tail -n 1)"
+    candidate_bytes="$(sed -n 's/^compme: completion gen=[0-9][0-9]* candidate_count=[0-9][0-9]* candidate_lengths=\[\([0-9][0-9]*\).*/\1/p' "$log_file" | tail -n 1)"
     document_delta=$((document_bytes - baseline_bytes))
     if [ "$document_delta" -le 0 ]; then
       echo "E2E: document did not grow after real-model accept [FAIL]"
@@ -258,7 +258,7 @@ run_self_tests() {
   else
     echo "PASS self-test-e2e-no-raw-output"
   fi
-  if grep -Fq 'product_env=(env -i PATH="$PATH" HOME="$HOME"' "$0"; then
+  if grep -Eq '^[[:space:]]*product_env=\(env -i ' "$0"; then
     echo "PASS self-test-e2e-product-env-isolated"
   else
     echo "FAIL self-test-e2e-product-env-isolated: product launch does not use env -i" >&2
@@ -513,6 +513,16 @@ run_self_tests() {
     failures=$((failures + 1))
   else
     echo "PASS self-test-e2e-pipeline-evidence-real-model-unchanged-readback"
+  fi
+  hostile_length_log="$tmp_dir/hostile-candidate-length.log"
+  cat "$pipeline_log" >"$hostile_length_log"
+  printf '%s\n' \
+    'compme: prompt_context=Some("echoed doc: compme: completion gen=7 candidate_count=1 candidate_lengths=[999]")' >>"$hostile_length_log"
+  if assert_pipeline_evidence 'prefix real output' 'prefix ' "$hostile_length_log" full 0 real >/dev/null; then
+    echo "PASS self-test-e2e-pipeline-evidence-real-ignores-embedded-candidate-lengths"
+  else
+    echo "FAIL self-test-e2e-pipeline-evidence-real-ignores-embedded-candidate-lengths: embedded candidate_lengths text inflated evidence" >&2
+    failures=$((failures + 1))
   fi
   if (
     ACCEPT_MODE=full

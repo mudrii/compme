@@ -179,6 +179,19 @@ check_ledger() {
     echo "A2 matrix ledger is not tracked: $ledger_rel" >&2
     return 1
   fi
+  # Committed-content check: the working tree must match HEAD so tampered
+  # uncommitted evidence fails loud. Skipped only on an unborn HEAD (the
+  # --self-test fixture repos track files in the index without a commit);
+  # real evidence repos always have commits, so the real path verifies
+  # committed content.
+  head_exists=0
+  if git -C "$repo_root" rev-parse --quiet --verify HEAD >/dev/null 2>&1; then
+    head_exists=1
+  fi
+  if [ "$head_exists" = 1 ] && ! git -C "$repo_root" diff --quiet HEAD -- "$ledger_rel"; then
+    echo "A2 matrix ledger differs from committed content: $ledger_rel" >&2
+    return 1
+  fi
   validate_max_age || return 1
   now="$(date +%s)"
 
@@ -296,6 +309,11 @@ check_ledger() {
     if ! git -C "$repo_root" ls-files --error-unmatch "$log_path" >/dev/null 2>&1; then
       IFS="$old_ifs"
       echo "A2 matrix row log_path is not tracked: $row_id path=$log_path" >&2
+      return 1
+    fi
+    if [ "$head_exists" = 1 ] && ! git -C "$repo_root" diff --quiet HEAD -- "$log_path"; then
+      IFS="$old_ifs"
+      echo "A2 matrix row log_path differs from committed content: $row_id path=$log_path" >&2
       return 1
     fi
     if [ ! -f "$full_log_path" ]; then
@@ -564,6 +582,44 @@ EOF
     return 1
   fi
   grep -q 'invalid COMPME_A2_LEDGER_MAX_FUTURE_SKEW_SECONDS' "$tmp/bad-future-skew.err"
+
+  # Committed-repo fixture: with a HEAD present, uncommitted tampering must
+  # fail even when the tampered content still contains valid proof lines.
+  committed_repo="$tmp/repo-committed"
+  repo_root="$committed_repo"
+  log_dir="$committed_repo/$log_dir_rel"
+  mkdir -p "$log_dir"
+  git -C "$committed_repo" init -q
+  committed_good="$committed_repo/$log_dir_rel/good.tsv"
+  {
+    printf 'generated_at_epoch\trow_id\tkind\tapp\tpid\tstatus\texpect\tlog_path\n'
+    for row in $expected_rows; do
+      IFS='|' read -r kind app expect <<EOF
+$(row_spec "$row")
+EOF
+      write_good_log "$row" "$kind" "$app" "$expect" "$log_dir/$row.log"
+      printf '%s\t%s\t%s\t%s\t123\tPASS\t%s\t%s/%s.log\n' "$generated_at" "$row" "$kind" "$app" "$expect" "$log_dir_rel" "$row"
+    done
+  } >"$committed_good"
+  (cd "$committed_repo" && git add "$log_dir_rel"/*.log "$log_dir_rel/good.tsv")
+  git -C "$committed_repo" -c user.name=self-test -c user.email=self-test@example.invalid \
+    -c commit.gpgsign=false commit -q --no-verify -m 'a2 ledger self-test fixture'
+  check_ledger "$committed_good"
+
+  printf 'compme: request gen=9 prompt_chars=50 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true\n' >>"$log_dir/textedit.log"
+  if check_ledger "$committed_good" >/dev/null 2>"$tmp/uncommitted-log.err"; then
+    echo "A2 matrix ledger self-test failed: uncommitted log tamper containing proof was accepted" >&2
+    return 1
+  fi
+  grep -q 'A2 matrix row log_path differs from committed content: textedit' "$tmp/uncommitted-log.err"
+  git -C "$committed_repo" checkout -q -- "$log_dir_rel/textedit.log"
+
+  printf '# tampered\n' >>"$committed_good"
+  if check_ledger "$committed_good" >/dev/null 2>"$tmp/uncommitted-ledger.err"; then
+    echo "A2 matrix ledger self-test failed: uncommitted ledger tamper was accepted" >&2
+    return 1
+  fi
+  grep -q 'A2 matrix ledger differs from committed content:' "$tmp/uncommitted-ledger.err"
 
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
     echo "A2 matrix ledger self-test failed: extra self-test argument was accepted" >&2

@@ -293,22 +293,36 @@ RUBY
 
   check_developer_id_fixture() {
     ruby -ryaml - "$1" <<'RUBY'
+def contains_secret_reference?(value)
+  case value
+  when String
+    value.include?("secrets.")
+  when Hash
+    value.any? { |_, child| contains_secret_reference?(child) }
+  when Array
+    value.any? { |child| contains_secret_reference?(child) }
+  else
+    false
+  end
+end
+
 workflow = YAML.load_file(ARGV.fetch(0))
+prebuild_job = workflow.fetch("jobs").fetch("prebuild")
+abort("missing release gate: prebuild job carries no secret references") if contains_secret_reference?(prebuild_job)
+prebuild_steps = prebuild_job.fetch("steps")
+prebuild_index = prebuild_steps.index { |step| step["name"] == "Prebuild release binary (no signing secrets in this job)" }
+abort("missing release gate: prebuilds release binary in secretless job") unless prebuild_index
 release_steps = workflow.fetch("jobs").fetch("release").fetch("steps")
 import_index = release_steps.index { |step| step["name"] == "Import Developer ID certificate" }
-prebuild_index = release_steps.index { |step| step["name"] == "Prebuild release binary (before signing identity exists)" }
 build_index = release_steps.index { |step| step["name"] == "Build the .app bundle" }
 abort("missing release gate: imports Developer ID certificate") unless import_index
-abort("missing release gate: prebuilds release binary before signing identity exists") unless prebuild_index
 abort("missing release gate: builds app bundle") unless build_index
-abort("missing release gate: prebuilds release binary before Developer ID import") unless prebuild_index < import_index
 abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
 build_run = release_steps.fetch(build_index).fetch("run")
-abort("missing release gate: bundle build skips cargo after Developer ID import") unless build_run == %q(COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle")
+abort("missing release gate: bundle build skips cargo in signing job") unless build_run == %q(COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle")
 release_steps.each_with_index do |step, idx|
-  next unless idx > import_index
   run = step["run"].to_s
-  abort("missing release gate: no cargo command after Developer ID import") if run.match?(/(^|[;&|[:space:]])cargo[[:space:]]/)
+  abort("missing release gate: no cargo command anywhere in signing job") if run.match?(/(^|[;&|[:space:]])cargo[[:space:]]/)
 end
 import_step = release_steps.fetch(import_index)
 import_env = import_step.fetch("env")
@@ -504,10 +518,12 @@ YAML
   good_developer_id_release="$tmp_dir/good-developer-id-release.yml"
   cat >"$good_developer_id_release" <<'YAML'
 jobs:
+  prebuild:
+    steps:
+      - name: Prebuild release binary (no signing secrets in this job)
+        run: cargo build --locked --release -p app
   release:
     steps:
-      - name: Prebuild release binary (before signing identity exists)
-        run: cargo build --locked --release -p app
       - name: Import Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
@@ -526,9 +542,13 @@ jobs:
 YAML
   check_developer_id_fixture "$good_developer_id_release"
 
-  post_secret_prebuild_release="$tmp_dir/post-secret-prebuild-release.yml"
-  cat >"$post_secret_prebuild_release" <<'YAML'
+  cargo_in_signing_job_release="$tmp_dir/cargo-in-signing-job-release.yml"
+  cat >"$cargo_in_signing_job_release" <<'YAML'
 jobs:
+  prebuild:
+    steps:
+      - name: Prebuild release binary (no signing secrets in this job)
+        run: cargo build --locked --release -p app
   release:
     steps:
       - name: Import Developer ID certificate
@@ -544,13 +564,46 @@ jobs:
             fi
           done
           echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
-      - name: Prebuild release binary (before signing identity exists)
+      - name: Rebuild release binary
         run: cargo build --locked --release -p app
       - name: Build the .app bundle
         run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 YAML
-  if check_developer_id_fixture "$post_secret_prebuild_release" >/dev/null 2>&1; then
-    echo "release gate self-test failed: post-secret prebuild was accepted" >&2
+  if check_developer_id_fixture "$cargo_in_signing_job_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cargo inside the signing job was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  secret_in_prebuild_release="$tmp_dir/secret-in-prebuild-release.yml"
+  cat >"$secret_in_prebuild_release" <<'YAML'
+jobs:
+  prebuild:
+    steps:
+      - name: Prebuild release binary (no signing secrets in this job)
+        env:
+          LEAK: ${{ secrets.COMPME_NOTARYTOOL_PASSWORD }}
+        run: cargo build --locked --release -p app
+  release:
+    steps:
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.COMPME_DEVELOPER_ID_P12_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.COMPME_CODESIGN_IDENTITY }}
+        run: |
+          for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY; do
+            if [ -z "${!name:-}" ]; then
+              echo "missing required release secret: $name" >&2
+              exit 1
+            fi
+          done
+          echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+      - name: Build the .app bundle
+        run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
+YAML
+  if check_developer_id_fixture "$secret_in_prebuild_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: secret reference in prebuild job was accepted" >&2
     cleanup
     return 1
   fi
@@ -558,10 +611,12 @@ YAML
   missing_identity_export_release="$tmp_dir/missing-identity-export-release.yml"
   cat >"$missing_identity_export_release" <<'YAML'
 jobs:
+  prebuild:
+    steps:
+      - name: Prebuild release binary (no signing secrets in this job)
+        run: cargo build --locked --release -p app
   release:
     steps:
-      - name: Prebuild release binary (before signing identity exists)
-        run: cargo build --locked --release -p app
       - name: Import Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
@@ -1137,6 +1192,8 @@ ruby -ryaml -e '
     "bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
     "bundle metadata self-test" => ["Bundle metadata self-test", "tools/bundle/check-bundle-metadata.sh --self-test"],
     "bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
+    "bundle smoke" => ["Bundle smoke", "tools/bundle/bundle-smoke.sh"],
+    "bundle smoke self-test" => ["Bundle smoke self-test", "tools/bundle/bundle-smoke.sh --self-test"],
     "E2E self-test" => ["E2E runner self-test", "tools/acceptance/e2e-complete-me.sh --self-test"],
     "missing-model startup self-test" => ["Missing-model startup self-test", "tools/acceptance/missing-model-startup.sh --self-test"],
     "missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
@@ -1162,8 +1219,6 @@ ruby -ryaml -e '
     "CI root clippy" => ["Clippy (deny warnings)", "cargo clippy --locked --workspace --all-targets -- -D warnings"],
     "CI root test" => ["Test", "cargo test --locked --workspace --all-targets -- --test-threads=1"],
     "CI root build" => ["Build", "cargo build --locked --workspace --all-targets"],
-    "CI bundle smoke" => ["Bundle smoke", "tools/bundle/bundle-smoke.sh"],
-    "CI bundle smoke self-test" => ["Bundle smoke self-test", "tools/bundle/bundle-smoke.sh --self-test"],
     "CI platform_macos examples build" => ["Build macOS acceptance examples", "cargo build --locked -p platform_macos --examples"],
   }.merge(shared_gate_steps.transform_keys { |key| "CI #{key}" }).each do |label, (name, run)|
     abort("missing release gate: #{label}") unless step?(ci_steps, name, run)
@@ -1213,7 +1268,7 @@ ruby -ryaml -e '
     abort("missing release gate: #{job} waits for release preflight") unless Array(release_jobs.fetch(job).fetch("needs")).include?("preflight")
   end
   validate_steps = release_jobs.fetch("validate").fetch("steps")
-  %w[validate windows linux build_release].each do |job_name|
+  %w[validate windows linux prebuild].each do |job_name|
     abort("missing release gate: release #{job_name} pins Rust toolchain") unless Array(release_jobs.fetch(job_name).fetch("steps")).any? { |step| step.is_a?(Hash) && rust_toolchain_step_valid?(step) }
   end
   windows = release_jobs.fetch("windows")
@@ -1228,10 +1283,12 @@ ruby -ryaml -e '
   require_step!(release_jobs, "linux", "Clippy", "cargo clippy --locked -p platform_linux --all-targets -- -D warnings", "release platform_linux clippy job")
   require_step!(release_jobs, "linux", "Test", "cargo test --locked -p platform_linux", "release platform_linux test job")
   require_step!(release_jobs, "linux", "Build", "cargo build --locked -p platform_linux", "release platform_linux build job")
+  prebuild = release_jobs.fetch("prebuild")
   build_release = release_jobs.fetch("build_release")
   publish_release = release_jobs.fetch("publish_release")
   quote = 39.chr
   tag_job_guard = "${{ github.ref_type == #{quote}tag#{quote} && startsWith(github.ref_name, #{quote}v#{quote}) }}"
+  abort("missing release gate: prebuild is limited to v* tag refs") unless prebuild.fetch("if") == tag_job_guard
   abort("missing release gate: build_release is limited to v* tag refs") unless build_release.fetch("if") == tag_job_guard
   abort("missing release gate: publish_release is limited to v* tag refs") unless publish_release.fetch("if") == tag_job_guard
   release_jobs.each do |job_name, job|
@@ -1252,12 +1309,20 @@ ruby -ryaml -e '
   end
   require_live_a2_ledger_step!(validate_steps)
 
-  build_release_needs = Array(build_release.fetch("needs"))
+  prebuild_needs = Array(prebuild.fetch("needs"))
   %w[validate windows linux].each do |job|
-    abort("missing release gate: build_release job depends on #{job}") unless build_release_needs.include?(job)
+    abort("missing release gate: prebuild job depends on #{job}") unless prebuild_needs.include?(job)
   end
+  build_release_needs = Array(build_release.fetch("needs"))
+  abort("missing release gate: build_release job depends on prebuild") unless build_release_needs.include?("prebuild")
   publish_release_needs = Array(publish_release.fetch("needs"))
   abort("missing release gate: publish_release job depends on build_release") unless publish_release_needs.include?("build_release")
+  # The prebuild job compiles third-party code (build.rs, proc-macros) and must
+  # therefore stay completely secretless: no protected environment, no secret
+  # references anywhere in the job.
+  abort("missing release gate: prebuild job must not use a protected environment") unless prebuild["environment"].nil?
+  abort("missing release gate: prebuild job carries no secret references") if contains_secret_reference?(prebuild)
+  abort("missing release gate: prebuild job has read-only contents permission") unless prebuild.fetch("permissions").fetch("contents") == "read"
   abort("missing release gate: build_release uses protected release environment") unless build_release.fetch("environment") == "release"
   abort("missing release gate: publish_release uses protected release environment") unless publish_release.fetch("environment") == "release"
   abort("missing release gate: build_release job has read-only contents permission") unless build_release.fetch("permissions").fetch("contents") == "read"
@@ -1268,19 +1333,27 @@ ruby -ryaml -e '
   abort("missing release gate: protected tag check receives github.ref_protected") unless protected_tag_step.fetch("env").fetch("REF_PROTECTED") == "${{ github.ref_protected }}"
   protected_tag_run = protected_tag_step.fetch("run")
   abort("missing release gate: protected tag check fails closed") unless protected_tag_run.include?(%q([ "$REF_PROTECTED" != "true" ])) && protected_tag_run.include?("release tag must match a protected v* ruleset")
+  prebuild_steps = prebuild.fetch("steps")
   build_steps = build_release.fetch("steps")
   publish_steps = publish_release.fetch("steps")
+  prebuild_checkout = prebuild_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
+  abort("missing release gate: prebuild checkout") unless prebuild_checkout
+  abort("missing release gate: prebuild checkout fetches full history") unless prebuild_checkout.fetch("with").fetch("fetch-depth") == 0
   checkout = build_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
   abort("missing release gate: build_release checkout") unless checkout
-  abort("missing release gate: build_release checkout fetches full history") unless checkout.fetch("with").fetch("fetch-depth") == 0
+  abort("missing release gate: build_release checkout does not persist credentials") unless checkout.fetch("with").fetch("persist-credentials") == false
   publish_checkout = publish_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
   abort("missing release gate: publish_release checkout") unless publish_checkout
   abort("missing release gate: publish_release checkout fetches full history") unless publish_checkout.fetch("with").fetch("fetch-depth") == 0
-  ancestry_index = build_steps.index { |step| step["name"] == "Verify release tag is on default branch" }
-  scrub_index = build_steps.index { |step| step["name"] == "Scrub persisted git credentials" }
+  ancestry_index = prebuild_steps.index { |step| step["name"] == "Verify release tag is on default branch" }
+  scrub_index = prebuild_steps.index { |step| step["name"] == "Scrub persisted git credentials" }
+  rust_index = prebuild_steps.index { |step| step["name"] == "Install Rust (stable)" }
+  prebuild_metadata_index = prebuild_steps.index { |step| step["name"] == "Check release tag matches bundle metadata" }
+  prebuild_index = prebuild_steps.index { |step| step["name"] == "Prebuild release binary (no signing secrets in this job)" }
+  prebuild_upload_index = prebuild_steps.index { |step| step["name"] == "Upload prebuilt release binary" }
   metadata_index = build_steps.index { |step| step["name"] == "Check release tag matches bundle metadata" }
-  rust_index = build_steps.index { |step| step["name"] == "Install Rust (stable)" }
-  prebuild_index = build_steps.index { |step| step["name"] == "Prebuild release binary (before signing identity exists)" }
+  download_binary_index = build_steps.index { |step| step["name"] == "Download prebuilt release binary" }
+  chmod_index = build_steps.index { |step| step["name"] == "Restore prebuilt binary executable bit" }
   import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
   build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
   notarize_index = build_steps.index { |step| step["name"] == "Notarize and staple the .app" }
@@ -1288,11 +1361,15 @@ ruby -ryaml -e '
   package_index = build_steps.index { |step| step["name"] == "Package + checksum" }
   manifest_index = build_steps.index { |step| step["name"] == "Write update manifest" }
   upload_index = build_steps.index { |step| step["name"] == "Upload release artifacts" }
-  abort("missing release gate: verifies tag ancestry before secrets") unless ancestry_index
+  abort("missing release gate: verifies tag ancestry in prebuild job") unless ancestry_index
   abort("missing release gate: scrubs persisted git credentials") unless scrub_index
-  abort("missing release gate: installs Rust in build_release") unless rust_index
+  abort("missing release gate: installs Rust in prebuild") unless rust_index
+  abort("missing release gate: checks release tag metadata in prebuild") unless prebuild_metadata_index
+  abort("missing release gate: prebuilds release binary in secretless job") unless prebuild_index
+  abort("missing release gate: uploads prebuilt release binary") unless prebuild_upload_index
   abort("missing release gate: checks release tag metadata") unless metadata_index
-  abort("missing release gate: prebuilds release binary before signing identity exists") unless prebuild_index
+  abort("missing release gate: downloads prebuilt release binary") unless download_binary_index
+  abort("missing release gate: restores prebuilt binary executable bit") unless chmod_index
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
   abort("missing release gate: notarizes and staples app") unless notarize_index
@@ -1300,29 +1377,53 @@ ruby -ryaml -e '
   abort("missing release gate: packages release artifact") unless package_index
   abort("missing release gate: writes update manifest") unless manifest_index
   abort("missing release gate: uploads release artifacts from read-only build job") unless upload_index
-  abort("missing release gate: verifies tag ancestry before Developer ID secrets") unless ancestry_index < import_index
+  abort("missing release gate: verifies tag ancestry before third-party build code") unless ancestry_index < prebuild_index
   abort("missing release gate: scrubs persisted git credentials after ancestry check") unless ancestry_index < scrub_index
   abort("missing release gate: scrubs persisted git credentials before Rust/build code") unless scrub_index < rust_index
+  abort("missing release gate: checks release tag metadata before prebuild") unless prebuild_metadata_index < prebuild_index
+  abort("missing release gate: prebuilds release binary before artifact upload") unless prebuild_index < prebuild_upload_index
   abort("missing release gate: checks release tag metadata before Developer ID secrets") unless metadata_index < import_index
-  abort("missing release gate: prebuilds release binary before Developer ID import") unless prebuild_index < import_index
+  abort("missing release gate: downloads prebuilt binary before Developer ID import") unless download_binary_index < import_index
+  abort("missing release gate: restores executable bit after download and before bundle build") unless download_binary_index < chmod_index && chmod_index < build_index
   abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
-  scrub_run = build_steps.fetch(scrub_index).fetch("run")
+  scrub_run = prebuild_steps.fetch(scrub_index).fetch("run")
   abort("missing release gate: scrub removes checkout extraheader") unless scrub_run.include?("git config --local --unset-all http.https://github.com/.extraheader")
+  abort("missing release gate: prebuild job runs a cold build (no rust-cache)") if prebuild_steps.any? { |step| step["uses"].to_s.include?("rust-cache") }
+  prebuild_step = prebuild_steps.fetch(prebuild_index)
+  abort("missing release gate: prebuild compiles the release app binary") unless prebuild_step.fetch("run") == "cargo build --locked --release -p app"
+  prebuild_upload_step = prebuild_steps.fetch(prebuild_upload_index)
+  abort("missing release gate: prebuilt binary uploaded with pinned upload-artifact action") unless prebuild_upload_step.fetch("uses").match?(/\Aactions\/upload-artifact@[0-9a-f]{40}\z/)
+  prebuild_upload_with = prebuild_upload_step.fetch("with")
+  abort("missing release gate: prebuilt binary artifact is named compme-prebuilt-binary") unless prebuild_upload_with.fetch("name") == "compme-prebuilt-binary"
+  abort("missing release gate: prebuilt binary upload fails when binary is missing") unless prebuild_upload_with.fetch("if-no-files-found") == "error"
+  abort("missing release gate: prebuilt binary upload path is target/release/compme") unless prebuild_upload_with.fetch("path") == "target/release/compme"
+  # The signing job must never compile anything: no cargo command in any step,
+  # no Rust toolchain install, no rust-cache. Third-party build code only runs
+  # in the secretless prebuild job.
   build_steps.each_with_index do |step, idx|
-    next unless idx > import_index
     run = step["run"].to_s
-    abort("missing release gate: no cargo command after Developer ID import") if run.match?(/(^|[;&|[:space:]])cargo[[:space:]]/)
+    abort("missing release gate: no cargo command anywhere in signing job (step #{step["name"] || idx})") if run.match?(/(^|[;&|[:space:]])cargo[[:space:]]/)
+    uses = step["uses"].to_s
+    abort("missing release gate: no Rust toolchain install in signing job") if uses.start_with?("dtolnay/rust-toolchain@")
+    abort("missing release gate: no rust-cache in signing job") if uses.include?("rust-cache")
   end
   abort("missing release gate: release artifact chain is build -> notarize -> cleanup -> package -> manifest -> upload") unless build_index < notarize_index && notarize_index < cleanup_index && cleanup_index < package_index && package_index < manifest_index && manifest_index < upload_index
   build_steps.each_with_index do |step, idx|
     next unless contains_secret_reference?(step)
-    abort("missing release gate: verifies tag ancestry before secret-bearing build step #{step["name"] || idx}") unless ancestry_index < idx
     abort("missing release gate: checks release tag metadata before secret-bearing build step #{step["name"] || idx}") unless metadata_index < idx
+    abort("missing release gate: downloads prebuilt binary before secret-bearing build step #{step["name"] || idx}") unless download_binary_index < idx
   end
-  ancestry_run = build_steps.fetch(ancestry_index).fetch("run")
+  ancestry_run = prebuild_steps.fetch(ancestry_index).fetch("run")
   ["git fetch origin \"$DEFAULT_BRANCH\"", "git merge-base --is-ancestor \"$GITHUB_SHA\" \"origin/$DEFAULT_BRANCH\""].each do |needle|
     abort("missing release gate: early default-branch ancestry check") unless ancestry_run.include?(needle)
   end
+  download_binary_step = build_steps.fetch(download_binary_index)
+  abort("missing release gate: prebuilt binary downloaded with pinned download-artifact action") unless download_binary_step.fetch("uses").match?(/\Aactions\/download-artifact@[0-9a-f]{40}\z/)
+  download_binary_with = download_binary_step.fetch("with")
+  abort("missing release gate: signing job downloads compme-prebuilt-binary artifact") unless download_binary_with.fetch("name") == "compme-prebuilt-binary"
+  abort("missing release gate: prebuilt binary lands in target/release") unless download_binary_with.fetch("path") == "target/release"
+  chmod_step = build_steps.fetch(chmod_index)
+  abort("missing release gate: restores executable bit on downloaded binary") unless chmod_step.fetch("run") == "chmod +x target/release/compme"
   import_step = build_steps.fetch(import_index)
   import_env = import_step.fetch("env")
   {
@@ -1412,7 +1513,7 @@ ruby -ryaml -e '
     abort("missing release gate: verifies downloaded artifact checksum #{needle}") unless checksum_lines.include?(needle)
   end
   publish_step = publish_steps.fetch(publish_index)
-  abort("missing release gate: publishes GitHub release as draft until cask finalizes") unless publish_step.fetch("with").fetch("draft") == true
+  abort("missing release gate: publishes GitHub release as draft until artifacts attach") unless publish_step.fetch("with").fetch("draft") == true
   publish_files = publish_step.fetch("with").fetch("files").to_s
   [
     "release-artifacts/compme-*-macos.zip",
@@ -1423,7 +1524,7 @@ ruby -ryaml -e '
   end
   abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index > publish_index
   undraft_index = publish_steps.index { |step| step["name"] == "Undraft GitHub release" }
-  abort("missing release gate: undrafts GitHub release after cask finalization") unless undraft_index && undraft_index > cask_index
+  abort("missing release gate: undrafts GitHub release after publish and before cask finalization") unless undraft_index && undraft_index > publish_index && undraft_index < cask_index
   undraft_step = publish_steps.fetch(undraft_index)
   abort("missing release gate: undraft uses GitHub token") unless undraft_step.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
   abort("missing release gate: undrafts current tag") unless undraft_step.fetch("run") == %q(gh release edit "$GITHUB_REF_NAME" --draft=false)
@@ -1611,6 +1712,9 @@ require_line "$releasing_doc" 'tools/bundle/check-bundle-metadata\.sh --self-tes
 require_line "$releasing_doc" 'tools/release/run-model-gates\.sh --self-test' "release docs model gate self-test"
 require_line "$releasing_doc" 'tools/release/finalize-cask\.sh --self-test' "release docs cask finalizer self-test"
 require_line "$releasing_doc" 'tools/bundle/make-app\.sh --self-test' "release docs bundle assembler self-test"
+require_line "$releasing_doc" 'tools/bundle/bundle-smoke\.sh' "release docs bundle smoke"
+require_line "$releasing_doc" 'tools/bundle/bundle-smoke\.sh --self-test' "release docs bundle smoke self-test"
+require_line "$releasing_doc" 'tools/acceptance/run-ui-assisted-session\.sh --self-test' "release docs UI-assisted session self-test"
 require_line "$releasing_doc" 'tools/acceptance/missing-model-startup\.sh --self-test' "release docs missing-model startup self-test"
 require_line "$releasing_doc" 'tools/acceptance/missing-model-startup\.sh`' "release docs missing-model startup product smoke"
 require_line "$releasing_doc" 'tools/release/check-model-client-features\.sh' "release docs model client feature policy"

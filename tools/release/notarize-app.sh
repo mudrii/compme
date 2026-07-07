@@ -35,8 +35,9 @@ build_notary_auth_args() {
       echo "COMPME_NOTARYTOOL_TEMP_KEY must be set by the caller before decoding a base64 key" >&2
       return 1
     fi
+    # Create the key file with 0600 before any private-key bytes are written.
+    install -m 600 /dev/null "$key_file"
     printf '%s' "$COMPME_NOTARYTOOL_KEY_BASE64" | base64 --decode >"$key_file"
-    chmod 600 "$key_file"
     notary_auth_args+=(--key "$key_file" --key-id "$COMPME_NOTARYTOOL_KEY_ID" --issuer "$COMPME_NOTARYTOOL_ISSUER")
     return 0
   fi
@@ -111,6 +112,9 @@ SH
   grep -Fq "xcrun stapler validate $app" "$log"
 
   local key_file="$tmp/AuthKey_TEST.p8"
+  # Pre-seed a world-readable key file: decode must recreate it 0600.
+  printf 'stale\n' >"$key_file"
+  chmod 644 "$key_file"
   PATH="$fake_bin:$PATH" \
     COMPME_NOTARIZE_SELF_TEST_LOG="$log" \
     COMPME_NOTARYTOOL_TEMP_KEY="$key_file" \
@@ -121,6 +125,11 @@ SH
     "$0" "$app" >"$tmp/stdout-api"
   grep -Fq "xcrun notarytool submit --wait --timeout 45m --key $key_file --key-id ABC123DEFG --issuer 00000000-0000-0000-0000-000000000000" "$log"
   grep -Fq "PRIVATE KEY" "$key_file"
+  key_mode="$(stat -f '%Lp' "$key_file" 2>/dev/null || stat -c '%a' "$key_file")"
+  if [ "$key_mode" != "600" ]; then
+    echo "self-test FAILED: decoded key file mode is $key_mode, expected 600" >&2
+    return 1
+  fi
 
   PATH="$fake_bin:$PATH" \
     COMPME_NOTARIZE_SELF_TEST_LOG="$log" \

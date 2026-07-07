@@ -9,8 +9,8 @@ also runs scoped Windows/Linux adapter jobs.
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push to `main` / `spike/**`, PR, or `workflow_dispatch` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, plus acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), A1b/A2/E2E self-tests, A2 matrix ledger self-test (`tools/release/check-a2-matrix-ledger.sh --self-test`), agent-brief alignment + self-test (`tools/release/check-agent-briefs.sh` and `tools/release/check-agent-briefs.sh --self-test`), privacy policy + self-test (`tools/release/check-privacy-policy.sh` and `tools/release/check-privacy-policy.sh --self-test`), missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected tag `v*` | Runs release validation first: serialized root fmt/clippy/test/build, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), acceptance/bundle/release script syntax + self-tests, A2 matrix ledger self-test plus live proof via `COMPME_A2_MATRIX_LEDGER` under `tools/acceptance/evidence/a2/`, agent-brief alignment + self-test, privacy policy + self-test, missing-model startup product smoke (`tools/acceptance/missing-model-startup.sh`), bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`), spike fmt/clippy/test/build, and scoped Windows/Linux adapter fmt/clippy/test/build jobs. Only after all release validation jobs pass, the protected `release` environment gates signing/publishing, scrubs the checkout-persisted git credentials right after the tag-ancestry check, prebuilds the release binary before any signing identity exists (so third-party build scripts never run with the keychain available), imports the Developer-ID certificate (deleting the decoded `.p12` immediately after import), assembles `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh) from the prebuilt binary with `COMPME_BUNDLE_SKIP_BUILD=1`, notarizes + staples it via [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh), deletes the signing keychain before packaging/upload, zips it with `ditto` and computes the sha256, writes an update manifest, and uploads those artifacts. A separate publish job then downloads the artifacts, verifies the zip against its `.sha256`, creates a draft GitHub Release with the zip, `.sha256`, and manifest, commits the finalized Homebrew cask checksum from the verified downloaded zip back to the default branch via [`tools/release/finalize-cask.sh`](../tools/release/finalize-cask.sh), then undrafts the release after the cask update succeeds. |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push to `main` / `spike/**`, PR, or `workflow_dispatch` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, plus acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), bundle smoke + self-test (`tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`), UI-assisted session self-test (`tools/acceptance/run-ui-assisted-session.sh --self-test`), A1b/A2/E2E self-tests, A2 matrix ledger self-test (`tools/release/check-a2-matrix-ledger.sh --self-test`), agent-brief alignment + self-test (`tools/release/check-agent-briefs.sh` and `tools/release/check-agent-briefs.sh --self-test`), privacy policy + self-test (`tools/release/check-privacy-policy.sh` and `tools/release/check-privacy-policy.sh --self-test`), missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected tag `v*` | Runs release validation first: serialized root fmt/clippy/test/build, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), acceptance/bundle/release script syntax + self-tests, A2 matrix ledger self-test plus live proof via `COMPME_A2_MATRIX_LEDGER` under `tools/acceptance/evidence/a2/`, agent-brief alignment + self-test, privacy policy + self-test, missing-model startup product smoke (`tools/acceptance/missing-model-startup.sh`), bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), bundle smoke + self-test (`tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`), spike fmt/clippy/test/build, and scoped Windows/Linux adapter fmt/clippy/test/build jobs. Only after all release validation jobs pass, a secretless prebuild job (read-only permissions, no `release` environment, no secrets) re-verifies tag ancestry, scrubs the checkout-persisted git credentials right after the tag-ancestry check, compiles the release binary cold (no build cache; third-party `build.rs`/proc-macro code runs only in this job, whose runner never holds signing credentials — a job boundary, since GitHub Actions does not kill background processes between steps of the same job), and uploads it as a workflow artifact. The protected `release` environment then gates the signing job, which runs no `cargo` and installs no Rust toolchain at all: it downloads the prebuilt binary (restoring the executable bit that `actions/download-artifact` drops), imports the Developer-ID certificate (deleting the decoded `.p12` immediately after import), assembles `Compme.app` via [`tools/bundle/make-app.sh`](../tools/bundle/make-app.sh) from the prebuilt binary with `COMPME_BUNDLE_SKIP_BUILD=1`, notarizes + staples it via [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh), deletes the signing keychain before packaging/upload, zips it with `ditto` and computes the sha256, writes an update manifest, and uploads those artifacts. A separate publish job then downloads the artifacts, verifies the zip against its `.sha256`, creates a draft GitHub Release with the zip, `.sha256`, and manifest, undrafts the release, then commits the finalized Homebrew cask checksum from the verified downloaded zip back to the default branch via [`tools/release/finalize-cask.sh`](../tools/release/finalize-cask.sh) — undraft runs first so a cask push never points at a draft-only URL. |
 
 Workflow permissions default to `contents: read`; only the publish job receives
 `contents: write`. The publish job also checks out full history
@@ -48,8 +48,9 @@ model-client gate.
    (both `CFBundleShortVersionString` and `CFBundleVersion` to the same value —
    `check-bundle-metadata.sh` enforces equality), and `Casks/compme.rb`
    (`version`), then run `tools/bundle/check-bundle-metadata.sh`, commit, and
-   push. Use a SemVer release version only: `X.Y.Z`, optionally with
-   prerelease/build metadata. The pushed tag must be `v<version>` and must match
+   push. Use a SemVer release version only: `X.Y.Z`, optionally with a
+   prerelease suffix (build metadata `+…` tags are rejected by the preflight).
+   The pushed tag must be `v<version>` and must match
    bundle metadata; the release preflight runs
    `COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh`.
 3. On a model-capable Mac, run the release model-gate wrapper before tagging.
@@ -87,10 +88,13 @@ model-client gate.
      tools/acceptance/run-a2-compat-gates.sh matrix
    ledger="$(ls -t "$evidence_dir"/a2-compat-matrix-*.tsv | head -n 1)"
    git add "$evidence_dir"
+   git commit -m "test: A2 compatibility matrix evidence for $release_tag"
    tools/release/check-a2-matrix-ledger.sh "$ledger"
    ```
 
-   Commit the TSV plus its per-row log files. The tag release workflow fails
+   Commit the TSV plus its per-row log files *before* running the checker: it
+   rejects staged-but-uncommitted evidence (the working tree must match HEAD
+   for the ledger and its logs). The tag release workflow fails
    closed unless `COMPME_A2_MATRIX_LEDGER` is set to that repo-relative TSV path
    under `tools/acceptance/evidence/a2/`, then validates it with the same
    checker. The committed row logs matter: the checker rejects ledgers whose
@@ -120,8 +124,8 @@ model-client gate.
 
    The Release workflow builds, Developer-ID signs, notarizes, staples, packages,
    creates a draft `v0.1.0` GitHub Release with `compme-0.1.0-macos.zip`,
-   `compme-0.1.0-macos.zip.sha256`, and `compme-0.1.0-update.json`, finalizes
-   the cask checksum on the default branch, then undrafts the release.
+   `compme-0.1.0-macos.zip.sha256`, and `compme-0.1.0-update.json`, undrafts
+   the release, then finalizes the cask checksum on the default branch.
 5. Confirm the workflow's **Finalize Homebrew cask** step committed the cask
    sha256 back to the default branch. If branch protection blocks that bot push
    or you need to recover manually, use the guarded finalizer path from a
@@ -141,10 +145,9 @@ model-client gate.
    Release helpers are strict about arity; use the documented command forms
    exactly, because unexpected positional arguments exit with usage.
 
-   Re-run recovery: a failed publish job always leaves the release drafted
-   (undraft runs only after cask finalize), but re-running can orphan a
-   duplicate draft — check `gh release list` and delete any extra draft for
-   the tag before re-running.
+   Re-run recovery: a publish job that fails before the undraft step leaves
+   the release drafted, but re-running can orphan a duplicate draft — check
+   `gh release list` and delete any extra draft for the tag before re-running.
 
 ## Code signing / notarization
 
@@ -154,10 +157,12 @@ identity to produce a hardened-runtime, timestamped signature; optionally set
 `COMPME_CODESIGN_ENTITLEMENTS` when a future release needs an entitlements file.
 
 The tag workflow requires a Developer-ID `.p12` certificate and notarization
-credentials in GitHub Secrets. It prebuilds `target/release/compme` before the
-signing identity is imported; after import, `make-app.sh` runs with
-`COMPME_BUNDLE_SKIP_BUILD=1` so no `cargo` build scripts execute while the
-Developer-ID keychain is available. It fails closed if signing/notarization
+credentials in GitHub Secrets. `target/release/compme` is compiled in a
+separate secretless prebuild job and handed to the signing job as a workflow
+artifact; the signing job runs no `cargo` at all and `make-app.sh` runs with
+`COMPME_BUNDLE_SKIP_BUILD=1`, so no third-party build code ever executes on
+the runner that holds the Developer-ID keychain or notarization credentials.
+It fails closed if signing/notarization
 secrets are absent, then submits the signed `.app` archive with
 `xcrun notarytool submit --wait`, staples the ticket with `xcrun stapler
 staple`, validates the staple, deletes the signing keychain and clears the

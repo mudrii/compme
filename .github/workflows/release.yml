@@ -35,7 +35,7 @@ jobs:
             echo "release tag must match a protected v* ruleset" >&2
             exit 1
           fi
-          if ! [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?([+]([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]; then
+          if ! [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]; then
             echo "release tag must look like vX.Y.Z: $GITHUB_REF_NAME" >&2
             exit 1
           fi
@@ -58,6 +58,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -66,7 +68,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
       - name: Root format
         run: cargo fmt --all -- --check
@@ -94,6 +96,12 @@ jobs:
 
       - name: Bundle assembler self-test
         run: tools/bundle/make-app.sh --self-test
+
+      - name: Bundle smoke
+        run: tools/bundle/bundle-smoke.sh
+
+      - name: Bundle smoke self-test
+        run: tools/bundle/bundle-smoke.sh --self-test
 
       - name: A1b runner self-test
         run: tools/acceptance/run-a1b-live-gates.sh --self-test
@@ -185,6 +193,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -193,7 +203,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
       - name: Format
         run: cargo fmt -p platform_windows -- --check
@@ -213,6 +223,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -221,7 +233,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
       - name: Format
         run: cargo fmt -p platform_linux -- --check
@@ -235,11 +247,19 @@ jobs:
       - name: Build
         run: cargo build --locked -p platform_linux
 
-  build_release:
-    name: Build · bundle · package (macOS)
+  # Compile the full third-party dependency tree (build.rs, proc-macro code) in
+  # a job that carries ZERO release secrets and no `environment: release`. A
+  # job boundary — not step ordering — separates untrusted build code from the
+  # signing credentials: GitHub Actions does not kill background processes
+  # between steps, so a daemon forked by a malicious build script would survive
+  # into later steps of the same job, but it dies with this runner and never
+  # sees the Developer-ID keychain or notarytool credentials. Cold build on
+  # purpose (no rust-cache): cached artifacts must never feed the signed
+  # release binary.
+  prebuild:
+    name: Prebuild release binary (macOS, no secrets)
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     needs: [validate, windows, linux]
-    environment: release
     permissions:
       contents: read
     runs-on: macos-14
@@ -266,18 +286,50 @@ jobs:
         with:
           toolchain: 1.96.1
 
-      - name: Cache cargo + target
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - name: Check release tag matches bundle metadata
+        run: COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh
+
+      - name: Prebuild release binary (no signing secrets in this job)
+        run: cargo build --locked --release -p app
+
+      - name: Upload prebuilt release binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: compme-prebuilt-binary
+          if-no-files-found: error
+          path: target/release/compme
+
+  # Signing job: consumes the binary built by the secretless prebuild job and
+  # runs no cargo, no Rust toolchain, and no rust-cache — nothing untrusted
+  # executes on the runner that holds the Developer-ID keychain and
+  # notarization credentials. make-app.sh assembles from the downloaded binary
+  # with COMPME_BUNDLE_SKIP_BUILD=1.
+  build_release:
+    name: Sign · bundle · package (macOS)
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    needs: [prebuild]
+    environment: release
+    permissions:
+      contents: read
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Check release tag matches bundle metadata
         run: COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh
 
-      # Compile the full dependency tree BEFORE the signing keychain exists:
-      # build.rs / proc-macro code from third-party crates must never run while
-      # the Developer-ID identity is importable. make-app.sh then assembles from
-      # this prebuilt binary with COMPME_BUNDLE_SKIP_BUILD=1.
-      - name: Prebuild release binary (before signing identity exists)
-        run: cargo build --locked --release -p app
+      - name: Download prebuilt release binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: compme-prebuilt-binary
+          path: target/release
+
+      # actions/download-artifact drops file permissions; restore the
+      # executable bit make-app.sh expects on target/release/compme.
+      - name: Restore prebuilt binary executable bit
+        run: chmod +x target/release/compme
 
       - name: Import Developer ID certificate
         env:
@@ -415,9 +467,16 @@ jobs:
             release-artifacts/compme-*-macos.zip.sha256
             release-artifacts/compme-*-update.json
 
+      - name: Undraft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
       # The cask's sha256 can only be known after the artifact is built. Finalize
-      # it from the just-published artifact so Homebrew users do not see the
-      # placeholder checksum after the first release tag lands.
+      # computes it from the locally downloaded artifact (it does not need the
+      # release to be public), so it runs after undraft: a finalize failure then
+      # leaves a public release without a cask update, never a cask on main
+      # pointing at a draft-only 404 URL.
       - name: Finalize Homebrew cask
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -428,8 +487,3 @@ jobs:
           ZIP="compme-${VERSION}-macos.zip"
           artifact_path="$PWD/release-artifacts/$ZIP"
           tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"
-
-      - name: Undraft GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false

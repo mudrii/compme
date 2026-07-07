@@ -27,11 +27,75 @@ denied_packages = %w[
   telemetry
 ]
 
-lock = File.join(root, "Cargo.lock")
-if File.exist?(lock)
+lockfiles = []
+root_lock = File.join(root, "Cargo.lock")
+if File.exist?(root_lock)
+  lockfiles << root_lock
+elsif File.exist?(File.join(root, "Cargo.toml"))
+  abort("privacy policy check failed: Cargo.toml present but Cargo.lock missing in #{root}")
+end
+%w[crates tools .github Casks docs].each do |entry|
+  path = File.join(root, entry)
+  next unless File.directory?(path)
+  Dir.glob(File.join(path, "**", "Cargo.lock"), File::FNM_DOTMATCH).each do |candidate|
+    next unless File.file?(candidate)
+    next if candidate.include?("/target/") || candidate.include?("/tools/acceptance/logs/")
+    lockfiles << candidate
+  end
+end
+
+# Any Cargo.toml not covered by a workspace lockfile must have a sibling
+# Cargo.lock, or the denied-package scan silently skips its dependencies.
+cargo_tomls = []
+root_toml = File.join(root, "Cargo.toml")
+cargo_tomls << root_toml if File.file?(root_toml)
+%w[crates tools .github Casks docs].each do |entry|
+  path = File.join(root, entry)
+  next unless File.directory?(path)
+  Dir.glob(File.join(path, "**", "Cargo.toml"), File::FNM_DOTMATCH).each do |candidate|
+    next unless File.file?(candidate)
+    next if candidate.include?("/target/") || candidate.include?("/tools/acceptance/logs/")
+    cargo_tomls << candidate
+  end
+end
+
+workspaces = {}
+cargo_tomls.each do |toml|
+  text = File.read(toml)
+  next unless text.match?(/^\[workspace\]/)
+  dir = File.dirname(toml)
+  unless File.file?(File.join(dir, "Cargo.lock"))
+    rel = File.dirname(toml.delete_prefix(root + "/"))
+    abort("privacy policy check failed: Cargo.toml present but Cargo.lock missing in #{rel}")
+  end
+  section = text[/^\[workspace\](?:(?!^\[).)*/m] || ""
+  members = (section[/^members\s*=\s*\[(.*?)\]/m, 1] || "").scan(/"([^"]+)"/).flatten
+  excludes = (section[/^exclude\s*=\s*\[(.*?)\]/m, 1] || "").scan(/"([^"]+)"/).flatten
+  workspaces[dir] = [members, excludes]
+end
+cargo_tomls.each do |toml|
+  text = File.read(toml)
+  next unless text.match?(/^\[package\]/)
+  dir = File.dirname(toml)
+  next if File.file?(File.join(dir, "Cargo.lock"))
+  covered = workspaces.any? do |ws_dir, (members, excludes)|
+    next false unless dir.start_with?(ws_dir + "/")
+    rel = dir.delete_prefix(ws_dir + "/")
+    members.any? { |m| File.fnmatch(m, rel, File::FNM_PATHNAME) } &&
+      excludes.none? { |e| File.fnmatch(e, rel, File::FNM_PATHNAME) }
+  end
+  next if covered
+  rel = File.dirname(toml.delete_prefix(root + "/"))
+  abort("privacy policy check failed: Cargo.toml present but Cargo.lock missing in #{rel}")
+end
+
+lockfiles.each do |lock|
   packages = File.read(lock).scan(/^name = "([^"]+)"/).flatten
   denied_packages.each do |name|
-    abort("privacy policy check failed: denied telemetry package #{name}") if packages.include?(name)
+    if packages.include?(name)
+      rel = lock.delete_prefix(root + "/")
+      abort("privacy policy check failed: denied telemetry package #{name} in #{rel}")
+    end
   end
 end
 
@@ -118,6 +182,8 @@ run_self_test() {
 name = "serde"
 version = "1.0.0"
 LOCK
+  printf '[workspace]\nmembers = ["crates/demo"]\n' >"$tmp/good/Cargo.toml"
+  printf '[package]\nname = "demo"\n' >"$tmp/good/crates/demo/Cargo.toml"
   cat >"$tmp/good/crates/demo/src/lib.rs" <<'RS'
 const MODEL_URL: &str = "https://huggingface.co/example/model.gguf";
 const UPDATE_URL: &str = "https://github.com/mudrii/compme/releases/latest";
@@ -134,6 +200,46 @@ LOCK
     echo "privacy policy self-test failed: denied telemetry package was accepted" >&2
     return 1
   fi
+
+  cp -R "$tmp/good" "$tmp/denied-nested-package"
+  mkdir -p "$tmp/denied-nested-package/tools/spike"
+  cat >"$tmp/denied-nested-package/tools/spike/Cargo.lock" <<'LOCK'
+[[package]]
+name = "sentry"
+version = "1.0.0"
+LOCK
+  if check_repo "$tmp/denied-nested-package" >/dev/null 2>&1; then
+    echo "privacy policy self-test failed: denied telemetry package in nested lockfile was accepted" >&2
+    return 1
+  fi
+
+  cp -R "$tmp/good" "$tmp/missing-lock"
+  rm "$tmp/missing-lock/Cargo.lock"
+  printf '[workspace]\n' >"$tmp/missing-lock/Cargo.toml"
+  if check_repo "$tmp/missing-lock" >/dev/null 2>"$tmp/missing-lock.err"; then
+    echo "privacy policy self-test failed: Cargo.toml without Cargo.lock was accepted" >&2
+    return 1
+  fi
+  grep -q 'Cargo.toml present but Cargo.lock missing' "$tmp/missing-lock.err"
+
+  cp -R "$tmp/good" "$tmp/deleted-nested-lock"
+  mkdir -p "$tmp/deleted-nested-lock/tools/spike"
+  printf '[workspace]\n' >"$tmp/deleted-nested-lock/tools/spike/Cargo.toml"
+  if check_repo "$tmp/deleted-nested-lock" >/dev/null 2>"$tmp/deleted-nested-lock.err"; then
+    echo "privacy policy self-test failed: nested workspace Cargo.toml without Cargo.lock was accepted" >&2
+    return 1
+  fi
+  grep -q 'Cargo.toml present but Cargo.lock missing in tools/spike' "$tmp/deleted-nested-lock.err"
+
+  cp -R "$tmp/good" "$tmp/uncovered-package"
+  mkdir -p "$tmp/uncovered-package/tools/spike"
+  printf '[package]\nname = "spike"\n' >"$tmp/uncovered-package/tools/spike/Cargo.toml"
+  printf '[workspace]\nmembers = ["crates/demo"]\nexclude = ["tools/spike"]\n' >"$tmp/uncovered-package/Cargo.toml"
+  if check_repo "$tmp/uncovered-package" >/dev/null 2>"$tmp/uncovered-package.err"; then
+    echo "privacy policy self-test failed: excluded package Cargo.toml without Cargo.lock was accepted" >&2
+    return 1
+  fi
+  grep -q 'Cargo.toml present but Cargo.lock missing in tools/spike' "$tmp/uncovered-package.err"
 
   cp -R "$tmp/good" "$tmp/denied-host"
   {
