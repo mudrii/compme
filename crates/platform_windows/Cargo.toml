@@ -8,15 +8,10 @@ license.workspace = true
 # fail-closed stub on every host so `cargo build/test --workspace` stays green on
 # the macOS-only dev/CI environment this was authored in. The real UI Automation
 # / WH_KEYBOARD_LL / SendInput implementation lands behind `#[cfg(windows)]` on a
-# Windows build+test environment — its Windows-only dependencies go under a
-# target table so non-Windows hosts never pull them:
-#
-#   [target.'cfg(windows)'.dependencies]
-#   windows = { version = "...", features = [
-#     "Win32_UI_Accessibility",            # UI Automation
-#     "Win32_UI_Input_KeyboardAndMouse",   # WH_KEYBOARD_LL, SendInput
-#     "Win32_Foundation", "Win32_UI_WindowsAndMessaging",
-#   ] }
+# Windows build+test environment — the target table below already exists for the
+# Phase-0 host services; the full adapter extends its feature list with
+# "Win32_UI_Accessibility" (UIA), "Win32_UI_Input_KeyboardAndMouse"
+# (WH_KEYBOARD_LL, SendInput), and "Win32_UI_WindowsAndMessaging".
 
 [dependencies]
 platform = { path = "../platform" }

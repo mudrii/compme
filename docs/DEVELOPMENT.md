@@ -40,6 +40,12 @@ The root `Cargo.toml` is a Rust workspace with 25 members
 `tools/spike` is excluded from the root workspace and must be checked
 separately.
 
+Every native/build.rs/FFI/crypto dependency carries an exact `=x.y.z` pin
+(llama-cpp-2, rusqlite, aes-gcm, ed25519-dalek, the objc2/security-framework
+stack, windows) so a routine `cargo update` cannot move ABI-sensitive code
+without a review-forcing manifest diff; foundational (libc, getrandom) and
+pure-Rust deps stay caret-ranged.
+
 ## Prerequisites
 
 Required for root workspace development:

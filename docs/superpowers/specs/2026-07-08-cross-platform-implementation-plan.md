@@ -105,9 +105,12 @@ gates green on 3-OS CI.
 
 ## Phase 1 — Windows adapter (env-gated: needs a Windows dev machine)
 
-Order chosen so each step yields a testable increment. Activate the
-commented `windows` dep in platform_windows/Cargo.toml (pin exact version).
-Feature-flag nothing; the crate is already target-gated.
+Order chosen so each step yields a testable increment. The `windows` dep is
+already active and pinned (`=0.61.3`, Phase 0.2/0.3, carrying
+Foundation/Security/Console features) — extend its feature list with the
+adapter features (`Win32_UI_Accessibility`, `Win32_UI_Input_KeyboardAndMouse`,
+`Win32_UI_WindowsAndMessaging`). Feature-flag nothing; the crate is already
+target-gated.
 
 1.1 **Event pump + environment**
    - Real `pump_events`: `MsgWaitForMultipleObjectsEx` + `PeekMessage` loop

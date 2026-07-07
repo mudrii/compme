@@ -6,7 +6,7 @@
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-08 through `2cadd74`
+> with symbol/function/gate anchors re-reviewed 2026-07-08 through `6f73891`
 > (workspace review/tdd/ponytail: zero-alloc slice-based trigger gates, an
 > `InsertStrategy::supports_atomic_range_replace` capability predicate replacing
 > `== AxSet` gates, +8 mutation-pinning tests → 1787 with the dead UTF-16 guard
