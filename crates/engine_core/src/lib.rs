@@ -1647,6 +1647,31 @@ mod tests {
     }
 
     #[test]
+    fn completion_seam_space_is_not_added_at_field_start() {
+        // Caret at offset 0 (empty field): a whitespace-led candidate must not
+        // gain a restored seam space — there is no typed word to the left to
+        // separate from. Pins the `!recent.is_empty()` conjunct of the seam
+        // restore ("".ends_with(ws) is false, so that check alone won't stop it).
+        let mut machine = machine();
+        machine.on_event(text_changed("", 0, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: " world".into(),
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "world".into(),
+            }]
+        );
+    }
+
+    #[test]
     fn shows_ghost_on_matching_completion() {
         let mut machine = machine();
         machine.on_event(text_changed("x", 1, 0));

@@ -282,4 +282,21 @@ mod tests {
         assert_eq!(vet_correction("cat", "cog").as_deref(), Some("cog"));
         assert_eq!(vet_correction("cat", "dog"), None);
     }
+
+    #[test]
+    fn vet_correction_accepts_length_diff_equal_to_max_edit_distance() {
+        // "cat"->"chart" has a length difference of exactly MAX_EDIT_DISTANCE
+        // (2) and a true edit distance of 2: the length short-circuit
+        // (`abs_diff > max`) must not fire at the boundary, and the DP must
+        // still accept. Pins the `>` (not `>=`) in the short-circuit.
+        assert_eq!(vet_correction("cat", "chart").as_deref(), Some("chart"));
+    }
+
+    #[test]
+    fn vet_correction_rejects_past_max_when_lengths_differ() {
+        // "cat"->"cogs" passes the length guard (diff 1) but its true edit
+        // distance is 3 — the DP itself must reject it. Pins the insertion
+        // cost term (`curr[j] + 1`) that the length guard cannot cover.
+        assert_eq!(vet_correction("cat", "cogs"), None);
+    }
 }

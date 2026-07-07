@@ -1010,6 +1010,43 @@ mod tests {
     }
 
     #[test]
+    fn correction_with_no_caret_rect_anchors_at_popup_anchor() {
+        // Third level of the anchor chain: range rect and caret rect both
+        // Ok(None) but a popup anchor exists — the correction must render
+        // there rather than take the show_failed reconcile path.
+        let mut adapter = FakeAdapter::new();
+        adapter.range_rect = None;
+        adapter.rect = None;
+        adapter.popup = Some(ScreenRect {
+            x: 7.0,
+            y: 8.0,
+            w: 2.0,
+            h: 12.0,
+        });
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+
+        engine.on_correction(&request, "the".into(), range).unwrap();
+
+        assert_eq!(
+            *overlay.calls.lock().unwrap(),
+            vec![OverlayCall::ShowCorrection(
+                ScreenRect {
+                    x: 7.0,
+                    y: 8.0,
+                    w: 2.0,
+                    h: 12.0,
+                },
+                "the".into(),
+            )],
+            "missing range and caret rects must fall back to the popup anchor"
+        );
+    }
+
+    #[test]
     fn correction_with_no_geometry_reconciles_and_records_no_shown() {
         // Range rect, caret rect, and popup anchor all Ok(None): the correction
         // cannot be placed, so the show_failed reconcile path must retract the

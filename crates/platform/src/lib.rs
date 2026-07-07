@@ -657,6 +657,26 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn only_axset_supports_atomic_range_replace() {
+        // Enumerate every variant so an `AxSet | X` widening — or a new
+        // variant wrongly opting in — fails here instead of silently enabling
+        // replacement suggestions on a non-atomic strategy.
+        for strategy in [
+            InsertStrategy::AxSet,
+            InsertStrategy::SyntheticKeys,
+            InsertStrategy::Clipboard,
+            InsertStrategy::ImeCommit,
+            InsertStrategy::None,
+        ] {
+            assert_eq!(
+                strategy.supports_atomic_range_replace(),
+                strategy == InsertStrategy::AxSet,
+                "{strategy:?}"
+            );
+        }
+    }
+
+    #[test]
     fn env_flag_on_treats_off_values_as_disabled() {
         use std::ffi::OsStr;
         // Unset → off. Explicit off-values (case-insensitive, trimmed) → off, so

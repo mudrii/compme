@@ -5575,9 +5575,6 @@ fn byte_index_for_utf16_units(value: &str, target_units: usize) -> usize {
 
     let mut units = 0usize;
     for (byte_index, ch) in value.char_indices() {
-        if units >= target_units {
-            return byte_index;
-        }
         units = units.saturating_add(ch.len_utf16());
         if units >= target_units {
             return byte_index + ch.len_utf8();

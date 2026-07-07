@@ -10959,6 +10959,32 @@ mod tests {
         .is_none());
     }
 
+    #[test]
+    fn grammar_detection_allows_collapsed_selection() {
+        // AX providers may report the caret as an empty selection range rather
+        // than None: a collapsed range (start == end) is no selection and must
+        // not block grammar fix. Pins the `start != range.end` conjunct.
+        let field = host_field("grammar-collapsed-selection");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let mut ctx = text_context_with_right(&field, "teh", "");
+        ctx.selection = Some(platform::TextRange { start: 3, end: 3 });
+
+        assert!(grammar_fix_request(
+            &field,
+            &ctx,
+            grammar_gate(
+                &config,
+                &config.prefs,
+                Some("TextEdit"),
+                None,
+                true,
+                &writable_axset_caps(),
+                0,
+            ),
+        )
+        .is_some());
+    }
+
     fn typed_change_after_baseline(
         field: &FieldHandle,
         baseline: &str,

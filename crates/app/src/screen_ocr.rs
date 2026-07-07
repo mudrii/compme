@@ -449,6 +449,25 @@ mod tests {
     }
 
     #[test]
+    fn close_discards_pending_request() {
+        // Submit then close without draining: close() must wipe the pending
+        // slot so no OCR pass runs after teardown — recv() checks pending
+        // before closed, so a leftover request would still be handed out.
+        let queue = LatestRequestQueue::default();
+        queue.submit(ScreenOcrRequest {
+            field: field(1),
+            generation: 1,
+            snapshot: 1,
+            caret_rect: rect(1.0),
+        });
+        queue.close();
+        assert!(
+            queue.recv().is_none(),
+            "close() must discard pending work, not hand it to the worker"
+        );
+    }
+
+    #[test]
     fn latest_queue_returns_none_when_closed() {
         let queue = LatestRequestQueue::default();
         queue.close();

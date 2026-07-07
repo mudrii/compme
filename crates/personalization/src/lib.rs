@@ -624,6 +624,21 @@ mod tests {
     }
 
     #[test]
+    fn sender_fields_are_trimmed_in_the_rendered_line() {
+        // Padded-but-nonempty fields must not leak whitespace into the
+        // directive: the value-side `.trim()` is load-bearing, not just the
+        // emptiness guard.
+        let sender = SenderIdentity {
+            name: "  Ada  ".into(),
+            email: "  ada@example.com  ".into(),
+        };
+        assert_eq!(
+            sender.line(),
+            Some("The writer's name Ada, email ada@example.com.".into())
+        );
+    }
+
+    #[test]
     fn sender_with_both_fields_renders_exact_format() {
         // The both-fields format is otherwise only checked with `.contains`, which
         // survives a field reorder or separator change. Pin the exact string.
