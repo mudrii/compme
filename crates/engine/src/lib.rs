@@ -1014,15 +1014,16 @@ mod tests {
         // Third level of the anchor chain: range rect and caret rect both
         // Ok(None) but a popup anchor exists — the correction must render
         // there rather than take the show_failed reconcile path.
-        let mut adapter = FakeAdapter::new();
-        adapter.range_rect = None;
-        adapter.rect = None;
-        adapter.popup = Some(ScreenRect {
+        let popup = ScreenRect {
             x: 7.0,
             y: 8.0,
             w: 2.0,
             h: 12.0,
-        });
+        };
+        let mut adapter = FakeAdapter::new();
+        adapter.range_rect = None;
+        adapter.rect = None;
+        adapter.popup = Some(popup);
         let overlay = FakeOverlay::default();
         let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
         engine.on_focus(field()).unwrap();
@@ -1033,15 +1034,7 @@ mod tests {
 
         assert_eq!(
             *overlay.calls.lock().unwrap(),
-            vec![OverlayCall::ShowCorrection(
-                ScreenRect {
-                    x: 7.0,
-                    y: 8.0,
-                    w: 2.0,
-                    h: 12.0,
-                },
-                "the".into(),
-            )],
+            vec![OverlayCall::ShowCorrection(popup, "the".into())],
             "missing range and caret rects must fall back to the popup anchor"
         );
     }

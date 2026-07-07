@@ -362,30 +362,18 @@ impl SuggestionMachine {
     /// Whether the current value/caret passes the conservative trigger gates:
     /// enough left context, and not mid-word unless configured otherwise.
     fn passes_trigger_gates(&self) -> bool {
-        // Single pass over the prefix — equivalent to
-        // `left_context(..).trim().chars().count()` plus a last-char peek,
-        // without allocating the prefix on every keystroke.
-        let mut total = 0usize;
-        let mut leading_ws = 0usize;
-        let mut trailing_ws = 0usize;
-        let mut last = None;
-        for c in self.value.chars().take(self.caret) {
-            total += 1;
-            if c.is_whitespace() {
-                if leading_ws + 1 == total {
-                    leading_ws += 1;
-                }
-                trailing_ws += 1;
-            } else {
-                trailing_ws = 0;
-            }
-            last = Some(c);
-        }
+        // Slice at the caret's byte offset instead of collecting left/right
+        // context Strings per keystroke (caret is a char offset; past-end
+        // clamps to the whole string).
+        let byte_caret = self
+            .value
+            .char_indices()
+            .nth(self.caret)
+            .map_or(self.value.len(), |(b, _)| b);
+        let left = &self.value[..byte_caret];
         // Minimum context: count only substantive characters — leading and
-        // trailing whitespace must not satisfy the minimum. Interior
-        // whitespace still counts, matching `str::trim` semantics.
-        let after_leading = total - leading_ws;
-        if after_leading - trailing_ws.min(after_leading) < self.min_context_chars {
+        // trailing whitespace must not satisfy the minimum.
+        if left.trim().chars().count() < self.min_context_chars {
             return false;
         }
         // Mid-word: the caret splits a word only when the characters on *both*
@@ -393,8 +381,8 @@ impl SuggestionMachine {
         // at the start of a word, or at end-of-text) is not mid-word.
         if !self.allow_mid_word {
             let is_word = |c: char| c.is_alphanumeric() || c == '_';
-            let left_is_word = last.is_some_and(is_word);
-            let right_is_word = self.value.chars().nth(self.caret).is_some_and(is_word);
+            let left_is_word = left.chars().next_back().is_some_and(is_word);
+            let right_is_word = self.value[byte_caret..].chars().next().is_some_and(is_word);
             if left_is_word && right_is_word {
                 return false;
             }
