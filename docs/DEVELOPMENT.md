@@ -34,7 +34,7 @@ The root `Cargo.toml` is a Rust workspace with 25 members
 - `crates/compat` — per-app compatibility tiers
 - `crates/model_catalog`, `crates/model_fetch`, `crates/model_client` — model catalog, downloads, llama.cpp client
 - `crates/platform_macos` — the macOS adapter (AX, overlay, tray, settings window)
-- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1
+- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1 (platform_windows additionally ships real `win_host` services: DACL hardening, console ctrl handler)
 - `crates/app` — the `compme` binary
 
 `tools/spike` is excluded from the root workspace and must be checked

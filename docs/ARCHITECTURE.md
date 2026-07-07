@@ -96,8 +96,11 @@ Key concepts:
 - `Capabilities`: what the focused field supports: readable text, readable
   caret, write support, secure-state information, toolkit, insertion strategy,
   accept interception, and overlay placement.
-- `InsertStrategy`: `AxSet`, `SyntheticKeys`, `Clipboard`, `ImeCommit`, or
-  `None`.
+- `InsertStrategy`: `AxSet`, `NativeRangeSet` (adapter-native atomic range
+  replacement for the future Windows UIA / Linux AT-SPI adapters),
+  `SyntheticKeys`, `Clipboard`, `ImeCommit`, or `None`. Replacement
+  suggestions are gated on `supports_atomic_range_replace()` (`AxSet` and
+  `NativeRangeSet`).
 - `PlatformAdapter`: focus/caret/accept subscriptions, app discovery,
   capabilities, context reads, caret/range geometry, insertion, and exact range
   replacement.

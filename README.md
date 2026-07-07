@@ -115,7 +115,7 @@ unbundled `cargo run -p app` is still fine.
 ├── crates/
 │   ├── platform/                      # Cross-platform adapter + UX contract
 │   ├── platform_macos/                # macOS Accessibility/AppKit/Carbon adapter
-│   ├── platform_windows/              # Windows adapter scaffold (fail-closed)
+│   ├── platform_windows/              # Windows adapter scaffold + real host services
 │   ├── platform_linux/                # Linux adapter scaffold (fail-closed)
 │   ├── context/                       # Pure caret/text-context helpers
 │   ├── engine_core/                   # Deterministic suggestion state machine
@@ -160,7 +160,7 @@ from `tools/spike/`.
 |-------|---------|
 | `platform` | Cross-platform contract shared by the pure engine and platform adapters: field handles, capabilities, insertion strategies, subscriptions, overlay presenter, and UX-mode classification. |
 | `platform_macos` | macOS implementation of the adapter and overlay presenter using Accessibility, CoreGraphics, AppKit/Carbon, and pasteboard APIs; ghost overlay, tray, key recorder, and settings window. |
-| `platform_windows` | Windows adapter scaffold that reports Windows and fails closed for platform I/O/subscription methods until a real adapter is implemented. |
+| `platform_windows` | Windows adapter scaffold that fails closed for platform I/O/subscription methods until the real UIA adapter lands, plus real host services already shipped: owner-only DACL file hardening and a console Ctrl-C handler. |
 | `platform_linux` | Linux adapter scaffold that reports Linux and fails closed for platform I/O/subscription methods until a real adapter is implemented. |
 | `context` | Pure text-context helpers around a caret (left/right context, word-at-caret extraction, left-tail truncation, context-block assembly). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
