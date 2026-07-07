@@ -68,7 +68,9 @@ cd tools/spike
 COMPME_SPIKE_MODEL_PATH="$PWD/models/qwen2.5-0.5b-q4_k_m.gguf" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1
 ```
 
-These ignored suites need the GGUF files and Metal GPU. Without
+These ignored suites need GGUF files. The root `model_client` gate is
+CPU-forced in release validation with `COMPME_MODEL_GPU_LAYERS=0`; the separate
+`tools/spike` model integration gate remains Metal/GPU-oriented. Without
 `COMPME_REQUIRE_MODEL_TESTS=1` they skip absent models for developer convenience;
 with it, a missing model is a failed acceptance gate. The root model-client gate
 also sets `COMPME_REQUIRE_MODEL_CONTEXT=1` so model load/context initialization

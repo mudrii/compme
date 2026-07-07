@@ -347,12 +347,15 @@ jobs:
           keychain="$RUNNER_TEMP/compme-signing.keychain-db"
           keychain_password="$(uuidgen)"
           p12="$RUNNER_TEMP/developer-id.p12"
+          trap 'rm -f "$p12"' EXIT
           printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
+          chmod 600 "$p12"
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
           security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
           rm -f "$p12"
+          trap - EXIT
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           {

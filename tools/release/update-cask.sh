@@ -18,7 +18,7 @@ usage() {
 
 validate_version() {
   local version="$1"
-  if [[ ! "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?([+]([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]; then
+  if [[ ! "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]; then
     echo "invalid version: $version" >&2
     return 1
   fi
@@ -94,6 +94,11 @@ CASK
     return 1
   fi
   grep -q 'invalid version: 9.8.7.6' "$tmp/four-part.err"
+  if COMPME_CASK_PATH="$fixture" COMPME_CASK_ARTIFACT="$artifact" "$0" v9.8.7+build >"$tmp/build-metadata.out" 2>"$tmp/build-metadata.err"; then
+    echo "build-metadata version unexpectedly passed" >&2
+    return 1
+  fi
+  grep -q 'invalid version: 9.8.7+build' "$tmp/build-metadata.err"
 
   mismatched_artifact="$tmp/compme-0.9.9-macos.zip"
   printf 'old artifact\n' >"$mismatched_artifact"

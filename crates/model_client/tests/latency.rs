@@ -97,7 +97,8 @@ fn strict_model_test_env_parses_truthy_values() {
 // only on an explicit truthy COMPME_REQUIRE_LATENCY_BUDGET and stay OFF for
 // absent/empty/falsy values, so a normal `cargo test` run never enforces the
 // 500ms budget. (The real end-to-end 500ms check lives in
-// `warm_completion_under_500ms`, which is #[ignore]'d and needs a GGUF + GPU.)
+// `warm_completion_under_500ms`, which is #[ignore]'d and needs a GGUF. Release
+// gates force the root model-client test through CPU with COMPME_MODEL_GPU_LAYERS=0.)
 #[test]
 fn strict_latency_budget_env_parses_truthy_values() {
     for value in [
@@ -126,7 +127,7 @@ fn strict_latency_budget_env_parses_truthy_values() {
 }
 
 #[test]
-#[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
+#[ignore = "requires the qwen2.5-0.5b GGUF model; release gates force CPU with COMPME_MODEL_GPU_LAYERS=0; run with --ignored"]
 fn warm_completion_under_500ms() {
     if !require_latency_budget() {
         return;
@@ -163,9 +164,10 @@ fn warm_completion_under_500ms() {
 // Guards G3 prefix-KV-cache reuse: the persistent context must produce the
 // *same* deterministic (greedy) output as a fresh context, across a sequence of
 // completions that share prefixes. A corrupt reuse (wrong seq_rm / position math)
-// would diverge here. Ignored by default — needs the GGUF + Metal.
+// would diverge here. Ignored by default — needs the GGUF. Release gates force
+// the root model-client test through CPU with COMPME_MODEL_GPU_LAYERS=0.
 #[test]
-#[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
+#[ignore = "requires the qwen2.5-0.5b GGUF model; release gates force CPU with COMPME_MODEL_GPU_LAYERS=0; run with --ignored"]
 fn prefix_reuse_matches_fresh_context_output() {
     if !require_model_tests() {
         return;
@@ -263,7 +265,7 @@ fn complete_n_returns_real_model_candidates() {
 }
 
 #[test]
-#[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
+#[ignore = "requires the qwen2.5-0.5b GGUF model; release gates force CPU with COMPME_MODEL_GPU_LAYERS=0; run with --ignored"]
 fn grammar_fix_real_model_output_is_vetted() {
     if !require_model_tests() {
         return;
@@ -289,16 +291,16 @@ fn grammar_fix_real_model_output_is_vetted() {
         !raw.trim().is_empty(),
         "real model grammar prompt produced no output"
     );
-    if let Some(correction) = vetted {
-        assert_ne!(
-            correction, "teh",
-            "accepted correction must change the word"
-        );
-        assert!(
-            correction.is_ascii() && !correction.contains(char::is_whitespace),
-            "accepted correction must be a single ASCII token: {correction:?}"
-        );
-    }
+    let correction =
+        vetted.expect("real model grammar prompt must produce a usable vetted correction");
+    assert_eq!(
+        correction, "the",
+        "expected the default release model to correct the public typo"
+    );
+    assert!(
+        correction.is_ascii() && !correction.contains(char::is_whitespace),
+        "accepted correction must be a single ASCII token: {correction:?}"
+    );
 
     Box::new(model).shutdown();
 }

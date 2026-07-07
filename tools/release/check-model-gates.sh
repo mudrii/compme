@@ -334,7 +334,17 @@ import_env = import_step.fetch("env")
   abort("missing release gate: Developer ID secret #{key}") unless import_env.fetch(key).include?(needle)
 end
 import_run = import_step.fetch("run")
-["for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY", "missing required release secret", "exit 1", "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY"].each do |needle|
+[
+  "for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY",
+  "missing required release secret",
+  "exit 1",
+  "p12=\"$RUNNER_TEMP/developer-id.p12\"",
+  "trap 'rm -f \"$p12\"' EXIT",
+  "chmod 600 \"$p12\"",
+  "rm -f \"$p12\"",
+  "trap - EXIT",
+  "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY",
+].each do |needle|
   abort("missing release gate: Developer ID import policy") unless import_run.include?(needle)
 end
 RUBY
@@ -536,6 +546,12 @@ jobs:
               exit 1
             fi
           done
+          p12="$RUNNER_TEMP/developer-id.p12"
+          trap 'rm -f "$p12"' EXIT
+          printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
+          chmod 600 "$p12"
+          rm -f "$p12"
+          trap - EXIT
           echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
       - name: Build the .app bundle
         run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
@@ -1438,7 +1454,16 @@ ruby -ryaml -e '
     abort("missing release gate: Developer ID secret #{key}") unless import_env.fetch(key).include?(needle)
   end
   import_run = import_step.fetch("run")
-  ["for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY", "missing required release secret", "exit 1"].each do |needle|
+  [
+    "for name in P12_BASE64 P12_PASSWORD SIGNING_IDENTITY",
+    "missing required release secret",
+    "exit 1",
+    "p12=\"$RUNNER_TEMP/developer-id.p12\"",
+    "trap #{39.chr}rm -f \"$p12\"#{39.chr} EXIT",
+    "chmod 600 \"$p12\"",
+    "rm -f \"$p12\"",
+    "trap - EXIT",
+  ].each do |needle|
     abort("missing release gate: Developer ID missing-secret failure loop") unless import_run.include?(needle)
   end
   abort("missing release gate: Developer ID identity exported to bundle build") unless import_run.include?("COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY")

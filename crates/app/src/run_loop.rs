@@ -2736,10 +2736,10 @@ fn apps_row_ids(counts: &[(String, u64)]) -> Vec<String> {
 }
 
 /// Whether an Apps-pane policy edit must retract the suggestion already on the
-/// FOCUSED field. Disabling all suggestions or the focused app's grammar-fix
-/// policy qualifies; editing a different app's row or enabling a policy leaves
-/// the focused ghost alone (the submit gate handles future submits). Pure so the
-/// focused-vs-other gate is testable.
+/// FOCUSED field. Disabling all suggestions or a feature that could have
+/// produced the focused ghost qualifies; editing a different app's row or
+/// enabling a policy leaves the focused ghost alone (the submit gate handles
+/// future submits). Pure so the focused-vs-other gate is testable.
 fn apps_edit_dismisses_focused(
     field: prefs::AppPolicyField,
     on: bool,
@@ -2749,7 +2749,10 @@ fn apps_edit_dismisses_focused(
     !on && focused_app == Some(edited_app)
         && matches!(
             field,
-            prefs::AppPolicyField::Enabled | prefs::AppPolicyField::GrammarFix
+            prefs::AppPolicyField::Enabled
+                | prefs::AppPolicyField::MidLine
+                | prefs::AppPolicyField::Autocorrect
+                | prefs::AppPolicyField::GrammarFix
         )
 }
 
@@ -5142,11 +5145,16 @@ pub fn run() -> Result<(), String> {
         // General-tab Autocorrect watcher: persist + apply on the edge. The
         // decision path reads config.autocorrect per offer, so a field write
         // IS the live apply (per-app overrides still win).
-        apply_autocorrect_settings_edge(
+        if let Some(on) = apply_autocorrect_settings_edge(
             &settings_flags.general_autocorrect,
             &mut config.autocorrect,
             |on| persist_and_log_switch("COMPME_AUTOCORRECT", "autocorrect", on),
-        );
+        ) {
+            if !on {
+                latest.clear();
+                let _ = log_err("on_dismiss", engine.on_dismiss());
+            }
+        }
         // General-tab Trailing-space watcher: persist + live engine apply
         // (the flag is baked at build via with_trailing_space, so the c94
         // runtime-setter pattern applies — set_trailing_space).
@@ -14065,20 +14073,20 @@ mod tests {
             Some("com.a"),
             "com.a"
         ));
-        // A non-Enabled/non-GrammarFix field edit on the focused app does not dismiss.
+        // Feature-off edges that can stale an existing visible suggestion also dismiss.
         assert!(!apps_edit_dismisses_focused(
             TabDisabled,
             false,
             Some("com.a"),
             "com.a"
         ));
-        assert!(!apps_edit_dismisses_focused(
+        assert!(apps_edit_dismisses_focused(
             MidLine,
             false,
             Some("com.a"),
             "com.a"
         ));
-        assert!(!apps_edit_dismisses_focused(
+        assert!(apps_edit_dismisses_focused(
             Autocorrect,
             false,
             Some("com.a"),

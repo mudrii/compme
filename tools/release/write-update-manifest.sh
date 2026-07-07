@@ -17,7 +17,7 @@ usage() {
 
 validate_version() {
   local version="$1"
-  [[ "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?([+]([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]
+  [[ "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]
 }
 
 validate_sha() {
@@ -99,6 +99,11 @@ run_self_test() {
     return 1
   fi
   grep -Fq "invalid version" "$tmp/four-part.err"
+  if "$0" 1.2.3+build compme-1.2.3+build-macos.zip "$sha" >"$tmp/build-metadata.out" 2>"$tmp/build-metadata.err"; then
+    echo "self-test FAILED: build-metadata version passed" >&2
+    return 1
+  fi
+  grep -Fq "invalid version" "$tmp/build-metadata.err"
   if "$0" bad compme-bad-macos.zip "$sha" >"$tmp/bad.out" 2>"$tmp/bad.err"; then
     echo "self-test FAILED: bad version passed" >&2
     return 1
