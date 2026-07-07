@@ -204,6 +204,25 @@ Status: pass (2026-07-07 scripted assisted session):
   path); allow leg — no exclusion -> request submitted, prefs_ok=true, same
   host-only domain. Chrome/Brave variants remain with the A2 matrix rows.
 
+Physical-leg follow-up (2026-07-07, scripted with synthetic keys — hardware
+purity stays with the runner's physical gates):
+- Multi-candidate cycle: COMPME_CANDIDATES=3, real model produced 3 candidates;
+  Down visibly switched the TextEdit ghost ("sunny and warm." -> "rainy.",
+  screenshots /tmp/cm-cyc*.png, log "cycle candidate"); word accept + Esc
+  dismiss re-proven in the same run.
+- Chrome (local textarea fixture): AXManualAccessibility wake works, focus
+  binds as AXTextArea and a completion request was submitted (3 candidates
+  returned) — but Chrome delivers a fresh AX element per focus notification
+  and every bind goes StaleField within the churn (661 StaleField lines), so
+  the ghost was discarded before rendering. REAL liveness finding, tracked in
+  ROADMAP Tier 4; the caret-marker-chrome-marker gate stays open.
+- VS Code: Monaco exposes only AXWebArea until VS Code's screen-reader mode is
+  on -> fail-closed, no suggestions (matches the unsupported compat class).
+- Firefox/Zen: mirror-mode ENGAGEMENT log-proven for both bundle ids
+  ("renders via a mirror window (inline overlay unsupported)"); Gecko does not
+  wake its AX tree for our advisory AXManualAccessibility set, so the visual
+  mirror render remains with the mirror-window-firefox-zen-look human gate.
+
 ## Batch 7 — Memory, Stats, Setup, Release Update Surface
 
 Evidence required:

@@ -166,6 +166,16 @@ Per `2026-06-10-a3-settings-ui-design.md`. The settings window now ships as 9
 tabs (Setup, General, Personalization, Apps, Context, Emoji, Shortcuts,
 Statistics, About). The macOS-buildable Tier 3 controls have landed in code and
 deterministic tests; the remaining work is the live visual/physical LOOK pass —
+**Live finding (2026-07-07 assisted-UI session, open):** Chrome web-content
+fields bind (`AXManualAccessibility` wake works, focus lands as `AXTextArea`,
+a request was submitted and 3 candidates returned) but Chrome delivers a fresh
+AX element per focus notification and each bind goes `StaleField` within the
+churn, so the ghost is discarded before rendering. Needs element-identity or
+retry-on-stale handling in the focus bind path before the
+`caret-marker-chrome-marker` gate can pass live. Firefox/Zen mirror-mode
+ENGAGEMENT is log-proven, but Gecko ignores the advisory accessibility wake,
+so the visual mirror render stays with its LOOK gate.
+
 the authoritative pass/fail ledger is [`ACCEPTANCE.md`](ACCEPTANCE.md)'s
 Manual/Live Gate Ledger (17 runner-pinned gate IDs); detailed walkthroughs live
 in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md), and the scripted assisted
