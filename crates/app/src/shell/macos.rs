@@ -37,5 +37,6 @@ pub use platform_macos::{
     keycode_label_with_mods, parse_accept_key, policy_restore_needed,
     set_accept_keymap_from_config_with_mods, set_shortcut_bindings,
     set_shortcut_bindings_from_config, set_tab_hotkey_suppressed, KeymapError, PersonalizationEdit,
-    SettingsFlags, ShortcutBindings, APPS_ROWS, APP_POLICY_FIELDS, SETUP_ROWS, STATS_ROWS,
+    SettingsFlags, ShortcutBindings, APPS_ROWS, APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES,
+    SETUP_ROWS, STATS_ROWS,
 };

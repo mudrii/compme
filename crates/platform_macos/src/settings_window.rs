@@ -28,7 +28,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::shell::{
     AppsPolicyEditSlot, CurrentAcceptKeys, KeyWithMods, PersonalizationEdit, RebindRequest,
-    SettingsFlags, APPS_ROWS, APP_POLICY_FIELDS, SETUP_ROWS, STATS_ROWS,
+    SettingsFlags, APPS_ROWS, APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES, SETUP_ROWS, STATS_ROWS,
 };
 use platform::PlatformError;
 
@@ -2250,17 +2250,6 @@ fn record_personalization_edit_slot(
 ) {
     slot.lock().unwrap_or_else(|e| e.into_inner()).push(edit);
 }
-
-/// Checkbox titles for the per-app policy fields, indexed the same as the tag
-/// encoding (and `prefs::AppPolicyField`'s variant order). `TabDisabled` reads
-/// as "Tab key" so the checked state means "Tab is a literal Tab here".
-const APP_POLICY_FIELD_TITLES: [&str; APP_POLICY_FIELDS] = [
-    "Enabled",
-    "Tab key",
-    "Mid-line",
-    "Autocorrect",
-    "Grammar fix",
-];
 
 /// Short column headers for the compact one-line Apps grid. The bare checkboxes
 /// carry the full [`APP_POLICY_FIELD_TITLES`] as tooltips; these label the

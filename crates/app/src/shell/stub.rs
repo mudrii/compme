@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use platform::shell::{ShellHost, TrayFlags, TrayHandle};
 use platform::PlatformError;
@@ -51,11 +51,14 @@ pub fn install_url_event_handler(
 pub use platform::shell::{
     AppsPolicyEdit, AppsPolicyEditSlot, CurrentAcceptKeys, EffectiveAcceptKeys, KeyWithMods,
     KeymapError, PersonalizationEdit, RebindRequest, SettingsFlags, ShortcutBindings, APPS_ROWS,
-    APP_POLICY_FIELDS, SETUP_ROWS, STATS_ROWS,
+    APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES, SETUP_ROWS, STATS_ROWS,
 };
 
-pub fn parse_accept_key(_raw: &str) -> Option<(i64, u32)> {
-    None
+static SHORTCUT_BINDINGS: LazyLock<RwLock<ShortcutBindings>> =
+    LazyLock::new(|| RwLock::new(ShortcutBindings::default()));
+
+pub fn parse_accept_key(raw: &str) -> Option<(i64, u32)> {
+    platform::shell::parse_key_with_mods(raw)
 }
 
 pub fn format_accept_key(keycode: i64, mask: u32) -> String {
@@ -81,10 +84,16 @@ pub fn effective_accept_keys_with_mods_and_grammar() -> EffectiveAcceptKeys {
 }
 
 pub fn effective_shortcut_bindings() -> ShortcutBindings {
-    ShortcutBindings::default()
+    *SHORTCUT_BINDINGS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-pub fn set_shortcut_bindings(_bindings: ShortcutBindings) {}
+pub fn set_shortcut_bindings(bindings: ShortcutBindings) {
+    *SHORTCUT_BINDINGS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = bindings;
+}
 
 pub fn set_shortcut_bindings_from_config(
     force_activate: Option<&str>,
@@ -92,8 +101,15 @@ pub fn set_shortcut_bindings_from_config(
     toggle_global: Option<&str>,
     grammar_check: Option<&str>,
 ) -> ShortcutBindings {
-    let _ = (force_activate, toggle_app, toggle_global, grammar_check);
-    ShortcutBindings::default()
+    let bindings =
+        ShortcutBindings::from_config(force_activate, toggle_app, toggle_global, grammar_check);
+    let effective = if bindings.has_internal_collision() {
+        ShortcutBindings::default()
+    } else {
+        bindings
+    };
+    set_shortcut_bindings(effective);
+    effective
 }
 
 pub fn policy_restore_needed(was_visible: bool, visible_now: bool) -> bool {

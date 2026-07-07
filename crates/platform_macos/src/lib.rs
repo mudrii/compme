@@ -67,7 +67,7 @@ pub use login_item::set_launch_at_login;
 pub use platform::shell::{
     AppsPolicyEdit, CurrentAcceptKeys, EffectiveAcceptKeys, KeyWithMods, KeymapError,
     PersonalizationEdit, RebindRequest, SettingsFlags, ShortcutBindings, APPS_ROWS,
-    APP_POLICY_FIELDS, SETUP_ROWS, STATS_ROWS,
+    APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES, SETUP_ROWS, STATS_ROWS,
 };
 pub use settings_window::{
     keycode_label, keycode_label_with_mods, policy_restore_needed, rebind_request_for,

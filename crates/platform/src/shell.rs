@@ -28,6 +28,13 @@ pub type CurrentAcceptKeys = (KeyWithMods, KeyWithMods, Option<KeyWithMods>);
 
 pub const APPS_ROWS: usize = 8;
 pub const APP_POLICY_FIELDS: usize = 5;
+pub const APP_POLICY_FIELD_TITLES: [&str; APP_POLICY_FIELDS] = [
+    "Enabled",
+    "Tab key",
+    "Mid-line",
+    "Autocorrect",
+    "Grammar fix",
+];
 pub const STATS_ROWS: usize = 4;
 pub const SETUP_ROWS: usize = 3;
 
@@ -38,7 +45,9 @@ const ACCEPT_KEY_MODIFIERS: [(&str, u32); 4] = [
     ("control", 1 << 12),
 ];
 
-fn parse_key_with_mods(raw: &str) -> Option<(i64, u32)> {
+/// Parse the persisted key chord grammar shared by accept keys and always-on
+/// shortcut bindings.
+pub fn parse_key_with_mods(raw: &str) -> Option<(i64, u32)> {
     let mut keycode = None;
     let mut mask = 0u32;
     for token in raw.split('+') {
@@ -395,5 +404,25 @@ mod tests {
         fn takes(_: Arc<dyn ShellHost>) {}
 
         takes(Arc::new(BareHost));
+    }
+
+    #[test]
+    fn key_with_mods_parser_accepts_shared_shortcut_grammar() {
+        assert_eq!(parse_key_with_mods("cmd+96"), Some((96, 1 << 8)));
+        assert_eq!(
+            parse_key_with_mods("ctrl+shift+96"),
+            Some((96, (1 << 12) | (1 << 9)))
+        );
+        assert_eq!(parse_key_with_mods("alt+49"), Some((49, 1 << 11)));
+        assert_eq!(parse_key_with_mods("96"), Some((96, 0)));
+    }
+
+    #[test]
+    fn key_with_mods_parser_rejects_malformed_chords() {
+        assert_eq!(parse_key_with_mods("ctrl"), None);
+        assert_eq!(parse_key_with_mods("ctrl+"), None);
+        assert_eq!(parse_key_with_mods("96+ctrl"), None);
+        assert_eq!(parse_key_with_mods("-1"), None);
+        assert_eq!(parse_key_with_mods("wat+96"), None);
     }
 }

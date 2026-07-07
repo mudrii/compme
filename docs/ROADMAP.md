@@ -33,7 +33,7 @@ tested**. Everything below is what the plan still calls for.
 deliverables built behind a shared cross-platform `PlatformAdapter` contract."*
 The `platform` crate was deliberately shaped as a trait/contract to accept them.
 
-**Foundation ✅ DONE (2026-06-16, gate-green on macOS):**
+**Foundation ✅ DONE (2026-06-16 through 2026-07-07, gate-green on macOS):**
 - **`crates/platform_windows`** (`1f8cace`) — implements every IO/subscribe
   method of the `platform::PlatformAdapter` contract as a **fail-closed stub**
   (the two optional anchor/URL methods take the trait's safe `Ok(None)`
@@ -44,22 +44,31 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   Unit-tested (environment, fail-closed `subscribe_focus` + `insert_replacing`).
 - **`crates/platform_linux`** (`5236a56`) — the same, for Linux (AT-SPI2 / XTEST /
   `wtype` / IBus / X11-or-layer-shell overlay).
-- **CI matrix** (`a7427c6`) — `windows-latest` + `ubuntu-latest` jobs run
-  fmt/clippy/test/build scoped to each new crate (`-p platform_windows` /
-  `-p platform_linux`), so the real per-OS code gets gated the moment it lands.
-- Both crates are **inert** — nothing wires them into the app (still `platform_macos`),
-  so the workspace builds + gates green on the macOS-only dev host.
+- **Shell foundation + app cfg boundary** (`2c80e74`) — `platform::shell`
+  defines the portable `ShellHost`/`TrayHandle` contract and shared settings/keymap
+  data; `platform_macos::MacosShellHost` wraps existing macOS behavior; Windows/Linux
+  provide fail-closed `ShellHost` + `OverlayPresenter` scaffolds; `app` routes
+  platform construction and macOS-only shell surfaces through `crate::shell`.
+- **App target-gated platform deps** (`2c80e74`) — `app` no longer depends
+  unconditionally on `platform_macos`; macOS, Windows, and Linux adapter crates are
+  selected behind Cargo target gates. Non-macOS runtime remains fail-closed until
+  the real adapters land.
+- **CI matrix** (`a7427c6`, widened by `2c80e74`) — `windows-latest` +
+  `ubuntu-latest` jobs run fmt/clippy/test over the workspace excluding only
+  Apple-only `platform_macos`, then build the `app` binary through its non-mac
+  facade.
 
 **Pending (🔒 needs Windows + Linux build+test environments — not doable on macOS):**
 - The actual **Windows** adapter behind `#[cfg(windows)]` (uncomment the `windows`
   dep in its `Cargo.toml`): UIA focus/caret/text + `WH_KEYBOARD_LL` accept tap +
-  `SendInput`/ValuePattern insert + layered overlay.
+  `SendInput`/ValuePattern insert + layered overlay, plus real ShellHost services
+  (DPAPI/CredWrite key store, tray, confirm UI, launch-at-login, native event pump).
 - The actual **Linux** adapter behind `#[cfg(target_os = "linux")]`: AT-SPI2
   read/insert/events + XTEST/`wtype` synthetic keys (IBus IME fallback on Wayland)
   + override-redirect/layer-shell overlay. (AT-SPI device key-listeners are
-  deprecated → prefer XTEST/XGrabKey or libei for the accept tap.)
-- The **app's adapter selection** — a `#[cfg]` target switch to pick the right
-  adapter (currently hardcoded `platform_macos`) — lands with the impls.
+  deprecated → prefer XTEST/XGrabKey or libei for the accept tap.) Real ShellHost
+  services still need libsecret, tray/portal integration, confirm UI, autostart,
+  and a native event pump.
 
 **Effort:** Very large, multi-phase (each platform is its own A-sized milestone).
 Each method's required Win32/Linux API is mapped in its crate's `src/lib.rs` doc

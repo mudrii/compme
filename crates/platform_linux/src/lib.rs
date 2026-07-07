@@ -175,6 +175,14 @@ impl platform::OverlayPresenter for LinuxOverlayPresenter {
         Err(LinuxAdapter::unsupported("show_ghost"))
     }
 
+    fn show_correction(
+        &mut self,
+        _rect: ScreenRect,
+        _suggestion: &str,
+    ) -> Result<(), PlatformError> {
+        Err(LinuxAdapter::unsupported("show_correction"))
+    }
+
     fn update_ghost(&mut self, _text: &str) -> Result<(), PlatformError> {
         Err(LinuxAdapter::unsupported("update_ghost"))
     }
@@ -475,6 +483,22 @@ mod tests {
                 "g",
             )
             .is_err());
+        let correction = o
+            .show_correction(
+                ScreenRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
+                "c",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            correction,
+            PlatformError::UnsupportedField { reason }
+                if reason.contains("platform_linux::show_correction")
+        ));
         assert!(o.update_ghost("g").is_err());
         o.hide().expect("hide is contractually idempotent-success");
         o.hide().expect("second hide too");
