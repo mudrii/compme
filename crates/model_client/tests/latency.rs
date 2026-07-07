@@ -281,6 +281,10 @@ fn grammar_fix_real_model_output_is_vetted() {
     let prompt = grammar_fix_prompt("teh", "Please fix");
     let raw = model.complete(&prompt, 4).expect("grammar fix");
     let vetted = vet_correction("teh", &raw);
+    // Diagnostic for live-quality triage (2026-07-07 assisted-UI session found
+    // corrections never surviving vetting with the default model): show what
+    // the model actually said.
+    eprintln!("grammar raw={raw:?} vetted={vetted:?}");
     assert!(
         !raw.trim().is_empty(),
         "real model grammar prompt produced no output"

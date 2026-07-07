@@ -740,7 +740,10 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let inference = InferenceHandle::spawn(
             Box::new(GrammarEchoModel {
-                output: "the cat",
+                // First token must be far from the original word: vetting now
+                // extracts the first token from runaway output ("the cat"
+                // would vet to "the").
+                output: "kitten cat",
                 seen,
             }),
             PromptMode::Raw,
@@ -762,7 +765,7 @@ mod tests {
 
     #[test]
     fn grammar_fix_rejected_outputs_emit_no_correction_for_all_vet_classes() {
-        for output in ["teh", "", "the cat", "alphabet", "thé"] {
+        for output in ["teh", "", "kitten cat", "alphabet", "thé"] {
             let seen = Arc::new(Mutex::new(Vec::new()));
             let inference = InferenceHandle::spawn(
                 Box::new(GrammarEchoModel { output, seen }),

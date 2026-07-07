@@ -589,11 +589,17 @@ pub fn terse_continuation_prompt(prefix: &str) -> String {
 /// Prompt the model for a safe single-word grammar/spelling correction.
 /// Callers post-filter with `grammar::vet_correction`; this prompt is only a
 /// terse hint and intentionally stays single-line for easy diagnostics.
+///
+/// Few-shot `misspelling -> fix` pairs, not an instruction: the shipped
+/// completion model is the BASE (non-instruct) qwen2.5-0.5b, which continues
+/// text instead of following directives — the 2026-07-07 live session showed
+/// the old instruction phrasing produced continuations like " If you want to"
+/// that never survived vetting, leaving the feature dead in practice.
 pub fn grammar_fix_prompt(word: &str, left_ctx: &str) -> String {
     let one_line_ctx = left_ctx.split_whitespace().collect::<Vec<_>>().join(" ");
     let one_line_word = word.split_whitespace().collect::<Vec<_>>().join(" ");
     format!(
-        "Correct one word only. Context: {one_line_ctx} Word: {one_line_word} Return only the corrected word, or the original word if already correct."
+        "Spelling fixes: wierd -> weird; recieve -> receive; adress -> address; definately -> definitely. Context: {one_line_ctx} Fix: {one_line_word} ->"
     )
 }
 
@@ -607,7 +613,7 @@ mod grammar_prompt_tests {
 
         assert_eq!(
             prompt,
-            "Correct one word only. Context: I typed Word: teh Return only the corrected word, or the original word if already correct."
+            "Spelling fixes: wierd -> weird; recieve -> receive; adress -> address; definately -> definitely. Context: I typed Fix: teh ->"
         );
         assert!(prompt.contains("teh"));
         assert!(prompt.contains("I typed"));
@@ -645,7 +651,7 @@ mod grammar_prompt_tests {
             "word tabs must collapse: {prompt:?}"
         );
         assert!(
-            prompt.contains("Word: teh word Return only"),
+            prompt.contains("Fix: teh word ->"),
             "word whitespace must collapse to single spaces: {prompt:?}"
         );
     }

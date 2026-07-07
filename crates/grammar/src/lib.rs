@@ -51,12 +51,18 @@ pub fn capitalize_pronoun(word: &str) -> Option<String> {
 /// edits, then reapplies the original word's case pattern.
 pub fn vet_correction(original: &str, model_output: &str) -> Option<String> {
     let original = original.trim();
-    let candidate = model_output.trim();
+    // Base (non-instruct) models answer the few-shot prompt with a runaway
+    // continuation (" the. The correct"); the fix is its first token. Take
+    // that token, strip edge punctuation, and hold it to every rule below.
+    let candidate = model_output
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| c.is_ascii_punctuation() && c != '\'');
     if original.is_empty()
         || candidate.is_empty()
         || !original.is_ascii()
         || !candidate.is_ascii()
-        || candidate.split_whitespace().count() != 1
         || !is_ascii_word(original)
         || !is_ascii_word(candidate)
         || original.eq_ignore_ascii_case(candidate)
@@ -196,11 +202,32 @@ mod tests {
 
     #[test]
     fn vet_correction_rejects_empty_identical_multi_word_large_edit_and_non_ascii() {
-        for output in ["", "   ", "teh", "the cat", "kitten"] {
+        // Multi-word output is judged by its FIRST token (see
+        // vet_correction_extracts_first_token_from_runaway_completion); it
+        // still rejects when that token is not a close single-word fix.
+        for output in ["", "   ", "teh", "kitten cat", "kitten"] {
             assert_eq!(vet_correction("teh", output), None, "{output:?}");
         }
         assert_eq!(vet_correction("日本", "本日"), None);
         assert_eq!(vet_correction("teh", "thé"), None);
+    }
+
+    #[test]
+    fn vet_correction_extracts_first_token_from_runaway_completion() {
+        // Live 2026-07-07: the base (non-instruct) model answers the few-shot
+        // prompt with a runaway continuation — " the. The correct" — whose
+        // first token IS the fix. Extraction takes the first whitespace token,
+        // strips edge punctuation, then applies every strictness rule.
+        assert_eq!(
+            vet_correction("teh", " the. The correct").as_deref(),
+            Some("the")
+        );
+        assert_eq!(vet_correction("teh", "the,").as_deref(), Some("the"));
+        assert_eq!(vet_correction("teh", "\"the\"").as_deref(), Some("the"));
+        // First token far from the original word still rejects.
+        assert_eq!(vet_correction("teh", "banana. the correct"), None);
+        // Punctuation-only first token rejects.
+        assert_eq!(vet_correction("teh", "-> the"), None);
     }
 
     #[test]
@@ -215,11 +242,11 @@ mod tests {
 
     #[test]
     fn vet_correction_rejects_non_word_tokens() {
-        // `is_ascii_word` gates BOTH sides to letters/apostrophes: punctuation
-        // in the candidate or a digit in the original is not a single-word
+        // Edge punctuation is stripped by extraction, but `is_ascii_word`
+        // still gates INTERIOR punctuation and digits on either side: a
+        // mid-word symbol or a digit in the original is not a single-word
         // correction, however small the edit distance.
-        assert_eq!(vet_correction("teh", "the."), None);
-        assert_eq!(vet_correction("teh", "the,"), None);
+        assert_eq!(vet_correction("teh", "th.e"), None);
         assert_eq!(vet_correction("b4", "by"), None);
     }
 
