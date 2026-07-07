@@ -124,7 +124,12 @@ Check:
 - Tab/Word accept, full accept, Esc, and Down behavior match docs.
 - Option+Tab passes through to TextEdit instead of accepting.
 
-Status: not started.
+Status: pass (2026-07-07 scripted assisted session). Ghost at caret verified by
+screenshot; word accept "hello world " + remainder; full accept "hello world";
+Esc dismissed; Option+Tab passed through (TextEdit consumed the chord). Found
+and fixed live: seam space lost by candidate normalization ("helloworld") —
+commit 7c80b51. Down-cycle stays with the physical gate (isolated launch env
+carries no COMPME_CANDIDATES override).
 
 ## Batch 4 — Local Replacement Features
 
@@ -138,7 +143,11 @@ Check:
 - Replacement deletes the typed token and inserts only the replacement.
 - Feature is suppressed when disabled or app policy blocks it.
 
-Status: not started.
+Status: pass (2026-07-07 scripted assisted session, doc readback): ":smile" ->
+😄 exactly; "I saw teh" -> "I saw the"; "my favorite color" -> "my favorite
+colour"; "the results are good" -> "the results are great" (4 thesaurus
+candidates offered). Policy-suppression legs remain covered by deterministic
+tests.
 
 ## Batch 5 — Grammar Fix Flow
 
@@ -152,7 +161,15 @@ Check:
 - Correction banner does not steal focus.
 - Word/Full accept keys do not accept correction unless bound as grammar accept.
 
-Status: not started.
+Status: pass (2026-07-07 scripted assisted session, real model). Found and
+fixed live: corrections NEVER surfaced — the instruction-style prompt fed the
+base (non-instruct) model, whose continuations always failed vetting (commit
+5126509: few-shot prompt + first-token extraction in vet_correction).
+After the fix: "I saw teh cat today" with the caret on the mid-sentence typo →
+ctrl+opt+F12 → underline on "teh" + "the" banner (screenshot
+/tmp/cm-b5-grammar2.png) → ⇧F6 → "I saw the cat today" (exact in-place range,
+log "accept Correction"). Staleness leg: correction for "recieve" produced,
+caret moved one right, ⇧F6 → document unchanged (stale correction refused).
 
 ## Batch 6 — Browser, Domain, Terminal, Context
 
