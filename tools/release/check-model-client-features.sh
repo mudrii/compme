@@ -40,10 +40,12 @@ tree_for() {
 check_non_macos_tree() {
   label="$1"
   tree="$2"
-  assert_contains "$label" "$tree" 'llama-cpp-2 feature "dynamic-backends"' || return 1
-  # vulkan is forbidden until the real Windows/Linux adapters land: it needs
-  # the Vulkan SDK at build time (CI runners lack it) and dynamic-backends
-  # already loads GPU backends at runtime when present.
+  # Static CPU-only llama off macOS until the real adapters land (ROADMAP
+  # 1.1): "vulkan" needs the Vulkan SDK at build time (CI runners lack it)
+  # and "dynamic-backends" hard-links shared libs in its build script with a
+  # racy !exists()->hard_link().unwrap() that panics AlreadyExists under CI.
+  assert_contains "$label" "$tree" 'llama-cpp-2 v' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "dynamic-backends"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "vulkan"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "metal"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "default"' || return 1
@@ -78,8 +80,9 @@ check_spike_macos_features() {
 
 run_self_test() {
   macos_tree='llama-cpp-2 feature "metal"'
-  non_macos_tree='llama-cpp-2 feature "dynamic-backends"'
+  non_macos_tree='llama-cpp-2 v0.1.146'
   non_macos_with_vulkan="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "vulkan"')"
+  non_macos_with_dynamic_backends="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "dynamic-backends"')"
 
   check_macos_tree "self-test macOS" "$macos_tree" >/dev/null
   check_non_macos_tree "self-test non-macOS" "$non_macos_tree" >/dev/null
@@ -122,8 +125,12 @@ run_self_test() {
     echo "model_client feature self-test failed: non-macOS Vulkan feature passed" >&2
     return 1
   fi
-  if check_non_macos_tree "self-test non-macOS missing dynamic-backends" 'llama-cpp-2 feature "accelerate"' >/dev/null 2>&1; then
-    echo "model_client feature self-test failed: missing dynamic-backends feature passed" >&2
+  if check_non_macos_tree "self-test non-macOS forbidden dynamic-backends" "$non_macos_with_dynamic_backends" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: non-macOS dynamic-backends feature passed" >&2
+    return 1
+  fi
+  if check_non_macos_tree "self-test non-macOS missing llama-cpp-2" 'some-other-crate v1.0.0' >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: tree without llama-cpp-2 passed" >&2
     return 1
   fi
   if check_non_macos_tree "self-test non-macOS forbidden metal" "$non_macos_with_metal" >/dev/null 2>&1; then

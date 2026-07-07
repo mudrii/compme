@@ -126,6 +126,10 @@ impl MemoryStore {
         // and the store silently never initializes.
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
+                // Read existence BEFORE create_dir_all; only the unix arm
+                // consumes it (0700 tightening), so gate the binding too or
+                // non-unix clippy -D warnings rejects it as unused.
+                #[cfg(unix)]
                 let parent_existed = parent.exists();
                 std::fs::create_dir_all(parent)?;
                 #[cfg(unix)]

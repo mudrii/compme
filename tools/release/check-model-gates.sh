@@ -1224,19 +1224,23 @@ ruby -ryaml -e '
     abort("missing release gate: #{label}") unless step?(ci_steps, name, run)
   end
 
+  # CI windows/linux jobs gate the whole portable workspace (everything but
+  # the Apple-only platform_macos crate) plus the app binary through its
+  # fail-closed shell facade. The release workflow keeps the narrower
+  # adapter-crate pins below until non-macOS artifacts exist.
   windows = jobs.fetch("windows")
   abort("missing release gate: platform_windows runs on Windows") unless windows.fetch("runs-on") == "windows-latest"
-  require_step!(jobs, "windows", "Format", "cargo fmt -p platform_windows -- --check", "platform_windows fmt job")
-  require_step!(jobs, "windows", "Clippy (deny warnings)", "cargo clippy --locked -p platform_windows --all-targets -- -D warnings", "platform_windows clippy job")
-  require_step!(jobs, "windows", "Test", "cargo test --locked -p platform_windows", "platform_windows test job")
-  require_step!(jobs, "windows", "Build", "cargo build --locked -p platform_windows", "platform_windows build job")
+  require_step!(jobs, "windows", "Format (workspace)", "cargo fmt --all -- --check", "platform_windows fmt job")
+  require_step!(jobs, "windows", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "platform_windows clippy job")
+  require_step!(jobs, "windows", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos", "platform_windows test job")
+  require_step!(jobs, "windows", "Build app binary", "cargo build --locked -p app", "platform_windows build job")
 
   linux = jobs.fetch("linux")
   abort("missing release gate: platform_linux runs on Linux") unless linux.fetch("runs-on") == "ubuntu-latest"
-  require_step!(jobs, "linux", "Format", "cargo fmt -p platform_linux -- --check", "platform_linux fmt job")
-  require_step!(jobs, "linux", "Clippy (deny warnings)", "cargo clippy --locked -p platform_linux --all-targets -- -D warnings", "platform_linux clippy job")
-  require_step!(jobs, "linux", "Test", "cargo test --locked -p platform_linux", "platform_linux test job")
-  require_step!(jobs, "linux", "Build", "cargo build --locked -p platform_linux", "platform_linux build job")
+  require_step!(jobs, "linux", "Format (workspace)", "cargo fmt --all -- --check", "platform_linux fmt job")
+  require_step!(jobs, "linux", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "platform_linux clippy job")
+  require_step!(jobs, "linux", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos", "platform_linux test job")
+  require_step!(jobs, "linux", "Build app binary", "cargo build --locked -p app", "platform_linux build job")
 
   workflow = release_workflow
   trigger = workflow["on"] || workflow[true]

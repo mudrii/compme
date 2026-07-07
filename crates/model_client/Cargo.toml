@@ -15,13 +15,14 @@ encoding_rs = "0.8"
 [target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["metal"] }
 
-# ponytail: CPU-only compile gate off macOS — the "vulkan" feature needs the
-# Vulkan SDK at build time (CI runners lack it) and no non-mac adapter can use
-# a GPU yet. Re-add "vulkan" plus CI SDK install steps when the real
-# Windows/Linux adapters land (ROADMAP 1.1); "dynamic-backends" already loads
-# GPU backends at runtime when present.
+# ponytail: static CPU-only llama off macOS until the real Windows/Linux
+# adapters land (ROADMAP 1.1). "vulkan" needs the Vulkan SDK at build time
+# (CI runners lack it); "dynamic-backends" hard-links shared backend libs in
+# its build script with a racy !exists()→hard_link().unwrap() that panics
+# AlreadyExists under CI (llama-cpp-sys-2 0.1.146 build.rs:1110). Re-add
+# GPU/dynamic backends together with the adapters and CI SDK install steps.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["dynamic-backends"] }
+llama-cpp-2 = { version = "=0.1.146", default-features = false }
 
 [dev-dependencies]
 grammar = { path = "../grammar" }
