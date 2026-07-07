@@ -126,12 +126,15 @@ fn config_file_path_for(lookup: &impl Fn(&str) -> Option<String>, os: &str) -> O
             return Some(PathBuf::from(path));
         }
     }
+    // Empty env vars are treated as unset (a relative "" base would write config
+    // under the process cwd), matching the COMPME_CONFIG/XDG_CONFIG_HOME guards.
     let dir = match os {
-        "windows" => PathBuf::from(lookup("APPDATA")?).join("compme"),
-        "macos" => PathBuf::from(lookup("HOME")?).join("Library/Application Support/compme"),
+        "windows" => PathBuf::from(lookup("APPDATA").filter(|v| !v.is_empty())?).join("compme"),
+        "macos" => PathBuf::from(lookup("HOME").filter(|v| !v.is_empty())?)
+            .join("Library/Application Support/compme"),
         _ => match lookup("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
             Some(xdg) => PathBuf::from(xdg).join("compme"),
-            None => PathBuf::from(lookup("HOME")?).join(".config/compme"),
+            None => PathBuf::from(lookup("HOME").filter(|v| !v.is_empty())?).join(".config/compme"),
         },
     };
     Some(dir.join("config.env"))
@@ -858,6 +861,25 @@ mod tests {
         for os in ["macos", "linux", "windows"] {
             assert!(config_file_path_for(&lookup, os).is_none());
         }
+    }
+
+    #[test]
+    fn config_path_none_when_home_env_is_empty() {
+        // An empty HOME/APPDATA must be treated as unset, not as a relative ""
+        // base that writes config under the process cwd.
+        let empty = |key: &str| match key {
+            "HOME" | "APPDATA" => Some(String::new()),
+            _ => None,
+        };
+        for os in ["macos", "linux", "windows"] {
+            assert!(config_file_path_for(&empty, os).is_none(), "os={os}");
+        }
+        // Empty XDG_CONFIG_HOME must fall back to (also-empty) HOME → None.
+        let empty_xdg = |key: &str| match key {
+            "XDG_CONFIG_HOME" | "HOME" => Some(String::new()),
+            _ => None,
+        };
+        assert!(config_file_path_for(&empty_xdg, "linux").is_none());
     }
 
     #[test]
