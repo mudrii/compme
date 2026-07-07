@@ -70,14 +70,6 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '\''
 }
 
-/// Strip trailing whitespace from a left-context prompt (the model should not
-/// see a dangling space/newline after the caret). Leading whitespace is kept —
-/// it is part of the user's text. Named for what it does: trims the *trailing*
-/// end only, not the prefix.
-pub fn trim_trailing(value: &str) -> &str {
-    value.trim_end()
-}
-
 /// Truncate to at most `max` chars on a char boundary, keeping the tail (the
 /// most recent / caret-adjacent end).
 pub fn tail_chars(s: &str, max: usize) -> &str {
@@ -514,16 +506,6 @@ Recent: green blue\n"
     }
 
     #[test]
-    fn trim_trailing_strips_trailing_whitespace() {
-        assert_eq!(trim_trailing("hi  \n\t"), "hi");
-    }
-
-    #[test]
-    fn trim_trailing_preserves_leading_whitespace() {
-        assert_eq!(trim_trailing("  hi "), "  hi");
-    }
-
-    #[test]
     fn left_context_empty_string_is_empty() {
         assert_eq!(left_context("", 5), "");
     }
@@ -536,15 +518,5 @@ Recent: green blue\n"
     #[test]
     fn right_context_empty_string_is_empty() {
         assert_eq!(right_context("", 3), "");
-    }
-
-    #[test]
-    fn trim_trailing_all_whitespace_is_empty() {
-        assert_eq!(trim_trailing("  \n\t"), "");
-    }
-
-    #[test]
-    fn trim_trailing_empty_string_is_empty() {
-        assert_eq!(trim_trailing(""), "");
     }
 }

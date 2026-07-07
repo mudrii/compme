@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1791 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1787 tests green).
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI

@@ -1,6 +1,6 @@
 //! Deterministic suggestion state machine.
 
-use context::{left_context, right_context, trim_trailing};
+use context::{left_context, right_context};
 use platform::{ux_mode, AcceptAction, Capabilities, CorrectionRange, FieldHandle, UxMode};
 use ranker::{
     cap_words, is_degenerate_repetition, next_word, repetition_penalty, strip_suffix_overlap,
@@ -460,8 +460,7 @@ impl SuggestionMachine {
                     if self.enabled() && now_ms.saturating_sub(since) >= self.debounce_ms {
                         let generation = self.generation;
                         let snapshot = self.snapshot;
-                        let prompt =
-                            trim_trailing(&left_context(&self.value, self.caret)).to_string();
+                        let prompt = left_context(&self.value, self.caret).trim_end().to_string();
                         self.requested = Some(RequestedCompletion {
                             generation,
                             field: field.clone(),

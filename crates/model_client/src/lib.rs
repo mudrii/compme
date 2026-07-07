@@ -578,7 +578,7 @@ impl Drop for LlamaModel {
 }
 
 /// Wrap the caret-left `prefix` in the fixed inline-completion instruction.
-/// Callers must pass already-trimmed text (`context::trim_trailing`) — no
+/// Callers must pass already-trimmed text (`str::trim_end`) — no
 /// trimming happens here — and `prefix` is user text: it must already be
 /// redaction/secure-field gated before reaching this function. Downstream
 /// shaping assumes the model returns only the continuation.
