@@ -223,9 +223,17 @@ purity stays with the runner's physical gates):
 - VS Code: Monaco exposes only AXWebArea until VS Code's screen-reader mode is
   on -> fail-closed, no suggestions (matches the unsupported compat class).
 - Firefox/Zen: mirror-mode ENGAGEMENT log-proven for both bundle ids
-  ("renders via a mirror window (inline overlay unsupported)"); Gecko does not
-  wake its AX tree for our advisory AXManualAccessibility set, so the visual
-  mirror render remains with the mirror-window-firefox-zen-look human gate.
+  ("renders via a mirror window (inline overlay unsupported)"). Later the same
+  day, ORGANIC USER TYPING in a Zen YouTube field drove the full pipeline with
+  hardware keystrokes: per-key reads ("P"->"Pl"->"Pleas"), domain
+  www.youtube.com resolved host-only, requests gen=39-41 submitted, and
+  mirror-window ghost frames rendered (text_len 36/34, overlay_frame logged).
+  Hardware-typing -> suggestion pipeline is thereby live-proven in the
+  Firefox family; the remaining human residue is only the on-screen LOOK
+  confirmation of the mirror window itself and hardware presses of the
+  accept/cycle keys while a ghost shows. Bonus evidence from the same session:
+  the macOS lock-screen password field (AXSecureTextField) received focus and
+  produced ZERO requests — live fail-closed proof on secure fields.
 
 ## Batch 7 — Memory, Stats, Setup, Release Update Surface
 
