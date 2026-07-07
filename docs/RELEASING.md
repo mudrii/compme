@@ -18,8 +18,10 @@ Workflow permissions default to `contents: read`; only the publish job receives
 default branch before it writes the finalized checksum.
 
 Model-inference tests (`crates/model_client/tests/latency.rs` and the spike model
-integration test) are `#[ignore]`d because they need a local GGUF and a Metal GPU,
-so branch/PR CI remains hermetic. The Release workflow runs
+integration test) are `#[ignore]`d because they need a local GGUF, so branch/PR
+CI remains hermetic. The Release workflow CPU-forces the root `model_client`
+latency suite with `COMPME_MODEL_GPU_LAYERS=0`; the separate spike integration
+test remains Metal/GPU-oriented. The Release workflow runs
 [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh) with
 `COMPME_REQUIRE_MODEL_TESTS=1`, `COMPME_REQUIRE_MODEL_CONTEXT=1`, and
 `COMPME_REQUIRE_LATENCY_BUDGET=1`; publishing a tag therefore downloads and

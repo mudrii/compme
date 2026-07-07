@@ -2746,14 +2746,16 @@ fn apps_edit_dismisses_focused(
     focused_app: Option<&str>,
     edited_app: &str,
 ) -> bool {
-    !on && focused_app == Some(edited_app)
-        && matches!(
-            field,
-            prefs::AppPolicyField::Enabled
-                | prefs::AppPolicyField::MidLine
-                | prefs::AppPolicyField::Autocorrect
-                | prefs::AppPolicyField::GrammarFix
-        )
+    if focused_app != Some(edited_app) {
+        return false;
+    }
+    match field {
+        prefs::AppPolicyField::TabDisabled => on,
+        prefs::AppPolicyField::Enabled
+        | prefs::AppPolicyField::MidLine
+        | prefs::AppPolicyField::Autocorrect
+        | prefs::AppPolicyField::GrammarFix => !on,
+    }
 }
 
 /// Map an Apps-row checkbox field index (the low part of the packed tag, see
@@ -3040,9 +3042,13 @@ fn apply_autocorrect_settings_edge(
     flag: &AtomicBool,
     current: &mut bool,
     persist: impl FnOnce(bool),
+    dismiss_existing: impl FnOnce(bool),
 ) -> Option<bool> {
     let on = switch_edge(flag, current)?;
     persist(on);
+    if !on {
+        dismiss_existing(on);
+    }
     Some(on)
 }
 
@@ -5145,16 +5151,17 @@ pub fn run() -> Result<(), String> {
         // General-tab Autocorrect watcher: persist + apply on the edge. The
         // decision path reads config.autocorrect per offer, so a field write
         // IS the live apply (per-app overrides still win).
-        if let Some(on) = apply_autocorrect_settings_edge(
+        let _ = apply_autocorrect_settings_edge(
             &settings_flags.general_autocorrect,
             &mut config.autocorrect,
             |on| persist_and_log_switch("COMPME_AUTOCORRECT", "autocorrect", on),
-        ) {
-            if !on {
-                latest.clear();
-                let _ = log_err("on_dismiss", engine.on_dismiss());
-            }
-        }
+            |on| {
+                if !on {
+                    latest.clear();
+                    let _ = log_err("on_dismiss", engine.on_dismiss());
+                }
+            },
+        );
         // General-tab Trailing-space watcher: persist + live engine apply
         // (the flag is baked at build via with_trailing_space, so the c94
         // runtime-setter pattern applies — set_trailing_space).
@@ -6957,22 +6964,45 @@ mod tests {
         let flag = AtomicBool::new(true);
         let mut current = false;
         let persisted = RefCell::new(Vec::new());
+        let dismissed = RefCell::new(Vec::new());
 
         assert_eq!(
-            apply_autocorrect_settings_edge(&flag, &mut current, |on| {
-                persisted.borrow_mut().push(on)
-            }),
+            apply_autocorrect_settings_edge(
+                &flag,
+                &mut current,
+                |on| persisted.borrow_mut().push(on),
+                |on| dismissed.borrow_mut().push(on),
+            ),
             Some(true)
         );
         assert!(current);
         assert_eq!(persisted.borrow().as_slice(), &[true]);
+        assert_eq!(dismissed.borrow().as_slice(), &[] as &[bool]);
         assert_eq!(
-            apply_autocorrect_settings_edge(&flag, &mut current, |on| {
-                persisted.borrow_mut().push(on)
-            }),
+            apply_autocorrect_settings_edge(
+                &flag,
+                &mut current,
+                |on| persisted.borrow_mut().push(on),
+                |on| dismissed.borrow_mut().push(on),
+            ),
             None
         );
         assert_eq!(persisted.borrow().as_slice(), &[true]);
+        assert_eq!(dismissed.borrow().as_slice(), &[] as &[bool]);
+
+        flag.store(false, Ordering::Relaxed);
+        assert_eq!(
+            apply_autocorrect_settings_edge(
+                &flag,
+                &mut current,
+                |on| persisted.borrow_mut().push(on),
+                |on| dismissed.borrow_mut().push(on),
+            ),
+            Some(false)
+        );
+        assert!(!current);
+        assert_eq!(persisted.borrow().as_slice(), &[true, false]);
+        assert_eq!(dismissed.borrow().as_slice(), &[false]);
     }
 
     #[test]
@@ -14077,6 +14107,15 @@ mod tests {
         assert!(!apps_edit_dismisses_focused(
             TabDisabled,
             false,
+            Some("com.a"),
+            "com.a"
+        ));
+        // Enabling Tab suppression for the focused app must also retract the
+        // visible suggestion, otherwise the already armed bare-Tab binding can
+        // still accept it until the next focus/show cycle.
+        assert!(apps_edit_dismisses_focused(
+            TabDisabled,
+            true,
             Some("com.a"),
             "com.a"
         ));

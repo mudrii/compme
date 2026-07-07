@@ -217,7 +217,7 @@ fn prefix_reuse_matches_fresh_context_output() {
 }
 
 #[test]
-#[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
+#[ignore = "requires the qwen2.5-0.5b GGUF model; release gates force CPU with COMPME_MODEL_GPU_LAYERS=0; run with --ignored"]
 fn complete_n_returns_real_model_candidates() {
     let path = model_path();
     if !ensure_model_exists(&path) {
@@ -314,8 +314,7 @@ fn model_quality_probe() {
     let path = std::env::var("COMPME_QUALITY_MODEL_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| model_path());
-    if !path.exists() {
-        eprintln!("SKIP: model not at {}", path.display());
+    if !ensure_model_exists(&path) {
         return;
     }
     let Some(model) = load_model_or_skip(&path) else {
@@ -365,6 +364,17 @@ fn model_quality_probe() {
         "grammar score: {fixed}/{} fixed, {false_fixes}/4 false-fixes",
         typos.len()
     );
+    if require_model_tests() {
+        assert!(
+            fixed >= 7,
+            "strict quality probe expected at least 7/{} typo fixes, got {fixed}",
+            typos.len()
+        );
+        assert_eq!(
+            false_fixes, 0,
+            "strict quality probe must not alter already-correct words"
+        );
+    }
 
     let prompts = [
         "Dear team, I wanted to",

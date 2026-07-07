@@ -33,6 +33,16 @@ require_line() {
   fi
 }
 
+reject_line() {
+  file="$1"
+  pattern="$2"
+  label="$3"
+  if grep -Eq "$pattern" "$file"; then
+    echo "stale release gate: $label" >&2
+    return 1
+  fi
+}
+
 require_test_symbol() {
   file="$1"
   symbol="$2"
@@ -239,6 +249,17 @@ end
 CASK
   if require_line "$cask_bad_url_fixture" '^  url "https://github\.com/mudrii/compme/releases/download/v#\{version\}/compme-#\{version\}-macos\.zip"$' "fixture cask GitHub release URL" >/dev/null 2>&1; then
     echo "release gate self-test failed: unexpected cask URL was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  stale_latency_fixture="$tmp_dir/stale-latency.rs"
+  cat >"$stale_latency_fixture" <<'RS'
+#[ignore = "requires the qwen2.5-0.5b GGUF model + Metal GPU; run with --ignored"]
+fn release_enforced_model_test() {}
+RS
+  if reject_line "$stale_latency_fixture" 'Metal GPU' "fixture stale root latency GPU wording" >/dev/null 2>&1; then
+    echo "release gate self-test failed: stale root latency GPU wording was accepted" >&2
     cleanup
     return 1
   fi
@@ -1692,6 +1713,7 @@ require_line "$gate_script" 'refusing \$name override in GitHub release context'
 require_line "$gate_script" 'COMPME_MODEL_GATE_CURL_BODY="wrong-model"' "model gate checksum failure self-test"
 require_line "$gate_script" 'latency=1 gpu=0 ctx_tokens=256 spike_model= args=test --locked -p model_client --test latency' "model gate root env self-test"
 require_line "$gate_script" 'tools/spike env=1 ctx= latency=1 gpu= ctx_tokens= spike_model=\$model_path args=test --locked --test model_integration' "model gate spike env self-test"
+reject_line "$repo_root/crates/model_client/tests/latency.rs" 'Metal GPU' "root model-client ignored tests stale GPU wording"
 require_line "$finalize_cask_script" 'git merge-base --is-ancestor "\$GITHUB_SHA" "origin/\$default_branch"' "cask finalizer ancestry check"
 require_line "$finalize_cask_script" 'tag/version mismatch' "cask finalizer tag/version guard"
 require_line "$finalize_cask_script" 'refusing to publish a stale or out-of-order cask update' "cask finalizer stale version refusal"
