@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-fn latency_budget_required(raw: Option<&str>) -> bool {
+/// True for an explicit truthy env value (trimmed, case-insensitive). Shared by
+/// every `COMPME_REQUIRE_*` gate below so they parse identically.
+fn env_flag_truthy(raw: Option<&str>) -> bool {
     matches!(
         raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
         Some("1" | "true" | "yes" | "on")
@@ -9,7 +11,7 @@ fn latency_budget_required(raw: Option<&str>) -> bool {
 }
 
 fn require_latency_budget() -> bool {
-    latency_budget_required(
+    env_flag_truthy(
         std::env::var("COMPME_REQUIRE_LATENCY_BUDGET")
             .ok()
             .as_deref(),
@@ -24,15 +26,8 @@ fn model_path() -> PathBuf {
         .join("../../tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf")
 }
 
-fn model_tests_required(raw: Option<&str>) -> bool {
-    matches!(
-        raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
-        Some("1" | "true" | "yes" | "on")
-    )
-}
-
 fn require_model_tests() -> bool {
-    model_tests_required(std::env::var("COMPME_REQUIRE_MODEL_TESTS").ok().as_deref())
+    env_flag_truthy(std::env::var("COMPME_REQUIRE_MODEL_TESTS").ok().as_deref())
 }
 
 fn ensure_model_exists(path: &std::path::Path) -> bool {
@@ -48,7 +43,7 @@ fn ensure_model_exists(path: &std::path::Path) -> bool {
 }
 
 fn require_model_context() -> bool {
-    model_tests_required(
+    env_flag_truthy(
         std::env::var("COMPME_REQUIRE_MODEL_CONTEXT")
             .ok()
             .as_deref(),
@@ -63,33 +58,6 @@ fn load_model_or_skip(path: &std::path::Path) -> Option<LlamaModel> {
             eprintln!("skipping real-model assertion: load model failed: {err}");
             None
         }
-    }
-}
-
-#[test]
-fn strict_model_test_env_parses_truthy_values() {
-    for raw in [
-        Some("1"),
-        Some("true"),
-        Some("TRUE"),
-        Some(" yes "),
-        Some("on"),
-    ] {
-        assert!(model_tests_required(raw), "{raw:?}");
-    }
-    for raw in [
-        None,
-        Some(""),
-        Some("0"),
-        Some("false"),
-        Some("FALSE"),
-        Some("no"),
-        Some(" No "),
-        Some("off"),
-        Some(" off "),
-        Some("maybe"),
-    ] {
-        assert!(!model_tests_required(raw), "{raw:?}");
     }
 }
 
@@ -108,7 +76,7 @@ fn strict_latency_budget_env_parses_truthy_values() {
         Some(" yes "),
         Some("on"),
     ] {
-        assert!(latency_budget_required(value));
+        assert!(env_flag_truthy(value));
     }
     for value in [
         None,
@@ -122,7 +90,7 @@ fn strict_latency_budget_env_parses_truthy_values() {
         Some("maybe"),
         Some(""),
     ] {
-        assert!(!latency_budget_required(value));
+        assert!(!env_flag_truthy(value));
     }
 }
 

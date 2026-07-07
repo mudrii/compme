@@ -732,6 +732,27 @@ impl SuggestionMachine {
         out
     }
 
+    /// A ready result matches the outstanding request only when its stamp
+    /// (generation, snapshot, field) equals the engine's current stamp AND it is
+    /// the kind we asked for — the shared guard for completion and correction
+    /// results, so a late/superseded or wrong-kind reply is dropped.
+    fn request_matches(
+        &self,
+        generation: u64,
+        snapshot: SnapshotId,
+        field: &FieldHandle,
+        kind: RequestedKind,
+    ) -> bool {
+        self.requested.as_ref().is_some_and(|requested| {
+            requested.generation == generation
+                && requested.snapshot == snapshot
+                && requested.field == *field
+                && requested.kind == kind
+                && generation == self.generation
+                && snapshot == self.snapshot
+        })
+    }
+
     /// Shape raw candidates into inline offerings and, if any survive, show the
     /// first. Shared by the single (`CompletionReady`) and multi
     /// (`CompletionReadyMulti`) paths. Shaping: cut at the first line break, then
@@ -751,14 +772,8 @@ impl SuggestionMachine {
         // `requested`, and a suppressed field cannot arm a fresh request
         // (`TextChanged` clears suppression before arming), so no matching
         // completion can arrive while suppressed.
-        let matches_request = self.requested.as_ref().is_some_and(|requested| {
-            requested.generation == generation
-                && requested.snapshot == snapshot
-                && requested.field == *field
-                && requested.kind == RequestedKind::Completion
-                && generation == self.generation
-                && snapshot == self.snapshot
-        });
+        let matches_request =
+            self.request_matches(generation, snapshot, field, RequestedKind::Completion);
         if !matches_request {
             return;
         }
@@ -837,14 +852,8 @@ impl SuggestionMachine {
         offer: CorrectionOffer,
         out: &mut Vec<Command>,
     ) {
-        let matches_request = self.requested.as_ref().is_some_and(|requested| {
-            requested.generation == generation
-                && requested.snapshot == snapshot
-                && requested.field == *field
-                && requested.kind == RequestedKind::GrammarFix
-                && generation == self.generation
-                && snapshot == self.snapshot
-        });
+        let matches_request =
+            self.request_matches(generation, snapshot, field, RequestedKind::GrammarFix);
         if !matches_request
             || !self.enabled()
             || self.suppressed
