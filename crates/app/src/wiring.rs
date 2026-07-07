@@ -758,6 +758,56 @@ mod tests {
     }
 
     #[test]
+    fn self_replace_range_noops_on_wrong_field() {
+        // A range-replace targeting a field that is not the tracked baseline must
+        // not rewrite the baseline (else app-generated text routes into monitored
+        // memory). The sibling apply_self_replace has this test; the range path did not.
+        let mut tracker = FieldTracker::new();
+        tracker.observe(
+            &field("f"),
+            &ctx("x:smile", ""),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        tracker.apply_self_replace_range(
+            &field("other"),
+            "the",
+            CorrectionRange { start: 0, end: 3 },
+        );
+        let observed = tracker.observe(
+            &field("f"),
+            &ctx("x:smile", ""),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 7
+            }
+        );
+    }
+
+    #[test]
+    fn self_replace_range_clamps_out_of_range_start_to_field_length() {
+        // A CorrectionRange whose start is past the field end must clamp: the text
+        // appends at the end and the output caret lands at end+len, not at the raw
+        // (unclamped) start. Pins the `range.start.min(total)` clamp via the caret.
+        let mut tracker = FieldTracker::new();
+        tracker.observe(&field("f"), &ctx("hi", ""), TriggerPolicy::Automatic, 0);
+        tracker.apply_self_replace_range(&field("f"), "X", CorrectionRange { start: 5, end: 9 });
+        let observed = tracker.observe(&field("f"), &ctx("hiX", ""), TriggerPolicy::Automatic, 1);
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 3
+            }
+        );
+    }
+
+    #[test]
     fn self_replace_noops_without_baseline() {
         // No observation yet → no baseline → apply_self_replace is a no-op (no
         // panic), and the first real observation still reads as a fresh Insert.

@@ -330,6 +330,99 @@ mod tests {
         );
     }
 
+    struct RecordingHost {
+        seen: Mutex<Option<(Option<ScreenRect>, usize)>>,
+        reply: Option<String>,
+    }
+
+    impl ShellHost for RecordingHost {
+        fn pump_events(&self, _heartbeat: Duration) {}
+        fn physical_memory_bytes(&self) -> u64 {
+            1
+        }
+        fn open_url(&self, _url: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn open_permission_settings(&self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn reveal_file(&self, _path: &Path) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn confirm(
+            &self,
+            _prompt: &platform::shell::ConfirmPrompt<'_>,
+        ) -> Result<bool, PlatformError> {
+            Ok(false)
+        }
+        fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
+            Err(PlatformError::UnsupportedField {
+                reason: "test".into(),
+            })
+        }
+        fn screen_context_text(
+            &self,
+            rect: Option<ScreenRect>,
+            max_chars: usize,
+        ) -> Option<String> {
+            *self.seen.lock().unwrap() = Some((rect, max_chars));
+            self.reply.clone()
+        }
+    }
+
+    #[test]
+    fn worker_runs_ocr_and_publishes_redacted_context_when_enabled() {
+        // The enabled loop body (max_chars > 0: recv → screen_context_text →
+        // publish) is otherwise unexercised — the only run() test uses max_chars==0
+        // and returns before the loop. Seed pending + closed directly so recv()
+        // yields exactly one request then None (close() alone would wipe pending).
+        let queue = Arc::new(LatestRequestQueue::default());
+        {
+            let mut st = queue.state.lock().unwrap();
+            st.pending = Some(ScreenOcrRequest {
+                field: field(4),
+                generation: 4,
+                snapshot: 4,
+                caret_rect: rect(5.0),
+            });
+            st.closed = true;
+        }
+        let screen = Arc::new(Mutex::new(None));
+        let host = Arc::new(RecordingHost {
+            seen: Mutex::new(None),
+            reply: Some("user token sk-abcdEFGH0123456789abcdEFGH0123".into()),
+        });
+        run(
+            Arc::clone(&host) as Arc<dyn ShellHost>,
+            Arc::clone(&queue),
+            Arc::clone(&screen),
+            40,
+            false,
+        );
+        // The worker forwarded the request's rect + the configured max_chars.
+        let seen = host
+            .seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("screen_context_text was called");
+        assert_eq!(seen.0.unwrap().x, 5.0);
+        assert_eq!(seen.1, 40);
+        // And published redacted OCR text under the request stamp.
+        let guard = screen.lock().unwrap();
+        let ctx = guard.as_ref().expect("published a screen context");
+        assert!(
+            ctx.text.contains("[redacted-secret]") && !ctx.text.contains("sk-abcdEFGH"),
+            "raw screen secret must be redacted before publishing: {:?}",
+            ctx.text
+        );
+        assert_eq!(ctx.generation, 4);
+        assert_eq!(ctx.snapshot, 4);
+    }
+
     #[test]
     fn latest_queue_coalesces_a_burst_to_the_newest_rect() {
         let queue = LatestRequestQueue::default();

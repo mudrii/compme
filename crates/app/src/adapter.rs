@@ -273,6 +273,20 @@ mod tests {
     }
 
     #[test]
+    fn shared_adapter_forwards_caret_rect_not_popup_anchor() {
+        // caret_rect and popup_anchor share the exact signature
+        // fn(&FieldHandle) -> Result<Option<ScreenRect>>, so a copy-paste that
+        // forwarded caret_rect to self.0.popup_anchor() would compile. The inner
+        // returns Err(StaleField) for caret_rect but Ok(Some(..)) for popup_anchor,
+        // so pin that the wrapper forwards to the RIGHT method.
+        let shared = SharedAdapter::new(Arc::new(RecordingInner::default()));
+        assert!(
+            matches!(shared.caret_rect(&field()), Err(PlatformError::StaleField)),
+            "SharedAdapter must forward caret_rect to the inner caret_rect, not popup_anchor"
+        );
+    }
+
+    #[test]
     fn shared_adapter_forwards_correction_range_methods_instead_of_inheriting_defaults() {
         let inner = Arc::new(RecordingInner::default());
         let shared = SharedAdapter::new(Arc::clone(&inner));

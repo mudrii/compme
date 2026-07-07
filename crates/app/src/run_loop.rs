@@ -7745,6 +7745,84 @@ mod tests {
     }
 
     #[test]
+    fn emoji_skin_tone_change_persists_saved_prefs_while_emoji_disabled() {
+        // config_emoji=None (Emoji disabled). Every other emoji test passes Some,
+        // so moving `saved_prefs.skin_tone = tone` inside the `if let Some(prefs)`
+        // block would drop persistence here yet stay green. The saved prefs must
+        // update so re-enabling Emoji restores the chosen tone.
+        let index = AtomicUsize::new(emoji_skin_tone_index(SkinTone::Light));
+        let mut current = emoji_skin_tone_index(SkinTone::MediumDark);
+        let mut config_emoji: Option<EmojiPrefs> = None;
+        let mut saved = EmojiPrefs {
+            skin_tone: SkinTone::MediumDark,
+            gender: Gender::Female,
+        };
+        let mut persisted = Vec::new();
+        assert_eq!(
+            handle_emoji_skin_tone_change(
+                &index,
+                &mut current,
+                &mut config_emoji,
+                &mut saved,
+                |value| persisted.push(value.to_string()),
+            ),
+            Some(SkinTone::Light)
+        );
+        assert!(config_emoji.is_none(), "Emoji must stay disabled");
+        assert_eq!(saved.skin_tone, SkinTone::Light);
+        assert_eq!(persisted, vec!["light"]);
+    }
+
+    #[test]
+    fn emoji_gender_change_persists_saved_prefs_while_emoji_disabled() {
+        // Same disabled-state persistence contract for gender.
+        let index = AtomicUsize::new(emoji_gender_index(Gender::Male));
+        let mut current = emoji_gender_index(Gender::Female);
+        let mut config_emoji: Option<EmojiPrefs> = None;
+        let mut saved = EmojiPrefs {
+            skin_tone: SkinTone::MediumDark,
+            gender: Gender::Female,
+        };
+        let mut persisted = Vec::new();
+        let out = handle_emoji_gender_change(
+            &index,
+            &mut current,
+            &mut config_emoji,
+            &mut saved,
+            |value| persisted.push(value.to_string()),
+        );
+        assert_eq!(out, Some(Gender::Male));
+        assert!(config_emoji.is_none(), "Emoji must stay disabled");
+        assert_eq!(saved.gender, Gender::Male);
+        assert_eq!(
+            persisted,
+            vec![emoji_gender_value(Gender::Male).to_string()]
+        );
+    }
+
+    #[test]
+    fn enqueue_deep_link_bounds_queue_fifo_and_rejects_oversize() {
+        // No direct test drove enqueue_deep_link's cap/oversize branches (only the
+        // handle_deep_link caller was tested). Pin FIFO evict-oldest at the cap and
+        // the oversize reject.
+        let mut q: Vec<String> = Vec::new();
+        for i in 0..MAX_DEEP_LINK_QUEUE {
+            assert!(enqueue_deep_link(&mut q, format!("compme://{i}")));
+        }
+        assert_eq!(q.len(), MAX_DEEP_LINK_QUEUE);
+        // Full queue: accept the new url, evict the OLDEST (FIFO), stay at cap.
+        assert!(enqueue_deep_link(&mut q, "compme://new".into()));
+        assert_eq!(q.len(), MAX_DEEP_LINK_QUEUE);
+        assert_eq!(q[0], "compme://1", "oldest (compme://0) must be evicted");
+        assert_eq!(q[MAX_DEEP_LINK_QUEUE - 1], "compme://new");
+        // Oversize url rejected; queue untouched.
+        let big = "x".repeat(MAX_DEEP_LINK_URL_CHARS + 1);
+        assert!(!enqueue_deep_link(&mut q, big));
+        assert_eq!(q.len(), MAX_DEEP_LINK_QUEUE);
+        assert_eq!(q[MAX_DEEP_LINK_QUEUE - 1], "compme://new");
+    }
+
+    #[test]
     fn emoji_gender_edge_applies_config_and_persists_only_on_change() {
         let index = AtomicUsize::new(emoji_gender_index(Gender::Female));
         let mut current = emoji_gender_index(Gender::Female);

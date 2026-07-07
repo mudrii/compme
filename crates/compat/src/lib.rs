@@ -456,6 +456,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shell_command_detection_covers_multitoken_just_and_env_long_options() {
+        // A 4+ token `just <target> ...` line skips the `len() <= 3` short-circuit,
+        // so only the target whitelist can classify it as a shell command. Existing
+        // `just` tests are all 3 tokens, so they never exercise the operand.
+        assert!(
+            !terminal_prompt_activates("com.googlecode.iterm2", "just build the whole thing"),
+            "multi-token `just build` must read as a shell command, not a prompt"
+        );
+        // `env --unset PATH cargo build`: the long option consumes its argument
+        // (PATH), so the real command `cargo` is what gets classified. Existing env
+        // tests use only short `-u`/`-C`, never the `--unset`/`--chdir` arms.
+        assert!(
+            !terminal_prompt_activates("com.googlecode.iterm2", "env --unset PATH cargo build"),
+            "`env --unset PATH cargo build` must resolve to the `cargo` shell command"
+        );
+    }
+
+    #[test]
     fn known_apps_map_to_their_tiers() {
         for (bundle, tier) in [
             ("com.apple.Safari", CompatTier::Works),

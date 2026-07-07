@@ -441,6 +441,20 @@ mod tests {
     }
 
     #[test]
+    fn truncate_at_sentence_end_cuts_at_real_terminator_after_abbreviation() {
+        // The abbreviation branch must `continue` scanning (not stop), so a real
+        // sentence end *after* an `e.g.`/`i.e.` still cuts. A mutant that returned
+        // or broke instead of continuing would swallow the whole completion; every
+        // other abbreviation test puts the abbreviation as the final terminator, so
+        // only this one pins the continue.
+        assert_eq!(truncate_at_sentence_end("e.g. this. more"), "e.g. this.");
+        assert_eq!(
+            truncate_at_sentence_end("I use i.e. items. Done"),
+            "I use i.e. items."
+        );
+    }
+
+    #[test]
     fn truncate_at_sentence_end_keeps_uppercase_abbreviations() {
         // `is_common_abbreviation_period` lowercases the prefix before matching
         // (lib.rs L65), so a sentence-initial "E.g." / "I.e." is still

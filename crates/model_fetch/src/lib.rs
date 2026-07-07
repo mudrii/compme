@@ -484,6 +484,14 @@ mod tests {
         /// LIE: reply 206 with the requested Content-Range start but a body
         /// length that does not match the declared range.
         CorrectStartWrongBody,
+        /// LIE: a VALIDATED 206 (correct Content-Range start) with NO
+        /// Content-Length (close-framed) that streams MORE bytes than the
+        /// Content-Range declares — exercises the mid-stream overshoot guard.
+        HonorNoLengthOverBody,
+        /// LIE: a VALIDATED 206 (correct Content-Range start) with NO
+        /// Content-Length (close-framed) that streams FEWER bytes than the
+        /// Content-Range declares — exercises the post-loop under-run guard.
+        HonorNoLengthUnderBody,
         /// LIE: reply 206 but serve the FULL body from offset 0 with a
         /// Content-Range that contradicts the request (corruption trap).
         Lie,
@@ -549,13 +557,33 @@ mod tests {
                         &body[40..],
                         Some(format!("bytes 40-{}/{}", body.len() - 1, body.len())),
                     ),
+                    // Validated 206 (start matches request) but streams the WHOLE
+                    // body — more than `bytes s-.../total` declares — with no
+                    // Content-Length so the overshoot is only catchable mid-stream.
+                    (RangeMode::HonorNoLengthOverBody, Some(s)) => (
+                        "206 Partial Content",
+                        body,
+                        Some(format!("bytes {s}-{}/{}", body.len() - 1, body.len())),
+                    ),
+                    // Validated 206 that streams one byte short of the declared
+                    // range with no Content-Length — only the post-loop guard sees it.
+                    (RangeMode::HonorNoLengthUnderBody, Some(s)) => (
+                        "206 Partial Content",
+                        &body[s..body.len() - 1],
+                        Some(format!("bytes {s}-{}/{}", body.len() - 1, body.len())),
+                    ),
                     _ => ("200 OK", body, None),
                 };
                 let _ = write!(stream, "HTTP/1.1 {status}\r\n");
                 if let Some(cr) = content_range {
                     let _ = write!(stream, "Content-Range: {cr}\r\n");
                 }
-                if matches!(mode, RangeMode::NoContentLength) {
+                if matches!(
+                    mode,
+                    RangeMode::NoContentLength
+                        | RangeMode::HonorNoLengthOverBody
+                        | RangeMode::HonorNoLengthUnderBody
+                ) {
                     // No Content-Length: the body length is signalled by the
                     // connection closing at the end of this loop iteration.
                     let _ = write!(stream, "Connection: close\r\n\r\n");
@@ -613,6 +641,42 @@ mod tests {
             "part should remain the original resume base when validation fails before writing"
         );
         let _ = std::fs::remove_file(&part);
+    }
+
+    #[test]
+    fn validated_206_without_content_length_wrong_body_fails_closed() {
+        // A validated resume 206 (Content-Range start == our offset) with NO
+        // Content-Length skips the up-front `body_len != range.body_len()` check,
+        // so the streaming overshoot guard and the post-loop under-run guard are
+        // the ONLY defenses on the hash-less resume path. Every other wrong-body
+        // 206 test carries a Content-Length and trips the earlier check instead.
+        for (label, mode) in [
+            ("over", RangeMode::HonorNoLengthOverBody),
+            ("under", RangeMode::HonorNoLengthUnderBody),
+        ] {
+            let url = serve(b"0123456789", mode);
+            let dest = temp_dest(&format!("nolen-{label}"));
+            let part = dest.with_extension("part");
+            let _ = std::fs::remove_file(&dest);
+            let _ = std::fs::remove_file(&part);
+            std::fs::write(&part, b"0123").unwrap();
+
+            let err = download_url(&url, &dest, None, |_, _| {}).unwrap_err();
+
+            assert!(
+                matches!(err, FetchError::InvalidRange(_)),
+                "{label}: expected InvalidRange, got: {err}"
+            );
+            assert!(
+                !dest.exists(),
+                "{label}: mismatched 206 must not publish dest"
+            );
+            assert!(
+                part.exists(),
+                "{label}: resume part must be kept for a later retry, not deleted"
+            );
+            let _ = std::fs::remove_file(&part);
+        }
     }
 
     #[test]

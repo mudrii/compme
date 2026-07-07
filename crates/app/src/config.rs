@@ -682,8 +682,8 @@ mod tests {
     fn atomic_write_creates_owner_only_dir_and_file() {
         // Fresh-install hardening: the first write must leave the app-support
         // dir 0700 and config.env 0600, matching memory::open's convention. A
-        // pre-existing dir keeps its permissions (pinned indirectly by the
-        // failed-rename test above, whose 0555 dir must NOT be re-chmodded).
+        // pre-existing dir keeps its permissions (pinned directly by
+        // atomic_write_preserves_perms_of_a_pre_existing_dir below).
         use std::os::unix::fs::PermissionsExt;
         let dir =
             std::env::temp_dir().join(format!("compme-atomic-perms-test-{}", std::process::id()));
@@ -695,6 +695,26 @@ mod tests {
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700, "created dir is owner-only");
         assert_eq!(mode(&path), 0o600, "config file is owner-only");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_preserves_perms_of_a_pre_existing_dir() {
+        // A successful write into a dir that ALREADY exists must not re-chmod it —
+        // the `created_dir` guard only tightens perms on a dir atomic_write itself
+        // created. Without the guard, every settings write would clobber a user's
+        // relaxed (e.g. 0755) config-dir permissions back to 0700.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("compme-preexist-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        atomic_write(&dir.join("config.env"), "K=v\n").expect("write");
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "pre-existing dir perms must be preserved");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

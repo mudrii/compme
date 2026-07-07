@@ -1311,6 +1311,62 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_context_line_skips_the_reference_header() {
+        // The literal context header must be dropped, not counted as an unknown
+        // source. Existing diag tests build header-less blocks, so the header-skip
+        // `continue` (inference.rs:230) is otherwise unpinned — removing it would
+        // add ~29 unknown chars and an `unknown` source to every real diagnostic.
+        let block = "Context (for reference only):\nClipboard: hi\n";
+        assert_eq!(
+            context_diagnostic_line(block),
+            Some("sources=clipboard chars=2 clipboard_chars=2".into())
+        );
+    }
+
+    #[test]
+    fn previous_inputs_record_ignores_whitespace_only_text() {
+        // Blank/whitespace accepts must not enter the CAP=5 ring (they would evict
+        // real context and emit empty "Recent:" lines). Pins the trim-empty guard.
+        let previous = PreviousInputs::default();
+        previous.record("TextEdit", "   ".into());
+        previous.record("TextEdit", "\n\t".into());
+        assert!(previous.recent("TextEdit").is_empty());
+        previous.record("TextEdit", "real".into());
+        assert_eq!(previous.recent("TextEdit"), vec!["real".to_string()]);
+    }
+
+    #[test]
+    fn matching_screen_text_requires_snapshot_not_just_generation() {
+        // Every other screen-mismatch test also mismatches generation, so the
+        // `ctx.snapshot == request.snapshot` conjunct (inference.rs:119) is
+        // otherwise unpinned — a stale-snapshot OCR would leak without it.
+        let req = request("typing", 1); // field gen=1, snapshot=1
+        let stale = Arc::new(Mutex::new(Some(ScreenContext {
+            field: req.field.clone(),
+            generation: req.generation,
+            snapshot: req.snapshot + 1, // same field+gen, newer snapshot
+            text: "stale ocr".into(),
+        })));
+        let ctx = WorkerContext {
+            screen: stale,
+            ..Default::default()
+        };
+        assert_eq!(ctx.matching_screen_text_now(&req), None);
+        // Control: an exact snapshot match returns the text.
+        let fresh = Arc::new(Mutex::new(Some(ScreenContext {
+            field: req.field.clone(),
+            generation: req.generation,
+            snapshot: req.snapshot,
+            text: "fresh ocr".into(),
+        })));
+        let ctx = WorkerContext {
+            screen: fresh,
+            ..Default::default()
+        };
+        assert_eq!(ctx.matching_screen_text_now(&req), Some("fresh ocr".into()));
+    }
+
+    #[test]
     fn context_disabled_prepends_nothing() {
         let previous = PreviousInputs::default();
         previous.record("TextEdit", "earlier".into());

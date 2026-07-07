@@ -397,6 +397,18 @@ mod tests {
     }
 
     #[test]
+    fn redacts_low_entropy_credentials_by_structure_not_content() {
+        // Every other key=value / auth-header test uses a value that ALSO trips
+        // `should_redact` (digit/dash/quote), so a refactor that gated these
+        // branches on entropy would still pass them. `devkey` is pure lowercase
+        // letters, no digit/punct, <16 chars: it can only be redacted by the
+        // structural `key=value` (stage 2) and `authorization` (stage 2b) arms.
+        assert_eq!(redact("token=devkey"), "token=[redacted-secret]");
+        assert!(redact("Authorization Bearer devkey").contains("[redacted-secret]"));
+        assert!(!redact("Authorization Bearer devkey").contains("devkey"));
+    }
+
+    #[test]
     fn redacts_json_quoted_credential_keys() {
         // JSON puts a closing quote between the key and the colon
         // (`"password": "v"`); the key regexes must tolerate it or short

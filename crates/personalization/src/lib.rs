@@ -624,6 +624,20 @@ mod tests {
     }
 
     #[test]
+    fn sender_with_both_fields_renders_exact_format() {
+        // The both-fields format is otherwise only checked with `.contains`, which
+        // survives a field reorder or separator change. Pin the exact string.
+        let sender = SenderIdentity {
+            name: "Ada".into(),
+            email: "ada@example.com".into(),
+        };
+        assert_eq!(
+            sender.line(),
+            Some("The writer's name Ada, email ada@example.com.".into())
+        );
+    }
+
+    #[test]
     fn sender_with_only_name_still_renders() {
         let sender = SenderIdentity {
             name: "Grace".into(),
