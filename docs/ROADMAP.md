@@ -74,6 +74,29 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   services still need libsecret, tray/portal integration, confirm UI, autostart,
   and a native event pump.
 
+**Unblocked pre-work (Phase 0, doable on macOS — validated 2026-07-08):**
+- **`InsertStrategy::NativeRangeSet`** — `supports_atomic_range_replace()`
+  currently admits only `AxSet` (platform/src/lib.rs:175), so UIA/AT-SPI atomic
+  edits have no variant to report and every replacement/grammar-fix suggestion
+  would fail closed on Windows/Linux. Add the variant + opt-in (single site) +
+  gate tests before adapter work starts.
+- **Windows file-hardening seam** — 0600/0700 tightening is `cfg(unix)`-only
+  (memory db/sidecars, config atomic_write, model_fetch .part); on Windows the
+  memory DB (plaintext `app` column) lands with inherited ACLs. Add an
+  owner-only-DACL seam with an asserting test in the Windows CI job.
+- **Windows console-control handler** — `install_signal_handlers` is a no-op
+  off-unix (run_loop.rs:96): no Ctrl-C shutdown parity until
+  `SetConsoleCtrlHandler` lands.
+- Cosmetics: About-pane credits list Apple-only crates on all OSes; a few
+  shared-code comments still say CFRunLoop/AppKit/Keychain.
+
+**Detailed execution guide:**
+[`2026-07-08-cross-platform-implementation-plan.md`](superpowers/specs/2026-07-08-cross-platform-implementation-plan.md)
+— phased plan (Phase 0 shared-code pre-work → Windows UIA → Linux X11 →
+Wayland spike → GPU runtime → per-OS packaging → acceptance), with per-method
+API mapping, CI upgrades, and a risk register. Evidence re-verified against
+`b367f0f`.
+
 **Effort:** Very large, multi-phase (each platform is its own A-sized milestone).
 Each method's required Win32/Linux API is mapped in its crate's `src/lib.rs` doc
 comments — the scaffold doubles as the implementation guide.
