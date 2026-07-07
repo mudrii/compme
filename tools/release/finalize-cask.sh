@@ -206,7 +206,10 @@ SH
   grep -q "is not on origin/main" "$tmp/ancestor.err"
 
   make_fixture_repo "$tmp/missing-sha" noop
-  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/missing-sha/work" \
+  # env -u: on GitHub runners GITHUB_SHA is always set, which made this
+  # missing-sha case fail for the wrong reason (and the bare grep below exit
+  # silently) — the step went red on CI while passing locally.
+  if env -u GITHUB_SHA COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/missing-sha/work" \
     "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main >/dev/null 2>"$tmp/missing-sha.err"; then
     echo "finalize-cask self-test failed: missing GITHUB_SHA was accepted" >&2
     return 1
