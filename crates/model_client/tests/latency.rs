@@ -302,3 +302,91 @@ fn grammar_fix_real_model_output_is_vetted() {
 
     Box::new(model).shutdown();
 }
+
+#[test]
+#[ignore = "diagnostic quality probe; needs a local GGUF — run with --ignored --nocapture and COMPME_QUALITY_MODEL_PATH"]
+fn model_quality_probe() {
+    // Per-model quality battery over the PRODUCT prompt/vet paths, for
+    // comparing catalog models. Prints a grid; asserts only that the model
+    // loads and speaks. Point COMPME_QUALITY_MODEL_PATH at any GGUF.
+    let path = std::env::var("COMPME_QUALITY_MODEL_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| model_path());
+    if !path.exists() {
+        eprintln!("SKIP: model not at {}", path.display());
+        return;
+    }
+    let Some(model) = load_model_or_skip(&path) else {
+        return;
+    };
+    model.warm_up().expect("warm up");
+    eprintln!("== model: {} ==", path.display());
+
+    let typos = [
+        ("teh", "the"),
+        ("recieve", "receive"),
+        ("adress", "address"),
+        ("definately", "definitely"),
+        ("wierd", "weird"),
+        ("occured", "occurred"),
+        ("seperate", "separate"),
+        ("beleive", "believe"),
+    ];
+    let mut fixed = 0;
+    for (typo, want) in typos {
+        let t0 = Instant::now();
+        let raw = model
+            .complete(&grammar_fix_prompt(typo, "I wrote"), 8)
+            .expect("grammar completion");
+        let vetted = vet_correction(typo, &raw);
+        let ok = vetted.as_deref() == Some(want);
+        fixed += ok as u32;
+        eprintln!(
+            "grammar {typo:>11} -> want {want:<11} got {:<11} raw {raw:?} ({} ms) {}",
+            vetted.as_deref().unwrap_or("-"),
+            t0.elapsed().as_millis(),
+            if ok { "PASS" } else { "MISS" }
+        );
+    }
+    let mut false_fixes = 0;
+    for word in ["the", "receive", "weather", "morning"] {
+        let raw = model
+            .complete(&grammar_fix_prompt(word, "I wrote"), 8)
+            .expect("grammar completion");
+        let vetted = vet_correction(word, &raw);
+        if let Some(bad) = &vetted {
+            false_fixes += 1;
+            eprintln!("grammar {word:>11} -> FALSE-FIX {bad:?} raw {raw:?}");
+        }
+    }
+    eprintln!(
+        "grammar score: {fixed}/{} fixed, {false_fixes}/4 false-fixes",
+        typos.len()
+    );
+
+    let prompts = [
+        "Dear team, I wanted to",
+        "The meeting is scheduled for",
+        "Thanks for your email. I will",
+        "The quarterly results show that",
+    ];
+    for prefix in prompts {
+        let t0 = Instant::now();
+        let raw = model
+            .complete(&terse_continuation_prompt(prefix), 24)
+            .expect("terse completion");
+        let terse_ms = t0.elapsed().as_millis();
+        let t1 = Instant::now();
+        let raw_prefix = model.complete(prefix, 24).expect("raw completion");
+        eprintln!(
+            "completion {prefix:?}\n  terse ({terse_ms} ms): {raw:?}\n  raw   ({} ms): {raw_prefix:?}",
+            t1.elapsed().as_millis()
+        );
+        assert!(
+            !raw.trim().is_empty() || !raw_prefix.trim().is_empty(),
+            "model produced no completion for {prefix:?}"
+        );
+    }
+
+    Box::new(model).shutdown();
+}
