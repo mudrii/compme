@@ -4832,8 +4832,8 @@ pub fn run() -> Result<(), String> {
         let clicked_row = settings_flags
             .apps_delete_row
             .lock()
-            .ok()
-            .and_then(|mut slot| slot.take());
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(row) = clicked_row {
             if let (Some(store), Some(app)) = (&memory, apps_ids.get(row)) {
                 // Irreversible (secure_delete zeroes freed pages) — confirm
@@ -4884,8 +4884,8 @@ pub fn run() -> Result<(), String> {
         let edit = settings_flags
             .apps_edit
             .lock()
-            .ok()
-            .and_then(|mut slot| slot.take());
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some((row, field_index, on)) = edit {
             if let (Some(app), Some(field)) =
                 (apps_ids.get(row), apps_policy_field_from_index(field_index))

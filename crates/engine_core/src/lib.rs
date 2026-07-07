@@ -1378,13 +1378,16 @@ mod tests {
         // semantics), only leading/trailing is excluded. min=3 must arm.
         let mut machine = machine().with_trigger_gates(3, false);
         machine.on_event(text_changed("a b", 3, 1000));
-        assert!(!machine.on_event(Event::Tick { now_ms: 2000 }).is_empty());
+        assert!(matches!(
+            machine.on_event(Event::Tick { now_ms: 2000 }).as_slice(),
+            [Command::RequestCompletion { .. }]
+        ));
     }
 
     #[test]
     fn all_whitespace_context_never_satisfies_min_context() {
-        // "    " trims to "" (0) < 1 → suppress; also pins that the trimmed
-        // count can't underflow when leading and trailing runs overlap.
+        // "    " trims to "" (0) < 1 → suppress: an all-whitespace prefix
+        // must never satisfy the minimum.
         let mut machine = machine().with_trigger_gates(1, false);
         machine.on_event(text_changed("    ", 4, 1000));
         assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
