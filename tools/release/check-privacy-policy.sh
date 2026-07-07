@@ -116,7 +116,9 @@ allowed_hosts = %w[
   opensource.org
   v2.tauri.app
   www.apache.org
+  www.apple.com
   www.llama.com
+  www.w3.org
   x.com
 ]
 denied_host_patterns = [
@@ -140,7 +142,9 @@ paths = []
     Dir.glob(File.join(path, "**", "*"), File::FNM_DOTMATCH).each do |candidate|
       next unless File.file?(candidate)
       next if candidate.include?("/target/") || candidate.include?("/tools/acceptance/logs/")
-      next unless candidate.match?(/\.(rs|sh|yml|yaml|md|rb|toml)\z/)
+      # Scan every text file; only skip known-binary formats. An extension
+      # allowlist here would let a telemetry URL hide in a .json/.plist.
+      next if candidate.match?(/\.(png|jpe?g|gif|icns|ico|pdf|zip|gz|tar|gguf|bin|dylib|car|o|a|DS_Store)\z/i)
       paths << candidate
     end
   else
@@ -261,6 +265,17 @@ LOCK
   } >"$tmp/denied-spec-host/docs/superpowers/specs/network.md"
   if check_repo "$tmp/denied-spec-host" >/dev/null 2>&1; then
     echo "privacy policy self-test failed: denied docs/superpowers host was accepted" >&2
+    return 1
+  fi
+
+  cp -R "$tmp/good" "$tmp/denied-json-host"
+  {
+    printf '%s' '{"dsn": "https:'
+    printf '%s' '//api.'
+    printf '%s\n' 'segment.io/v1/track"}'
+  } >"$tmp/denied-json-host/crates/demo/telemetry.json"
+  if check_repo "$tmp/denied-json-host" >/dev/null 2>&1; then
+    echo "privacy policy self-test failed: denied host in a .json file was accepted" >&2
     return 1
   fi
 

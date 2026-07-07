@@ -463,6 +463,10 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           draft: true
+          # A hyphen in the tag (v1.2.3-rc.1) marks a prerelease: GitHub then
+          # excludes it from /releases/latest, which is the URL the app's
+          # Check-for-Updates opens.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
@@ -480,7 +484,10 @@ jobs:
       # release to be public), so it runs after undraft: a finalize failure then
       # leaves a public release without a cask update, never a cask on main
       # pointing at a draft-only 404 URL.
+      # Prerelease tags never reach the cask: brew has no prerelease notion,
+      # so bumping the cask to an rc would ship it to every `brew upgrade`.
       - name: Finalize Homebrew cask
+        if: ${{ !contains(github.ref_name, '-') }}
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |

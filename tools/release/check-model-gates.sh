@@ -1601,8 +1601,11 @@ ruby -ryaml -e '
   undraft_step = publish_steps.fetch(undraft_index)
   abort("missing release gate: undraft uses GitHub token") unless undraft_step.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
   abort("missing release gate: undrafts current tag") unless undraft_step.fetch("run") == %q(gh release edit "$GITHUB_REF_NAME" --draft=false)
+  q = 39.chr
+  abort("missing release gate: hyphenated tags publish as prerelease") unless publish_step.fetch("with")["prerelease"].to_s == "${{ contains(github.ref_name, #{q}-#{q}) }}"
   cask_step = publish_steps.fetch(cask_index)
   abort("missing release gate: finalizes Homebrew cask") unless cask_step
+  abort("missing release gate: cask finalization skips prerelease tags") unless cask_step["if"].to_s == "${{ !contains(github.ref_name, #{q}-#{q}) }}"
   cask_run = cask_step.fetch("run")
   cask_lines = active_shell_lines(cask_run)
   abort("missing release gate: derives cask ZIP from release version") unless cask_lines.include?("ZIP=\"compme-${VERSION}-macos.zip\"")
