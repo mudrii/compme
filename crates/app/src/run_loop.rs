@@ -8,8 +8,8 @@
 //!   thread**; they only enqueue a `HostEvent` (cheap, no AX work).
 //! - Inference runs on its own thread (`InferenceHandle`).
 //! - Each iteration drains queued host events and inference outcomes, ticks the
-//!   engine, submits the newest pending request, then pumps the CFRunLoop for one
-//!   heartbeat (which paces the loop and services the overlay).
+//!   engine, submits the newest pending request, then pumps the host event loop
+//!   for one heartbeat (which paces the loop and services the overlay).
 
 use std::collections::{HashMap, VecDeque};
 use std::env;
@@ -93,11 +93,17 @@ fn install_signal_handlers() {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn install_signal_handlers() {
-    // Windows console handlers land with the real Windows adapter. Until then,
-    // shutdown remains controlled by the tray Quit path.
+    // Ctrl-C / console-close parity with SIGINT/SIGTERM. The headless toggle
+    // (SIGUSR1 equivalent) lands with the real Windows adapter (named event).
+    if let Err(err) = platform_windows::win_host::install_console_ctrl_handler(&STOP) {
+        eprintln!("compme: console ctrl handler unavailable: {err}");
+    }
 }
+
+#[cfg(not(any(unix, windows)))]
+fn install_signal_handlers() {}
 
 /// What a platform callback enqueues for the main loop to process.
 #[derive(Clone, Debug, PartialEq)]
@@ -1133,6 +1139,22 @@ fn open_memory_store(
         );
         return None;
     };
+    // Windows analog of the store's unix 0700/0600 tightening: an owner-only
+    // DACL on the db directory, inherited by the db and its wal/shm sidecars.
+    // Fail closed — the store holds user text; without the DACL it would land
+    // with inherited (potentially group-readable) ACLs.
+    #[cfg(windows)]
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        let hardened = std::fs::create_dir_all(parent)
+            .and_then(|()| platform_windows::win_host::harden_owner_only(parent));
+        if let Err(err) = hardened {
+            eprintln!(
+                "compme: failed to harden memory dir {}: {err} — memory disabled",
+                parent.display()
+            );
+            return None;
+        }
+    }
     // StaticKey scrubs its own copy on drop; scrub this transient copy too so
     // no un-zeroized key byte is left on the stack after the store is opened.
     let opened = MemoryStore::open(path, &StaticKey(key), config.mode);
@@ -3910,10 +3932,10 @@ pub fn run() -> Result<(), String> {
     // The Settings pane can enable clipboard context after launch, so keep the
     // worker bound positive enough for a later live enable.
     let context_bound = settings_context_bound_chars(config.context_max_chars);
-    // Screen OCR (Vision, ~200–800 ms) runs on its own thread so it never
-    // stalls this AppKit run loop (overlay repaint + Carbon accept callbacks).
-    // It publishes redacted text into `screen_cell`, which the inference worker
-    // waits for briefly off the AppKit loop and accepts only when stamped for
+    // Screen OCR (~200–800 ms) runs on its own thread so it never stalls
+    // this host UI loop (overlay repaint + accept-hotkey callbacks). It
+    // publishes redacted text into `screen_cell`, which the inference worker
+    // waits for briefly off the UI loop and accepts only when stamped for
     // the submitted request.
     let mut screen_ocr = if screen_active {
         match ScreenOcr::spawn(
@@ -5029,8 +5051,8 @@ pub fn run() -> Result<(), String> {
                 };
                 // Only the Ready decision runs the download body; blocked/
                 // declined/empty cases log above and fall through to the loop
-                // tail (event-pump + CFRunLoop pace) like every other heartbeat
-                // branch. A `continue` here would skip that mandatory Carbon
+                // tail (event-pump + host-loop pace) like every other heartbeat
+                // branch. A `continue` here would skip that mandatory
                 // accept-event drain for one tick.
                 if let Some((entry, accepted_license)) = ready {
                     if let Some(accepted) = accepted_license {
@@ -5683,11 +5705,11 @@ pub fn run() -> Result<(), String> {
             }
         }
 
-        // 8. Drain queued AppKit/window-server events, then pump the main run
-        // loop. The drain is what dispatches Carbon accept-hotkey presses to
-        // their handler (a bare CFRunLoop pump never dequeues them — live
-        // step-6 finding: hotkeys registered, handler never fired); the
-        // CFRunLoop pump paces the loop and services the overlay.
+        // 8. Drain queued window-system events, then pump the host run loop.
+        // On macOS the drain is what dispatches Carbon accept-hotkey presses
+        // to their handler (a bare CFRunLoop pump never dequeues them — live
+        // step-6 finding: hotkeys registered, handler never fired); the pump
+        // paces the loop and services the overlay.
         shell.pump_events(heartbeat);
     }
 

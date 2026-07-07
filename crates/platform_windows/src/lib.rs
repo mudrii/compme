@@ -306,6 +306,7 @@ mod tests {
         };
         for strategy in [
             InsertStrategy::AxSet,
+            InsertStrategy::NativeRangeSet,
             InsertStrategy::SyntheticKeys,
             InsertStrategy::Clipboard,
             InsertStrategy::ImeCommit,
@@ -315,6 +316,7 @@ mod tests {
             // compilation here and forces the array above to be updated too.
             match strategy {
                 InsertStrategy::AxSet
+                | InsertStrategy::NativeRangeSet
                 | InsertStrategy::SyntheticKeys
                 | InsertStrategy::Clipboard
                 | InsertStrategy::ImeCommit
@@ -366,6 +368,7 @@ mod tests {
         };
         for strategy in [
             InsertStrategy::AxSet,
+            InsertStrategy::NativeRangeSet,
             InsertStrategy::SyntheticKeys,
             InsertStrategy::Clipboard,
             InsertStrategy::ImeCommit,
@@ -500,5 +503,184 @@ mod tests {
         assert!(o.update_ghost("g").is_err());
         o.hide().expect("hide is contractually idempotent-success");
         o.hide().expect("second hide too");
+    }
+}
+
+/// Real Windows host services that do not need the full UIA adapter
+/// (cross-platform plan Phase 0.2/0.3). Everything here is `cfg(windows)`:
+/// non-Windows hosts compile the fail-closed scaffold above only.
+#[cfg(windows)]
+pub mod win_host {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::OnceLock;
+
+    use windows::core::{BOOL, PCWSTR};
+    use windows::Win32::Foundation::{LocalFree, ERROR_SUCCESS, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows::Win32::Security::{
+        GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    };
+    use windows::Win32::System::Console::SetConsoleCtrlHandler;
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Owner-only DACL, inheritance removed: the Windows analog of the unix
+    /// 0700/0600 tightening. `OW` (OWNER_RIGHTS) grants full control to the
+    /// current owner only; `OICI` makes children created under a hardened
+    /// directory inherit the restriction, and `SetNamedSecurityInfoW`
+    /// propagates it to children that already exist.
+    const OWNER_ONLY_SDDL: &str = "D:P(A;OICI;FA;;;OW)";
+
+    pub fn harden_owner_only(path: &Path) -> std::io::Result<()> {
+        let sddl: Vec<u16> = OWNER_ONLY_SDDL
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: sddl is NUL-terminated; sd receives a LocalAlloc'd buffer we
+        // free below; dacl points into that buffer and is not used after free
+        // except by SetNamedSecurityInfoW, which copies it.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(sddl.as_ptr()),
+                SDDL_REVISION_1,
+                &mut sd,
+                None,
+            )
+            .map_err(std::io::Error::other)?;
+            let mut present = BOOL(0);
+            let mut defaulted = BOOL(0);
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            let got = GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted);
+            let result = match got {
+                Err(e) => Err(std::io::Error::other(e)),
+                Ok(()) if !present.as_bool() || dacl.is_null() => {
+                    Err(std::io::Error::other("owner-only SDDL produced no DACL"))
+                }
+                Ok(()) => {
+                    let target = wide(path);
+                    let err = SetNamedSecurityInfoW(
+                        PCWSTR(target.as_ptr()),
+                        SE_FILE_OBJECT,
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        None,
+                        None,
+                        Some(dacl),
+                        None,
+                    );
+                    if err == ERROR_SUCCESS {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::from_raw_os_error(err.0 as i32))
+                    }
+                }
+            };
+            LocalFree(Some(HLOCAL(sd.0)));
+            result
+        }
+    }
+
+    static STOP_FLAG: OnceLock<&'static AtomicBool> = OnceLock::new();
+
+    unsafe extern "system" fn on_console_ctrl(_ctrl_type: u32) -> BOOL {
+        // Handler runs on its own thread: only a relaxed atomic store, the
+        // same contract as the unix signal handlers.
+        match STOP_FLAG.get() {
+            Some(flag) => {
+                flag.store(true, Ordering::Relaxed);
+                BOOL(1)
+            }
+            None => BOOL(0),
+        }
+    }
+
+    /// Ctrl-C / Ctrl-Break / console-close parity with SIGINT/SIGTERM: sets
+    /// `stop` and reports the event handled. Install once; a second install
+    /// keeps the first flag (OnceLock) and re-registration is harmless.
+    pub fn install_console_ctrl_handler(stop: &'static AtomicBool) -> std::io::Result<()> {
+        let _ = STOP_FLAG.set(stop);
+        // SAFETY: the handler only touches a static AtomicBool.
+        unsafe { SetConsoleCtrlHandler(Some(on_console_ctrl), true).map_err(std::io::Error::other) }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use windows::Win32::Security::Authorization::GetNamedSecurityInfoW;
+        use windows::Win32::Security::{
+            AclSizeInformation, GetAclInformation, ACL_SIZE_INFORMATION,
+        };
+
+        fn ace_count(path: &Path) -> u32 {
+            let target = wide(path);
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            let mut sd = PSECURITY_DESCRIPTOR::default();
+            // SAFETY: out-pointers are valid; sd freed below.
+            unsafe {
+                let err = GetNamedSecurityInfoW(
+                    PCWSTR(target.as_ptr()),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    None,
+                    None,
+                    Some(&mut dacl),
+                    None,
+                    &mut sd,
+                );
+                assert_eq!(err, ERROR_SUCCESS, "GetNamedSecurityInfoW failed");
+                let mut info = ACL_SIZE_INFORMATION::default();
+                GetAclInformation(
+                    dacl,
+                    &mut info as *mut _ as *mut _,
+                    std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                    AclSizeInformation,
+                )
+                .expect("GetAclInformation");
+                LocalFree(Some(HLOCAL(sd.0)));
+                info.AceCount
+            }
+        }
+
+        #[test]
+        fn harden_owner_only_leaves_a_single_owner_ace() {
+            let dir =
+                std::env::temp_dir().join(format!("compme-harden-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            harden_owner_only(&dir).expect("harden dir");
+            assert_eq!(ace_count(&dir), 1, "dir DACL must be the single owner ACE");
+
+            // A file created AFTER hardening inherits the owner-only ACE.
+            let child = dir.join("child.txt");
+            std::fs::write(&child, b"x").unwrap();
+            assert_eq!(ace_count(&child), 1, "child must inherit owner-only DACL");
+
+            // A file that existed BEFORE a (re-)harden gets the propagated ACE.
+            harden_owner_only(&dir).expect("re-harden");
+            assert_eq!(ace_count(&child), 1);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn console_ctrl_handler_sets_the_stop_flag() {
+            static STOP: AtomicBool = AtomicBool::new(false);
+            install_console_ctrl_handler(&STOP).expect("install");
+            // Invoke the handler directly (generating a real console event
+            // would signal the whole CI process group).
+            // SAFETY: handler only stores to the static flag.
+            let handled = unsafe { on_console_ctrl(0) };
+            assert!(handled.as_bool());
+            assert!(STOP.load(Ordering::Relaxed));
+        }
     }
 }

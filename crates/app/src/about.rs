@@ -11,10 +11,18 @@ pub fn about_text() -> String {
     // README.md's guarantee, quoted verbatim (the deliberate replacement for
     // a telemetry toggle — there is nothing to toggle).
     const TELEMETRY: &str = "All inference is local (llama.cpp), with no proprietary telemetry.";
+    // Credits list only what this build links: the Apple stack is macOS-only.
+    #[cfg(target_os = "macos")]
     const ACKS: &str = "llama-cpp-2, encoding_rs, rusqlite, aes-gcm, getrandom, \
                         accessibility-sys, core-foundation, core-graphics, objc2, \
                         objc2-app-kit, objc2-foundation, objc2-service-management, \
                         security-framework, regex, libc";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const ACKS: &str = "llama-cpp-2, encoding_rs, rusqlite, aes-gcm, getrandom, \
+                        regex, libc";
+    #[cfg(windows)]
+    const ACKS: &str = "llama-cpp-2, encoding_rs, rusqlite, aes-gcm, getrandom, \
+                        regex, windows";
     format!(
         "Compme v{}\nApache-2.0 \u{2014} Copyright 2026 Compme contributors\n{}\n{}\n\nBuilt with: {}",
         env!("CARGO_PKG_VERSION"),
@@ -40,6 +48,8 @@ mod tests {
         // Credits: the inference and crypto cornerstones must be named.
         assert!(text.contains("llama-cpp-2"));
         assert!(text.contains("aes-gcm"));
+        // The Apple stack is credited only in macOS builds.
+        #[cfg(target_os = "macos")]
         assert!(text.contains("objc2"));
     }
 }

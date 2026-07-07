@@ -3855,6 +3855,29 @@ mod tests {
     }
 
     #[test]
+    fn offer_replacement_arms_on_native_range_set_fields() {
+        // NativeRangeSet (Windows UIA / Linux AT-SPI atomic edits) passes the
+        // same supports_atomic_range_replace gate as AxSet — replacements must
+        // arm, not fail closed, when a future adapter reports it.
+        let mut caps = inline_caps();
+        caps.insert_strategy = InsertStrategy::NativeRangeSet;
+        let mut machine = SuggestionMachine::new(caps.clone(), 200, 4);
+        machine.on_event(Event::Focus {
+            field: field("field-a"),
+            caps,
+        });
+        assert_eq!(
+            machine.offer_replacement(&field("field-a"), "😄".into(), 5),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "😄".into(),
+            }]
+        );
+        assert!(machine.take_stat_events().contains(&StatEvent::Shown));
+    }
+
+    #[test]
     fn offer_replacement_multi_only_on_axset_fields() {
         // A non-range-replace field (SyntheticKeys/Clipboard) can't honor the
         // deletion, so no multi replacement is offered there — same guard as the

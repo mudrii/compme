@@ -223,13 +223,19 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     // permission shouldn't need revisiting if one is ever added.
     // Read existence BEFORE create_dir_all; only the unix arm consumes it,
     // so gate the binding too or non-unix clippy -D warnings rejects it.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let created_dir = !dir.exists();
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
     if created_dir {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    // Windows analog of the 0700 tightening: owner-only DACL with inheritance,
+    // so the temp file below (and every config file) inherits owner-only.
+    #[cfg(windows)]
+    if created_dir {
+        platform_windows::win_host::harden_owner_only(dir)?;
     }
     let temp = dir.join(format!(
         ".{}.tmp.{}",

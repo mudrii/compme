@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-08 (second review+tdd+ponytail pass + release prerelease-tag containment + privacy-scan denylist) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1787 workspace tests; spike separate)
+> **Last updated:** 2026-07-08 (second review+tdd+ponytail pass + release prerelease-tag containment + privacy-scan denylist) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1788 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -74,21 +74,22 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   services still need libsecret, tray/portal integration, confirm UI, autostart,
   and a native event pump.
 
-**Unblocked pre-work (Phase 0, doable on macOS — validated 2026-07-08):**
-- **`InsertStrategy::NativeRangeSet`** — `supports_atomic_range_replace()`
-  currently admits only `AxSet` (platform/src/lib.rs:175), so UIA/AT-SPI atomic
-  edits have no variant to report and every replacement/grammar-fix suggestion
-  would fail closed on Windows/Linux. Add the variant + opt-in (single site) +
-  gate tests before adapter work starts.
-- **Windows file-hardening seam** — 0600/0700 tightening is `cfg(unix)`-only
-  (memory db/sidecars, config atomic_write, model_fetch .part); on Windows the
-  memory DB (plaintext `app` column) lands with inherited ACLs. Add an
-  owner-only-DACL seam with an asserting test in the Windows CI job.
-- **Windows console-control handler** — `install_signal_handlers` is a no-op
-  off-unix (run_loop.rs:96): no Ctrl-C shutdown parity until
-  `SetConsoleCtrlHandler` lands.
-- Cosmetics: About-pane credits list Apple-only crates on all OSes; a few
-  shared-code comments still say CFRunLoop/AppKit/Keychain.
+**Phase 0 pre-work ✅ DONE (2026-07-08, same-day as planned):**
+- **`InsertStrategy::NativeRangeSet`** shipped — variant + doc contract on the
+  shared enum, opted into `supports_atomic_range_replace()`; pinned by the
+  enumerated-variant predicate test, an engine_core arming test
+  (`offer_replacement_arms_on_native_range_set_fields`), and the
+  Windows/Linux stub exhaustive-match tests (both mutation-verified).
+- **Windows owner-only DACL hardening** shipped —
+  `platform_windows::win_host::harden_owner_only` (protected `OICI` OWNER_RIGHTS
+  ACE, propagates to existing children); wired fail-closed ahead of
+  `MemoryStore::open` (db + wal/shm inherit) and into config-dir creation;
+  DACL-readback test (`AceCount == 1`, inheritance) runs in the Windows CI job.
+- **Windows console-control handler** shipped —
+  `platform_windows::win_host::install_console_ctrl_handler` gives Ctrl-C/close
+  parity with SIGINT/SIGTERM (headless toggle deferred to the real adapter).
+- Cosmetics done: About credits are per-OS; shared-code comments reworded
+  host-neutral (CFRunLoop/AppKit mentions scoped to macOS behavior notes).
 
 **Detailed execution guide:**
 [`2026-07-08-cross-platform-implementation-plan.md`](superpowers/specs/2026-07-08-cross-platform-implementation-plan.md)
@@ -525,7 +526,7 @@ with physical trigger/accept keypresses.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1787 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1788 tests, clippy clean). What remains for
 > "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
 > **distribution** (Developer-ID signing + notarization + first `v*` tag), which is

@@ -308,6 +308,7 @@ mod tests {
         };
         for strategy in [
             InsertStrategy::AxSet,
+            InsertStrategy::NativeRangeSet,
             InsertStrategy::SyntheticKeys,
             InsertStrategy::Clipboard,
             InsertStrategy::ImeCommit,
@@ -317,6 +318,7 @@ mod tests {
             // compilation here and forces the array above to be updated too.
             match strategy {
                 InsertStrategy::AxSet
+                | InsertStrategy::NativeRangeSet
                 | InsertStrategy::SyntheticKeys
                 | InsertStrategy::Clipboard
                 | InsertStrategy::ImeCommit
@@ -368,6 +370,7 @@ mod tests {
         };
         for strategy in [
             InsertStrategy::AxSet,
+            InsertStrategy::NativeRangeSet,
             InsertStrategy::SyntheticKeys,
             InsertStrategy::Clipboard,
             InsertStrategy::ImeCommit,

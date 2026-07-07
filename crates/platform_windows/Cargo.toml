@@ -20,3 +20,14 @@ license.workspace = true
 
 [dependencies]
 platform = { path = "../platform" }
+
+# Phase 0.2/0.3 (cross-platform plan 2026-07-08): owner-only DACL hardening +
+# console ctrl handler are real already; the UIA/adapter deps stay commented
+# until the full adapter lands.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Console",
+] }

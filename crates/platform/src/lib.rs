@@ -155,12 +155,19 @@ pub enum Toolkit {
     Unknown(String),
 }
 
-/// How accepted text enters the field. Only `AxSet` can range-replace (delete
-/// left of the caret atomically) — replacement suggestions are gated on it.
+/// How accepted text enters the field. Only the atomic strategies (`AxSet`,
+/// `NativeRangeSet`) can range-replace (delete left of the caret atomically) —
+/// replacement suggestions are gated on `supports_atomic_range_replace`.
 /// `None` means the field cannot be written at all (`UxMode::Unsupported`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InsertStrategy {
+    /// macOS Accessibility `AXValue`/range set.
     AxSet,
+    /// Adapter-native atomic range replacement (Windows UIA
+    /// TextPattern/ValuePattern, Linux AT-SPI2 `EditableText`). Same contract
+    /// as `AxSet`: all-or-nothing, expected-text verified where the API
+    /// allows. No adapter reports it yet (Tier 1.1 Windows/Linux impls).
+    NativeRangeSet,
     SyntheticKeys,
     Clipboard,
     ImeCommit,
@@ -173,7 +180,7 @@ impl InsertStrategy {
     /// strategy that replaces atomically opts in here instead of every gate
     /// re-encoding `== AxSet`.
     pub fn supports_atomic_range_replace(self) -> bool {
-        matches!(self, InsertStrategy::AxSet)
+        matches!(self, InsertStrategy::AxSet | InsertStrategy::NativeRangeSet)
     }
 }
 
@@ -657,12 +664,13 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn only_axset_supports_atomic_range_replace() {
-        // Enumerate every variant so an `AxSet | X` widening — or a new
-        // variant wrongly opting in — fails here instead of silently enabling
-        // replacement suggestions on a non-atomic strategy.
+    fn only_atomic_strategies_support_range_replace() {
+        // Enumerate every variant so a widening — or a new variant wrongly
+        // opting in — fails here instead of silently enabling replacement
+        // suggestions on a non-atomic strategy.
         for strategy in [
             InsertStrategy::AxSet,
+            InsertStrategy::NativeRangeSet,
             InsertStrategy::SyntheticKeys,
             InsertStrategy::Clipboard,
             InsertStrategy::ImeCommit,
@@ -670,7 +678,10 @@ mod tests {
         ] {
             assert_eq!(
                 strategy.supports_atomic_range_replace(),
-                strategy == InsertStrategy::AxSet,
+                matches!(
+                    strategy,
+                    InsertStrategy::AxSet | InsertStrategy::NativeRangeSet
+                ),
                 "{strategy:?}"
             );
         }
