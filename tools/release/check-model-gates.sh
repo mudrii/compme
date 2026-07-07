@@ -37,6 +37,14 @@ reject_line() {
   file="$1"
   pattern="$2"
   label="$3"
+  # Fail loud if the target moved/vanished: a negative assertion over a missing
+  # file would otherwise pass silently (grep errors, the `if` is skipped), so the
+  # guard goes dead-green when the code it protects is renamed away. Mirrors
+  # require_line's loud behavior on an absent file.
+  if [ ! -f "$file" ]; then
+    echo "release gate target missing: $label ($file)" >&2
+    return 1
+  fi
   if grep -Eq "$pattern" "$file"; then
     echo "stale release gate: $label" >&2
     return 1
@@ -260,6 +268,14 @@ fn release_enforced_model_test() {}
 RS
   if reject_line "$stale_latency_fixture" 'Metal GPU' "fixture stale root latency GPU wording" >/dev/null 2>&1; then
     echo "release gate self-test failed: stale root latency GPU wording was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  # A negative assertion over a MISSING file must fail loud, not pass silently —
+  # else renaming the guarded file turns the gate dead-green.
+  if reject_line "$tmp_dir/reject-target-absent.rs" 'anything' "fixture missing reject target" >/dev/null 2>&1; then
+    echo "release gate self-test failed: reject_line passed for a missing target file" >&2
     cleanup
     return 1
   fi
