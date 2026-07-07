@@ -292,6 +292,13 @@ requires an unlocked macOS GUI session with Accessibility permission:
 - move the caret or edit the field before accepting and confirm the stale
   correction no longer applies
 
+After fixes 5126509 (few-shot grammar prompt for the base model) and 4c2f8d3
+(grammar `max_tokens` bound), a scripted assisted-session live pass on
+2026-07-07 ([`UI-ASSISTED-TEST-MATRIX.md`](UI-ASSISTED-TEST-MATRIX.md) Batch 5)
+confirmed the underline and banner render with a real model, in-place accept,
+and staleness refusal. The human/physical `grammar-fix-textedit-look` pass
+remains the formal residual.
+
 ### Settings & Runtime LOOK Gates
 
 These Settings-window checks are manual because they depend on visible AppKit
@@ -405,7 +412,9 @@ For release evidence that must pass on GitHub-hosted runners, set
 `COMPME_A2_LOG_DIR` under `tools/acceptance/evidence/a2/` before running
 `matrix`, commit the TSV and every row log file, then set the repository
 variable `COMPME_A2_MATRIX_LEDGER` to that repo-relative TSV path. The checker
-rejects unsafe or untracked `log_path` entries, missing row log files, row logs
+rejects unsafe or untracked `log_path` entries, ledger or row-log content that
+differs from the committed content (the working tree must match `HEAD`),
+missing row log files, row logs
 that do not prove the expected app/domain/context behavior, stale ledgers older than
 `COMPME_A2_LEDGER_MAX_AGE_SECONDS` (default `86400`), and future-dated ledgers
 beyond `COMPME_A2_LEDGER_MAX_FUTURE_SKEW_SECONDS` (default `300`).

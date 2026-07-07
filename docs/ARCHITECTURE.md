@@ -73,7 +73,7 @@ All paths honor the same per-app/per-domain prefs gate.
 The 25 crates fall into six groups: the **contract + core** (`platform`,
 `engine_core`, `engine`, `context`, `ranker`), the **model seam**
 (`model_client`, `model_catalog`, `model_fetch`), **pure text features**
-(`autocorrect`, `localize`, `thesaurus`, `emoji`, `textcase`), **policy &
+(`autocorrect`, `grammar`, `localize`, `thesaurus`, `emoji`, `textcase`), **policy &
 privacy** (`prefs`, `compat`, `personalization`, `redaction`, `memory`,
 `stats`, `webconfig`), **platform adapters** (`platform_macos`,
 `platform_windows`, `platform_linux`), and the **host binary** (`app`). The
@@ -258,8 +258,8 @@ typing (§6 / §16). Text is **redacted** (`redaction`) then **encrypted**
 SQLite database — text plaintext never touches disk. The app identifier remains
 plaintext metadata for per-app counts/delete and is also bound into the AEAD as
 AAD, so rows cannot be relabeled and decrypted under another app. The 32-byte
-key comes from a `KeyProvider`: production reads it from the macOS Keychain (A3
-live integration), tests use a fixed key. Storage is opt-in —
+key is a `StaticKey` the host fills: production reads it from the macOS
+Keychain (A3 live integration), tests use a fixed key. Storage is opt-in —
 `StorageMode::Off` is the default and records nothing; `AcceptedOnly` stores
 accepted completions, `AllMonitored` is the broader opt-in. Records are
 inspectable (`count` / `recent`) and deletable (`delete_all` / `delete_app`).
@@ -438,7 +438,7 @@ Major responsibilities:
 - apply per-app mid-line override live on focus via `Engine::set_allow_mid_word`
 - marshal platform callbacks onto the AppKit main-thread engine host
 - keep only the latest pending completion request
-- compose the settings window panes (Setup checklist, General switches, Apps
+- compose the settings window panes (Setup checklist, General switches, Personalization steering, Apps
   recorded-input counts, Context/Emoji controls, Shortcuts bindings, Statistics
   sparklines, About) and apply tray/window flags each heartbeat
 - pick the download target from `model_catalog` with a RAM-fit verdict,

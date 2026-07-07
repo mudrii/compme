@@ -1,14 +1,14 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-06 (docs/roadmap sync after audit, TDD, and release-pipeline hardening loops) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1750 workspace tests; spike separate)
+> **Last updated:** 2026-07-07 (docs sync after release-pipeline audit + assisted-UI live evidence) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1750 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-06 through the current
-> bundle/A2 gate hardening pass, starting from baseline `ba4e805`
-> (`d2beda1`, `e282fd9`, `9ede926`, `706c61b`, and `ba4e805` since `b1c9264`).
+> with symbol/function/gate anchors re-reviewed 2026-07-07 through `8935866`
+> (release-pipeline hardening `4d58e42` + finalize-cask CI fix `8935866`),
+> starting from baseline `ba4e805` since `b1c9264`.
 
 ## Status legend
 
@@ -175,9 +175,11 @@ tracks the underlying AX node across refs while the anonymous wrong-field
 guard stays intact. Live after fix: 0 churn StaleFields; Chrome textarea
 bind→request→completion→ghost→accept→insert end-to-end (" world" inserted with
 seam). Caret precision in Chrome still degrades to the window-rect anchor —
-that remains the `caret-marker-chrome-marker` calibration gate. Firefox/Zen mirror-mode
-ENGAGEMENT is log-proven, but Gecko ignores the advisory accessibility wake,
-so the visual mirror render stays with its LOOK gate.
+that remains the `caret-marker-chrome-marker` calibration gate. Firefox/Zen
+mirror-mode pipeline is log-proven end-to-end under ORGANIC hardware typing
+(per-key reads, gen=39-41 requests, rendered mirror ghost frames — `f6fa98b`,
+2026-07-07); scripted focus still misses the advisory wake. Residual: on-screen
+LOOK of the mirror window plus hardware accept/cycle presses.
 
 the authoritative pass/fail ledger is [`ACCEPTANCE.md`](ACCEPTANCE.md)'s
 Manual/Live Gate Ledger (17 runner-pinned gate IDs); detailed walkthroughs live
@@ -192,8 +194,9 @@ live pass — plus optional UX enhancements explicitly called out below.
   policy checkboxes plus a delete action. The run loop resolves row/field edits
   into `prefs::AppPolicyField` updates and retracts visible suggestions when a
   policy edge makes the focused field ineligible.
-- **Remaining:** visual LOOK only: column readability, name truncation, and
-  toggling behavior in a real settings window. A manual "add app" control is a
+- **Remaining:** visual LOOK only: column readability closed by Batch 1
+  (assisted session); residual is name truncation and toggle-changes-behavior
+  in a live settings window. A manual "add app" control is a
   future convenience, not a blocking residual for the current Apps-grid scope;
   rows are created from observed/recorded apps.
 - Spec: `a3-settings-ui-design.md` Phase S2 "App Settings pane — largest".
@@ -212,10 +215,11 @@ live pass — plus optional UX enhancements explicitly called out below.
   inference worker profile through `set_profile` and persist through the same
   settings path. Memory storage mode remains governed by memory config and UI
   controls elsewhere; it is not part of the personalization profile.
-- **Remaining:** visual LOOK only: the pane layout, multiline instructions field
-  behavior, sender/strength controls, and visible steering effect in a live app.
-  A Context appearance sub-toggle remains a future visual option, not a current
-  blocking item.
+- **Remaining:** visual LOOK only: pane layout, instructions field,
+  sender/strength controls, and persistence closed (assisted Batches 1-2);
+  Context opt-in verified live (Batch 6). Residual is a visible steering effect
+  in a live app. A Context appearance sub-toggle remains a future visual option,
+  not a current blocking item.
 
 ### 3.3 ✅ Statistics range / group chart controls — current scope complete
 - **Range picker ✅:** Last 7/14/30 days drives the bucket span.
@@ -237,12 +241,12 @@ live pass — plus optional UX enhancements explicitly called out below.
   run loop. Toggle-app/global mirror the tray policy paths. Force-activate
   re-shows the currently held suggestion; it deliberately does not start fresh
   inference.
-- **Remaining:** physical keypress LOOK only, pinned by the A1b
-  `always-on-hotkeys-physical-look` manual gate: verify recorder capture/persistence
-  for Word/Full/Grammar accept, verify configured force/toggle/grammar-check
-  shortcuts fire in a granted macOS session, update the focused app/global policy
-  as expected, and confirm force-activate behaves as the held-suggestion re-show
-  command.
+- **Remaining:** recorder capture/persistence synthetic-validated (Batch 2:
+  ⇧F5 with modifier persisted). Residual is the physical-key edge, pinned by
+  the A1b `always-on-hotkeys-physical-look` manual gate: verify configured
+  force/toggle/grammar-check shortcuts fire in a granted macOS session, update
+  the focused app/global policy as expected, and confirm force-activate behaves
+  as the held-suggestion re-show command.
 
 ### 3.5 ☐ Emoji `includeVanillaVariants` (deferred by design)
 - Deferred: an alternate vanilla glyph has no display path in the single-ghost
@@ -272,13 +276,13 @@ folded settings LOOK gates (`personalization-pane-look`,
 
 | Item | Status | Live residual |
 |---|---|---|
-| Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking | run against live Safari/Chrome/Brave PIDs with focused hosts; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
-| Multi-candidate Down-cycle | engine ✅; `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before release |
+| Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking; Safari allow+exclude legs live-proven 2026-07-07 (Batch 6) | Chrome/Brave live rows with the A2 matrix; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
+| Multi-candidate Down-cycle | engine ✅; synthetic Down-cycle live-proven 2026-07-07 (`COMPME_CANDIDATES=3`, real model); `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before release |
 | Compatibility matrix | classifier ✅; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger | supply live row PID map via `COMPME_A2_MATRIX_TARGETS`; local dry runs may explicitly allow skips, but release evidence must pass every row and satisfy `check-a2-matrix-ledger.sh` |
 | Browser mirror-window | `set_mirror_mode` ✅; `mirror-window-firefox-zen-look` manual gate pins Firefox/Zen ghost-in-mirror confirmation | run the manual gate in a granted desktop session |
-| Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅ | tuning vs real agent prompts |
-| Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch | OCR quality/perf on a granted desktop + multi-display caret confirm |
-| Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; records only established inserted-text deltas after a baseline, never pre-existing field text; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: secure input, snoozed transition, volatile `pid:N` |
+| Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
+| Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch; live submit-path pass 2026-07-07 after CGImageRef encoding panic fix (`e5c055b`) | OCR quality/perf on a granted desktop + multi-display caret confirm |
+| Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; records only established inserted-text deltas after a baseline, never pre-existing field text; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: snoozed transition, volatile `pid:N` (secure-field fail-closed live-proven 2026-07-07, `f6fa98b`) |
 | Per-app memory inspect/delete UI | count/delete_app ✅ | completed live in Apps pane; global `delete_all` and memory-mode controls are deferred UI work, not part of the current Personalization pane |
 | Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback in deterministic `word-only` mode; real-model E2E must use `full`/`word` because real-model `word-only` fails closed; optional manual UX confirmation remains part of the broad settings walkthrough |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
@@ -298,14 +302,19 @@ This is a detect→underline→confirm flow, distinct from the type-ahead ghost.
 — phase-by-phase build plan (G1-G5) with exact files, signatures, tests, and
 acceptance criteria. Start there for implementation.
 
-**Status (2026-07-02):** G1-G5 are implemented and deterministic validation is
+**Status (2026-07-07):** G1-G5 are implemented and deterministic validation is
 green. The portable correction pipeline, macOS trigger/accept routing,
 fail-closed range seams, `overlay-correction-presenter`, Apps-pane `GrammarFix`
 policy column, grammar-accept recorder/persistence, and correction-accept tap
 isolation are in code with focused tests plus `accept_tap_acceptance` correction
-requirements. The remaining acceptance item is the interactive TextEdit grammar
-LOOK gate emitted by `tools/acceptance/run-a1b-live-gates.sh` and pinned by its
-`--self-test`, which requires a granted macOS GUI session.
+requirements. Live-found+fixed: the shipped base (non-instruct) model never
+produced corrections until the few-shot prompt/first-token vet fix (`5126509`)
+plus the worker `max_tokens` fix (`4c2f8d3`). The Batch 5 assisted session
+([`UI-ASSISTED-TEST-MATRIX.md`](UI-ASSISTED-TEST-MATRIX.md)) live-proved
+underline/banner render, in-place accept, and stale-correction refusal with the
+real model. Residual: the formal `grammar-fix-textedit-look` A1b gate emitted by
+`tools/acceptance/run-a1b-live-gates.sh` (physical trigger/accept keypresses in
+a granted macOS GUI session).
 
 **Decisions settled (with the requester, 2026-07-01):**
 0. **Cross-platform by construction — Linux, Windows, and macOS.** No part of the
@@ -456,8 +465,10 @@ feature.
 portable core (G1-G2) and macOS reference surfaces (G3-G5) are implemented and
 headless-tested. Windows and Linux retain fail-closed stubs for the new range
 and correction surfaces until their real four-row trait impls are built. The
-remaining macOS risk is live LOOK validation of the underline/banner and
-physical trigger/accept interaction.
+remaining macOS risk narrowed 2026-07-07: underline/banner render, in-place
+accept, and stale-correction refusal live-proved with the real model (Batch 5
+assisted session); residual is the formal `grammar-fix-textedit-look` A1b gate
+with physical trigger/accept keypresses.
 
 ---
 
@@ -524,7 +535,8 @@ per-app configurable.
 3. **Non-AxSet plain-insert posture** — *recommended: keep best-effort*; add a
    post-insert readback only if a live per-app pass (Terminal/iTerm/Safari)
    shows wrong text. Plain inserts via SyntheticKeys/Clipboard currently assume
-   success (`platform_macos/src/lib.rs:1082`); replacements already fail closed.
+   success (`insert_impl` SyntheticKeys/Clipboard branches,
+   `crates/platform_macos/src/lib.rs`); replacements already fail closed.
 
 ### After macOS is complete — longer-term order (unchanged)
 

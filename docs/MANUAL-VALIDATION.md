@@ -47,9 +47,16 @@ _Live evidence: the dropdown exposed Neutral/Female/Male, persisted
 `COMPME_EMOJI_GENDER=female`, and reopened with Female selected. Stale-ghost
 invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visible_suggestion`._
 
-## Tier 5 grammar/spell-fix LOOK gate (pending live evidence)
+## Tier 5 grammar/spell-fix LOOK gate (scripted-live pass 2026-07-07; physical LOOK pending)
 
 Runner ID: `grammar-fix-textedit-look`.
+
+A scripted assisted-session live pass on 2026-07-07
+([`UI-ASSISTED-TEST-MATRIX.md`](UI-ASSISTED-TEST-MATRIX.md) Batch 5, after
+commit 5126509's few-shot grammar prompt) rendered the underline and banner
+with a real model, accepted in place, and refused a stale correction. The
+checkboxes below remain unchecked because they record the formal human/physical
+pass.
 
 > Deterministic coverage is green for grammar request routing, correction
 > vetting, scalar-range tracking, correction-only accept handling, and fail-closed
