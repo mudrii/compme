@@ -41,7 +41,10 @@ check_non_macos_tree() {
   label="$1"
   tree="$2"
   assert_contains "$label" "$tree" 'llama-cpp-2 feature "dynamic-backends"' || return 1
-  assert_contains "$label" "$tree" 'llama-cpp-2 feature "vulkan"' || return 1
+  # vulkan is forbidden until the real Windows/Linux adapters land: it needs
+  # the Vulkan SDK at build time (CI runners lack it) and dynamic-backends
+  # already loads GPU backends at runtime when present.
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "vulkan"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "metal"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "default"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "openmp"' || return 1
@@ -75,8 +78,8 @@ check_spike_macos_features() {
 
 run_self_test() {
   macos_tree='llama-cpp-2 feature "metal"'
-  non_macos_tree='llama-cpp-2 feature "dynamic-backends"
-llama-cpp-2 feature "vulkan"'
+  non_macos_tree='llama-cpp-2 feature "dynamic-backends"'
+  non_macos_with_vulkan="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "vulkan"')"
 
   check_macos_tree "self-test macOS" "$macos_tree" >/dev/null
   check_non_macos_tree "self-test non-macOS" "$non_macos_tree" >/dev/null
@@ -115,11 +118,11 @@ llama-cpp-2 feature "vulkan"'
     echo "model_client feature self-test failed: macOS Android feature passed" >&2
     return 1
   fi
-  if check_non_macos_tree "self-test non-macOS missing vulkan" 'llama-cpp-2 feature "dynamic-backends"' >/dev/null 2>&1; then
-    echo "model_client feature self-test failed: missing Vulkan feature passed" >&2
+  if check_non_macos_tree "self-test non-macOS forbidden vulkan" "$non_macos_with_vulkan" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: non-macOS Vulkan feature passed" >&2
     return 1
   fi
-  if check_non_macos_tree "self-test non-macOS missing dynamic-backends" 'llama-cpp-2 feature "vulkan"' >/dev/null 2>&1; then
+  if check_non_macos_tree "self-test non-macOS missing dynamic-backends" 'llama-cpp-2 feature "accelerate"' >/dev/null 2>&1; then
     echo "model_client feature self-test failed: missing dynamic-backends feature passed" >&2
     return 1
   fi

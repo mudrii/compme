@@ -1126,7 +1126,10 @@ mod tests {
         )
         .unwrap();
 
-        screen_wait_ms.store(80, Ordering::Relaxed);
+        // Generous bound: the writer publishes at ~20ms, but loaded CI runners
+        // (test-threads=1) have blown an 80ms window before — the wait only
+        // runs to the bound when the test is already failing.
+        screen_wait_ms.store(2000, Ordering::Relaxed);
         inference.submit(req);
         let outcome = inference.recv_outcome().expect("outcome");
 
@@ -1159,7 +1162,10 @@ mod tests {
         });
         let worker_context = WorkerContext {
             screen,
-            screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_millis(80)),
+            // Generous bound for the same CI-load reason as the live-enable
+            // test above: the writer lands at ~10ms; the bound is only reached
+            // when the test is already failing.
+            screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_millis(2000)),
             max_chars: 160,
             ..Default::default()
         };

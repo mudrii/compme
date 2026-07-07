@@ -10,13 +10,18 @@ license.workspace = true
 encoding_rs = "0.8"
 # ABI-sensitive FFI bindings to llama.cpp — pinned exact because even patch
 # bumps can change the vendored C ABI/behavior. Backend features are target
-# scoped: Metal on macOS, dynamic/Vulkan-capable backends elsewhere.
+# scoped: Metal on macOS, dynamic runtime-loaded backends elsewhere.
 
 [target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["metal"] }
 
+# ponytail: CPU-only compile gate off macOS — the "vulkan" feature needs the
+# Vulkan SDK at build time (CI runners lack it) and no non-mac adapter can use
+# a GPU yet. Re-add "vulkan" plus CI SDK install steps when the real
+# Windows/Linux adapters land (ROADMAP 1.1); "dynamic-backends" already loads
+# GPU backends at runtime when present.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["dynamic-backends", "vulkan"] }
+llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["dynamic-backends"] }
 
 [dev-dependencies]
 grammar = { path = "../grammar" }
