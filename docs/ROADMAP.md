@@ -1,14 +1,15 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-07 (docs sync after release-pipeline audit + assisted-UI live evidence) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1781 workspace tests; spike separate)
+> **Last updated:** 2026-07-08 (review+tdd+ponytail pass + CI-gate hardening + doc-count sync) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1781 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-07 through `8935866`
-> (release-pipeline hardening `4d58e42` + finalize-cask CI fix `8935866`),
-> starting from baseline `ba4e805` since `b1c9264`.
+> with symbol/function/gate anchors re-reviewed 2026-07-08 through `a381484`
+> (workspace review/tdd/ponytail: config empty-HOME fix, +16 mutation tests → 1781,
+> engine_core `request_matches` dedup; CI reject_line/reject_readme_homebrew_line
+> fail-loud hardening), starting from baseline `ba4e805` since `b1c9264`.
 
 ## Status legend
 
