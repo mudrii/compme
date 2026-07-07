@@ -616,7 +616,9 @@ mod tests {
             domain: None,
             snapshot: generation,
             prompt: String::new(),
-            max_tokens: 128,
+            // Mirrors production: the run loop stamps the grammar budget on the
+            // request and the worker honors request.max_tokens (4c2f8d3).
+            max_tokens: GRAMMAR_MAX_TOKENS,
             kind: RequestKind::GrammarFix {
                 word: word.into(),
                 left_ctx: left_ctx.into(),

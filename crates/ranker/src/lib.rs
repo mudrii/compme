@@ -28,14 +28,22 @@ pub fn cap_words(text: &str, max_words: usize) -> String {
 /// Split a completion into the next word to insert and the remainder. The word
 /// carries one trailing space iff a remainder follows, so word-by-word accepts
 /// concatenate back to the (whitespace-normalized) whole — the engine's caret
-/// advance counts on that exact spacing. Empty/whitespace-only input yields
-/// two empty strings.
+/// advance counts on that exact spacing. Leading whitespace is the seam the
+/// completion chose between the typed text and itself (live 2026-07-07:
+/// dropping it turned "hello" + " world" into "helloworld"); it collapses to
+/// exactly one space on the first word. Empty/whitespace-only input yields two
+/// empty strings.
 pub fn next_word(text: &str) -> (String, String) {
+    let seam = if text.starts_with(char::is_whitespace) {
+        " "
+    } else {
+        ""
+    };
     let words: Vec<&str> = text.split_whitespace().collect();
     match words.as_slice() {
         [] => (String::new(), String::new()),
-        [only] => ((*only).to_string(), String::new()),
-        [first, rest @ ..] => (format!("{first} "), rest.join(" ")),
+        [only] => (format!("{seam}{only}"), String::new()),
+        [first, rest @ ..] => (format!("{seam}{first} "), rest.join(" ")),
     }
 }
 
@@ -228,11 +236,16 @@ mod tests {
     }
 
     #[test]
-    fn next_word_skips_leading_whitespace() {
+    fn next_word_collapses_leading_whitespace_to_one_seam_space() {
+        // Live 2026-07-07 assisted-UI finding: a completion that begins with
+        // whitespace carries the seam between the typed word and the suggestion
+        // ("hello" + " world"). Dropping it made word-accept insert
+        // "helloworld". The first word keeps exactly one leading space.
         assert_eq!(
             next_word("  hello world"),
-            ("hello ".to_string(), "world".to_string())
+            (" hello ".to_string(), "world".to_string())
         );
+        assert_eq!(next_word(" world"), (" world".to_string(), String::new()));
     }
 
     #[test]
@@ -265,8 +278,10 @@ mod tests {
             remainder = rest;
         }
 
-        assert_eq!(accumulated, normalized);
-        assert_eq!(accumulated, "the quick brown fox");
+        // Leading whitespace on the raw completion is a SEAM the model chose
+        // (typed word | suggestion); word-by-word accepts keep exactly one.
+        assert_eq!(accumulated, format!(" {normalized}"));
+        assert_eq!(accumulated, " the quick brown fox");
     }
 
     #[test]

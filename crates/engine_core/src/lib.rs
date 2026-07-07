@@ -771,7 +771,19 @@ impl SuggestionMachine {
             let line = trim_to_stop_boundary(&raw);
             let sentence = truncate_at_sentence_end(line);
             let de_overlapped = strip_suffix_overlap(sentence, &right);
-            let capped = cap_words(&de_overlapped, self.max_words);
+            let mut capped = cap_words(&de_overlapped, self.max_words);
+            // Seam space: a candidate that starts with whitespace is the model
+            // separating the typed word from its continuation ("hello" +
+            // " world"). cap_words normalizes it away; restore exactly one
+            // space unless the left context already ends with whitespace
+            // (live 2026-07-07: accepts produced "helloworld" without this).
+            if raw.starts_with(char::is_whitespace)
+                && !capped.is_empty()
+                && !recent.is_empty()
+                && !recent.ends_with(char::is_whitespace)
+            {
+                capped.insert(0, ' ');
+            }
             // Degeneracy is checked on the PRE-cap text: `is_degenerate_repetition`
             // needs >=3 words, but `cap_words` may have truncated a degenerate loop
             // below that floor (e.g. max_words=2), letting it slip through if checked
@@ -1514,6 +1526,80 @@ mod tests {
         });
 
         assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+    }
+
+    #[test]
+    fn completion_seam_space_is_preserved_when_left_context_needs_it() {
+        // Live 2026-07-07 assisted-UI finding: caret touching "hello" with model
+        // candidate " world" showed ghost "world" and accepting produced
+        // "helloworld" — cap_words normalization dropped the seam space the
+        // model provided. The seam survives shaping when the left context does
+        // not already end in whitespace.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello", 5, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: " world there".into(),
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: " world there".into(),
+            }]
+        );
+
+        // Word-accept keeps the seam on the inserted chunk.
+        let mut machine2 = self::machine();
+        machine2.on_event(text_changed("hello", 5, 0));
+        machine2.on_event(Event::Tick { now_ms: 500 });
+        machine2.on_event(Event::CompletionReady {
+            generation: 1,
+            field: field("field-a"),
+            snapshot: 1,
+            text: " world there".into(),
+        });
+        assert_eq!(
+            machine2.on_event(Event::AcceptWord),
+            vec![
+                Command::Insert {
+                    field: field("field-a"),
+                    text: " world ".into(),
+                },
+                Command::UpdateGhost {
+                    field: field("field-a"),
+                    snapshot: 1,
+                    text: "there".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn completion_seam_space_is_dropped_when_left_context_already_has_one() {
+        // "The quick brown fox " + " jumps" must not become a double space —
+        // normalization still applies when the typed text carries the seam.
+        let mut machine = machine();
+        machine.on_event(text_changed("hello ", 6, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: " world".into(),
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "world".into(),
+            }]
+        );
     }
 
     #[test]
