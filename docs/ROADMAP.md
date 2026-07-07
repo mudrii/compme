@@ -1,15 +1,18 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-08 (review+tdd+ponytail pass + CI-gate hardening + doc-count sync) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1787 workspace tests; spike separate)
+> **Last updated:** 2026-07-08 (second review+tdd+ponytail pass + release prerelease-tag containment + privacy-scan denylist) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1787 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-08 through `a381484`
-> (workspace review/tdd/ponytail: config empty-HOME fix, +16 mutation tests → 1781,
-> engine_core `request_matches` dedup; CI reject_line/reject_readme_homebrew_line
-> fail-loud hardening), starting from baseline `ba4e805` since `b1c9264`.
+> with symbol/function/gate anchors re-reviewed 2026-07-08 through `b367f0f`
+> (workspace review/tdd/ponytail: zero-alloc slice-based trigger gates, an
+> `InsertStrategy::supports_atomic_range_replace` capability predicate replacing
+> `== AxSet` gates, +8 mutation-pinning tests → 1787 with the dead UTF-16 guard
+> and the `trim_trailing` wrapper removed; release: hyphenated tags publish as
+> GitHub prereleases and skip cask finalization, privacy scan widened to all
+> text files), starting from baseline `ba4e805` since `b1c9264`.
 
 ## Status legend
 

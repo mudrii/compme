@@ -114,7 +114,6 @@ Key concepts:
 - `right_context`
 - `word_at_caret`
 - `tail_chars`
-- `trim_trailing`
 - `build_context_block`
 
 These helpers avoid platform dependencies and are tested with Unicode-safe

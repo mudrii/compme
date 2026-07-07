@@ -162,7 +162,7 @@ from `tools/spike/`.
 | `platform_macos` | macOS implementation of the adapter and overlay presenter using Accessibility, CoreGraphics, AppKit/Carbon, and pasteboard APIs; ghost overlay, tray, key recorder, and settings window. |
 | `platform_windows` | Windows adapter scaffold that reports Windows and fails closed for platform I/O/subscription methods until a real adapter is implemented. |
 | `platform_linux` | Linux adapter scaffold that reports Linux and fails closed for platform I/O/subscription methods until a real adapter is implemented. |
-| `context` | Pure text-context helpers around a caret (left/right context, left-tail extraction, prompt-prefix trimming). |
+| `context` | Pure text-context helpers around a caret (left/right context, word-at-caret extraction, left-tail truncation, context-block assembly). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
 | `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2`; macOS enables Metal, while non-macOS targets use dynamic/Vulkan-capable backends. |
