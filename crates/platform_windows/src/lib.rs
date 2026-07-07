@@ -675,6 +675,25 @@ pub mod win_host {
         }
 
         #[test]
+        fn harden_owner_only_accepts_a_plain_file_target() {
+            // config.rs hard-fails (`?`) on this path and the memory per-file
+            // backstop calls it on the db/sidecars: an OICI ACE applied to a
+            // leaf object must succeed, not error.
+            let dir = std::env::temp_dir()
+                .join(format!("compme-harden-file-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("leaf.txt");
+            std::fs::write(&file, b"x").unwrap();
+            harden_owner_only(&file).expect("harden plain file");
+            assert_eq!(
+                ace_count(&file),
+                1,
+                "file DACL must be the single owner ACE"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn console_ctrl_handler_sets_the_stop_flag() {
             static STOP: AtomicBool = AtomicBool::new(false);
             install_console_ctrl_handler(&STOP).expect("install");
