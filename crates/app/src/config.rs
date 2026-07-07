@@ -505,10 +505,14 @@ mod tests {
         drop(first);
         assert!(try_acquire_instance_lock(&path).is_ok());
         // An IO failure must NOT masquerade as Held (misleading diagnostics):
-        // a lock path whose parent is an unwritable pseudo-dir errors as Io.
-        let bad = Path::new("/dev/null/cannot/exist/instance.lock");
+        // a lock path whose parent chain crosses a FILE fails create_dir_all
+        // on every OS (/dev/null tricks are unix-only; this runs on the
+        // Windows CI gate too).
+        let blocker = dir.join("blocker-file");
+        std::fs::write(&blocker, b"x").expect("write blocker file");
+        let bad = blocker.join("cannot-exist").join("instance.lock");
         assert!(matches!(
-            try_acquire_instance_lock(bad),
+            try_acquire_instance_lock(&bad),
             Err(InstanceLockError::Io(_))
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -876,9 +880,16 @@ mod tests {
             Some(PathBuf::from("/some/path"))
         );
 
-        // Branch 2: COMPME_CONFIG empty + HOME set -> path under macOS HOME.
-        let path = config_file_path_from(&env(&[("COMPME_CONFIG", ""), ("HOME", "/h")]))
-            .expect("HOME branch should yield a path");
+        // Branch 2: COMPME_CONFIG empty + per-OS home var set -> path under
+        // it on EVERY host OS (this test runs on the Windows/Linux CI gates
+        // too; the per-OS branch specifics are pinned by the
+        // config_file_path_for tests below).
+        let path = config_file_path_from(&env(&[
+            ("COMPME_CONFIG", ""),
+            ("HOME", "/h"),
+            ("APPDATA", "/h"),
+        ]))
+        .expect("home branch should yield a path");
         assert!(
             path.ends_with("compme/config.env"),
             "unexpected path: {path:?}"
