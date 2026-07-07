@@ -1139,14 +1139,20 @@ fn open_memory_store(
         );
         return None;
     };
-    // Windows analog of the store's unix 0700/0600 tightening: an owner-only
-    // DACL on the db directory, inherited by the db and its wal/shm sidecars.
-    // Fail closed — the store holds user text; without the DACL it would land
-    // with inherited (potentially group-readable) ACLs.
+    // Windows analog of the store's unix 0700 dir tightening: harden the db
+    // directory ONLY when this launch creates it — a pre-existing (possibly
+    // shared or user-chosen) parent must not have owner-only ACLs propagated
+    // over its existing subtree. Fail closed — the store holds user text.
     #[cfg(windows)]
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        let hardened = std::fs::create_dir_all(parent)
-            .and_then(|()| platform_windows::win_host::harden_owner_only(parent));
+        let created = !parent.exists();
+        let hardened = std::fs::create_dir_all(parent).and_then(|()| {
+            if created {
+                platform_windows::win_host::harden_owner_only(parent)
+            } else {
+                Ok(())
+            }
+        });
         if let Err(err) = hardened {
             eprintln!(
                 "compme: failed to harden memory dir {}: {err} — memory disabled",
@@ -1158,6 +1164,27 @@ fn open_memory_store(
     // StaticKey scrubs its own copy on drop; scrub this transient copy too so
     // no un-zeroized key byte is left on the stack after the store is opened.
     let opened = MemoryStore::open(path, &StaticKey(key), config.mode);
+    // Windows analog of the store's unix per-file 0600 belt-and-suspenders:
+    // owner-only DACL on the db and any sidecar, regardless of dir state —
+    // covers a pre-existing unhardened dir and a bare-filename path. Posture
+    // like unix (log, don't disable): the dir gate above is the fail-closed
+    // layer for the fresh-install case.
+    #[cfg(windows)]
+    if opened.is_ok() {
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            let mut file = path.as_os_str().to_owned();
+            file.push(suffix);
+            let file = std::path::Path::new(&file);
+            if file.exists() {
+                if let Err(err) = platform_windows::win_host::harden_owner_only(file) {
+                    eprintln!(
+                        "compme: failed to tighten permissions on {}: {err}",
+                        file.display()
+                    );
+                }
+            }
+        }
+    }
     key.zeroize();
     match opened {
         Ok(store) => {

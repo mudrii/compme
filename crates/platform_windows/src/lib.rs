@@ -595,7 +595,10 @@ pub mod win_host {
 
     unsafe extern "system" fn on_console_ctrl(_ctrl_type: u32) -> BOOL {
         // Handler runs on its own thread: only a relaxed atomic store, the
-        // same contract as the unix signal handlers.
+        // same contract as the unix signal handlers. Returning handled is
+        // meaningful for CTRL_C/CTRL_BREAK; for CLOSE/LOGOFF/SHUTDOWN the OS
+        // ignores the return value and terminates after the grace window —
+        // the flag just gives the loop its chance at a clean exit first.
         match STOP_FLAG.get() {
             Some(flag) => {
                 flag.store(true, Ordering::Relaxed);

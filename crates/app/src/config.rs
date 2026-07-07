@@ -250,6 +250,11 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
     }
+    // Windows parity with the unconditional 0600 above: per-file owner-only
+    // DACL survives the rename, covering a pre-existing unhardened dir where
+    // the created_dir gate above did not run.
+    #[cfg(windows)]
+    platform_windows::win_host::harden_owner_only(&temp)?;
     std::fs::rename(&temp, path)
 }
 
