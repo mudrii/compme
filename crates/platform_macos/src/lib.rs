@@ -7273,6 +7273,27 @@ mod tests {
         assert_eq!(installs.lock().unwrap().len(), expected);
     }
 
+    fn count_drop_events(events: &Arc<Mutex<Vec<String>>>) -> usize {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.as_str() == "drop")
+            .count()
+    }
+
+    fn wait_for_drop_events(events: &Arc<Mutex<Vec<String>>>, expected: usize) {
+        let deadline = SystemTime::now() + WAIT_DEADLINE;
+        while SystemTime::now() < deadline {
+            if count_drop_events(events) >= expected {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert_eq!(count_drop_events(events), expected);
+    }
+
     fn wait_for_vec_count<T>(items: &Arc<Mutex<Vec<T>>>, expected: usize) {
         let deadline = SystemTime::now() + WAIT_DEADLINE;
         while SystemTime::now() < deadline {
@@ -11790,8 +11811,10 @@ mod tests {
     #[test]
     fn accept_subscription_delayed_hide_tears_down_consumer_tap() {
         let accept_tap_installs = Arc::new(Mutex::new(Vec::new()));
+        let accept_tap_events = Arc::new(Mutex::new(Vec::new()));
         let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
         config.accept_tap_installs = Arc::clone(&accept_tap_installs);
+        config.accept_tap_events = Arc::clone(&accept_tap_events);
         let adapter = test_adapter_with_hooks(config);
 
         let subscription = adapter
@@ -11802,10 +11825,16 @@ mod tests {
             .expect("activate consumer");
         wait_for_accept_tap_count(&accept_tap_installs, 3);
 
+        let drops_before = count_drop_events(&accept_tap_events);
         subscription
             .hide_suggestion_after(Duration::from_millis(10))
             .expect("schedule delayed hide");
-        thread::sleep(Duration::from_millis(50));
+        // Wait for the hide to actually fire (the consumer-tap drop) instead
+        // of a fixed sleep: on an oversubscribed CI runner the 10 ms sleeper
+        // thread can be scheduled later than any fixed interval, making the
+        // reactivate below a visible->visible no-op and stranding the install
+        // count at 3 (live CI flake 2026-07-08).
+        wait_for_drop_events(&accept_tap_events, drops_before + 1);
         subscription
             .set_suggestion_visible(true)
             .expect("reactivate after delayed hide");
