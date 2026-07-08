@@ -127,23 +127,20 @@ signing + hardened runtime + notarization + a native updater.
   `compme-<version>-update.json` next to the zip and checksum (nothing consumes
   it in-app yet; a future auto-updater must add signature verification before
   trusting it). A full Sparkle/appcast client remains an optional later upgrade.
-- **No `v*` git tags** yet (`git tag -l 'v*'` empty), so the first real release
-  still needs the external Developer-ID secrets plus a maintainer-created tag.
+- **v0.1.0 SHIPPED 2026-07-08** (interim unsigned mode): protected `v*` tag
+  ruleset + gated `release` environment created; all 13 A2 matrix rows passed
+  live (`tools/acceptance/evidence/a2/v0.1.0-20260708-154651/`, variable set);
+  the tag build published `compme-0.1.0-macos.zip` + `.sha256` + update
+  manifest and finalized the cask sha on main. Release teething fixed en
+  route: secrets-in-step-`if` startup failure, hosted-runner latency-budget
+  opt-out, browser-row harness `COMPME_DEBUG`.
 
 **Pending:**
-- Configure the protected `release` environment, protected `v*` tag ruleset, and
-  GitHub Secrets for Developer-ID signing and notarization.
-- Run all 13 A2 compatibility matrix rows in a granted live macOS session with
-  `COMPME_A2_LOG_DIR` under `tools/acceptance/evidence/a2/` and no skipped rows;
-  commit the pass-only TSV plus tracked row logs, validate it with
-  `tools/release/check-a2-matrix-ledger.sh`, and set `COMPME_A2_MATRIX_LEDGER`
-  to that repo-relative TSV path.
-- Run the first tag build and verify the notarized zip, `.sha256`, and update
-  manifest publish correctly after the pre-publish checksum verification step,
-  and that the workflow commits the finalized `Casks/compme.rb` checksum back
-  to the default branch.
+- Add Developer-ID signing + notarization secrets (Apple Developer account,
+  human-gated) — flips releases back to signed+notarized automatically; the
+  Gatekeeper "Open Anyway" caveat then leaves the cask/README/notes.
 - Optional later upgrade: replace the GitHub-release menu handoff with a full
-  Sparkle/appcast client.
+  Sparkle/appcast client (must add manifest signature verification first).
 
 **Effort:** Medium. **Blocked on an Apple Developer ID account ($99/yr) — human-gated.**
 The CI/release/cask glue is already written and locally validated; every gate

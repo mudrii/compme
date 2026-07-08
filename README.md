@@ -33,11 +33,7 @@ are configured.
 
 ### Homebrew (macOS)
 
-Homebrew cask install is not available until the first signed `v*` release
-publishes the artifact and finalizes the cask checksum. Until then, build from
-source.
-
-Once the first release is published, install with:
+Install with:
 
 ```sh
 brew tap mudrii/compme https://github.com/mudrii/compme
