@@ -46,6 +46,32 @@ model-client gate.
    preconfigured local keychain, but the GitHub-hosted workflow does not create
    that profile. The release repository variable `COMPME_A2_MATRIX_LEDGER` must
    point at the committed repo-relative TSV under `tools/acceptance/evidence/a2/`.
+
+   **Producing the secrets** (first-time setup):
+   - Developer-ID `.p12`: export the "Developer ID Application" certificate +
+     private key from Keychain Access (or `security export`), then
+     `base64 -i cert.p12 | pbcopy` → `COMPME_DEVELOPER_ID_P12_BASE64`; the
+     export passphrase is `COMPME_DEVELOPER_ID_P12_PASSWORD`.
+   - `COMPME_CODESIGN_IDENTITY`: the full identity string from
+     `security find-identity -v -p codesigning`, e.g.
+     `Developer ID Application: Your Name (TEAMID)`.
+   - Notarytool API key (preferred set): create an App Store Connect API key
+     (Users and Access → Integrations → App Store Connect API, role
+     Developer+), download `AuthKey_<KEY_ID>.p8` once, then
+     `base64 -i AuthKey_<KEY_ID>.p8` → `COMPME_NOTARYTOOL_KEY_BASE64`; the
+     Key ID and Issuer ID shown on that page are `COMPME_NOTARYTOOL_KEY_ID`
+     and `COMPME_NOTARYTOOL_ISSUER`. (Alternative Apple-ID set: an
+     app-specific password from appleid.apple.com plus your Team ID.)
+
+   **One-time repository setup** (the preflight fails closed without it):
+   - Protected tag ruleset: Settings → Rules → Rulesets → new tag ruleset
+     targeting pattern `v*` (this is what makes `github.ref_protected` true;
+     an unprotected tag is rejected by the preflight).
+   - `release` environment: Settings → Environments → create `release` with
+     required reviewers — both the signing and publish jobs declare
+     `environment: release`, so this is the human gate before any signing.
+     Signing/notarization secrets may live at repo or environment scope;
+     environment scope keeps them away from non-release workflows.
 2. Bump the version in `crates/app/Cargo.toml`, `tools/bundle/Info.plist`
    (both `CFBundleShortVersionString` and `CFBundleVersion` to the same value —
    `check-bundle-metadata.sh` enforces equality), and `Casks/compme.rb`
@@ -131,6 +157,12 @@ model-client gate.
    hyphenated prerelease tag (`vX.Y.Z-rc.N`) is instead marked a GitHub
    prerelease and skips cask finalization, so `brew upgrade` and the in-app
    updater (`/releases/latest`) never pick it up.
+
+   The release body is auto-generated from commits; prepend the curated notes
+   (e.g. [`docs/RELEASE-NOTES-v0.1.0.md`](RELEASE-NOTES-v0.1.0.md)) after
+   publish with `gh release edit v0.1.0 --notes-file docs/RELEASE-NOTES-v0.1.0.md`
+   (or paste them above the generated list in the web UI). Also refresh the
+   README **Status** section if this is the first release.
 5. Confirm the workflow's **Finalize Homebrew cask** step committed the cask
    sha256 back to the default branch. If branch protection blocks that bot push
    or you need to recover manually, use the guarded finalizer path from a
@@ -153,6 +185,18 @@ model-client gate.
    Re-run recovery: a publish job that fails before the undraft step leaves
    the release drafted, but re-running can orphan a duplicate draft — check
    `gh release list` and delete any extra draft for the tag before re-running.
+
+   Post-publish checklist:
+   - `gh release view v0.1.0` shows all three assets (zip, `.sha256`,
+     `-update.json`) and the release is not a draft.
+   - `https://github.com/mudrii/compme/releases/latest` resolves to the tag.
+   - On a clean machine: `brew tap mudrii/compme https://github.com/mudrii/compme
+     && brew install --cask compme` installs the signed, notarized app.
+
+   Recovering from a published bad release: do NOT retag — the protected tag
+   cannot move, and the cask finalizer's stale-version guard refuses to
+   re-bump `main` to a version it has already reached. Bump to the next patch
+   version (e.g. `v0.1.1`) and run the release flow again.
 
 ## Code signing / notarization
 

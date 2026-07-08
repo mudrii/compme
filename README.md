@@ -66,6 +66,16 @@ Security → Accessibility. Source builds should use the bundle for `compme://`
 deep links, Login Items, and a stable TCC identity. For core development, an
 unbundled `cargo run -p app` is still fine.
 
+### First run
+
+1. Grant Accessibility when prompted (System Settings → Privacy & Security →
+   Accessibility). Input Monitoring is not needed.
+2. Open the menu-bar icon → **Settings…** → **Setup** tab and download a
+   catalog model (the default Qwen2.5-0.5B is ~0.4 GB, one-time download; each
+   row shows a RAM-fit verdict for this machine).
+3. Start typing in any supported field: accept the next word with **Tab**,
+   the full suggestion with **`` ` ``** (both rebindable under Shortcuts).
+
 ## Features
 
 - **Inline model completions** — short local GGUF continuations through `llama-cpp-2`
@@ -101,8 +111,9 @@ unbundled `cargo run -p app` is still fine.
 - **Menu-bar icon** — a caret + double-chevron template image (it recently replaced the
   old "CM…" text title; that title remains only as a fallback if the image fails to load).
 - **Release updater surface** — the tray's **Check for Updates…** item opens the
-  latest GitHub Release; tagged releases also upload a machine-readable update
-  manifest next to the notarized zip and checksum.
+  latest GitHub Release (no in-app auto-update yet); tagged releases also upload
+  a machine-readable update manifest next to the notarized zip and checksum for
+  tooling and a future auto-updater.
 - **Signed deep-link config** — a fail-closed `compme://setOverride` URL scheme for
   reversible per-app/per-domain overrides; non-reversible settings require an Ed25519
   signature.
@@ -186,9 +197,11 @@ from `tools/spike/`.
 
 ## Requirements
 
-- macOS for the macOS adapter and live acceptance harnesses.
+- macOS 14 (Sonoma) or later — the bundle sets `LSMinimumSystemVersion` 14.0.
 - Rust toolchain compatible with the workspace.
 - Xcode Command Line Tools for native macOS frameworks.
+- CMake for the bundled llama.cpp build (not included with Xcode CLT —
+  `brew install cmake`).
 - Accessibility permission for the terminal running live probes.
 - Input Monitoring is **not** required by the production accept path (transient
   Carbon hotkeys); it is only relevant to the historical A0 CGEventTap spike
@@ -405,6 +418,15 @@ model's license for acceptance.
 
 ## Status
 
-This repository is on an active development branch and has no release tags in
-the current checkout. Treat documented behavior as current workspace behavior,
-not a published product release.
+This repository develops on `main`; documented behavior describes the current
+workspace. Published releases (if any) are listed on the
+[Releases page](https://github.com/mudrii/compme/releases) with signed,
+notarized artifacts and per-version release notes.
+
+## Support & Security
+
+- Questions and bugs: [GitHub issues](https://github.com/mudrii/compme/issues).
+- Vulnerabilities: report privately via
+  [GitHub security advisories](https://github.com/mudrii/compme/security/advisories/new)
+  — see [SECURITY.md](SECURITY.md). Please do not open public issues for
+  security reports.

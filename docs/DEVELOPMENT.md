@@ -53,6 +53,8 @@ Required for root workspace development:
 - Rust toolchain
 - macOS when building or testing `platform_macos`
 - Xcode Command Line Tools
+- CMake for the bundled llama.cpp build (`brew install cmake`; not included
+  with Xcode CLT)
 
 Required for live macOS acceptance:
 
