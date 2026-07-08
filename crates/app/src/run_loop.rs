@@ -993,7 +993,7 @@ fn download_log_transition(state: &model_fetch::DownloadState, logged: u8) -> (u
         model_fetch::DownloadState::Done(path) if logged < 2 => (
             2,
             Some(format!(
-                "compme: model downloaded \u{2014} set COMPME_MODEL_PATH={} to use it",
+                "compme: model downloaded to {} \u{2014} COMPME_MODEL_PATH set, relaunch to use",
                 path.display()
             )),
         ),
@@ -2945,8 +2945,9 @@ fn compose_setup_lines(
     ax_relaunch_required: bool,
     ax_trusted: bool,
     screen_recording: bool,
+    download_status: Option<&model_fetch::DownloadStatus>,
 ) -> Vec<String> {
-    setup_lines_from_checks(crate::setup_state::SetupChecks {
+    let mut lines = setup_lines_from_checks(crate::setup_state::SetupChecks {
         // Probed fresh here (cheap), not the loop's 480ms-stale copy —
         // review-c107: rows must not flip at different cadences.
         ax_trusted,
@@ -2954,7 +2955,47 @@ fn compose_setup_lines(
         screen_context_enabled: config.screen_context,
         screen_recording,
         model_ready,
-    })
+    });
+    // A download's progress/outcome lives only in the log otherwise, invisible
+    // to a Finder-launched .app. Surface it as a Setup-pane suffix so the user
+    // sees the click did something (and why it failed).
+    if let Some(line) = model_download_status_line(download_status, model_ready) {
+        lines.push(line);
+    }
+    lines
+}
+
+/// A one-line download-status suffix for the Setup pane, or `None` when there
+/// is nothing to say: the model already loaded (`model_ready`, so the row is
+/// already ✓), no download has run, or it is idle. Running shows a percent
+/// when the total is known (0 total = unknown); Done points at the relaunch;
+/// Failed surfaces the error the user would otherwise never see.
+fn model_download_status_line(
+    status: Option<&model_fetch::DownloadStatus>,
+    model_ready: bool,
+) -> Option<String> {
+    if model_ready {
+        return None;
+    }
+    let status = status?;
+    let state = status.state.lock().unwrap_or_else(|e| e.into_inner());
+    match &*state {
+        model_fetch::DownloadState::Idle => None,
+        model_fetch::DownloadState::Running => {
+            let done = status.downloaded.load(Ordering::Relaxed);
+            let total = status.total.load(Ordering::Relaxed);
+            // checked_div is None for the 0 = unknown-total sentinel, so an
+            // unknown total falls back to a byte count instead of a bogus %.
+            Some(match done.saturating_mul(100).checked_div(total) {
+                Some(pct) => format!("   downloading model\u{2026} {}%", pct.min(100)),
+                None => format!("   downloading model\u{2026} {} MB", done / (1024 * 1024)),
+            })
+        }
+        model_fetch::DownloadState::Done(_) => {
+            Some("   model downloaded \u{2014} relaunch to use".into())
+        }
+        model_fetch::DownloadState::Failed(err) => Some(format!("   download failed: {err}")),
+    }
 }
 
 fn setup_lines_from_checks(checks: crate::setup_state::SetupChecks) -> Vec<String> {
@@ -4712,6 +4753,7 @@ pub fn run() -> Result<(), String> {
                 subscriptions_require_relaunch,
                 shell.accessibility_trusted(),
                 shell.screen_capture_permission(),
+                model_download_status.as_deref(),
             );
             last_setup_poll_ms = Some(now_ms);
             // Apps tab: per-app counts straight from the store (plaintext
@@ -5161,9 +5203,39 @@ pub fn run() -> Result<(), String> {
         if let Some(status) = &model_download_status {
             let state = status.state.lock().unwrap_or_else(|e| e.into_inner());
             let (next_logged, line) = download_log_transition(&state, model_download_logged);
+            // The Done edge (logged advances to 2 with a Done state) fires once
+            // per download — start_model_download_edge resets logged to 0 on
+            // each new queue — so a second download re-persists its own path.
+            let done_edge = next_logged != model_download_logged
+                && matches!(&*state, model_fetch::DownloadState::Done(_));
             model_download_logged = next_logged;
             if let Some(line) = line {
                 eprintln!("{line}");
+            }
+            // Auto-wire the freshly downloaded model: persist COMPME_MODEL_PATH
+            // so the next launch loads it (env > file > default). Without this a
+            // completed download is unusable — the Setup "Model file" row stays
+            // ✗ forever and a Finder-launched .app has no way to point at the
+            // file (env vars aren't set for GUI launches). Persist failure only
+            // logs; the file is still on disk for a manual override.
+            if done_edge {
+                if let model_fetch::DownloadState::Done(path) = &*state {
+                    if let Some(cfg) = config::config_file_path() {
+                        match config::persist_setting(
+                            &cfg,
+                            "COMPME_MODEL_PATH",
+                            &path.to_string_lossy(),
+                        ) {
+                            Ok(()) => eprintln!(
+                                "compme: COMPME_MODEL_PATH set to {} \u{2014} relaunch to use it",
+                                path.display()
+                            ),
+                            Err(err) => {
+                                eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}")
+                            }
+                        }
+                    }
+                }
             }
         }
         // Periodic lifetime-stats flush (c102): baseline + grow-only session
@@ -5194,6 +5266,7 @@ pub fn run() -> Result<(), String> {
                 subscriptions_require_relaunch,
                 shell.accessibility_trusted(),
                 shell.screen_capture_permission(),
+                model_download_status.as_deref(),
             );
             settings_window.refresh_setup_labels();
         }
@@ -5287,6 +5360,7 @@ pub fn run() -> Result<(), String> {
                 subscriptions_require_relaunch,
                 shell.accessibility_trusted(),
                 shell.screen_capture_permission(),
+                model_download_status.as_deref(),
             );
             settings_window.refresh_setup_labels();
         }
@@ -13437,6 +13511,51 @@ mod tests {
     }
 
     #[test]
+    fn model_download_status_line_surfaces_progress_and_outcome_but_stays_quiet_when_ready() {
+        use model_fetch::{DownloadState, DownloadStatus};
+        use std::sync::atomic::Ordering;
+
+        let status = std::sync::Arc::new(DownloadStatus::default());
+        let set = |state: DownloadState, done: u64, total: u64| {
+            *status.state.lock().unwrap() = state;
+            status.downloaded.store(done, Ordering::Relaxed);
+            status.total.store(total, Ordering::Relaxed);
+        };
+
+        // Model already loaded → never nag, whatever the download state says.
+        set(DownloadState::Failed("ignored".into()), 0, 0);
+        assert_eq!(model_download_status_line(Some(&status), true), None);
+        // No download and idle → nothing to show.
+        assert_eq!(model_download_status_line(None, false), None);
+        set(DownloadState::Idle, 0, 0);
+        assert_eq!(model_download_status_line(Some(&status), false), None);
+
+        // Running: percent when total known, byte count when unknown (0 total).
+        set(
+            DownloadState::Running,
+            512 * 1024 * 1024,
+            1024 * 1024 * 1024,
+        );
+        assert!(model_download_status_line(Some(&status), false)
+            .unwrap()
+            .contains("50%"));
+        set(DownloadState::Running, 3 * 1024 * 1024, 0);
+        assert!(model_download_status_line(Some(&status), false)
+            .unwrap()
+            .contains("3 MB"));
+
+        // Terminal states are the whole point — the user must see them.
+        set(DownloadState::Done("/tmp/m.gguf".into()), 0, 0);
+        assert!(model_download_status_line(Some(&status), false)
+            .unwrap()
+            .contains("relaunch"));
+        set(DownloadState::Failed("http error: status 404".into()), 0, 0);
+        assert!(model_download_status_line(Some(&status), false)
+            .unwrap()
+            .contains("404"));
+    }
+
+    #[test]
     fn download_log_transitions_log_each_stage_exactly_once() {
         use model_fetch::DownloadState;
         // Running logs once, never repeats.
@@ -13447,12 +13566,12 @@ mod tests {
             download_log_transition(&DownloadState::Running, 1),
             (1, None)
         );
-        // Done logs the COMPME_MODEL_PATH hint — the only user-visible
-        // signal of where the model landed — even when it skipped Running.
+        // Done logs where the model landed — the only user-visible signal —
+        // even when it skipped Running.
         let done = DownloadState::Done("/tmp/m.gguf".into());
         let (logged, line) = download_log_transition(&done, 0);
         assert_eq!(logged, 2);
-        assert!(line.unwrap().contains("COMPME_MODEL_PATH=/tmp/m.gguf"));
+        assert!(line.unwrap().contains("/tmp/m.gguf"));
         assert_eq!(
             download_log_transition(&done, 2),
             (2, None),
@@ -13472,13 +13591,13 @@ mod tests {
     fn download_log_transition_emits_path_hint_on_running_to_done() {
         // The normal sequence is Running (logged 0->1) then Done (logged 1->2).
         // The Done guard is `logged < 2`, so reaching Done with logged == 1 must
-        // still emit the COMPME_MODEL_PATH hint — the only signal of where the
-        // model landed. A mutant narrowing the guard to `logged == 0` would drop
-        // the hint on this real path, leaving the user with no destination.
+        // still emit the destination path — the only signal of where the model
+        // landed. A mutant narrowing the guard to `logged == 0` would drop the
+        // line on this real path, leaving the user with no destination.
         let done = model_fetch::DownloadState::Done("/tmp/m.gguf".into());
         let (logged, line) = download_log_transition(&done, 1);
         assert_eq!(logged, 2);
-        assert!(line.unwrap().contains("COMPME_MODEL_PATH=/tmp/m.gguf"));
+        assert!(line.unwrap().contains("/tmp/m.gguf"));
     }
 
     #[test]

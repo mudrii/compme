@@ -35,6 +35,9 @@ run_self_test() {
   mkdir -p "$fake_bin"
   mkdir -p "$fixture_root/tools/bundle"
   cp "$repo_root/tools/bundle/Info.plist" "$fixture_root/tools/bundle/Info.plist"
+  # A stand-in icon so the required-icon copy has something to move; content is
+  # irrelevant to the assembly test.
+  printf 'icns-fixture' >"$fixture_root/tools/bundle/AppIcon.icns"
 
   cat >"$fake_bin/cargo" <<'SH'
 #!/usr/bin/env bash
@@ -86,6 +89,7 @@ SH
   test -d "$app/Contents/MacOS"
   test -d "$app/Contents/Resources"
   cmp "$fixture_root/tools/bundle/Info.plist" "$app/Contents/Info.plist" >/dev/null
+  cmp "$fixture_root/tools/bundle/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns" >/dev/null
   test -x "$app/Contents/MacOS/compme"
   grep -Fq "cargo build --locked --release -p app --manifest-path $fixture_root/Cargo.toml" "$log"
   grep -Fq "plutil -lint $app/Contents/Info.plist" "$log"
@@ -223,6 +227,15 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$repo_root/tools/bundle/Info.plist" "$app/Contents/Info.plist"
 cp "$bundle_target_dir/release/compme" "$app/Contents/MacOS/compme"
+
+# App icon (CFBundleIconFile=AppIcon). Required: a bundle without it shows the
+# generic placeholder in Finder/Dock. Regenerate with tools/bundle/make-icon.sh.
+icon_src="$repo_root/tools/bundle/AppIcon.icns"
+if [[ ! -f "$icon_src" ]]; then
+  echo "missing app icon: $icon_src (run tools/bundle/make-icon.sh)" >&2
+  exit 1
+fi
+cp "$icon_src" "$app/Contents/Resources/AppIcon.icns"
 
 plutil -lint "$app/Contents/Info.plist"
 
