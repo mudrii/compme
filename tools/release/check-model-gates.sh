@@ -1371,6 +1371,8 @@ ruby -ryaml -e '
   }.merge(shared_gate_steps.transform_keys { |key| "release #{key}" }).each do |label, (name, run)|
     abort("missing release gate: #{label}") unless step?(validate_steps, name, run)
   end
+  model_gate_step = validate_steps.find { |step| step["name"] == "Model-backed release gates" }
+  abort("missing release gate: hosted-runner model gates skip only the latency budget") unless model_gate_step && model_gate_step.fetch("env", {})["COMPME_REQUIRE_LATENCY_BUDGET"].to_s == "0"
   require_live_a2_ledger_step!(validate_steps)
 
   prebuild_needs = Array(prebuild.fetch("needs"))
@@ -1751,8 +1753,9 @@ require_line "$finalize_cask_script" 'tag/version mismatch' "cask finalizer tag/
 require_line "$finalize_cask_script" 'refusing to publish a stale or out-of-order cask update' "cask finalizer stale version refusal"
 require_line "$finalize_cask_script" 'COMPME_CASK_ARTIFACT="\$artifact_path" tools/release/update-cask\.sh "\$tag"' "cask finalizer artifact handoff"
 require_line "$finalize_cask_script" 'git push origin "HEAD:\$default_branch"' "cask finalizer push"
-require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
-require_line "$gate_script" '^  COMPME_SPIKE_MODEL_PATH="\$spike_model" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"
+require_line "$gate_script" '^require_latency_budget="\$\{COMPME_REQUIRE_LATENCY_BUDGET:-1\}"[[:space:]]*$' "latency budget defaults on, CI opt-out only"
+require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET="\$require_latency_budget" cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
+require_line "$gate_script" '^  COMPME_SPIKE_MODEL_PATH="\$spike_model" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET="\$require_latency_budget" cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"
 require_line "$acceptance_doc" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized root ignored model tests"
 require_line "$acceptance_doc" '^COMPME_SPIKE_MODEL_PATH="\$PWD/models/qwen2\.5-0\.5b-q4_k_m\.gguf" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized spike ignored model tests"
 require_line "$acceptance_doc" '^cargo build --locked -p platform_macos --examples[[:space:]]*$' "acceptance docs platform_macos examples build"

@@ -79,7 +79,12 @@ jobs:
       - name: Root tests
         run: cargo test --locked --workspace --all-targets -- --test-threads=1
 
+      # Correctness only on the hosted runner: virtualized macOS has no usable
+      # Metal, so the 500ms warm-latency budget is enforced by the mandatory
+      # pre-tag run on a real Mac (RELEASING step 3), not here.
       - name: Model-backed release gates
+        env:
+          COMPME_REQUIRE_LATENCY_BUDGET: "0"
         run: bash tools/release/run-model-gates.sh
 
       - name: Root build

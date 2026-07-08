@@ -223,8 +223,14 @@ case "$model" in
   *) spike_model="$repo_root/$model" ;;
 esac
 
-COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1
+# The latency budget is enforced by default (the pre-tag run on a real,
+# Metal-capable Mac — RELEASING step 3). Hosted CI runners are virtualized
+# without usable Metal and can never meet it, so the release workflow runs
+# with COMPME_REQUIRE_LATENCY_BUDGET=0: correctness still asserted, timing
+# evidence comes from the mandatory local run.
+require_latency_budget="${COMPME_REQUIRE_LATENCY_BUDGET:-1}"
+COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET="$require_latency_budget" cargo test --locked -p model_client --test latency -- --ignored --test-threads=1
 (
   cd "$repo_root/tools/spike"
-  COMPME_SPIKE_MODEL_PATH="$spike_model" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1
+  COMPME_SPIKE_MODEL_PATH="$spike_model" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET="$require_latency_budget" cargo test --locked --test model_integration -- --ignored --test-threads=1
 )
