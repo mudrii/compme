@@ -1437,6 +1437,9 @@ ruby -ryaml -e '
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
   abort("missing release gate: notarizes and staples app") unless notarize_index
+  signing_gate = "${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 != #{39.chr}#{39.chr} }}"
+  abort("missing release gate: cert import gated on the signing secret (unsigned interim mode)") unless build_steps.fetch(import_index)["if"].to_s == signing_gate
+  abort("missing release gate: notarization paired with the signing condition") unless build_steps.fetch(notarize_index)["if"].to_s == signing_gate
   abort("missing release gate: deletes signing keychain") unless cleanup_index
   abort("missing release gate: packages release artifact") unless package_index
   abort("missing release gate: writes update manifest") unless manifest_index

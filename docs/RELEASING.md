@@ -72,6 +72,14 @@ model-client gate.
      `environment: release`, so this is the human gate before any signing.
      Signing/notarization secrets may live at repo or environment scope;
      environment scope keeps them away from non-release workflows.
+
+   **Interim unsigned mode:** with NO Developer-ID secret configured, the
+   signing and notarization steps are skipped (gated on
+   `COMPME_DEVELOPER_ID_P12_BASE64`; pinned by `check-model-gates.sh`) and the
+   release ships an ad-hoc-signed bundle — Gatekeeper requires the user's
+   explicit approval on first launch, and the cask caveats say so. A partial
+   secret set still fails loud. Adding the full secret set later flips
+   releases back to signed+notarized with no workflow change.
 2. Bump the version in `crates/app/Cargo.toml`, `tools/bundle/Info.plist`
    (both `CFBundleShortVersionString` and `CFBundleVersion` to the same value —
    `check-bundle-metadata.sh` enforces equality), and `Casks/compme.rb`

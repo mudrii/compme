@@ -50,6 +50,9 @@ brew install --cask compme
 
 Release artifacts are Developer-ID signed and notarized by the tag workflow once
 release secrets are configured (see [docs/RELEASING.md](docs/RELEASING.md)).
+Until then, releases ship **ad-hoc signed** (interim mode): Gatekeeper blocks
+the first launch, so approve the app under System Settings → Privacy &
+Security ("Open Anyway") after installing — the cask caveats explain this.
 Enable Compme under System Settings → Privacy & Security → Accessibility. All
 inference is local; nothing leaves the machine.
 

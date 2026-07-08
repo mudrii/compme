@@ -44,9 +44,15 @@ brew tap mudrii/compme https://github.com/mudrii/compme
 brew install --cask compme
 ```
 
-Or download `compme-0.1.0-macos.zip` below — the app is Developer-ID signed
-and notarized; verify with the `.sha256` file. `compme-0.1.0-update.json` is a
-machine-readable manifest for tooling (nothing in-app consumes it yet).
+Or download `compme-0.1.0-macos.zip` below; verify with the `.sha256` file.
+`compme-0.1.0-update.json` is a machine-readable manifest for tooling (nothing
+in-app consumes it yet).
+
+**This release is ad-hoc signed** (no Apple Developer ID yet): Gatekeeper
+blocks the first launch. After installing, approve the app under System
+Settings → Privacy & Security ("Open Anyway"), or install the cask with
+`--no-quarantine` if you accept the trade-off. A future release will be
+Developer-ID signed and notarized.
 
 ## Known limitations
 
