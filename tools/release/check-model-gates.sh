@@ -1437,9 +1437,12 @@ ruby -ryaml -e '
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
   abort("missing release gate: notarizes and staples app") unless notarize_index
-  signing_gate = "${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 != #{39.chr}#{39.chr} }}"
-  abort("missing release gate: cert import gated on the signing secret (unsigned interim mode)") unless build_steps.fetch(import_index)["if"].to_s == signing_gate
-  abort("missing release gate: notarization paired with the signing condition") unless build_steps.fetch(notarize_index)["if"].to_s == signing_gate
+  q = 39.chr
+  have_signing = "${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 != #{q}#{q} }}"
+  signing_gate = "${{ env.COMPME_HAVE_SIGNING == #{q}true#{q} }}"
+  abort("missing release gate: signing-secret presence surfaced as job env (secrets context is invalid in step if)") unless build_release.fetch("env", {})["COMPME_HAVE_SIGNING"].to_s == have_signing
+  abort("missing release gate: cert import gated on the signing switch (unsigned interim mode)") unless build_steps.fetch(import_index)["if"].to_s == signing_gate
+  abort("missing release gate: notarization paired with the signing switch") unless build_steps.fetch(notarize_index)["if"].to_s == signing_gate
   abort("missing release gate: deletes signing keychain") unless cleanup_index
   abort("missing release gate: packages release artifact") unless package_index
   abort("missing release gate: writes update manifest") unless manifest_index

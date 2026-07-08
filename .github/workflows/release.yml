@@ -312,6 +312,11 @@ jobs:
     permissions:
       contents: read
     runs-on: macos-14
+    env:
+      # Interim unsigned mode switch: the secrets context is not usable in
+      # step `if:` conditions (Actions startup failure), so surface presence
+      # as a job env value and gate the steps on that.
+      COMPME_HAVE_SIGNING: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 != '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -338,7 +343,7 @@ jobs:
       # Configuring the secrets later flips releases back to signed+notarized
       # with no workflow change. A PARTIAL secret set still fails loud below.
       - name: Import Developer ID certificate
-        if: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 != '' }}
+        if: ${{ env.COMPME_HAVE_SIGNING == 'true' }}
         env:
           P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.COMPME_DEVELOPER_ID_P12_PASSWORD }}
@@ -380,7 +385,7 @@ jobs:
       # paired with the signing condition. If signing secrets exist but the
       # notary credentials don't, notarize-app.sh itself fails loud.
       - name: Notarize and staple the .app
-        if: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 != '' }}
+        if: ${{ env.COMPME_HAVE_SIGNING == 'true' }}
         env:
           COMPME_NOTARYTOOL_KEY_BASE64: ${{ secrets.COMPME_NOTARYTOOL_KEY_BASE64 }}
           COMPME_NOTARYTOOL_KEY_ID: ${{ secrets.COMPME_NOTARYTOOL_KEY_ID }}
