@@ -1,0 +1,12 @@
+compme: COMPME_SCREEN_CONTEXT is set in the environment — Settings changes persist to config.env but the environment wins at relaunch
+compme: state=loading
+compme: state=ready
+compme: running (acceptance_pid=Some(80344) stub=true run_ms=Some(3500))
+compme: status=Ready enabled=true snoozed=false
+compme: focus ax:ptr=ax:0x738e45d10|pid=80344|hash=1668325367|id=First Text View|role=AXTextArea
+compme: request gen=3 prompt_chars=531 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: screen_context=Some(160)
+compme: prompt_context=Some("sources=screen chars=160 screen_chars=160")
+compme: completion gen=3 candidate_count=1 candidate_lengths=[21]
+compme: shutting down
+compme: usage shown=1 accepted=0 dismissed=0 superseded=0 words=0 latency_avg=Some(206) latency_p95=Some(206)

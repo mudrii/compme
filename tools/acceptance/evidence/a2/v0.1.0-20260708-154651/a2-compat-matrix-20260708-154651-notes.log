@@ -1,0 +1,9 @@
+compme: state=loading
+compme: state=ready
+compme: running (acceptance_pid=Some(80345) stub=true run_ms=Some(3500))
+compme: status=Ready enabled=true snoozed=false
+compme: focus ax:ptr=ax:0x8be9c6220|pid=80345|hash=1668325448|id=Note Body Text View|role=AXTextArea
+compme: request gen=2 prompt_chars=155 app=com.apple.Notes app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: completion gen=2 candidate_count=1 candidate_lengths=[21]
+compme: shutting down
+compme: usage shown=1 accepted=0 dismissed=0 superseded=0 words=0 latency_avg=Some(12) latency_p95=Some(12)

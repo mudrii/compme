@@ -1,0 +1,9 @@
+compme: state=loading
+compme: state=ready
+compme: running (acceptance_pid=Some(86888) stub=true run_ms=Some(3500))
+compme: status=Ready enabled=true snoozed=false
+compme: focus ax:ptr=ax:0x794ebae20|pid=86888|hash=1668331943|role=AXTextArea
+compme: com.barebones.bbedit is not supported — suggestions disabled
+compme: request blocked gen=3 prompt_chars=172 app=com.barebones.bbedit app_allows=false terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: shutting down
+compme: usage shown=0 accepted=0 dismissed=0 superseded=0 words=0 latency_avg=None latency_p95=None

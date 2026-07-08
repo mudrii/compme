@@ -1,0 +1,11 @@
+compme: COMPME_EXCLUDED_DOMAINS is set in the environment — Settings changes persist to config.env but the environment wins at relaunch
+compme: state=loading
+compme: state=ready
+compme: running (acceptance_pid=Some(94137) stub=true run_ms=Some(3500))
+compme: status=Ready enabled=true snoozed=false
+compme: focus ax:ptr=ax:0x83ae81590|pid=94137|hash=1718670744|role=AXTextField
+compme: domain=html.duckduckgo.com (com.google.Chrome)
+compme: replace left="Dear team, I wanted to compme a2 marker browser-domain-allow 98009 Dear team, I wanted to compme a2 marker browser-domain-exclude 98059 Dear team, I wanted to compme a2 marker browser-domain-allow 4207 Dear team, I wanted to compme a2 marker browser-domain-exclude 4261 " emoji=false autocorrect=false british=false thesaurus=false decision=None
+compme: request blocked gen=2 prompt_chars=269 app=com.google.Chrome app_allows=true terminal_ok=true domain_ready=true prefs_ok=false prompt_marker=true
+compme: shutting down
+compme: usage shown=0 accepted=0 dismissed=0 superseded=0 words=0 latency_avg=None latency_p95=None

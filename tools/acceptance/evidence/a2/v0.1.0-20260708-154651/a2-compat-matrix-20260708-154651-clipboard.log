@@ -1,0 +1,12 @@
+compme: COMPME_CLIPBOARD_CONTEXT is set in the environment — Settings changes persist to config.env but the environment wins at relaunch
+compme: state=loading
+compme: state=ready
+compme: running (acceptance_pid=Some(80344) stub=true run_ms=Some(3500))
+compme: status=Ready enabled=true snoozed=false
+compme: focus ax:ptr=ax:0x8a2c1c030|pid=80344|hash=1668325367|id=First Text View|role=AXTextArea
+compme: clipboard_context=Some(chars=24 marker=true)
+compme: request gen=3 prompt_chars=479 app=com.apple.TextEdit app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: prompt_context=Some("sources=clipboard chars=24 clipboard_chars=24")
+compme: completion gen=3 candidate_count=1 candidate_lengths=[21]
+compme: shutting down
+compme: usage shown=1 accepted=0 dismissed=0 superseded=0 words=0 latency_avg=Some(36) latency_p95=Some(36)

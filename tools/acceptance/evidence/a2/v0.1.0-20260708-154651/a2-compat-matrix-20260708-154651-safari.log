@@ -1,0 +1,21 @@
+compme: state=loading
+compme: state=ready
+compme: running (acceptance_pid=Some(18988) stub=true run_ms=Some(3500))
+compme: replace left="Dear team, I wanted to compme a2 marker browser-domain-allow 90259 Dear team, I wanted to compme a2 marker browser-domain-allow 97983 Dear team, I wanted to c" emoji=false autocorrect=false british=false thesaurus=false decision=None
+compme: status=Ready enabled=true snoozed=false
+compme: replace left="Dear team, I wanted to compme a2 marker browser-domain-allow 90259 Dear team, I wanted to compme a2 marker browser-domain-allow 97983 Dear team, I wanted to compme a2 ma" emoji=false autocorrect=false british=false thesaurus=false decision=None
+compme: replace left="Dear team, I wanted to compme a2 marker browser-domain-allow 90259 Dear team, I wanted to compme a2 marker browser-domain-allow 97983 Dear team, I wanted to compme a2 marker brow" emoji=false autocorrect=false british=false thesaurus=false decision=None
+compme: replace left="Dear team, I wanted to compme a2 marker browser-domain-allow 90259 Dear team, I wanted to compme a2 marker browser-domain-allow 97983 Dear team, I wanted to compme a2 marker browser-domain-all" emoji=false autocorrect=false british=false thesaurus=false decision=None
+compme: replace left="Dear team, I wanted to compme a2 marker browser-domain-allow 90259 Dear team, I wanted to compme a2 marker browser-domain-allow 97983 Dear team, I wanted to compme a2 marker browser-domain-allow 4181 " emoji=false autocorrect=false british=false thesaurus=false decision=None
+compme: focus ax:ptr=ax:0x866b28180|pid=18988|hash=1668326533|role=AXComboBox
+compme: domain=duckduckgo.com (com.apple.Safari)
+compme: replace left="Dear team, I wanted to compme a2 marker browser-domain-allow 90259 Dear team, I wanted to compme a2 marker browser-domain-allow 97983 Dear team, I wanted to compme a2 marker browser-domain-allow 4181 " emoji=false autocorrect=false british=false thesaurus=false decision=None
+compme: request gen=7 prompt_chars=199 app=com.apple.Safari app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: completion gen=7 candidate_count=1 candidate_lengths=[21]
+compme: ghost text_len=19 caret_rect=(x2161.0 y182.0 w3.0 h20.0) primary_h=1600.0 overlay_frame=(x2161.0 y1376.0 w240.0 h24.0)
+compme: carbon hotkey registered id=1 keycode=48 modifiers=0
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: shutting down
+compme: usage shown=1 accepted=0 dismissed=0 superseded=0 words=0 latency_avg=Some(14) latency_p95=Some(14)

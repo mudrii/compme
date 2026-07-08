@@ -1,0 +1,14 @@
+generated_at_epoch	row_id	kind	app	pid	status	expect	log_path
+1783496811	textedit	works	com.apple.TextEdit	80344	PASS	request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-textedit.log
+1783496811	notes	works	com.apple.Notes	80345	PASS	request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-notes.log
+1783496811	mail	works	com.apple.mail	80559	PASS	request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-mail.log
+1783496811	word	works	com.microsoft.Word	80665	PASS	request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-word.log
+1783496811	safari	browser-domain-allow	com.apple.Safari	18988	PASS	domain-request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-safari.log
+1783496811	chrome	browser-domain-allow	com.google.Chrome	94137	PASS	domain-request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-chrome.log
+1783496811	brave	browser-domain-allow	com.brave.Browser	94178	PASS	domain-request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-brave.log
+1783496811	browser-exclude	browser-domain-exclude	browser-domain	94137	PASS	blocked-prefs	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-browser-exclude.log
+1783496811	terminal-cmd	terminal-cmd	terminal	80351	PASS	blocked-terminal	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-terminal-cmd.log
+1783496811	terminal-nlp	terminal-nlp	terminal	99975	PASS	request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-terminal-nlp.log
+1783496811	unsupported	unsupported	unsupported-app	86888	PASS	blocked-app	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-unsupported.log
+1783496811	clipboard	clipboard	works-app	80344	PASS	context-request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-clipboard.log
+1783496811	screen	screen	works-app	80344	PASS	context-request	tools/acceptance/evidence/a2/v0.1.0-20260708-154651/a2-compat-matrix-20260708-154651-screen.log

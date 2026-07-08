@@ -609,6 +609,14 @@ if [[ "$KIND" == "screen" ]]; then
   screen_env=(COMPME_SCREEN_CONTEXT=1 COMPME_DIAG_CONTEXT=1)
 fi
 
+browser_env=()
+if [[ "$KIND" == "browser-domain-allow" || "$KIND" == "browser-domain-exclude" ]]; then
+  # The domain evidence lines (`compme: domain=<host> (<app>)`) are printed
+  # only under COMPME_DEBUG; without it the browser rows can never produce
+  # the host-only proof this harness requires.
+  browser_env=(COMPME_DEBUG=1)
+fi
+
 if [[ "$KIND" == "browser-domain-exclude" ]]; then
   if [[ -z "${COMPME_A2_BROWSER_EXCLUDED_DOMAIN:-}" ]]; then
     echo "FAIL: set COMPME_A2_BROWSER_EXCLUDED_DOMAIN to the focused browser host" >&2
@@ -643,6 +651,7 @@ env -i \
   ${clip_env[@]+"${clip_env[@]}"} \
   ${screen_env[@]+"${screen_env[@]}"} \
   ${prefs_env[@]+"${prefs_env[@]}"} \
+  ${browser_env[@]+"${browser_env[@]}"} \
   "$BIN" >"$LOG" 2>&1 &
 BIN_PID=$!
 sleep "$(awk "BEGIN{print ($WARMUP_MS+$RUN_MS)/1000}")"

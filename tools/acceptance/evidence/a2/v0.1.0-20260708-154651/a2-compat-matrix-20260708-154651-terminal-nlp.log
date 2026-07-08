@@ -1,0 +1,9 @@
+compme: state=loading
+compme: state=ready
+compme: running (acceptance_pid=Some(99975) stub=true run_ms=Some(3500))
+compme: status=Ready enabled=true snoozed=false
+compme: focus ax:ptr=ax:0x7eaa4b4e0|pid=99975|hash=1668344998|role=AXTextArea
+compme: request gen=2 prompt_chars=275 app=com.googlecode.iterm2 app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: completion gen=2 candidate_count=1 candidate_lengths=[21]
+compme: shutting down
+compme: usage shown=1 accepted=0 dismissed=0 superseded=0 words=0 latency_avg=Some(13) latency_p95=Some(13)

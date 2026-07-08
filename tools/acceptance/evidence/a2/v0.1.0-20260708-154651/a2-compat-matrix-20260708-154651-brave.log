@@ -1,0 +1,16 @@
+compme: state=loading
+compme: state=ready
+compme: running (acceptance_pid=Some(94178) stub=true run_ms=Some(3500))
+compme: status=Ready enabled=true snoozed=false
+compme: focus ax:ptr=ax:0xcbea95b30|pid=94178|hash=1718670657|role=AXTextField
+compme: domain=html.duckduckgo.com (com.brave.Browser)
+compme: replace left="Dear team, I wanted to compme a2 marker browser-domain-allow 97489 Dear team, I wanted to compme a2 marker browser-domain-allow 98035 Dear team, I wanted to compme a2 marker browser-domain-allow 4238 " emoji=false autocorrect=false british=false thesaurus=false decision=None
+compme: request gen=2 prompt_chars=199 app=com.brave.Browser app_allows=true terminal_ok=true domain_ready=true prefs_ok=true prompt_marker=true
+compme: completion gen=2 candidate_count=1 candidate_lengths=[21]
+compme: ghost text_len=19 caret_rect=(x811.0 y746.0 w0.0 h19.0) primary_h=1600.0 overlay_frame=(x811.0 y814.0 w240.0 h23.0)
+compme: carbon hotkey registered id=1 keycode=48 modifiers=0
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: shutting down
+compme: usage shown=1 accepted=0 dismissed=0 superseded=0 words=0 latency_avg=Some(13) latency_p95=Some(13)
