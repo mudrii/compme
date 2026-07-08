@@ -2883,6 +2883,8 @@ fn build_settings_flags(
         setup_grant_ax: Arc::new(AtomicBool::new(false)),
         setup_request_screen: Arc::new(AtomicBool::new(false)),
         setup_reveal_model: Arc::new(AtomicBool::new(false)),
+        setup_reveal_models_dir: Arc::new(AtomicBool::new(false)),
+        setup_choose_model: Arc::new(Mutex::new(None)),
         setup_download_model: Arc::new(AtomicBool::new(false)),
         // Picker download target: start at the recommended index so the
         // default download is byte-identical to before (the popup pre-selects
@@ -3739,6 +3741,72 @@ fn model_download_dest_len(dest: &std::path::Path) -> Option<u64> {
     std::fs::metadata(dest).ok().map(|m| m.len())
 }
 
+/// Validate a bring-your-own-model file: a readable, non-empty `.gguf` whose
+/// header carries the GGUF magic. Checked at the trust boundary (the file
+/// panel) so a bad pick fails at the click, not deep in the model loader after
+/// a relaunch. Returns a human-readable reason on rejection.
+fn validate_gguf_model(path: &std::path::Path) -> Result<(), String> {
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+        != Some(true)
+    {
+        return Err(format!("{} is not a .gguf file", path.display()));
+    }
+    let mut file = std::fs::File::open(path)
+        .map_err(|err| format!("cannot open {}: {err}", path.display()))?;
+    let mut magic = [0u8; 4];
+    // read_exact on a <4-byte (e.g. empty/partial) file errors, so this also
+    // rejects empty stubs.
+    std::io::Read::read_exact(&mut file, &mut magic)
+        .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
+    if &magic != b"GGUF" {
+        return Err(format!(
+            "{} is not a GGUF model (bad header)",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The app-support models directory (sibling of the config file): where
+/// `Download Model` writes GGUFs. `None` when no config home resolves.
+fn app_support_models_dir() -> Option<PathBuf> {
+    config::config_file_path().map(|path| path.with_file_name("models"))
+}
+
+/// The most-recently-modified non-empty `*.gguf` in `dir`, if any. Downloads
+/// land in this dir, but the loader otherwise only consults COMPME_MODEL_PATH
+/// (env/config file) and the DEFAULT_MODEL fallback — a repo-relative dev path
+/// absent from a shipped `.app`. So a model the user already downloaded (this
+/// build or an older one) would sit unused and the Setup row stay ✗, with a
+/// re-download click reporting only "already present". Newest wins so the
+/// latest download is adopted; empty/partial stubs are skipped.
+// ponytail: newest-by-mtime, not the picker's selection — the Download button
+// persists the exact selected model; this is only the zero-click fallback.
+fn discover_downloaded_model(dir: &std::path::Path) -> Option<PathBuf> {
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("gguf") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() || meta.len() == 0 {
+            continue;
+        }
+        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if newest
+            .as_ref()
+            .is_none_or(|(newest_mtime, _)| mtime > *newest_mtime)
+        {
+            newest = Some((mtime, path));
+        }
+    }
+    newest.map(|(_, path)| path)
+}
+
 fn model_download_dest_present(
     dest: &std::path::Path,
     expected_sha256: Option<&str>,
@@ -3903,6 +3971,30 @@ pub fn run() -> Result<(), String> {
         || caret_subscription_requires_relaunch
         || accept_subscription_requires_relaunch;
     engine.set_accept_subscription(accept_sub);
+
+    // Auto-adopt an already-downloaded model when the configured path is
+    // unusable (COMPME_MODEL_PATH unset → nonexistent DEFAULT_MODEL, or a
+    // stale/deleted path). Downloads land in the app-support models dir but
+    // the loader only reads env/file/default, so a model the user already
+    // downloaded would never load and the Setup row would stay ✗ forever. An
+    // explicit, existing COMPME_MODEL_PATH always wins (exists() short-circuits
+    // the scan). Persist the adoption so later launches skip the scan.
+    if config.stub_completion.is_none() && !config.model_path.exists() {
+        if let Some(found) = app_support_models_dir()
+            .as_deref()
+            .and_then(discover_downloaded_model)
+        {
+            eprintln!("compme: adopting downloaded model {}", found.display());
+            if let Some(cfg) = config::config_file_path() {
+                if let Err(err) =
+                    config::persist_setting(&cfg, "COMPME_MODEL_PATH", &found.to_string_lossy())
+                {
+                    eprintln!("compme: failed to persist adopted COMPME_MODEL_PATH: {err}");
+                }
+            }
+            config.model_path = found;
+        }
+    }
 
     let model = match load_model(resolve_source(
         config.stub_completion.clone(),
@@ -4831,6 +4923,52 @@ pub fn run() -> Result<(), String> {
                 eprintln!("compme: reveal model failed: {err:?}");
             }
         }
+        // "Show Models Folder": open the app-support models dir in Finder
+        // (created first so it opens even before the first download).
+        if settings_flags
+            .setup_reveal_models_dir
+            .swap(false, Ordering::Relaxed)
+        {
+            match app_support_models_dir() {
+                Some(dir) => {
+                    let _ = std::fs::create_dir_all(&dir);
+                    if let Err(err) = shell.open_url(&dir.to_string_lossy()) {
+                        eprintln!("compme: open models folder failed: {err:?}");
+                    }
+                }
+                None => eprintln!("compme: cannot resolve models folder (no config home)"),
+            }
+        }
+        // Bring-your-own-model: a path picked via the file panel. Validate it is
+        // a readable GGUF, then point COMPME_MODEL_PATH at it in place (no copy);
+        // the model loads on the next launch (same as adopt/download).
+        let chosen_model = settings_flags
+            .setup_choose_model
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(path) = chosen_model {
+            match validate_gguf_model(&path) {
+                Ok(()) => {
+                    if let Some(cfg) = config::config_file_path() {
+                        match config::persist_setting(
+                            &cfg,
+                            "COMPME_MODEL_PATH",
+                            &path.to_string_lossy(),
+                        ) {
+                            Ok(()) => eprintln!(
+                                "compme: using model {} \u{2014} relaunch to load",
+                                path.display()
+                            ),
+                            Err(err) => {
+                                eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}")
+                            }
+                        }
+                    }
+                }
+                Err(reason) => eprintln!("compme: chosen model rejected \u{2014} {reason}"),
+            }
+        }
         // Live accept-key rebind (recorder 5b slice 3): the recorder UI (or
         // a debug trigger — slice 4 supplies the producer) parks the request;
         // consume the edge here. Sequencing inside apply_live_accept_keymap:
@@ -5175,11 +5313,27 @@ pub fn run() -> Result<(), String> {
                         DownloadStartResult::PreparedFailed(err) => {
                             eprintln!("compme: {err}");
                         }
-                        DownloadStartResult::AlreadyPresent => eprintln!(
-                            "compme: {} already downloaded at {} \u{2014} delete it to re-download",
-                            entry.name,
-                            dest.display()
-                        ),
+                        DownloadStartResult::AlreadyPresent => {
+                            // The model is already on disk (this build or an
+                            // older one). A download Done edge will never fire,
+                            // so wire it here: persist the SELECTED model's path
+                            // so a re-click on a present model adopts it instead
+                            // of being an inert "already present" no-op.
+                            if let Some(cfg) = config::config_file_path() {
+                                if let Err(err) = config::persist_setting(
+                                    &cfg,
+                                    "COMPME_MODEL_PATH",
+                                    &dest.to_string_lossy(),
+                                ) {
+                                    eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}");
+                                }
+                            }
+                            eprintln!(
+                                "compme: {} already downloaded at {} \u{2014} COMPME_MODEL_PATH set, relaunch to use",
+                                entry.name,
+                                dest.display()
+                            )
+                        }
                         DownloadStartResult::SpawnFailed(err) => {
                             eprintln!("compme: failed to start model downloader \u{2014} {err}");
                         }
@@ -13508,6 +13662,99 @@ mod tests {
             } => assert_eq!(entry.name, recommended.name),
             other => panic!("expected OOB fallback to recommended, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn validate_gguf_model_accepts_gguf_magic_and_rejects_the_rest() {
+        let dir = std::env::temp_dir().join(format!("cm-byom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Wrong extension → rejected before any read.
+        let txt = dir.join("model.bin");
+        std::fs::write(&txt, b"GGUFxxxx").unwrap();
+        assert!(
+            validate_gguf_model(&txt).is_err(),
+            "non-.gguf must be rejected"
+        );
+
+        // .gguf extension but wrong magic → rejected.
+        let bad = dir.join("bad.gguf");
+        std::fs::write(&bad, b"NOPEyyyy").unwrap();
+        assert!(
+            validate_gguf_model(&bad).is_err(),
+            "bad magic must be rejected"
+        );
+
+        // Empty .gguf → rejected (read_exact of 4 bytes fails).
+        let empty = dir.join("empty.gguf");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(
+            validate_gguf_model(&empty).is_err(),
+            "empty must be rejected"
+        );
+
+        // Missing file → rejected.
+        assert!(validate_gguf_model(&dir.join("nope.gguf")).is_err());
+
+        // Real GGUF magic + uppercase extension → accepted.
+        let good = dir.join("model.GGUF");
+        std::fs::write(&good, b"GGUF\x03\x00\x00\x00rest").unwrap();
+        assert!(
+            validate_gguf_model(&good).is_ok(),
+            "a GGUF-magic .gguf (case-insensitive ext) must be accepted"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discover_downloaded_model_picks_newest_nonempty_gguf() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("cm-discover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Empty dir → nothing to adopt.
+        assert_eq!(discover_downloaded_model(&dir), None);
+
+        // A non-gguf file and an empty gguf stub are both ignored.
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        std::fs::write(dir.join("partial.gguf"), b"").unwrap();
+        assert_eq!(
+            discover_downloaded_model(&dir),
+            None,
+            "non-gguf and empty stubs must be skipped"
+        );
+
+        // Two real models: the one with the newer mtime wins, regardless of name.
+        let older = dir.join("qwen2.5-0.5b-q4_k_m.gguf");
+        let newer = dir.join("gemma-2-2b-q4_k_m.gguf");
+        std::fs::write(&older, b"aaaa").unwrap();
+        std::fs::write(&newer, b"bbbb").unwrap();
+        let base = SystemTime::now();
+        set_mtime(&older, base - Duration::from_secs(60));
+        set_mtime(&newer, base);
+        assert_eq!(
+            discover_downloaded_model(&dir).as_deref(),
+            Some(newer.as_path()),
+            "the most recently modified gguf must win"
+        );
+
+        // Touch the older one newer → it now wins (proves mtime, not name/order).
+        set_mtime(&older, base + Duration::from_secs(60));
+        assert_eq!(
+            discover_downloaded_model(&dir).as_deref(),
+            Some(older.as_path())
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Set a file's mtime with stdlib only (File::set_modified, stable 1.75).
+    fn set_mtime(path: &std::path::Path, when: std::time::SystemTime) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(when).unwrap();
     }
 
     #[test]

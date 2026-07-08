@@ -21,9 +21,10 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSButtonType,
-    NSControlStateValue, NSControlStateValueOn, NSEvent, NSFocusRingType, NSFont, NSPopUpButton,
-    NSResponder, NSSegmentSwitchTracking, NSSegmentedControl, NSSwitch, NSTabView, NSTabViewItem,
-    NSTabViewType, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSControlStateValue, NSControlStateValueOn, NSEvent, NSFocusRingType, NSFont,
+    NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSResponder, NSSegmentSwitchTracking,
+    NSSegmentedControl, NSSwitch, NSTabView, NSTabViewItem, NSTabViewType, NSTextField, NSView,
+    NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::shell::{
@@ -346,6 +347,45 @@ define_class!(
         #[unsafe(method(downloadModel:))]
         fn download_model(&self, _sender: Option<&NSButton>) {
             record_setup_download(&self.ivars().flags.setup_download_model);
+        }
+
+        #[unsafe(method(revealModelsDir:))]
+        fn reveal_models_dir(&self, _sender: Option<&NSButton>) {
+            self.ivars()
+                .flags
+                .setup_reveal_models_dir
+                .store(true, Ordering::Relaxed);
+        }
+
+        // Bring-your-own-model: an NSOpenPanel picks a .gguf; the chosen path is
+        // handed to the run loop, which validates it and points COMPME_MODEL_PATH
+        // at it. The panel is main-thread only and runs a nested modal loop
+        // (NSAlert pattern in ui_prompt.rs). Extension/magic validation lives in
+        // the run loop, so the panel itself imposes no (deprecated) type filter.
+        #[unsafe(method(chooseModel:))]
+        fn choose_model(&self, _sender: Option<&NSButton>) {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let panel = NSOpenPanel::openPanel(mtm);
+            panel.setCanChooseFiles(true);
+            panel.setCanChooseDirectories(false);
+            panel.setAllowsMultipleSelection(false);
+            panel.setMessage(Some(&NSString::from_str(
+                "Choose a .gguf model file to use with Compme",
+            )));
+            panel.setPrompt(Some(&NSString::from_str("Use Model")));
+            if panel.runModal() == NSModalResponseOK {
+                if let Some(path) = panel.URL().and_then(|url| url.path()) {
+                    *self
+                        .ivars()
+                        .flags
+                        .setup_choose_model
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(std::path::PathBuf::from(path.to_string()));
+                }
+            }
         }
 
         #[unsafe(method(selectModel:))]
@@ -1560,6 +1600,35 @@ fn build_window(
             setup.addSubview(&button);
             setup_action_buttons.push(button);
         }
+
+        // Always-on model-management buttons in the right column: reveal the
+        // models folder in Finder, and bring-your-own-model. Kept OUT of
+        // setup_action_buttons so the row-coupled availability refresh (a
+        // `[bool; 4]` zip) never hides them; the view hierarchy retains them.
+        let model_mgmt: [(&str, objc2::runtime::Sel); 2] = [
+            ("Show Models Folder", sel!(revealModelsDir:)),
+            ("Choose Model\u{2026}", sel!(chooseModel:)),
+        ];
+        for (i, (title, action)) in model_mgmt.into_iter().enumerate() {
+            // SAFETY: target outlives the window (held by MacosSettingsWindow).
+            let button = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(title),
+                    Some({
+                        let any: &AnyObject = target.as_ref();
+                        any
+                    }),
+                    Some(action),
+                    mtm,
+                )
+            };
+            button.setFrame(NSRect::new(
+                NSPoint::new(270.0, 150.0 - i as f64 * 36.0),
+                NSSize::new(230.0, 28.0),
+            ));
+            setup.addSubview(&button);
+        }
+
         refresh_setup_action_buttons(&setup_action_buttons, &initial);
     }
 

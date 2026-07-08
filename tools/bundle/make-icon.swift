@@ -1,6 +1,9 @@
-// Render the Compme placeholder app icon to a 1024px PNG.
+// Render the Compme app icon to a 1024px PNG.
 // Usage: swift make-icon.swift <output.png>
-// A rounded-square (squircle) indigo→violet gradient with a centered white "C".
+//
+// Concept: inline text-completion. On a rounded-square blue→violet gradient,
+// a solid white "typed" bar, a text caret, and a faded "ghost suggestion" bar
+// — the product's core gesture (accept the ghost text after your cursor).
 import AppKit
 
 let outPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "icon-1024.png"
@@ -10,27 +13,33 @@ let rect = NSRect(x: 0, y: 0, width: size, height: size)
 let image = NSImage(size: rect.size)
 image.lockFocus()
 
-// Transparent corners: clip to a rounded rect so Finder shows a squircle.
-let radius = size * 0.2237 // macOS continuous-corner ratio, approximated
+// Squircle: transparent corners so Finder shows a rounded icon.
+let radius = size * 0.2237
 NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).addClip()
 
-// Vertical gradient background.
-let top = NSColor(srgbRed: 0.31, green: 0.27, blue: 0.90, alpha: 1) // indigo
-let bottom = NSColor(srgbRed: 0.49, green: 0.23, blue: 0.93, alpha: 1) // violet
-NSGradient(colors: [top, bottom])!.draw(in: rect, angle: -90)
+// Diagonal gradient background.
+let top = NSColor(srgbRed: 0.29, green: 0.33, blue: 0.95, alpha: 1) // indigo-blue
+let bottom = NSColor(srgbRed: 0.55, green: 0.22, blue: 0.93, alpha: 1) // violet
+NSGradient(colors: [top, bottom])!.draw(in: rect, angle: -60)
 
-// Centered white "C".
-let para = NSMutableParagraphStyle()
-para.alignment = .center
-let font = NSFont.systemFont(ofSize: 640, weight: .bold)
-let attrs: [NSAttributedString.Key: Any] = [
-    .font: font,
-    .foregroundColor: NSColor.white,
-    .paragraphStyle: para,
-]
-let glyph = "C" as NSString
-let g = glyph.size(withAttributes: attrs)
-glyph.draw(at: NSPoint(x: (size - g.width) / 2, y: (size - g.height) / 2), withAttributes: attrs)
+// Helper: a rounded white bar.
+func bar(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, alpha: CGFloat) {
+    NSColor(white: 1, alpha: alpha).setFill()
+    NSBezierPath(roundedRect: NSRect(x: x, y: y, width: w, height: h),
+                 xRadius: h / 2, yRadius: h / 2).fill()
+}
+
+let midY = size / 2
+let barH: CGFloat = 104
+// "typed" solid text (left of the caret).
+bar(232, midY - barH / 2, 250, barH, alpha: 1.0)
+// Text caret: a tall thin vertical bar.
+let caretW: CGFloat = 60
+NSColor(white: 1, alpha: 1).setFill()
+NSBezierPath(roundedRect: NSRect(x: 512 - caretW / 2, y: midY - 190, width: caretW, height: 380),
+             xRadius: caretW / 2, yRadius: caretW / 2).fill()
+// "ghost suggestion" (right of the caret), faded.
+bar(566, midY - barH / 2, 236, barH, alpha: 0.42)
 
 image.unlockFocus()
 

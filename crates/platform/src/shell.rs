@@ -182,6 +182,12 @@ pub struct SettingsFlags {
     pub setup_grant_ax: Arc<AtomicBool>,
     pub setup_request_screen: Arc<AtomicBool>,
     pub setup_reveal_model: Arc<AtomicBool>,
+    /// "Show Models Folder" clicked — the run loop reveals the app-support
+    /// models directory in Finder.
+    pub setup_reveal_models_dir: Arc<AtomicBool>,
+    /// Bring-your-own-model: a path the user picked via the file panel, for the
+    /// run loop to validate and point COMPME_MODEL_PATH at. `None` until chosen.
+    pub setup_choose_model: Arc<Mutex<Option<std::path::PathBuf>>>,
     pub setup_download_model: Arc<AtomicBool>,
     pub setup_model_index: Arc<AtomicUsize>,
     pub setup_model_menu_titles: Vec<String>,

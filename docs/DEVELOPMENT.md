@@ -122,9 +122,11 @@ are wired (D14):
   re-downloaded (`model_present`), so a repeat "Download" click never clobbers a
   good file; an interrupted 0-byte stub is treated as absent and re-fetched.
 
-On a completed download the log prints the `COMPME_MODEL_PATH=…` line to point a
-relaunch at the new file. Downloads use `model_fetch` with catalog-pinned
-SHA-256 hashes and verify-before-rename semantics. See
+On a completed download (or when a model is already present, or via
+"Choose Model…") the app persists `COMPME_MODEL_PATH` to `config.env` so the
+next launch loads it; if it is unset and the configured path is missing, startup
+auto-adopts the newest `.gguf` in the models dir. Downloads use `model_fetch`
+with catalog-pinned SHA-256 hashes and verify-before-rename semantics. See
 `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` §15 D14.
 
 ## Root Workspace Commands
@@ -154,7 +156,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1789 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1791 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -218,7 +220,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1789 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1791 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
