@@ -3,12 +3,8 @@
 [![CI](https://github.com/mudrii/compme/actions/workflows/ci.yml/badge.svg)](https://github.com/mudrii/compme/actions/workflows/ci.yml)
 
 Compme is an **open-source, multi-platform** inline text-completion engine
-**inspired by** [Cotypist](https://cotypist.app). It is **not** a proprietary
-clone, but the plan is to cover Cotypist's non-payment user-facing writing
-workflow while shaping the implementation around open local-first goals.
-Compme deliberately leaves out payment, licensing, subscription tiers, and
-multi-device seats. Every feature that ships is available to every user with no
-pricing gates; the only constraint on which local models are offered is hardware
+**inspired by** [Cotypist](https://cotypist.app). 
+Compme the only constraint on which local models are offered is hardware
 capability. macOS ships first; **Windows and Linux are
 committed deliverables** built behind a shared cross-platform `PlatformAdapter`
 contract. All inference is local (llama.cpp), with no proprietary telemetry.
