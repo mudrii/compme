@@ -1,7 +1,8 @@
 cask "compme" do
-  version "0.1.0"
-  # Placeholder until the first tagged release; tools/release/update-cask.sh
-  # rewrites both lines from the published artifact (see docs/RELEASING.md).
+  version "0.1.1"
+  # sha256 is rewritten from the published artifact by
+  # tools/release/update-cask.sh during the tag release (see docs/RELEASING.md);
+  # the value below is the previous release's until v0.1.1 finalizes.
   sha256 "c34160b96dfdf51b0ba66f179a432668b277c804d6722f2898c62bb0216804ba"
 
   url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
@@ -9,7 +10,7 @@ cask "compme" do
   desc "Open-source local inline text-completion engine for macOS"
   homepage "https://github.com/mudrii/compme"
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "Compme.app"
 

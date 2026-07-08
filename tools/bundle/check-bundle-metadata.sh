@@ -55,7 +55,7 @@ PLIST
 cask "compme" do
   version "${2}"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-  depends_on macos: ">= :${floor}"
+  depends_on macos: :${floor}
 end
 CASK
   }
@@ -302,7 +302,7 @@ ruby -rrexml/document -e '
   cargo_version = File.read(cargo_path)[/^version\s*=\s*"([^"]+)"/, 1]
   cask_text = File.read(cask_path)
   cask_version = cask_text[/^\s*version\s+"([^"]+)"/, 1]
-  cask_macos = cask_text[/^\s*depends_on\s+macos:\s+">=\s*:(\w+)"/, 1]
+  cask_macos = cask_text[/^\s*depends_on\s+macos:\s+:(\w+)/, 1]
   plist_version = value_after.call("CFBundleShortVersionString")
   expect.call("CFBundleVersion", value_after.call("CFBundleVersion"), plist_version)
   errors << "crates/app Cargo.toml: missing package version" unless cargo_version
