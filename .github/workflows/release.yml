@@ -402,6 +402,10 @@ jobs:
           COMPME_NOTARYTOOL_APPLE_ID: ${{ secrets.COMPME_NOTARYTOOL_APPLE_ID }}
           COMPME_NOTARYTOOL_PASSWORD: ${{ secrets.COMPME_NOTARYTOOL_PASSWORD }}
           COMPME_NOTARYTOOL_TEAM_ID: ${{ secrets.COMPME_NOTARYTOOL_TEAM_ID }}
+          # Notary --wait cap. Raised above the 30m default for a freshly enrolled
+          # Apple account whose first notarizations queue for hours. Tune via the
+          # COMPME_NOTARYTOOL_TIMEOUT repo variable (no code change needed).
+          COMPME_NOTARYTOOL_TIMEOUT: ${{ vars.COMPME_NOTARYTOOL_TIMEOUT || '60m' }}
         run: tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app"
 
       - name: Delete signing keychain
