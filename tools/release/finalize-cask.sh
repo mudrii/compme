@@ -14,15 +14,16 @@ usage() {
 
 freeze_release_helpers() {
   frozen_root="$1"
+  tag_sha="$2"
   mkdir -p "$frozen_root/tools/release"
   for helper in validate-version.sh update-cask.sh; do
-    source_path="$repo_root/tools/release/$helper"
-    if [ ! -f "$source_path" ]; then
-      echo "missing tag-reviewed release helper: $source_path" >&2
+    destination="$frozen_root/tools/release/$helper"
+    if ! git -C "$repo_root" show "$tag_sha:tools/release/$helper" >"$destination"; then
+      rm -f "$destination"
+      echo "missing release helper at verified tag commit $tag_sha: tools/release/$helper" >&2
       return 1
     fi
-    cp "$source_path" "$frozen_root/tools/release/$helper"
-    chmod +x "$frozen_root/tools/release/$helper"
+    chmod +x "$destination"
   done
 }
 
@@ -62,13 +63,6 @@ finalize_cask() {
   version="$3"
   default_branch="$4"
 
-  frozen_root="$(mktemp -d "${TMPDIR:-/tmp}/compme-finalize-helpers.XXXXXX")"
-  trap 'rm -rf "$frozen_root"' EXIT
-  freeze_release_helpers "$frozen_root"
-  frozen_validator="$frozen_root/tools/release/validate-version.sh"
-  frozen_updater="$frozen_root/tools/release/update-cask.sh"
-
-  "$frozen_validator" "$version"
   if [ "$tag" != "v$version" ]; then
     echo "tag/version mismatch: $tag != v$version" >&2
     return 1
@@ -89,6 +83,14 @@ finalize_cask() {
     echo "release tag commit $GITHUB_SHA is not on origin/$default_branch" >&2
     return 1
   fi
+
+  frozen_root="$(mktemp -d "${TMPDIR:-/tmp}/compme-finalize-helpers.XXXXXX")"
+  trap 'rm -rf "$frozen_root"' EXIT
+  freeze_release_helpers "$frozen_root" "$tag_sha"
+  frozen_validator="$frozen_root/tools/release/validate-version.sh"
+  frozen_updater="$frozen_root/tools/release/update-cask.sh"
+  "$frozen_validator" "$version"
+
   git checkout "$default_branch"
   git pull --ff-only origin "$default_branch"
   current_cask_version="$(ruby -ne 'puts $1 if /^  version "([^"]+)"/' Casks/compme.rb)"
@@ -269,6 +271,37 @@ SH
     return 1
   fi
 
+  make_fixture_repo "$tmp/dirty-tag-checkout" modify
+  dirty_tag_sha="$(git -C "$tmp/dirty-tag-checkout/work" rev-parse refs/tags/v9.8.7^{commit})"
+  detach_release_checkout "$tmp/dirty-tag-checkout/work" "$dirty_tag_sha"
+  cat >"$tmp/dirty-tag-checkout/work/tools/release/validate-version.sh" <<'SH'
+set -euo pipefail
+printf '%s\n' "dirty-validator" >>"${COMPME_FINALIZE_CASK_HELPER_LOG:?}"
+exit 73
+SH
+  cat >"$tmp/dirty-tag-checkout/work/tools/release/update-cask.sh" <<'SH'
+set -euo pipefail
+printf '%s\n' "dirty-updater" >>"${COMPME_FINALIZE_CASK_HELPER_LOG:?}"
+exit 74
+SH
+  chmod +x \
+    "$tmp/dirty-tag-checkout/work/tools/release/validate-version.sh" \
+    "$tmp/dirty-tag-checkout/work/tools/release/update-cask.sh"
+  : >"$tmp/dirty-tag-helpers.log"
+  COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/dirty-tag-checkout/work" \
+    COMPME_FINALIZE_CASK_HELPER_LOG="$tmp/dirty-tag-helpers.log" \
+    GITHUB_SHA="$dirty_tag_sha" \
+    "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main >/dev/null
+  grep -Fxq "tag-validator" "$tmp/dirty-tag-helpers.log"
+  grep -Fxq "tag-updater" "$tmp/dirty-tag-helpers.log"
+  if grep -Fq "dirty-" "$tmp/dirty-tag-helpers.log"; then
+    echo "finalize-cask self-test failed: dirty working-tree helper executed" >&2
+    return 1
+  fi
+  git -C "$tmp/dirty-tag-checkout/work" fetch origin main >/dev/null 2>&1
+  git -C "$tmp/dirty-tag-checkout/work" log --oneline origin/main -1 |
+    grep -q "chore(release): cask v9.8.7"
+
   for rejection in \
     "bad-syntax|invalid Ruby syntax after cask update" \
     "wrong-arch|expected exactly one arm64 dependency line" \
@@ -355,8 +388,11 @@ SH
   grep -q "tag/version mismatch" "$tmp/tag-version-mismatch.err"
 
   make_fixture_repo "$tmp/invalid-version" noop
+  invalid_version_sha="$(git -C "$tmp/invalid-version/work" rev-parse HEAD)"
+  git -C "$tmp/invalid-version/work" tag v01.2.3 "$invalid_version_sha"
+  git -C "$tmp/invalid-version/work" push origin refs/tags/v01.2.3 >/dev/null 2>&1
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/invalid-version/work" \
-    GITHUB_SHA=unused \
+    GITHUB_SHA="$invalid_version_sha" \
     "$0" v01.2.3 "$tmp/artifact.zip" 01.2.3 main >/dev/null 2>"$tmp/invalid-version.err"; then
     echo "finalize-cask self-test failed: invalid version was accepted" >&2
     return 1

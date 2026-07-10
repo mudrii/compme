@@ -454,9 +454,13 @@ validate_lines = active_shell_lines(function_body(source, "validate_finalized_ca
 finalize_lines = active_shell_lines(function_body(source, "finalize_cask"))
 [
   'for helper in validate-version.sh update-cask.sh; do',
-  'source_path="$repo_root/tools/release/$helper"',
-  'cp "$source_path" "$frozen_root/tools/release/$helper"',
+  'tag_sha="$2"',
+  'destination="$frozen_root/tools/release/$helper"',
+  'git -C "$repo_root" show "$tag_sha:tools/release/$helper" >"$destination"',
 ].each { |fragment| require_active_fragment!(freeze_lines, fragment) }
+if freeze_lines.any? { |line| line.include?('cp "$repo_root/tools/release/$helper"') || line.include?('source_path="$repo_root/tools/release/$helper"') }
+  abort("stale release gate: cask finalizer freezes helpers from the working tree")
+end
 [
   "expected_sha=\"$(shasum -a 256 \"$artifact_path\"",
   'ruby -c "$cask_path"',
@@ -467,7 +471,7 @@ finalize_lines = active_shell_lines(function_body(source, "finalize_cask"))
   'depends_on arch: :arm64',
 ].each { |fragment| require_active_fragment!(validate_lines, fragment) }
 [
-  'freeze_release_helpers "$frozen_root"',
+  'freeze_release_helpers "$frozen_root" "$tag_sha"',
   'frozen_validator="$frozen_root/tools/release/validate-version.sh"',
   'frozen_updater="$frozen_root/tools/release/update-cask.sh"',
   '"$frozen_validator" "$version"',
@@ -477,8 +481,11 @@ finalize_lines = active_shell_lines(function_body(source, "finalize_cask"))
   'validate_finalized_cask "$cask_path" "$version" "$artifact_path"',
 ].each { |fragment| require_active_fragment!(finalize_lines, fragment) }
 
-freeze_index = finalize_lines.index { |line| line.include?('freeze_release_helpers "$frozen_root"') }
 fetch_index = finalize_lines.index { |line| line.include?('git fetch origin "$default_branch"') }
+tag_sha_index = finalize_lines.index { |line| line.include?('tag_sha="$(git rev-parse "refs/tags/$tag^{commit}")"') }
+tag_sha_verification_index = finalize_lines.index { |line| line.include?('if [ "$tag_sha" != "$GITHUB_SHA" ]; then') }
+ancestry_index = finalize_lines.index { |line| line.include?('git merge-base --is-ancestor "$GITHUB_SHA" "origin/$default_branch"') }
+freeze_index = finalize_lines.index { |line| line.include?('freeze_release_helpers "$frozen_root" "$tag_sha"') }
 checkout_index = finalize_lines.index { |line| line.include?('git checkout "$default_branch"') }
 pull_index = finalize_lines.index { |line| line.include?('git pull --ff-only origin "$default_branch"') }
 updater_index = finalize_lines.index { |line| line.include?('"$frozen_updater" "$tag"') }
@@ -486,8 +493,10 @@ validation_index = finalize_lines.index { |line| line.include?('validate_finaliz
 git_add_index = finalize_lines.index { |line| line.include?('git add Casks/compme.rb') }
 commit_index = finalize_lines.index { |line| line.include?('commit -m "chore(release): cask $tag"') }
 push_index = finalize_lines.index { |line| line.include?('git push origin "HEAD:$default_branch"') }
-abort("missing release gate: cask finalizer freezes tag-reviewed helpers before mutable branch operations") unless
-  freeze_index && fetch_index && checkout_index && pull_index && freeze_index < fetch_index && freeze_index < checkout_index && freeze_index < pull_index
+abort("missing release gate: cask finalizer verifies tag provenance before freezing helpers and mutable branch operations") unless
+  fetch_index && tag_sha_index && tag_sha_verification_index && ancestry_index && freeze_index && checkout_index && pull_index &&
+  fetch_index < tag_sha_index && tag_sha_index < tag_sha_verification_index && tag_sha_verification_index < ancestry_index &&
+  ancestry_index < freeze_index && freeze_index < checkout_index && checkout_index < pull_index
 abort("missing release gate: cask finalizer validates the frozen-updater result before git publication") unless
   updater_index && validation_index && git_add_index && commit_index && push_index &&
   updater_index < validation_index && validation_index < git_add_index && validation_index < commit_index && validation_index < push_index
@@ -2089,7 +2098,7 @@ YAML
   fi
 
   cp "$finalize_cask_script" "$finalizer_fixture"
-  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root"), %q(  # freeze_release_helpers "$frozen_root"))' "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root" "$tag_sha"), %q(  # freeze_release_helpers "$frozen_root" "$tag_sha"))' "$finalizer_fixture"
   if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: commented frozen-helper invocation was accepted" >&2
     cleanup
@@ -2097,8 +2106,8 @@ YAML
   fi
 
   cp "$finalize_cask_script" "$finalizer_fixture"
-  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root"), %q(  return 0
-  freeze_release_helpers "$frozen_root"))' "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root" "$tag_sha"), %q(  return 0
+  freeze_release_helpers "$frozen_root" "$tag_sha"))' "$finalizer_fixture"
   if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: frozen-helper path after early return was accepted" >&2
     cleanup
@@ -2106,10 +2115,35 @@ YAML
   fi
 
   cp "$finalize_cask_script" "$finalizer_fixture"
-  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root"), ""); sub(%q(  git pull --ff-only origin "$default_branch"), %q(  git pull --ff-only origin "$default_branch"
-  freeze_release_helpers "$frozen_root"))' "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root" "$tag_sha"), ""); sub(%q(  git pull --ff-only origin "$default_branch"), %q(  git pull --ff-only origin "$default_branch"
+  freeze_release_helpers "$frozen_root" "$tag_sha"))' "$finalizer_fixture"
   if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: helper freeze after mutable branch pull was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(git -C "$repo_root" show "$tag_sha:tools/release/$helper" >"$destination"), %q(cp "$repo_root/tools/release/$helper" "$destination"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: working-tree helper copy was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root" "$tag_sha"), ""); sub(%q(  if [ "$tag_sha" != "$GITHUB_SHA" ]; then), %q(  freeze_release_helpers "$frozen_root" "$tag_sha"
+  if [ "$tag_sha" != "$GITHUB_SHA" ]; then))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: helper freeze before tag SHA verification was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root" "$tag_sha"), %q(  freeze_release_helpers "$frozen_root" HEAD))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: helper freeze from HEAD was accepted" >&2
     cleanup
     return 1
   fi
@@ -2798,7 +2832,7 @@ require_line "$development_doc" "workspace with ${workspace_members_count}[[:spa
 require_line "$readme_doc" "roughly ${workspace_test_count_commas}[[:space:]]+tests" "README workspace test count"
 require_line "$development_doc" "~${workspace_test_count}[[:space:]]+tests" "DEVELOPMENT workspace test count"
 require_line "$roadmap_doc" "≈${workspace_test_count}[[:space:]]+workspace tests" "ROADMAP workspace test count"
-require_line "$roadmap_doc" "${workspace_test_count}[[:space:]]+tests, clippy clean" "ROADMAP readiness test count"
+require_line "$roadmap_doc" "current workspace count is recorded in the" "ROADMAP readiness count source"
 require_line "$grammar_spec" "≈${workspace_test_count}[[:space:]]+tests green" "grammar spec prerequisite test count"
 if grep -Eq 'sha256 "0{64}"' "$cask_file"; then
   require_line "$roadmap_doc" 'first real release' "ROADMAP first release pending status"

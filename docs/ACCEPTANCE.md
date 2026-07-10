@@ -621,6 +621,9 @@ download block. To exercise:
 1. Confirm the Setup pane exposes exactly one **Show Models Folder** control and
    no **Reveal Model in Finder** control; click it and verify Finder opens the
    models directory.
+   Automated coverage pins create-before-reveal ordering, the exact filesystem
+   path, and fail-closed behavior when directory creation fails; this live step
+   still proves the Finder handoff itself.
 2. Open the popup and confirm one row per catalog entry
    (`qwen2.5-0.5b-q4_k_m`, `llama-3.2-1b-q4_k_m`, `qwen2.5-1.5b-q4_k_m`,
    `gemma-2-2b-q4_k_m`), each carrying a fit suffix.

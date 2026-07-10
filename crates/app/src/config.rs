@@ -203,6 +203,95 @@ pub fn persist_setting(path: &Path, key: &str, value: &str) -> std::io::Result<(
     atomic_write(path, &updated)
 }
 
+/// Create `dir`, tightening it to owner-only only when this call created it.
+/// A pre-existing custom directory keeps its intentional permissions.
+fn create_owner_only_dir_if_missing_with(
+    dir: &Path,
+    mut create_dir: impl FnMut(&Path) -> std::io::Result<()>,
+    mut create_dir_all: impl FnMut(&Path) -> std::io::Result<()>,
+    harden: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let created = match create_dir(dir) {
+        Ok(()) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            create_dir_all(dir)?;
+            false
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+                create_dir_all(parent)?;
+            }
+            match create_dir(dir) {
+                Ok(()) => true,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    create_dir_all(dir)?;
+                    false
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(err) => return Err(err),
+    };
+    if created {
+        if let Err(err) = harden(dir) {
+            // Remove only the exact directory we created, and only if it is
+            // still empty. A raced/nonempty directory makes remove_dir fail
+            // and is deliberately preserved. The hardening error remains the
+            // authoritative failure either way.
+            let _ = std::fs::remove_dir(dir);
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn create_owner_only_dir_if_missing(dir: &Path) -> std::io::Result<()> {
+    create_owner_only_dir_if_missing_with(
+        dir,
+        |path| std::fs::create_dir(path),
+        |path| std::fs::create_dir_all(path),
+        harden_owner_only_dir,
+    )
+}
+
+fn harden_owner_only_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(windows)]
+    {
+        platform_windows::win_host::harden_owner_only(dir)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = dir;
+        Ok(())
+    }
+}
+
+/// Open a writable file and enforce owner-only permissions even when the file
+/// already existed in a deliberately permissive custom directory.
+pub(crate) fn open_owner_only_file(path: &Path, truncate: bool) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(truncate);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(windows)]
+    platform_windows::win_host::harden_owner_only(path)?;
+    Ok(file)
+}
+
 /// Atomically replace `path` with `contents`: a temp file in the same directory
 /// is renamed over the target, so a crash mid-write prevents a torn/partial
 /// config. This is NOT a full power-loss durability guarantee — there is no
@@ -221,22 +310,7 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     // sticks) and file, matching the hardening memory::open applies to the
     // same app-support tree — config.env holds no secret today, but the
     // permission shouldn't need revisiting if one is ever added.
-    // Read existence BEFORE create_dir_all; only the unix arm consumes it,
-    // so gate the binding too or non-unix clippy -D warnings rejects it.
-    #[cfg(any(unix, windows))]
-    let created_dir = !dir.exists();
-    std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    if created_dir {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    // Windows analog of the 0700 tightening: owner-only DACL with inheritance,
-    // so the temp file below (and every config file) inherits owner-only.
-    #[cfg(windows)]
-    if created_dir {
-        platform_windows::win_host::harden_owner_only(dir)?;
-    }
+    create_owner_only_dir_if_missing(dir)?;
     let temp = dir.join(format!(
         ".{}.tmp.{}",
         path.file_name()
@@ -244,17 +318,11 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
             .unwrap_or("config"),
         std::process::id()
     ));
-    std::fs::write(&temp, contents)?;
-    #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
+        use std::io::Write as _;
+        let mut file = open_owner_only_file(&temp, true)?;
+        file.write_all(contents.as_bytes())?;
     }
-    // Windows parity with the unconditional 0600 above: per-file owner-only
-    // DACL survives the rename, covering a pre-existing unhardened dir where
-    // the created_dir gate above did not run.
-    #[cfg(windows)]
-    platform_windows::win_host::harden_owner_only(&temp)?;
     std::fs::rename(&temp, path)
 }
 
@@ -334,14 +402,10 @@ pub enum InstanceLockError {
 /// and double-insert completions.
 pub fn try_acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLockError> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| InstanceLockError::Io(e.to_string()))?;
+        create_owner_only_dir_if_missing(dir).map_err(|e| InstanceLockError::Io(e.to_string()))?;
     }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-        .map_err(|e| InstanceLockError::Io(e.to_string()))?;
+    let file =
+        open_owner_only_file(path, false).map_err(|e| InstanceLockError::Io(e.to_string()))?;
     match file.try_lock() {
         Ok(()) => Ok(InstanceLock { _file: file }),
         Err(std::fs::TryLockError::WouldBlock) => Err(InstanceLockError::Held),
@@ -529,6 +593,168 @@ mod tests {
             try_acquire_instance_lock(&bad),
             Err(InstanceLockError::Io(_))
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn instance_lock_creates_owner_only_parent_and_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "compme-private-instance-lock-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("instance.lock");
+
+        let _lock = try_acquire_instance_lock(&path).expect("acquire fresh lock");
+
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn instance_lock_preserves_preexisting_directory_mode_but_hardens_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "compme-custom-instance-lock-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.join("instance.lock");
+
+        let _lock = try_acquire_instance_lock(&path).expect("acquire custom-dir lock");
+
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_directory_creator_is_never_mistaken_for_our_owned_directory() {
+        let dir = PathBuf::from("/tmp/compme-raced-parent/owned");
+        let create_calls = std::cell::Cell::new(0usize);
+        let hardened = std::cell::Cell::new(false);
+
+        create_owner_only_dir_if_missing_with(
+            &dir,
+            |_| {
+                let call = create_calls.get();
+                create_calls.set(call + 1);
+                if call == 0 {
+                    Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+                } else {
+                    // Another actor created the final directory after we made
+                    // its parent but before our atomic retry.
+                    Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+                }
+            },
+            |_| Ok(()),
+            |_| {
+                hardened.set(true);
+                Ok(())
+            },
+        )
+        .expect("the raced directory now exists");
+
+        assert_eq!(create_calls.get(), 2);
+        assert!(
+            !hardened.get(),
+            "a directory created by the racing actor must keep its permissions"
+        );
+    }
+
+    #[test]
+    fn failed_hardening_removes_empty_owned_directory_so_retry_can_harden() {
+        let dir =
+            std::env::temp_dir().join(format!("compme-harden-retry-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let first = create_owner_only_dir_if_missing_with(
+            &dir,
+            |path| std::fs::create_dir(path),
+            |path| std::fs::create_dir_all(path),
+            |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "harden failed",
+                ))
+            },
+        );
+        assert_eq!(
+            first.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(
+            !dir.exists(),
+            "failed hardening must not leave an empty owned directory"
+        );
+
+        let hardened = std::cell::Cell::new(false);
+        create_owner_only_dir_if_missing_with(
+            &dir,
+            |path| std::fs::create_dir(path),
+            |path| std::fs::create_dir_all(path),
+            |_| {
+                hardened.set(true);
+                Ok(())
+            },
+        )
+        .expect("retry creates and hardens");
+        assert!(
+            hardened.get(),
+            "retry must not mistake residue for a custom directory"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_hardening_never_removes_nonempty_owned_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "compme-harden-nonempty-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let result = create_owner_only_dir_if_missing_with(
+            &dir,
+            |path| std::fs::create_dir(path),
+            |path| std::fs::create_dir_all(path),
+            |path| {
+                std::fs::write(path.join("raced-child"), b"owned elsewhere")?;
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "harden failed",
+                ))
+            },
+        );
+
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(
+            dir.join("raced-child").exists(),
+            "nonempty directory must survive cleanup"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1,12 +1,13 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening and Settings cleanup are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1828 workspace tests listed on current `main` (spike separate)
+> **Last updated:** 2026-07-11 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening, Settings cleanup, and the full-codebase audit fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1846 workspace tests listed on current `main` (spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-10 through `5fa5b6b`
+> with symbol/function/gate anchors re-reviewed 2026-07-11 on the current tree
+> based on `e10e682`
 > (workspace review/tdd/ponytail: zero-alloc slice-based trigger gates, an
 > `InsertStrategy::supports_atomic_range_replace` capability predicate replacing
 > `== AxSet` gates, +8 mutation-pinning tests → 1787 with the dead UTF-16 guard
@@ -15,15 +16,19 @@
 > text files; cross-platform Phase 0: `InsertStrategy::NativeRangeSet`,
 > `platform_windows::win_host` DACL hardening + console ctrl handler, Windows
 > CI job runs the new windows-only tests; `18fbc4f` corrected the pinned
-> Qwen2.5-1.5B catalog byte size so the download cap admits the real artifact),
+> Qwen2.5-1.5B catalog byte size so the download cap admits the real artifact;
+> the 2026-07-11 audit closed stale-focus acceptance, terminal command-shape,
+> Finder path dispatch, private-file hardening, URL-handler teardown, and
+> verified-tag release-helper provenance gaps),
 > starting from baseline `ba4e805` since `b1c9264`.
 
 > **Release boundary:** the published v0.1.4 artifact is tag `18b8dc0`.
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
 > `618013d` (seam hardening and A2 local/manual-only automation policy),
 > `a5781fc` (single model-location control), `18fbc4f` (catalog metadata fix),
-> the documentation reconciliations through `88b22cd`, and `5fa5b6b` (release
-> publication hardening) are post-tag `main`
+> the documentation reconciliations through `88b22cd`, `5fa5b6b` / `5e39ae4`
+> (release publication hardening), and the audit/TDD cleanup through `e10e682`
+> plus this 2026-07-11 audit/fix update are post-tag `main`
 > changes. They require a later
 > release tag before they are available in the distributed binary. Unless a row
 > explicitly says otherwise, current implementation/test claims below describe
@@ -165,8 +170,9 @@ signing + hardened runtime + notarization + a native updater.
   `gh release create --verify-tag --draft --generate-notes`, refuses an existing
   release for the tag without overwriting assets, and separates cask finalization
   into a rerunnable protected-environment job. That job re-downloads and verifies
-  the artifact, freezes the tag-reviewed cask updater and validator before
-  switching to the default branch, validates the resulting cask, and makes a
+  the artifact, verifies the release tag SHA and ancestry, extracts the cask
+  updater and validator directly from that verified commit before switching to
+  the default branch, validates the resulting cask, and makes a
   failed cask push recoverable without republishing. The workflow also constrains
   the artifact/cask to arm64 and allowlists the exact identities and commit SHAs
   of every workflow action. None of these post-tag policy changes is part of the
@@ -599,7 +605,8 @@ with physical trigger/accept keypresses.
 > **Historical status (2026-07-01): this six-item macOS UI backlog is
 > CODE-COMPLETE.** All six residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1828 tests, clippy clean). This historical claim
+> review + tdd + ponytail pass (the current workspace count is recorded in the
+> header). This historical claim
 > covers the six rows only; the broader parity audit now tracks the five committed
 > code gaps above in addition to a human visual-LOOK pass over the 9 settings
 > panes and the Tier-4 live checklist. Developer-ID
@@ -614,6 +621,9 @@ always-visible **Show Models Folder** is the single model-location action
 alongside **Choose Model…** and **Download Model**.
 The `setup-model-picker-look` manual gate must verify exactly one **Show Models
 Folder** control is visible and that **Reveal Model in Finder** is absent.
+The 2026-07-11 audit also corrected the surviving control's click-through: it
+creates the directory and routes the typed filesystem path through
+`ShellHost::reveal_file`, rather than treating the path as a schemeless URL.
 
 **Directive: finish macOS first.** The cross-platform adapters (1.1) remain
 environment-gated on Windows/Linux build+test systems. Signed macOS distribution

@@ -1115,6 +1115,55 @@ fn parse_hex_key(raw: &str) -> Option<[u8; 32]> {
     Some(key)
 }
 
+/// Keep an opened memory store only when every existing owned SQLite file can
+/// be made owner-only. On the first hardening error `store` is dropped by the
+/// `Err` return, so callers cannot accidentally continue with a live store.
+#[cfg(any(windows, test))]
+fn retain_memory_store_if_hardened<T>(
+    store: T,
+    path: &std::path::Path,
+    exists: impl Fn(&std::path::Path) -> std::io::Result<bool>,
+    mut harden: impl FnMut(&std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<T> {
+    for suffix in ["", "-journal", "-wal", "-shm"] {
+        let mut candidate = path.as_os_str().to_owned();
+        candidate.push(suffix);
+        let candidate = PathBuf::from(candidate);
+        if exists(&candidate)? {
+            harden(&candidate).map_err(|err| {
+                std::io::Error::new(
+                    err.kind(),
+                    format!("failed to harden {}: {err}", candidate.display()),
+                )
+            })?;
+        }
+    }
+    Ok(store)
+}
+
+/// Ensure a Windows memory parent exists, then require proof that it already
+/// has the exact protected owner-only inheritable DACL. The injected form pins
+/// fail-closed behavior on non-Windows hosts without mutating a real directory.
+#[cfg(any(windows, test))]
+fn ensure_memory_parent_posture_with(
+    parent: &std::path::Path,
+    ensure: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+    verify: impl FnOnce(&std::path::Path) -> std::io::Result<bool>,
+) -> std::io::Result<()> {
+    ensure(parent)?;
+    if verify(parent)? {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is not an owner-only inherited directory",
+                parent.display()
+            ),
+        ))
+    }
+}
+
 /// Open the encrypted memory store when enabled and fully configured. Returns
 /// `None` (disabled, logged) when the mode is `Off`, the path is missing, no key
 /// is available, or the open fails — never fatal, mirroring the tray-unavailable
@@ -1152,18 +1201,18 @@ fn open_memory_store(
     // shared or user-chosen) parent must not have owner-only ACLs propagated
     // over its existing subtree. Fail closed — the store holds user text.
     #[cfg(windows)]
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        let created = !parent.exists();
-        let hardened = std::fs::create_dir_all(parent).and_then(|()| {
-            if created {
-                platform_windows::win_host::harden_owner_only(parent)
-            } else {
-                Ok(())
-            }
-        });
-        if let Err(err) = hardened {
+    {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        if let Err(err) = ensure_memory_parent_posture_with(
+            parent,
+            config::create_owner_only_dir_if_missing,
+            platform_windows::win_host::is_owner_only_inherited_dir,
+        ) {
             eprintln!(
-                "compme: failed to harden memory dir {}: {err} — memory disabled",
+                "compme: insecure memory dir {}: {err} — memory disabled",
                 parent.display()
             );
             return None;
@@ -1174,25 +1223,18 @@ fn open_memory_store(
     let opened = MemoryStore::open(path, &StaticKey(key), config.mode);
     // Windows analog of the store's unix per-file 0600 belt-and-suspenders:
     // owner-only DACL on the db and any sidecar, regardless of dir state —
-    // covers a pre-existing unhardened dir and a bare-filename path. Posture
-    // like unix (log, don't disable): the dir gate above is the fail-closed
-    // layer for the fresh-install case.
+    // covers a pre-existing unhardened dir and a bare-filename path. Any
+    // per-file hardening error drops the opened store and disables memory.
     #[cfg(windows)]
-    if opened.is_ok() {
-        for suffix in ["", "-journal", "-wal", "-shm"] {
-            let mut file = path.as_os_str().to_owned();
-            file.push(suffix);
-            let file = std::path::Path::new(&file);
-            if file.exists() {
-                if let Err(err) = platform_windows::win_host::harden_owner_only(file) {
-                    eprintln!(
-                        "compme: failed to tighten permissions on {}: {err}",
-                        file.display()
-                    );
-                }
-            }
-        }
-    }
+    let opened = opened.and_then(|store| {
+        retain_memory_store_if_hardened(
+            store,
+            path,
+            |candidate| candidate.try_exists(),
+            |candidate| platform_windows::win_host::harden_owner_only(candidate),
+        )
+        .map_err(|err| memory::MemoryError::Io(err.to_string()))
+    });
     key.zeroize();
     match opened {
         Ok(store) => {
@@ -2720,11 +2762,11 @@ fn persist_lifetime_stats(
     let merged = base.merged(session.counts, session.words);
     let tmp = path.with_extension("env.tmp");
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        config::create_owner_only_dir_if_missing(parent)?;
     }
     {
         use std::io::Write as _;
-        let mut file = std::fs::File::create(&tmp)?;
+        let mut file = config::open_owner_only_file(&tmp, true)?;
         file.write_all(stats::render_stats_file(&merged).as_bytes())?;
         // fsync before the rename: the periodic flush writes every ≤5 dirty
         // minutes (vs once per run pre-c128), so the power-loss window where
@@ -3781,6 +3823,18 @@ fn validate_gguf_model(path: &std::path::Path) -> Result<(), String> {
 /// `Download Model` writes GGUFs. `None` when no config home resolves.
 fn app_support_models_dir() -> Option<PathBuf> {
     config::config_file_path().map(|path| path.with_file_name("models"))
+}
+
+/// Create the models directory, then reveal that exact filesystem path.
+/// Injection keeps the UI action testable without opening Finder; a creation
+/// failure returns before the reveal callback can run.
+fn show_models_folder_with(
+    path: &std::path::Path,
+    create_dir: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+    reveal_dir: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    create_dir(path)?;
+    reveal_dir(path)
 }
 
 /// The most-recently-modified non-empty `*.gguf` in `dir`, if any. Downloads
@@ -4920,9 +4974,16 @@ pub fn run() -> Result<(), String> {
         {
             match app_support_models_dir() {
                 Some(dir) => {
-                    let _ = std::fs::create_dir_all(&dir);
-                    if let Err(err) = shell.open_url(&dir.to_string_lossy()) {
-                        eprintln!("compme: open models folder failed: {err:?}");
+                    if let Err(err) = show_models_folder_with(
+                        &dir,
+                        |path| std::fs::create_dir_all(path),
+                        |path| {
+                            shell
+                                .reveal_file(path)
+                                .map_err(|err| std::io::Error::other(format!("{err:?}")))
+                        },
+                    ) {
+                        eprintln!("compme: open models folder failed: {err}");
                     }
                 }
                 None => eprintln!("compme: cannot resolve models folder (no config home)"),
@@ -6872,6 +6933,59 @@ mod tests {
             "no `.env.tmp` scratch may linger beside the renamed target"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lifetime_flush_creates_owner_only_parent_and_stats_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = flush_temp_path("private-perms");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("stats.env");
+
+        persist_lifetime_stats(
+            Some(&path),
+            &stats::PersistedStats::default(),
+            Default::default(),
+        )
+        .expect("fresh stats flush");
+
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700, "fresh stats parent is owner-only");
+        assert_eq!(mode(&path), 0o600, "stats file is owner-only");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lifetime_flush_preserves_custom_parent_but_hardens_existing_temp_and_final() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = flush_temp_path("custom-perms");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.join("stats.env");
+        let tmp = path.with_extension("env.tmp");
+        std::fs::write(&tmp, b"stale").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        persist_lifetime_stats(
+            Some(&path),
+            &stats::PersistedStats::default(),
+            Default::default(),
+        )
+        .expect("stats flush in custom parent");
+
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o755, "custom parent mode is preserved");
+        assert_eq!(mode(&path), 0o600, "renamed temp and final are owner-only");
+        assert!(
+            !tmp.exists(),
+            "temp is renamed away after a successful flush"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -10073,6 +10187,126 @@ mod tests {
             key: Some([7u8; 32]),
         };
         assert!(open_memory_store(&cfg_off, || None).is_none());
+    }
+
+    #[test]
+    fn memory_file_hardening_failure_drops_store_and_stops_at_the_failed_sidecar() {
+        struct DropProbe<'a>(&'a Cell<bool>);
+        impl Drop for DropProbe<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+
+        let dropped = Cell::new(false);
+        let path = PathBuf::from("/tmp/compme-memory.db");
+        let attempted = RefCell::new(Vec::new());
+
+        let result = retain_memory_store_if_hardened(
+            DropProbe(&dropped),
+            &path,
+            |_| Ok(true),
+            |candidate| {
+                attempted.borrow_mut().push(candidate.to_path_buf());
+                if candidate.to_string_lossy().ends_with("-wal") {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "cannot harden wal",
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(
+            dropped.get(),
+            "a hardening failure must drop the live store"
+        );
+        assert_eq!(
+            attempted.into_inner(),
+            vec![
+                path.clone(),
+                PathBuf::from("/tmp/compme-memory.db-journal"),
+                PathBuf::from("/tmp/compme-memory.db-wal"),
+            ],
+            "hardening stops immediately at the first failed owned file"
+        );
+    }
+
+    #[test]
+    fn memory_file_probe_error_drops_store_without_attempting_hardening() {
+        struct DropProbe<'a>(&'a Cell<bool>);
+        impl Drop for DropProbe<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+
+        let dropped = Cell::new(false);
+        let hardened = Cell::new(false);
+        let result = retain_memory_store_if_hardened(
+            DropProbe(&dropped),
+            std::path::Path::new("/tmp/compme-memory.db"),
+            |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "metadata denied",
+                ))
+            },
+            |_| {
+                hardened.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(dropped.get(), "a probe error must drop the live store");
+        assert!(
+            !hardened.get(),
+            "hardening must not proceed after the existence probe fails"
+        );
+    }
+
+    #[test]
+    fn memory_parent_posture_gate_fails_closed_without_mutating_preexisting_parent() {
+        let parent = PathBuf::from("/tmp/custom-memory-parent");
+        let ensured = Cell::new(false);
+
+        let result = ensure_memory_parent_posture_with(
+            &parent,
+            |_| {
+                ensured.set(true);
+                Ok(())
+            },
+            |_| Ok(false),
+        );
+
+        assert!(ensured.get());
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn memory_parent_posture_gate_propagates_readback_errors() {
+        let result = ensure_memory_parent_posture_with(
+            std::path::Path::new("/tmp/unreadable-memory-parent"),
+            |_| Ok(()),
+            |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "readback denied",
+                ))
+            },
+        );
+
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
     }
 
     #[test]
@@ -13856,6 +14090,54 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn show_models_folder_creates_then_reveals_the_exact_directory() {
+        let path = PathBuf::from("/tmp/compme models/exact");
+        let calls = RefCell::new(Vec::new());
+
+        show_models_folder_with(
+            &path,
+            |created| {
+                calls.borrow_mut().push(("create", created.to_path_buf()));
+                Ok(())
+            },
+            |revealed| {
+                calls.borrow_mut().push(("reveal", revealed.to_path_buf()));
+                Ok(())
+            },
+        )
+        .expect("create + reveal");
+
+        assert_eq!(
+            calls.into_inner(),
+            vec![("create", path.clone()), ("reveal", path)]
+        );
+    }
+
+    #[test]
+    fn show_models_folder_propagates_create_failure_without_revealing() {
+        let path = PathBuf::from("/tmp/compme models/blocked");
+        let revealed = Cell::new(false);
+
+        let err = show_models_folder_with(
+            &path,
+            |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "blocked",
+                ))
+            },
+            |_| {
+                revealed.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!revealed.get(), "create failure must stop before reveal");
     }
 
     #[test]

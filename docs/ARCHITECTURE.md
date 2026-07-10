@@ -17,7 +17,8 @@ and additions such as candidate cycling.
 **Release boundary:** the published `v0.1.4` artifact points to `18b8dc0`; this
 page documents current `main`. Post-tag runtime/download/clipboard/OCR/deep-link
 hardening, local/manual-only A2 policy, single **Show Models Folder** Settings
-control, and release-integrity controls are unreleased until the next tag. The
+control, stale-focus fail-closed cleanup, owner-only host files, URL-handler
+teardown, and release-integrity controls are unreleased until the next tag. The
 current stable `vX.Y.Z` pipeline uses a secretless exact-arm64 prebuild,
 re-verifies the binary before secrets, fails closed on signing-keychain cleanup
 or release-asset name collisions, and constrains the Homebrew cask to arm64.
@@ -288,6 +289,13 @@ per-app collection-off settings. Missing store path/key configuration fails
 closed instead of silently writing plaintext. The host also hardens the
 database, sidecars, config, stats, and lock files to owner-only permissions;
 failure to secure a memory sidecar disables the store rather than continuing.
+Fresh host directories are claimed atomically before they are hardened, so a
+concurrently created custom directory is never mistaken for one owned by the
+app. Config/stats contents are written only after their temporary file is
+owner-only, and Windows metadata-probe or DACL failures drop the live memory
+store. A pre-existing custom Windows memory directory must already have the
+exact protected owner-only inheritable DACL; the app refuses it rather than
+rewriting permissions on unrelated contents.
 
 ### `stats`
 
@@ -652,6 +660,8 @@ download target from `model_catalog`, shown with a RAM-fit label; `Exceeds`
 models are blocked before the click-through **license gate**, and a
 dest-exists guard avoids redundant downloads. It exposes one model-location
 action, **Show Models Folder**, plus **Choose Model…** for a local GGUF. The
+folder action creates the directory and calls the typed `reveal_file(Path)`
+shell seam; it never passes a raw filesystem path through URL parsing. The
 Statistics tab renders range/group-selectable `stats` sparkline rows; the Apps
 tab lists per-app recorded-input counts with per-row delete and five policy
 columns (Enabled, Tab key, Mid-line, Autocorrect, Grammar fix). General carries

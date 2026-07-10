@@ -7,6 +7,7 @@
 //! trust, and policy live in the pure `webconfig`/app layers. AppKit/FFI
 //! glue: build- and live-verified, not unit-tested (the tray convention).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use objc2::rc::Retained;
@@ -44,6 +45,43 @@ struct UrlTargetIvars {
     on_url: Arc<UrlCallback>,
 }
 
+/// Tracks which guard owns the process-wide GURL/GURL registration.
+///
+/// Apple Event handler installation is main-thread-only, but the atomic slot
+/// keeps the ownership rule independently testable: replacing a registration
+/// makes older guards stale, and only the current guard may unregister it.
+struct UrlHandlerSlot {
+    current_owner: AtomicU64,
+}
+
+impl UrlHandlerSlot {
+    const fn new() -> Self {
+        Self {
+            current_owner: AtomicU64::new(0),
+        }
+    }
+
+    fn arm(&self, owner: u64) {
+        debug_assert_ne!(owner, 0);
+        self.current_owner.store(owner, Ordering::Release);
+    }
+
+    fn disarm_if_current(&self, owner: u64, unregister: impl FnOnce()) -> bool {
+        if self
+            .current_owner
+            .compare_exchange(owner, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        unregister();
+        true
+    }
+}
+
+static URL_HANDLER_SLOT: UrlHandlerSlot = UrlHandlerSlot::new();
+static NEXT_URL_HANDLER_OWNER: AtomicU64 = AtomicU64::new(1);
+
 define_class!(
     // SAFETY: a plain NSObject subclass used only as an Apple Events handler
     // target; the method extracts a string and calls a Rust closure.
@@ -66,10 +104,32 @@ define_class!(
     }
 );
 
-/// Keeps the handler target alive; dropping it leaves a dangling Apple Events
-/// registration, so hold it for the process lifetime (run loop owns it).
+/// Owns one process-wide GURL/GURL registration and keeps its target alive.
+///
+/// The target is main-thread-only, so the guard must also be dropped on the
+/// main thread. Dropping the current guard unregisters the Apple Event handler;
+/// dropping a stale guard from an older installation leaves the newer handler
+/// untouched.
 pub struct UrlEventHandler {
+    owner: u64,
     _target: Retained<UrlTarget>,
+}
+
+impl Drop for UrlEventHandler {
+    fn drop(&mut self) {
+        let on_main_thread = MainThreadMarker::new().is_some();
+        debug_assert!(
+            on_main_thread,
+            "URL event handler must be dropped on the main thread"
+        );
+        if !on_main_thread {
+            return;
+        }
+        URL_HANDLER_SLOT.disarm_if_current(self.owner, || {
+            NSAppleEventManager::sharedAppleEventManager()
+                .removeEventHandlerForEventClass_andEventID(GURL, GURL);
+        });
+    }
 }
 
 /// Install the `kAEGetURL` handler. Main-thread only (Apple Events dispatch
@@ -98,7 +158,12 @@ pub fn install_url_event_handler(
                 GURL,
             );
     }
-    Ok(UrlEventHandler { _target: target })
+    let owner = NEXT_URL_HANDLER_OWNER.fetch_add(1, Ordering::Relaxed);
+    URL_HANDLER_SLOT.arm(owner);
+    Ok(UrlEventHandler {
+        owner,
+        _target: target,
+    })
 }
 
 #[cfg(test)]
@@ -150,5 +215,28 @@ mod tests {
         }));
 
         assert!(matches!(outcome, Ok(true)));
+    }
+
+    #[test]
+    fn current_url_handler_owner_disarms_exactly_once() {
+        let slot = UrlHandlerSlot::new();
+        slot.arm(41);
+        let mut unregisters = 0;
+
+        assert!(slot.disarm_if_current(41, || unregisters += 1));
+        assert!(!slot.disarm_if_current(41, || unregisters += 1));
+        assert_eq!(unregisters, 1);
+    }
+
+    #[test]
+    fn stale_url_handler_owner_cannot_disarm_newer_registration() {
+        let slot = UrlHandlerSlot::new();
+        slot.arm(41);
+        slot.arm(42);
+        let mut unregisters = 0;
+
+        assert!(!slot.disarm_if_current(41, || unregisters += 1));
+        assert!(slot.disarm_if_current(42, || unregisters += 1));
+        assert_eq!(unregisters, 1);
     }
 }

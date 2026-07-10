@@ -223,9 +223,11 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
 5. After publication, the separate **Finalize Homebrew cask** job downloads the
    artifact again, verifies its checksum, and commits the cask sha256 back to the
    default branch. Before it checks out or pulls that mutable branch, the
-   finalizer freezes `update-cask.sh` and `validate-version.sh` from the reviewed
-   release tag; it then invokes those frozen helpers with explicit cask and
-   artifact paths. Before committing, it verifies Ruby syntax plus the exact
+   finalizer first verifies the release tag commit and default-branch ancestry,
+   then materializes `update-cask.sh` and `validate-version.sh` from that exact
+   commit with `git show`; dirty working-tree copies are never executed. It then
+   invokes those frozen helpers with explicit cask and artifact paths. Before
+   committing, it verifies Ruby syntax plus the exact
    arm64 stanza, version, release URL, and artifact sha256.
 
    If branch protection blocks that bot push or you need to recover manually,

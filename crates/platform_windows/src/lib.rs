@@ -565,12 +565,15 @@ pub mod win_host {
     use windows::core::{BOOL, PCWSTR};
     use windows::Win32::Foundation::{LocalFree, ERROR_SUCCESS, HLOCAL};
     use windows::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
-        SDDL_REVISION_1, SE_FILE_OBJECT,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
+        SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows::Win32::Security::{
-        GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        AclSizeInformation, CreateWellKnownSid, EqualSid, GetAce, GetAclInformation,
+        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, WinCreatorOwnerRightsSid,
+        ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE,
+        DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SECURITY_MAX_SID_SIZE, SE_DACL_PROTECTED,
     };
     use windows::Win32::System::Console::SetConsoleCtrlHandler;
     use windows::Win32::UI::Shell::ShellExecuteW;
@@ -658,6 +661,81 @@ pub mod win_host {
                     }
                 }
             };
+            LocalFree(Some(HLOCAL(sd.0)));
+            result
+        }
+    }
+
+    /// Verify the exact directory posture required for safe SQLite sidecar
+    /// inheritance: protected DACL, one allow ACE, OWNER_RIGHTS SID, full
+    /// control, and both object/container inheritance flags.
+    pub fn is_owner_only_inherited_dir(path: &Path) -> std::io::Result<bool> {
+        const FILE_ALL_ACCESS_MASK: u32 = 0x001F_01FF;
+        const ACCESS_ALLOWED_ACE_TYPE_VALUE: u8 = 0;
+
+        let target = wide(path);
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: all out-pointers are valid; `sd` owns the returned DACL and
+        // remains live until LocalFree after every inspection completes.
+        unsafe {
+            let err = GetNamedSecurityInfoW(
+                PCWSTR(target.as_ptr()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(&mut dacl),
+                None,
+                &mut sd,
+            );
+            if err != ERROR_SUCCESS {
+                return Err(std::io::Error::from_raw_os_error(err.0 as i32));
+            }
+            let result = (|| -> std::io::Result<bool> {
+                if dacl.is_null() {
+                    return Ok(false);
+                }
+                let mut control = 0u16;
+                let mut revision = 0u32;
+                GetSecurityDescriptorControl(sd, &mut control, &mut revision)
+                    .map_err(std::io::Error::other)?;
+                if control & SE_DACL_PROTECTED.0 == 0 {
+                    return Ok(false);
+                }
+                let mut info = ACL_SIZE_INFORMATION::default();
+                GetAclInformation(
+                    dacl,
+                    &mut info as *mut _ as *mut _,
+                    std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                    AclSizeInformation,
+                )
+                .map_err(std::io::Error::other)?;
+                if info.AceCount != 1 {
+                    return Ok(false);
+                }
+                let mut raw_ace: *mut std::ffi::c_void = std::ptr::null_mut();
+                GetAce(dacl, 0, &mut raw_ace).map_err(std::io::Error::other)?;
+                let ace = &*(raw_ace as *const ACCESS_ALLOWED_ACE);
+                let expected_flags = (OBJECT_INHERIT_ACE.0 | CONTAINER_INHERIT_ACE.0) as u8;
+                if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE_VALUE
+                    || ace.Header.AceFlags != expected_flags
+                    || ace.Mask != FILE_ALL_ACCESS_MASK
+                {
+                    return Ok(false);
+                }
+                let ace_sid = PSID(std::ptr::addr_of!(ace.SidStart) as *mut _);
+                let mut owner_rights = [0u8; SECURITY_MAX_SID_SIZE as usize];
+                let mut len = owner_rights.len() as u32;
+                CreateWellKnownSid(
+                    WinCreatorOwnerRightsSid,
+                    None,
+                    Some(PSID(owner_rights.as_mut_ptr() as *mut _)),
+                    &mut len,
+                )
+                .map_err(std::io::Error::other)?;
+                Ok(EqualSid(ace_sid, PSID(owner_rights.as_mut_ptr() as *mut _)).is_ok())
+            })();
             LocalFree(Some(HLOCAL(sd.0)));
             result
         }
@@ -807,6 +885,25 @@ pub mod win_host {
                 ace_count(&file),
                 1,
                 "file DACL must be the single owner ACE"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn owner_only_inherited_directory_predicate_matches_exact_hardened_posture() {
+            let dir = std::env::temp_dir()
+                .join(format!("compme-owner-posture-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            assert!(
+                !is_owner_only_inherited_dir(&dir).expect("read normal temp DACL"),
+                "a normal permissive temp directory must not satisfy the exact posture"
+            );
+            harden_owner_only(&dir).expect("harden directory");
+            assert!(
+                is_owner_only_inherited_dir(&dir).expect("read hardened DACL"),
+                "the hardener output must satisfy the exact inherited posture"
             );
             let _ = std::fs::remove_dir_all(&dir);
         }

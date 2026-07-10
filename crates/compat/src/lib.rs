@@ -266,6 +266,17 @@ fn is_natural_language_prompt_leader(token: &str) -> bool {
             | "inspect"
             | "debug"
             | "check"
+            | "implement"
+            | "add"
+            | "write"
+            | "create"
+            | "update"
+            | "fix"
+            | "test"
+            | "document"
+            | "design"
+            | "build"
+            | "remove"
     )
 }
 
@@ -279,6 +290,17 @@ fn looks_like_shell_command(tokens: &[&str]) -> bool {
         return true;
     }
     let rest = &tokens[1..];
+    // The executable allow-list can never enumerate every installed CLI. An
+    // otherwise-unrecognized first token followed by an option still has a
+    // strong command shape (`openssl rand -hex 32`, `tool subcommand --json`).
+    // Preserve explicit natural-language leaders and agent slash commands:
+    // `explain --flag behavior` and `/review --all current diff` are prompts.
+    if !is_natural_language_prompt_leader(first)
+        && !is_single_segment_slash_command(first)
+        && rest.iter().any(|token| token.starts_with('-'))
+    {
+        return true;
+    }
     if shell_operator_has_command_shape(tokens) {
         return true;
     }
@@ -732,6 +754,39 @@ mod tests {
             term,
             "git status\nplease summarize the diff for"
         ));
+    }
+
+    #[test]
+    fn terminal_skips_unlisted_executable_with_option_arguments() {
+        let term = "com.apple.Terminal";
+
+        assert!(
+            !terminal_prompt_activates(term, "openssl rand -hex 32"),
+            "an unlisted executable with command-line options is shell input, not prose"
+        );
+        assert!(
+            !terminal_prompt_activates(term, "aws s3 cp --recursive out"),
+            "a second unlisted executable must be classified by command shape"
+        );
+        assert!(
+            terminal_prompt_activates(term, "explain --flag behavior"),
+            "an explicit natural-language leader preserves option-like prose"
+        );
+    }
+
+    #[test]
+    fn terminal_keeps_common_agent_verbs_with_option_like_prose_active() {
+        let term = "com.apple.Terminal";
+        for prompt in [
+            "implement support for --json output",
+            "add a --dry-run option",
+            "write tests for -q behavior",
+        ] {
+            assert!(
+                terminal_prompt_activates(term, prompt),
+                "{prompt:?} is a natural-language agent prompt"
+            );
+        }
     }
 
     #[test]

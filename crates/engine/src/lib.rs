@@ -37,7 +37,7 @@ pub struct TextChange {
 /// A model completion the host loop must fulfil and feed back via
 /// [`Engine::on_completion`].
 ///
-/// Created by [`Engine::dispatch`] whenever the `SuggestionMachine` emits a
+/// Created internally whenever the `SuggestionMachine` emits a
 /// `RequestCompletion` command. The host is responsible for running inference
 /// and returning the result through [`Engine::on_completion`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,7 +198,21 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         &mut self,
         field: FieldHandle,
     ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
-        let caps = self.adapter.capabilities(&field)?;
+        let caps = match self.adapter.capabilities(&field) {
+            Ok(caps) => caps,
+            Err(err) => {
+                // A focus boundary is authoritative even when the new field's
+                // capabilities cannot be read. Advance the machine with
+                // fail-closed capabilities so the previous field's ghost is
+                // hidden, its accept state is disarmed, and in-flight results
+                // are staled before surfacing the adapter error.
+                let caps = unsupported_caps();
+                self.caps = caps.clone();
+                let commands = self.machine.on_event(Event::Focus { field, caps });
+                let _ = self.dispatch(commands);
+                return Err(err);
+            }
+        };
         self.caps = caps.clone();
         let commands = self.machine.on_event(Event::Focus { field, caps });
         self.dispatch(commands)
@@ -613,6 +627,7 @@ mod tests {
         AcceptCallback, AcceptSubscription, AppId, CaretCallback, Environment, FocusCallback,
         Inserted, OperatingSystem, PlatformError, ScreenRect, Subscription, TextContext,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     fn field() -> FieldHandle {
@@ -708,6 +723,7 @@ mod tests {
         rect: Option<ScreenRect>,
         popup: Option<ScreenRect>,
         fail_caret_rect: bool,
+        fail_capabilities: Arc<AtomicBool>,
         fail_popup: bool,
         fail_range_rect: bool,
         fail_insert: bool,
@@ -729,6 +745,7 @@ mod tests {
                 }),
                 popup: None,
                 fail_caret_rect: false,
+                fail_capabilities: Arc::new(AtomicBool::new(false)),
                 fail_popup: false,
                 fail_range_rect: false,
                 fail_insert: false,
@@ -775,6 +792,9 @@ mod tests {
             None
         }
         fn capabilities(&self, _field: &FieldHandle) -> Result<Capabilities, PlatformError> {
+            if self.fail_capabilities.load(Ordering::Relaxed) {
+                return Err(PlatformError::Timeout);
+            }
             Ok(self.caps.clone())
         }
         fn read_context(&self, _field: &FieldHandle) -> Result<TextContext, PlatformError> {
@@ -2467,6 +2487,48 @@ mod tests {
         engine.on_focus(other_field()).unwrap();
 
         assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+    }
+
+    #[test]
+    fn focus_capability_error_hides_and_invalidates_showing_ghost() {
+        let (mut engine, adapter, overlay) = engine();
+        let visible = Arc::new(Mutex::new(Vec::new()));
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let recorded_visible = Arc::clone(&visible);
+        let recorded_actions = Arc::clone(&actions);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |value| {
+                recorded_visible.lock().unwrap().push(value);
+                Ok(())
+            },
+            |_| Ok(()),
+            move |action| {
+                recorded_actions.lock().unwrap().push(action);
+                Ok(())
+            },
+        ));
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine
+            .on_completion(&requests[0], "stale suggestion".into())
+            .unwrap();
+        overlay.calls.lock().unwrap().clear();
+        visible.lock().unwrap().clear();
+        actions.lock().unwrap().clear();
+        adapter.fail_capabilities.store(true, Ordering::Relaxed);
+
+        assert_eq!(engine.on_focus(other_field()), Err(PlatformError::Timeout));
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+        assert_eq!(*visible.lock().unwrap(), vec![false]);
+        assert_eq!(*actions.lock().unwrap(), vec![None]);
+
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert!(
+            adapter.inserts.lock().unwrap().is_empty(),
+            "a suggestion from the previous field must not remain acceptable"
+        );
     }
 
     #[test]

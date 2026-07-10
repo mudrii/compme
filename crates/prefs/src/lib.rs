@@ -17,7 +17,7 @@ pub struct AppPolicy {
     /// (Cotypist's per-app Tab disable).
     pub tab_disabled: bool,
     /// Per-app typing-history collection override (tray "Input Collection in
-    /// <app>"): `None` → inherit the default (allowed — the global opt-IN is
+    /// `{app}`"): `None` → inherit the default (allowed — the global opt-IN is
     /// the memory `StorageMode`); `Some(false)` → never record from this app.
     pub collect_inputs: Option<bool>,
     /// Per-app mid-line completions override (config
@@ -65,7 +65,7 @@ pub struct Prefs {
     pub per_app: HashMap<String, AppPolicy>,
     /// When set and in the future, suggestions are paused until this instant.
     pub snooze_until_ms: Option<u64>,
-    /// Per-app timed pauses (tray "Disable Completions in <app>" — the
+    /// Per-app timed pauses (tray "Disable Completions in `{app}`" — the
     /// Cotypist-style submenu). `u64::MAX` = until relaunch (session-only,
     /// like the global snooze; the permanent arm is `excluded_apps`).
     pub app_snooze_until_ms: HashMap<String, u64>,

@@ -274,7 +274,7 @@ comma-separated bundle ids.
 | `COMPME_STRENGTH` | Personalization strength (6 stops). |
 | `COMPME_SENDER_NAME` / `COMPME_SENDER_EMAIL` | Sender identity templated into the steering preamble. |
 | `COMPME_MEMORY` | Typing-memory collection mode: `off` / `accepted` / `all` (default `off`). |
-| `COMPME_MEMORY_PATH` | Override path for the encrypted memory store (store stays off without a path). |
+| `COMPME_MEMORY_PATH` | Override path for the encrypted memory store (store stays off without a path). On Windows, an existing parent directory must already have the protected owner-only inheritable DACL; an insecure custom directory disables memory rather than being rewritten. |
 | `COMPME_MEMORY_KEY` | 64-hex AES key for memory (default: Keychain-managed). |
 | `COMPME_LAUNCH_AT_LOGIN` | `true`/`false` registers/unregisters the login item; absent leaves Login Items alone. |
 | `COMPME_MODEL_PATH` | Path to the GGUF model file to load (defaults to the checked-in spike model). |
@@ -337,7 +337,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,828 tests:
+suite is roughly 1,846 tests:
 
 ```sh
 cargo fmt --all -- --check
