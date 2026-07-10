@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; release workflow now fails closed without signing credentials; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1829 workspace tests; spike separate)
+> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; release workflow now fails closed without signing credentials; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1830 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -529,13 +529,17 @@ with physical trigger/accept keypresses.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1829 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1830 tests, clippy clean). What remains for
 > "ready to use" is **not development**: a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist. Developer-ID
 > signing, notarization, and the first stable tags are complete through v0.1.4;
 > a full native auto-updater remains optional. The authoritative live-gate ledger is `docs/ACCEPTANCE.md`
 > (Manual/Live Gate Ledger); `docs/MANUAL-VALIDATION.md` carries the detailed
 > walkthroughs.
+
+**Setup-pane cleanup (2026-07-10):** the redundant conditional **Reveal Model
+in Finder** control was removed; the always-visible **Show Models Folder** is
+the single model-location action alongside **Choose Model…** and **Download Model**.
 
 **Directive: finish macOS first.** The cross-platform adapters (1.1) remain
 environment-gated on Windows/Linux build+test systems. Signed macOS distribution

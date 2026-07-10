@@ -336,14 +336,6 @@ define_class!(
                 .store(true, Ordering::Relaxed);
         }
 
-        #[unsafe(method(revealModel:))]
-        fn reveal_model(&self, _sender: Option<&NSButton>) {
-            self.ivars()
-                .flags
-                .setup_reveal_model
-                .store(true, Ordering::Relaxed);
-        }
-
         #[unsafe(method(downloadModel:))]
         fn download_model(&self, _sender: Option<&NSButton>) {
             record_setup_download(&self.ivars().flags.setup_download_model);
@@ -821,11 +813,18 @@ fn refresh_apps_policy_checkbox_states(
     }
 }
 
-fn setup_action_available(lines: &[String], label: &str, ready: bool) -> bool {
-    let glyph = if ready { '\u{2713}' } else { '\u{2717}' };
-    let expected = format!("{glyph} {label}");
+fn setup_action_missing(lines: &[String], label: &str) -> bool {
+    let expected = format!("\u{2717} {label}");
     lines.iter().any(|line| line.as_str() == expected.as_str())
 }
+
+const SETUP_ACTION_BUTTON_TITLES: [&str; 3] = [
+    "Grant Accessibility\u{2026}",
+    "Request Screen Recording\u{2026}",
+    "Download Model",
+];
+
+const MODEL_MANAGEMENT_BUTTON_TITLES: [&str; 2] = ["Show Models Folder", "Choose Model\u{2026}"];
 
 fn refresh_setup_action_buttons(buttons: &[Retained<NSButton>], lines: &[String]) {
     let available = setup_action_button_availability(lines);
@@ -835,11 +834,10 @@ fn refresh_setup_action_buttons(buttons: &[Retained<NSButton>], lines: &[String]
     }
 }
 
-fn setup_action_button_availability(lines: &[String]) -> [bool; 4] {
+fn setup_action_button_availability(lines: &[String]) -> [bool; 3] {
     [
-        setup_action_available(lines, "Accessibility", false),
-        setup_action_available(lines, "Screen Recording", false),
-        setup_action_available(lines, "Model file", true),
+        setup_action_missing(lines, "Accessibility"),
+        setup_action_missing(lines, "Screen Recording"),
         true,
     ]
 }
@@ -1506,7 +1504,7 @@ fn build_window(
 
     // Setup tab: readiness rows (permissions, model file). Strings come
     // from the run loop via flags.setup_lines; show() refreshes them on
-    // every open. Grant/Request/Reveal buttons are the next slice.
+    // every open. Grant/Request/Download buttons are the next slice.
     {
         let setup = &pane_views[0];
         let header = NSTextField::labelWithString(&NSString::from_str("Setup checklist"), mtm);
@@ -1571,16 +1569,16 @@ fn build_window(
         // Action buttons (always present; each is a harmless no-op when its
         // item is already ready). The privileged calls happen in the run
         // loop — buttons only set flags.
-        let buttons: [(&str, objc2::runtime::Sel); 4] = [
-            ("Grant Accessibility\u{2026}", sel!(grantAccessibility:)),
-            (
-                "Request Screen Recording\u{2026}",
-                sel!(requestScreenRecording:),
-            ),
-            ("Reveal Model in Finder", sel!(revealModel:)),
-            ("Download Model", sel!(downloadModel:)),
+        let actions: [objc2::runtime::Sel; 3] = [
+            sel!(grantAccessibility:),
+            sel!(requestScreenRecording:),
+            sel!(downloadModel:),
         ];
-        for (i, (title, action)) in buttons.into_iter().enumerate() {
+        for (i, (title, action)) in SETUP_ACTION_BUTTON_TITLES
+            .into_iter()
+            .zip(actions)
+            .enumerate()
+        {
             // SAFETY: target outlives the window (held by MacosSettingsWindow).
             let button = unsafe {
                 NSButton::buttonWithTitle_target_action(
@@ -1605,11 +1603,13 @@ fn build_window(
         // models folder in Finder, and bring-your-own-model. Kept OUT of
         // setup_action_buttons so the row-coupled availability refresh (a
         // `[bool; 4]` zip) never hides them; the view hierarchy retains them.
-        let model_mgmt: [(&str, objc2::runtime::Sel); 2] = [
-            ("Show Models Folder", sel!(revealModelsDir:)),
-            ("Choose Model\u{2026}", sel!(chooseModel:)),
-        ];
-        for (i, (title, action)) in model_mgmt.into_iter().enumerate() {
+        let model_mgmt_actions: [objc2::runtime::Sel; 2] =
+            [sel!(revealModelsDir:), sel!(chooseModel:)];
+        for (i, (title, action)) in MODEL_MANAGEMENT_BUTTON_TITLES
+            .into_iter()
+            .zip(model_mgmt_actions)
+            .enumerate()
+        {
             // SAFETY: target outlives the window (held by MacosSettingsWindow).
             let button = unsafe {
                 NSButton::buttonWithTitle_target_action(
@@ -2449,30 +2449,15 @@ mod tests {
     }
 
     #[test]
-    fn setup_action_available_matches_exact_setup_row_label() {
+    fn setup_action_missing_matches_exact_setup_row_label() {
         let lines = vec!["\u{2717} Accessibility helper".to_string()];
-        assert!(!setup_action_available(&lines, "Accessibility", false));
+        assert!(!setup_action_missing(&lines, "Accessibility"));
 
         let exact_missing = vec!["\u{2717} Accessibility".to_string()];
-        assert!(setup_action_available(
-            &exact_missing,
-            "Accessibility",
-            false
-        ));
-
-        let exact_ready = vec!["\u{2713} Model file".to_string()];
-        assert!(setup_action_available(&exact_ready, "Model file", true));
-        assert!(!setup_action_available(&exact_ready, "Model", true));
+        assert!(setup_action_missing(&exact_missing, "Accessibility"));
 
         let ready_permission = vec!["\u{2713} Accessibility".to_string()];
-        assert!(!setup_action_available(
-            &ready_permission,
-            "Accessibility",
-            false
-        ));
-
-        let missing_model = vec!["\u{2717} Model file".to_string()];
-        assert!(!setup_action_available(&missing_model, "Model file", true));
+        assert!(!setup_action_missing(&ready_permission, "Accessibility"));
     }
 
     #[test]
@@ -2484,7 +2469,7 @@ mod tests {
         ];
         assert_eq!(
             setup_action_button_availability(&all_ready),
-            [false, false, true, true]
+            [false, false, true]
         );
 
         let all_missing = vec![
@@ -2494,7 +2479,7 @@ mod tests {
         ];
         assert_eq!(
             setup_action_button_availability(&all_missing),
-            [true, true, false, true]
+            [true, true, true]
         );
 
         let screen_context_off = vec![
@@ -2503,7 +2488,7 @@ mod tests {
         ];
         assert_eq!(
             setup_action_button_availability(&screen_context_off),
-            [false, false, true, true]
+            [false, false, true]
         );
 
         let missing_model = vec![
@@ -2512,7 +2497,24 @@ mod tests {
         ];
         assert_eq!(
             setup_action_button_availability(&missing_model),
-            [false, false, false, true]
+            [false, false, true]
+        );
+    }
+
+    #[test]
+    fn setup_pane_exposes_one_model_location_control() {
+        assert_eq!(
+            SETUP_ACTION_BUTTON_TITLES.as_slice(),
+            &[
+                "Grant Accessibility\u{2026}",
+                "Request Screen Recording\u{2026}",
+                "Download Model",
+            ],
+            "the legacy file reveal duplicates the always-visible models-folder control"
+        );
+        assert_eq!(
+            MODEL_MANAGEMENT_BUTTON_TITLES,
+            ["Show Models Folder", "Choose Model\u{2026}"]
         );
     }
 

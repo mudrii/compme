@@ -181,7 +181,6 @@ pub struct SettingsFlags {
     pub setup_lines: Arc<Mutex<Vec<String>>>,
     pub setup_grant_ax: Arc<AtomicBool>,
     pub setup_request_screen: Arc<AtomicBool>,
-    pub setup_reveal_model: Arc<AtomicBool>,
     /// "Show Models Folder" clicked — the run loop reveals the app-support
     /// models directory in Finder.
     pub setup_reveal_models_dir: Arc<AtomicBool>,

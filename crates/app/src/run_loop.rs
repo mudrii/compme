@@ -2890,7 +2890,6 @@ fn build_settings_flags(
         setup_lines: Arc::new(Mutex::new(Vec::new())),
         setup_grant_ax: Arc::new(AtomicBool::new(false)),
         setup_request_screen: Arc::new(AtomicBool::new(false)),
-        setup_reveal_model: Arc::new(AtomicBool::new(false)),
         setup_reveal_models_dir: Arc::new(AtomicBool::new(false)),
         setup_choose_model: Arc::new(Mutex::new(None)),
         setup_download_model: Arc::new(AtomicBool::new(false)),
@@ -4911,24 +4910,6 @@ pub fn run() -> Result<(), String> {
                 shell.request_screen_capture_permission();
             } else {
                 eprintln!("compme: screen recording request ignored; screen context is off or already granted");
-            }
-        }
-        if settings_flags
-            .setup_reveal_model
-            .swap(false, Ordering::Relaxed)
-        {
-            // Absolutize: NSURL fileURLWithPath resolves relative paths
-            // against the CWD, which is / for a bundle launch (review-c107;
-            // same class as the banked D14 default-path item).
-            let model_abs = if config.model_path.is_absolute() {
-                config.model_path.clone()
-            } else {
-                std::env::current_dir()
-                    .map(|cwd| cwd.join(&config.model_path))
-                    .unwrap_or_else(|_| config.model_path.clone())
-            };
-            if let Err(err) = shell.reveal_file(&model_abs) {
-                eprintln!("compme: reveal model failed: {err:?}");
             }
         }
         // "Show Models Folder": open the app-support models dir in Finder
