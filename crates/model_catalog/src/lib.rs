@@ -88,6 +88,8 @@ pub fn download_gate(entry: &ModelEntry, is_accepted: impl Fn(&str) -> bool) -> 
 /// download attempt. Lowercase is an authoring convention (runtime comparison
 /// is case-insensitive). The authoring-time catalog invariant for any
 /// `expected_sha256` that is `Some`.
+/// Test-only: the invariant is enforced by the catalog unit tests.
+#[cfg(test)]
 pub fn is_wellformed_sha256(hash: &str) -> bool {
     hash.len() == 64
         && hash

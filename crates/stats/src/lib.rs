@@ -409,6 +409,8 @@ impl Stats {
     /// window-expired entries not yet dropped — it is a post-write memory bound,
     /// not a continuous time-based one. Queries always filter by window
     /// regardless, so expired entries never affect counts/latency results.
+    /// Test-only probe for the memory-bound invariant.
+    #[cfg(test)]
     pub fn retained_len(&self) -> usize {
         self.entries.len() + self.latencies.len()
     }
