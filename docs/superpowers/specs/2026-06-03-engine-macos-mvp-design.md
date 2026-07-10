@@ -6,8 +6,10 @@
 
 > **Implementation status (2026-07-10):** this is the historical design record,
 > not the current pending-work ledger. The macOS reference product is
-> code-complete and a signed/notarized v0.1.4 is published; 17 formal macOS
-> manual/live gates remain open. Windows/Linux remain fail-closed scaffolds.
+> shipped through signed/notarized v0.1.4, but the broader committed parity scope
+> still has the code gaps listed in `docs/ROADMAP.md`; 17 runner-pinned macOS
+> manual/live gates plus additional manually recorded Tier-4 rows remain open.
+> Windows/Linux remain fail-closed scaffolds.
 > Use `docs/ROADMAP.md` for current status and the 2026-07-08 cross-platform
 > implementation plan for the remaining adapter work.
 
@@ -110,7 +112,7 @@ crates/redaction        # persistence/diagnostic redaction helpers
 crates/prefs            # settings store and app/domain overrides
 crates/memory           # encrypted local memory, accepted-only/all-monitored modes
 crates/stats            # local usage stats and persistence
-crates/webconfig        # signed compme:// web-driven config events
+crates/webconfig        # confirmed compme:// web-driven config events
 crates/emoji            # shortcode replacement data
 crates/textcase         # local word-case helpers
 crates/thesaurus        # local synonym replacement data
@@ -250,7 +252,15 @@ Prompt-based, not ML. Simpler, ships, and is what Cotypist actually does.
 - Telemetry decision is explicit: P0/P1 ship no network telemetry. If A3 adds crash/usage telemetry, the plan must specify provider, region, payload schema, default state, opt-out/opt-in semantics, restart requirements, and a hard rule that typed text, clipboard text, OCR text, and prompts are never included.
 
 **Distribution & permission lifecycle (prior-art §2 — category's #1 support burden):**
-- **App Sandbox OFF**; hardened runtime needs `com.apple.security.cs.disable-library-validation` to load the dynamic llama framework → **Mac App Store impossible**. Ship a Developer-ID signed/notarized `.app` zip via GitHub Releases, with the Homebrew cask finalized after artifact publication. Entitlement `com.apple.security.automation.apple-events`.
+- **Current Compme distribution:** App Sandbox is off and the Developer-ID build
+  uses hardened runtime, but llama is statically linked into the single app
+  binary. v0.1.4 did **not** require
+  `com.apple.security.cs.disable-library-validation` or a signing-entitlements
+  file; `COMPME_CODESIGN_ENTITLEMENTS` is reserved for a future need. The earlier
+  dynamic-framework/entitlement statement came from prior-art research and does
+  not describe the shipped bundle. Cross-app Accessibility behavior remains
+  incompatible with a conventional Mac App Store sandbox. Ship the notarized
+  `.app` zip through GitHub Releases, then finalize the Homebrew cask.
 - A3 updater decision: publish `compme-<version>-update.json` beside the notarized zip and checksum on the GitHub Release; the app's Check for Updates item hands off to the latest GitHub Release. A full Sparkle/appcast client remains optional later.
 - **Stable signing identity** — TCC keys on cert+bundle-id; a cert change under the same bundle id causes an infinite "grant Accessibility" loop. Provide a `tccutil reset` recovery path + re-grant detection after OS updates.
 - Detect when **Secure Input** is stuck (background password managers) — it kills all injection globally; surface it in diagnostics.
@@ -373,7 +383,8 @@ First-suggestion perceived latency <100–150 ms (warm); **<500 ms p95 is the ha
 **What we adopt:** prompt-based personalization (global+per-app/per-domain, **6-stop strength slider Off↔Max, full reach for all users — no tier caps**; §15 D2 + Project Scope), configurable shortcut matrix, word-capped length, pasteboard + previous-input context, optional screen-aware context, selectable model catalog (base+instruct), backdrop/mirror overlay, disable-native-inline-prediction where possible, pause/snooze, per-app overrides (incl. tab-key/smart-quotes/size-threshold/display), encrypted local stats/training data, compatibility guidance, quality/reuse thresholds.
 **What we change:** **[CORR 06-07]** native Rust shell (`crates/app` + objc2/AppKit tray), **not Tauri**; A3 chose Developer-ID signing/notarization plus a GitHub-release-driven update manifest and release-page handoff (full Sparkle/appcast remains optional later); Rust instead of Swift; `engine_core`/`model_client` built by hand (Cotypist's completion is Swift `CompletionManagerActor` + llama.cpp; `RepliesSDK` is unrelated feedback tooling). **[CORR 06-09]** Our input layer now matches Cotypist's no-CGEventTap accept-key architecture: AX + CGEvent synthesis + transient Carbon hotkeys; model fetch from HF or self-host TBD; telemetry disabled unless explicitly designed later.
 **Feature status:** emoji completion, the curated typo-fix half of autocorrect,
-spelling localization, thesaurus lookup, and signed web-driven config are
+spelling localization, trailing-word thesaurus lookup, and signed/unsigned
+reversible web-driven config (mandatory confirmation for both) are
 shipped in the local replacement / `compme://` paths. Still-sequenced parity
 work includes full statistical autocorrect, cross-app previous inputs, and
 thesaurus selection-trigger UX. Domain/website overrides are no longer optional

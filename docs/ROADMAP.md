@@ -6,7 +6,7 @@
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-10 through `a5781fc`
+> with symbol/function/gate anchors re-reviewed 2026-07-10 through `ea94bba`
 > (workspace review/tdd/ponytail: zero-alloc slice-based trigger gates, an
 > `InsertStrategy::supports_atomic_range_replace` capability predicate replacing
 > `== AxSet` gates, +8 mutation-pinning tests → 1787 with the dead UTF-16 guard
@@ -14,14 +14,16 @@
 > GitHub prereleases and skip cask finalization, privacy scan widened to all
 > text files; cross-platform Phase 0: `InsertStrategy::NativeRangeSet`,
 > `platform_windows::win_host` DACL hardening + console ctrl handler, Windows
-> CI job runs the new windows-only tests), starting from baseline `ba4e805`
-> since `b1c9264`.
+> CI job runs the new windows-only tests; `18fbc4f` corrected the pinned
+> Qwen2.5-1.5B catalog byte size so the download cap admits the real artifact),
+> starting from baseline `ba4e805` since `b1c9264`.
 
 > **Release boundary:** the published v0.1.4 artifact is tag `18b8dc0`.
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
 > `618013d` (seam hardening and A2 local/manual-only automation policy),
-> `a5781fc` (single model-location control), and this documentation
-> reconciliation (`58debca`) are post-tag `main` changes. They require a later
+> `a5781fc` (single model-location control), `18fbc4f` (catalog metadata fix),
+> and the documentation reconciliations through `ea94bba` are post-tag `main`
+> changes. They require a later
 > release tag before they are available in the distributed binary. Unless a row
 > explicitly says otherwise, current implementation/test claims below describe
 > `main`; the v0.1.4 bullets describe the published artifact.
@@ -211,12 +213,13 @@ instruction editor remains a future enhancement, not a runtime steering gap.
 
 ---
 
-## Tier 3 — A3 settings UI (code-complete; live LOOK remaining)
+## Tier 3 — A3 settings UI (controls shipped; tray links + live LOOK remain)
 
 Per `2026-06-10-a3-settings-ui-design.md`. The settings window now ships as 9
 tabs (Setup, General, Personalization, Apps, Context, Emoji, Shortcuts,
-Statistics, About). The macOS-buildable Tier 3 controls have landed in code and
-deterministic tests; the remaining work is the live visual/physical LOOK pass —
+Statistics, About). The nine-tab controls have landed in code and deterministic
+tests. The remaining Tier 3 work is the tray website/support action pair tracked
+below plus the live visual/physical LOOK pass —
 **Live finding (2026-07-07 assisted-UI session) — FIXED same day:** Chrome
 delivers a fresh AX element ref per focus notification for identifier-less web
 fields, so pointer-based identity churned `StaleField` on every read (661
@@ -313,14 +316,36 @@ runs. The retired screenshot matrix is not current release evidence.
 
 ---
 
-## Tier 4 — 🔬 Live validation (code complete; needs human/scripted evidence)
+## Remaining committed macOS/A2 code gaps
 
-These are implemented to a deterministic/build-verified standard. Selected A2
+The six-item June 30 macOS UI backlog is complete, but the broader committed
+parity scope is not wholly code-complete. These implementation gaps must be
+resolved or explicitly re-scoped before their corresponding live rows can close:
+
+- **SidebarOnly editor-vs-sidebar detector:** VS Code/Cursor/Windsurf currently
+  fail closed for every field; the host has no detector that enables only their
+  AI-chat/sidebar fields.
+- **Full statistical autocorrect:** the shipped `autocorrect` path is the curated
+  high-confidence typo table, not the distinct full-autocorrect behavior promised
+  by the parity spec; the code-field gate remains part of that work.
+- **Cross-app previous-input context:** same-app redacted bounded history ships;
+  the separate opt-in cross-app mode is not implemented.
+- **Thesaurus selection-trigger UX:** trailing-word lookup/offers ship, but
+  selection-triggered synonym behavior does not.
+- **Tray website/support actions:** Settings, updates, and Quit ship; the A3
+  **Visit Website** / **Contact Support** menu actions remain unimplemented.
+
+---
+
+## Tier 4 — 🔬 Live validation (implemented rows need human/scripted evidence)
+
+Except for the explicit code prerequisites above, these rows are implemented to
+a deterministic/build-verified standard. Selected A2
 scenarios have locally invoked script evidence via
 `tools/acceptance/run-a2-compat-gates.sh`, but that runner and its ledger checker
 are deliberately excluded from CI, tag releases, the release-policy checker,
-and generic shell-syntax validation. The residuals need a person at a granted
-macOS desktop, not new code. Sources:
+and generic shell-syntax validation. The listed residuals need a person at a
+granted macOS desktop after any linked code prerequisite closes. Sources:
 `2026-06-09-a2-parity-design.md §16`, `integration-phase-design.md`.
 Gate coverage note: only the AllMonitored row has a dedicated runner gate ID
 (`encrypted-memory-all-monitored-live`); the other residuals are covered by
@@ -333,7 +358,7 @@ folded settings LOOK gates (`personalization-pane-look`,
 |---|---|---|
 | Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking; Safari allow+exclude legs live-proven 2026-07-07 (Batch 6) | Chrome/Brave live rows with the A2 matrix; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
 | Multi-candidate Down-cycle | engine ✅; synthetic Down-cycle live-proven 2026-07-07 (`COMPME_CANDIDATES=3`, real model); `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before the next release |
-| Compatibility matrix | classifier ✅; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger as a local/manual tool | for a manual pre-release pass, supply live row PID map via `COMPME_A2_MATRIX_TARGETS`; dry runs may explicitly allow skips, while recorded evidence should pass every row and satisfy `check-a2-matrix-ledger.sh` locally |
+| Compatibility matrix | classifier ✅; Unsupported tiers fail closed; SidebarOnly remains blocked pending the editor-vs-sidebar detector above; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger as a local/manual tool | after the detector lands, supply live row PID map via `COMPME_A2_MATRIX_TARGETS`; dry runs may explicitly allow skips, while recorded evidence should pass every row and satisfy `check-a2-matrix-ledger.sh` locally |
 | Browser mirror-window | `set_mirror_mode` ✅; `mirror-window-firefox-zen-look` manual gate pins Firefox/Zen ghost-in-mirror confirmation | run the manual gate in a granted desktop session |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch; live submit-path pass 2026-07-07 after CGImageRef encoding panic fix (`e5c055b`) | OCR quality/perf on a granted desktop + multi-display caret confirm |
@@ -487,16 +512,13 @@ a granted macOS GUI session).
 | G4 | Underline + correction-banner overlay (novel FFI) | L | ✅ Implemented with macOS range geometry and correction presenter tests; live visual LOOK remains pending on a granted Mac. |
 | G5 | Settings: grammar-accept recorder row + Apps-pane `GrammarFix` column; live validation | M | ✅ Implemented: recorder role/collision handling, live grammar-accept rebind persistence, Apps-pane `GrammarFix` mapping, and env-shadow/config tests are covered. |
 
-### Open decisions (recommended defaults)
-- **Underline rendering:** *recommend a thin filled sub-panel* under the word rect
-  (matches the existing "position a transparent panel" pattern) over an
-  attributed-string `NSUnderlineStyle` (the repo uses no attributed strings yet).
-- **LLM safety:** *recommend* a strict single-word post-filter + small-edit-distance
-  guard; the local model must not turn a typo-fix into a paraphrase. If the model
-  is unreliable at word-level, fall back to the pure `autocorrect` table for the
-  known-typo subset.
-- **Trigger with no error found:** *recommend* a silent no-op (or a subtle flash),
-  not a "nothing to fix" banner.
+### Resolved implementation decisions
+- **Underline rendering:** thin filled non-activating sub-panel under the word,
+  paired with the correction banner.
+- **LLM safety:** completion-native few-shot prompt, one generated token, strict
+  single-word post-filter, and edit distance at most two. Grammar does not hide an
+  autocorrect-table pre-pass.
+- **Trigger with no error found:** silent no-op; no banner.
 
 ### Cross-platform architecture (Linux · Windows · macOS)
 The portable core (G1-G2, plus policy/settings logic) is **written once** and
@@ -535,22 +557,27 @@ with physical trigger/accept keypresses.
 
 - **Payment / licensing tiers / subscriptions / multi-device seats** — compme is
   Apache-2.0, all features open (`a3-settings-ui-design.md:15`). No Subscription
-  pane, no telemetry toggle (nothing is ever sent; About pane states this).
+  pane and no telemetry toggle because no analytics/telemetry is sent. Explicit
+  user-initiated model downloads and URL navigation are separate network actions.
 - **RTL / multilingual** — model/locale-bound, not pure-table features
   (`a2-parity-design.md:89`).
-- **Candidate cycling & thesaurus** are intentional **supersets** beyond Cotypist,
-  already shipped — *not* parity gaps (`a2-parity-design.md:69-76`).
+- **Candidate cycling** is an intentional superset beyond Cotypist and is not a
+  parity gap. Thesaurus evidence is mixed: public help omits it, while the
+  installed-binary audit exposed auto/selection feature flags. The current scope
+  therefore tracks shipped trailing-word lookup separately from the pending
+  selection-trigger UX above.
 
 ---
 
 ## macOS completion plan (2026-06-30)
 
-> **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
-> residuals below are done in code (the last gap — the Personalization multi-line
+> **Historical status (2026-07-01): this six-item macOS UI backlog is
+> CODE-COMPLETE.** All six residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1831 tests, clippy clean). What remains for
-> "ready to use" is **not development**: a human **visual-LOOK pass** on a
-> granted Mac over the 9 settings panes + the Tier-4 live checklist. Developer-ID
+> review + tdd + ponytail pass (1831 tests, clippy clean). This historical claim
+> covers the six rows only; the broader parity audit now tracks the five committed
+> code gaps above in addition to a human visual-LOOK pass over the 9 settings
+> panes and the Tier-4 live checklist. Developer-ID
 > signing, notarization, and the first stable tags are complete through v0.1.4;
 > a full native auto-updater remains optional. The authoritative live-gate ledger is `docs/ACCEPTANCE.md`
 > (Manual/Live Gate Ledger); `docs/MANUAL-VALIDATION.md` carries the detailed
@@ -602,7 +629,8 @@ per-app configurable.
    shows wrong text. Plain inserts via SyntheticKeys/Clipboard currently assume
    success (`insert_impl` SyntheticKeys/Clipboard branches,
    `crates/platform_macos/src/lib.rs`); replacements already fail closed.
-4. **Non-atomic replacement support** — decide after the 17-gate macOS pass
+4. **Non-atomic replacement support** — decide after the expanded compatibility
+   and manual Tier-4 pass
    whether SyntheticKeys/Clipboard fields need explicit backspace-synthesis for
    emoji/autocorrect/grammar replacements. Default: keep the current fail-closed
    atomic-only behavior unless the compatibility pass proves it blocks an
@@ -610,25 +638,28 @@ per-app configurable.
 
 ### Current execution order
 
-1. **Close all 17 Tier-4 macOS manual/live gates** using the current local binary;
+1. **Close the five committed macOS/A2 code gaps above** (or record an explicit
+   product-scope decision for any deliberate deferral), with deterministic tests.
+2. **Run all 17 runner-pinned macOS manual/live gates plus the additional
+   manually recorded Tier-4 rows** using the current local binary;
    record each result in `docs/ACCEPTANCE.md`. Prioritize the nine-tab Settings
    walkthrough, Setup single-location-control invariant, Apps/Personalization,
    physical hotkeys + grammar fix, Chromium-family caret calibration, and memory
    privacy residuals.
-2. ✅ **Synchronize plan/support/acceptance docs (2026-07-10)** — this update
+3. ✅ **Synchronize plan/support/acceptance docs (2026-07-10)** — this update
    refreshed the implementation anchor, atomic-replacement wording, Apps/memory
    status, Setup control invariant, A2 local-only policy, and platform-support
    matrix. Repeat the sync whenever manual gates close or adapter phases ship.
-3. **Settle non-atomic replacement scope** from that compatibility evidence; do
+4. **Settle non-atomic replacement scope** from that compatibility evidence; do
    not add backspace synthesis speculatively.
-4. **Windows Phase 1 (1.1–1.7)** — UIA read/caret, keyboard hook, insertion,
+5. **Windows Phase 1 (1.1–1.7)** — UIA read/caret, keyboard hook, insertion,
    layered overlay, ShellHost services, and native acceptance on Windows hardware.
-5. **Linux Phase 2 (2.1–2.7), X11-first** — start with the two-day accept-key
+6. **Linux Phase 2 (2.1–2.7), X11-first** — start with the two-day accept-key
    strategy spike, then AT-SPI2, insertion, overlay, ShellHost, and Xvfb fixtures.
-6. **Wayland Phase 3 decision spike** — compare IME and portal/global-shortcut
+7. **Wayland Phase 3 decision spike** — compare IME and portal/global-shortcut
    paths on GNOME, KDE, and sway before committing to an implementation.
-7. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux
+8. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux
    packaging/signing/publication, and feature-by-platform acceptance/docs after
    the corresponding adapter is functional.
-8. **Tier 1.2 optional updater** — replace the release-page handoff only with a
+9. **Tier 1.2 optional updater** — replace the release-page handoff only with a
    signature-verifying native updater design; this remains non-blocking.

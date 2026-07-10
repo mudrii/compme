@@ -95,9 +95,11 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
 **New/changed:**
 - `crates/model_client/src/lib.rs`: add
   `pub fn grammar_fix_prompt(word: &str, left_ctx: &str) -> String` next to
-  `terse_continuation_prompt`. Instruction-style prompt that asks for the
-  single corrected word only (or the word unchanged), with the left context for
-  disambiguation. Keep it terse; the caller uses a small `max_tokens`.
+  `terse_continuation_prompt`. **Implemented form:** a single-line few-shot
+  continuation (`misspelling -> fix` examples, then context + target), not an
+  instruction. The shipped Qwen2.5 base model continued the old directive instead
+  of following it, so the live-found fix uses this completion-native form and a
+  one-token generation budget.
   (Hardened 2026-07-04: the host tail-bounds `left_ctx` to
   `GRAMMAR_LEFT_CTX_CHARS` = 400 scalars before building the request — the AX
   field value is unbounded input. Like the completion prompt, `left_ctx` is raw
@@ -418,15 +420,15 @@ range bounds and range replacement, not just the existing left-of-caret
 
 ---
 
-## Open decisions (recommended defaults)
-- **Underline rendering:** thin filled sub-panel under the word rect (matches the
-  existing panel pattern) over attributed-string `NSUnderlineStyle` (repo uses no
-  attributed strings yet). *Recommended: sub-panel.*
-- **LLM reliability fallback:** if the local model is weak at word-level, keep the
-  pure `autocorrect` table as a zero-cost pre-pass for the known-typo subset and
-  only fall through to the LLM for misses.
-- **Trigger with no correction:** silent no-op (or a subtle flash), no banner.
-- **`GRAMMAR_MAX_TOKENS` / `MAX_EDIT`:** pick small constants in G1/G2; tune on-device.
+## Resolved implementation decisions
+- **Underline rendering:** a thin filled non-activating sub-panel under the word,
+  paired with the correction banner panel.
+- **Model path:** grammar uses the local LLM plus strict post-vetting; the curated
+  autocorrect table is not a hidden grammar pre-pass.
+- **Trigger with no correction:** silent no-op; no banner is shown.
+- **Bounds:** grammar generation is exactly one token
+  (`GRAMMAR_GENERATION_TOKENS = 1`) and vetting allows edit distance at most two
+  (`MAX_EDIT_DISTANCE = 2`).
 
 ## Risk register
 - **R1 (high):** underline+banner overlay is net-new FFI on each OS — the primary

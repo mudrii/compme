@@ -1,5 +1,5 @@
 //! The model catalog (engine-macos §15 D14, designed c95): which local
-//! models the General pane offers, where they download from, and whether
+//! models the Setup pane offers, where they download from, and whether
 //! this machine can offer them for download.
 //!
 //! Deliberate deviation from the c95 sketch: the catalog is static Rust
@@ -95,7 +95,7 @@ pub fn is_wellformed_sha256(hash: &str) -> bool {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
-/// One downloadable model the General pane can offer.
+/// One downloadable model the Setup pane can offer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelEntry {
     /// Display name (also the on-disk file stem).

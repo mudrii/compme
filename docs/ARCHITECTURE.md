@@ -114,6 +114,10 @@ Key concepts:
   replacement.
 - `OverlayPresenter`: `show_ghost`, `show_correction`, `update_ghost`, and
   `hide`.
+- `ShellHost`: the product-shell half of the platform boundary: native event
+  pumping, permissions, clipboard/OCR context, OS integration, confirmation UI,
+  and memory-key storage.
+- `TrayHandle`: the platform status-UI seam driven by the shared run loop.
 - `ux_mode`: classifies capabilities as `Inline`, `Popup`, `Hotkey`,
   `Unsupported`, or `Blocked`.
 
@@ -434,13 +438,14 @@ adapter-driven entry points required by the A1b macOS contract:
 
 ### `app`
 
-`app` owns the `compme` binary and the runtime wiring. Its `run_loop` is the
-single place where the pure crates meet AppKit: it loads config, owns all
-policy (prefs, compat, personalization), marshals platform callbacks onto the
-main thread, and dispatches all three suggestion paths. It is the only root crate
-that combines config loading, AppKit run-loop pumping, the menu-bar status
-surface, the settings window, model selection/download, the inference worker,
-signal handling, and ordered shutdown.
+`app` owns the `compme` binary and is the orchestration boundary where pure
+policy meets the portable `PlatformAdapter`, `OverlayPresenter`, `ShellHost`,
+and `TrayHandle` seams. It loads config, owns policy (prefs, compat,
+personalization), marshals platform callbacks onto the main thread, and
+dispatches all three suggestion paths. AppKit implementation remains in
+`platform_macos`; `app` combines its portable facades with model
+selection/download, the inference worker, signal handling, and ordered
+shutdown.
 
 Major responsibilities:
 
@@ -657,8 +662,9 @@ host probes machine RAM through the platform adapter, renders the label, and
 blocks `Exceeds` downloads before the license/fetch edge. When the user picks an offerable model
 and accepts its license, the run loop spawns the `model_fetch`
 `ModelDownloader` worker, which downloads to a `.part` file, verifies the
-SHA-256, and atomically renames it into place. The chosen model then feeds
-`LlamaModel` on the inference worker thread.
+SHA-256, and atomically renames it into place. The app inference worker owns and
+calls the `LlamaModel` handle; that handle delegates llama.cpp model/context
+ownership and decode to the separate `model-client-llama` worker.
 
 ### Local-Replacement Path
 

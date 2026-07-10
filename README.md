@@ -129,9 +129,11 @@ unbundled `cargo run -p app` is still fine.
   latest GitHub Release (no in-app auto-update yet); tagged releases also upload
   a machine-readable update manifest next to the notarized zip and checksum for
   tooling and a future auto-updater.
-- **Signed deep-link config** — a fail-closed `compme://setOverride` URL scheme for
-  reversible per-app/per-domain overrides. It cannot set model, instruction, or
-  security values; any future non-reversible command must require an Ed25519 signature.
+- **Confirmed deep-link config** — a fail-closed `compme://setOverride` URL
+  scheme for reversible per-app/per-domain overrides. Signed and unsigned
+  reversible links require user confirmation; signed links are verified when a
+  trusted key is configured. It cannot set model, instruction, or security
+  values; any future non-reversible command must require an Ed25519 signature.
 
 ## Repository Layout
 
@@ -162,7 +164,7 @@ unbundled `cargo run -p app` is still fine.
 │   ├── redaction/                     # Secret/high-entropy redaction
 │   ├── memory/                        # Encrypted typing-history store
 │   ├── stats/                         # Acceptance statistics + sparkline
-│   ├── webconfig/                     # Signed compme:// deep-link config
+│   ├── webconfig/                     # Confirmed compme:// deep-link config
 │   └── app/                           # compme binary and run loop
 ├── tools/
 │   ├── acceptance/                    # A1b live, A2 compat, E2E, and startup gates
@@ -184,7 +186,7 @@ from `tools/spike/`.
 
 | Crate | Purpose |
 |-------|---------|
-| `platform` | Cross-platform contract shared by the pure engine and platform adapters: field handles, capabilities, insertion strategies, subscriptions, overlay presenter, and UX-mode classification. |
+| `platform` | Cross-platform contracts shared by the host and platform implementations: `PlatformAdapter` for field focus/read/write, `OverlayPresenter` for suggestions, `ShellHost` for product-shell services, and `TrayHandle` for status UI. |
 | `platform_macos` | macOS implementation of the adapter and overlay presenter using Accessibility, CoreGraphics, AppKit/Carbon, and pasteboard APIs; ghost overlay, tray, key recorder, and settings window. |
 | `platform_windows` | Windows adapter scaffold that fails closed for platform I/O/subscription methods until the real UIA adapter lands, plus real host services already shipped: owner-only DACL file hardening and a console Ctrl-C handler. |
 | `platform_linux` | Linux adapter scaffold that reports Linux and fails closed for platform I/O/subscription methods until a real adapter is implemented. |
@@ -192,7 +194,7 @@ from `tools/spike/`.
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
 | `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2`; macOS enables Metal, while current non-macOS builds are CPU-only until Vulkan/CUDA and their CI SDKs land. |
-| `model_catalog` | Pure, static catalog of which local models the General/Setup pane offers, their download sources, and a `fits` / `tight` / `exceeds` RAM-fit verdict for the host. |
+| `model_catalog` | Pure, static catalog of which local models the Setup pane offers, their download sources, and a `fits` / `tight` / `exceeds` RAM-fit verdict for the host. |
 | `model_fetch` | Pure SHA-256 integrity + resume planning, plus the blocking network downloader (`.part` → verify → atomic rename) and a `ModelDownloader` worker thread. |
 | `ranker` | Candidate shaping helpers: word capping, first-word extraction, and repetition penalty. |
 | `prefs` | Suggestion-gating preferences: per-app and per-domain enable/exclude, per-app Tab-key disable, and a global pause/snooze, resolved against an injected clock. |
@@ -202,13 +204,13 @@ from `tools/spike/`.
 | `grammar` | Pure grammar helpers: current inline pronoun capitalization plus the LLM-backed standalone grammar/spell-fix post-filter. |
 | `localize` | Pure, high-precision US→British spelling normalization for American-only forms; deliberately skips ambiguous words. |
 | `emoji` | Pure `:shortcode`→emoji completion honoring skin-tone (Fitzpatrick) and gender preferences. |
-| `thesaurus` | Pure synonym lookup with the queried word's case pattern applied; supports selection and auto modes. |
+| `thesaurus` | Pure synonym lookup with the queried word's case pattern applied; the current host uses the trailing-word auto path, while selection-trigger UX remains future work. |
 | `textcase` | Pure capitalization-pattern detection and application, shared by the text-suggestion crates. |
 | `redaction` | Pure best-effort scrubbing of emails, Luhn-valid card numbers, and high-entropy tokens before any persistence or diagnostics; biased to over-redact. |
 | `memory` | Encrypted local memory for accepted completions or all monitored typing: text is redacted then AES-256-GCM encrypted to SQLite, opt-in storage modes, Keychain-managed key, plaintext app metadata for per-app counts/delete. |
 | `stats` | Pure rolling 30-day accumulator for shown/accepted/dismissed/superseded counts, words completed, and latency, with injected time. |
 | `webconfig` | Strict, fail-closed parser for `compme://setOverride` deep links; reversible per-app/per-domain overrides only, signed (Ed25519) links required for anything non-reversible. |
-| `app` | `compme` binary: config loading, run loop, tray menu + icon, settings window wiring, inference worker, and shutdown ordering. |
+| `app` | `compme` orchestration boundary: config loading, run loop, portable platform/shell wiring, inference worker, and shutdown ordering. AppKit implementation remains owned by `platform_macos`. |
 
 ## Requirements
 

@@ -36,7 +36,7 @@ The root `Cargo.toml` is a Rust workspace with 25 members
 - `crates/context`, `crates/ranker`, `crates/engine_core`, `crates/engine` — suggestion pipeline
 - `crates/personalization`, `crates/redaction`, `crates/prefs`, `crates/memory` — steering, privacy, prefs, encrypted history
 - `crates/stats` — usage statistics + lifetime persistence
-- `crates/webconfig` — signed `compme://` deep links
+- `crates/webconfig` — confirmed signed/unsigned reversible `compme://` links
 - `crates/emoji`, `crates/textcase`, `crates/thesaurus`, `crates/autocorrect`, `crates/grammar`, `crates/localize` — local replacement features
 - `crates/compat` — per-app compatibility tiers
 - `crates/model_catalog`, `crates/model_fetch`, `crates/model_client` — model catalog, downloads, llama.cpp client
@@ -104,8 +104,9 @@ COMPME_MODEL_PATH=/abs/path/to/model.gguf
 The MVP default is **Qwen2.5-0.5B Q4_K_M** — chosen for the warm sub-150 ms first
 token the latency gate requires, not for output quality. The reference app
 (Cotypist) ships a far larger default (~3 GB Gemma 4) behind a downloaded,
-tiered catalog. Any GGUF that `llama-cpp-2` can load works via the override
-above, so tiering up is a config change, not a code change.
+tiered catalog. The override supports compatible non-recurrent transformer
+GGUFs accepted by the pinned `llama-cpp-2` backend. Recurrent/hybrid models are
+currently unsupported because prefix-KV reuse would require full re-decode.
 
 **In-app model picker (Setup tab).** The Setup tab now exposes a
 "Model to download:" popup over the built-in `model_catalog` (four entries,

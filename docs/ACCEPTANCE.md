@@ -542,8 +542,10 @@ log showed `AxSet write silently ignored — falling back to synthetic input`, a
 the follow-on synthetic insertion landed in the target. This does **not** close
 non-AxSet replacement support: local replacements remain AxSet-only because
 SyntheticKeys/Clipboard cannot atomically delete `replace_left` and insert the
-replacement. The shared non-AxSet backspace-synthesis replacement residual above
-therefore remains open.
+replacement. Backspace synthesis is a possible follow-up, not an implementation
+commitment: keep replacements fail-closed unless the expanded compatibility pass
+shows that an in-scope app needs non-atomic support, then settle the design from
+that evidence.
 
 ## Live UI LOOK Gates (Settings window / tray)
 

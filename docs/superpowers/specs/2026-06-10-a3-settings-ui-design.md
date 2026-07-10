@@ -18,8 +18,9 @@
 > and [`docs/ACCEPTANCE.md`](../../ACCEPTANCE.md) — the remaining Tier 3 work is
 > LOOK validation for shipped controls: Apps policy grid, Personalization pane,
 > Shortcuts recorder/physical hotkeys, Setup model picker, menu-bar icon, and the
-> nine-tab walkthrough. Inline per-line annotations below are historical where a
-> dated correction supersedes them.
+> nine-tab walkthrough. One small code gap also remains in this plan: the tray's
+> Visit Website / Contact Support actions. Inline per-line annotations below are
+> historical where a dated correction supersedes them.
 
 Reference: 13 Cotypist 2026.1 screenshots captured 2026-06-10 (tray menu +
 every settings pane). This maps each surface to compme's existing backing and
@@ -32,8 +33,9 @@ live tray flags.
 
 - **No Subscription pane** — compme is Apache-2.0, all features open.
 - **No telemetry toggle** — Cotypist's "share anonymous usage statistics"
-  pane has no compme equivalent because nothing is ever sent (local-only).
-  The About pane states this instead.
+  pane has no compme equivalent because Compme sends no analytics/telemetry.
+  Explicit user-initiated model downloads and URL navigation are separate
+  network actions. The About pane states the no-telemetry policy instead.
 - **No Sparkle auto-updater initially** — GitHub-release **Check for Updates...**
   handoff is shipped; Sparkle/appcast remains optional later.
 
@@ -48,7 +50,7 @@ input-collection submenu, Settings (⌘,), support links, updates, Quit.
 | Disable Completions Globally ▸ (1h / until relaunch / always) | snooze (c54) = the 1h arm; "always" = enable toggle (c50) | shipped for 1h / until relaunch / always via `apply_global_disable`; remaining polish is stateful submenu text/dynamic app-name LOOK validation |
 | Input Collection in <app> ▸ | `memory` per-app collection override in `prefs` | shipped as a current-app toggle with persistence and run-loop gates; remaining polish is submenu state/dynamic app-name LOOK validation |
 | Settings… ⌘, | opens the S2 window | done |
-| Visit Website / Contact Support | repo URLs, `NSWorkspace.open` | trivial |
+| Visit Website / Contact Support | repo URLs, `NSWorkspace.open` | pending small tray action + URL-dispatch wiring; tracked in ROADMAP |
 | Quit | exists | done |
 
 ## Phase S2 — Settings window skeleton + panes
@@ -68,7 +70,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 | App Settings | per-app list (usage counts) with enable/mid-line/autocorrect/Tab-disable, compat mode, per-app instructions, per-app history | `prefs` overrides + `tab_disabled` tap suppression; `memory` per-app counts; personalization per-app maps (config-wired; editor missing) | Apps tab ships recorded rows, count/delete, and On/Tab/Mid/AC/GF policy columns; column readability is live-validated. Remaining LOOK is name truncation and physical toggle-to-behavior confirmation |
 | Labs | mid-line toggle | `COMPME_MIDLINE` | pane only — **[2026-06-10] DONE** (shipped as a switch in the General tab — the Labs pane content moved to General) |
 | Statistics | today + 30-day charts (range/group/metric) | `stats` crate (counts/words/latency) — menu line shipped c51 | current scope complete: sparkline rows + lifetime row + stats.env persistence + range/grouping popups and LOOK evidence shipped; a single metric picker was closed by design because separate rows preserve comparison |
-| About | version, acks, links | LICENSE, deps | pane only; states the no-telemetry guarantee — **[2026-06-10] DONE** |
+| About | version, acks, links | LICENSE, deps | pane only; states the no-analytics/telemetry guarantee — **[2026-06-10] DONE** |
 
 ## Build order (each loop-tick-sized unless noted)
 
@@ -110,6 +112,6 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
    floating button, Sparkle/appcast auto-update client — separate; GitHub
    Release handoff + update manifest are shipped.
 
-GUI panes are live-LOOK validated (human or scripted screenshot reads);
-underlying toggles stay env/config-file-backed so every behavior remains
-headless-testable.
+GUI panes require the live-LOOK validation listed in the status header (human or
+scripted screenshot reads); underlying toggles stay env/config-file-backed so
+their behavior remains headless-testable.

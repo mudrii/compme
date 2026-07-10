@@ -18,6 +18,7 @@ cask "compme" do
     System Settings -> Privacy & Security -> Accessibility.
 
     Use the menu-bar item "Check for Updates…" to open the latest GitHub
-    release. All inference is local; nothing is sent off the machine.
+    release. Inference and prompt context stay local; model downloads and the
+    update link use the network. Compme sends no typed text or telemetry.
   EOS
 end

@@ -1602,7 +1602,7 @@ fn build_window(
         // Always-on model-management buttons in the right column: reveal the
         // models folder in Finder, and bring-your-own-model. Kept OUT of
         // setup_action_buttons so the row-coupled availability refresh (a
-        // `[bool; 4]` zip) never hides them; the view hierarchy retains them.
+        // `[bool; 3]` zip) never hides them; the view hierarchy retains them.
         let model_mgmt_actions: [objc2::runtime::Sel; 2] =
             [sel!(revealModelsDir:), sel!(chooseModel:)];
         for (i, (title, action)) in MODEL_MANAGEMENT_BUTTON_TITLES
