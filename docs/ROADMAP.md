@@ -166,17 +166,24 @@ signing + hardened runtime + notarization + a native updater.
   without signing/notarization credentials; `618013d` removed A2 validation from
   CI/tag-release automation. The current release-integrity review additionally
   enforces stable-only `X.Y.Z` / `vX.Y.Z` versions, repeats the exact-default-tip
-  check immediately before publication, creates the draft with
+  check immediately before draft creation and again before undraft (deleting a
+  stale draft on drift), creates the draft with
   `gh release create --verify-tag --draft --generate-notes`, refuses an existing
   release for the tag without overwriting assets, and separates cask finalization
-  into a rerunnable protected-environment job. That job re-downloads and verifies
-  the artifact, verifies the release tag SHA and ancestry, extracts the cask
+  into a rerunnable protected-environment job. That job verifies the local zip
+  against the published checksum asset, verifies the release tag SHA
+  and ancestry, extracts the cask
   updater and validator directly from that verified commit before switching to
   the default branch, validates the resulting cask, and makes a
-  failed cask push recoverable without republishing. The workflow also constrains
-  the artifact/cask to arm64 and allowlists the exact identities and commit SHAs
-  of every workflow action. None of these post-tag policy changes is part of the
-  v0.1.4 tag.
+  failed cask push recoverable without republishing. CI and tag validation run a
+  pinned RustSec dependency audit; release Windows/Linux gates match branch CI's
+  portable-workspace/app-binary coverage; every job has an explicit timeout.
+  After packaging, the final zip is expanded and its sole top-level `Compme.app`
+  must pass strict signature, staple, and Gatekeeper assessment. Hermetic helper
+  self-tests reject poisoned ambient `COMPME_*` controls. The workflow also
+  constrains the artifact/cask to arm64 and allowlists the exact identities and
+  commit SHAs of every workflow action. None of these post-tag policy changes is
+  part of the v0.1.4 tag.
 
 **Pending:**
 - Optional later upgrade: replace the GitHub-release menu handoff with a full

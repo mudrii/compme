@@ -4,7 +4,8 @@ Compme ships as a Developer-ID signed and notarized macOS `.app` bundle publishe
 to GitHub Releases and installed through a Homebrew cask. GitHub Actions runs the
 root macOS checks and release build on Apple Silicon `macos-14` runners. Branch
 CI also tests the portable workspace and app binary on Windows and Linux; tag
-validation runs scoped adapter-crate jobs on those platforms.
+validation runs the same portable workspace and app-binary gates on those
+platforms.
 
 > **Release boundary (2026-07-10):** this page describes the pipeline on current
 > `main` for the next tag. The latest published artifact is `v0.1.4` at
@@ -19,13 +20,22 @@ validation runs scoped adapter-crate jobs on those platforms.
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push to `main` / `spike/**`, PR, or `workflow_dispatch` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, plus non-A2 acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), release-version validator self-test, Homebrew cask Ruby syntax (`ruby -c Casks/compme.rb`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), bundle smoke + self-test (`tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`), UI-assisted session self-test (`tools/acceptance/run-ui-assisted-session.sh --self-test`), A1b/E2E self-tests, agent-brief alignment + self-test (`tools/release/check-agent-briefs.sh` and `tools/release/check-agent-briefs.sh --self-test`), privacy policy + self-test (`tools/release/check-privacy-policy.sh` and `tools/release/check-privacy-policy.sh --self-test`), missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. Windows/Linux portability jobs fmt the workspace, clippy/test the workspace excluding `platform_macos`, and build the app binary through the target facade. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected stable tag `vX.Y.Z` | Preflight validates the stable-only `X.Y.Z` version with `validate-version.sh`, requires the tag commit to equal the current default-branch HEAD, and checks bundle metadata before starting expensive jobs. Release validation then runs serialized root fmt/clippy/test, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), root build, non-A2 acceptance/bundle/release script syntax + self-tests including the release-version validator, Homebrew cask Ruby syntax, spike fmt/clippy/test/build, and scoped Windows/Linux adapter fmt/clippy/test/build jobs. Only after all validation passes, a secretless prebuild job (read-only permissions, no `release` environment, no secrets) rechecks that the tag still equals default-branch HEAD, scrubs the checkout-persisted git credential, compiles cold without a build cache, verifies the binary contains exactly `arm64`, and uploads it. The protected `release` environment then gates the signing job, which runs no `cargo` and installs no Rust toolchain: it downloads the binary, restores its executable bit, re-verifies exact `arm64` before exposing signing secrets, registers a deterministic cleanup path, imports the Developer-ID certificate, assembles `Compme.app` with `COMPME_BUNDLE_SKIP_BUILD=1`, notarizes + staples it, and strictly deletes and verifies absence of the signing keychain before packaging. It then zips with `ditto`, computes sha256, writes the update manifest, and uploads the three artifacts. Publication and Homebrew finalization are separate protected-environment jobs so a cask failure can be retried without rebuilding or republishing. The publish job verifies the downloaded zip checksum, performs a late exact-default-tip check, refuses an existing release for the tag, creates a draft with `gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes` plus exactly the three release files, and undrafts it. The dependent finalizer downloads and verifies the artifact again, freezes the tag-reviewed cask updater and version validator before switching to the default branch, and validates the resulting cask before committing it. |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected stable tag `vX.Y.Z` | Preflight validates the stable version, exact default-branch tip, and bundle metadata. Validation runs pinned RustSec auditing, root/spike gates, release self-tests, and full portable-workspace plus app-binary gates on Windows/Linux. Secretless prebuild produces an exact-arm64 binary. Protected signing downloads and re-verifies it, signs, notarizes, staples, deletes the signing keychain, packages the zip, then expands the final zip and requires exactly one top-level `Compme.app` that passes strict `codesign`, staple, and Gatekeeper assessment. Publication creates a draft after an exact-tip check, then re-fetches tag/default branch immediately before undraft; drift deletes the stale draft and fails. The cask finalizer verifies its local zip against the published checksum asset before branch mutation. All jobs have explicit timeouts; signing/notary allows 360 minutes for multi-hour Apple queues. |
+
+Both CI and tag validation run the exact-SHA-pinned RustSec audit action. Their
+audit jobs grant only `contents: read` plus the `checks: write` permission the
+action needs to report findings. Every CI and release job has an explicit
+timeout. The publish job verifies the downloaded zip checksum before creating
+the draft.
 
 Workflow permissions default to `contents: read`; only the publication and cask
 finalization jobs receive `contents: write`, and both are gated by the protected
 `release` environment. Both check out full history (`fetch-depth: 0`) so their
 late tag/default-branch checks and the cask finalizer's ancestry proof use the
 complete repository history.
+The workflow never overwrites an existing asset, but GitHub release assets are
+still inside the trust boundary of privileged contents writers unless the
+repository separately enables GitHub Immutable Releases.
 
 A2 validation is local/manual-only. The automated workflows exclude
 `tools/acceptance/run-a2-compat-gates.sh` and
@@ -178,7 +188,8 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    secretless prebuild repeats the exact-HEAD check after validation so a
    default-branch advance cancels the release rather than signing an older
    commit. The publication job performs the same exact-tip check immediately
-   before creating the draft, closing the later build/signing window.
+   before creating the draft, then fetches the default branch and tag again
+   immediately before undraft. Drift deletes the stale draft and fails closed.
    The cask finalizer refuses to update `main`
    if the tag commit is not an ancestor of the default branch or if the
    default-branch cask version has already moved past the tag version:
@@ -194,7 +205,9 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
 
    The Release workflow builds and verifies an exact-arm64 binary before upload,
    re-verifies exact arm64 after download and before signing secrets are exposed,
-   then Developer-ID signs, notarizes, staples, and packages it. The **Publish
+   then Developer-ID signs, notarizes, staples, and packages it. The final zip
+   is expanded, required to contain exactly one top-level `Compme.app`, and
+   reassessed with strict codesign, staple, and Gatekeeper checks. The **Publish
    release** job creates a draft `vX.Y.Z` GitHub Release by running
    the equivalent of:
 
@@ -208,7 +221,8 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
      "release-artifacts/compme-$version-update.json"
    ```
 
-   It then undrafts the release. `gh release create` fails if the tag already has
+   It repeats the exact-tip/tag check and then undrafts the release.
+   `gh release create` fails if the tag already has
    a release, and the workflow never uses an asset-upload overwrite/clobber path;
    existing release assets are therefore never replaced in place. In short:
    same-name release assets are never overwritten; a collision fails closed
@@ -221,14 +235,16 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    replaces the whole body rather than prepending text. Also refresh the README
    **Status** section if this is the first release.
 5. After publication, the separate **Finalize Homebrew cask** job downloads the
-   artifact again, verifies its checksum, and commits the cask sha256 back to the
-   default branch. Before it checks out or pulls that mutable branch, the
-   finalizer first verifies the release tag commit and default-branch ancestry,
-   then materializes `update-cask.sh` and `validate-version.sh` from that exact
-   commit with `git show`; dirty working-tree copies are never executed. It then
-   invokes those frozen helpers with explicit cask and artifact paths. Before
-   committing, it verifies Ruby syntax plus the exact
-   arm64 stanza, version, release URL, and artifact sha256.
+   artifact again and commits the cask sha256 back to the default branch. The
+   finalizer independently downloads the published release's
+   `<zip>.sha256` with `gh`, requires its exact lowercase-SHA-256/filename format,
+   and refuses a local artifact whose bytes do not match it. Before it checks out
+   or pulls the mutable default branch, it also verifies the release tag commit
+   and default-branch ancestry, then materializes `update-cask.sh` and
+   `validate-version.sh` from that exact commit with `git show`; dirty
+   working-tree copies are never executed. It invokes those frozen helpers with
+   explicit cask and artifact paths. Before committing, it verifies Ruby syntax
+   plus the exact arm64 stanza, version, release URL, and artifact sha256.
 
    If branch protection blocks that bot push or you need to recover manually,
    use the guarded finalizer path from a checkout at the release tag commit so
@@ -240,6 +256,11 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    tag="v$version"
    git fetch origin main "refs/tags/$tag:refs/tags/$tag"
    git checkout --detach "$tag"
+   mkdir -p release-artifacts
+   gh release download "$tag" \
+     --repo mudrii/compme \
+     --pattern "compme-$version-macos.zip" \
+     --dir release-artifacts
    artifact_path="$PWD/release-artifacts/compme-$version-macos.zip"
    GITHUB_SHA="$(git rev-parse "$tag^{commit}")" \
      tools/release/finalize-cask.sh \
@@ -248,6 +269,13 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
        "$version" \
        main
    ```
+
+   `gh` must already be authenticated, or `GH_TOKEN` must contain a token that
+   can read the release. Do not supply a renamed or independently rebuilt zip:
+   the finalizer requires the canonical filename and compares its bytes with the
+   checksum asset downloaded directly from the published tag. The finalizer also
+   rejects draft and prerelease state; publish/undraft the stable release only
+   after verifying all three original assets, then run cask finalization.
 
    Release helpers are strict about arity; use the documented command forms
    exactly, because unexpected positional arguments exit with usage.
@@ -262,6 +290,15 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
      only the failed **Finalize Homebrew cask** job. Approve its protected
      `release` environment again; it re-downloads and re-verifies the published
      artifact without creating or uploading another release.
+   - If the Actions rerun window or workflow artifacts have expired, do not
+     rebuild and upload new bytes under the existing protected tag. If a draft
+     already contains all three original assets, download them, verify the zip
+     against its published checksum, inspect the update manifest, and only then
+     undraft it. If any original asset is absent or invalid, delete the draft and
+     cut the next patch release from a new commit/tag. For a published release
+     whose cask alone still needs recovery, download its zip as shown above and
+     run the guarded finalizer; its checksum comes from the published release
+     asset, not from the local file.
 
    Post-publish checklist:
    - `gh release view "vX.Y.Z"` (with the published tag substituted) shows all
@@ -273,9 +310,13 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
      && brew install --cask compme` installs the signed, notarized app.
 
    Recovering from a published bad release: do NOT retag — the protected tag
-   cannot move, and the cask finalizer's stale-version guard refuses to
-   re-bump `main` to a version it has already reached. Bump to the next patch
-   version (e.g. `v0.1.1`) and run the release flow again.
+   cannot move, and the cask finalizer's stale-version guard refuses to re-bump
+   `main` to a version it has already reached. For an urgent withdrawal, first
+   mark the GitHub release as a draft (`gh release edit "$tag" --draft`) and
+   remove or disable that version's cask on `main` through a reviewed commit so
+   new installs stop. Preserve the tag and evidence for incident analysis. Then
+   bump to the next patch version (e.g. `v0.1.1`) and run the complete release
+   flow; never replace assets on the withdrawn tag.
 
 ## Code signing / notarization
 
@@ -298,7 +339,9 @@ as fatal, verifies the keychain file is absent, and only then clears the signing
 environment values. The workflow submits the signed `.app` archive with
 `xcrun notarytool submit --wait`, staples the ticket with `xcrun stapler
 staple`, validates the staple, performs that strict keychain cleanup, and only
-then packages the release zip.
+then packages the release zip. It expands those final bytes and reruns
+`codesign --verify --deep --strict`, `xcrun stapler validate`, and
+`spctl --assess --type execute` before artifact upload.
 
 ## Updates
 

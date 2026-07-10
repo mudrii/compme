@@ -48,6 +48,12 @@ rewrite_cask() {
 }
 
 run_self_test() {
+  for name in COMPME_CASK_PATH COMPME_CASK_ARTIFACT; do
+    if printenv "$name" >/dev/null 2>&1; then
+      echo "self-test FAILED: inherited $name" >&2
+      return 1
+    fi
+  done
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-cask-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
 
@@ -270,6 +276,7 @@ if [ "${1:-}" = "--self-test" ]; then
     usage
     exit 2
   fi
+  unset COMPME_CASK_PATH COMPME_CASK_ARTIFACT
   run_self_test
   exit 0
 fi

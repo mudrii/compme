@@ -20,6 +20,8 @@ model downloads and opening release/documentation URLs. The CI policy check
 `tools/release/check-privacy-policy.sh` rejects known telemetry dependencies and
 hosts, and requires every referenced network host to be reviewed; it is a
 defense-in-depth static check, not proof of all runtime traffic.
+CI and stable-tag validation also run the exact-SHA-pinned RustSec audit action
+against `Cargo.lock`; local release-readiness proof uses `cargo audit`.
 
 Reports about the redaction layer, the opt-in encrypted typing memory,
 `compme://` signature verification and mandatory confirmation, secure-field

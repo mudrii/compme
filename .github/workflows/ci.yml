@@ -22,6 +22,10 @@ jobs:
     # Apple Silicon runner: Metal is available for the llama-cpp-2 build, and
     # Xcode + cmake are preinstalled (the native llama.cpp build needs them).
     runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -35,6 +39,11 @@ jobs:
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Rust dependency audit
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998
+        with:
+          token: ${{ github.token }}
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -139,6 +148,7 @@ jobs:
   spike:
     name: spike fmt · clippy · test · build (macOS)
     runs-on: macos-14
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -172,6 +182,7 @@ jobs:
   windows:
     name: portable workspace + platform_windows (Windows)
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -204,6 +215,7 @@ jobs:
   linux:
     name: portable workspace + platform_linux (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:

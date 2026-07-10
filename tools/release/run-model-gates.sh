@@ -27,6 +27,15 @@ url="${COMPME_MODEL_GATE_URL:-$default_url}"
 expected="${COMPME_MODEL_GATE_SHA256:-$default_expected}"
 
 run_self_test() {
+  for name in \
+    GITHUB_ACTIONS GITHUB_REF_TYPE COMPME_ALLOW_MODEL_GATE_OVERRIDE \
+    COMPME_MODEL_GATE_PATH COMPME_MODEL_GATE_URL COMPME_MODEL_GATE_SHA256 \
+    COMPME_REQUIRE_LATENCY_BUDGET; do
+    if printenv "$name" >/dev/null 2>&1; then
+      echo "run-model-gates self-test failed: inherited $name" >&2
+      return 1
+    fi
+  done
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-model-gates.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   unset GITHUB_ACTIONS GITHUB_REF_TYPE COMPME_ALLOW_MODEL_GATE_OVERRIDE
@@ -188,6 +197,9 @@ if [ "${1:-}" = "--self-test" ]; then
     echo "usage: $0 [--self-test]" >&2
     exit 2
   fi
+  unset GITHUB_ACTIONS GITHUB_REF_TYPE COMPME_ALLOW_MODEL_GATE_OVERRIDE
+  unset COMPME_MODEL_GATE_PATH COMPME_MODEL_GATE_URL COMPME_MODEL_GATE_SHA256
+  unset COMPME_REQUIRE_LATENCY_BUDGET
   run_self_test
   exit 0
 fi

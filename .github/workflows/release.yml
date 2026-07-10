@@ -20,6 +20,7 @@ jobs:
   preflight:
     name: Preflight release tag
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -51,6 +52,10 @@ jobs:
     name: Validate release gates (macOS)
     needs: [preflight]
     runs-on: macos-14
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -64,6 +69,11 @@ jobs:
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Rust dependency audit
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998
+        with:
+          token: ${{ github.token }}
 
       - name: Root format
         run: cargo fmt --all -- --check
@@ -173,9 +183,10 @@ jobs:
           cargo build --locked --bins
 
   windows:
-    name: platform_windows fmt · clippy · test · build (Windows)
+    name: portable workspace + platform_windows (Windows)
     needs: [preflight]
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -190,22 +201,23 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
-      - name: Format
-        run: cargo fmt -p platform_windows -- --check
+      - name: Format (workspace)
+        run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --locked -p platform_windows --all-targets -- -D warnings
+      - name: Clippy portable workspace (deny warnings)
+        run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --locked -p platform_windows
+      - name: Test portable workspace
+        run: cargo test --locked --workspace --exclude platform_macos
 
-      - name: Build
-        run: cargo build --locked -p platform_windows
+      - name: Build app binary
+        run: cargo build --locked -p app
 
   linux:
-    name: platform_linux fmt · clippy · test · build (Linux)
+    name: portable workspace + platform_linux (Linux)
     needs: [preflight]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -220,17 +232,17 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
-      - name: Format
-        run: cargo fmt -p platform_linux -- --check
+      - name: Format (workspace)
+        run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --locked -p platform_linux --all-targets -- -D warnings
+      - name: Clippy portable workspace (deny warnings)
+        run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --locked -p platform_linux
+      - name: Test portable workspace
+        run: cargo test --locked --workspace --exclude platform_macos
 
-      - name: Build
-        run: cargo build --locked -p platform_linux
+      - name: Build app binary
+        run: cargo build --locked -p app
 
   # Compile the full third-party dependency tree (build.rs, proc-macro code) in
   # a job that carries ZERO release secrets and no `environment: release`. A
@@ -248,6 +260,7 @@ jobs:
     permissions:
       contents: read
     runs-on: macos-14
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -310,6 +323,7 @@ jobs:
     permissions:
       contents: read
     runs-on: macos-14
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -431,6 +445,25 @@ jobs:
             echo "sha256=$sha"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Verify packaged app signature and notarization
+        env:
+          ZIP: ${{ steps.pkg.outputs.zip }}
+        run: |
+          set -euo pipefail
+          verify_dir="$(mktemp -d "$RUNNER_TEMP/compme-package-verify.XXXXXX")"
+          trap 'rm -rf "$verify_dir"' EXIT
+          ditto -x -k "$ZIP" "$verify_dir"
+          entry_count="$(find "$verify_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+          if [ "$entry_count" -ne 1 ] || [ ! -d "$verify_dir/Compme.app" ]; then
+            echo "release zip must contain exactly one top-level Compme.app" >&2
+            find "$verify_dir" -mindepth 1 -maxdepth 1 -print >&2
+            exit 1
+          fi
+          app="$verify_dir/Compme.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+
       - name: Write update manifest
         id: manifest
         env:
@@ -461,6 +494,7 @@ jobs:
     permissions:
       contents: write
     runs-on: macos-14
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -510,14 +544,29 @@ jobs:
             "release-artifacts/$ZIP.sha256" \
             "release-artifacts/$MANIFEST"
 
-      - name: Undraft GitHub release
+      - name: Revalidate default-branch HEAD and undraft GitHub release
         env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        run: |
+          set -euo pipefail
+          git fetch --force origin \
+            "$DEFAULT_BRANCH" \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
+          tag_sha="$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")"
+          if [ "$tag_sha" != "$GITHUB_SHA" ] || [ "$tag_sha" != "$default_sha" ]; then
+            echo "release tag $GITHUB_REF_NAME must still resolve to workflow commit $GITHUB_SHA and current origin/$DEFAULT_BRANCH HEAD $default_sha before undraft; got $tag_sha" >&2
+            if ! gh release delete "$GITHUB_REF_NAME" --yes; then
+              echo "failed to delete stale draft release $GITHUB_REF_NAME" >&2
+            fi
+            exit 1
+          fi
+          gh release edit "$GITHUB_REF_NAME" --draft=false
 
   # Keep cask publication in its own protected-environment job. If the push
   # fails after the GitHub release is public, GitHub can rerun this job directly
-  # without attempting to recreate or replace immutable release assets.
+  # without attempting to recreate or replace published release assets.
   finalize_cask:
     name: Finalize Homebrew cask
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
@@ -526,6 +575,7 @@ jobs:
     permissions:
       contents: write
     runs-on: macos-14
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -550,6 +600,7 @@ jobs:
       - name: Finalize Homebrew cask
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TAG="$GITHUB_REF_NAME"

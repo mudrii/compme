@@ -66,6 +66,17 @@ build_notary_auth_args() {
 
 run_self_test() {
   local fake_bin app log
+  for name in \
+    COMPME_NOTARYTOOL_KEYCHAIN_PROFILE COMPME_NOTARYTOOL_KEY_BASE64 \
+    COMPME_NOTARYTOOL_KEY_PATH COMPME_NOTARYTOOL_KEY_ID \
+    COMPME_NOTARYTOOL_ISSUER COMPME_NOTARYTOOL_APPLE_ID \
+    COMPME_NOTARYTOOL_PASSWORD COMPME_NOTARYTOOL_TEAM_ID \
+    COMPME_NOTARYTOOL_TEMP_KEY COMPME_NOTARYTOOL_TIMEOUT; do
+    if printenv "$name" >/dev/null 2>&1; then
+      echo "self-test FAILED: inherited $name" >&2
+      return 1
+    fi
+  done
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-notarize-self-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   fake_bin="$tmp/bin"
@@ -316,6 +327,10 @@ if [[ "${1:-}" == "--self-test" ]]; then
     usage
     exit 2
   fi
+  unset COMPME_NOTARYTOOL_KEYCHAIN_PROFILE COMPME_NOTARYTOOL_KEY_BASE64
+  unset COMPME_NOTARYTOOL_KEY_PATH COMPME_NOTARYTOOL_KEY_ID COMPME_NOTARYTOOL_ISSUER
+  unset COMPME_NOTARYTOOL_APPLE_ID COMPME_NOTARYTOOL_PASSWORD COMPME_NOTARYTOOL_TEAM_ID
+  unset COMPME_NOTARYTOOL_TEMP_KEY COMPME_NOTARYTOOL_TIMEOUT
   run_self_test
   exit 0
 fi

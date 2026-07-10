@@ -8,6 +8,10 @@ usage() {
 }
 
 run_self_test() {
+  if printenv COMPME_EXPECTED_VERSION >/dev/null 2>&1; then
+    echo "self-test FAILED: inherited COMPME_EXPECTED_VERSION" >&2
+    return 1
+  fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-bundle-meta-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
 
@@ -297,6 +301,7 @@ if [ "${1:-}" = "--self-test" ]; then
     usage
     exit 2
   fi
+  unset COMPME_EXPECTED_VERSION
   run_self_test
   exit 0
 fi

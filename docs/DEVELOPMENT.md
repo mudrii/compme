@@ -199,6 +199,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
+cargo audit
 
 find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
 tools/release/validate-version.sh --self-test
@@ -242,9 +243,11 @@ surface and several macOS pasteboard checks share process-wide OS state.
 Branch/PR CI also runs native Windows/Linux portability jobs: workspace fmt,
 portable-workspace clippy/tests excluding `platform_macos`, and an app-binary
 build through each fail-closed target facade. Tag release validation is
-narrower: it runs fmt, clippy, test, and build for `platform_windows` on
-`windows-latest` and for `platform_linux` on `ubuntu-latest`. Those are
-CI/release-runner gates rather than local macOS commands.
+equally broad: it runs the same portable-workspace gates and app-binary build on
+`windows-latest` and `ubuntu-latest`. CI and tag validation also run the
+exact-SHA-pinned RustSec audit action, and every workflow job has an explicit
+timeout. Those are hosted-runner gates rather than local macOS commands;
+`cargo audit` is their local equivalent.
 For release-readiness audits with the local GGUF model installed, also run the
 ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md) and the A1b
 manual checklist. The automated tag workflow self-tests the A1b checklist

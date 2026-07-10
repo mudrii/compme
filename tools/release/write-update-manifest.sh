@@ -79,6 +79,10 @@ JSON
 
 run_self_test() {
   local sha
+  if printenv COMPME_UPDATE_PUBLISHED_AT >/dev/null 2>&1; then
+    echo "self-test FAILED: inherited COMPME_UPDATE_PUBLISHED_AT" >&2
+    return 1
+  fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-update-manifest-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -156,6 +160,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     usage
     exit 2
   fi
+  unset COMPME_UPDATE_PUBLISHED_AT
   run_self_test
   exit 0
 fi

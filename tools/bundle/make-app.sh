@@ -22,6 +22,15 @@ repo_root="${COMPME_BUNDLE_REPO_ROOT:-$script_repo_root}"
 lsregister="${COMPME_BUNDLE_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
 
 run_self_test() {
+  for name in \
+    COMPME_BUNDLE_REPO_ROOT COMPME_BUNDLE_LSREGISTER CARGO_TARGET_DIR \
+    COMPME_BUNDLE_SKIP_BUILD COMPME_CODESIGN_IDENTITY \
+    COMPME_CODESIGN_ENTITLEMENTS; do
+    if printenv "$name" >/dev/null 2>&1; then
+      echo "self-test FAILED: inherited $name" >&2
+      return 1
+    fi
+  done
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/compme-make-app-self-test.XXXXXX")"
   cleanup() {
     rm -rf "$tmp_dir"
@@ -34,7 +43,7 @@ run_self_test() {
   log="$tmp_dir/commands.log"
   mkdir -p "$fake_bin"
   mkdir -p "$fixture_root/tools/bundle"
-  cp "$repo_root/tools/bundle/Info.plist" "$fixture_root/tools/bundle/Info.plist"
+  cp "$script_repo_root/tools/bundle/Info.plist" "$fixture_root/tools/bundle/Info.plist"
   # A stand-in icon so the required-icon copy has something to move; content is
   # irrelevant to the assembly test.
   printf 'icns-fixture' >"$fixture_root/tools/bundle/AppIcon.icns"
@@ -198,6 +207,8 @@ if [[ "${1:-}" == "--self-test" ]]; then
     echo "usage: tools/bundle/make-app.sh [output-dir] | --self-test" >&2
     exit 2
   fi
+  unset COMPME_BUNDLE_REPO_ROOT COMPME_BUNDLE_LSREGISTER CARGO_TARGET_DIR
+  unset COMPME_BUNDLE_SKIP_BUILD COMPME_CODESIGN_IDENTITY COMPME_CODESIGN_ENTITLEMENTS
   run_self_test
   exit 0
 fi
