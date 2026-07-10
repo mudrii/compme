@@ -85,7 +85,10 @@ pub fn word_at_split_caret(
 
     let start = left_scalar_count.saturating_sub(left_word.len());
     let end = left_scalar_count.saturating_add(right_word.len());
-    let word = left_word.into_iter().chain(right_word).collect();
+    let word: String = left_word.into_iter().chain(right_word).collect();
+    if !has_alphanumeric_edges(&word) {
+        return None;
+    }
     Some(OwnedWordAtCaret {
         word,
         range: WordRange { start, end },
@@ -120,17 +123,25 @@ pub fn word_at_caret(value: &str, caret: usize) -> Option<WordAtCaret<'_>> {
     while end < len && is_word_char(chars[end].1) {
         end += 1;
     }
-
     let byte_start = chars[start].0;
     let byte_end = chars.get(end).map(|(idx, _)| *idx).unwrap_or(value.len());
+    let word = &value[byte_start..byte_end];
+    if !has_alphanumeric_edges(word) {
+        return None;
+    }
     Some(WordAtCaret {
-        word: &value[byte_start..byte_end],
+        word,
         range: WordRange { start, end },
     })
 }
 
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '\'' | '’')
+}
+
+fn has_alphanumeric_edges(word: &str) -> bool {
+    word.chars().next().is_some_and(char::is_alphanumeric)
+        && word.chars().next_back().is_some_and(char::is_alphanumeric)
 }
 
 /// Truncate to at most `max` chars on a char boundary, keeping the tail (the
@@ -549,6 +560,44 @@ Recent: green blue\n"
                 range: WordRange { start: 0, end: 5 },
             })
         );
+    }
+
+    #[test]
+    fn word_at_caret_rejects_standalone_and_edge_apostrophes() {
+        for value in ["'", "’", "'hello", "hello'", "’hello", "hello’"] {
+            assert_eq!(
+                word_at_caret(value, value.chars().count()),
+                None,
+                "apostrophes may join a contraction but may not form a word edge: {value:?}"
+            );
+        }
+
+        assert_eq!(word_at_caret("don't", 5).unwrap().word, "don't");
+        assert_eq!(word_at_caret("i’m", 3).unwrap().word, "i’m");
+    }
+
+    #[test]
+    fn word_at_split_caret_rejects_standalone_and_edge_apostrophes() {
+        for (left, right) in [
+            ("'", ""),
+            ("’", ""),
+            ("'he", "llo"),
+            ("hello'", ""),
+            ("’he", "llo"),
+            ("hello’", ""),
+        ] {
+            assert_eq!(
+                word_at_split_caret(left, right, left.chars().count(), 32),
+                None,
+                "apostrophes may join a contraction but may not form a word edge: {left:?}|{right:?}"
+            );
+        }
+
+        assert_eq!(
+            word_at_split_caret("don'", "t", 4, 32).unwrap().word,
+            "don't"
+        );
+        assert_eq!(word_at_split_caret("i’", "m", 2, 32).unwrap().word, "i’m");
     }
 
     #[test]

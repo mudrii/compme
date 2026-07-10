@@ -164,6 +164,10 @@ pub enum PersonalizationEdit {
 #[derive(Clone)]
 pub struct SettingsFlags {
     pub general_enabled: Arc<AtomicBool>,
+    /// Current launch-at-login state and the desired state written by the
+    /// General-pane switch. The host loop restores this atomic when the OS
+    /// rejects a change so the visible control cannot claim a false state.
+    pub general_launch_at_login: Arc<AtomicBool>,
     pub labs_midline: Arc<AtomicBool>,
     pub general_autocorrect: Arc<AtomicBool>,
     pub general_trailing_space: Arc<AtomicBool>,

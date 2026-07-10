@@ -2911,10 +2911,12 @@ fn compose_apps_policy_bits(
 fn build_settings_flags(
     config: &Config,
     tray_enabled: Arc<AtomicBool>,
+    launch_at_login_enabled: bool,
     available_ram_gb: u32,
 ) -> crate::shell::SettingsFlags {
     crate::shell::SettingsFlags {
         general_enabled: tray_enabled,
+        general_launch_at_login: Arc::new(AtomicBool::new(launch_at_login_enabled)),
         labs_midline: Arc::new(AtomicBool::new(config.allow_mid_word)),
         general_autocorrect: Arc::new(AtomicBool::new(config.autocorrect)),
         general_trailing_space: Arc::new(AtomicBool::new(config.trailing_space)),
@@ -3217,6 +3219,28 @@ fn apply_midline_settings_edge(
     set_allow_mid_word(prefs.mid_line_enabled(focused_app, on));
     persist(on);
     Some(on)
+}
+
+/// Apply a user launch-at-login change through the OS boundary before
+/// persisting it. A rejected OS mutation restores both the loop's truth and
+/// the shared UI atomic; persistence is never called for a rejected change.
+fn apply_launch_at_login_settings_edge(
+    flag: &AtomicBool,
+    current: &mut bool,
+    shell: &dyn platform::shell::ShellHost,
+    persist: impl FnOnce(bool),
+) -> Result<Option<bool>, PlatformError> {
+    let desired = flag.load(Ordering::Relaxed);
+    if desired == *current {
+        return Ok(None);
+    }
+    if let Err(err) = shell.set_launch_at_login(desired) {
+        flag.store(*current, Ordering::Relaxed);
+        return Err(err);
+    }
+    *current = desired;
+    persist(desired);
+    Ok(Some(desired))
 }
 
 fn apply_emoji_enabled(
@@ -4120,12 +4144,16 @@ pub fn run() -> Result<(), String> {
     // leaves the user's Login Items alone. Non-fatal — a bare cargo binary
     // (no bundle) is expected to fail here, and the bundled app is the real
     // consumer.
+    let mut launch_at_login_enabled = false;
     if let Some(enabled) = config.launch_at_login {
         match shell.set_launch_at_login(enabled) {
-            Ok(()) => eprintln!(
-                "compme: launch at login {}",
-                if enabled { "ON" } else { "OFF" }
-            ),
+            Ok(()) => {
+                launch_at_login_enabled = enabled;
+                eprintln!(
+                    "compme: launch at login {}",
+                    if enabled { "ON" } else { "OFF" }
+                )
+            }
             Err(err) => eprintln!("compme: launch-at-login unavailable: {err}"),
         }
     }
@@ -4257,8 +4285,13 @@ pub fn run() -> Result<(), String> {
     let mut emoji_skin_tone_index = emoji_skin_tone_index(emoji_prefs.skin_tone);
     let mut emoji_gender_index = emoji_gender_index(emoji_prefs.gender);
     let available_ram_gb = model_catalog::bytes_to_whole_gb(shell.physical_memory_bytes());
-    let settings_flags =
-        build_settings_flags(&config, Arc::clone(&flags.enabled), available_ram_gb);
+    let settings_flags = build_settings_flags(
+        &config,
+        Arc::clone(&flags.enabled),
+        launch_at_login_enabled,
+        available_ram_gb,
+    );
+    let mut current_launch_at_login = launch_at_login_enabled;
     // The app ids behind the Apps rows as last rendered (index == row).
     let mut apps_ids: Vec<String> = Vec::new();
     // One downloader per process (model_fetch contract); lazy — spawned on
@@ -5488,6 +5521,18 @@ pub fn run() -> Result<(), String> {
                 }
             },
         );
+        // General-tab Launch at Login watcher: mutate the OS first. Only a
+        // successful registration/unregistration is persisted; rejection
+        // restores the shared atomic and immediately redraws the visible switch.
+        if let Err(err) = apply_launch_at_login_settings_edge(
+            &settings_flags.general_launch_at_login,
+            &mut current_launch_at_login,
+            shell.as_ref(),
+            |on| persist_and_log_switch("COMPME_LAUNCH_AT_LOGIN", "launch at login", on),
+        ) {
+            eprintln!("compme: launch-at-login change rejected: {err}");
+            settings_window.refresh_switches();
+        }
         // General-tab Trailing-space watcher: persist + live engine apply
         // (the flag is baked at build via with_trailing_space, so the c94
         // runtime-setter pattern applies — set_trailing_space).
@@ -7028,8 +7073,9 @@ mod tests {
             ("COMPME_STRENGTH", "4"),
         ]));
         let tray_enabled = Arc::new(AtomicBool::new(true));
-        let flags = build_settings_flags(&config, Arc::clone(&tray_enabled), 16);
+        let flags = build_settings_flags(&config, Arc::clone(&tray_enabled), false, 16);
         assert!(Arc::ptr_eq(&flags.general_enabled, &tray_enabled));
+        assert!(!flags.general_launch_at_login.load(Ordering::Relaxed));
         assert_eq!(
             flags.labs_midline.load(Ordering::Relaxed),
             config.allow_mid_word
@@ -8054,7 +8100,7 @@ mod tests {
             }
         );
 
-        let flags = build_settings_flags(&config, Arc::new(AtomicBool::new(true)), 16);
+        let flags = build_settings_flags(&config, Arc::new(AtomicBool::new(true)), false, 16);
         assert_eq!(
             flags.emoji_skin_tone_index.load(Ordering::Relaxed),
             emoji_skin_tone_index(SkinTone::Dark)
@@ -8659,6 +8705,102 @@ mod tests {
             Config::from_lookup(lookup(&[("COMPME_LAUNCH_AT_LOGIN", "maybe")])).launch_at_login,
             None
         );
+    }
+
+    struct LaunchAtLoginHost {
+        result: Result<(), PlatformError>,
+        calls: Mutex<Vec<bool>>,
+    }
+
+    impl platform::shell::ShellHost for LaunchAtLoginHost {
+        fn pump_events(&self, _heartbeat: Duration) {}
+        fn physical_memory_bytes(&self) -> u64 {
+            1
+        }
+        fn open_url(&self, _url: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn open_permission_settings(&self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn reveal_file(&self, _path: &std::path::Path) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn set_launch_at_login(&self, enabled: bool) -> Result<(), PlatformError> {
+            self.calls.lock().unwrap().push(enabled);
+            self.result.clone()
+        }
+        fn confirm(
+            &self,
+            _prompt: &platform::shell::ConfirmPrompt<'_>,
+        ) -> Result<bool, PlatformError> {
+            Ok(false)
+        }
+        fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
+            Err(PlatformError::UnsupportedField {
+                reason: "test".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn launch_at_login_settings_edge_applies_then_persists() {
+        let flag = AtomicBool::new(true);
+        let mut current = false;
+        let host = LaunchAtLoginHost {
+            result: Ok(()),
+            calls: Mutex::new(Vec::new()),
+        };
+        let persisted = RefCell::new(Vec::new());
+
+        assert_eq!(
+            apply_launch_at_login_settings_edge(&flag, &mut current, &host, |on| {
+                persisted.borrow_mut().push(on)
+            }),
+            Ok(Some(true))
+        );
+        assert!(current);
+        assert_eq!(host.calls.lock().unwrap().as_slice(), &[true]);
+        assert_eq!(persisted.borrow().as_slice(), &[true]);
+        assert_eq!(
+            apply_launch_at_login_settings_edge(&flag, &mut current, &host, |_| unreachable!()),
+            Ok(None)
+        );
+
+        flag.store(false, Ordering::Relaxed);
+        assert_eq!(
+            apply_launch_at_login_settings_edge(&flag, &mut current, &host, |on| {
+                persisted.borrow_mut().push(on)
+            }),
+            Ok(Some(false))
+        );
+        assert!(!current);
+        assert_eq!(host.calls.lock().unwrap().as_slice(), &[true, false]);
+        assert_eq!(persisted.borrow().as_slice(), &[true, false]);
+    }
+
+    #[test]
+    fn launch_at_login_settings_edge_restores_state_and_does_not_persist_on_failure() {
+        let flag = AtomicBool::new(true);
+        let mut current = false;
+        let host = LaunchAtLoginHost {
+            result: Err(PlatformError::CannotComplete {
+                reason: "registration denied".into(),
+            }),
+            calls: Mutex::new(Vec::new()),
+        };
+        let persisted = RefCell::new(Vec::new());
+
+        assert!(
+            apply_launch_at_login_settings_edge(&flag, &mut current, &host, |on| {
+                persisted.borrow_mut().push(on)
+            })
+            .is_err()
+        );
+        assert!(!current);
+        assert!(!flag.load(Ordering::Relaxed));
+        assert_eq!(host.calls.lock().unwrap().as_slice(), &[true]);
+        assert!(persisted.borrow().is_empty());
     }
 
     #[test]

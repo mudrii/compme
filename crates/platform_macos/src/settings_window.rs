@@ -33,6 +33,65 @@ use platform::shell::{
 };
 use platform::PlatformError;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GeneralToggleAction {
+    Enabled,
+    LaunchAtLogin,
+    Midline,
+    Autocorrect,
+    TrailingSpace,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GeneralToggleSpec {
+    title: &'static str,
+    action: GeneralToggleAction,
+}
+
+const GENERAL_TOGGLE_SPECS: [GeneralToggleSpec; 5] = [
+    GeneralToggleSpec {
+        title: "Enable completions",
+        action: GeneralToggleAction::Enabled,
+    },
+    GeneralToggleSpec {
+        title: "Launch at Login",
+        action: GeneralToggleAction::LaunchAtLogin,
+    },
+    GeneralToggleSpec {
+        title: "Mid-line completions (show even with text after the cursor)",
+        action: GeneralToggleAction::Midline,
+    },
+    GeneralToggleSpec {
+        title: "Autocorrect typos (offer the fix as you type)",
+        action: GeneralToggleAction::Autocorrect,
+    },
+    GeneralToggleSpec {
+        title: "Trailing space after single-word completions",
+        action: GeneralToggleAction::TrailingSpace,
+    },
+];
+
+fn general_toggle_specs() -> &'static [GeneralToggleSpec] {
+    &GENERAL_TOGGLE_SPECS
+}
+
+fn general_toggle_route<T: Copy>(
+    action: GeneralToggleAction,
+    enabled: T,
+    launch_at_login: T,
+    midline: T,
+    autocorrect: T,
+    trailing_space: T,
+) -> (T, objc2::runtime::Sel) {
+    match action {
+        GeneralToggleAction::Enabled => (enabled, sel!(toggleEnabled:)),
+        GeneralToggleAction::LaunchAtLogin => (launch_at_login, sel!(toggleLaunchAtLogin:)),
+        GeneralToggleAction::Midline => (midline, sel!(toggleMidline:)),
+        GeneralToggleAction::Autocorrect => (autocorrect, sel!(toggleAutocorrect:)),
+        GeneralToggleAction::TrailingSpace => (trailing_space, sel!(toggleTrailingSpace:)),
+    }
+}
+
 /// Which accept role a recorder field rebinds (recorder 5b slice 4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RecorderRole {
@@ -445,6 +504,17 @@ define_class!(
             if let Some(switch) = sender {
                 let on = switch.state() == NSControlStateValueOn;
                 self.ivars().flags.general_enabled.store(on, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(toggleLaunchAtLogin:))]
+        fn toggle_launch_at_login(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars()
+                    .flags
+                    .general_launch_at_login
+                    .store(on, Ordering::Relaxed);
             }
         }
 
@@ -1634,36 +1704,22 @@ fn build_window(
 
     // General tab: a uniform stack of global toggles (40px step), each two
     // views of one atomic — see SettingsFlags. Same table+loop idiom as the
-    // Context tab below. Push order (enabled, midline, autocorrect, trailing)
-    // is the refresh order.
+    // Context tab below. The private control ledger and route helper keep each
+    // title, state atomic, and AppKit selector in one testable mapping.
     {
         let general = &pane_views[1];
-        let rows: [(&str, &Arc<AtomicBool>, objc2::runtime::Sel); 4] = [
-            (
-                "Enable completions",
-                &flags.general_enabled,
-                sel!(toggleEnabled:),
-            ),
-            (
-                "Mid-line completions (show even with text after the cursor)",
-                &flags.labs_midline,
-                sel!(toggleMidline:),
-            ),
-            (
-                "Autocorrect typos (offer the fix as you type)",
-                &flags.general_autocorrect,
-                sel!(toggleAutocorrect:),
-            ),
-            (
-                "Trailing space after single-word completions",
-                &flags.general_trailing_space,
-                sel!(toggleTrailingSpace:),
-            ),
-        ];
         let label_top_y = 310.0;
         let switch_top_y = 306.0;
-        for (row, (title, flag, action)) in rows.into_iter().enumerate() {
-            let label = NSTextField::labelWithString(&NSString::from_str(title), mtm);
+        for (row, spec) in general_toggle_specs().iter().enumerate() {
+            let (flag, action) = general_toggle_route(
+                spec.action,
+                &flags.general_enabled,
+                &flags.general_launch_at_login,
+                &flags.labs_midline,
+                &flags.general_autocorrect,
+                &flags.general_trailing_space,
+            );
+            let label = NSTextField::labelWithString(&NSString::from_str(spec.title), mtm);
             label.setFrame(NSRect::new(
                 NSPoint::new(20.0, label_top_y - row as f64 * 40.0),
                 NSSize::new(400.0, 20.0),
@@ -2624,6 +2680,57 @@ mod tests {
             ]
         );
         assert_eq!(pane_titles().len(), PANE_COUNT);
+    }
+
+    #[test]
+    fn general_toggle_specs_and_selectors_are_exact() {
+        let expected = [
+            (
+                "Enable completions",
+                GeneralToggleAction::Enabled,
+                "enabled",
+                sel!(toggleEnabled:),
+            ),
+            (
+                "Launch at Login",
+                GeneralToggleAction::LaunchAtLogin,
+                "launch_at_login",
+                sel!(toggleLaunchAtLogin:),
+            ),
+            (
+                "Mid-line completions (show even with text after the cursor)",
+                GeneralToggleAction::Midline,
+                "midline",
+                sel!(toggleMidline:),
+            ),
+            (
+                "Autocorrect typos (offer the fix as you type)",
+                GeneralToggleAction::Autocorrect,
+                "autocorrect",
+                sel!(toggleAutocorrect:),
+            ),
+            (
+                "Trailing space after single-word completions",
+                GeneralToggleAction::TrailingSpace,
+                "trailing_space",
+                sel!(toggleTrailingSpace:),
+            ),
+        ];
+        let actual = general_toggle_specs()
+            .iter()
+            .map(|spec| {
+                let (flag, selector) = general_toggle_route(
+                    spec.action,
+                    "enabled",
+                    "launch_at_login",
+                    "midline",
+                    "autocorrect",
+                    "trailing_space",
+                );
+                (spec.title, spec.action, flag, selector)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     }
 
     #[test]

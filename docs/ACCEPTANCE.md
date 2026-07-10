@@ -647,8 +647,10 @@ A quick LOOK pass over all nine panes:
 - **Setup** — readiness checklist (Accessibility / Screen Recording / model
   file) plus the model picker + Download button; rows re-probe on each show.
 - **General** — the master Enabled switch (the same atomic as the tray
-  checkmark) plus autocorrect / trailing-space / Labs mid-line switches; flips
-  live-apply and persist.
+  checkmark), Launch at Login, autocorrect, trailing-space, and Labs mid-line
+  switches. Launch at Login changes the OS login-item registration first and
+  persists only on success; an OS rejection restores the prior switch state.
+  The remaining switches live-apply and persist.
 - **Personalization** — a strength popup plus editors for the global steering
   instructions and sender identity (name / email), driven by the
   `PersonalizationEdit` enum; edits live-apply and persist. (Pane builds;

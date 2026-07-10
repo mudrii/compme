@@ -1,13 +1,13 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-11 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening, Settings cleanup, and the full-codebase audit fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1846 workspace tests listed on current `main` (spike separate)
+> **Last updated:** 2026-07-11 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening, Settings cleanup, and the full-codebase audit fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1851 workspace tests listed on current `main` (spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
 > with symbol/function/gate anchors re-reviewed 2026-07-11 on the current tree
-> based on `e10e682`
+> based on `b6da495` plus this audit
 > (workspace review/tdd/ponytail: zero-alloc slice-based trigger gates, an
 > `InsertStrategy::supports_atomic_range_replace` capability predicate replacing
 > `== AxSet` gates, +8 mutation-pinning tests → 1787 with the dead UTF-16 guard
@@ -249,7 +249,10 @@ instruction editor remains a future enhancement, not a runtime steering gap.
 Per `2026-06-10-a3-settings-ui-design.md`. The settings window now ships as 9
 tabs (Setup, General, Personalization, Apps, Context, Emoji, Shortcuts,
 Statistics, About). The nine-tab controls have landed in code and deterministic
-tests. The remaining Tier 3 work is the tray website/support action pair tracked
+tests. The General pane now includes the specified default-off Launch at Login
+toggle: successful `SMAppService` changes persist to config, while OS failures
+restore the prior visible state and do not persist a false value. The remaining
+Tier 3 work is the tray website/support action pair tracked
 below plus the live visual/physical LOOK pass —
 **Live finding (2026-07-07 assisted-UI session) — FIXED same day:** Chrome
 delivers a fresh AX element ref per focus notification for identifier-less web
