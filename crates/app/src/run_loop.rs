@@ -1231,7 +1231,7 @@ fn open_memory_store(
             store,
             path,
             |candidate| candidate.try_exists(),
-            |candidate| platform_windows::win_host::harden_owner_only(candidate),
+            platform_windows::win_host::harden_owner_only,
         )
         .map_err(|err| memory::MemoryError::Io(err.to_string()))
     });
