@@ -1,5 +1,9 @@
 # Compme v0.1.0 — first public release
 
+> Historical release record for protected tag `v0.1.0` (`91b57f7`). It
+> describes that published artifact, not current `main` or the latest stable
+> release.
+
 Compme is an open-source inline text-completion engine for macOS: local GGUF
 completions rendered as ghost text in the field you are typing in, accepted
 word-by-word or in full from the keyboard. All inference is local

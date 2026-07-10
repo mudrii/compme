@@ -5,6 +5,14 @@
 **Companion:** `2026-06-03-engine-macos-mvp-design.md` (Sub-project A)
 **Method:** 3 parallel deep-research agents against current docs/crates (Feb–Jun 2026): Windows UIA stack, Linux AT-SPI/X11/Wayland stack, cross-platform llama.cpp + Tauri shell. Sources inline.
 
+> **Historical research status.** This review established the portability risks
+> and strategy; it does not describe current product support. macOS is the only
+> released usable adapter. Windows/Linux currently compile as fail-closed
+> scaffolds, off-mac inference is CPU-only at the pinned runtime, and Vulkan,
+> CUDA, real adapters, Wayland, packaging, and acceptance remain planned. The
+> current execution source is the 2026-07-08 cross-platform implementation plan;
+> the current status ledger is `docs/ROADMAP.md`.
+
 **Current-design correction (2026-07-05):** The macOS accept path now uses the
 `CarbonHotkey` capability (`RegisterEventHotKey`) for transient accept
 interception. `CgEventTap` remains relevant to historical A0 probes and some

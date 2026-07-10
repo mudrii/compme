@@ -5,6 +5,11 @@
 **Companions:** `2026-06-03-engine-macos-mvp-design.md`, `2026-06-03-cross-platform-review.md`
 **Method:** 3 parallel agents read real production code (cloned + GitHub) and the product landscape: (1) macOS clones KeyType/Cotabby/GhostType, (2) Espanso + Rust input/AX crate maturity, (3) commercial+OSS landscape and failure modes.
 
+> **Historical research status.** This evidence informed the implementation but
+> is not a current support or pending-work statement. Production accept uses
+> transient Carbon hotkeys, macOS has shipped through v0.1.4, and the remaining
+> work is tracked only in `docs/ROADMAP.md` and `docs/ACCEPTANCE.md`.
+
 **Current-design correction (2026-07-05):** CGEventTap/Input Monitoring notes
 below are historical A0/prior-art evidence, not the current Compme accept-key
 requirement. Production accept uses transient Carbon hotkeys; Accessibility is

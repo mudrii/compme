@@ -1,5 +1,9 @@
 # Compme v0.1.1 — model setup + app icon fixes
 
+> Historical release record for protected tag `v0.1.1` (`401e07b`). It
+> describes that published artifact, not current `main` or the latest stable
+> release.
+
 A small follow-up to v0.1.0 fixing two problems people hit on the first
 Homebrew install: a downloaded model never becoming usable, and a missing app
 icon. All inference stays local; no telemetry (CI-enforced).

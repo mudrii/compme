@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; release workflow now fails closed without signing credentials; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1830 workspace tests; spike separate)
+> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening and Settings cleanup are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1830 workspace tests listed on current `main` (spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -16,6 +16,15 @@
 > `platform_windows::win_host` DACL hardening + console ctrl handler, Windows
 > CI job runs the new windows-only tests), starting from baseline `ba4e805`
 > since `b1c9264`.
+
+> **Release boundary:** the published v0.1.4 artifact is tag `18b8dc0`.
+> `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
+> `618013d` (seam hardening and A2 local/manual-only automation policy),
+> `a5781fc` (single model-location control), and this documentation
+> reconciliation (`58debca`) are post-tag `main` changes. They require a later
+> release tag before they are available in the distributed binary. Unless a row
+> explicitly says otherwise, current implementation/test claims below describe
+> `main`; the v0.1.4 bullets describe the published artifact.
 
 ## Status legend
 
@@ -138,8 +147,11 @@ signing + hardened runtime + notarization + a native updater.
 - **v0.1.4 SHIPPED 2026-07-10 signed and notarized:** the protected release run
   imported the Developer-ID identity, produced a hardened-runtime signature,
   notarized and stapled the app, verified the packaged checksum, published all
-  three artifacts, and finalized the Homebrew cask. Stable tag releases now
-  fail closed if signing or notarization credentials are missing.
+  three artifacts, and finalized the Homebrew cask.
+- **Post-v0.1.4 release policy on current `main`:** `216fa0a` removed the
+  conditional unsigned stable-release fallback so future stable tags fail closed
+  without signing/notarization credentials; `618013d` removed A2 validation from
+  CI/tag-release automation. Neither policy change is part of the v0.1.4 tag.
 
 **Pending:**
 - Optional later upgrade: replace the GitHub-release menu handoff with a full
@@ -303,20 +315,24 @@ runs. The retired screenshot matrix is not current release evidence.
 
 ## Tier 4 — 🔬 Live validation (code complete; needs human/scripted evidence)
 
-These are implemented to a deterministic/build-verified standard and (mostly)
-scripted-smoke-gated via `tools/acceptance/run-a2-compat-gates.sh`. They need a
-person at a granted macOS desktop, not new code. Sources:
+These are implemented to a deterministic/build-verified standard. Selected A2
+scenarios have locally invoked script evidence via
+`tools/acceptance/run-a2-compat-gates.sh`, but that runner and its ledger checker
+are deliberately excluded from CI, tag releases, the release-policy checker,
+and generic shell-syntax validation. The residuals need a person at a granted
+macOS desktop, not new code. Sources:
 `2026-06-09-a2-parity-design.md §16`, `integration-phase-design.md`.
 Gate coverage note: only the AllMonitored row has a dedicated runner gate ID
 (`encrypted-memory-all-monitored-live`); the other residuals are covered by
-`run-a2-compat-gates.sh` smoke kinds, the table-driven `matrix` ledger, and the
+optional local `run-a2-compat-gates.sh` smoke kinds, the table-driven `matrix`
+ledger, and the
 folded settings LOOK gates (`personalization-pane-look`,
 `nine-tab-settings-walkthrough`).
 
 | Item | Status | Live residual |
 |---|---|---|
 | Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking; Safari allow+exclude legs live-proven 2026-07-07 (Batch 6) | Chrome/Brave live rows with the A2 matrix; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
-| Multi-candidate Down-cycle | engine ✅; synthetic Down-cycle live-proven 2026-07-07 (`COMPME_CANDIDATES=3`, real model); `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before release |
+| Multi-candidate Down-cycle | engine ✅; synthetic Down-cycle live-proven 2026-07-07 (`COMPME_CANDIDATES=3`, real model); `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before the next release |
 | Compatibility matrix | classifier ✅; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger as a local/manual tool | for a manual pre-release pass, supply live row PID map via `COMPME_A2_MATRIX_TARGETS`; dry runs may explicitly allow skips, while recorded evidence should pass every row and satisfy `check-a2-matrix-ledger.sh` locally |
 | Browser mirror-window | `set_mirror_mode` ✅; `mirror-window-firefox-zen-look` manual gate pins Firefox/Zen ghost-in-mirror confirmation | run the manual gate in a granted desktop session |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
@@ -532,7 +548,7 @@ with physical trigger/accept keypresses.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1830 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1831 tests, clippy clean). What remains for
 > "ready to use" is **not development**: a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist. Developer-ID
 > signing, notarization, and the first stable tags are complete through v0.1.4;
@@ -540,9 +556,10 @@ with physical trigger/accept keypresses.
 > (Manual/Live Gate Ledger); `docs/MANUAL-VALIDATION.md` carries the detailed
 > walkthroughs.
 
-**Setup-pane cleanup (2026-07-10):** the redundant conditional **Reveal Model
-in Finder** control was removed; the always-visible **Show Models Folder** is
-the single model-location action alongside **Choose Model…** and **Download Model**.
+**Setup-pane cleanup (2026-07-10, current `main` only; not in v0.1.4):** the
+redundant conditional **Reveal Model in Finder** control was removed; the
+always-visible **Show Models Folder** is the single model-location action
+alongside **Choose Model…** and **Download Model**.
 The `setup-model-picker-look` manual gate must verify exactly one **Show Models
 Folder** control is visible and that **Reveal Model in Finder** is absent.
 

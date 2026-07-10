@@ -1,6 +1,6 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
-**Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1+ env-gated
+**Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1–6 pending/env-gated
 **Prereqs:** clean `main` (builds, clippy clean, ≈1830 tests green).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
 status ledger; this doc is the execution guide.
@@ -8,8 +8,17 @@ status ledger; this doc is the execution guide.
 Evidence base: full-codebase analysis 2026-07-08 (three-agent sweep: contract
 inventory, macOS-leakage audit, build/CI/packaging audit), every claim
 re-verified by grep against `b367f0f`. Status was reconciled again 2026-07-10
-through `a5781fc`: Phase 0 remains shipped, macOS is released, and the real
+through implementation commit `a5781fc` and documentation commit `58debca`:
+Phase 0 remains shipped, macOS v0.1.4 is released, and the real
 Windows/Linux adapters plus Phases 3–6 remain pending.
+
+**Release boundary:** v0.1.4 is tag `18b8dc0`. The runtime/release hardening,
+A2 local/manual-only automation policy, and single model-location-control fix
+described from later `main` are post-tag and require a subsequent release.
+The post-tag shell hardening also replaced Windows `cmd /C start` URL launch
+with `ShellExecuteW` (preserving metacharacters verbatim) and made Linux
+`xdg-open` child reaping non-blocking; the pre-Phase-0 baseline below retains
+the original launcher description only as historical derivation context.
 
 ## Verified Phase 0 baseline (historical)
 
@@ -53,7 +62,7 @@ below as still-open work after their corresponding Phase 0 item is marked shippe
   - G6 No packaging/signing/update path off macOS; release.yml not
     OS-parameterized.
 
-## Phase 0 — shared-code pre-work (UNBLOCKED, doable on macOS now)
+## Phase 0 — shared-code pre-work (✅ SHIPPED; historical task text)
 
 Small, independently shippable, all gate-green on macOS. Do these before any
 adapter work so the contract is final when real impls land.

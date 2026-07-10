@@ -1,10 +1,15 @@
 # compme — Manual UX Validation Checklist
 
-> Live, human-at-the-Mac validation record for the Tier-3 settings UI. The
-> Statistics range/grouping and Emoji gender LOOK gates below were completed on
-> 2026-06-17 and are summarized in [`ACCEPTANCE.md`](ACCEPTANCE.md). Future
-> AppKit LOOK items can still use this file as the working checklist before
-> their evidence is promoted into the acceptance record.
+> Live, human-at-the-Mac working checklist for Settings, grammar correction,
+> caret calibration, and runtime LOOK gates. The Statistics range/grouping and
+> Emoji gender gates below were completed on 2026-06-17 and are summarized in
+> [`ACCEPTANCE.md`](ACCEPTANCE.md). New evidence is promoted into that document's
+> authoritative Manual/Live Gate Ledger.
+>
+> **Release boundary (2026-07-10):** this checklist tracks current `main`, not
+> the latest published `v0.1.4` (`18b8dc0`) binary. In particular, the
+> local/manual-only A2 policy and the single **Show Models Folder** invariant are
+> post-tag changes; compile current `main` before validating them.
 >
 > Run the app and work down the list:
 > ```sh

@@ -22,10 +22,13 @@ Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
 The current checkout develops on `main`; signed and notarized releases are
 published through v0.1.4. Workspace behavior may be newer than the latest tag,
 so use the tag-specific release assets and notes when validating a published
-version.
+version. Specifically, `v0.1.4` points to `18b8dc0`; current `main` adds
+post-tag runtime/release hardening, moves A2 validation out of automation, and
+removes the duplicate model-location control. Those changes are unreleased
+until the next tag.
 
 The root `Cargo.toml` is a Rust workspace with 25 members
-([verified 2026-07-04] — keep in sync with `Cargo.toml`):
+([verified 2026-07-10] — keep in sync with `Cargo.toml`):
 
 - `crates/platform` — cross-platform adapter contract
 - `crates/context`, `crates/ranker`, `crates/engine_core`, `crates/engine` — suggestion pipeline
@@ -36,7 +39,7 @@ The root `Cargo.toml` is a Rust workspace with 25 members
 - `crates/compat` — per-app compatibility tiers
 - `crates/model_catalog`, `crates/model_fetch`, `crates/model_client` — model catalog, downloads, llama.cpp client
 - `crates/platform_macos` — the macOS adapter (AX, overlay, tray, settings window)
-- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1 (platform_windows additionally ships real `win_host` services: DACL hardening, console ctrl handler)
+- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1; Windows additionally has owner-only DACL hardening, a console control handler, and native URL opening, while Linux URL opening reaps its `xdg-open` child
 - `crates/app` — the `compme` binary
 
 `tools/spike` is excluded from the root workspace and must be checked
@@ -128,7 +131,10 @@ On a completed download (or when a model is already present, or via
 "Choose Model…") the app persists `COMPME_MODEL_PATH` to `config.env` so the
 next launch loads it; if it is unset and the configured path is missing, startup
 auto-adopts the newest `.gguf` in the models dir. Downloads use `model_fetch`
-with catalog-pinned SHA-256 hashes and verify-before-rename semantics. See
+with catalog-pinned SHA-256 hashes, a catalog-derived byte ceiling, and
+verify-before-rename semantics. The same Setup pane has exactly one
+model-location action, **Show Models Folder**; there is no separate "Reveal
+Model in Finder" control. See
 `docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md` §15 D14.
 
 ## Root Workspace Commands
@@ -158,7 +164,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1830 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1831 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -220,7 +226,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1830 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1831 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
@@ -352,13 +358,16 @@ tools/acceptance/run-a1b-live-gates.sh --skip-textedit --allow-incomplete --popu
 `model_client::LlamaModel` currently:
 
 - loads a GGUF model through `llama-cpp-2`
-- enables Metal offload on macOS through `with_n_gpu_layers(999)`; non-macOS
-  builds use dynamic/Vulkan-capable backends
+- enables Metal offload on macOS through `with_n_gpu_layers(999)`; current
+  non-macOS builds are CPU-only until the planned Vulkan/CUDA features and CI
+  SDKs land
 - **[Updated 2026-06-08 — G3 closed]** runs on a dedicated worker thread owning a **persistent** `LlamaContext` (no longer a fresh context per completion) and **reuses the KV cache** for the shared prompt prefix (`reusable_prefix_len` + `clear_kv_cache_seq`), re-decoding only the divergent suffix
 - serializes `complete()` calls via a mutex held across the round-trip; the backend is a `'static` singleton
 - supports `warm_up()` so launch can trigger the first Metal decode before serving suggestions
 - supports ordered `shutdown()` so the model/backend are dropped before process teardown
 - greedily samples up to the requested max token count
+- clamps the prompt to context capacity and caps generation to the remaining
+  token budget before decode
 - decodes pieces with `token_to_piece` and a UTF-8 decoder
 
 Known future production work:

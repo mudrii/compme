@@ -2,7 +2,7 @@
 
 > These probes block on run loops (`CFRunLoop::run_current`, `app.run()`) or a 1s polling loop,
 > and need TCC grants + a GUI, so they cannot be auto-verified by a subagent — they are
-> compile-gated only (all five compile under `cargo build --release`). Behaviour is verified
+> compile-gated only (all six compile under `cargo build --release`). Behaviour is verified
 > here by a human. Grant **System Settings → Privacy & Security → Accessibility** AND
 > **Input Monitoring** to the terminal that launches the probes, then relaunch it.
 > Run each from `tools/spike/` (the model + `models/` paths are relative).
@@ -14,7 +14,7 @@
 - [x] **P5 tap** — `cargo run --release --bin p5_tap`; press Tab (the accept key wired via `spike::keys::should_swallow`, keycode 48) vs other keys; type in ANOTHER app.
       PASS: Tab swallowed, others pass, NO input lag in the other app. Verified 2026-06-04 with macOS `System Events`: TextEdit value stayed unchanged after Tab while the tap logged `keycode 48 (accept key) -> SWALLOWED`; keycode 11 passed and inserted `b`.
 - [x] **P5b two-tap** — `cargo run --release --bin p5_twotap`; press Tab before and after toggling simulated suggestion visibility with F8.
-      PASS: listen-only tap observes keys; F8 toggles `suggestion_visible`; Tab passes when false and is swallowed when true; other apps do not lag. Verified 2026-06-04 with macOS `System Events`: TextEdit changed from `twotap` to `twotap\t` after the false-state Tab, F8 toggled true, and the second Tab was swallowed. NOTE: this proves split observer/consumer behavior, but production still needs A1b create/enable/teardown lifecycle around a real suggestion.
+      PASS: listen-only tap observes keys; F8 toggles `suggestion_visible`; Tab passes when false and is swallowed when true; other apps do not lag. Verified 2026-06-04 with macOS `System Events`: TextEdit changed from `twotap` to `twotap\t` after the false-state Tab, F8 toggled true, and the second Tab was swallowed. HISTORICAL NOTE: this proved the split observer/consumer behavior needed at the time; production has since moved to transient Carbon accept handling with its real visibility lifecycle, so this is no longer pending A1b work.
 - [x] **P6 overlay** — `cargo run --release --bin p6_overlay`.
       PASS 2026-06-05: screenshot `/tmp/compme-p6-redo-before.png` visually showed grey `ghost completion text` over a Chrome click target; CoreGraphics listed onscreen `p6_overlay` at layer `101`, bounds `240x30`, alpha `1` before and after the click; `System Events`/frontmost checks did not switch focus to the overlay; click-through was verified by clicking screen coordinate `{590,1185}` inside both overlay and Chrome button, changing Chrome title from `clicked-0` to `clicked-1`.
 - [x] **P7 smoke** — `cargo run --release --bin p7_smoke`; within 3s focus a TextEdit doc with text.

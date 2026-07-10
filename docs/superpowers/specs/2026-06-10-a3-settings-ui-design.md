@@ -1,6 +1,6 @@
 # A3 Settings UI + Tray Menu — Cotypist-Reference Plan
 
-> **Status annotations updated 2026-07-05:** window ships as 9 tabs
+> **Status annotations updated 2026-07-10:** window ships as 9 tabs
 > (Setup/General/Personalization/Apps/Context/Emoji/Shortcuts/Statistics/About)
 > via NSTabView. The Context tab exposes clipboard + screen-OCR context
 > switches, the Emoji tab exposes the live `COMPME_EMOJI` enable switch plus the
@@ -10,7 +10,11 @@
 > LOOK gate was completed 2026-06-17. A metric-picker redesign was closed by
 > design in the Roadmap.
 >
-> **Live pending status (re-verified 2026-07-05): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
+> **Current-main release boundary:** the single model-location-control cleanup
+> (one **Show Models Folder**, no **Reveal Model in Finder**) landed after the
+> published v0.1.4 tag and requires the next release to reach distributed users.
+>
+> **Live pending status (re-verified 2026-07-10): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
 > and [`docs/ACCEPTANCE.md`](../../ACCEPTANCE.md) — the remaining Tier 3 work is
 > LOOK validation for shipped controls: Apps policy grid, Personalization pane,
 > Shortcuts recorder/physical hotkeys, Setup model picker, menu-bar icon, and the
@@ -56,7 +60,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 | Pane | Cotypist contents | compme backing | Gap |
 |---|---|---|---|
 | Setup | permission states (AX, Screen Recording), model downloaded, macOS text-suggestions off, clipboard context | `accessibility_trusted`, `screen_recording_permission`, model_select, compat | pane only; "disable macOS suggestions" helper is new — **[2026-06-10] DONE** (checklist + Grant/Request/Reveal buttons + 480ms visible-only poll) |
-| General | launch-at-login; menu-bar icon toggle; accessory button; model picker + reveal; enable-by-default; max length (S/M/L); autocorrect toggles | SMAppService (bundle exists, c80); tray exists; model_select + `COMPME_MODEL_PATH`; `COMPME_ENABLED`; `COMPME_MAX_WORDS`; `COMPME_AUTOCORRECT` | accessory floating button = new feature (defer) — **[2026-06-10] DONE** for 3 live switches (mid-line/autocorrect/trailing-space); launch-at-login wiring done via SMAppService; **[2026-06-17] model catalog/download shipped in Setup** with picker, RAM labels/gate, license gate, SHA verify, and dest-exists guard; residual model work is recovery LOOK validation / broader picker polish |
+| General | launch-at-login; menu-bar icon toggle; accessory button; model picker + folder reveal; enable-by-default; max length (S/M/L); autocorrect toggles | SMAppService (bundle exists, c80); tray exists; model_select + `COMPME_MODEL_PATH`; `COMPME_ENABLED`; `COMPME_MAX_WORDS`; `COMPME_AUTOCORRECT` | accessory floating button = new feature (defer) — **[2026-06-10] DONE** for 3 live switches (mid-line/autocorrect/trailing-space); launch-at-login wiring done via SMAppService; **[2026-06-17] model catalog/download shipped in Setup** with picker, RAM labels/gate, license gate, SHA verify, and dest-exists guard; **[2026-07-10, current main]** Setup has exactly one model-location action, **Show Models Folder**, and no **Reveal Model in Finder**; residual model work is recovery/visual LOOK validation |
 | Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | dedicated Context tab with clipboard + screen-OCR switches shipped; screen enable takes effect on next launch, screen disable gates new OCR submissions immediately; appearance sub-toggle has no equivalent (defer) |
 | Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS`, `COMPME_INSTRUCTIONS_APPS` / `_APP_*`, `COMPME_INSTRUCTIONS_DOMAINS` / `_DOMAIN_*` | global instructions, sender identity, and 6-stop strength controls shipped in the dedicated Personalization tab; remaining work is live LOOK/persistence/visible-steering validation, with memory mode/global delete controls tracked separately from the profile editor |
 | Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | enable switch plus skin-tone and gender popups shipped in a dedicated Emoji tab; `includeVanillaVariants` is unmodeled and deferred until multi-candidate replacement display exists |

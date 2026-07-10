@@ -4,15 +4,20 @@ Compme is split into a pure completion core, a platform contract, platform
 adapters, a local model seam, and a ring of small pure feature crates (text
 features, gating, personalization, privacy, catalog/download). The current
 implementation focuses on macOS because the hard integration points are
-Accessibility, event taps, AppKit overlays, Secure Input, and pasteboard
+Accessibility, Carbon hotkeys, AppKit overlays, Secure Input, and pasteboard
 behavior.
 
-Compme is **inspired by [Cotypist](https://cotypist.app), not a re-implementation
-of it.** Where a crate below notes that it "mirrors" a Cotypist behavior, that is
-deliberate behavioral parity *on that specific feature* — the project does **not**
-aim to replicate all of Cotypist, and it freely diverges (open-source, cross-
-platform, no pricing gates, and supersets like candidate cycling) where its own
-goals differ.
+Compme's committed product scope is an **open-source, multi-platform**
+re-implementation of Cotypist functionality except payment, licensing,
+subscription tiers, and multi-device seats. Behavioral parity is implemented
+behind Compme's own portable contracts and without pricing gates; deliberate
+product differences include local-only inference, no proprietary telemetry,
+and additions such as candidate cycling.
+
+**Release boundary:** the published `v0.1.4` artifact points to `18b8dc0`; this
+page documents current `main`. Post-tag runtime/download/clipboard/OCR/deep-link
+hardening and the single **Show Models Folder** Settings control are unreleased
+until the next tag.
 
 The workspace now holds 25 crates. The shape is deliberate: almost everything
 outside the model/download seams, platform adapters, and host is pure (text in →
@@ -77,8 +82,9 @@ The 25 crates fall into six groups: the **contract + core** (`platform`,
 privacy** (`prefs`, `compat`, `personalization`, `redaction`, `memory`,
 `stats`, `webconfig`), **platform adapters** (`platform_macos`,
 `platform_windows`, `platform_linux`), and the **host binary** (`app`). The
-non-platform feature crates are pure and OS-agnostic, with time and keys
-injected, so the host owns all I/O, clocks, and toggles.
+text, policy, and state-machine crates are pure and OS-agnostic, with time and
+keys injected. Explicit I/O remains fenced into `model_client`, `model_fetch`,
+`memory`, the platform adapters, and the `app` host.
 
 ### `platform`
 
@@ -90,7 +96,9 @@ Key concepts:
 - `FieldHandle`: stable field identity used to tie completions and inserts to a
   focused field.
 - `TextContext`: text to the left and right of the caret, selection metadata,
-  source, field identity, and offset encoding.
+  source, field identity, offset encoding, and a producer-computed absolute
+  Unicode-scalar offset (`left_scalars`) so consumers do not rescan an
+  unbounded field.
 - `CorrectionRange`: Unicode-scalar range used by standalone grammar/spell-fix
   for both underline geometry and exact accept-time replacement.
 - `Capabilities`: what the focused field supports: readable text, readable
@@ -270,7 +278,9 @@ it does not scrape pre-existing field text. The run loop blocks collection for
 secure input, disabled/snoozed/excluded policy, stale browser-domain state when
 domain rules exist, terminal command prompts, volatile `pid:N` identities, and
 per-app collection-off settings. Missing store path/key configuration fails
-closed instead of silently writing plaintext.
+closed instead of silently writing plaintext. The host also hardens the
+database, sidecars, config, stats, and lock files to owner-only permissions;
+failure to secure a memory sidecar disables the store rather than continuing.
 
 ### `stats`
 
@@ -296,7 +306,9 @@ signature over the exact URL byte-prefix against a host-pinned `TrustedKey`,
 with no canonicalization and fail-closed when no key is configured. The §16
 web-config flow is wired end-to-end: `platform_macos::url_events` installs the
 Apple-Events `compme://` URL-scheme handler, and the run loop drains each link
-through a host confirmation prompt before `handle_deep_link` applies it.
+through a host confirmation prompt before `handle_deep_link` applies it. The
+parser cannot express model, instruction, or security changes; any future
+non-reversible command must require `LinkTrust::Signed`.
 
 ### `engine_core`
 
@@ -362,8 +374,9 @@ below `REPETITION_PENALTY_FLOOR` shows it repeats nearby text, or when
 - `LocalModel`: synchronous local completion trait.
 - `LocalModelError`: structured failure stage plus message.
 - `LlamaModel`: `llama-cpp-2` implementation. macOS builds enable Metal via
-  `with_n_gpu_layers(999)`; non-macOS builds use dynamic/Vulkan-capable
-  backends. Overrides `warm_up` (a throwaway decode that triggers first-backend
+  `with_n_gpu_layers(999)`; current non-macOS builds are CPU-only until the
+  planned Vulkan/CUDA features and CI SDKs land. Overrides `warm_up` (a
+  throwaway decode that triggers first-backend
   setup up front) and `shutdown` (drops the model before the backend, in order,
   to avoid the ggml exit-abort).
 - `terse_continuation_prompt`: the current development prompt shape.
@@ -376,6 +389,10 @@ across the round-trip; the backend is a `'static` singleton. (Earlier drafts of
 this doc said a fresh context is created per completion — that is no longer true;
 see design spec §15 G3.)
 
+Decode planning clamps prompt tokens to the configured context and caps output
+to the remaining capacity; a request with no output capacity fails without
+calling llama.cpp.
+
 ### `model_catalog`
 
 `model_catalog` is the pure catalog (§15 D14) of which local GGUF models the
@@ -385,7 +402,7 @@ machine's RAM (probed by the platform host, not here) into a fit verdict:
 `Fits` and `Tight` are offerable labels, while `Exceeds` is a hard download
 gate answered by `offerable_by_ram`. The catalog is static Rust data, not a TOML file: the same
 in-repo content, no parser dependency, and invalid entries become compile
-errors. Everything here is pure; the RAM probe and IO are later slices.
+errors. Everything here is pure; the host owns the implemented RAM probe and I/O.
 
 ### `model_fetch`
 
@@ -394,9 +411,11 @@ pure core (SHA-256 integrity, resume planning — unit-testable with no IO) and 
 blocking network half (`download_url` over `ureq` with resume/restart/verify,
 plus a `ModelDownloader` worker thread). The download protocol is
 `.part` → verify SHA-256 → atomic rename, so a partial download never
-masquerades as complete. The seam stays inside the crate so protocol tests can
-drive the real network code against a loopback mini-server; nothing here
-touches AppKit or the engine.
+masquerades as complete. Catalog downloads also carry a catalog-derived byte
+ceiling that rejects oversized declarations, streams, resume totals, and
+already-oversized partial files before rename. The seam stays inside the crate
+so protocol tests can drive the real network code against a loopback
+mini-server; nothing here touches AppKit or the engine.
 
 ### `engine`
 
@@ -418,7 +437,7 @@ adapter-driven entry points required by the A1b macOS contract:
 `app` owns the `compme` binary and the runtime wiring. Its `run_loop` is the
 single place where the pure crates meet AppKit: it loads config, owns all
 policy (prefs, compat, personalization), marshals platform callbacks onto the
-main thread, and dispatches both suggestion paths. It is the only root crate
+main thread, and dispatches all three suggestion paths. It is the only root crate
 that combines config loading, AppKit run-loop pumping, the menu-bar status
 surface, the settings window, model selection/download, the inference worker,
 signal handling, and ordered shutdown.
@@ -435,6 +454,9 @@ Major responsibilities:
 - route `ShortcutAction::GrammarCheck` to a manual grammar request, detect the
   word at the caret, carry its `CorrectionRange`, show the correction banner,
   and keep `AcceptCorrection` isolated from normal word/full ghost accepts
+- stop grammar correction before inference when the split caret token is
+  malformed or overlong; the producer-supplied scalar offset avoids rebuilding
+  or rescanning the full field
 - compute the browser page domain from the focused element's AX URL and feed it
   into the per-domain gate
 - apply per-app mid-line override live on focus via `Engine::set_allow_mid_word`
@@ -449,6 +471,7 @@ Major responsibilities:
   persist only on success), reverting on failure
 - derive loading/ready/disabled/blocked status for tray gating
 - shut down inference before dropping engine/overlay/platform resources
+- revoke in-flight screen-OCR publication during worker shutdown
 
 ### `platform_macos`
 
@@ -474,6 +497,9 @@ Major responsibilities:
   `AxSet` can update the value and selected range safely.
 - Stale-focus rejection before global synthetic or paste insertion.
 - Pasteboard snapshot/restore with `changeCount` guard.
+- Deferred pasteboard restoration through a coordinator that retains the
+  earliest complete multi-format snapshot across back-to-back inserts and
+  never overwrites a user-changed pasteboard.
 - Transient Carbon `RegisterEventHotKey` accept interception, armed only while
   a suggestion is shown, with rebindable keys + modifier masks (`AcceptKeymap`).
 - AppKit `NSPanel` overlay presenter that is transparent, click-through,
@@ -482,6 +508,20 @@ Major responsibilities:
 - `NSStatusItem` tray with a template menu-bar icon and status menu.
 - A 9-tab settings `NSWindow` shell (render-only; the run loop owns policy),
   including the `KeyRecorderField` accept-key recorder.
+
+### `platform_windows` and `platform_linux`
+
+These crates compile the portable workspace on their native CI runners, but
+they are not usable product adapters yet. Their `PlatformAdapter` text,
+focus/caret/accept, insertion, and overlay methods fail closed with
+`UnsupportedField` (overlay `hide` remains idempotent). Most `ShellHost`
+services also fail closed.
+
+The current Windows foundation has real owner-only DACL hardening, a console
+control handler for orderly shutdown, and native `ShellExecuteW` URL opening.
+The Linux shell can open a URL through `xdg-open` and reaps the child without
+blocking. UI Automation/AT-SPI event paths, native insertion, overlays, key
+stores, trays, autostart, packaging, and GPU backends remain roadmap work.
 
 ## macOS Runtime Model
 
@@ -600,11 +640,15 @@ stranded.
 The Setup tab carries a **model picker** (`NSPopUpButton`) that selects the
 download target from `model_catalog`, shown with a RAM-fit label; `Exceeds`
 models are blocked before the click-through **license gate**, and a
-dest-exists guard avoids redundant downloads. The Statistics tab renders the
-`stats` sparkline rows; the Apps tab lists per-app recorded-input counts with
-per-row delete; General carries feature toggles (autocorrect, trailing-space,
-etc.); the Shortcuts tab shows the current accept binding and hosts the
-recorder.
+dest-exists guard avoids redundant downloads. It exposes one model-location
+action, **Show Models Folder**, plus **Choose Model…** for a local GGUF. The
+Statistics tab renders range/group-selectable `stats` sparkline rows; the Apps
+tab lists per-app recorded-input counts with per-row delete and five policy
+columns (Enabled, Tab key, Mid-line, Autocorrect, Grammar fix). General carries
+the master, mid-line, autocorrect, and trailing-space toggles; Personalization
+edits global instructions, sender identity, and the six-stop strength; Context
+and Emoji own their live controls; Shortcuts records word/full/grammar-accept
+bindings.
 
 ### Model Catalog, Fetch, and Picker
 

@@ -1,5 +1,13 @@
 # Cross-Platform Foundation Implementation Plan (Steps 1 + 2)
 
+> **Historical executed plan.** Phases A and B are complete: portable crates and
+> the target-gated app build in native Windows/Linux CI, the shared `ShellHost`
+> seam is live, and non-macOS adapters remain fail-closed scaffolds. Later Phase
+> 0 work also shipped `NativeRangeSet`, Windows owner-only DACL hardening, and a
+> console-control handler, superseding the parked ACL degradation below. Do not
+> use unchecked boxes in this file as pending work; use `docs/ROADMAP.md` and
+> `docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every crate except the OS adapters compile and test green on Windows + Linux CI (Phase A), then extend the platform contract with the shell seams (key store, tray, pump, prompts, deep links, autostart, permissions, clipboard, OCR, open-url) so the `app` binary itself compiles on all three OSes with fail-closed stubs (Phase B).
@@ -1372,4 +1380,3 @@ Expected: macOS, Windows, Linux jobs all green. The Windows/Linux jobs now compi
 - **The stub arm cannot be compiled locally** (Homebrew rustc, no rustup targets). CI is the compile gate for `shell/stub.rs` — expect one fix-up iteration at Task 15 Step 4; that is planned, not a failure.
 - **No behavior drift on macOS:** every migration task ends with the full existing suite. If any macOS test needs a behavioral edit (not a rename/import fix), stop — the seam leaked semantics; re-check the wrapper.
 - **Line numbers** cited are as of commit `4d58e42`; re-grep before editing (`run_loop.rs` is 14k lines and shifts).
-

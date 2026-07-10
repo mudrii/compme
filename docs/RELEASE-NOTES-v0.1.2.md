@@ -1,5 +1,9 @@
 # Compme v0.1.2 — model loading fixed + model management
 
+> Historical release record for protected tag `v0.1.2` (`4a6c1e2`). It
+> describes that published artifact, not current `main` or the latest stable
+> release.
+
 Fixes the main v0.1.1 problem — a downloaded model never actually loaded — and
 adds two ways to manage models. All inference stays local; no telemetry
 (CI-enforced).

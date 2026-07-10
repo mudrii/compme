@@ -3,6 +3,13 @@
 This document describes the current automated and live acceptance checks for
 Compme.
 
+> **Release boundary (2026-07-10):** this document tracks current `main`. The
+> latest published artifact, `v0.1.4` (`18b8dc0`), predates the post-tag change
+> that made A2 local/manual-only and the fix that replaced the two model-location
+> buttons with one **Show Models Folder** control. Build current `main` when
+> validating those checks; do not treat them as properties of the `v0.1.4`
+> binary.
+
 ## Automated Gates
 
 Root workspace:
@@ -53,6 +60,18 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked --bins
 ```
+
+Native portability CI:
+
+- Branch/PR CI runs `cargo fmt --all -- --check`, then clippy and tests for the
+  portable workspace (`--workspace --exclude platform_macos`), and finally
+  `cargo build --locked -p app` on both Windows and Linux. These jobs detect
+  shared-crate portability leaks and prove the app compiles through each
+  fail-closed platform facade; they do not claim a functional Windows/Linux
+  product adapter.
+- Tag validation runs fmt, clippy, test, and build scoped to
+  `platform_windows` on Windows and `platform_linux` on Linux before the macOS
+  release prebuild can start.
 
 The root test gate must use `--all-targets` because `platform_macos` keeps
 acceptance regression tests in example targets. It is serialized because several
@@ -445,16 +464,17 @@ A2 submit ledger alone:
 
 ## A2 Local-Replacement Live Gate (emoji / autocorrect / British English)
 
-The local-replacement pipeline (`offer_replacement` → `Command::Replace` → AxSet
-range-replace) is unit/build-verified and covered by the rebuilt scripted Carbon
-live gates. Synthetic key posts do fire the Carbon accept path when the NSApp
-event pump is active (same correction as A1b above), so scripted runs are valid
-coverage for the accept edge.
+The local-replacement pipeline (`offer_replacement` → `Command::Replace` →
+atomic range replacement) is unit/build-verified and covered on macOS through
+the AxSet path by the rebuilt scripted Carbon live gates. Synthetic key posts do
+fire the Carbon accept path when the NSApp event pump is active (same correction
+as A1b above), so scripted runs are valid coverage for the accept edge.
 
 For optional physical confirmation, run `compme` with the feature enabled, focus
-an **AxSet** field (e.g. TextEdit — the offer is gated to AxSet-capable fields;
-SyntheticKeys/Clipboard apps are a separate backspace-synthesis residual), then
-with a physical keyboard:
+an atomic-range-replacement field (on macOS, an **AxSet** field such as TextEdit;
+`NativeRangeSet` is also supported by the shared contract, while
+SyntheticKeys/Clipboard apps remain a separate backspace-synthesis residual),
+then with a physical keyboard:
 
 - `COMPME_EMOJI=1` — type `:smile`, accept → the `:smile` is deleted and the
   emoji glyph (skin-tone/gender per `_SKIN_TONE`/`_GENDER`) is inserted.
@@ -626,8 +646,9 @@ A quick LOOK pass over all nine panes:
   instructions and sender identity (name / email), driven by the
   `PersonalizationEdit` enum; edits live-apply and persist. (Pane builds;
   per-app/per-domain instruction editing is a follow-up.)
-- **Apps** — per-app recorded-input counts from the encrypted memory store;
-  count rows (`app — N`) carry a Delete button, status/empty rows do not.
+- **Apps** — per-app On / Tab / Mid / AC / GF policy columns plus recorded-input
+  counts from the encrypted memory store; count rows (`app — N`) carry a Delete
+  button, status/empty rows do not.
 - **Context** — Clipboard and Screen Context switches match their current
   config-backed state; disabling either clears the cached context source and
   gates new submissions.

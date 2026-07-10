@@ -4,6 +4,13 @@
 **Status:** Approved, then revised with online validation + Cotypist reverse-engineering
 **Scope:** First sub-project of an **open-source, multi-platform** predictive-writing product that re-implements all Cotypist functionality except payment/licensing (see Project Scope note below). Covers **only** the OS-agnostic engine + the macOS adapter + the app shell. **Windows/Linux adapters are committed sub-projects (B/C)** behind the interfaces defined here, not optional add-ons.
 
+> **Implementation status (2026-07-10):** this is the historical design record,
+> not the current pending-work ledger. The macOS reference product is
+> code-complete and a signed/notarized v0.1.4 is published; 17 formal macOS
+> manual/live gates remain open. Windows/Linux remain fail-closed scaffolds.
+> Use `docs/ROADMAP.md` for current status and the 2026-07-08 cross-platform
+> implementation plan for the remaining adapter work.
+
 **Revision note (v2):** This document was re-validated against current crates/docs (Feb–Jun 2026) and against the **installed** Cotypist binary (`/Applications/Cotypist.app`, v2026.1 **build 73**) via static analysis + its live `UserDefaults`. (The current official DMG is **2026.1.1 build 74** — see §15 D12; treat all evidence here as installed-b73, not the latest shipping build.) Material corrections are marked **[CORR]** and the evidence is in §12–§13.
 
 **2026-06-05 A1b reconciliation:** Native inline prediction suppression remains a product concern, but is deferred out of A1b for cross-app text fields. Current AppKit bindings expose automatic text-completion controls for owned `NSTextView`/`NSTextField` instances, while this app reads and writes other applications through Accessibility plus native overlay rendering. The active A1b source of truth is `docs/superpowers/plans/2026-06-04-a1b-macos-adapter-contract.md`.
@@ -501,14 +508,16 @@ live before/after completion diffs.
 | **Not supported** (Thunderbird/Pages/Scrivener/Ghostty/Warp…) | Explicitly disabled/listed; no misfire |
 | Terminal/iTerm AI-agent prompt | Activates only in intended natural-language prompt contexts, not arbitrary shell input |
 
-**2026-07-06 test-audit status:** `tools/acceptance/run-a2-compat-gates.sh`
-is still request-path smoke evidence for selected compatibility/context paths.
-Release evidence now also requires a table-driven matrix ledger with every
-committed row passing, paired TSV/log artifacts under
-`tools/acceptance/evidence/a2/`, and `COMPME_A2_MATRIX_LEDGER` pointing at the
-reviewed TSV. It is not a full replacement for the per-family live matrix above,
-especially setup-needed browsers, mirror-only apps, sidebar-only AI panels,
-insertion behavior, and onboarding copy.
+**2026-07-10 correction to the 2026-07-06 test-audit status:**
+`tools/acceptance/run-a2-compat-gates.sh` remains optional local/manual
+request-path smoke evidence for selected compatibility/context paths. The
+published v0.1.4 workflow required a table-driven A2 matrix ledger, but current
+`main` deliberately removed the runner and ledger checker from CI, tag releases,
+the release-policy checker, and generic shell-syntax validation (`618013d`). A
+manually recorded ledger should still have every row passing with paired TSV/log
+artifacts under `tools/acceptance/evidence/a2/`; it is not a replacement for the
+per-family live matrix above, especially setup-needed browsers, mirror-only apps,
+sidebar-only AI panels, insertion behavior, and onboarding copy.
 
 ### Other in-scope features — now with gates (close D16's "loosely deferred")
 | Feature | Phase | Acceptance gate |

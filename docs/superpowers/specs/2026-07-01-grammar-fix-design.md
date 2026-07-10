@@ -2,7 +2,10 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1830 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1831 tests green).
+**Release boundary:** this status describes current `main`. The published
+v0.1.4 tag predates the post-release runtime/grammar hardening in `216fa0a` and
+the A2 automation-policy change in `618013d`; those changes require a later tag.
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI
@@ -16,7 +19,7 @@ before editing (they drift).
   prefs/config, and correction accept side effects are implemented with focused tests.
 - G3 macOS grammar trigger/accept key routing is implemented behind configurable
   `COMPME_GRAMMAR_CHECK_KEY` and `COMPME_GRAMMAR_ACCEPT_KEY`.
-- G4 macOS scalar-range conversion, range bounds, fail-closed AxSet range
+- G4 macOS scalar-range conversion, range bounds, fail-closed atomic range
   replacement, and a two-panel underline/banner correction presenter are
   implemented with focused geometry tests. Live LOOK validation remains pending
   because it requires granted Accessibility permissions and an interactive macOS app.
@@ -64,7 +67,8 @@ type-ahead.
 grammar-trigger key (per-OS hotkey)
   → HostEvent::Shortcut(ShortcutAction::GrammarCheck)     [run_loop shortcut dispatch]
   → run_loop: read_context(field) → word-under-caret + left_ctx + CorrectionRange
-  → gate: grammar_fix_enabled(app) && suggestion_gates_pass && caps.AxSet
+  → gate: grammar_fix_enabled(app) && suggestion_gates_pass
+          && insertion_strategy.supports_atomic_range_replace()
   → dispatch CompletionRequest{ kind: GrammarFix, word, left_ctx, correction_range }
       worker: prompt = model_client::grammar_fix_prompt(word, left_ctx)
               raw = model.complete(prompt, small_max_tokens)
@@ -176,7 +180,8 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   `Command::ReplaceRange { field, text, correction_range }`. Do not reuse
   `AcceptFull`/`AcceptWord`: those commit the existing `replace_left` model and
   can only delete characters immediately left of the caret. Same
-  `InsertStrategy::AxSet` gate.
+  `InsertStrategy::supports_atomic_range_replace()` capability gate (`AxSet`
+  and `NativeRangeSet` are the currently atomic strategies).
 - `crates/engine/src/lib.rs`: add `pub fn on_correction(...)` wrapping
   `offer_correction` (mirror `on_replacement`). Extend dispatch for
   `ShowCorrection`: resolve `adapter.text_range_rect(field, correction_range)`,
@@ -265,12 +270,13 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   `grammar_trigger_dispatches_word_at_caret_scalar_range`,
   `grammar_detection_blocks_without_fresh_browser_domain_when_domain_rules_exist`,
   `grammar_detection_refresh_drops_stale_allowed_browser_domain`,
-  `grammar_detection_respects_enable_per_app_snooze_and_axset`,
-  `grammar_detection_rejects_non_empty_selection`, and the AxSet arm inside
+  `grammar_detection_respects_enable_per_app_snooze_and_axset` (legacy test
+  name), `grammar_detection_rejects_non_empty_selection`, and the atomic-strategy
+  arm inside
   `grammar_detection_respects_enable_per_app_snooze_and_axset`. Together they
   must prove the enable gate, per-app exclude, snooze, browser-domain freshness
   when domain rules exist, stale cached-domain refresh, non-empty selection
-  rejection, and AxSet fail-closed gate.
+  rejection, and atomic-range fail-closed gate.
 
 **Acceptance:** phase-local fake model + fake overlay tests green. Current
 release-readiness uses the locked workspace gates from `docs/ACCEPTANCE.md` and
@@ -428,8 +434,10 @@ range bounds and range replacement, not just the existing left-of-caret
   `ensure_panel` recipe.
 - **R2 (med):** LLM produces a wrong/over-eager correction. Mitigation: strict
   `vet_correction` (single word + bounded edit distance) — pure and fully tested in G1.
-- **R3 (med):** non-AxSet fields can't atomically replace. Mitigation: inherit the
-  existing AxSet gate — offer nothing there (same as replacements today).
+- **R3 (med):** non-atomic fields can't replace a range safely. Mitigation:
+  inherit the existing `supports_atomic_range_replace()` gate — `AxSet` and
+  `NativeRangeSet` may proceed; offer nothing for the other strategies (same as
+  replacements today).
 - **R4 (low):** keystroke collisions. Mitigation: existing `has_internal_collision`
   / `record_decision` auto-cover once the new ids join the field arrays.
 - **R5 (high):** range drift between detection, underline, and accept could replace

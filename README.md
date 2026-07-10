@@ -3,9 +3,10 @@
 [![CI](https://github.com/mudrii/compme/actions/workflows/ci.yml/badge.svg)](https://github.com/mudrii/compme/actions/workflows/ci.yml)
 
 Compme is an **open-source, multi-platform** inline text-completion engine
-**inspired by** [Cotypist](https://cotypist.app). 
-Compme the only constraint on which local models are offered is hardware
-capability. macOS ships first; **Windows and Linux are
+**inspired by** [Cotypist](https://cotypist.app). Every catalog model is
+available without a pricing tier; downloads are limited only by the machine's
+RAM-fit check and any upstream model-license click-through. macOS ships first;
+**Windows and Linux are
 committed deliverables** built behind a shared cross-platform `PlatformAdapter`
 contract. All inference is local (llama.cpp), with no proprietary telemetry.
 
@@ -24,12 +25,18 @@ promoted into the workspace.
 
 | Platform | Product status | Current boundary |
 |---|---|---|
-| macOS | **Released** — signed/notarized `v0.1.4`; deterministic code gates green | The 17 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
-| Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `WindowsAdapter`, overlay, and ShellHost operations remain fail-closed; no usable Windows product or package yet. |
+| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.4` | Current `main` is newer than the artifact; its deterministic gates are green, while 17 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
+| Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | Adapter/overlay operations and most ShellHost services remain fail-closed; owner-only DACL hardening, console shutdown handling, and URL opening are real, but there is no usable Windows product or package yet. |
 | Linux | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `LinuxAdapter`, overlay, and most ShellHost operations remain fail-closed; no usable Linux product or package yet. |
 
 The detailed Windows, Linux/X11, Wayland, GPU, packaging, and per-OS acceptance
 sequence is tracked in [the cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md).
+
+**Release boundary:** `v0.1.4` points to `18b8dc0`. The feature and architecture
+descriptions below document current `main`. Post-tag runtime/release hardening,
+the local/manual-only A2 pipeline policy, and the single **Show Models Folder**
+control are current-main behavior and will not be in a published artifact until
+the next release.
 
 The macOS run loop is functional: it reads caret/text context through
 Accessibility, generates short local completions, classifies field UX (inline /
@@ -55,7 +62,8 @@ Release artifacts are Developer-ID signed, notarized, and stapled by the tag
 workflow (see [docs/RELEASING.md](docs/RELEASING.md)); v0.1.4 is the current
 published signed release. Local source bundles remain ad-hoc signed by default.
 Enable Compme under System Settings → Privacy & Security → Accessibility. All
-inference is local; nothing leaves the machine.
+inference and prompt context stay local. Model downloads and the update-link
+action use the network, but Compme sends no typed text or proprietary telemetry.
 
 ### From source
 
@@ -105,6 +113,8 @@ unbundled `cargo run -p app` is still fine.
 - **Model picker with RAM-fit advisory** — the Setup tab lets you choose which built-in
   catalog model to download, each row carrying a `fits` / `tight` / `exceeds` verdict
   for this machine, with a dest-exists guard that skips a model already on disk.
+  **Show Models Folder** is the single model-location action; **Choose Model…**
+  supports a local bring-your-own GGUF.
 - **Encrypted typing memory** — opt-in AES-256-GCM store for accepted completions
   or all monitored typing, redacted before encryption, keyed by a
   Keychain-managed key.
@@ -119,8 +129,8 @@ unbundled `cargo run -p app` is still fine.
   a machine-readable update manifest next to the notarized zip and checksum for
   tooling and a future auto-updater.
 - **Signed deep-link config** — a fail-closed `compme://setOverride` URL scheme for
-  reversible per-app/per-domain overrides; non-reversible settings require an Ed25519
-  signature.
+  reversible per-app/per-domain overrides. It cannot set model, instruction, or
+  security values; any future non-reversible command must require an Ed25519 signature.
 
 ## Repository Layout
 
@@ -180,7 +190,7 @@ from `tools/spike/`.
 | `context` | Pure text-context helpers around a caret (left/right context, word-at-caret extraction, left-tail truncation, context-block assembly). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
-| `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2`; macOS enables Metal, while non-macOS targets use dynamic/Vulkan-capable backends. |
+| `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2`; macOS enables Metal, while current non-macOS builds are CPU-only until Vulkan/CUDA and their CI SDKs land. |
 | `model_catalog` | Pure, static catalog of which local models the General/Setup pane offers, their download sources, and a `fits` / `tight` / `exceeds` RAM-fit verdict for the host. |
 | `model_fetch` | Pure SHA-256 integrity + resume planning, plus the blocking network downloader (`.part` → verify → atomic rename) and a `ModelDownloader` worker thread. |
 | `ranker` | Candidate shaping helpers: word capping, first-word extraction, and repetition penalty. |
@@ -323,7 +333,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,830 tests:
+suite is roughly 1,831 tests:
 
 ```sh
 cargo fmt --all -- --check
@@ -418,10 +428,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Acceptance](docs/ACCEPTANCE.md)
+- [Manual validation](docs/MANUAL-VALIDATION.md)
 - [Releasing](docs/RELEASING.md)
 - [Engine/macOS MVP design](docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md)
 - [A1b macOS adapter contract](docs/superpowers/plans/2026-06-04-a1b-macos-adapter-contract.md)
-- [Current work handoff](docs/superpowers/plans/2026-06-05-current-work-handoff.md)
+- [Cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md)
 
 ## License
 

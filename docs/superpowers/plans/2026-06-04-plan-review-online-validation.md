@@ -1,5 +1,11 @@
 # Plan Review - Online Validation and Shortcomings
 
+> **Historical review snapshot.** This document records the June 2026 inputs
+> and decisions that shaped A0/A1. It is not a pending-work ledger. The macOS
+> product has since shipped through v0.1.4; use `docs/ROADMAP.md` for current
+> status, `docs/ACCEPTANCE.md` for open live gates, and the 2026-07-08
+> cross-platform implementation plan for Windows/Linux work.
+
 **Date:** 2026-06-04
 **Scope:** `docs/superpowers/**` and `tools/spike/**`
 **Verdict:** GO for contract-first A1a implementation and A1b planning after the 2026-06-05 P6 redo and P2 model comparison. The remaining guardrail is to keep A1a bound to the A1b macOS adapter contract; `tools/spike/FINDINGS.md` is the source of truth for the model decision.
