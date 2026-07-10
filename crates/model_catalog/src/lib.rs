@@ -374,6 +374,31 @@ mod tests {
     }
 
     #[test]
+    fn size_mb_download_cap_admits_every_pinned_artifact() {
+        // Regression pin for 18fbc4f: the download path caps transfers at
+        // `size_mb * MiB` (run_loop's catalog_download_request), so an
+        // undercounted size_mb makes that entry's download always fail with
+        // SizeExceeded. Real byte sizes below are the upstream Content-Length
+        // of each pinned resolve URL (checked 2026-07-10); a new or re-pinned
+        // entry must extend this table or the length assert fails.
+        let real_bytes: &[(&str, u64)] = &[
+            ("qwen2.5-0.5b-q4_k_m", 397_807_520),
+            ("llama-3.2-1b-q4_k_m", 807_694_464),
+            ("qwen2.5-1.5b-q4_k_m", 1_117_320_736),
+            ("gemma-2-2b-q4_k_m", 1_708_582_752),
+        ];
+        assert_eq!(real_bytes.len(), catalog().len());
+        for (name, bytes) in real_bytes {
+            let entry = catalog().iter().find(|e| e.name == *name).unwrap();
+            assert!(
+                u64::from(entry.size_mb) * 1024 * 1024 >= *bytes,
+                "{name}: size_mb {} caps the download below the real {bytes}-byte file",
+                entry.size_mb
+            );
+        }
+    }
+
+    #[test]
     fn recommended_in_skips_a_smaller_gated_entry_and_picks_the_smallest_unencumbered() {
         // Isolated, order-independent proof of the selection logic: a SMALLER
         // gated entry sits FIRST, so a `.find(first unencumbered)` would still

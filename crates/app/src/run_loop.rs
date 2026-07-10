@@ -7448,7 +7448,8 @@ mod tests {
     fn setup_pane_composition_respects_the_row_limit() {
         // The window builds SETUP_ROWS labels; zip-truncation would
         // silently hide overflow rows (review-c106, c103 precedent). Pin
-        // against the REAL const, not a drifting literal.
+        // against the REAL const, not a drifting literal. Exact equality:
+        // `<=` would miss a dropped row (blank line in the pane).
         let rows = crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
             ax_trusted: true,
             ax_relaunch_required: false,
@@ -7456,7 +7457,7 @@ mod tests {
             screen_recording: true,
             model_ready: true,
         });
-        assert!(rows.len() <= crate::shell::SETUP_ROWS);
+        assert_eq!(rows.len(), crate::shell::SETUP_ROWS);
     }
 
     #[test]

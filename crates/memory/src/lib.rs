@@ -1311,8 +1311,11 @@ mod tests {
         // open() chmods a newly-created parent directory to 0700 so the db and
         // its WAL/SHM sidecars aren't group/world-traversable. Only the 0600
         // *file* modes are pinned elsewhere — nothing asserts the *directory*
-        // mode, so loosening it to 0755 or dropping the chmod (which is only
-        // logged on failure, never fatal) would stay green. Pin it.
+        // mode, so loosening it to 0755 or dropping the chmod would stay
+        // green. Pin it. (Since 216fa0a a chmod failure is fatal (`?`), but
+        // that failure path has no injection seam — a freshly created dir is
+        // owner-owned, so chmod can't be made to fail without root; the
+        // sidecar symlink test covers the shared fail-closed convention.)
         use std::os::unix::fs::PermissionsExt;
         let mut suffix = [0u8; 8];
         getrandom::getrandom(&mut suffix).unwrap();

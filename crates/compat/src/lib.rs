@@ -799,6 +799,11 @@ mod tests {
             "export RUST_LOG=debug cargo test",
             "custom-tool input | sed output",
             "foo input | bar output",
+            // Pin the other strong operators ("||", ";") as shell signals too;
+            // only "|" was covered, so dropping them from the operator arm
+            // survived the suite.
+            "foo input || bar output",
+            "foo input ; bar output",
         ] {
             assert!(
                 !terminal_prompt_activates(term, command),

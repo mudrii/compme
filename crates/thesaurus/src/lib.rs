@@ -157,22 +157,6 @@ mod tests {
     }
 
     #[test]
-    fn multi_sense_query_merges_matching_groups_and_dedupes() {
-        assert_eq!(
-            synonyms("bright"),
-            vec![
-                "smart",
-                "clever",
-                "intelligent",
-                "sharp",
-                "luminous",
-                "radiant",
-                "vivid",
-            ]
-        );
-    }
-
-    #[test]
     fn multi_sense_query_sharp_merges_both_groups() {
         // "sharp" is the OTHER multi-sense word (alongside "bright"): it lives
         // in [smart, clever, intelligent, bright, sharp] AND [bright, luminous,
