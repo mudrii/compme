@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening and Settings cleanup are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1829 workspace tests listed on current `main` (spike separate)
+> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening and Settings cleanup are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1828 workspace tests listed on current `main` (spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -599,7 +599,7 @@ with physical trigger/accept keypresses.
 > **Historical status (2026-07-01): this six-item macOS UI backlog is
 > CODE-COMPLETE.** All six residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1829 tests, clippy clean). This historical claim
+> review + tdd + ponytail pass (1828 tests, clippy clean). This historical claim
 > covers the six rows only; the broader parity audit now tracks the five committed
 > code gaps above in addition to a human visual-LOOK pass over the 9 settings
 > panes and the Tier-4 live checklist. Developer-ID

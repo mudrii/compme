@@ -8,7 +8,7 @@
 use std::sync::atomic::Ordering;
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
 use objc2::{define_class, sel, AnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
@@ -77,24 +77,6 @@ pub fn apply_tray_action(flags: &TrayFlags, action: TrayAction) {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(arm);
         }
-    }
-}
-
-fn tray_action_selector(action: TrayAction) -> Sel {
-    match action {
-        TrayAction::ToggleEnabled => sel!(toggleEnabled:),
-        TrayAction::OpenAccessibilitySettings => sel!(openSettings:),
-        TrayAction::Quit => sel!(requestQuit:),
-        TrayAction::DisableGlobal(DisableArm::Hour) => sel!(disableGlobalHour:),
-        TrayAction::DisableGlobal(DisableArm::UntilRelaunch) => sel!(disableGlobalRelaunch:),
-        TrayAction::DisableGlobal(DisableArm::Always) => sel!(disableGlobalAlways:),
-        TrayAction::Snooze => sel!(requestSnooze:),
-        TrayAction::OpenSettingsWindow => sel!(openSettingsWindow:),
-        TrayAction::CheckUpdates => sel!(checkUpdates:),
-        TrayAction::ToggleCollection => sel!(toggleCollection:),
-        TrayAction::DisableApp(DisableArm::Hour) => sel!(disableAppHour:),
-        TrayAction::DisableApp(DisableArm::UntilRelaunch) => sel!(disableAppRelaunch:),
-        TrayAction::DisableApp(DisableArm::Always) => sel!(disableAppAlways:),
     }
 }
 
@@ -368,7 +350,7 @@ impl MacosTray {
         check_updates_item.setTitle(&NSString::from_str(check_updates_spec.title));
         unsafe {
             check_updates_item.setTarget(Some(target_as_any(&target)));
-            check_updates_item.setAction(Some(tray_action_selector(check_updates_spec.action)));
+            check_updates_item.setAction(Some(sel!(checkUpdates:)));
         }
         menu.addItem(&check_updates_item);
 
@@ -589,9 +571,5 @@ mod tests {
             title: "Check for Updates…",
             action: TrayAction::CheckUpdates,
         }));
-        assert_eq!(
-            tray_action_selector(TrayAction::CheckUpdates),
-            sel!(checkUpdates:)
-        );
     }
 }

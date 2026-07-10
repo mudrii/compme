@@ -337,7 +337,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,829 tests:
+suite is roughly 1,828 tests:
 
 ```sh
 cargo fmt --all -- --check

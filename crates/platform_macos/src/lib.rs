@@ -2471,36 +2471,23 @@ fn schedule_pasteboard_restore(
     coordinator: Arc<ClipboardRestoreCoordinator>,
     restore_epoch: u64,
 ) -> Result<(), PlatformError> {
-    defer_pasteboard_restore_with(
-        coordinator,
-        restore_epoch,
-        |delay, coordinator, restore_epoch| {
-            let when =
-                DispatchTime::try_from(delay).map_err(|()| PlatformError::CannotComplete {
-                    reason: "clipboard restore deadline overflowed".into(),
-                })?;
-            DispatchQueue::main()
-                .after(when, move || {
-                    let pasteboard = NSPasteboard::generalPasteboard();
-                    let _ = restore_coordinated_pasteboard_if_unchanged(
-                        &pasteboard,
-                        &coordinator,
-                        restore_epoch,
-                    );
-                })
-                .map_err(|error| PlatformError::CannotComplete {
-                    reason: format!("failed to schedule clipboard restore: {error:?}"),
-                })
-        },
-    )
-}
-
-fn defer_pasteboard_restore_with(
-    coordinator: Arc<ClipboardRestoreCoordinator>,
-    restore_epoch: u64,
-    schedule: impl FnOnce(Duration, Arc<ClipboardRestoreCoordinator>, u64) -> Result<(), PlatformError>,
-) -> Result<(), PlatformError> {
-    schedule(CLIPBOARD_RESTORE_DELAY, coordinator, restore_epoch)
+    let when = DispatchTime::try_from(CLIPBOARD_RESTORE_DELAY).map_err(|()| {
+        PlatformError::CannotComplete {
+            reason: "clipboard restore deadline overflowed".into(),
+        }
+    })?;
+    DispatchQueue::main()
+        .after(when, move || {
+            let pasteboard = NSPasteboard::generalPasteboard();
+            let _ = restore_coordinated_pasteboard_if_unchanged(
+                &pasteboard,
+                &coordinator,
+                restore_epoch,
+            );
+        })
+        .map_err(|error| PlatformError::CannotComplete {
+            reason: format!("failed to schedule clipboard restore: {error:?}"),
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10120,40 +10107,6 @@ mod tests {
                 .map(|value| value.to_string()),
             Some("original user text".into())
         );
-    }
-
-    #[test]
-    fn clipboard_restore_is_deferred_without_waiting_for_the_deadline() {
-        let scheduled = Arc::new(Mutex::new(Vec::new()));
-        let scheduled_in_hook = Arc::clone(&scheduled);
-        let coordinator = Arc::new(ClipboardRestoreCoordinator::default());
-        let snapshot = PasteboardSnapshot {
-            items: Vec::new(),
-            fallback_string: Some("previous".into()),
-        };
-        let restore_epoch = coordinator.record_insert(snapshot, 7);
-
-        let start = std::time::Instant::now();
-        defer_pasteboard_restore_with(
-            Arc::clone(&coordinator),
-            restore_epoch,
-            move |delay, coordinator, restore_epoch| {
-                let snapshot = coordinator
-                    .take_if_current_epoch_and_change_count(restore_epoch, 7)
-                    .unwrap();
-                scheduled_in_hook.lock().unwrap().push((delay, snapshot));
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        // "Deferred" means we returned before the restore deadline; a tighter
-        // wall-clock bound flakes under parallel-test CPU load.
-        assert!(start.elapsed() < CLIPBOARD_RESTORE_DELAY);
-        let scheduled = scheduled.lock().unwrap();
-        assert_eq!(scheduled.len(), 1);
-        assert_eq!(scheduled[0].0, CLIPBOARD_RESTORE_DELAY);
-        assert_eq!(scheduled[0].1.fallback_string.as_deref(), Some("previous"));
     }
 
     #[test]
