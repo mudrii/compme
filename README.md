@@ -20,6 +20,17 @@ downloader, and the `compme` binary that wires them together. A separate spike
 prototype under `tools/spike` validates low-level macOS behavior before it is
 promoted into the workspace.
 
+### Current platform support
+
+| Platform | Product status | Current boundary |
+|---|---|---|
+| macOS | **Released** — signed/notarized `v0.1.4`; deterministic code gates green | The 17 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
+| Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `WindowsAdapter`, overlay, and ShellHost operations remain fail-closed; no usable Windows product or package yet. |
+| Linux | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `LinuxAdapter`, overlay, and most ShellHost operations remain fail-closed; no usable Linux product or package yet. |
+
+The detailed Windows, Linux/X11, Wayland, GPU, packaging, and per-OS acceptance
+sequence is tracked in [the cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md).
+
 The macOS run loop is functional: it reads caret/text context through
 Accessibility, generates short local completions, classifies field UX (inline /
 popup / blocked / hotkey-only / unsupported), shows a non-activating AppKit

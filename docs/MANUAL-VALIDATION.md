@@ -142,8 +142,9 @@ the set. Walkthrough detail lives in the ledger entries.
       live-apply.
 - [ ] `menu-bar-icon-look` — caret + double-chevron template icon renders
       (text title only as fallback).
-- [ ] `setup-model-picker-look` — picker rows carry RAM verdicts; license gate
-      and dest-exists skip behave.
+- [ ] `setup-model-picker-look` — exactly one **Show Models Folder** control is
+      visible, **Reveal Model in Finder** is absent, picker rows carry RAM
+      verdicts, and the license gate and dest-exists skip behave.
 - [ ] `encrypted-memory-all-monitored-live` — residual legs: secure-input
       suppression, snoozed policy transition, volatile `pid:N` adds no rows.
 - [ ] `mirror-window-firefox-zen-look` — Firefox/Zen mirror-window placement

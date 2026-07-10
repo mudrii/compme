@@ -321,7 +321,9 @@ layout and live control interaction. The runner-pinned IDs are
   without relaunch.
 - **Menu bar / Shortcuts / Setup / nine-tab walkthrough** — confirm the tray
   icon/status, modifier-combo recorder, always-on hotkey dispatch, setup model
-  picker, and all nine panes match the detailed Live UI LOOK checklist below.
+  picker, exactly one **Show Models Folder** control with no **Reveal Model in
+  Finder** duplicate, and all nine panes match the detailed Live UI LOOK
+  checklist below.
 
 ### Useful Options
 
@@ -592,18 +594,21 @@ label for this machine's available memory (`ram_verdict`):
 `fits` and `tight` entries may download; `exceeds available memory` is a hard
 download block. To exercise:
 
-1. Open the popup and confirm one row per catalog entry
+1. Confirm the Setup pane exposes exactly one **Show Models Folder** control and
+   no **Reveal Model in Finder** control; click it and verify Finder opens the
+   models directory.
+2. Open the popup and confirm one row per catalog entry
    (`qwen2.5-0.5b-q4_k_m`, `llama-3.2-1b-q4_k_m`, `qwen2.5-1.5b-q4_k_m`,
    `gemma-2-2b-q4_k_m`), each carrying a fit suffix.
-2. Pick a **non-recommended** model that fits or is tight and click Download →
+3. Pick a **non-recommended** model that fits or is tight and click Download →
    that model downloads (log: `downloading <model> (<MB> MB) — progress in this
    log`), proving the picker index drives the target, not just `recommended()`.
-3. On a machine below a model's minimum RAM, picking that row and clicking
+4. On a machine below a model's minimum RAM, picking that row and clicking
    Download logs a blocked message and does not enqueue a fetch.
-4. Re-click Download on a model already on disk → the dest-exists guard logs
+5. Re-click Download on a model already on disk → the dest-exists guard logs
    `<model> already downloaded at <path> — delete it to re-download` (no
    re-fetch / clobber).
-5. Pick an **encumbered** model (`llama-3.2-1b-q4_k_m` /
+6. Pick an **encumbered** model (`llama-3.2-1b-q4_k_m` /
    `gemma-2-2b-q4_k_m`) with no prior acceptance → the **license click-through
    prompt** appears (the `download_gate` `NeedsLicense` path) before any fetch.
    Today's recommended default is unencumbered, so a plain run never prompts.

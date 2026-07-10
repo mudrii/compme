@@ -7,9 +7,15 @@ status ledger; this doc is the execution guide.
 
 Evidence base: full-codebase analysis 2026-07-08 (three-agent sweep: contract
 inventory, macOS-leakage audit, build/CI/packaging audit), every claim
-re-verified by grep against `b367f0f`.
+re-verified by grep against `b367f0f`. Status was reconciled again 2026-07-10
+through `a5781fc`: Phase 0 remains shipped, macOS is released, and the real
+Windows/Linux adapters plus Phases 3–6 remain pending.
 
-## Verified starting state
+## Verified Phase 0 baseline (historical)
+
+This records the pre-Phase-0 state used to derive tasks 0.1–0.4. Current status
+is the header above plus `docs/ROADMAP.md`; do not read the G1–G6 baseline gaps
+below as still-open work after their corresponding Phase 0 item is marked shipped.
 
 - `platform::PlatformAdapter` (15 methods), `ShellHost` (8 required + 9
   defaulted), `OverlayPresenter`, `TrayHandle` — contract complete and
@@ -287,9 +293,10 @@ in-app consumption (ROADMAP 1.2 note stands).
 - Extend `ACCEPTANCE.md`'s Manual/Live Gate Ledger with Windows/Linux rows; port
   tools/acceptance e2e to per-OS variants (osascript → PowerShell UIA
   script / dogtail+Xvfb).
-- ACCEPTANCE.md per-OS gates; ARCHITECTURE.md adapter chapters;
-  README platform-support table with honest UxMode expectations per
-  desktop (GNOME-Wayland: Hotkey until Phase 3 lands, etc.).
+- ACCEPTANCE.md per-OS gates; ARCHITECTURE.md adapter chapters. Keep README's
+  current support table honest (macOS released; Windows/Linux scaffold-only),
+  then extend it with per-desktop UxMode expectations as real adapters land
+  (GNOME-Wayland: Hotkey until Phase 3 lands, etc.).
 
 ## Cross-cutting rules
 

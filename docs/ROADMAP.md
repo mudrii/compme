@@ -6,7 +6,7 @@
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-08 through `6f73891`
+> with symbol/function/gate anchors re-reviewed 2026-07-10 through `a5781fc`
 > (workspace review/tdd/ponytail: zero-alloc slice-based trigger gates, an
 > `InsertStrategy::supports_atomic_range_replace` capability predicate replacing
 > `== AxSet` gates, +8 mutation-pinning tests → 1787 with the dead UTF-16 guard
@@ -251,8 +251,9 @@ runs. The retired screenshot matrix is not current release evidence.
 - **Personalization:** the Personalization tab now edits global instructions,
   sender name/email, and the 6-stop steering strength. Edits update the live
   inference worker profile through `set_profile` and persist through the same
-  settings path. Memory storage mode remains governed by memory config and UI
-  controls elsewhere; it is not part of the personalization profile.
+  settings path. Memory storage mode remains governed by memory config; dedicated
+  memory-mode and global delete-all Settings controls are deferred UI work, not
+  part of the personalization profile or the current Personalization-pane scope.
 - **Remaining:** visual LOOK only: pane layout, instructions field,
   sender/strength controls, and persistence closed (assisted Batches 1-2);
   Context opt-in verified live (Batch 6). Residual is a visible steering effect
@@ -393,9 +394,11 @@ a granted macOS GUI session).
   scalar `CorrectionRange` at the `platform` boundary, carry that same range
   through the request/outcome/showing state, and emit `Command::ReplaceRange` →
   `insert_replacing_range`. `replace_left` remains for emoji/autocorrect only.
-  **Same `InsertStrategy::AxSet` gate** applies (see the `InsertStrategy::AxSet`
-  correction branch in `engine_core/src/lib.rs`):
-  on non-AxSet fields offer nothing (degrade), exactly as replacements do today.
+  **The same `InsertStrategy::supports_atomic_range_replace()` gate** applies
+  (see the correction branch in `engine_core/src/lib.rs`): `AxSet` and
+  `NativeRangeSet` can offer an atomic correction; non-atomic
+  SyntheticKeys/Clipboard/ImeCommit/None fields offer nothing (degrade), exactly
+  as replacements do today.
 - **Snapshot/staleness safety:** model the correction as a `Showing` with
   `presentation = Correction` and `correction_range = Some(..)`; every
   TextChanged/CaretMoved bumps `generation`/`snapshot` so a correction can't
@@ -540,6 +543,8 @@ with physical trigger/accept keypresses.
 **Setup-pane cleanup (2026-07-10):** the redundant conditional **Reveal Model
 in Finder** control was removed; the always-visible **Show Models Folder** is
 the single model-location action alongside **Choose Model…** and **Download Model**.
+The `setup-model-picker-look` manual gate must verify exactly one **Show Models
+Folder** control is visible and that **Reveal Model in Finder** is absent.
 
 **Directive: finish macOS first.** The cross-platform adapters (1.1) remain
 environment-gated on Windows/Linux build+test systems. Signed macOS distribution
@@ -562,7 +567,7 @@ per-app configurable.
 |---|---|---|---|
 | 1 | ✅ **DONE (2026-06-30)** — Emoji gendered + skin-tone ZWJ assembly | S–M | Shipped: `with_skin_tone_zwj` splices the Fitzpatrick modifier into the base of the gendered ZWJ sequence (`emoji/src/lib.rs`). 27 tests pass, clippy clean. |
 | 2 | ✅ **DONE (2026-06-30, closed without picker)** — Statistics metric selector (3.3) | S / 0 | Decision taken: keep the existing layout, no `NSPopUpButton`. A single-select picker trades away at-a-glance comparison for an unrequested control. The `StatMetric`/`metric_series` scaffold has since been **removed** (a later ponytail pass cut it — zero references remain in `crates/`). |
-| 3 | 🟢 **CODE-COMPLETE — VISUAL LOOK pending (2026-07-01)** — Apps-pane editing rows (3.1) | M | Core + AppKit shell landed. `editAppPolicy:` checkboxes → `apps_edit` signal → run-loop resolves row→app → `set_app_policy_field` → persist. **LAYOUT BUG found + fixed (2026-07-01, `f5a81c5`):** the geometry-check pass caught a real overlap — each app was laid across 2 lines but rows advanced only 26px, so every row's policy checkboxes rendered *on top of the next app's name* (28 collisions, only visible with 2+ apps; headless "0 panics" validation couldn't see it). Redesigned to a **compact one-line grid** (name + 4 title-less checkbox columns under an `App | On Tab Mid AC` header + tooltips + Delete), all 8 apps fit, zero overlap, pinned by `apps_pane_grid_has_no_overlaps_within_budget` (mutation-verified). **Pre-check also resolved** — `compose_apps_policy_bits` publishes live per-app bits on show, seeded via `refresh_apps_policy_checkbox_states`. **Still needs eyes/fingers (pure visual LOOK):** bare-checkbox column look, name truncation, toggling changes behavior. |
+| 3 | 🟢 **CODE-COMPLETE — VISUAL LOOK pending (2026-07-01)** — Apps-pane editing rows (3.1) | M | Core + AppKit shell landed. `editAppPolicy:` checkboxes → `apps_edit` signal → run-loop resolves row→app → `set_app_policy_field` → persist. **LAYOUT BUG found + fixed (2026-07-01, `f5a81c5`):** the geometry-check pass caught a real overlap — each app was laid across 2 lines but rows advanced only 26px, so every row's policy checkboxes rendered *on top of the next app's name* (28 collisions, only visible with 2+ apps; headless "0 panics" validation couldn't see it). Redesigned to a **compact one-line grid** (name + 5 title-less checkbox columns under an `App | On Tab Mid AC GF` header + tooltips + Delete), all 8 apps fit, zero overlap, pinned by `apps_pane_grid_has_no_overlaps_within_budget` (mutation-verified). **Pre-check also resolved** — `compose_apps_policy_bits` publishes live per-app bits on show, seeded via `refresh_apps_policy_checkbox_states`. **Still needs eyes/fingers (pure visual LOOK):** bare-checkbox column look, name truncation, toggling changes behavior. |
 | 4 | 🟢 **REGISTRATION runtime-validated — FORCE/TOGGLE DISPATCH needs physical keypress (2026-06-30)** — Always-on hotkeys (3.4) | M | Core + FFI shell landed. **Headless LOOK confirmed for the pre-grammar hotkey set (with COMPME_DEBUG, env keys, TextEdit focus):** `global shortcuts configured` parses env correctly; on text-field focus Carbon hotkeys through ids 5/6/7 (keycodes 96/97/98, shift mask) register via `registration_plan`→`register_hotkey`; collision check passes. Hotkeys re-register per arm-cycle. **Accept hotkeys 1–4 are script-validated** by the rebuilt A1b Carbon accept gates; this row now tracks the remaining always-on force/toggle hotkeys only. Grammar hotkeys ids 8/9 are tracked by the grammar LOOK gate and A1b docs/scripts. **Cannot headless-validate force/toggle dispatch yet:** needs a PHYSICAL press of shift+F5/F6/F7 to confirm ForceActivate/ToggleApp/ToggleGlobal reactions. ForceActivate → `Engine::on_force_show` (re-presents held candidate, 3 tests); ToggleApp/Global call real mechanisms. **Deferred:** re-show only works while a suggestion is held (TODO(LOOK) in `engine_core`). |
 | 5 | 🟢 **CODE-COMPLETE — VISUAL LOOK pending (2026-07-01)** — Personalization pane (3.2) | L | Core (live `set_profile` reload) + pane shell landed. New "Personalization" pane (3 knobs) → `personalization_edit` signal → run loop applies + `set_profile` (live) + `persist_setting`. **Headless LOOK confirmed:** Settings window opens with the new pane present (AXTabButton focus events seen), **0 panics**. **Roadmap correction:** MemoryStore is governed by `config.memory.mode`, NOT the profile. **Last code gap closed (2026-07-01, `256eb14`):** the global-instructions input is now a **multi-line wrapping `NSTextField`** (`setUsesSingleLineMode(false)` + word-wrapping cell; Return commits, Option-Return inserts a newline — tested target/action path preserved), field grown to ~5–6 lines with sender/strength rows shifted down. **Still needs eyes/fingers (pure visual LOOK, no code):** pane + multi-line field render/commit correctly; edits visibly re-steer output (the re-steer *path* is already unit-tested via live `set_profile`). |
 | — | Emoji `includeVanillaVariants` (3.5) | — | **Do not schedule.** Hard-blocked on a multi-candidate replacement *display* that does not exist yet. |
@@ -580,12 +585,33 @@ per-app configurable.
    shows wrong text. Plain inserts via SyntheticKeys/Clipboard currently assume
    success (`insert_impl` SyntheticKeys/Clipboard branches,
    `crates/platform_macos/src/lib.rs`); replacements already fail closed.
+4. **Non-atomic replacement support** — decide after the 17-gate macOS pass
+   whether SyntheticKeys/Clipboard fields need explicit backspace-synthesis for
+   emoji/autocorrect/grammar replacements. Default: keep the current fail-closed
+   atomic-only behavior unless the compatibility pass proves it blocks an
+   in-scope macOS app.
 
-### After macOS is complete — longer-term order (unchanged)
+### Current execution order
 
-1. **Tier 1.1** cross-platform adapters — a dedicated milestone of their own
-   (Windows/UIA, Linux/AT-SPI2, GNOME-Wayland IME path).
-2. **Tier 4** — opportunistic live LOOK gates, whenever a macOS GUI session is
-   available.
-3. **Tier 1.2 optional updater** — replace the release-page handoff only with a
-   signature-verifying native updater design.
+1. **Close all 17 Tier-4 macOS manual/live gates** using the current local binary;
+   record each result in `docs/ACCEPTANCE.md`. Prioritize the nine-tab Settings
+   walkthrough, Setup single-location-control invariant, Apps/Personalization,
+   physical hotkeys + grammar fix, Chromium-family caret calibration, and memory
+   privacy residuals.
+2. ✅ **Synchronize plan/support/acceptance docs (2026-07-10)** — this update
+   refreshed the implementation anchor, atomic-replacement wording, Apps/memory
+   status, Setup control invariant, A2 local-only policy, and platform-support
+   matrix. Repeat the sync whenever manual gates close or adapter phases ship.
+3. **Settle non-atomic replacement scope** from that compatibility evidence; do
+   not add backspace synthesis speculatively.
+4. **Windows Phase 1 (1.1–1.7)** — UIA read/caret, keyboard hook, insertion,
+   layered overlay, ShellHost services, and native acceptance on Windows hardware.
+5. **Linux Phase 2 (2.1–2.7), X11-first** — start with the two-day accept-key
+   strategy spike, then AT-SPI2, insertion, overlay, ShellHost, and Xvfb fixtures.
+6. **Wayland Phase 3 decision spike** — compare IME and portal/global-shortcut
+   paths on GNOME, KDE, and sway before committing to an implementation.
+7. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux
+   packaging/signing/publication, and feature-by-platform acceptance/docs after
+   the corresponding adapter is functional.
+8. **Tier 1.2 optional updater** — replace the release-page handoff only with a
+   signature-verifying native updater design; this remains non-blocking.

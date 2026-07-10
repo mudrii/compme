@@ -7,7 +7,16 @@
 are implemented, unit-tested, and reviewed; GUI/permission-bound features remain
 live LOOK/evidence residuals under their §16 acceptance gates (environment-bound,
 like §15 G7 / Task 5c live residuals).
-**Live pending status (re-verified 2026-07-06):** see [`docs/ROADMAP.md`](../../ROADMAP.md). The personalization/settings surface is code-complete for global instructions, sender identity, strength, Apps policy rows, and config-backed per-app/per-domain steering: `field.app` is canonicalized to a real bundle id before inference, `build_personalization` populates per-app/per-domain instruction maps from config keys, and inference passes `request.domain` into `build_preamble`. Remaining LOOK work is visual/physical validation; a GUI editor for per-app/per-domain instruction text remains a future A3 enhancement, not runtime instruction steering.
+**Live pending status (re-verified 2026-07-10):** see
+[`docs/ROADMAP.md`](../../ROADMAP.md). The personalization/settings surface is
+code-complete for global instructions, sender identity, strength, Apps policy
+rows, and config-backed per-app/per-domain steering: `field.app` is canonicalized
+to a real bundle id before inference, `build_personalization` populates
+per-app/per-domain instruction maps from config keys, and inference passes
+`request.domain` into `build_preamble`. Remaining LOOK work is visual/physical
+validation; A2 compatibility evidence is local/manual-only, and a GUI editor for
+per-app/per-domain instruction text remains a future A3 enhancement, not runtime
+instruction steering.
 **Scope:** A2 from the roadmap (`2026-06-03-engine-macos-mvp-design.md` §9) — prompt-based personalization, per-app/per-domain gating, encrypted local memory, context augmentation, multi-candidate, compatibility surfaces. Acceptance gates are in design spec §16.
 
 ## Implemented this cycle (tested + reviewed)
@@ -58,7 +67,7 @@ features, a persisted UI/control surface.
 | Browser mirror-window fallback | ✅ `Engine::set_mirror_mode` — MirrorOnly apps (Firefox/Zen) render the ghost in the floating non-activating mirror window (front-app popup anchor) instead of inline; run loop sets it per focused app's tier; engine test pins it. | live Firefox/Zen confirmation. |
 | Terminal/iTerm AI-agent activation | ✅ `compat::terminal_prompt_activates` (sigil-aware; tested) gates terminals to natural-language prompts before submit. | live tuning vs real agent prompts. |
 | Clipboard context | ✅ `read_pasteboard_text` + run-loop refresh (redacted) into `WorkerContext.clipboard`; `COMPME_CLIPBOARD_CONTEXT` opt-in; `COMPME_DIAG_CONTEXT=1` gate proves a marker reaches the submit path. | — |
-| Compatibility matrix gating | ✅ `compat::compatibility_tier` + unsupported/sidebar gating + onboarding; browser-domain allow/exclude rules are smoke-tested by `run-a2-compat-gates.sh`; release evidence now uses a table-driven 13-row matrix ledger with committed TSV/log artifacts under `tools/acceptance/evidence/a2/` and `COMPME_A2_MATRIX_LEDGER` pointing at the reviewed TSV. | per-app live confirmation across the matrix (script-driven); release-ready evidence must pass every ledger row and `tools/release/check-a2-matrix-ledger.sh`. |
+| Compatibility matrix gating | ✅ `compat::compatibility_tier` + unsupported/sidebar gating + onboarding; browser-domain allow/exclude rules are smoke-tested by `run-a2-compat-gates.sh`; an explicit local/manual pre-release pass can write a table-driven 13-row matrix ledger with committed TSV/log artifacts under `tools/acceptance/evidence/a2/`. Automated CI/tag-release workflows do not consume or validate that ledger. | per-app live confirmation across the matrix (script-driven); manually recorded evidence should pass every ledger row and `tools/release/check-a2-matrix-ledger.sh` locally. |
 
 ## Testing strategy
 Every pure feature is unit-tested (RED→GREEN). FFI is build-verified, and
@@ -69,10 +78,13 @@ live/manual evidence before marking the matching §16 gates closed. Keep
 `cargo fmt --all -- --check`,
 `cargo clippy --locked --workspace --all-targets -- -D warnings`,
 `cargo test --locked --workspace --all-targets -- --test-threads=1`, and
-`cargo build --locked --workspace --all-targets` green. The canonical release
-gate list lives in `docs/ACCEPTANCE.md` and `docs/RELEASING.md`; it includes the
-A2 matrix ledger checker, model-backed release gates, bundle/release helper
-self-tests, agent-brief alignment, and privacy-policy checks.
+`cargo build --locked --workspace --all-targets` green. The canonical automated
+release gate list lives in `docs/ACCEPTANCE.md` and `docs/RELEASING.md`; it
+includes model-backed release gates, bundle/release helper self-tests,
+agent-brief alignment, and privacy-policy checks. A2 validation is a separate
+local/manual pre-release activity: CI, tag releases, and the release-policy
+checker deliberately exclude both `run-a2-compat-gates.sh` and
+`check-a2-matrix-ledger.sh` from execution and generic syntax validation.
 
 ## Parity notes — compme supersets beyond Cotypist
 Cotypist deliberately omits two things compme implements. (a) Candidate/suggestion

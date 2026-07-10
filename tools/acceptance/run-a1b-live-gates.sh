@@ -795,7 +795,7 @@ run_self_tests() {
     '^MANUAL always-on-hotkeys-physical-look: .*force-activate.*per-app toggle.*global toggle.*grammar-check.*physical keypress' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-setup-model-picker-look-checklist" "$dry_run_log" \
-    '^MANUAL setup-model-picker-look: .*Settings > Setup.*model picker.*Download.*license.*dest-exists' \
+    '^MANUAL setup-model-picker-look: .*Settings > Setup.*exactly one Show Models Folder.*no Reveal Model in Finder.*model picker.*Download.*license.*dest-exists' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-nine-tab-settings-walkthrough-checklist" "$dry_run_log" \
     '^MANUAL nine-tab-settings-walkthrough: .*all nine Settings panes.*Setup.*General.*Personalization.*Apps.*Context.*Emoji.*Shortcuts.*Statistics.*About' \
@@ -1094,7 +1094,7 @@ manual_gate "personalization-pane-look" "open Settings > Personalization; edit i
 manual_gate "menu-bar-icon-look" "verify the menu bar icon renders crisply in light/dark appearances, status changes are visible, and the fallback title remains readable when the icon is unavailable"
 manual_gate "shortcuts-recorder-look" "open Settings > Shortcuts; click a recorder box, press a modifier-combo accept key, confirm the resolved chord displays, live rebind works, and the value persists after reopening Settings"
 manual_gate "always-on-hotkeys-physical-look" "with shortcuts configured, press force-activate, per-app toggle, global toggle, and grammar-check as physical keypress hotkeys; confirm each dispatches without reopening Settings and persists across relaunch"
-manual_gate "setup-model-picker-look" "open Settings > Setup; verify model picker rows show fit suffixes, Download uses the selected row, license prompts appear before encumbered fetches, and dest-exists blocks re-fetch"
+manual_gate "setup-model-picker-look" "open Settings > Setup; verify exactly one Show Models Folder control is visible and no Reveal Model in Finder control remains; verify model picker rows show fit suffixes, Download uses the selected row, license prompts appear before encumbered fetches, and dest-exists blocks re-fetch"
 manual_gate "nine-tab-settings-walkthrough" "walk all nine Settings panes: Setup, General, Personalization, Apps, Context, Emoji, Shortcuts, Statistics, and About; verify controls fit, reflect current state, and live-apply where documented"
 manual_gate "caret-marker-chromium-forks-calibration" "on a granted desktop, type in Brave, Edge, and Vivaldi; confirm whether each ghost lands one line low before adding any bundle prefix to RECT_IS_LINE_BUNDLE_PREFIXES"
 manual_gate "caret-marker-chrome-marker" "focus a Google Chrome textarea or content-editable field; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics"
