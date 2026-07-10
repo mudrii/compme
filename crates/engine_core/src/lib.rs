@@ -380,7 +380,7 @@ impl SuggestionMachine {
         // sides are word characters. A caret at a word boundary (after a space,
         // at the start of a word, or at end-of-text) is not mid-word.
         if !self.allow_mid_word {
-            let is_word = |c: char| c.is_alphanumeric() || c == '_';
+            let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '\'' | '’');
             let left_is_word = left.chars().next_back().is_some_and(is_word);
             let right_is_word = self.value[byte_caret..].chars().next().is_some_and(is_word);
             if left_is_word && right_is_word {
@@ -858,8 +858,11 @@ impl SuggestionMachine {
     ) {
         let matches_request =
             self.request_matches(generation, snapshot, field, RequestedKind::GrammarFix);
-        if !matches_request
-            || !self.enabled()
+        if !matches_request {
+            return;
+        }
+        self.requested = None;
+        if !self.enabled()
             || self.suppressed
             || offer.suggestion.is_empty()
             || !self.caps.insert_strategy.supports_atomic_range_replace()
@@ -887,7 +890,6 @@ impl SuggestionMachine {
             correction_range: offer.range,
         });
         self.record_stat(StatEvent::Shown);
-        self.requested = None;
     }
 
     pub fn arm_manual_grammar_request(&mut self, field: &FieldHandle) -> Option<(u64, SnapshotId)> {
@@ -1400,6 +1402,19 @@ mod tests {
         let mut machine = machine().with_trigger_gates(0, false);
         machine.on_event(text_changed("foo_bar", 4, 1000));
         assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+    }
+
+    #[test]
+    fn apostrophes_inside_contractions_count_as_mid_word() {
+        for contraction in ["don't", "don’t"] {
+            let mut machine = machine().with_trigger_gates(0, false);
+            machine.on_event(text_changed(contraction, 4, 1000));
+            assert_eq!(
+                machine.on_event(Event::Tick { now_ms: 2000 }),
+                vec![],
+                "caret after the apostrophe must remain inside {contraction:?}"
+            );
+        }
     }
 
     #[test]
@@ -4564,6 +4579,39 @@ mod tests {
             vec![]
         );
         assert!(completion.preview_accept_correction().is_none());
+    }
+
+    #[test]
+    fn rejected_matching_correction_consumes_the_request() {
+        let f = field("field-a");
+        let range = CorrectionRange { start: 0, end: 3 };
+        let mut machine = focused_machine();
+        let (generation, snapshot) = machine.arm_manual_grammar_request(&f).expect("armed");
+
+        assert_eq!(
+            machine.on_event(Event::CorrectionReady {
+                generation,
+                field: f.clone(),
+                snapshot,
+                original: "teh".into(),
+                suggestion: String::new(),
+                correction_range: range,
+            }),
+            vec![]
+        );
+        assert_eq!(
+            machine.on_event(Event::CorrectionReady {
+                generation,
+                field: f,
+                snapshot,
+                original: "teh".into(),
+                suggestion: "the".into(),
+                correction_range: range,
+            }),
+            vec![],
+            "a matching grammar outcome is single-use even when rejected"
+        );
+        assert!(machine.preview_accept_correction().is_none());
     }
 
     #[test]

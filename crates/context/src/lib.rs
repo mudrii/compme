@@ -130,7 +130,7 @@ pub fn word_at_caret(value: &str, caret: usize) -> Option<WordAtCaret<'_>> {
 }
 
 fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '\''
+    c.is_alphanumeric() || matches!(c, '\'' | '’')
 }
 
 /// Truncate to at most `max` chars on a char boundary, keeping the tail (the
@@ -458,6 +458,17 @@ Recent: green blue\n"
     }
 
     #[test]
+    fn word_at_split_caret_keeps_smart_apostrophe_contractions_whole() {
+        assert_eq!(
+            word_at_split_caret("i’", "m", 2, 32),
+            Some(OwnedWordAtCaret {
+                word: "i’m".into(),
+                range: WordRange { start: 0, end: 3 },
+            })
+        );
+    }
+
+    #[test]
     fn word_at_split_caret_uses_the_producer_scalar_offset_without_rescanning_prefix() {
         assert_eq!(
             word_at_split_caret("te", "h", 10_000, 32),
@@ -528,10 +539,9 @@ Recent: green blue\n"
 
     #[test]
     fn word_at_caret_treats_apostrophe_as_a_word_char() {
-        // is_word_char (lib.rs L69) allows `'` so contractions stay whole: the
+        // is_word_char allows `'` so contractions stay whole: the
         // caret inside "don't" must return the entire "don't", not a fragment
-        // split at the apostrophe. Nothing else pins the `|| c == '\''` arm; drop
-        // it and this word splits to "t"/"don".
+        // split at the apostrophe.
         assert_eq!(
             word_at_caret("don't", 5),
             Some(WordAtCaret {

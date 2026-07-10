@@ -158,7 +158,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1816 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1829 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -188,7 +188,7 @@ cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
 
-bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
+find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
 tools/bundle/check-bundle-metadata.sh
 tools/bundle/check-bundle-metadata.sh --self-test
 tools/bundle/make-app.sh --self-test
@@ -199,8 +199,6 @@ tools/acceptance/missing-model-startup.sh --self-test
 tools/acceptance/missing-model-startup.sh
 tools/acceptance/run-ui-assisted-session.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
-tools/acceptance/run-a2-compat-gates.sh --self-test
-tools/release/check-a2-matrix-ledger.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
 tools/release/check-agent-briefs.sh
@@ -222,7 +220,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1816 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1829 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
@@ -233,19 +231,23 @@ native runners: fmt, clippy, test, and build for `platform_windows` on
 `ubuntu-latest`. Those are CI/release-runner gates rather than local macOS
 commands.
 For release-readiness audits with the local GGUF model installed, also run the
-ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md), the A2
-compatibility matrix ledger check against committed/tracked evidence, and the
-A1b manual checklist. The automated tag workflow validates fresh A2 evidence
-and self-tests the A1b checklist structure; it does **not** claim that the 17
-remaining LOOK/manual gates passed. Record those live results separately and
-keep unresolved gates pending. A release-readiness audit should fail on missing
-A2 rows, skip/fail rows, unsafe or untracked A2 logs, or model-gate policy drift.
+ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md) and the A1b
+manual checklist. The automated tag workflow self-tests the A1b checklist
+structure; it does **not** claim that the 17 remaining LOOK/manual gates passed.
+Record those live results separately and keep unresolved gates pending.
+
+A2 validation is local/manual-only. CI, tag releases, and
+`tools/release/check-model-gates.sh` neither execute nor syntax-check the A2
+runner or ledger checker. For an explicit manual pre-release compatibility pass:
 
 ```sh
-tools/release/check-a2-matrix-ledger.sh "$ledger"
-# For tagged release workflow:
-COMPME_A2_MATRIX_LEDGER="$ledger"
+tools/acceptance/run-a2-compat-gates.sh --self-test
+tools/release/check-a2-matrix-ledger.sh --self-test
 ```
+
+Continue with [the A2 manual procedure](ACCEPTANCE.md#a2-compatibility-and-context-smoke-gates-localmanual-only),
+which defines the required target mapping, evidence directory, `ledger`
+assignment, matrix run, and local ledger validation.
 
 For macOS adapter work, also run the live acceptance harness when the GUI state
 is available:

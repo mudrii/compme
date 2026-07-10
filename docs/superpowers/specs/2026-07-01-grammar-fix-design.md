@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1816 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1829 tests green).
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI
@@ -443,7 +443,7 @@ range bounds and range replacement, not just the existing left-of-caret
 - `cargo test --locked --workspace --all-targets -- --test-threads=1`
 - `cargo build --locked --workspace --all-targets`
 - `cargo build --locked -p platform_macos --examples`
-- `bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh`
+- `find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n`
 - `tools/bundle/check-bundle-metadata.sh`
 - `tools/bundle/check-bundle-metadata.sh --self-test`
 - `tools/bundle/make-app.sh --self-test`
@@ -454,8 +454,6 @@ range bounds and range replacement, not just the existing left-of-caret
 - `tools/acceptance/missing-model-startup.sh`
 - `tools/acceptance/run-ui-assisted-session.sh --self-test`
 - `tools/acceptance/run-a1b-live-gates.sh --self-test`
-- `tools/acceptance/run-a2-compat-gates.sh --self-test`
-- `tools/release/check-a2-matrix-ledger.sh --self-test`
 - `tools/release/check-model-client-features.sh`
 - `tools/release/check-model-client-features.sh --self-test`
 - `tools/release/check-agent-briefs.sh`
@@ -475,6 +473,10 @@ range bounds and range replacement, not just the existing left-of-caret
 - `cd tools/spike && cargo test --locked`
 - `cd tools/spike && cargo build --locked --bins`
 - `cd tools/spike && COMPME_SPIKE_MODEL_PATH="$PWD/models/qwen2.5-0.5b-q4_k_m.gguf" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1`
+
+A2 compatibility validation is a separate local/manual pre-release activity;
+the automated command set above deliberately excludes
+`run-a2-compat-gates.sh` and `check-a2-matrix-ledger.sh`.
 
 ## Definition of done (macOS reference)
 Code-complete criteria are met: G1–G5 landed, the validation command set above is

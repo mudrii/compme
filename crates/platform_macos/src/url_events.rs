@@ -21,6 +21,25 @@ const GURL: u32 = 0x4755_524C;
 /// `keyDirectObject` == '----'.
 const KEY_DIRECT_OBJECT: u32 = 0x2D2D_2D2D;
 
+/// Decode and dispatch one `kAEGetURL` event.
+///
+/// Returns `true` when the event carried a string direct object. Callback
+/// panics are contained so they cannot unwind through the Objective-C event
+/// manager boundary.
+pub fn dispatch_gurl_event(event: &NSAppleEventDescriptor, on_url: &UrlCallback) -> bool {
+    let Some(url) = event
+        .paramDescriptorForKeyword(KEY_DIRECT_OBJECT)
+        .and_then(|direct| direct.stringValue())
+    else {
+        return false;
+    };
+    let url = url.to_string();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        on_url(url);
+    }));
+    true
+}
+
 struct UrlTargetIvars {
     on_url: Arc<UrlCallback>,
 }
@@ -42,21 +61,7 @@ define_class!(
             event: &NSAppleEventDescriptor,
             _reply: Option<&NSAppleEventDescriptor>,
         ) {
-            if let Some(url) = event
-                .paramDescriptorForKeyword(KEY_DIRECT_OBJECT)
-                .and_then(|direct| direct.stringValue())
-            {
-                // objc2→Rust FFI boundary: a panic unwinding into the objc
-                // `handleGetURL:withReplyEvent:` dispatch is UB-adjacent
-                // (objc2 0.6.4 turns it into abort()). Shield the injected
-                // callback, matching the catch_unwind convention every other
-                // FFI entry in lib.rs uses.
-                let on_url = Arc::clone(&self.ivars().on_url);
-                let url = url.to_string();
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    on_url(url);
-                }));
-            }
+            dispatch_gurl_event(event, self.ivars().on_url.as_ref());
         }
     }
 );
@@ -94,4 +99,56 @@ pub fn install_url_event_handler(
             );
     }
     Ok(UrlEventHandler { _target: target })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use objc2_foundation::NSString;
+    use std::sync::Mutex;
+
+    fn event_with_url(url: Option<&str>) -> Retained<NSAppleEventDescriptor> {
+        let event = NSAppleEventDescriptor::recordDescriptor();
+        if let Some(url) = url {
+            let direct = NSAppleEventDescriptor::descriptorWithString(&NSString::from_str(url));
+            event.setParamDescriptor_forKeyword(&direct, KEY_DIRECT_OBJECT);
+        }
+        event
+    }
+
+    #[test]
+    fn gurl_event_delivers_the_exact_unicode_url() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let callback_received = Arc::clone(&received);
+        let callback = move |url| callback_received.lock().unwrap().push(url);
+        let event = event_with_url(Some("compme://setOverride?app=文本&enabled=true"));
+
+        assert!(dispatch_gurl_event(&event, &callback));
+        assert_eq!(
+            *received.lock().unwrap(),
+            ["compme://setOverride?app=文本&enabled=true"]
+        );
+    }
+
+    #[test]
+    fn gurl_event_without_a_string_direct_object_is_ignored() {
+        let called = Arc::new(Mutex::new(false));
+        let callback_called = Arc::clone(&called);
+        let callback = move |_| *callback_called.lock().unwrap() = true;
+        let event = event_with_url(None);
+
+        assert!(!dispatch_gurl_event(&event, &callback));
+        assert!(!*called.lock().unwrap());
+    }
+
+    #[test]
+    fn gurl_callback_panic_is_contained_at_the_event_boundary() {
+        let event = event_with_url(Some("compme://setOverride?enabled=true"));
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_gurl_event(&event, &|_| panic!("callback panic"))
+        }));
+
+        assert!(matches!(outcome, Ok(true)));
+    }
 }

@@ -22,7 +22,15 @@ use platform::PlatformError;
 /// Public tray actions that cross the AppKit target/action seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrayAction {
+    ToggleEnabled,
+    OpenAccessibilitySettings,
+    Quit,
+    DisableGlobal(DisableArm),
+    Snooze,
+    OpenSettingsWindow,
     CheckUpdates,
+    ToggleCollection,
+    DisableApp(DisableArm),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,9 +46,55 @@ pub fn tray_menu_action_specs() -> &'static [TrayMenuActionSpec] {
     }]
 }
 
+/// Apply a user-selected tray action to the state shared with the run loop.
+///
+/// Keeping this mapping declarative makes the target/action shell thin: AppKit
+/// selectors only identify an action, while this function owns its observable
+/// meaning.
+pub fn apply_tray_action(flags: &TrayFlags, action: TrayAction) {
+    match action {
+        TrayAction::ToggleEnabled => {
+            let enabled = &flags.enabled;
+            enabled.store(!enabled.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        TrayAction::OpenAccessibilitySettings => {
+            flags.open_settings.store(true, Ordering::Relaxed);
+        }
+        TrayAction::Quit => flags.quit.store(true, Ordering::Relaxed),
+        TrayAction::DisableGlobal(arm) => {
+            *flags
+                .global_disable
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(arm);
+        }
+        TrayAction::Snooze => flags.snooze_requested.store(true, Ordering::Relaxed),
+        TrayAction::OpenSettingsWindow => flags.open_settings_window.store(true, Ordering::Relaxed),
+        TrayAction::CheckUpdates => flags.check_updates.store(true, Ordering::Relaxed),
+        TrayAction::ToggleCollection => flags.collection_toggle.store(true, Ordering::Relaxed),
+        TrayAction::DisableApp(arm) => {
+            *flags
+                .app_disable
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(arm);
+        }
+    }
+}
+
 fn tray_action_selector(action: TrayAction) -> Sel {
     match action {
+        TrayAction::ToggleEnabled => sel!(toggleEnabled:),
+        TrayAction::OpenAccessibilitySettings => sel!(openSettings:),
+        TrayAction::Quit => sel!(requestQuit:),
+        TrayAction::DisableGlobal(DisableArm::Hour) => sel!(disableGlobalHour:),
+        TrayAction::DisableGlobal(DisableArm::UntilRelaunch) => sel!(disableGlobalRelaunch:),
+        TrayAction::DisableGlobal(DisableArm::Always) => sel!(disableGlobalAlways:),
+        TrayAction::Snooze => sel!(requestSnooze:),
+        TrayAction::OpenSettingsWindow => sel!(openSettingsWindow:),
         TrayAction::CheckUpdates => sel!(checkUpdates:),
+        TrayAction::ToggleCollection => sel!(toggleCollection:),
+        TrayAction::DisableApp(DisableArm::Hour) => sel!(disableAppHour:),
+        TrayAction::DisableApp(DisableArm::UntilRelaunch) => sel!(disableAppRelaunch:),
+        TrayAction::DisableApp(DisableArm::Always) => sel!(disableAppAlways:),
     }
 }
 
@@ -64,69 +118,88 @@ define_class!(
         // that reads the flags, so Relaxed ordering is sufficient.
         #[unsafe(method(toggleEnabled:))]
         fn toggle_enabled(&self, _sender: Option<&AnyObject>) {
-            let enabled = &self.ivars().flags.enabled;
-            let now = enabled.load(Ordering::Relaxed);
-            enabled.store(!now, Ordering::Relaxed);
+            apply_tray_action(&self.ivars().flags, TrayAction::ToggleEnabled);
         }
 
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
-            self.ivars().flags.open_settings.store(true, Ordering::Relaxed);
+            apply_tray_action(
+                &self.ivars().flags,
+                TrayAction::OpenAccessibilitySettings,
+            );
         }
 
         #[unsafe(method(requestQuit:))]
         fn request_quit(&self, _sender: Option<&AnyObject>) {
-            self.ivars().flags.quit.store(true, Ordering::Relaxed);
+            apply_tray_action(&self.ivars().flags, TrayAction::Quit);
         }
 
         #[unsafe(method(disableGlobalHour:))]
         fn disable_global_hour(&self, _sender: Option<&AnyObject>) {
-            *self.ivars().flags.global_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::Hour);
+            apply_tray_action(
+                &self.ivars().flags,
+                TrayAction::DisableGlobal(DisableArm::Hour),
+            );
         }
 
         #[unsafe(method(disableGlobalRelaunch:))]
         fn disable_global_relaunch(&self, _sender: Option<&AnyObject>) {
-            *self.ivars().flags.global_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::UntilRelaunch);
+            apply_tray_action(
+                &self.ivars().flags,
+                TrayAction::DisableGlobal(DisableArm::UntilRelaunch),
+            );
         }
 
         #[unsafe(method(disableGlobalAlways:))]
         fn disable_global_always(&self, _sender: Option<&AnyObject>) {
-            *self.ivars().flags.global_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::Always);
+            apply_tray_action(
+                &self.ivars().flags,
+                TrayAction::DisableGlobal(DisableArm::Always),
+            );
         }
 
         #[unsafe(method(requestSnooze:))]
         fn request_snooze(&self, _sender: Option<&AnyObject>) {
-            self.ivars().flags.snooze_requested.store(true, Ordering::Relaxed);
+            apply_tray_action(&self.ivars().flags, TrayAction::Snooze);
         }
 
         #[unsafe(method(openSettingsWindow:))]
         fn open_settings_window(&self, _sender: Option<&AnyObject>) {
-            self.ivars().flags.open_settings_window.store(true, Ordering::Relaxed);
+            apply_tray_action(&self.ivars().flags, TrayAction::OpenSettingsWindow);
         }
 
         #[unsafe(method(checkUpdates:))]
         fn check_updates(&self, _sender: Option<&AnyObject>) {
-            self.ivars().flags.check_updates.store(true, Ordering::Relaxed);
+            apply_tray_action(&self.ivars().flags, TrayAction::CheckUpdates);
         }
 
         #[unsafe(method(toggleCollection:))]
         fn toggle_collection(&self, _sender: Option<&AnyObject>) {
-            self.ivars().flags.collection_toggle.store(true, Ordering::Relaxed);
+            apply_tray_action(&self.ivars().flags, TrayAction::ToggleCollection);
         }
 
         #[unsafe(method(disableAppHour:))]
         fn disable_app_hour(&self, _sender: Option<&AnyObject>) {
-            *self.ivars().flags.app_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::Hour);
+            apply_tray_action(
+                &self.ivars().flags,
+                TrayAction::DisableApp(DisableArm::Hour),
+            );
         }
 
         #[unsafe(method(disableAppRelaunch:))]
         fn disable_app_relaunch(&self, _sender: Option<&AnyObject>) {
-            *self.ivars().flags.app_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::UntilRelaunch);
+            apply_tray_action(
+                &self.ivars().flags,
+                TrayAction::DisableApp(DisableArm::UntilRelaunch),
+            );
         }
 
         #[unsafe(method(disableAppAlways:))]
         fn disable_app_always(&self, _sender: Option<&AnyObject>) {
-            *self.ivars().flags.app_disable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DisableArm::Always);
+            apply_tray_action(
+                &self.ivars().flags,
+                TrayAction::DisableApp(DisableArm::Always),
+            );
         }
     }
 );
@@ -403,6 +476,106 @@ fn tray_button_title(button_title_fallback: bool, status_title: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    fn tray_flags() -> TrayFlags {
+        TrayFlags {
+            enabled: Arc::new(AtomicBool::new(false)),
+            quit: Arc::new(AtomicBool::new(false)),
+            open_settings: Arc::new(AtomicBool::new(false)),
+            snooze_requested: Arc::new(AtomicBool::new(false)),
+            global_disable: Arc::new(Mutex::new(None)),
+            open_settings_window: Arc::new(AtomicBool::new(false)),
+            check_updates: Arc::new(AtomicBool::new(false)),
+            collection_toggle: Arc::new(AtomicBool::new(false)),
+            app_disable: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct TrayState {
+        enabled: bool,
+        quit: bool,
+        open_settings: bool,
+        snooze_requested: bool,
+        global_disable: Option<DisableArm>,
+        open_settings_window: bool,
+        check_updates: bool,
+        collection_toggle: bool,
+        app_disable: Option<DisableArm>,
+    }
+
+    fn state(flags: &TrayFlags) -> TrayState {
+        TrayState {
+            enabled: flags.enabled.load(Ordering::Relaxed),
+            quit: flags.quit.load(Ordering::Relaxed),
+            open_settings: flags.open_settings.load(Ordering::Relaxed),
+            snooze_requested: flags.snooze_requested.load(Ordering::Relaxed),
+            global_disable: *flags
+                .global_disable
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            open_settings_window: flags.open_settings_window.load(Ordering::Relaxed),
+            check_updates: flags.check_updates.load(Ordering::Relaxed),
+            collection_toggle: flags.collection_toggle.load(Ordering::Relaxed),
+            app_disable: *flags
+                .app_disable
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        }
+    }
+
+    #[test]
+    fn every_tray_action_changes_only_its_public_flag() {
+        macro_rules! assert_action {
+            ($action:expr, $field:ident = $value:expr) => {{
+                let action = $action;
+                let flags = tray_flags();
+                apply_tray_action(&flags, action);
+                assert_eq!(
+                    state(&flags),
+                    TrayState {
+                        $field: $value,
+                        ..TrayState::default()
+                    },
+                    "{action:?}"
+                );
+            }};
+        }
+
+        assert_action!(TrayAction::ToggleEnabled, enabled = true);
+        assert_action!(TrayAction::OpenAccessibilitySettings, open_settings = true);
+        assert_action!(TrayAction::Quit, quit = true);
+        assert_action!(
+            TrayAction::DisableGlobal(DisableArm::Hour),
+            global_disable = Some(DisableArm::Hour)
+        );
+        assert_action!(
+            TrayAction::DisableGlobal(DisableArm::UntilRelaunch),
+            global_disable = Some(DisableArm::UntilRelaunch)
+        );
+        assert_action!(
+            TrayAction::DisableGlobal(DisableArm::Always),
+            global_disable = Some(DisableArm::Always)
+        );
+        assert_action!(TrayAction::Snooze, snooze_requested = true);
+        assert_action!(TrayAction::OpenSettingsWindow, open_settings_window = true);
+        assert_action!(TrayAction::CheckUpdates, check_updates = true);
+        assert_action!(TrayAction::ToggleCollection, collection_toggle = true);
+        assert_action!(
+            TrayAction::DisableApp(DisableArm::Hour),
+            app_disable = Some(DisableArm::Hour)
+        );
+        assert_action!(
+            TrayAction::DisableApp(DisableArm::UntilRelaunch),
+            app_disable = Some(DisableArm::UntilRelaunch)
+        );
+        assert_action!(
+            TrayAction::DisableApp(DisableArm::Always),
+            app_disable = Some(DisableArm::Always)
+        );
+    }
 
     #[test]
     fn tray_button_title_uses_status_text_only_when_icon_is_unavailable() {

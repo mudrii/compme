@@ -35,7 +35,11 @@ if [ "${COMPME_BUNDLE_SMOKE_APP_DUPLICATE:-0}" = 1 ]; then
   echo 'compme: another instance is already running — exiting' >&2
   exit 0
 fi
-printf 'compme: running (acceptance_pid=None stub=true run_ms=Some(%s))\n' "${COMPME_RUN_MS:-}" >&2
+acceptance_pid=None
+if [ -n "${COMPME_ACCEPTANCE_PID:-}" ]; then
+  acceptance_pid="Some(${COMPME_ACCEPTANCE_PID})"
+fi
+printf 'compme: running (acceptance_pid=%s stub=true run_ms=Some(%s))\n' "$acceptance_pid" "${COMPME_RUN_MS:-}" >&2
 exit "${COMPME_BUNDLE_SMOKE_APP_EXIT:-0}"
 APP
 chmod +x "$app/Contents/MacOS/compme"
@@ -50,6 +54,16 @@ SH
     "$0" "$tmp_dir/out" >"$tmp_dir/stdout"
   grep -Fq "make-app $tmp_dir/out" "$log"
   grep -Eq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= smoke COMPME_CONFIG=.+ args=" "$log"
+
+  hostile_log="$tmp_dir/hostile.log"
+  if ! COMPME_ACCEPTANCE_PID=444 \
+    COMPME_BUNDLE_SMOKE_REPO_ROOT="$fake_repo" \
+    COMPME_BUNDLE_SMOKE_MAKE_APP="$fake_make_app" \
+    COMPME_BUNDLE_SMOKE_SELF_TEST_LOG="$hostile_log" \
+    "$0" "$tmp_dir/hostile-out" >"$tmp_dir/stdout-hostile" 2>"$tmp_dir/stderr-hostile"; then
+    echo "bundle smoke self-test failed: hostile product environment leaked into app" >&2
+    return 1
+  fi
 
   custom_log="$tmp_dir/custom.log"
   COMPME_RUN_MS=77 \
@@ -138,12 +152,26 @@ cleanup_runtime() {
 trap cleanup_runtime EXIT
 
 run_ms="${COMPME_RUN_MS:-1500}"
+app_env=(
+  env -i
+  "PATH=${PATH:-/usr/bin:/bin}"
+  "HOME=${HOME:-$runtime_dir}"
+  "TMPDIR=${TMPDIR:-/tmp}"
+  "COMPME_CONFIG=$runtime_dir/config.env"
+  "COMPME_RUN_MS=$run_ms"
+  "COMPME_STUB_COMPLETION=${COMPME_STUB_COMPLETION:- smoke}"
+)
+for self_test_var in \
+  COMPME_BUNDLE_SMOKE_SELF_TEST_LOG \
+  COMPME_BUNDLE_SMOKE_APP_EXIT \
+  COMPME_BUNDLE_SMOKE_APP_DUPLICATE; do
+  if [[ "${!self_test_var+x}" == x ]]; then
+    app_env+=("$self_test_var=${!self_test_var}")
+  fi
+done
 status=0
 output="$(
-  COMPME_CONFIG="$runtime_dir/config.env" \
-    COMPME_RUN_MS="$run_ms" \
-    COMPME_STUB_COMPLETION="${COMPME_STUB_COMPLETION:- smoke}" \
-    "$app_bin" 2>&1
+  "${app_env[@]}" "$app_bin" 2>&1
 )" || status=$?
 printf '%s\n' "$output"
 if [[ "$status" -ne 0 ]]; then

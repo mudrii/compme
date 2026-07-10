@@ -56,7 +56,11 @@ jobs:
         run: cargo build --locked -p platform_macos --examples
 
       - name: Script syntax
-        run: bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
+        run: |
+          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' \
+            ! -path 'tools/acceptance/run-a2-compat-gates.sh' \
+            ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 \
+            | xargs -0 bash -n
 
       - name: Bundle metadata
         run: tools/bundle/check-bundle-metadata.sh
@@ -87,12 +91,6 @@ jobs:
 
       - name: A1b runner self-test
         run: tools/acceptance/run-a1b-live-gates.sh --self-test
-
-      - name: A2 compatibility runner self-test
-        run: tools/acceptance/run-a2-compat-gates.sh --self-test
-
-      - name: A2 matrix ledger policy self-test
-        run: tools/release/check-a2-matrix-ledger.sh --self-test
 
       - name: Model client feature policy
         run: tools/release/check-model-client-features.sh

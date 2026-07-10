@@ -18,9 +18,20 @@ usage() {
 
 validate_version() {
   local version="$1"
+  local identifier
+  local -a prerelease_identifiers
   if [[ ! "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]; then
     echo "invalid version: $version" >&2
     return 1
+  fi
+  if [[ "$version" == *-* ]]; then
+    IFS=. read -r -a prerelease_identifiers <<<"${version#*-}"
+    for identifier in "${prerelease_identifiers[@]}"; do
+      if [[ "$identifier" =~ ^[0-9]+$ && "$identifier" == 0* && "$identifier" != "0" ]]; then
+        echo "invalid version: $version" >&2
+        return 1
+      fi
+    done
   fi
 }
 
@@ -99,6 +110,13 @@ CASK
     return 1
   fi
   grep -q 'invalid version: 9.8.7+build' "$tmp/build-metadata.err"
+  leading_zero_artifact="$tmp/compme-9.8.7-rc.01-macos.zip"
+  printf 'invalid prerelease artifact\n' >"$leading_zero_artifact"
+  if COMPME_CASK_PATH="$fixture" COMPME_CASK_ARTIFACT="$leading_zero_artifact" "$0" v9.8.7-rc.01 >"$tmp/leading-zero-prerelease.out" 2>"$tmp/leading-zero-prerelease.err"; then
+    echo "numeric prerelease identifier with a leading zero unexpectedly passed" >&2
+    return 1
+  fi
+  grep -q 'invalid version: 9.8.7-rc.01' "$tmp/leading-zero-prerelease.err"
 
   mismatched_artifact="$tmp/compme-0.9.9-macos.zip"
   printf 'old artifact\n' >"$mismatched_artifact"

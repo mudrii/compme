@@ -6018,7 +6018,7 @@ pub fn run() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
     struct ShortcutBindingsGuard(crate::shell::ShortcutBindings);
@@ -8417,6 +8417,58 @@ mod tests {
     }
 
     #[test]
+    fn only_a_verified_signed_deep_link_reaches_confirmation_and_mutates_prefs() {
+        // RFC 8032-compatible deterministic fixture: private seed [7; 32].
+        // Keeping the public key, payload, and signature as literals makes the
+        // expected trust decision independent of the production signer/parser.
+        let trusted = webconfig::TrustedKey::from_hex(
+            "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        )
+        .expect("fixture public key");
+        let signed = concat!(
+            "compme://setOverride?app=com.apple.TextEdit&excluded=true",
+            "&sig=721848ed25850b98440cdb91f5077077b8f1077446be885c3b8c6b3c3a2a986f",
+            "8884b34489c675afdc344af112d58251f8df40098903d97a861605baa667a005",
+        );
+        let mut prefs = Prefs::default();
+        let confirmations = RefCell::new(Vec::new());
+
+        let summary = handle_deep_link(signed, Some(&trusted), &mut prefs, |decision| {
+            confirmations.borrow_mut().push(decision.clone());
+            true
+        })
+        .expect("a valid signed link should reach host confirmation and apply");
+
+        assert_eq!(
+            confirmations.into_inner(),
+            vec![webconfig::PromptDecision {
+                scope: "com.apple.TextEdit".to_string(),
+                action: "Exclude".to_string(),
+                trust: "signed link, verified".to_string(),
+            }],
+        );
+        assert!(summary.contains("Signed link"), "{summary}");
+        assert!(prefs.excluded_apps.contains("com.apple.TextEdit"));
+
+        // Changing the signed scope without resigning must fail before the host
+        // prompts or mutates the already-established policy.
+        let before = prefs.clone();
+        let tampered = signed.replace("com.apple.TextEdit", "com.apple.Mail");
+        let prompted = Cell::new(false);
+        let err = handle_deep_link(&tampered, Some(&trusted), &mut prefs, |_| {
+            prompted.set(true);
+            true
+        })
+        .expect_err("tampered payload must fail closed");
+        assert_eq!(err, "signature verification failed");
+        assert!(
+            !prompted.get(),
+            "unverified payload must not reach confirmation"
+        );
+        assert_eq!(prefs, before, "unverified payload must not mutate policy");
+    }
+
+    #[test]
     fn accept_key_config_parses_keycodes_and_rejects_junk() {
         // Raw macOS virtual keycodes (the future shortcuts-pane recorder
         // emits keycodes too); junk → None → default bindings.
@@ -8562,6 +8614,86 @@ mod tests {
             0
         )
         .is_some());
+    }
+
+    #[test]
+    fn per_app_thesaurus_override_survives_persistence_and_gates_the_offer() {
+        let configured = Config::from_lookup(lookup(&[
+            ("COMPME_THESAURUS", "0"),
+            (
+                "COMPME_THESAURUS_ON_APPS",
+                "com.example.writer,com.example.conflict",
+            ),
+            ("COMPME_THESAURUS_OFF_APPS", "com.example.conflict"),
+        ]));
+        let dir = std::env::temp_dir().join(format!(
+            "compme-per-app-thesaurus-persist-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.env");
+
+        // Any prefs persistence edge rewrites every per-app policy category.
+        // The config-only thesaurus override must survive that rewrite too.
+        persist_web_override_prefs(&path, &configured.prefs);
+        let map = config::load_file_map(&path);
+        let reloaded = Config::from_lookup(|key| {
+            (key == "COMPME_THESAURUS")
+                .then(|| "0".to_string())
+                .or_else(|| map.get(key).cloned())
+        });
+
+        assert_eq!(
+            replacement_decision(
+                "happy",
+                &reloaded,
+                &reloaded.prefs,
+                Some("com.example.writer"),
+                None,
+                true,
+                0,
+            ),
+            Some((
+                vec![
+                    "glad".to_string(),
+                    "joyful".to_string(),
+                    "cheerful".to_string(),
+                    "content".to_string(),
+                    "pleased".to_string(),
+                    "delighted".to_string(),
+                ],
+                5,
+            )),
+            "the opted-in app should get the observable synonym candidates",
+        );
+        assert_eq!(
+            replacement_decision(
+                "happy",
+                &reloaded,
+                &reloaded.prefs,
+                Some("com.example.other"),
+                None,
+                true,
+                0,
+            ),
+            None,
+            "an unconfigured app should inherit the global off state",
+        );
+        assert_eq!(
+            replacement_decision(
+                "happy",
+                &reloaded,
+                &reloaded.prefs,
+                Some("com.example.conflict"),
+                None,
+                true,
+                0,
+            ),
+            None,
+            "the explicit per-app off list should win a conflicting on entry",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

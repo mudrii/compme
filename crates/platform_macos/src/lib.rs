@@ -75,9 +75,11 @@ pub use settings_window::{
     record_decision, MacosSettingsWindow, RecordDecision, RecorderRole,
 };
 pub use shell_host::MacosShellHost;
-pub use tray::{DisableArm, MacosTray, TrayFlags};
-pub use ui_prompt::confirm_prompt;
-pub use url_events::{install_url_event_handler, UrlEventHandler};
+pub use tray::{apply_tray_action, DisableArm, MacosTray, TrayAction, TrayFlags};
+pub use ui_prompt::{
+    confirm_prompt, confirmation_button_titles, confirmation_response_is_explicit,
+};
+pub use url_events::{dispatch_gurl_event, install_url_event_handler, UrlEventHandler};
 
 const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.05;
 const AX_WORKER_PUMP_INTERVAL: Duration = Duration::from_millis(5);
@@ -12305,6 +12307,7 @@ mod tests {
         );
 
         assert_eq!(context.left, "Hi 😀");
+        assert_eq!(context.left_scalars, 4);
         assert_eq!(context.right, " there");
         assert_eq!(context.selection, None);
         assert_eq!(context.caret, 5);
@@ -12327,6 +12330,7 @@ mod tests {
         );
 
         assert_eq!(context.left, "Hello ");
+        assert_eq!(context.left_scalars, 6);
         assert_eq!(context.right, "");
         assert_eq!(context.selection, Some(TextRange { start: 6, end: 11 }));
         assert_eq!(context.caret, 6);
@@ -12346,6 +12350,7 @@ mod tests {
         );
 
         assert_eq!(context.left, "abc");
+        assert_eq!(context.left_scalars, 3);
         assert_eq!(context.right, "");
         assert_eq!(context.selection, None);
         assert_eq!(context.caret, 3);

@@ -54,11 +54,10 @@ pub fn next_word(text: &str) -> (String, String) {
 /// only counts when followed by whitespace or end-of-text, so `3.14` and `e.g.`
 /// are not mistaken for sentence ends.
 pub fn truncate_at_sentence_end(text: &str) -> &str {
-    let bytes = text.as_bytes();
     for (index, ch) in text.char_indices() {
         if matches!(ch, '.' | '!' | '?') {
-            let next = bytes.get(index + ch.len_utf8());
-            if next.is_none_or(|b| b.is_ascii_whitespace()) {
+            let next = text[index + ch.len_utf8()..].chars().next();
+            if next.is_none_or(char::is_whitespace) {
                 if ch == '.' && is_common_abbreviation_period(text, index) {
                     continue;
                 }
@@ -113,7 +112,7 @@ pub fn strip_suffix_overlap(candidate: &str, right: &str) -> String {
 /// times (`the the the`, `go home go home go home`) — a classic small-model
 /// degenerate loop that should be dropped rather than shown.
 pub fn is_degenerate_repetition(text: &str) -> bool {
-    let words: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
     let len = words.len();
     if len < 3 {
         return false;
@@ -478,12 +477,14 @@ mod tests {
 
     #[test]
     fn truncate_at_sentence_end_keeps_terminator_followed_by_multibyte_char() {
-        // The `next` byte after the terminator is the first byte of a multibyte
-        // scalar (`世`, 0xE4), which is not ASCII whitespace, so the terminator
-        // is NOT a sentence end and the text is kept whole. Pins the non-ASCII
-        // branch of the `is_ascii_whitespace` check (only ASCII space + decimals
-        // were pinned before).
+        // The scalar after the terminator (`世`) is not whitespace, so the
+        // terminator is NOT a sentence end and the text is kept whole.
         assert_eq!(truncate_at_sentence_end("Done.世界"), "Done.世界");
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_cuts_before_unicode_whitespace() {
+        assert_eq!(truncate_at_sentence_end("Done.\u{00a0}More"), "Done.");
     }
 
     #[test]
@@ -588,6 +589,11 @@ mod tests {
     #[test]
     fn is_degenerate_repetition_flags_single_word_loop() {
         assert!(is_degenerate_repetition("the the the"));
+    }
+
+    #[test]
+    fn is_degenerate_repetition_flags_case_varied_loop() {
+        assert!(is_degenerate_repetition("Go go GO"));
     }
 
     #[test]

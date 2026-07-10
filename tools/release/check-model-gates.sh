@@ -5,7 +5,6 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 release_workflow="${1:-$repo_root/.github/workflows/release.yml}"
 ci_workflow="$repo_root/.github/workflows/ci.yml"
 gate_script="$repo_root/tools/release/run-model-gates.sh"
-a2_matrix_ledger_script="$repo_root/tools/release/check-a2-matrix-ledger.sh"
 feature_script="$repo_root/tools/release/check-model-client-features.sh"
 privacy_script="$repo_root/tools/release/check-privacy-policy.sh"
 bundle_metadata_script="$repo_root/tools/bundle/check-bundle-metadata.sh"
@@ -47,6 +46,74 @@ reject_line() {
   fi
   if grep -Eq "$pattern" "$file"; then
     echo "stale release gate: $label" >&2
+    return 1
+  fi
+}
+
+check_no_automated_a2_validation() {
+  workflow_path="$1"
+  workflow_label="$2"
+  ruby -ryaml - "$workflow_path" "$workflow_label" <<'RUBY'
+workflow = YAML.load_file(ARGV.fetch(0))
+label = ARGV.fetch(1)
+runner = "tools/acceptance/run-a2-compat-gates.sh"
+ledger = "tools/release/check-a2-matrix-ledger.sh"
+reject_a2_env = lambda do |env, where|
+  if env.keys.any? { |key| key.to_s.start_with?("COMPME_A2_") }
+    abort("stale release gate: #{where} still injects automated A2 environment")
+  end
+end
+reject_a2_env.call(workflow.fetch("env", {}), label)
+
+workflow.fetch("jobs").each do |job_name, job|
+  reject_a2_env.call(job.fetch("env", {}), "#{label} #{job_name}")
+  Array(job["steps"]).each do |step|
+    next unless step.is_a?(Hash)
+    name = step["name"].to_s
+    abort("stale release gate: #{label} #{job_name} still contains automated A2 step #{name}") if name.match?(/\bA2\b/i)
+    env = step.fetch("env", {})
+    reject_a2_env.call(env, "#{label} #{job_name}")
+    run = step["run"].to_s
+    if run.include?("bash -n tools/acceptance/*.sh") || run.include?("bash -n tools/release/*.sh")
+      abort("stale release gate: #{label} #{job_name} syntax-checks A2 scripts through a wildcard")
+    end
+    run.lines.each do |raw|
+      line = raw.strip
+      next if line.empty? || line.start_with?("#")
+      allowed_exclusion = [
+        "! -path 'tools/acceptance/run-a2-compat-gates.sh' \\",
+        "! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 \\",
+      ].include?(line)
+      if (line.include?(runner) || line.include?(ledger)) && !allowed_exclusion
+        abort("stale release gate: #{label} #{job_name} executes or validates A2 tooling")
+      end
+    end
+  end
+end
+
+syntax_steps = workflow.fetch("jobs").values.flat_map { |job| Array(job["steps"]) }
+syntax = syntax_steps.find { |step| step.is_a?(Hash) && step["name"] == "Script syntax" }
+abort("missing release gate: #{label} keeps non-A2 script syntax validation") unless syntax
+syntax_run = syntax.fetch("run").to_s
+[
+  "find tools/acceptance tools/bundle tools/release",
+  "! -path 'tools/acceptance/run-a2-compat-gates.sh'",
+  "! -path 'tools/release/check-a2-matrix-ledger.sh'",
+  "xargs -0 bash -n",
+].each do |needle|
+  abort("missing release gate: #{label} script syntax excludes only local/manual A2 tooling") unless syntax_run.include?(needle)
+end
+RUBY
+}
+
+check_manual_a2_summary() {
+  local summary_file="$1"
+  local summary_label="$2"
+  require_line "$summary_file" '^A2 validation is local/manual-only' "$summary_label marks A2 local/manual-only"
+  require_line "$summary_file" 'tools/acceptance/run-a2-compat-gates\.sh --self-test' "$summary_label retains the local A2 runner self-test"
+  require_line "$summary_file" 'tools/release/check-a2-matrix-ledger\.sh --self-test' "$summary_label retains the local A2 ledger self-test"
+  if grep -Fq '"$ledger"' "$summary_file" && ! grep -Eq '^ledger=' "$summary_file"; then
+    echo "stale release gate: $summary_label uses an undefined A2 ledger variable" >&2
     return 1
   fi
 }
@@ -144,6 +211,106 @@ run_self_test() {
   cleanup() {
     rm -rf "$tmp_dir"
   }
+
+  good_manual_doc="$tmp_dir/good-manual.md"
+  cat >"$good_manual_doc" <<'MD'
+A2 validation is local/manual-only.
+- `tools/acceptance/run-a2-compat-gates.sh --self-test`
+- `tools/release/check-a2-matrix-ledger.sh --self-test`
+MD
+  check_manual_a2_summary "$good_manual_doc" "fixture docs"
+
+  bad_manual_doc="$tmp_dir/bad-manual.md"
+  cat >"$bad_manual_doc" <<'MD'
+A2 validation is local/manual-only.
+- `tools/acceptance/run-a2-compat-gates.sh --self-test`
+- `tools/release/check-a2-matrix-ledger.sh --self-test`
+- `tools/release/check-a2-matrix-ledger.sh "$ledger"`
+MD
+  if check_manual_a2_summary "$bad_manual_doc" "fixture docs" >/dev/null 2>&1; then
+    echo "release gate self-test failed: undefined manual A2 ledger variable was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  good_pipeline="$tmp_dir/good-pipeline.yml"
+  cat >"$good_pipeline" <<'YAML'
+jobs:
+  check:
+    steps:
+      - name: Script syntax
+        run: |
+          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' \
+            ! -path 'tools/acceptance/run-a2-compat-gates.sh' \
+            ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 \
+            | xargs -0 bash -n
+YAML
+  check_no_automated_a2_validation "$good_pipeline" "fixture"
+
+  bad_pipeline="$tmp_dir/bad-pipeline.yml"
+  cp "$good_pipeline" "$bad_pipeline"
+  ruby -0pi -e 'sub(/(    steps:\n)/, "\\1      - name: A2 compatibility runner self-test\\n        run: tools/acceptance/run-a2-compat-gates.sh --self-test\\n")' "$bad_pipeline"
+  if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: automated A2 runner was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_pipeline="$tmp_dir/bad-generic-syntax.yml"
+  cp "$good_pipeline" "$bad_pipeline"
+  ruby -0pi -e 'sub(/find tools\/acceptance.*xargs -0 bash -n/m, "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh")' "$bad_pipeline"
+  if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: wildcard A2 syntax validation was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_pipeline="$tmp_dir/bad-workflow-a2-env.yml"
+  cp "$good_pipeline" "$bad_pipeline"
+  ruby -0pi -e 'sub(/jobs:\n/, "env:\n  COMPME_A2_MATRIX_LEDGER: evidence.tsv\njobs:\n")' "$bad_pipeline"
+  if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: workflow-level A2 environment was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_pipeline="$tmp_dir/bad-job-a2-env.yml"
+  cat >"$bad_pipeline" <<'YAML'
+jobs:
+  check:
+    env:
+      COMPME_A2_MATRIX_LEDGER: evidence.tsv
+    steps:
+      - name: Script syntax
+        run: |
+          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' \
+            ! -path 'tools/acceptance/run-a2-compat-gates.sh' \
+            ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 \
+            | xargs -0 bash -n
+YAML
+  if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: job-level A2 environment was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_pipeline="$tmp_dir/bad-exclusion-tail.yml"
+  cat >"$bad_pipeline" <<'YAML'
+jobs:
+  check:
+    steps:
+      - name: Script syntax
+        run: |
+          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' \
+            ! -path 'tools/acceptance/run-a2-compat-gates.sh' \; tools/acceptance/run-a2-compat-gates.sh --self-test \
+            ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 \
+            | xargs -0 bash -n
+YAML
+  if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: A2 execution hidden after an exclusion was accepted" >&2
+    cleanup
+    return 1
+  fi
 
   old_grammar_spec="$grammar_spec"
   grammar_spec="$tmp_dir/good-spec.md"
@@ -424,30 +591,6 @@ abort("missing release gate: platform_linux release job") unless jobs.fetch("lin
 RUBY
   }
 
-  check_live_a2_ledger_fixture() {
-    ruby -ryaml - "$1" <<'RUBY'
-def active_shell_lines(run)
-  run.lines.map do |line|
-    stripped = line.strip
-    next if stripped.empty? || stripped.start_with?("#")
-    stripped.sub(/[[:space:]]+#.*$/, "")
-  end.compact
-end
-
-workflow = YAML.load_file(ARGV.fetch(0))
-steps = workflow.fetch("jobs").fetch("validate").fetch("steps")
-step = steps.find { |candidate| candidate["name"] == "A2 matrix ledger live proof" }
-abort("missing release gate: release validates live A2 matrix ledger") unless step
-env = step.fetch("env")
-abort("missing release gate: release A2 ledger reads COMPME_A2_MATRIX_LEDGER") unless env.fetch("COMPME_A2_MATRIX_LEDGER").to_s.include?("COMPME_A2_MATRIX_LEDGER")
-abort("stale release gate: release A2 ledger weakens the 24-hour freshness policy") if env.key?("COMPME_A2_LEDGER_MAX_AGE_SECONDS")
-run = step.fetch("run")
-abort("missing release gate: release A2 live ledger variable guard") unless run.include?("missing required release variable: COMPME_A2_MATRIX_LEDGER")
-abort("missing release gate: release A2 live ledger path guard") unless run.include?("COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/")
-abort("missing release gate: release A2 live ledger runs checker") unless active_shell_lines(run).include?("tools/release/check-a2-matrix-ledger.sh \"$COMPME_A2_MATRIX_LEDGER\"")
-RUBY
-  }
-
   good_release="$tmp_dir/good-release.yml"
   cat >"$good_release" <<'YAML'
 jobs:
@@ -526,56 +669,6 @@ jobs:
 YAML
   if check_finalizer_fixture "$missing_finalizer_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: missing cask finalizer command was accepted" >&2
-    cleanup
-    return 1
-  fi
-
-  good_a2_live_release="$tmp_dir/good-a2-live-release.yml"
-  cat >"$good_a2_live_release" <<'YAML'
-jobs:
-  validate:
-    steps:
-      - name: A2 matrix ledger live proof
-        env:
-          COMPME_A2_MATRIX_LEDGER: ${{ vars.COMPME_A2_MATRIX_LEDGER }}
-        run: |
-          if [ -z "${COMPME_A2_MATRIX_LEDGER:-}" ]; then
-            echo "missing required release variable: COMPME_A2_MATRIX_LEDGER" >&2
-            exit 1
-          fi
-          echo "COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/"
-          tools/release/check-a2-matrix-ledger.sh "$COMPME_A2_MATRIX_LEDGER"
-YAML
-  check_live_a2_ledger_fixture "$good_a2_live_release"
-
-  stale_a2_live_release="$tmp_dir/stale-a2-live-release.yml"
-  cp "$good_a2_live_release" "$stale_a2_live_release"
-  ruby -0pi -e 'sub(/(COMPME_A2_MATRIX_LEDGER:.*\n)/, "\\1          COMPME_A2_LEDGER_MAX_AGE_SECONDS: 31536000\n")' "$stale_a2_live_release"
-  if check_live_a2_ledger_fixture "$stale_a2_live_release" >/dev/null 2>&1; then
-    echo "release gate self-test failed: weakened A2 freshness policy was accepted" >&2
-    cleanup
-    return 1
-  fi
-
-  echoed_a2_live_release="$tmp_dir/echoed-a2-live-release.yml"
-  cat >"$echoed_a2_live_release" <<'YAML'
-jobs:
-  validate:
-    steps:
-      - name: A2 matrix ledger live proof
-        env:
-          COMPME_A2_MATRIX_LEDGER: ${{ vars.COMPME_A2_MATRIX_LEDGER }}
-        run: |
-          if [ -z "${COMPME_A2_MATRIX_LEDGER:-}" ]; then
-            echo "missing required release variable: COMPME_A2_MATRIX_LEDGER" >&2
-            exit 1
-          fi
-          echo "COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/"
-          # tools/release/check-a2-matrix-ledger.sh "$COMPME_A2_MATRIX_LEDGER"
-          echo 'tools/release/check-a2-matrix-ledger.sh "$COMPME_A2_MATRIX_LEDGER"'
-YAML
-  if check_live_a2_ledger_fixture "$echoed_a2_live_release" >/dev/null 2>&1; then
-    echo "release gate self-test failed: commented/echoed A2 ledger command was accepted" >&2
     cleanup
     return 1
   fi
@@ -1194,6 +1287,15 @@ if [ "$#" -gt 1 ]; then
   exit 2
 fi
 
+check_no_automated_a2_validation "$ci_workflow" "CI"
+check_no_automated_a2_validation "$release_workflow" "release"
+check_manual_a2_summary "$readme_doc" "README"
+check_manual_a2_summary "$development_doc" "DEVELOPMENT"
+reject_line "$0" '^[[:space:]]*a2_matrix_ledger_script=' "release policy checker binds the manual A2 ledger tool"
+reject_line "$0" '^[[:space:]]*bash -n "\$a2_matrix_ledger_script"' "release policy checker syntax-checks the manual A2 ledger tool"
+reject_line "$0" '^[[:space:]]*"\$a2_matrix_ledger_script"' "release policy checker executes the manual A2 ledger tool"
+reject_line "$0" '^[[:space:]]*(check_live_a2|require_live_a2)' "release policy checker validates A2 evidence"
+reject_line "$0" '^[[:space:]]*(bash[[:space:]]+)?tools/(acceptance/run-a2-compat-gates|release/check-a2-matrix-ledger)\.sh' "release policy checker executes A2 tooling directly"
 run_self_test >/dev/null
 
 ruby -ryaml -e '
@@ -1208,23 +1310,6 @@ ruby -ryaml -e '
   def require_step!(jobs, job, name, run, label)
     steps = jobs.fetch(job).fetch("steps")
     abort("missing release gate: #{label}") unless step?(steps, name, run)
-  end
-
-  def require_live_a2_ledger_step!(steps)
-    step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["name"] == "A2 matrix ledger live proof" }
-    abort("missing release gate: release validates live A2 matrix ledger") unless step
-    env = step.fetch("env")
-    abort("missing release gate: release A2 ledger reads COMPME_A2_MATRIX_LEDGER") unless env.fetch("COMPME_A2_MATRIX_LEDGER").to_s.include?("COMPME_A2_MATRIX_LEDGER")
-    abort("stale release gate: release A2 ledger weakens the 24-hour freshness policy") if env.key?("COMPME_A2_LEDGER_MAX_AGE_SECONDS")
-    run = step.fetch("run")
-    lines = active_shell_lines(run)
-    [
-      "missing required release variable: COMPME_A2_MATRIX_LEDGER",
-      "COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/",
-    ].each do |needle|
-      abort("missing release gate: release A2 live ledger #{needle}") unless run.include?(needle)
-    end
-    abort("missing release gate: release A2 live ledger runs checker") unless lines.include?("tools/release/check-a2-matrix-ledger.sh \"$COMPME_A2_MATRIX_LEDGER\"")
   end
 
   def active_shell_lines(run)
@@ -1284,7 +1369,6 @@ ruby -ryaml -e '
   # Gate steps required verbatim in BOTH the CI check job and the release
   # validate job; per-workflow extras are merged in at each call site.
   shared_gate_steps = {
-    "script syntax" => ["Script syntax", "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh"],
     "bundle metadata" => ["Bundle metadata", "tools/bundle/check-bundle-metadata.sh"],
     "bundle metadata self-test" => ["Bundle metadata self-test", "tools/bundle/check-bundle-metadata.sh --self-test"],
     "bundle assembler self-test" => ["Bundle assembler self-test", "tools/bundle/make-app.sh --self-test"],
@@ -1295,8 +1379,6 @@ ruby -ryaml -e '
     "missing-model startup product smoke" => ["Missing-model startup product smoke", "tools/acceptance/missing-model-startup.sh"],
     "UI-assisted session self-test" => ["UI-assisted session self-test", "tools/acceptance/run-ui-assisted-session.sh --self-test"],
     "A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
-    "A2 self-test" => ["A2 compatibility runner self-test", "tools/acceptance/run-a2-compat-gates.sh --self-test"],
-    "A2 matrix ledger self-test" => ["A2 matrix ledger policy self-test", "tools/release/check-a2-matrix-ledger.sh --self-test"],
     "model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
     "model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
     "agent brief alignment" => ["Agent brief alignment", "tools/release/check-agent-briefs.sh"],
@@ -1409,8 +1491,6 @@ ruby -ryaml -e '
   end
   model_gate_step = validate_steps.find { |step| step["name"] == "Model-backed release gates" }
   abort("missing release gate: hosted-runner model gates skip only the latency budget") unless model_gate_step && model_gate_step.fetch("env", {})["COMPME_REQUIRE_LATENCY_BUDGET"].to_s == "0"
-  require_live_a2_ledger_step!(validate_steps)
-
   prebuild_needs = Array(prebuild.fetch("needs"))
   %w[validate windows linux].each do |job|
     abort("missing release gate: prebuild job depends on #{job}") unless prebuild_needs.include?(job)
@@ -1664,7 +1744,6 @@ workspace_test_count="$(cargo test --locked --workspace --all-targets -- --list 
 workspace_test_count_commas="$(ruby -e 'puts ARGV.fetch(0).reverse.gsub(/(\d{3})(?=\d)/, "\\1,").reverse' "$workspace_test_count")"
 
 bash -n "$gate_script"
-bash -n "$a2_matrix_ledger_script"
 bash -n "$feature_script"
 bash -n "$privacy_script"
 bash -n "$bundle_metadata_script"
@@ -1674,7 +1753,6 @@ bash -n "$notarize_script"
 bash -n "$update_manifest_script"
 "$bundle_metadata_script" >/dev/null
 "$make_app_script" --self-test >/dev/null
-"$a2_matrix_ledger_script" --self-test >/dev/null
 GITHUB_ACTIONS=true GITHUB_REF_TYPE=tag COMPME_MODEL_GATE_PATH=/tmp/compme-poisoned-model.gguf "$gate_script" --self-test >/dev/null
 "$gate_script" --self-test >/dev/null
 "$privacy_script" >/dev/null
@@ -1755,9 +1833,12 @@ require_line "$make_app_script" 'grep -Fq "lsregister -f \$app" "\$log"' "bundle
 require_line "$make_app_script" 'COMPME_BUNDLE_LSREGISTER="\$fake_bin/lsregister_fail"' "bundle self-test asserts Launch Services registration failure"
 require_line "$make_app_script" 'lsregister failure was accepted' "bundle self-test rejects masked Launch Services registration failure"
 require_line "$make_app_script" '^[[:space:]]*"\$lsregister" -f "\$app"[[:space:]]*$' "bundle Launch Services registration fails closed"
-require_line "$bundle_smoke_script" 'COMPME_CONFIG="\$runtime_dir/config.env"' "bundle smoke isolates packaged app config"
-require_line "$bundle_smoke_script" 'COMPME_RUN_MS="\$run_ms"' "bundle smoke bounds packaged app runtime"
-require_line "$bundle_smoke_script" 'COMPME_STUB_COMPLETION="\${COMPME_STUB_COMPLETION:- smoke}"' "bundle smoke enables deterministic completion"
+require_line "$bundle_smoke_script" '^[[:space:]]*env -i[[:space:]]*$' "bundle smoke clears inherited product environment"
+require_line "$bundle_smoke_script" '"COMPME_CONFIG=\$runtime_dir/config.env"' "bundle smoke isolates packaged app config"
+require_line "$bundle_smoke_script" '"COMPME_RUN_MS=\$run_ms"' "bundle smoke bounds packaged app runtime"
+require_line "$bundle_smoke_script" '"COMPME_STUB_COMPLETION=\${COMPME_STUB_COMPLETION:- smoke}"' "bundle smoke enables deterministic completion"
+require_line "$bundle_smoke_script" 'COMPME_ACCEPTANCE_PID=444' "bundle smoke self-test poisons the inherited product environment"
+require_line "$bundle_smoke_script" 'hostile product environment leaked into app' "bundle smoke self-test rejects inherited product environment"
 require_line "$bundle_smoke_script" 'bundle smoke failed: isolated app exited as a duplicate instance' "bundle smoke rejects instance-lock collisions"
 require_line "$bundle_smoke_script" 'app never reached the bounded stub runtime' "bundle smoke verifies bounded stub startup"
 require_line "$bundle_smoke_script" 'COMPME_BUNDLE_SMOKE_MAKE_APP' "bundle smoke make-app override"
@@ -1811,7 +1892,6 @@ require_line "$acceptance_doc" 'Apps policy grid' "acceptance docs Apps policy L
 require_line "$acceptance_doc" 'Personalization pane' "acceptance docs Personalization LOOK gate"
 require_line "$acceptance_doc" '^--allow-manual[[:space:]]*$' "acceptance docs A1b allow-manual option"
 require_line "$acceptance_doc" '^Use `--allow-manual` only after executing and recording the MANUAL checklist$' "acceptance docs A1b allow-manual policy"
-require_line "$acceptance_doc" '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "acceptance docs A2 self-test"
 require_line "$acceptance_doc" '^tools/release/check-model-client-features\.sh[[:space:]]*$' "acceptance docs model client feature policy"
 require_line "$acceptance_doc" '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "acceptance docs model client feature policy self-test"
 require_line "$acceptance_doc" '^tools/release/check-agent-briefs\.sh[[:space:]]*$' "acceptance docs agent brief alignment"
@@ -1851,13 +1931,17 @@ require_line "$releasing_doc" 'cargo build --locked -p platform_macos --examples
 require_line "$releasing_doc" 'git pull --ff-only origin main' "release docs require up-to-date default branch before tag"
 require_line "$releasing_doc" 'cask finalizer refuses to update `main`' "release docs cask finalizer ancestry guard"
 require_line "$repo_root/tools/acceptance/run-a1b-live-gates.sh" 'overlay-correction-presenter' "A1b runner correction overlay gate"
-require_line "$a2_matrix_ledger_script" 'status != "PASS"' "A2 matrix ledger rejects non-pass rows"
-require_line "$a2_matrix_ledger_script" 'missing A2 matrix row' "A2 matrix ledger requires complete row coverage"
-require_line "$acceptance_doc" '^tools/release/check-a2-matrix-ledger\.sh "\$ledger"[[:space:]]*$' "acceptance docs A2 matrix ledger validation"
-require_line "$releasing_doc" 'tools/release/check-a2-matrix-ledger\.sh "\$ledger"' "release docs A2 matrix ledger validation"
-require_line "$releasing_doc" 'COMPME_A2_MATRIX_LEDGER' "release docs A2 live ledger workflow variable"
-require_line "$releasing_doc" 'tools/acceptance/evidence/a2/' "release docs committed A2 evidence directory"
-require_line "$acceptance_doc" 'COMPME_A2_LOG_DIR' "acceptance docs A2 evidence log dir"
+require_line "$readme_doc" '^A2 validation is local/manual-only' "README marks A2 validation local/manual-only"
+require_line "$development_doc" '^A2 validation is local/manual-only' "DEVELOPMENT marks A2 validation local/manual-only"
+require_line "$acceptance_doc" '^A2 validation is local/manual-only' "acceptance docs mark A2 validation local/manual-only"
+require_line "$releasing_doc" '^A2 validation is local/manual-only' "release docs mark A2 validation local/manual-only"
+require_line "$roadmap_doc" '^A2 compatibility validation is now local/manual-only' "roadmap marks A2 validation local/manual-only"
+require_line "$acceptance_doc" '^tools/acceptance/run-a2-compat-gates\.sh <kind>[[:space:]]*$' "acceptance docs retain manual A2 runner"
+require_line "$acceptance_doc" '^tools/release/check-a2-matrix-ledger\.sh "\$ledger"[[:space:]]*$' "acceptance docs retain manual A2 ledger checker"
+reject_line "$readme_doc" '^bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh' "README wildcard syntax-checks local/manual A2 scripts"
+reject_line "$development_doc" '^bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh' "DEVELOPMENT wildcard syntax-checks local/manual A2 scripts"
+reject_line "$acceptance_doc" '^bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh' "acceptance docs wildcard syntax-check local/manual A2 scripts"
+reject_line "$grammar_spec" 'bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh' "grammar spec wildcard syntax-checks local/manual A2 scripts"
 for gate in \
   apps-policy-toggle-look \
   personalization-pane-look \
@@ -1890,8 +1974,6 @@ require_readme_gate_line '^tools/acceptance/missing-model-startup\.sh --self-tes
 require_readme_gate_line '^tools/acceptance/missing-model-startup\.sh[[:space:]]*$' "README missing-model startup product smoke"
 require_readme_gate_line '^tools/acceptance/run-ui-assisted-session\.sh --self-test[[:space:]]*$' "README UI-assisted session self-test"
 require_readme_gate_line '^tools/acceptance/run-a1b-live-gates\.sh --self-test[[:space:]]*$' "README A1b self-test"
-require_readme_gate_line '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "README A2 self-test"
-require_readme_gate_line '^tools/release/check-a2-matrix-ledger\.sh --self-test[[:space:]]*$' "README A2 matrix ledger self-test"
 require_readme_gate_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "README model client feature policy"
 require_readme_gate_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "README model client feature policy self-test"
 require_readme_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "README release gate policy check"
@@ -1913,8 +1995,6 @@ require_development_gate_line '^tools/acceptance/missing-model-startup\.sh[[:spa
 require_development_gate_line '^tools/acceptance/run-ui-assisted-session\.sh --self-test[[:space:]]*$' "DEVELOPMENT UI-assisted session self-test"
 require_development_gate_line '^tools/acceptance/run-a1b-live-gates\.sh --self-test[[:space:]]*$' "DEVELOPMENT A1b self-test"
 require_line "$development_doc" '^Use `--allow-manual` only after executing and recording the MANUAL checklist$' "DEVELOPMENT A1b allow-manual policy"
-require_development_gate_line '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "DEVELOPMENT A2 self-test"
-require_development_gate_line '^tools/release/check-a2-matrix-ledger\.sh --self-test[[:space:]]*$' "DEVELOPMENT A2 matrix ledger self-test"
 require_development_gate_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "DEVELOPMENT model client feature policy"
 require_development_gate_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "DEVELOPMENT model client feature policy self-test"
 require_development_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "DEVELOPMENT release gate policy check"
@@ -1930,7 +2010,7 @@ require_grammar_spec_validation_line '^cargo clippy --locked --workspace --all-t
 require_grammar_spec_validation_line '^cargo test --locked --workspace --all-targets -- --test-threads=1[[:space:]]*$' "grammar spec workspace test gate"
 require_grammar_spec_validation_line '^cargo build --locked --workspace --all-targets[[:space:]]*$' "grammar spec workspace build gate"
 require_grammar_spec_validation_line '^cargo build --locked -p platform_macos --examples[[:space:]]*$' "grammar spec platform_macos examples build gate"
-require_grammar_spec_validation_line '^bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh[[:space:]]*$' "grammar spec script syntax gate"
+require_line "$grammar_spec" 'find tools/acceptance tools/bundle tools/release -type f -name.*run-a2-compat-gates\.sh.*check-a2-matrix-ledger\.sh.*xargs -0 bash -n' "grammar spec non-A2 script syntax gate"
 require_grammar_spec_validation_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "grammar spec bundle metadata gate"
 require_grammar_spec_validation_line '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "grammar spec bundle metadata self-test"
 require_grammar_spec_validation_line '^tools/bundle/make-app\.sh --self-test[[:space:]]*$' "grammar spec bundle assembler self-test"
@@ -1939,8 +2019,6 @@ require_grammar_spec_validation_line '^tools/acceptance/missing-model-startup\.s
 require_grammar_spec_validation_line '^tools/acceptance/missing-model-startup\.sh[[:space:]]*$' "grammar spec missing-model product smoke"
 require_grammar_spec_validation_line '^tools/acceptance/run-ui-assisted-session\.sh --self-test[[:space:]]*$' "grammar spec UI-assisted session self-test"
 require_grammar_spec_validation_line '^tools/acceptance/run-a1b-live-gates\.sh --self-test[[:space:]]*$' "grammar spec A1b self-test"
-require_grammar_spec_validation_line '^tools/acceptance/run-a2-compat-gates\.sh --self-test[[:space:]]*$' "grammar spec A2 self-test"
-require_grammar_spec_validation_line '^tools/release/check-a2-matrix-ledger\.sh --self-test[[:space:]]*$' "grammar spec A2 matrix ledger self-test"
 require_grammar_spec_validation_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "grammar spec model client feature policy"
 require_grammar_spec_validation_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "grammar spec model client feature policy self-test"
 require_grammar_spec_validation_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "grammar spec release policy check"

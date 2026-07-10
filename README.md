@@ -312,7 +312,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,816 tests:
+suite is roughly 1,829 tests:
 
 ```sh
 cargo fmt --all -- --check
@@ -321,7 +321,7 @@ cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
 
-bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
+find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
 tools/bundle/check-bundle-metadata.sh
 tools/bundle/check-bundle-metadata.sh --self-test
 tools/bundle/make-app.sh --self-test
@@ -332,8 +332,6 @@ tools/acceptance/missing-model-startup.sh --self-test
 tools/acceptance/missing-model-startup.sh
 tools/acceptance/run-ui-assisted-session.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
-tools/acceptance/run-a2-compat-gates.sh --self-test
-tools/release/check-a2-matrix-ledger.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
 tools/release/check-agent-briefs.sh
@@ -354,6 +352,19 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked --bins
 ```
+
+A2 validation is local/manual-only and is deliberately excluded from CI, tag
+releases, and the release-policy checker. Confirm the two local tools themselves
+before a manual compatibility pass:
+
+```sh
+tools/acceptance/run-a2-compat-gates.sh --self-test
+tools/release/check-a2-matrix-ledger.sh --self-test
+```
+
+Then follow [the A2 manual procedure](docs/ACCEPTANCE.md#a2-compatibility-and-context-smoke-gates-localmanual-only)
+for the required target mapping, evidence directory, matrix run, and ledger
+validation.
 
 CI and the tag release workflow also run scoped Windows/Linux adapter gates on
 native runners: fmt, clippy, test, and build for `platform_windows` on

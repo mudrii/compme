@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; release workflow now fails closed without signing credentials; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1816 workspace tests; spike separate)
+> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; release workflow now fails closed without signing credentials; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1829 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -148,8 +148,10 @@ signing + hardened runtime + notarization + a native updater.
 **Effort:** Small/optional for the remaining updater upgrade. The signed release,
 CI/release/cask glue, and supply-chain hardening are implemented and machine-pinned
 by `tools/release/check-model-gates.sh`; see [`RELEASING.md`](RELEASING.md).
-Future tags require fresh committed A2 matrix evidence under
-`tools/acceptance/evidence/a2/` using the checker's 24-hour default.
+A2 compatibility validation is now local/manual-only: CI, tag releases, and
+`tools/release/check-model-gates.sh` do not execute or syntax-check its runner or
+ledger checker. Teams may still collect committed pre-release evidence under
+`tools/acceptance/evidence/a2/` and validate it locally.
 
 ---
 
@@ -314,7 +316,7 @@ folded settings LOOK gates (`personalization-pane-look`,
 |---|---|---|
 | Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking; Safari allow+exclude legs live-proven 2026-07-07 (Batch 6) | Chrome/Brave live rows with the A2 matrix; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
 | Multi-candidate Down-cycle | engine ✅; synthetic Down-cycle live-proven 2026-07-07 (`COMPME_CANDIDATES=3`, real model); `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before release |
-| Compatibility matrix | classifier ✅; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger | supply live row PID map via `COMPME_A2_MATRIX_TARGETS`; local dry runs may explicitly allow skips, but release evidence must pass every row and satisfy `check-a2-matrix-ledger.sh` |
+| Compatibility matrix | classifier ✅; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger as a local/manual tool | for a manual pre-release pass, supply live row PID map via `COMPME_A2_MATRIX_TARGETS`; dry runs may explicitly allow skips, while recorded evidence should pass every row and satisfy `check-a2-matrix-ledger.sh` locally |
 | Browser mirror-window | `set_mirror_mode` ✅; `mirror-window-firefox-zen-look` manual gate pins Firefox/Zen ghost-in-mirror confirmation | run the manual gate in a granted desktop session |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch; live submit-path pass 2026-07-07 after CGImageRef encoding panic fix (`e5c055b`) | OCR quality/perf on a granted desktop + multi-display caret confirm |
@@ -527,7 +529,7 @@ with physical trigger/accept keypresses.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1816 tests, clippy clean). What remains for
+> review + tdd + ponytail pass (1829 tests, clippy clean). What remains for
 > "ready to use" is **not development**: a human **visual-LOOK pass** on a
 > granted Mac over the 9 settings panes + the Tier-4 live checklist. Developer-ID
 > signing, notarization, and the first stable tags are complete through v0.1.4;

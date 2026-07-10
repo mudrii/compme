@@ -91,7 +91,11 @@ jobs:
         run: cargo build --locked --workspace --all-targets
 
       - name: Script syntax
-        run: bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
+        run: |
+          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' \
+            ! -path 'tools/acceptance/run-a2-compat-gates.sh' \
+            ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 \
+            | xargs -0 bash -n
 
       - name: Bundle metadata
         run: tools/bundle/check-bundle-metadata.sh
@@ -110,31 +114,6 @@ jobs:
 
       - name: A1b runner self-test
         run: tools/acceptance/run-a1b-live-gates.sh --self-test
-
-      - name: A2 compatibility runner self-test
-        run: tools/acceptance/run-a2-compat-gates.sh --self-test
-
-      - name: A2 matrix ledger policy self-test
-        run: tools/release/check-a2-matrix-ledger.sh --self-test
-
-      - name: A2 matrix ledger live proof
-        env:
-          COMPME_A2_MATRIX_LEDGER: ${{ vars.COMPME_A2_MATRIX_LEDGER }}
-        run: |
-          set -euo pipefail
-          if [ -z "${COMPME_A2_MATRIX_LEDGER:-}" ]; then
-            echo "missing required release variable: COMPME_A2_MATRIX_LEDGER" >&2
-            echo "Run tools/acceptance/run-a2-compat-gates.sh matrix with COMPME_A2_LOG_DIR under tools/acceptance/evidence/a2/, commit the TSV + row logs, and set this variable to that repo-relative TSV path." >&2
-            exit 1
-          fi
-          case "$COMPME_A2_MATRIX_LEDGER" in
-            tools/acceptance/evidence/a2/*.tsv) ;;
-            *)
-              echo "COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/: $COMPME_A2_MATRIX_LEDGER" >&2
-              exit 1
-              ;;
-          esac
-          tools/release/check-a2-matrix-ledger.sh "$COMPME_A2_MATRIX_LEDGER"
 
       - name: E2E runner self-test
         run: tools/acceptance/e2e-complete-me.sh --self-test

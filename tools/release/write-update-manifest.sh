@@ -17,7 +17,18 @@ usage() {
 
 validate_version() {
   local version="$1"
-  [[ "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]
+  local identifier
+  local -a prerelease_identifiers
+  [[ "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]] || return 1
+  if [[ "$version" == *-* ]]; then
+    IFS=. read -r -a prerelease_identifiers <<<"${version#*-}"
+    for identifier in "${prerelease_identifiers[@]}"; do
+      if [[ "$identifier" =~ ^[0-9]+$ && "$identifier" == 0* && "$identifier" != "0" ]]; then
+        return 1
+      fi
+    done
+  fi
+  return 0
 }
 
 validate_sha() {
@@ -27,7 +38,16 @@ validate_sha() {
 
 validate_published_at() {
   local published_at="$1"
-  [[ "$published_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  [[ "$published_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  ruby -rtime -e '
+    input = ARGV.fetch(0)
+    begin
+      parsed = Time.iso8601(input)
+      exit(parsed.utc.iso8601 == input ? 0 : 1)
+    rescue ArgumentError
+      exit 1
+    end
+  ' "$published_at"
 }
 
 json_escape() {
@@ -104,6 +124,11 @@ run_self_test() {
     return 1
   fi
   grep -Fq "invalid version" "$tmp/build-metadata.err"
+  if "$0" 1.2.3-rc.01 compme-1.2.3-rc.01-macos.zip "$sha" >"$tmp/leading-zero-prerelease.out" 2>"$tmp/leading-zero-prerelease.err"; then
+    echo "self-test FAILED: numeric prerelease identifier with a leading zero passed" >&2
+    return 1
+  fi
+  grep -Fq "invalid version" "$tmp/leading-zero-prerelease.err"
   if "$0" bad compme-bad-macos.zip "$sha" >"$tmp/bad.out" 2>"$tmp/bad.err"; then
     echo "self-test FAILED: bad version passed" >&2
     return 1
@@ -114,6 +139,11 @@ run_self_test() {
     return 1
   fi
   grep -Fq "invalid published_at" "$tmp/bad-date.err"
+  if COMPME_UPDATE_PUBLISHED_AT="2026-02-30T00:00:00Z" "$0" 1.2.3 compme-1.2.3-macos.zip "$sha" >"$tmp/impossible-date.out" 2>"$tmp/impossible-date.err"; then
+    echo "self-test FAILED: impossible calendar date passed" >&2
+    return 1
+  fi
+  grep -Fq "invalid published_at" "$tmp/impossible-date.err"
   upper_sha="$(printf '%s' "$sha" | tr '[:lower:]' '[:upper:]')"
   if "$0" 1.2.3 compme-1.2.3-macos.zip "$upper_sha" >"$tmp/upper-sha.out" 2>"$tmp/upper-sha.err"; then
     echo "self-test FAILED: uppercase sha passed" >&2

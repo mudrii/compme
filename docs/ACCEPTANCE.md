@@ -18,7 +18,7 @@ cargo build --locked -p platform_macos --examples
 Acceptance harness syntax, deterministic self-tests, and release model gate:
 
 ```sh
-bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh
+find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
 tools/bundle/check-bundle-metadata.sh
 tools/bundle/check-bundle-metadata.sh --self-test
 tools/bundle/make-app.sh --self-test
@@ -29,8 +29,6 @@ tools/acceptance/missing-model-startup.sh --self-test
 tools/acceptance/missing-model-startup.sh
 tools/acceptance/run-ui-assisted-session.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
-tools/acceptance/run-a2-compat-gates.sh --self-test
-tools/release/check-a2-matrix-ledger.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
 tools/release/check-agent-briefs.sh
@@ -369,7 +367,11 @@ Failure classification looks for common blockers:
 - wrong focused target
 - transient AX observer setup failures
 
-## A2 Compatibility And Context Smoke Gates
+## A2 Compatibility And Context Smoke Gates (Local/Manual Only)
+
+A2 validation is local/manual-only. CI, tag releases, and the release-policy
+checker do not execute or syntax-check these two tools. Run them explicitly on
+a granted Mac when collecting manual pre-release compatibility evidence.
 
 Run:
 
@@ -395,7 +397,7 @@ pairs (for example `textedit=123 terminal-cmd=456`) and it writes a TSV ledger
 under `tools/acceptance/logs/`. Missing rows fail unless
 `COMPME_A2_MATRIX_ALLOW_SKIP=1` is set.
 
-Before tagging a release, write the fresh matrix ledger under committed release
+For a manual pre-release pass, write the fresh matrix ledger under committed
 evidence and validate it without skip/fail rows:
 
 ```sh
@@ -413,12 +415,9 @@ git commit -m "test: A2 compatibility matrix evidence for $release_tag"
 tools/release/check-a2-matrix-ledger.sh "$ledger"
 ```
 
-For release evidence that must pass on GitHub-hosted runners, set
-`COMPME_A2_LOG_DIR` under `tools/acceptance/evidence/a2/` before running
-`matrix`, commit the TSV and every row log file, then set the repository
-variable `COMPME_A2_MATRIX_LEDGER` to that repo-relative TSV path. The checker
-rejects unsafe or untracked `log_path` entries, ledger or row-log content that
-differs from the committed content (the working tree must match `HEAD`),
+The local checker rejects unsafe or untracked `log_path` entries, ledger or
+row-log content that differs from the committed content (the working tree must
+match `HEAD`),
 missing row log files, row logs
 that do not prove the expected app/domain/context behavior, stale ledgers older than
 `COMPME_A2_LEDGER_MAX_AGE_SECONDS` (default `86400`), and future-dated ledgers
