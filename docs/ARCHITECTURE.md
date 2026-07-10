@@ -16,8 +16,11 @@ and additions such as candidate cycling.
 
 **Release boundary:** the published `v0.1.4` artifact points to `18b8dc0`; this
 page documents current `main`. Post-tag runtime/download/clipboard/OCR/deep-link
-hardening and the single **Show Models Folder** Settings control are unreleased
-until the next tag.
+hardening, local/manual-only A2 policy, single **Show Models Folder** Settings
+control, and release-integrity controls are unreleased until the next tag. The
+current tag pipeline uses a secretless exact-arm64 prebuild, re-verifies the
+binary before secrets, fails closed on signing-keychain cleanup or release-asset
+name collisions, and constrains the Homebrew cask to arm64.
 
 The workspace now holds 25 crates. The shape is deliberate: almost everything
 outside the model/download seams, platform adapters, and host is pure (text in →

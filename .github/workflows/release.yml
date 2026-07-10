@@ -25,7 +25,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify release tag is semver and on default branch
+      - name: Verify release tag is valid and at default-branch HEAD
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REF_PROTECTED: ${{ github.ref_protected }}
@@ -35,19 +35,14 @@ jobs:
             echo "release tag must match a protected v* ruleset" >&2
             exit 1
           fi
-          if ! [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]; then
-            echo "release tag must look like vX.Y.Z: $GITHUB_REF_NAME" >&2
+          version="${GITHUB_REF_NAME#v}"
+          tools/release/validate-version.sh "$version"
+          git fetch origin "$DEFAULT_BRANCH"
+          default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
+          if [ "$GITHUB_SHA" != "$default_sha" ]; then
+            echo "release tag commit $GITHUB_SHA must equal current origin/$DEFAULT_BRANCH HEAD $default_sha" >&2
             exit 1
           fi
-          version="${GITHUB_REF_NAME#v}"
-          case "$version" in
-            *[!0-9A-Za-z.-]* | *..* | .* | *.)
-              echo "release tag contains invalid version text: $GITHUB_REF_NAME" >&2
-              exit 1
-              ;;
-          esac
-          git fetch origin "$DEFAULT_BRANCH"
-          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
 
       - name: Check release tag matches bundle metadata
         run: COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh
@@ -102,6 +97,12 @@ jobs:
 
       - name: Bundle metadata self-test
         run: tools/bundle/check-bundle-metadata.sh --self-test
+
+      - name: Release version validator self-test
+        run: tools/release/validate-version.sh --self-test
+
+      - name: Homebrew cask syntax
+        run: ruby -c Casks/compme.rb
 
       - name: Bundle assembler self-test
         run: tools/bundle/make-app.sh --self-test
@@ -252,15 +253,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify release tag is on default branch
+      - name: Verify release tag is still at default-branch HEAD
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           git fetch origin "$DEFAULT_BRANCH"
-          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
+          default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
+          if [ "$GITHUB_SHA" != "$default_sha" ]; then
+            echo "release tag commit $GITHUB_SHA must still equal current origin/$DEFAULT_BRANCH HEAD $default_sha before prebuild" >&2
+            exit 1
+          fi
 
-      # Last authenticated git op in this job is the ancestry check above; drop
+      # Last authenticated git op in this job is the default-HEAD check above; drop
       # the checkout-persisted token before any third-party build code runs.
       - name: Scrub persisted git credentials
         run: git config --local --unset-all http.https://github.com/.extraheader || true
@@ -275,6 +280,15 @@ jobs:
 
       - name: Prebuild release binary (no signing secrets in this job)
         run: cargo build --locked --release -p app
+
+      - name: Verify prebuilt binary is arm64 only
+        run: |
+          set -euo pipefail
+          archs="$(lipo -archs target/release/compme)"
+          if [ "$archs" != "arm64" ]; then
+            echo "prebuilt release binary must contain exactly arm64, got: $archs" >&2
+            exit 1
+          fi
 
       - name: Upload prebuilt release binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -315,6 +329,18 @@ jobs:
       - name: Restore prebuilt binary executable bit
         run: chmod +x target/release/compme
 
+      - name: Verify downloaded binary is arm64 only
+        run: |
+          set -euo pipefail
+          archs="$(lipo -archs target/release/compme)"
+          if [ "$archs" != "arm64" ]; then
+            echo "downloaded release binary must contain exactly arm64, got: $archs" >&2
+            exit 1
+          fi
+
+      - name: Register signing keychain cleanup path
+        run: echo "COMPME_SIGNING_KEYCHAIN=$RUNNER_TEMP/compme-signing.keychain-db" >> "$GITHUB_ENV"
+
       - name: Import Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
@@ -328,7 +354,7 @@ jobs:
               exit 1
             fi
           done
-          keychain="$RUNNER_TEMP/compme-signing.keychain-db"
+          keychain="${COMPME_SIGNING_KEYCHAIN:?signing keychain cleanup path was not registered}"
           keychain_password="$(uuidgen)"
           p12="$RUNNER_TEMP/developer-id.p12"
           trap 'rm -f "$p12"' EXIT
@@ -343,7 +369,6 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           {
-            echo "COMPME_SIGNING_KEYCHAIN=$keychain"
             echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY"
           } >> "$GITHUB_ENV"
 
@@ -353,7 +378,7 @@ jobs:
       - name: Build the .app bundle
         run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 
-      # Stable release artifacts are always Developer-ID signed and notarized;
+      # Tagged release artifacts are always Developer-ID signed and notarized;
       # the helper fails closed when either notarization credential set is absent.
       - name: Notarize and staple the .app
         env:
@@ -373,14 +398,22 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          if [ -n "${COMPME_SIGNING_KEYCHAIN:-}" ]; then
-            security delete-keychain "$COMPME_SIGNING_KEYCHAIN" || true
+          keychain="${COMPME_SIGNING_KEYCHAIN:-$RUNNER_TEMP/compme-signing.keychain-db}"
+          cleanup_status=0
+          if [ -e "$keychain" ] && ! security delete-keychain "$keychain"; then
+            echo "failed to delete signing keychain: $keychain" >&2
+            cleanup_status=1
+          fi
+          if [ -e "$keychain" ]; then
+            echo "signing keychain still exists after cleanup: $keychain" >&2
+            cleanup_status=1
           fi
           unset COMPME_SIGNING_KEYCHAIN COMPME_CODESIGN_IDENTITY
           {
             echo "COMPME_SIGNING_KEYCHAIN="
             echo "COMPME_CODESIGN_IDENTITY="
           } >> "$GITHUB_ENV"
+          exit "$cleanup_status"
 
       - name: Package + checksum
         id: pkg
@@ -449,10 +482,32 @@ jobs:
           test -f "$ZIP.sha256"
           shasum -a 256 -c "$ZIP.sha256"
 
+      - name: Reject existing release asset names
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          existing_assets="$(
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .assets[].name"
+          )"
+          for asset in \
+            "compme-${VERSION}-macos.zip" \
+            "compme-${VERSION}-macos.zip.sha256" \
+            "compme-${VERSION}-update.json"; do
+            if grep -Fxq "$asset" <<<"$existing_assets"; then
+              echo "refusing to overwrite existing release asset: $asset" >&2
+              exit 1
+            fi
+          done
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           draft: true
+          overwrite_files: false
           # A hyphen in the tag (v1.2.3-rc.1) marks a prerelease: GitHub then
           # excludes it from /releases/latest, which is the URL the app's
           # Check-for-Updates opens.

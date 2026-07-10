@@ -14,7 +14,10 @@ are ad-hoc signed by default; the `v*` tag workflow Developer-ID signs,
 notarizes, and staples release artifacts. It compiles the release binary first
 in a secretless prebuild job, then fails closed before bundling if signing
 credentials are missing and before packaging or publication if notarization
-credentials are missing.
+credentials are missing. Both sides of the prebuild artifact boundary require a
+thin arm64 binary; the signing job registers its cleanup path before importing
+the Developer-ID certificate and fails if the temporary keychain cannot be
+deleted and proven absent.
 
 Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
 
@@ -198,8 +201,10 @@ cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
 
 find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
+tools/release/validate-version.sh --self-test
 tools/bundle/check-bundle-metadata.sh
 tools/bundle/check-bundle-metadata.sh --self-test
+ruby -c Casks/compme.rb
 tools/bundle/make-app.sh --self-test
 tools/bundle/bundle-smoke.sh
 tools/bundle/bundle-smoke.sh --self-test

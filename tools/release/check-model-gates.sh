@@ -2,7 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
-release_workflow="${1:-$repo_root/.github/workflows/release.yml}"
+canonical_release_workflow="$repo_root/.github/workflows/release.yml"
+release_workflow="${1:-$canonical_release_workflow}"
 ci_workflow="$repo_root/.github/workflows/ci.yml"
 gate_script="$repo_root/tools/release/run-model-gates.sh"
 feature_script="$repo_root/tools/release/check-model-client-features.sh"
@@ -13,6 +14,7 @@ bundle_smoke_script="$repo_root/tools/bundle/bundle-smoke.sh"
 finalize_cask_script="$repo_root/tools/release/finalize-cask.sh"
 notarize_script="$repo_root/tools/release/notarize-app.sh"
 update_manifest_script="$repo_root/tools/release/write-update-manifest.sh"
+version_validator_script="$repo_root/tools/release/validate-version.sh"
 acceptance_doc="$repo_root/docs/ACCEPTANCE.md"
 manual_validation_doc="$repo_root/docs/MANUAL-VALIDATION.md"
 development_doc="$repo_root/docs/DEVELOPMENT.md"
@@ -103,6 +105,123 @@ syntax_run = syntax.fetch("run").to_s
 ].each do |needle|
   abort("missing release gate: #{label} script syntax excludes only local/manual A2 tooling") unless syntax_run.include?(needle)
 end
+RUBY
+}
+
+check_release_integrity_controls() {
+  ruby -ryaml - "$1" <<'RUBY'
+def active_shell_lines(run)
+  run.to_s.lines.map do |line|
+    stripped = line.strip
+    next if stripped.empty? || stripped.start_with?("#")
+    stripped.sub(/[[:space:]]+#.*$/, "")
+  end.compact
+end
+
+def require_run_fragment!(step, fragment, label)
+  abort("missing release gate: #{label}") unless step.fetch("run").include?(fragment)
+end
+
+workflow = YAML.load_file(ARGV.fetch(0))
+jobs = workflow.fetch("jobs")
+
+preflight_steps = jobs.fetch("preflight").fetch("steps")
+preflight = preflight_steps.find { |step| step["name"] == "Verify release tag is valid and at default-branch HEAD" }
+abort("missing release gate: preflight validates release version and exact default-branch HEAD") unless preflight
+[
+  'version="${GITHUB_REF_NAME#v}"',
+  'tools/release/validate-version.sh "$version"',
+  'git fetch origin "$DEFAULT_BRANCH"',
+  'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
+  'if [ "$GITHUB_SHA" != "$default_sha" ]; then',
+  'exit 1',
+].each { |fragment| require_run_fragment!(preflight, fragment, "preflight #{fragment}") }
+
+prebuild_steps = jobs.fetch("prebuild").fetch("steps")
+prebuild_head = prebuild_steps.find { |step| step["name"] == "Verify release tag is still at default-branch HEAD" }
+abort("missing release gate: prebuild revalidates exact default-branch HEAD") unless prebuild_head
+[
+  'git fetch origin "$DEFAULT_BRANCH"',
+  'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
+  'if [ "$GITHUB_SHA" != "$default_sha" ]; then',
+  'exit 1',
+].each { |fragment| require_run_fragment!(prebuild_head, fragment, "prebuild #{fragment}") }
+prebuild_index = prebuild_steps.index { |step| step["name"] == "Prebuild release binary (no signing secrets in this job)" }
+prebuild_arch_index = prebuild_steps.index { |step| step["name"] == "Verify prebuilt binary is arm64 only" }
+prebuild_upload_index = prebuild_steps.index { |step| step["name"] == "Upload prebuilt release binary" }
+abort("missing release gate: prebuild verifies arm64 after build and before upload") unless prebuild_index && prebuild_arch_index && prebuild_upload_index && prebuild_index < prebuild_arch_index && prebuild_arch_index < prebuild_upload_index
+prebuild_arch = prebuild_steps.fetch(prebuild_arch_index)
+[
+  'archs="$(lipo -archs target/release/compme)"',
+  'if [ "$archs" != "arm64" ]; then',
+  'exit 1',
+].each { |fragment| require_run_fragment!(prebuild_arch, fragment, "prebuild architecture #{fragment}") }
+
+build_steps = jobs.fetch("build_release").fetch("steps")
+download_index = build_steps.index { |step| step["name"] == "Download prebuilt release binary" }
+chmod_index = build_steps.index { |step| step["name"] == "Restore prebuilt binary executable bit" }
+download_arch_index = build_steps.index { |step| step["name"] == "Verify downloaded binary is arm64 only" }
+register_index = build_steps.index { |step| step["name"] == "Register signing keychain cleanup path" }
+import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
+abort("missing release gate: downloaded binary architecture and cleanup path are verified before secrets") unless download_index && chmod_index && download_arch_index && register_index && import_index && download_index < chmod_index && chmod_index < download_arch_index && download_arch_index < register_index && register_index < import_index
+download_arch = build_steps.fetch(download_arch_index)
+[
+  'archs="$(lipo -archs target/release/compme)"',
+  'if [ "$archs" != "arm64" ]; then',
+  'exit 1',
+].each { |fragment| require_run_fragment!(download_arch, fragment, "downloaded architecture #{fragment}") }
+register = build_steps.fetch(register_index)
+abort("missing release gate: signing keychain cleanup path is registered deterministically") unless register.fetch("run") == 'echo "COMPME_SIGNING_KEYCHAIN=$RUNNER_TEMP/compme-signing.keychain-db" >> "$GITHUB_ENV"'
+import_run = build_steps.fetch(import_index).fetch("run")
+assignment = 'keychain="${COMPME_SIGNING_KEYCHAIN:?signing keychain cleanup path was not registered}"'
+create = 'security create-keychain -p "$keychain_password" "$keychain"'
+key_import = 'security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign'
+assignment_index = import_run.index(assignment)
+abort("missing release gate: signing import consumes the registered cleanup path") unless assignment_index
+[create, key_import].each do |command|
+  command_index = import_run.index(command)
+  abort("missing release gate: registered signing keychain path precedes #{command}") unless command_index && assignment_index < command_index
+end
+
+cleanup_index = build_steps.index { |step| step["name"] == "Delete signing keychain" }
+abort("missing release gate: deletes signing keychain") unless cleanup_index
+cleanup = build_steps.fetch(cleanup_index)
+abort("missing release gate: signing keychain cleanup runs always") unless cleanup.fetch("if") == "always()"
+cleanup_run = cleanup.fetch("run")
+[
+  'keychain="${COMPME_SIGNING_KEYCHAIN:-$RUNNER_TEMP/compme-signing.keychain-db}"',
+  'cleanup_status=0',
+  'if [ -e "$keychain" ] && ! security delete-keychain "$keychain"; then',
+  'if [ -e "$keychain" ]; then',
+  'cleanup_status=1',
+  'unset COMPME_SIGNING_KEYCHAIN COMPME_CODESIGN_IDENTITY',
+  'COMPME_SIGNING_KEYCHAIN=',
+  'COMPME_CODESIGN_IDENTITY=',
+  '>> "$GITHUB_ENV"',
+  'exit "$cleanup_status"',
+].each { |fragment| require_run_fragment!(cleanup, fragment, "signing keychain cleanup #{fragment}") }
+abort("missing release gate: signing keychain deletion must not fail open") if active_shell_lines(cleanup_run).any? { |line| line.match?(/security delete-keychain.*\|\|[[:space:]]*true/) }
+
+publish_steps = jobs.fetch("publish_release").fetch("steps")
+collision_index = publish_steps.index { |step| step["name"] == "Reject existing release asset names" }
+publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
+abort("missing release gate: existing release asset names are rejected before publish") unless collision_index && publish_index && collision_index < publish_index
+collision = publish_steps.fetch(collision_index)
+abort("missing release gate: release asset collision check uses GitHub token") unless collision.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
+[
+  'gh api --paginate',
+  '"repos/$GITHUB_REPOSITORY/releases?per_page=100"',
+  '--jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .assets[].name"',
+  '"compme-${VERSION}-macos.zip"',
+  '"compme-${VERSION}-macos.zip.sha256"',
+  '"compme-${VERSION}-update.json"',
+  'if grep -Fxq "$asset" <<<"$existing_assets"; then',
+  'refusing to overwrite existing release asset: $asset',
+  'exit 1',
+].each { |fragment| require_run_fragment!(collision, fragment, "release asset collision #{fragment}") }
+publish = publish_steps.find { |step| step["name"] == "Publish GitHub release" }
+abort("missing release gate: publishes GitHub release") unless publish
+abort("missing release gate: published release assets are not overwritten") unless publish.fetch("with").fetch("overwrite_files") == false
 RUBY
 }
 
@@ -569,13 +688,20 @@ abort("missing release gate: workflow defaults to read-only contents permission"
 jobs = workflow.fetch("jobs")
 release = jobs.fetch("release")
 abort("missing release gate: release job uses protected release environment") unless release.fetch("environment") == "release"
-def full_sha_action_ref?(uses)
-  uses.is_a?(String) && uses.match?(/\A[^@\s]+@[0-9a-f]{40}\z/)
+def approved_action_ref?(uses)
+  [
+    "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+    "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
+    "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",
+  ].include?(uses)
 end
 jobs.each do |job_name, job|
   Array(job["steps"]).each do |step|
     next unless step.key?("uses")
-    abort("missing release gate: #{job_name} action is pinned to a full commit SHA") unless full_sha_action_ref?(step["uses"])
+    abort("missing release gate: #{job_name} action uses an approved identity and commit SHA") unless approved_action_ref?(step["uses"])
   end
 end
 needs = Array(release.fetch("needs"))
@@ -842,7 +968,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
   release:
     needs: [validate, windows, linux]
     environment: release
@@ -910,6 +1036,15 @@ jobs:
 YAML
   if check_release_hardening_fixture "$mutable_prereq_action_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: mutable prerequisite action ref was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  attacker_action_release="$tmp_dir/attacker-action-release.yml"
+  cp "$good_hardened_release" "$attacker_action_release"
+  ruby -0pi -e 'sub(%r{actions/checkout@[0-9a-f]{40}}, "attacker/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5")' "$attacker_action_release"
+  if check_release_hardening_fixture "$attacker_action_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: attacker-owned pinned action was accepted" >&2
     cleanup
     return 1
   fi
@@ -1270,6 +1405,135 @@ YAML
     return 1
   fi
 
+  # The current workflow is the public policy seam for coordinated release
+  # integrity controls. Each mutation below preserves valid YAML while removing
+  # or weakening one security property; the checker must reject every variant.
+  check_release_integrity_controls "$canonical_release_workflow"
+  integrity_fixture="$tmp_dir/release-integrity.yml"
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(tools/release/validate-version.sh "$version"), %q(echo "$version"))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: missing shared version validation was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(if [ "$GITHUB_SHA" != "$default_sha" ]; then), %q(if false; then))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: non-exact preflight default HEAD check was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    needle = %q(if [ "$GITHUB_SHA" != "$default_sha" ]; then)
+    first = text.index(needle)
+    second = first && text.index(needle, first + needle.length)
+    abort "missing second exact-HEAD fixture" unless second
+    text[second, needle.length] = "if false; then"
+    File.write(path, text)
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: non-exact prebuild default HEAD check was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(if [ "$archs" != "arm64" ]; then), %q(if [ -z "$archs" ]; then))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: weakened prebuild architecture check was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    steps = workflow.fetch("jobs").fetch("build_release").fetch("steps")
+    arch = steps.index { |step| step["name"] == "Verify downloaded binary is arm64 only" }
+    import = steps.index { |step| step["name"] == "Import Developer ID certificate" }
+    steps.insert(import + 1, steps.delete_at(arch))
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: post-secret architecture verification was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    steps = workflow.fetch("jobs").fetch("build_release").fetch("steps")
+    steps.reject! { |step| step["name"] == "Register signing keychain cleanup path" }
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: missing pre-import keychain registration was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(security delete-keychain "$keychain"; then), %q(security delete-keychain "$keychain" || true; then))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: fail-open signing keychain deletion was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(keychain="${COMPME_SIGNING_KEYCHAIN:-$RUNNER_TEMP/compme-signing.keychain-db}"), %q(keychain="${COMPME_SIGNING_KEYCHAIN:-}"))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cleanup without deterministic keychain fallback was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(if [ -e "$keychain" ]; then), %q(if false; then))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cleanup without keychain absence verification was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    steps = workflow.fetch("jobs").fetch("publish_release").fetch("steps")
+    steps.reject! { |step| step["name"] == "Reject existing release asset names" }
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: missing existing-asset collision check was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    publish = workflow.fetch("jobs").fetch("publish_release").fetch("steps").find { |step| step["name"] == "Publish GitHub release" }
+    publish.fetch("with")["overwrite_files"] = true
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: release asset overwrite was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   cleanup
 }
 
@@ -1289,6 +1553,7 @@ fi
 
 check_no_automated_a2_validation "$ci_workflow" "CI"
 check_no_automated_a2_validation "$release_workflow" "release"
+check_release_integrity_controls "$release_workflow"
 check_manual_a2_summary "$readme_doc" "README"
 check_manual_a2_summary "$development_doc" "DEVELOPMENT"
 reject_line "$0" '^[[:space:]]*a2_matrix_ledger_script=' "release policy checker binds the manual A2 ledger tool"
@@ -1352,13 +1617,20 @@ ruby -ryaml -e '
 
   jobs = ci_workflow.fetch("jobs")
   abort("missing release gate: CI workflow defaults to read-only contents permission") unless ci_workflow.fetch("permissions").fetch("contents") == "read"
-  def full_sha_action_ref?(uses)
-    uses.is_a?(String) && uses.match?(/\A[^@\s]+@[0-9a-f]{40}\z/)
+  def approved_action_ref?(uses)
+    [
+      "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+      "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
+      "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
+      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+      "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+      "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",
+    ].include?(uses)
   end
   jobs.each do |job_name, job|
     Array(job["steps"]).each do |step|
       next unless step.key?("uses")
-      abort("missing release gate: CI #{job_name} action is pinned to a full commit SHA") unless full_sha_action_ref?(step["uses"])
+      abort("missing release gate: CI #{job_name} action uses an approved identity and commit SHA") unless approved_action_ref?(step["uses"])
     end
   end
   jobs.each do |job_name, job|
@@ -1391,6 +1663,7 @@ ruby -ryaml -e '
     "cask finalizer" => ["Release cask finalizer self-test", "tools/release/finalize-cask.sh --self-test"],
     "notarization helper" => ["Notarization helper self-test", "tools/release/notarize-app.sh --self-test"],
     "update manifest" => ["Update manifest self-test", "tools/release/write-update-manifest.sh --self-test"],
+    "version validator" => ["Release version validator self-test", "tools/release/validate-version.sh --self-test"],
   }
   {
     "CI root format" => ["Format", "cargo fmt --all -- --check"],
@@ -1435,10 +1708,10 @@ ruby -ryaml -e '
   preflight_steps = preflight.fetch("steps")
   preflight_checkout = preflight_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
   abort("missing release gate: preflight checkout fetches full history") unless preflight_checkout && preflight_checkout.fetch("with").fetch("fetch-depth") == 0
-  preflight_tag = preflight_steps.find { |step| step["name"] == "Verify release tag is semver and on default branch" }
-  abort("missing release gate: preflight verifies tag ancestry") unless preflight_tag
+  preflight_tag = preflight_steps.find { |step| step["name"] == "Verify release tag is valid and at default-branch HEAD" }
+  abort("missing release gate: preflight verifies release version and exact default-branch HEAD") unless preflight_tag
   preflight_run = preflight_tag.fetch("run")
-  ["release tag must look like vX.Y.Z", "git fetch origin \"$DEFAULT_BRANCH\"", "git merge-base --is-ancestor \"$GITHUB_SHA\" \"origin/$DEFAULT_BRANCH\""].each do |needle|
+  ["version=\"${GITHUB_REF_NAME#v}\"", "tools/release/validate-version.sh \"$version\"", "git fetch origin \"$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then"].each do |needle|
     abort("missing release gate: preflight #{needle}") unless preflight_run.include?(needle)
   end
   abort("missing release gate: preflight checks release tag metadata") unless step?(
@@ -1476,7 +1749,7 @@ ruby -ryaml -e '
   release_jobs.each do |job_name, job|
     Array(job["steps"]).each do |step|
       next unless step.key?("uses")
-      abort("missing release gate: #{job_name} action is pinned to a full commit SHA") unless full_sha_action_ref?(step["uses"])
+      abort("missing release gate: #{job_name} action uses an approved identity and commit SHA") unless approved_action_ref?(step["uses"])
     end
   end
 
@@ -1510,7 +1783,7 @@ ruby -ryaml -e '
   abort("missing release gate: build_release job has read-only contents permission") unless build_release.fetch("permissions").fetch("contents") == "read"
   abort("missing release gate: publish_release job has contents write permission") unless publish_release.fetch("permissions").fetch("contents") == "write"
   preflight_steps = release_jobs.fetch("preflight").fetch("steps")
-  protected_tag_step = preflight_steps.find { |step| step["name"] == "Verify release tag is semver and on default branch" }
+  protected_tag_step = preflight_steps.find { |step| step["name"] == "Verify release tag is valid and at default-branch HEAD" }
   abort("missing release gate: preflight validates protected release tag") unless protected_tag_step
   abort("missing release gate: protected tag check receives github.ref_protected") unless protected_tag_step.fetch("env").fetch("REF_PROTECTED") == "${{ github.ref_protected }}"
   protected_tag_run = protected_tag_step.fetch("run")
@@ -1527,15 +1800,18 @@ ruby -ryaml -e '
   publish_checkout = publish_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
   abort("missing release gate: publish_release checkout") unless publish_checkout
   abort("missing release gate: publish_release checkout fetches full history") unless publish_checkout.fetch("with").fetch("fetch-depth") == 0
-  ancestry_index = prebuild_steps.index { |step| step["name"] == "Verify release tag is on default branch" }
+  ancestry_index = prebuild_steps.index { |step| step["name"] == "Verify release tag is still at default-branch HEAD" }
   scrub_index = prebuild_steps.index { |step| step["name"] == "Scrub persisted git credentials" }
   rust_index = prebuild_steps.index { |step| step["name"] == "Install Rust (stable)" }
   prebuild_metadata_index = prebuild_steps.index { |step| step["name"] == "Check release tag matches bundle metadata" }
   prebuild_index = prebuild_steps.index { |step| step["name"] == "Prebuild release binary (no signing secrets in this job)" }
+  prebuild_arch_index = prebuild_steps.index { |step| step["name"] == "Verify prebuilt binary is arm64 only" }
   prebuild_upload_index = prebuild_steps.index { |step| step["name"] == "Upload prebuilt release binary" }
   metadata_index = build_steps.index { |step| step["name"] == "Check release tag matches bundle metadata" }
   download_binary_index = build_steps.index { |step| step["name"] == "Download prebuilt release binary" }
   chmod_index = build_steps.index { |step| step["name"] == "Restore prebuilt binary executable bit" }
+  download_arch_index = build_steps.index { |step| step["name"] == "Verify downloaded binary is arm64 only" }
+  register_keychain_index = build_steps.index { |step| step["name"] == "Register signing keychain cleanup path" }
   import_index = build_steps.index { |step| step["name"] == "Import Developer ID certificate" }
   build_index = build_steps.index { |step| step["name"] == "Build the .app bundle" }
   notarize_index = build_steps.index { |step| step["name"] == "Notarize and staple the .app" }
@@ -1548,10 +1824,13 @@ ruby -ryaml -e '
   abort("missing release gate: installs Rust in prebuild") unless rust_index
   abort("missing release gate: checks release tag metadata in prebuild") unless prebuild_metadata_index
   abort("missing release gate: prebuilds release binary in secretless job") unless prebuild_index
+  abort("missing release gate: verifies prebuilt release binary architecture") unless prebuild_arch_index
   abort("missing release gate: uploads prebuilt release binary") unless prebuild_upload_index
   abort("missing release gate: checks release tag metadata") unless metadata_index
   abort("missing release gate: downloads prebuilt release binary") unless download_binary_index
   abort("missing release gate: restores prebuilt binary executable bit") unless chmod_index
+  abort("missing release gate: verifies downloaded release binary architecture") unless download_arch_index
+  abort("missing release gate: registers signing keychain cleanup path") unless register_keychain_index
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
   abort("missing release gate: notarizes and staples app") unless notarize_index
@@ -1566,10 +1845,10 @@ ruby -ryaml -e '
   abort("missing release gate: scrubs persisted git credentials after ancestry check") unless ancestry_index < scrub_index
   abort("missing release gate: scrubs persisted git credentials before Rust/build code") unless scrub_index < rust_index
   abort("missing release gate: checks release tag metadata before prebuild") unless prebuild_metadata_index < prebuild_index
-  abort("missing release gate: prebuilds release binary before artifact upload") unless prebuild_index < prebuild_upload_index
+  abort("missing release gate: verifies arm64 prebuilt binary before artifact upload") unless prebuild_index < prebuild_arch_index && prebuild_arch_index < prebuild_upload_index
   abort("missing release gate: checks release tag metadata before Developer ID secrets") unless metadata_index < import_index
   abort("missing release gate: downloads prebuilt binary before Developer ID import") unless download_binary_index < import_index
-  abort("missing release gate: restores executable bit after download and before bundle build") unless download_binary_index < chmod_index && chmod_index < build_index
+  abort("missing release gate: verifies downloaded arm64 binary and registers cleanup before secrets") unless download_binary_index < chmod_index && chmod_index < download_arch_index && download_arch_index < register_keychain_index && register_keychain_index < import_index
   abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
   scrub_run = prebuild_steps.fetch(scrub_index).fetch("run")
   abort("missing release gate: scrub removes checkout extraheader") unless scrub_run.include?("git config --local --unset-all http.https://github.com/.extraheader")
@@ -1599,8 +1878,8 @@ ruby -ryaml -e '
     abort("missing release gate: downloads prebuilt binary before secret-bearing build step #{step["name"] || idx}") unless download_binary_index < idx
   end
   ancestry_run = prebuild_steps.fetch(ancestry_index).fetch("run")
-  ["git fetch origin \"$DEFAULT_BRANCH\"", "git merge-base --is-ancestor \"$GITHUB_SHA\" \"origin/$DEFAULT_BRANCH\""].each do |needle|
-    abort("missing release gate: early default-branch ancestry check") unless ancestry_run.include?(needle)
+  ["git fetch origin \"$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then"].each do |needle|
+    abort("missing release gate: early exact default-branch HEAD check") unless ancestry_run.include?(needle)
   end
   download_binary_step = build_steps.fetch(download_binary_index)
   abort("missing release gate: prebuilt binary downloaded with pinned download-artifact action") unless download_binary_step.fetch("uses").match?(/\Aactions\/download-artifact@[0-9a-f]{40}\z/)
@@ -1639,7 +1918,7 @@ ruby -ryaml -e '
   cleanup_step = build_steps.fetch(cleanup_index)
   abort("missing release gate: signing keychain cleanup runs always") unless cleanup_step.fetch("if") == "always()"
   cleanup_run = cleanup_step.fetch("run")
-  ["security delete-keychain \"$COMPME_SIGNING_KEYCHAIN\"", "unset COMPME_SIGNING_KEYCHAIN COMPME_CODESIGN_IDENTITY", "COMPME_SIGNING_KEYCHAIN=", "COMPME_CODESIGN_IDENTITY=", ">> \"$GITHUB_ENV\""].each do |needle|
+  ["keychain=\"${COMPME_SIGNING_KEYCHAIN:-$RUNNER_TEMP/compme-signing.keychain-db}\"", "security delete-keychain \"$keychain\"", "if [ -e \"$keychain\" ]; then", "exit \"$cleanup_status\"", "unset COMPME_SIGNING_KEYCHAIN COMPME_CODESIGN_IDENTITY", "COMPME_SIGNING_KEYCHAIN=", "COMPME_CODESIGN_IDENTITY=", ">> \"$GITHUB_ENV\""].each do |needle|
     abort("missing release gate: signing keychain cleanup #{needle}") unless cleanup_run.include?(needle)
   end
   package_step = build_steps.fetch(package_index)
@@ -1679,11 +1958,12 @@ ruby -ryaml -e '
   download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
   abort("missing release gate: downloads release artifacts in publish job") unless download_index
   checksum_index = publish_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
+  collision_index = publish_steps.index { |step| step["name"] == "Reject existing release asset names" }
   publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
   cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
   abort("missing release gate: publishes GitHub release") unless publish_index
   abort("missing release gate: finalizes Homebrew cask") unless cask_index
-  abort("missing release gate: verifies downloaded artifact checksum before publishing release") unless checksum_index && download_index < checksum_index && checksum_index < publish_index
+  abort("missing release gate: verifies checksum and rejects existing assets before publishing release") unless checksum_index && collision_index && download_index < checksum_index && checksum_index < collision_index && collision_index < publish_index
   upload_step = build_steps.fetch(upload_index)
   upload_with = upload_step.fetch("with")
   abort("missing release gate: uploads artifacts with pinned upload-artifact action") unless upload_step.fetch("uses").match?(/\Aactions\/upload-artifact@[0-9a-f]{40}\z/)
@@ -1708,6 +1988,7 @@ ruby -ryaml -e '
   end
   publish_step = publish_steps.fetch(publish_index)
   abort("missing release gate: publishes GitHub release as draft until artifacts attach") unless publish_step.fetch("with").fetch("draft") == true
+  abort("missing release gate: release publisher refuses to overwrite files") unless publish_step.fetch("with").fetch("overwrite_files") == false
   publish_files = publish_step.fetch("with").fetch("files").to_s
   [
     "release-artifacts/compme-*-macos.zip",
@@ -1751,6 +2032,7 @@ bash -n "$make_app_script"
 bash -n "$finalize_cask_script"
 bash -n "$notarize_script"
 bash -n "$update_manifest_script"
+bash -n "$version_validator_script"
 "$bundle_metadata_script" >/dev/null
 "$make_app_script" --self-test >/dev/null
 GITHUB_ACTIONS=true GITHUB_REF_TYPE=tag COMPME_MODEL_GATE_PATH=/tmp/compme-poisoned-model.gguf "$gate_script" --self-test >/dev/null
@@ -1760,6 +2042,7 @@ GITHUB_ACTIONS=true GITHUB_REF_TYPE=tag COMPME_MODEL_GATE_PATH=/tmp/compme-poiso
 "$finalize_cask_script" --self-test >/dev/null
 "$notarize_script" --self-test >/dev/null
 "$update_manifest_script" --self-test >/dev/null
+"$version_validator_script" --self-test >/dev/null
 
 require_line "$readme_doc" "workspace of ${workspace_members_count}$" "README workspace member count"
 require_line "$development_doc" "workspace with ${workspace_members_count}[[:space:]]+members" "DEVELOPMENT workspace member count"
@@ -1777,6 +2060,7 @@ else
   reject_readme_homebrew_line 'Until then, build from' "README Homebrew source fallback after first tag"
 fi
 require_line "$cask_file" '^  url "https://github\.com/mudrii/compme/releases/download/v#\{version\}/compme-#\{version\}-macos\.zip"$' "Homebrew cask GitHub release URL"
+require_line "$cask_file" '^  depends_on arch: :arm64$' "Homebrew cask Apple Silicon architecture constraint"
 require_line "$grammar_spec" 'grammar_fix_prompt_is_single_line_and_includes_word_and_left_context' "grammar spec G1 prompt RED-first test"
 require_line "$grammar_spec" 'vet_correction_accepts_one_edit_and_preserves_case' "grammar spec G1 vet accept RED-first test"
 require_line "$grammar_spec" 'vet_correction_rejects_empty_identical_multi_word_large_edit_and_non_ascii' "grammar spec G1 vet reject RED-first test"
@@ -1857,6 +2141,9 @@ require_development_gate_line '^tools/release/check-privacy-policy\.sh --self-te
 require_line "$acceptance_doc" '^tools/release/check-privacy-policy\.sh[[:space:]]*$' "acceptance docs privacy policy gate"
 require_line "$acceptance_doc" '^tools/release/check-privacy-policy\.sh --self-test[[:space:]]*$' "acceptance docs privacy policy self-test gate"
 require_line "$bundle_metadata_script" 'release tag version is empty' "bundle metadata empty release-tag version rejection"
+require_line "$bundle_metadata_script" 'ruby -c "\$cask_file"' "bundle metadata validates cask Ruby syntax"
+require_line "$bundle_metadata_script" 'Casks/compme\.rb: invalid Ruby syntax' "bundle metadata rejects invalid cask Ruby syntax"
+require_line "$bundle_metadata_script" 'Casks/compme\.rb: architecture must be :arm64' "bundle metadata enforces cask arm64 architecture"
 require_line "$gate_script" '^default_model="tools/spike/models/qwen2\.5-0\.5b-q4_k_m\.gguf"[[:space:]]*$' "pinned base GGUF model path"
 require_line "$gate_script" '^default_url="https://huggingface\.co/Brianpuz/Qwen2\.5-0\.5B-Q4_K_M-GGUF/resolve/2188f0ce52503bd130dee9abf56f36f610784c0e/qwen2\.5-0\.5b-q4_k_m\.gguf"[[:space:]]*$' "pinned base GGUF download URL"
 require_line "$gate_script" '^default_expected="ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484"[[:space:]]*$' "pinned base GGUF sha256"
@@ -1909,7 +2196,8 @@ require_line "$releasing_doc" 'COMPME_MODEL_GATE_URL' "release docs model gate U
 require_line "$releasing_doc" 'COMPME_MODEL_GATE_SHA256' "release docs model gate SHA override"
 require_line "$releasing_doc" 'COMPME_ALLOW_MODEL_GATE_OVERRIDE' "release docs model gate override escape hatch"
 require_line "$releasing_doc" 'COMPME_SPIKE_MODEL_PATH' "release docs spike model path override"
-require_line "$releasing_doc" 'verifies the zip against its `\.sha256`' "release docs publish checksum verification"
+require_line "$releasing_doc" 'verifies the downloaded zip checksum' "release docs publish checksum verification"
+require_line "$releasing_doc" 'same-name release assets are never overwritten; a collision fails closed' "release docs asset collision policy"
 require_line "$releasing_doc" 'tools/bundle/check-bundle-metadata\.sh' "release docs bundle metadata check"
 require_line "$releasing_doc" 'tools/bundle/check-bundle-metadata\.sh --self-test' "release docs bundle metadata self-test"
 require_line "$releasing_doc" 'tools/release/run-model-gates\.sh --self-test' "release docs model gate self-test"

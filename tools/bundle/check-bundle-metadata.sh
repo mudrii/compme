@@ -51,11 +51,13 @@ PLIST
 
   write_cask() {
     floor="${3:-sonoma}"
+    arch="${4:-arm64}"
     cat >"$1" <<CASK
 cask "compme" do
   version "${2}"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   depends_on macos: :${floor}
+  depends_on arch: :${arch}
 end
 CASK
   }
@@ -86,6 +88,13 @@ CASK
   write_cask "$tag_drift_cask" 1.2.3
   ventura_cask="$tmp/ventura.rb"
   write_cask "$ventura_cask" 1.2.3 ventura
+  wrong_arch_cask="$tmp/wrong-arch.rb"
+  write_cask "$wrong_arch_cask" 1.2.3 sonoma x86_64
+  missing_arch_cask="$tmp/missing-arch.rb"
+  write_cask "$missing_arch_cask" 1.2.3
+  ruby -0pi -e 'sub(/^  depends_on arch: :arm64\n/, "")' "$missing_arch_cask"
+  malformed_cask="$tmp/malformed.rb"
+  printf 'cask "compme" do\n  version "1.2.3\nend\n' >"$malformed_cask"
 
   # (a) version drift: cask version != Cargo.toml version -> non-zero + drift error.
   if out="$("$0" "$good_plist" "$cargo" "$drift_cask" 2>&1)"; then
@@ -150,6 +159,36 @@ CASK
   case "$out" in
     *"macOS floor must be >= :sonoma"*) ;;
     *) echo "self-test FAILED: expected macOS-floor error, got: $out" >&2; exit 1 ;;
+  esac
+
+  if out="$("$0" "$good_plist" "$cargo" "$wrong_arch_cask" 2>&1)"; then
+    echo "self-test FAILED: x86_64 cask architecture should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"architecture must be :arm64"*) ;;
+    *) echo "self-test FAILED: expected cask architecture error, got: $out" >&2; exit 1 ;;
+  esac
+
+  if out="$("$0" "$good_plist" "$cargo" "$missing_arch_cask" 2>&1)"; then
+    echo "self-test FAILED: missing cask architecture should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"architecture must be :arm64"*) ;;
+    *) echo "self-test FAILED: expected missing cask architecture error, got: $out" >&2; exit 1 ;;
+  esac
+
+  if out="$("$0" "$good_plist" "$cargo" "$malformed_cask" 2>&1)"; then
+    echo "self-test FAILED: malformed cask Ruby should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"invalid Ruby syntax"*) ;;
+    *) echo "self-test FAILED: expected Ruby syntax error, got: $out" >&2; exit 1 ;;
   esac
 
   if out="$("$0" "$bad_id_plist" "$cargo" "$good_cask" 2>&1)"; then
@@ -255,6 +294,11 @@ info_plist="${1:-"$repo_root/tools/bundle/Info.plist"}"
 app_manifest="${2:-"$repo_root/crates/app/Cargo.toml"}"
 cask_file="${3:-"$repo_root/Casks/compme.rb"}"
 
+if ! ruby -c "$cask_file" >/dev/null; then
+  echo "Casks/compme.rb: invalid Ruby syntax" >&2
+  exit 1
+fi
+
 ruby -rrexml/document -e '
   info_path, cargo_path, cask_path = ARGV
   info = REXML::Document.new(File.read(info_path))
@@ -303,11 +347,13 @@ ruby -rrexml/document -e '
   cask_text = File.read(cask_path)
   cask_version = cask_text[/^\s*version\s+"([^"]+)"/, 1]
   cask_macos = cask_text[/^\s*depends_on\s+macos:\s+:(\w+)/, 1]
+  cask_arch = cask_text[/^\s*depends_on\s+arch:\s+:(\w+)/, 1]
   plist_version = value_after.call("CFBundleShortVersionString")
   expect.call("CFBundleVersion", value_after.call("CFBundleVersion"), plist_version)
   errors << "crates/app Cargo.toml: missing package version" unless cargo_version
   errors << "Casks/compme.rb: missing cask version" unless cask_version
   errors << "Casks/compme.rb: macOS floor must be >= :sonoma" unless cask_macos == "sonoma"
+  errors << "Casks/compme.rb: architecture must be :arm64" unless cask_arch == "arm64"
   if cargo_version && cask_version
     expect.call("CFBundleShortVersionString", plist_version, cargo_version)
     errors << "version drift: cask #{cask_version.inspect} != app #{cargo_version.inspect}" unless cask_version == cargo_version

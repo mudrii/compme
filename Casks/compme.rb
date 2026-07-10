@@ -10,6 +10,7 @@ cask "compme" do
   homepage "https://github.com/mudrii/compme"
 
   depends_on macos: :sonoma
+  depends_on arch: :arm64
 
   app "Compme.app"
 

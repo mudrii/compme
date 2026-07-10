@@ -42,8 +42,10 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
-      # Model-inference tests in model_client/tests/latency.rs are #[ignore]d
-      # (they need a local GGUF + Metal GPU), so the default run is hermetic.
+      # Root model-inference tests in model_client/tests/latency.rs are
+      # #[ignore]d because they need a local GGUF; the tag-release wrapper runs
+      # them CPU-forced. The separate spike integration test remains the
+      # Metal/GPU-oriented path, so the default branch run stays hermetic.
       # Note: a few platform_macos tests share the process-wide NSPasteboard and
       # are serialized to avoid cross-test pasteboard state leaks.
       - name: Test
@@ -67,6 +69,12 @@ jobs:
 
       - name: Bundle metadata self-test
         run: tools/bundle/check-bundle-metadata.sh --self-test
+
+      - name: Release version validator self-test
+        run: tools/release/validate-version.sh --self-test
+
+      - name: Homebrew cask syntax
+        run: ruby -c Casks/compme.rb
 
       - name: Bundle assembler self-test
         run: tools/bundle/make-app.sh --self-test

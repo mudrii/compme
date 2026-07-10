@@ -11,28 +11,10 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+version_validator="$repo_root/tools/release/validate-version.sh"
 
 usage() {
   echo "usage: update-cask.sh vX.Y.Z | --self-test" >&2
-}
-
-validate_version() {
-  local version="$1"
-  local identifier
-  local -a prerelease_identifiers
-  if [[ ! "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]]; then
-    echo "invalid version: $version" >&2
-    return 1
-  fi
-  if [[ "$version" == *-* ]]; then
-    IFS=. read -r -a prerelease_identifiers <<<"${version#*-}"
-    for identifier in "${prerelease_identifiers[@]}"; do
-      if [[ "$identifier" =~ ^[0-9]+$ && "$identifier" == 0* && "$identifier" != "0" ]]; then
-        echo "invalid version: $version" >&2
-        return 1
-      fi
-    done
-  fi
 }
 
 rewrite_cask() {
@@ -317,7 +299,7 @@ if [ -z "$raw" ]; then
 fi
 
 version="${raw#v}"
-validate_version "$version"
+"$version_validator" "$version"
 cask="${COMPME_CASK_PATH:-"$repo_root/Casks/compme.rb"}"
 zip="compme-${version}-macos.zip"
 url="https://github.com/mudrii/compme/releases/download/v${version}/${zip}"

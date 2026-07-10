@@ -6,7 +6,9 @@
 #        finalize-cask.sh --self-test
 set -euo pipefail
 
+script_repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 repo_root="${COMPME_FINALIZE_CASK_REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+version_validator="$script_repo_root/tools/release/validate-version.sh"
 
 usage() {
   echo "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH | --self-test" >&2
@@ -18,6 +20,7 @@ finalize_cask() {
   version="$3"
   default_branch="$4"
 
+  "$version_validator" "$version"
   if [ "$tag" != "v$version" ]; then
     echo "tag/version mismatch: $tag != v$version" >&2
     return 1
@@ -28,7 +31,12 @@ finalize_cask() {
   fi
 
   cd "$repo_root"
-  git fetch origin "$default_branch"
+  git fetch origin "$default_branch" "refs/tags/$tag:refs/tags/$tag"
+  tag_sha="$(git rev-parse "refs/tags/$tag^{commit}")"
+  if [ "$tag_sha" != "$GITHUB_SHA" ]; then
+    echo "GITHUB_SHA $GITHUB_SHA does not match tag $tag commit $tag_sha" >&2
+    return 1
+  fi
   if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$default_branch"; then
     echo "release tag commit $GITHUB_SHA is not on origin/$default_branch" >&2
     return 1
@@ -45,12 +53,14 @@ finalize_cask() {
   if git diff --quiet -- Casks/compme.rb; then
     echo "Casks/compme.rb already matches $tag"
   else
-    git config user.name "github-actions[bot]"
-    git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
     git add Casks/compme.rb
-    git commit -m "chore(release): cask $tag"
-    git push origin "HEAD:$default_branch"
+    git -c user.name="github-actions[bot]" \
+      -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+      commit -m "chore(release): cask $tag"
   fi
+  # Always push, including the no-diff path: a previous failed push can leave
+  # the finalized commit locally clean but still absent from the remote.
+  git push origin "HEAD:$default_branch"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
       echo "## Homebrew cask"
@@ -89,7 +99,8 @@ SH
     chmod +x tools/release/update-cask.sh
     git add .
     git -c user.name=t -c user.email=t@example.test commit -m initial >/dev/null
-    git push origin main >/dev/null 2>&1
+    git tag v9.8.7
+    git push origin main refs/tags/v9.8.7 >/dev/null 2>&1
   )
 }
 
@@ -171,12 +182,24 @@ SH
   fi
   git -C "$tmp/push-fail/work" fetch origin main >/dev/null 2>&1
   test "$(git -C "$tmp/push-fail/work" rev-parse origin/main)" = "$before_remote_sha"
+  failed_push_commit="$(git -C "$tmp/push-fail/work" rev-parse HEAD)"
+  rm "$tmp/push-fail/remote.git/hooks/pre-receive"
+  COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/push-fail/work" \
+    GITHUB_SHA="$push_fail_sha" \
+    "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main >"$tmp/push-retry.out"
+  git -C "$tmp/push-fail/work" fetch origin main >/dev/null 2>&1
+  test "$(git -C "$tmp/push-fail/work" rev-parse origin/main)" = "$failed_push_commit"
+  grep -q "already matches v9.8.7" "$tmp/push-retry.out"
 
   make_fixture_repo "$tmp/version-mismatch" noop
   mismatch_sha="$(git -C "$tmp/version-mismatch/work" rev-parse HEAD)"
+  ruby -0pi -e 'sub(/version "9\.8\.7"/, "version \"9.9.9\"")' "$tmp/version-mismatch/work/Casks/compme.rb"
+  git -C "$tmp/version-mismatch/work" add Casks/compme.rb
+  git -C "$tmp/version-mismatch/work" -c user.name=t -c user.email=t@example.test commit -m newer-version >/dev/null
+  git -C "$tmp/version-mismatch/work" push origin main >/dev/null 2>&1
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/version-mismatch/work" \
     GITHUB_SHA="$mismatch_sha" \
-    "$0" v9.9.9 "$tmp/artifact.zip" 9.9.9 main >/dev/null 2>"$tmp/mismatch.err"; then
+    "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main >/dev/null 2>"$tmp/mismatch.err"; then
     echo "finalize-cask self-test failed: version mismatch was accepted" >&2
     return 1
   fi
@@ -195,8 +218,31 @@ SH
   test "$before_count" = "$after_count"
   grep -q "tag/version mismatch" "$tmp/tag-version-mismatch.err"
 
+  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/not-a-repo" \
+    GITHUB_SHA=unused \
+    "$0" v01.2.3 "$tmp/artifact.zip" 01.2.3 main >/dev/null 2>"$tmp/invalid-version.err"; then
+    echo "finalize-cask self-test failed: invalid version was accepted" >&2
+    return 1
+  fi
+  grep -q "invalid version: 01.2.3" "$tmp/invalid-version.err"
+
+  make_fixture_repo "$tmp/tag-sha-mismatch" noop
+  tag_sha="$(git -C "$tmp/tag-sha-mismatch/work" rev-parse refs/tags/v9.8.7)"
+  wrong_sha="$(git -C "$tmp/tag-sha-mismatch/work" -c user.name=t -c user.email=t@example.test commit-tree "$(git -C "$tmp/tag-sha-mismatch/work" rev-parse HEAD^{tree})" -m wrong-sha)"
+  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/tag-sha-mismatch/work" \
+    GITHUB_SHA="$wrong_sha" \
+    "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main >/dev/null 2>"$tmp/tag-sha-mismatch.err"; then
+    echo "finalize-cask self-test failed: mismatched tag SHA was accepted" >&2
+    return 1
+  fi
+  grep -q "does not match tag v9.8.7 commit $tag_sha" "$tmp/tag-sha-mismatch.err"
+
   make_fixture_repo "$tmp/ancestor" noop
   bad_sha="$(git -C "$tmp/ancestor/work" -c user.name=t -c user.email=t@example.test commit-tree "$(git -C "$tmp/ancestor/work" rev-parse HEAD^{tree})" -m detached)"
+  git -C "$tmp/ancestor/work" tag -d v9.8.7 >/dev/null
+  git -C "$tmp/ancestor/work" push origin :refs/tags/v9.8.7 >/dev/null 2>&1
+  git -C "$tmp/ancestor/work" tag v9.8.7 "$bad_sha"
+  git -C "$tmp/ancestor/work" push origin refs/tags/v9.8.7 >/dev/null 2>&1
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ancestor/work" \
     GITHUB_SHA="$bad_sha" \
     "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main >/dev/null 2>"$tmp/ancestor.err"; then

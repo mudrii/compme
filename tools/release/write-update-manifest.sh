@@ -10,25 +10,11 @@ set -euo pipefail
 
 repo="mudrii/compme"
 min_macos="14.0"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+version_validator="$repo_root/tools/release/validate-version.sh"
 
 usage() {
   echo "usage: write-update-manifest.sh VERSION ZIP SHA256 | --self-test" >&2
-}
-
-validate_version() {
-  local version="$1"
-  local identifier
-  local -a prerelease_identifiers
-  [[ "$version" =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-([0-9A-Za-z-]+[.])*[0-9A-Za-z-]+)?$ ]] || return 1
-  if [[ "$version" == *-* ]]; then
-    IFS=. read -r -a prerelease_identifiers <<<"${version#*-}"
-    for identifier in "${prerelease_identifiers[@]}"; do
-      if [[ "$identifier" =~ ^[0-9]+$ && "$identifier" == 0* && "$identifier" != "0" ]]; then
-        return 1
-      fi
-    done
-  fi
-  return 0
 }
 
 validate_sha() {
@@ -62,10 +48,7 @@ write_manifest() {
   local base="https://github.com/${repo}/releases/download/${tag}"
   local pub_date="${COMPME_UPDATE_PUBLISHED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 
-  validate_version "$version" || {
-    echo "invalid version: $version" >&2
-    return 1
-  }
+  "$version_validator" "$version"
   validate_sha "$sha" || {
     echo "invalid sha256: $sha" >&2
     return 1

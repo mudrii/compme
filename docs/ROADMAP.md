@@ -6,7 +6,7 @@
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-10 through `ea94bba`
+> with symbol/function/gate anchors re-reviewed 2026-07-10 through `88b22cd`
 > (workspace review/tdd/ponytail: zero-alloc slice-based trigger gates, an
 > `InsertStrategy::supports_atomic_range_replace` capability predicate replacing
 > `== AxSet` gates, +8 mutation-pinning tests → 1787 with the dead UTF-16 guard
@@ -22,7 +22,7 @@
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
 > `618013d` (seam hardening and A2 local/manual-only automation policy),
 > `a5781fc` (single model-location control), `18fbc4f` (catalog metadata fix),
-> and the documentation reconciliations through `ea94bba` are post-tag `main`
+> and the documentation reconciliations through `88b22cd` are post-tag `main`
 > changes. They require a later
 > release tag before they are available in the distributed binary. Unless a row
 > explicitly says otherwise, current implementation/test claims below describe
@@ -130,10 +130,15 @@ signing + hardened runtime + notarization + a native updater.
   `xcrun notarytool submit --wait`, staples the ticket with `xcrun stapler`, and
   validates the staple. The tag workflow imports the Developer-ID `.p12`, fails
   closed when signing/notarization secrets are missing, requires a protected
-  `v*` tag plus the protected `release` environment, notarizes before zipping,
-  deletes the signing keychain before packaging/upload, uploads the notarized
-  zip plus `.sha256`, and verifies the downloaded artifact checksum before
-  publishing the GitHub release.
+  `v*` tag plus the protected `release` environment, validates the supported
+  release-version subset through one shared helper, requires the tag to equal
+  the current default-branch HEAD at preflight and again before prebuild, and
+  verifies an exact-arm64 binary both before artifact upload and before signing
+  secrets are exposed. It notarizes before zipping, fails closed unless the
+  deterministic signing keychain is deleted and absent, rejects pre-existing
+  same-name release assets, uploads the notarized zip plus `.sha256`, and
+  verifies the downloaded artifact checksum before publishing the GitHub
+  release. Cask metadata is Ruby-syntax checked and explicitly arm64-only.
 - The updater path is GitHub-release-driven: the tray's **Check for Updates…**
   opens the releases page, and the release workflow uploads an informational
   `compme-<version>-update.json` next to the zip and checksum (nothing consumes
@@ -151,13 +156,26 @@ signing + hardened runtime + notarization + a native updater.
   notarized and stapled the app, verified the packaged checksum, published all
   three artifacts, and finalized the Homebrew cask.
 - **Post-v0.1.4 release policy on current `main`:** `216fa0a` removed the
-  conditional unsigned stable-release fallback so future stable tags fail closed
+  conditional unsigned stable-release fallback so future tags fail closed
   without signing/notarization credentials; `618013d` removed A2 validation from
-  CI/tag-release automation. Neither policy change is part of the v0.1.4 tag.
+  CI/tag-release automation. The current release-integrity review additionally
+  centralizes version validation, binds cask finalization to the tag commit,
+  makes a failed cask push recoverable on retry, rejects release-asset name
+  collisions, constrains the artifact/cask to arm64, and allowlists the exact
+  identities and commit SHAs of every workflow action. None of these post-tag
+  policy changes is part of the v0.1.4 tag.
 
 **Pending:**
 - Optional later upgrade: replace the GitHub-release menu handoff with a full
   Sparkle/appcast client (must add manifest signature verification first).
+- 🔒 **Repository-governance decision:** live GitHub settings still leave
+  `main` unprotected, allow release-tag creation, permit release-environment
+  self-review and unrestricted deployment branches, and allow actions outside
+  the repository's exact checker allowlist. Closing those external controls
+  needs owner authorization because branch protection conflicts with the
+  current direct-to-`main` development policy. Until then, tag-controlled
+  release helpers remain inside the trust boundary of whoever can advance
+  `main` and create a release tag.
 
 **Effort:** Small/optional for the remaining updater upgrade. The signed release,
 CI/release/cask glue, and supply-chain hardening are implemented and machine-pinned

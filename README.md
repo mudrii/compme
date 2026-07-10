@@ -44,8 +44,8 @@ popup / blocked / hotkey-only / unsupported), shows a non-activating AppKit
 ghost-text overlay, intercepts accept keys through transient Carbon hotkeys, and
 inserts accepted text through Accessibility, synthetic keys, or a clipboard-paste
 fallback. Tagged release artifacts are built through the GitHub Release workflow
-as Developer-ID signed, hardened-runtime, notarized, and stapled bundles; stable
-tag releases fail closed if the required signing credentials are unavailable.
+as Developer-ID signed, hardened-runtime, notarized, and stapled bundles; tag
+releases fail closed if the required signing credentials are unavailable.
 
 ## Install
 
@@ -348,6 +348,8 @@ cargo build --locked -p platform_macos --examples
 find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
 tools/bundle/check-bundle-metadata.sh
 tools/bundle/check-bundle-metadata.sh --self-test
+tools/release/validate-version.sh --self-test
+ruby -c Casks/compme.rb
 tools/bundle/make-app.sh --self-test
 tools/bundle/bundle-smoke.sh
 tools/bundle/bundle-smoke.sh --self-test
@@ -390,11 +392,12 @@ Then follow [the A2 manual procedure](docs/ACCEPTANCE.md#a2-compatibility-and-co
 for the required target mapping, evidence directory, matrix run, and ledger
 validation.
 
-CI and the tag release workflow also run scoped Windows/Linux adapter gates on
-native runners: fmt, clippy, test, and build for `platform_windows` on
-`windows-latest`, and the same four commands for `platform_linux` on
-`ubuntu-latest`. They are CI/release-runner gates, not part of the local macOS
-gate above.
+Branch/PR CI also runs native Windows/Linux portability jobs: workspace fmt,
+portable-workspace clippy/tests excluding `platform_macos`, and an app-binary
+build through each target facade. Tag release validation is narrower: it runs
+fmt, clippy, test, and build for `platform_windows` on `windows-latest` and for
+`platform_linux` on `ubuntu-latest`. These are CI/release-runner gates, not part
+of the local macOS gate above.
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full development workflow
 and [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for live macOS validation.

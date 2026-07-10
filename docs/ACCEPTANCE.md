@@ -26,8 +26,10 @@ Acceptance harness syntax, deterministic self-tests, and release model gate:
 
 ```sh
 find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
+tools/release/validate-version.sh --self-test
 tools/bundle/check-bundle-metadata.sh
 tools/bundle/check-bundle-metadata.sh --self-test
+ruby -c Casks/compme.rb
 tools/bundle/make-app.sh --self-test
 tools/bundle/bundle-smoke.sh
 tools/bundle/bundle-smoke.sh --self-test
