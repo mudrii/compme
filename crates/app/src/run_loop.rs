@@ -10309,13 +10309,21 @@ mod tests {
         );
     }
 
+    fn private_memory_test_path(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("compme-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("memory.db")
+    }
+
+    fn remove_private_memory_test_dir(path: &std::path::Path) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
     #[test]
     fn memory_opens_with_the_keychain_fallback_key_when_env_key_is_missing() {
-        let path = std::env::temp_dir().join(format!(
-            "compme-keychain-fallback-{}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let path = private_memory_test_path("keychain-fallback");
         let cfg = MemoryConfig {
             mode: memory::StorageMode::AcceptedOnly,
             path: Some(path.clone()),
@@ -10328,7 +10336,7 @@ mod tests {
             "a keychain-provided key must open the store when the env key is absent"
         );
         drop(store);
-        let _ = std::fs::remove_file(&path);
+        remove_private_memory_test_dir(&path);
     }
 
     #[test]
@@ -10336,11 +10344,7 @@ mod tests {
         // The keychain must not even be consulted: an explicit
         // COMPME_MEMORY_KEY is the operator's override (and the
         // fail-closed path when the keychain is unavailable).
-        let path = std::env::temp_dir().join(format!(
-            "compme-env-key-precedence-{}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let path = private_memory_test_path("env-key-precedence");
         let cfg = MemoryConfig {
             mode: memory::StorageMode::AcceptedOnly,
             path: Some(path.clone()),
@@ -10350,16 +10354,12 @@ mod tests {
         let store = open_memory_store(&cfg, || panic!("keychain consulted despite env key"));
         assert!(store.is_some());
         drop(store);
-        let _ = std::fs::remove_file(&path);
+        remove_private_memory_test_dir(&path);
     }
 
     #[test]
     fn configured_all_monitored_store_persists_redacted_inserted_deltas_only() {
-        let path = std::env::temp_dir().join(format!(
-            "compme-all-monitored-configured-{}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let path = private_memory_test_path("all-monitored-configured");
         let path_str = path.to_string_lossy().into_owned();
         let key = "1111111111111111111111111111111111111111111111111111111111111111";
         let cfg = build_memory_config(&|name| match name {
@@ -10401,7 +10401,7 @@ mod tests {
                 "monitored text must be encrypted on disk, including redacted form"
             );
         }
-        let _ = std::fs::remove_file(&path);
+        remove_private_memory_test_dir(&path);
     }
 
     #[test]
