@@ -44,6 +44,14 @@ run_self_test() {
   cat >"$fake_bin" <<'SH'
 #!/usr/bin/env bash
 mode="${COMPME_FAKE_MODE:-ok}"
+if [ -z "${COMPME_CONFIG:-}" ]; then
+  echo 'fake compme: missing isolated COMPME_CONFIG' >&2
+  exit 9
+fi
+if [ "$mode" = duplicate ]; then
+  printf '%s\n' 'compme: another instance is already running — exiting'
+  exit 0
+fi
 [ "$mode" = omit-startup ] || printf '%s\n' 'compme: model unavailable at startup: model file not found: /tmp/missing.gguf'
 [ "$mode" = omit-recovery ] || printf '%s\n' 'compme: setup remains available; download or select a model, then relaunch'
 [ "$mode" = omit-setup ] || printf '%s\n' 'compme: setup: Model file not ready'
@@ -69,6 +77,17 @@ SH
     echo "PASS self-test-missing-model-startup-secure-input-status"
   else
     echo "FAIL self-test-missing-model-startup-secure-input-status" >&2
+    exit 1
+  fi
+
+  if COMPME_FAKE_MODE=duplicate COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/duplicate.log" "$0" >"$tmp_dir/duplicate.out" 2>&1; then
+    echo "FAIL self-test-missing-model-startup-duplicate-instance: duplicate exit passed" >&2
+    exit 1
+  elif grep -q 'missing startup-unavailable log' "$tmp_dir/duplicate.out"; then
+    echo "PASS self-test-missing-model-startup-duplicate-instance"
+  else
+    echo "FAIL self-test-missing-model-startup-duplicate-instance: expected error missing" >&2
+    cat "$tmp_dir/duplicate.out" >&2
     exit 1
   fi
 
@@ -169,6 +188,7 @@ env -i \
   TMPDIR="${TMPDIR:-/tmp}" \
   RUST_BACKTRACE="${RUST_BACKTRACE:-}" \
   COMPME_FAKE_MODE="${COMPME_FAKE_MODE:-}" \
+  COMPME_CONFIG="$tmp_dir/config.env" \
   COMPME_MODEL_PATH="$missing_model" \
   COMPME_RUN_MS="$RUN_MS" \
   COMPME_ENABLED=false \

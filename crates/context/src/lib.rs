@@ -29,6 +29,69 @@ pub struct WordAtCaret<'a> {
     pub range: WordRange,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnedWordAtCaret {
+    pub word: String,
+    pub range: WordRange,
+}
+
+/// Find the word touching a caret represented by already-split left/right
+/// context without concatenating or indexing the complete field. At most
+/// `max_word_chars + 1` adjacent scalars on either side are materialized; an
+/// overlong word is rejected before it can become an unbounded model prompt.
+/// `left_scalar_count` is the producer-cached absolute caret offset, so this
+/// helper never rescans the unbounded left prefix merely to build the range.
+pub fn word_at_split_caret(
+    left: &str,
+    right: &str,
+    left_scalar_count: usize,
+    max_word_chars: usize,
+) -> Option<OwnedWordAtCaret> {
+    if max_word_chars == 0 {
+        return None;
+    }
+    let right_starts_word = right.chars().next().is_some_and(is_word_char);
+    let left_ends_word = left.chars().next_back().is_some_and(is_word_char);
+    if !right_starts_word && !left_ends_word {
+        return None;
+    }
+
+    let scan_limit = max_word_chars.saturating_add(1);
+    let mut left_word: Vec<char> = left
+        .chars()
+        .rev()
+        .take_while(|c| is_word_char(*c))
+        .take(scan_limit)
+        .collect();
+    if left_word.len() > max_word_chars {
+        return None;
+    }
+    left_word.reverse();
+
+    let right_word: Vec<char> = if right_starts_word {
+        right
+            .chars()
+            .take_while(|c| is_word_char(*c))
+            .take(scan_limit)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if right_word.len() > max_word_chars
+        || left_word.len().saturating_add(right_word.len()) > max_word_chars
+    {
+        return None;
+    }
+
+    let start = left_scalar_count.saturating_sub(left_word.len());
+    let end = left_scalar_count.saturating_add(right_word.len());
+    let word = left_word.into_iter().chain(right_word).collect();
+    Some(OwnedWordAtCaret {
+        word,
+        range: WordRange { start, end },
+    })
+}
+
 pub fn word_at_caret(value: &str, caret: usize) -> Option<WordAtCaret<'_>> {
     let chars: Vec<(usize, char)> = value.char_indices().collect();
     if chars.is_empty() {
@@ -76,15 +139,18 @@ pub fn tail_chars(s: &str, max: usize) -> &str {
     if max == 0 {
         return "";
     }
-    let count = s.chars().count();
-    if count <= max {
-        return s;
-    }
-    let (byte_idx, _) = s
-        .char_indices()
-        .nth(count - max)
-        .expect("count-max is a valid char boundary < count");
+    let (byte_idx, _) = tail_start_byte(s, max);
     &s[byte_idx..]
+}
+
+fn tail_start_byte(s: &str, max: usize) -> (usize, usize) {
+    let mut byte_idx = 0;
+    let mut scanned = 0;
+    for (index, _) in s.char_indices().rev().take(max) {
+        byte_idx = index;
+        scanned += 1;
+    }
+    (byte_idx, scanned)
 }
 
 /// Assemble an opt-in context block to prepend to the completion prompt (A2 §16
@@ -105,8 +171,7 @@ pub fn build_context_block(
     // Collapse whitespace runs (incl. newlines) to a single space so a multi-line
     // source can't masquerade as a new directive line or escape the block.
     // Pre-bound to a 4x tail first: this caps the whitespace-collapse + join
-    // allocation at O(max_chars) instead of O(source). (The tail_chars scan
-    // itself is still linear in the source — it only avoids the allocation.)
+    // allocation and reverse scan at O(max_chars) instead of O(source).
     // Collapse never lengthens text, so 4x slack keeps the final tail_chars()
     // cut identical for anything but whitespace-dominated tails.
     let one_line = |s: &str| {
@@ -243,8 +308,8 @@ Recent: recent\n"
 
     #[test]
     fn context_block_keeps_source_whole_when_len_equals_max() {
-        // tail_chars returns the source unchanged when its scalar count is <= max
-        // (the `count <= max` early return). Pin the exact boundary: a 4-char
+        // tail_chars returns the source unchanged when its scalar count is <= max.
+        // Pin the exact boundary: a 4-char
         // clipboard source with max_chars == 4 is kept WHOLE — not truncated by an
         // off-by-one to its 3-char tail. The bounds tests cover len > max; this is
         // the len == max edge.
@@ -260,8 +325,7 @@ Clipboard: wxyz\n",
     #[test]
     fn context_block_keeps_multibyte_source_whole_when_len_equals_max() {
         // The same len == max boundary, but with a multibyte source: "a日本" is 3
-        // scalars, and max_chars == 3 returns it whole via the `count <= max`
-        // early return — never reaching the byte-offset tail slice. Guards that the
+        // scalars, and max_chars == 3 returns it whole. Guards that the
         // boundary is scalar-counted (a byte-length comparison would see 7 bytes >
         // 3 and wrongly truncate).
         let block = build_context_block(Some("a日本"), None, &[], 3); // 3 scalars == max
@@ -276,7 +340,7 @@ Clipboard: a日本\n",
     #[test]
     fn context_block_truncates_a_multibyte_tail_on_a_char_boundary() {
         // tail_chars is the crate's ONLY byte-offset slice (`&s[byte_idx..]`
-        // after `char_indices().nth()`); that indirection is what keeps the cut
+        // after a reverse `char_indices()` scan); that indirection keeps the cut
         // on a char boundary. The ASCII bounds test above would still pass with
         // naive `&s[count-max..]` byte indexing — this pins the multibyte path
         // (clipboard/screen context routinely carries CJK/emoji), where naive
@@ -288,6 +352,15 @@ Clipboard: a日本\n",
         // Astral (4-byte) tail: keep the last 2 of "x😀y" → "😀y".
         let astral = build_context_block(Some("x😀y"), None, &[], 2);
         assert!(astral.contains("Clipboard: 😀y"), "got {astral:?}");
+    }
+
+    #[test]
+    fn tail_chars_scans_only_the_requested_suffix() {
+        let source = format!("{}日本cd", "x".repeat(10_000));
+        let (start, scanned) = tail_start_byte(&source, 4);
+        assert_eq!(scanned, 4);
+        assert_eq!(&source[start..], "日本cd");
+        assert_eq!(tail_chars(&source, 4), "日本cd");
     }
 
     #[test]
@@ -371,6 +444,55 @@ Recent: green blue\n"
                 range: WordRange { start: 11, end: 14 },
             })
         );
+    }
+
+    #[test]
+    fn word_at_split_caret_finds_a_midword_range_without_joining_the_field() {
+        assert_eq!(
+            word_at_split_caret("😀 te", "h later", 4, 32),
+            Some(OwnedWordAtCaret {
+                word: "teh".into(),
+                range: WordRange { start: 2, end: 5 },
+            })
+        );
+    }
+
+    #[test]
+    fn word_at_split_caret_uses_the_producer_scalar_offset_without_rescanning_prefix() {
+        assert_eq!(
+            word_at_split_caret("te", "h", 10_000, 32),
+            Some(OwnedWordAtCaret {
+                word: "teh".into(),
+                range: WordRange {
+                    start: 9_998,
+                    end: 10_001,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn word_at_split_caret_rejects_an_overlong_correction_token() {
+        let long = "x".repeat(129);
+        assert_eq!(word_at_split_caret(&long, "", 129, 128), None);
+        assert_eq!(word_at_split_caret("prefix ", &long, 7, 128), None);
+        assert_eq!(
+            word_at_split_caret("", "short", 0, 5).unwrap().word,
+            "short"
+        );
+    }
+
+    #[test]
+    fn word_at_split_caret_preserves_boundary_word_semantics() {
+        assert_eq!(
+            word_at_split_caret("hello", " world", 5, 32).unwrap().word,
+            "hello"
+        );
+        assert_eq!(
+            word_at_split_caret("hello ", "world", 6, 32).unwrap().word,
+            "world"
+        );
+        assert_eq!(word_at_split_caret(" ", " ", 1, 32), None);
     }
 
     #[test]

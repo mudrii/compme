@@ -1,7 +1,7 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
 **Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1+ env-gated
-**Prereqs:** clean `main` (builds, clippy clean, ≈1787 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1816 tests green).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
 status ledger; this doc is the execution guide.
 
@@ -284,7 +284,7 @@ in-app consumption (ROADMAP 1.2 note stands).
 
 ## Phase 6 — acceptance + docs
 
-- Extend UI-ASSISTED-TEST-MATRIX with Windows/Linux columns; port
+- Extend `ACCEPTANCE.md`'s Manual/Live Gate Ledger with Windows/Linux rows; port
   tools/acceptance e2e to per-OS variants (osascript → PowerShell UIA
   script / dogtail+Xvfb).
 - ACCEPTANCE.md per-OS gates; ARCHITECTURE.md adapter chapters;

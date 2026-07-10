@@ -51,16 +51,17 @@ pub fn capitalize_pronoun(word: &str) -> Option<String> {
 /// edits, then reapplies the original word's case pattern.
 pub fn vet_correction(original: &str, model_output: &str) -> Option<String> {
     let original = original.trim();
-    // Base (non-instruct) models answer the few-shot prompt with a runaway
-    // continuation (" the. The correct"); the fix is its first token. Take
-    // that token, strip edge punctuation, and hold it to every rule below.
-    let candidate = model_output
-        .split_whitespace()
+    // The model is advisory: never salvage a plausible first token from a
+    // runaway continuation. The safety contract requires the complete response
+    // to contain exactly one whitespace-delimited token.
+    let mut tokens = model_output.split_whitespace();
+    let candidate = tokens
         .next()
         .unwrap_or("")
         .trim_matches(|c: char| c.is_ascii_punctuation() && c != '\'');
     if original.is_empty()
         || candidate.is_empty()
+        || tokens.next().is_some()
         || !original.is_ascii()
         || !candidate.is_ascii()
         || !is_ascii_word(original)
@@ -202,10 +203,7 @@ mod tests {
 
     #[test]
     fn vet_correction_rejects_empty_identical_multi_word_large_edit_and_non_ascii() {
-        // Multi-word output is judged by its FIRST token (see
-        // vet_correction_extracts_first_token_from_runaway_completion); it
-        // still rejects when that token is not a close single-word fix.
-        for output in ["", "   ", "teh", "kitten cat", "kitten"] {
+        for output in ["", "   ", "teh", "the cat", "kitten cat", "kitten"] {
             assert_eq!(vet_correction("teh", output), None, "{output:?}");
         }
         assert_eq!(vet_correction("日本", "本日"), None);
@@ -213,21 +211,12 @@ mod tests {
     }
 
     #[test]
-    fn vet_correction_extracts_first_token_from_runaway_completion() {
-        // Live 2026-07-07: the base (non-instruct) model answers the few-shot
-        // prompt with a runaway continuation — " the. The correct" — whose
-        // first token IS the fix. Extraction takes the first whitespace token,
-        // strips edge punctuation, then applies every strictness rule.
-        assert_eq!(
-            vet_correction("teh", " the. The correct").as_deref(),
-            Some("the")
-        );
+    fn vet_correction_rejects_runaway_output_instead_of_truncating_it() {
+        assert_eq!(vet_correction("teh", " the. The correct"), None);
+        assert_eq!(vet_correction("teh", "the\ncat"), None);
+        // Surrounding punctuation on one token is still a single-word answer.
         assert_eq!(vet_correction("teh", "the,").as_deref(), Some("the"));
         assert_eq!(vet_correction("teh", "\"the\"").as_deref(), Some("the"));
-        // First token far from the original word still rejects.
-        assert_eq!(vet_correction("teh", "banana. the correct"), None);
-        // Punctuation-only first token rejects.
-        assert_eq!(vet_correction("teh", "-> the"), None);
     }
 
     #[test]

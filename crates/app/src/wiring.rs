@@ -353,6 +353,7 @@ mod tests {
         TextContext {
             left: left.into(),
             right: right.into(),
+            left_scalars: left.chars().count(),
             selection: None,
             caret: left.chars().count(),
             source: ContextSource::Accessibility,

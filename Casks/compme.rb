@@ -14,11 +14,6 @@ cask "compme" do
   app "Compme.app"
 
   caveats <<~EOS
-    Releases are currently ad-hoc signed (no Apple Developer ID yet), so
-    Gatekeeper will block the first launch: approve it under
-    System Settings -> Privacy & Security ("Open Anyway"), or install with
-    --no-quarantine if you accept the trade-off.
-
     Open Compme and grant it Accessibility access in
     System Settings -> Privacy & Security -> Accessibility.
 

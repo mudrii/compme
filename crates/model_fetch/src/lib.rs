@@ -31,6 +31,7 @@ pub fn resume_range_header(existing_len: u64) -> Option<String> {
 struct ContentRange {
     start: u64,
     end: u64,
+    total: u64,
 }
 
 impl ContentRange {
@@ -41,7 +42,7 @@ impl ContentRange {
         let start = start.parse::<u64>().ok()?;
         let end = end.parse::<u64>().ok()?;
         let total = total.parse::<u64>().ok()?;
-        (start <= end && end < total).then_some(Self { start, end })
+        (start <= end && end < total).then_some(Self { start, end, total })
     }
 
     fn body_len(self) -> u64 {
@@ -84,6 +85,9 @@ pub enum FetchError {
     /// Downloaded bytes hash differently than the catalog expects. The part
     /// file is KEPT for inspection; dest is never created.
     HashMismatch { expected: String, actual: String },
+    /// A declared, streamed, or already-partial body exceeded the caller's
+    /// catalog-derived byte ceiling.
+    SizeExceeded { max_bytes: u64, observed: u64 },
 }
 
 impl std::fmt::Display for FetchError {
@@ -96,6 +100,13 @@ impl std::fmt::Display for FetchError {
             FetchError::HashMismatch { expected, actual } => {
                 write!(f, "sha256 mismatch: expected {expected}, got {actual}")
             }
+            FetchError::SizeExceeded {
+                max_bytes,
+                observed,
+            } => write!(
+                f,
+                "download size exceeded: maximum {max_bytes} bytes, observed {observed}"
+            ),
         }
     }
 }
@@ -110,13 +121,27 @@ impl std::error::Error for FetchError {}
 /// Strategy (banked D14 design):
 /// partial bytes live in `dest.part`; a non-empty part sends `Range:
 /// bytes=N-`. A 206 appends from N; a 200 means the server ignored Range —
-/// truncate and restart from zero. Any failure KEEPS the part file for the
-/// next resume attempt; success renames part → dest. `progress` receives
+/// truncate and restart from zero. Network/protocol failures keep a safe-size
+/// part for the next resume attempt; an already-oversized part is removed to
+/// reclaim disk. Success renames part → dest. `progress` receives
 /// (bytes_so_far, total_if_known) per chunk.
 pub fn download_url(
     url: &str,
     dest: &std::path::Path,
     expected_sha256: Option<&str>,
+    progress: impl Fn(u64, Option<u64>),
+) -> Result<std::path::PathBuf, FetchError> {
+    download_url_bounded(url, dest, expected_sha256, None, progress)
+}
+
+/// [`download_url`] with an optional hard byte ceiling. Catalog-backed callers
+/// use this so a broken or compromised origin cannot consume unbounded disk
+/// before the final hash check.
+pub fn download_url_bounded(
+    url: &str,
+    dest: &std::path::Path,
+    expected_sha256: Option<&str>,
+    max_bytes: Option<u64>,
     progress: impl Fn(u64, Option<u64>),
 ) -> Result<std::path::PathBuf, FetchError> {
     // Timeouts are mandatory (review-c118 CRITICAL): without a read timeout
@@ -128,7 +153,7 @@ pub fn download_url(
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout_read(std::time::Duration::from_secs(30))
         .build();
-    download_with_agent(&agent, url, dest, expected_sha256, progress)
+    download_with_agent(&agent, url, dest, expected_sha256, max_bytes, progress)
 }
 
 /// Agent-injectable core — tests drive it with millisecond timeouts.
@@ -137,10 +162,20 @@ fn download_with_agent(
     url: &str,
     dest: &std::path::Path,
     expected_sha256: Option<&str>,
+    max_bytes: Option<u64>,
     progress: impl Fn(u64, Option<u64>),
 ) -> Result<std::path::PathBuf, FetchError> {
     let part = dest.with_extension("part");
     let existing = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+    if let Some(max_bytes) = max_bytes {
+        if existing > max_bytes {
+            std::fs::remove_file(&part).map_err(|e| FetchError::Io(e.to_string()))?;
+            return Err(FetchError::SizeExceeded {
+                max_bytes,
+                observed: existing,
+            });
+        }
+    }
 
     let mut request = agent.get(url);
     if let Some(range) = resume_range_header(existing) {
@@ -159,7 +194,7 @@ fn download_with_agent(
         // overflowing the stack instead of failing.
         Err(ureq::Error::Status(416, _)) if existing > 0 => {
             std::fs::remove_file(&part).map_err(|e| FetchError::Io(e.to_string()))?;
-            return download_with_agent(agent, url, dest, expected_sha256, progress);
+            return download_with_agent(agent, url, dest, expected_sha256, max_bytes, progress);
         }
         Err(ureq::Error::Status(code, _)) => return Err(FetchError::Http(code)),
         Err(other) => return Err(FetchError::Network(other.to_string())),
@@ -189,7 +224,7 @@ fn download_with_agent(
         // recompute existing==0 and drop the Range. Propagate Io on failure
         // rather than recursing into an unbounded re-request.
         std::fs::remove_file(&part).map_err(|e| FetchError::Io(e.to_string()))?;
-        return download_with_agent(agent, url, dest, expected_sha256, progress);
+        return download_with_agent(agent, url, dest, expected_sha256, max_bytes, progress);
     }
     if status == 206 && !resumed {
         return Err(FetchError::InvalidRange(
@@ -207,12 +242,22 @@ fn download_with_agent(
             )));
         }
     }
-    let total = body_len
-        // saturating: Content-Length is attacker-controlled; a value near u64::MAX
-        // plus the resume offset would overflow (a debug-build panic) for a number
-        // that only ever feeds the progress bar. The SHA-256 verify-before-rename
-        // is the real integrity gate, so a clamped total is harmless.
-        .map(|body_len| body_len.saturating_add(if resumed { existing } else { 0 }));
+    let total = resumed_range.map(|range| range.total).or_else(|| {
+        body_len
+            // saturating: Content-Length is attacker-controlled; a value near u64::MAX
+            // plus the resume offset would overflow (a debug-build panic) for a number
+            // that only ever feeds the progress bar. The SHA-256 verify-before-rename
+            // is the real integrity gate, so a clamped total is harmless.
+            .map(|body_len| body_len.saturating_add(if resumed { existing } else { 0 }))
+    });
+    if let (Some(max_bytes), Some(observed)) = (max_bytes, total) {
+        if observed > max_bytes {
+            return Err(FetchError::SizeExceeded {
+                max_bytes,
+                observed,
+            });
+        }
+    }
     let resumed_expected_written = resumed_range.map(|range| existing + range.body_len());
 
     // 206 → append to the part; anything else → truncate (fresh or the
@@ -242,8 +287,17 @@ fn download_with_agent(
             Ok(0) => break,
             Ok(n) => {
                 use std::io::Write as _;
+                let next_written = written.saturating_add(n as u64);
+                if let Some(max_bytes) = max_bytes {
+                    if next_written > max_bytes {
+                        return Err(FetchError::SizeExceeded {
+                            max_bytes,
+                            observed: next_written,
+                        });
+                    }
+                }
                 if let Some(expected) = resumed_expected_written {
-                    if written.saturating_add(n as u64) > expected {
+                    if next_written > expected {
                         return Err(FetchError::InvalidRange(format!(
                             "206 body exceeded Content-Range body length {}",
                             expected - existing
@@ -252,7 +306,7 @@ fn download_with_agent(
                 }
                 file.write_all(&buf[..n])
                     .map_err(|e| FetchError::Io(e.to_string()))?;
-                written += n as u64;
+                written = next_written;
                 progress(written, total);
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -319,6 +373,9 @@ pub struct DownloadRequest {
     pub url: String,
     pub dest: std::path::PathBuf,
     pub expected_sha256: Option<String>,
+    /// Maximum permitted bytes on disk, normally derived from the catalog's
+    /// advertised MiB size. `None` is reserved for non-catalog test/probe use.
+    pub max_bytes: Option<u64>,
     pub status: std::sync::Arc<DownloadStatus>,
 }
 
@@ -346,10 +403,11 @@ impl ModelDownloader {
                     *req.status.state.lock().unwrap_or_else(|e| e.into_inner()) =
                         DownloadState::Running;
                     let status = std::sync::Arc::clone(&req.status);
-                    let result = download_url(
+                    let result = download_url_bounded(
                         &req.url,
                         &req.dest,
                         req.expected_sha256.as_deref(),
+                        req.max_bytes,
                         move |written, total| {
                             status
                                 .downloaded
@@ -434,6 +492,95 @@ mod tests {
     }
 
     #[test]
+    fn declared_fresh_body_above_the_download_ceiling_is_rejected_before_writing() {
+        let body = b"eightbit";
+        let url = serve(body, RangeMode::Ignore);
+        let dest = temp_dest("fresh-over-limit");
+        let part = dest.with_extension("part");
+
+        let err = download_url_bounded(&url, &dest, None, Some(4), |_, _| {}).unwrap_err();
+
+        assert!(matches!(
+            err,
+            FetchError::SizeExceeded {
+                max_bytes: 4,
+                observed: 8
+            }
+        ));
+        assert!(!dest.exists());
+        assert!(
+            !part.exists(),
+            "oversized declared bodies must not be opened"
+        );
+    }
+
+    #[test]
+    fn close_framed_body_cannot_stream_past_the_download_ceiling() {
+        let body = b"eightbit";
+        let url = serve(body, RangeMode::NoContentLength);
+        let dest = temp_dest("stream-over-limit");
+        let part = dest.with_extension("part");
+
+        let err = download_url_bounded(&url, &dest, None, Some(4), |_, _| {}).unwrap_err();
+
+        assert!(matches!(
+            err,
+            FetchError::SizeExceeded {
+                max_bytes: 4,
+                observed: 8
+            }
+        ));
+        assert!(!dest.exists());
+        assert_eq!(std::fs::metadata(&part).unwrap().len(), 0);
+        let _ = std::fs::remove_file(part);
+    }
+
+    #[test]
+    fn oversized_existing_part_is_removed_without_resuming() {
+        let dest = temp_dest("existing-over-limit");
+        let part = dest.with_extension("part");
+        std::fs::write(&part, b"eightbit").unwrap();
+
+        let err =
+            download_url_bounded("http://127.0.0.1:1/unused", &dest, None, Some(4), |_, _| {})
+                .unwrap_err();
+
+        assert!(matches!(
+            err,
+            FetchError::SizeExceeded {
+                max_bytes: 4,
+                observed: 8
+            }
+        ));
+        assert!(
+            !part.exists(),
+            "unsafe oversized partials must be reclaimed"
+        );
+    }
+
+    #[test]
+    fn resumed_content_range_total_above_the_download_ceiling_is_rejected() {
+        let body = b"eightbit";
+        let url = serve(body, RangeMode::Honor);
+        let dest = temp_dest("resume-over-limit");
+        let part = dest.with_extension("part");
+        std::fs::write(&part, &body[..4]).unwrap();
+
+        let err = download_url_bounded(&url, &dest, None, Some(7), |_, _| {}).unwrap_err();
+
+        assert!(matches!(
+            err,
+            FetchError::SizeExceeded {
+                max_bytes: 7,
+                observed: 8
+            }
+        ));
+        assert_eq!(std::fs::read(&part).unwrap(), &body[..4]);
+        assert!(!dest.exists());
+        let _ = std::fs::remove_file(part);
+    }
+
+    #[test]
     fn worker_surfaces_a_failed_download_as_failed_state() {
         // The Err→Failed(msg) mapping is what the picker UI renders — pin
         // that a dead download lands in Failed with the status in the text.
@@ -445,6 +592,7 @@ mod tests {
             url,
             dest,
             expected_sha256: None,
+            max_bytes: None,
             status: std::sync::Arc::clone(&status),
         }));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -692,6 +840,7 @@ mod tests {
             url,
             dest: dest.clone(),
             expected_sha256: None,
+            max_bytes: None,
             status: std::sync::Arc::clone(&status),
         }));
         // Spin-wait with a hard deadline — never hang the suite.
@@ -738,6 +887,7 @@ mod tests {
             url,
             dest: dest.clone(),
             expected_sha256: Some(sha256_hex(b"expected worker bytes")),
+            max_bytes: None,
             status: std::sync::Arc::clone(&status),
         }));
 
@@ -790,6 +940,7 @@ mod tests {
             &format!("http://{addr}/model.bin"),
             &dest,
             None,
+            None,
             |_, _| {},
         )
         .unwrap_err();
@@ -837,6 +988,7 @@ mod tests {
             &format!("http://{addr}/model.bin"),
             &dest,
             None,
+            None,
             |_, _| {},
         )
         .unwrap_err();
@@ -879,6 +1031,7 @@ mod tests {
             &agent,
             "http://192.0.2.1:8080/model.bin",
             &dest,
+            None,
             None,
             |_, _| {},
         )
@@ -1353,6 +1506,7 @@ mod tests {
                     url: format!("http://{stall_addr}/model.bin"),
                     dest: temp_dest("overflow"),
                     expected_sha256: None,
+                    max_bytes: None,
                     status: std::sync::Arc::clone(status),
                 })
             })
@@ -1567,6 +1721,7 @@ mod tests {
             url,
             dest: dest.clone(),
             expected_sha256: None,
+            max_bytes: None,
             status: std::sync::Arc::clone(&status),
         }));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1619,6 +1774,7 @@ mod tests {
             url: bad_url,
             dest: temp_dest("second-after-fail-bad"),
             expected_sha256: None,
+            max_bytes: None,
             status: std::sync::Arc::clone(&failed),
         }));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1650,6 +1806,7 @@ mod tests {
             url: good_url.clone(),
             dest: good_dest.clone(),
             expected_sha256: None,
+            max_bytes: None,
             status: std::sync::Arc::clone(&done),
         }) {
             assert!(
@@ -1717,6 +1874,7 @@ mod tests {
             url: format!("http://{addr}/model.bin"),
             dest,
             expected_sha256: None,
+            max_bytes: None,
             status: std::sync::Arc::clone(&status),
         }));
         // Wait until the download is demonstrably in flight.

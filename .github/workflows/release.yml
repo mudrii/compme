@@ -120,10 +120,6 @@ jobs:
       - name: A2 matrix ledger live proof
         env:
           COMPME_A2_MATRIX_LEDGER: ${{ vars.COMPME_A2_MATRIX_LEDGER }}
-          # ponytail: freshness gate relaxed for v0.1.3 — reuses v0.1.0 A2 evidence
-          # instead of a fresh live matrix run. Restore the 86400 default (delete
-          # this line) once a current-release A2 ledger is committed.
-          COMPME_A2_LEDGER_MAX_AGE_SECONDS: "31536000"
         run: |
           set -euo pipefail
           if [ -z "${COMPME_A2_MATRIX_LEDGER:-}" ]; then
@@ -321,11 +317,6 @@ jobs:
     permissions:
       contents: read
     runs-on: macos-14
-    env:
-      # Interim unsigned mode switch: the secrets context is not usable in
-      # step `if:` conditions (Actions startup failure), so surface presence
-      # as a job env value and gate the steps on that.
-      COMPME_HAVE_SIGNING: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 != '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -345,14 +336,7 @@ jobs:
       - name: Restore prebuilt binary executable bit
         run: chmod +x target/release/compme
 
-      # Interim unsigned mode: with no Developer-ID secret configured this
-      # step is skipped, COMPME_CODESIGN_IDENTITY stays unset, and make-app.sh
-      # ad-hoc signs the bundle (Gatekeeper then requires the user's explicit
-      # "Open Anyway" — documented in the cask caveats and release notes).
-      # Configuring the secrets later flips releases back to signed+notarized
-      # with no workflow change. A PARTIAL secret set still fails loud below.
       - name: Import Developer ID certificate
-        if: ${{ env.COMPME_HAVE_SIGNING == 'true' }}
         env:
           P12_BASE64: ${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.COMPME_DEVELOPER_ID_P12_PASSWORD }}
@@ -369,8 +353,8 @@ jobs:
           keychain_password="$(uuidgen)"
           p12="$RUNNER_TEMP/developer-id.p12"
           trap 'rm -f "$p12"' EXIT
+          install -m 600 /dev/null "$p12"
           printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
-          chmod 600 "$p12"
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
@@ -390,11 +374,9 @@ jobs:
       - name: Build the .app bundle
         run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 
-      # Notarization is only possible for Developer-ID-signed builds; it is
-      # paired with the signing condition. If signing secrets exist but the
-      # notary credentials don't, notarize-app.sh itself fails loud.
+      # Stable release artifacts are always Developer-ID signed and notarized;
+      # the helper fails closed when either notarization credential set is absent.
       - name: Notarize and staple the .app
-        if: ${{ env.COMPME_HAVE_SIGNING == 'true' }}
         env:
           COMPME_NOTARYTOOL_KEY_BASE64: ${{ secrets.COMPME_NOTARYTOOL_KEY_BASE64 }}
           COMPME_NOTARYTOOL_KEY_ID: ${{ secrets.COMPME_NOTARYTOOL_KEY_ID }}

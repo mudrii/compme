@@ -1,7 +1,7 @@
 //! macOS platform adapter scaffolding.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_uchar, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -36,6 +36,7 @@ use core_graphics::display::CGDisplay;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField, KeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+use dispatch2::{DispatchQueue, DispatchTime};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{class, msg_send, MainThreadMarker, MainThreadOnly};
@@ -82,6 +83,7 @@ const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.05;
 const AX_WORKER_PUMP_INTERVAL: Duration = Duration::from_millis(5);
 const AX_WORKER_RUN_LOOP_SLICE: Duration = Duration::from_millis(1);
 const CARET_COALESCE_INTERVAL_MS: u64 = 25;
+const FIELD_IDENTITY_REGISTRY_CAPACITY: usize = 64;
 const CARET_SAFETY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const APP_REBIND_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_USABLE_CARET_RECT_WIDTH: f64 = 2000.0;
@@ -342,6 +344,7 @@ pub struct MacosPlatformAdapter {
     callback_dispatcher: CallbackDispatcher,
     next_subscription_id: AtomicU64,
     subscriptions: Arc<Mutex<HashMap<u64, SubscriptionEntry>>>,
+    field_tracker: Arc<Mutex<CaretFieldTracker>>,
     frontmost_pid: Arc<FrontmostPidProvider>,
     now_ms: Arc<NowMsProvider>,
     secure_input_enabled: Arc<SecureInputProvider>,
@@ -1317,17 +1320,21 @@ impl MacosPlatformAdapter {
     }
 
     pub fn with_worker(worker: AxWorker) -> Result<Self, PlatformError> {
+        let clipboard_restore = Arc::new(ClipboardRestoreCoordinator::default());
         Ok(Self {
             worker,
             callback_dispatcher: CallbackDispatcher::new()?,
             next_subscription_id: AtomicU64::new(1),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            field_tracker: Arc::new(Mutex::new(CaretFieldTracker::new())),
             frontmost_pid: Arc::new(frontmost_app_pid),
             now_ms: Arc::new(wall_clock_now_ms),
             secure_input_enabled: Arc::new(macos_secure_input_enabled),
             process_exists: Arc::new(process_exists),
             synthetic_key_poster: Arc::new(post_synthetic_text),
-            pasteboard_poster: Arc::new(post_clipboard_text),
+            pasteboard_poster: Arc::new(move |pid, text| {
+                post_clipboard_text(pid, text, Arc::clone(&clipboard_restore))
+            }),
             backspace_poster: Arc::new(post_synthetic_backspaces),
             observer_installer: AdapterObserverInstaller::Worker,
             accept_tap_installer: AdapterAcceptTapInstaller::Worker,
@@ -1404,6 +1411,7 @@ impl MacosPlatformAdapter {
             callback_dispatcher,
             next_subscription_id: AtomicU64::new(1),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            field_tracker: Arc::new(Mutex::new(CaretFieldTracker::new())),
             frontmost_pid,
             now_ms,
             secure_input_enabled,
@@ -1614,7 +1622,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
     fn subscribe_focus(&self, cb: FocusCallback) -> Result<Subscription, PlatformError> {
         let pid = self.frontmost_pid()?;
         let id = self.next_subscription();
-        let factory = Arc::new(Mutex::new(FocusTokenFactory::new()));
+        let field_tracker = Arc::clone(&self.field_tracker);
         let current_identity_key = Arc::new(Mutex::new(None));
         let binding_state = Arc::new(Mutex::new(None));
         let active = Arc::new(AtomicBool::new(true));
@@ -1644,14 +1652,10 @@ impl PlatformAdapter for MacosPlatformAdapter {
             }
             *current_identity_key = Some(identity_key);
 
-            let Ok(mut factory) = factory.lock() else {
+            let Ok(mut field_tracker) = field_tracker.lock() else {
                 return;
             };
-            let field = factory.focused_field(
-                event.identity.app_id(event.pid),
-                event.identity.pid(event.pid),
-                event.identity.field_element_id(),
-            );
+            let field = field_tracker.field_for_event(event.pid, &event.identity);
             cb_for_dispatch(field);
         });
         let binding = start_dynamic_observer_binding(DynamicObserverBindingConfig {
@@ -1689,7 +1693,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
     fn subscribe_caret(&self, cb: CaretCallback) -> Result<Subscription, PlatformError> {
         let pid = self.frontmost_pid()?;
         let id = self.next_subscription();
-        let tracker = Arc::new(Mutex::new(CaretFieldTracker::new()));
+        let tracker = Arc::clone(&self.field_tracker);
         let coalescer = Arc::new(Mutex::new(CaretCoalescer::new(CARET_COALESCE_INTERVAL_MS)));
         let now_ms = Arc::clone(&self.now_ms);
         let binding_state = Arc::new(Mutex::new(None));
@@ -2428,31 +2432,73 @@ fn post_synthetic_backspaces(pid: i32, count: usize) -> Result<(), PlatformError
     Ok(())
 }
 
-fn post_clipboard_text(pid: i32, text: &str) -> Result<(), PlatformError> {
+fn post_clipboard_text(
+    pid: i32,
+    text: &str,
+    coordinator: Arc<ClipboardRestoreCoordinator>,
+) -> Result<(), PlatformError> {
     let pasteboard = NSPasteboard::generalPasteboard();
     let string_type = pasteboard_string_type();
-    let previous_snapshot = snapshot_pasteboard(&pasteboard);
+    let previous_snapshot = coordinator.snapshot_for_insert(snapshot_pasteboard(&pasteboard)?);
 
     pasteboard.clearContents();
     if !pasteboard.setString_forType(&NSString::from_str(text), string_type) {
-        restore_pasteboard(&pasteboard, &previous_snapshot);
+        let _ = restore_pasteboard(&pasteboard, &previous_snapshot);
         return Err(PlatformError::CannotComplete {
             reason: "failed to write completion text to pasteboard".into(),
         });
     }
     let completion_change_count = pasteboard.changeCount();
+    let restore_epoch =
+        coordinator.record_insert(previous_snapshot.clone(), completion_change_count);
 
+    if let Err(error) = schedule_pasteboard_restore(Arc::clone(&coordinator), restore_epoch) {
+        let _ =
+            restore_coordinated_pasteboard_if_unchanged(&pasteboard, &coordinator, restore_epoch);
+        return Err(error);
+    }
     let post_result = post_command_v(pid);
-    // The Clipboard strategy runs on the AppKit main thread (NSPasteboard is
-    // main-thread-only), so this blocking sleep stalls the heartbeat run loop for
-    // CLIPBOARD_RESTORE_DELAY. It is the price of a synchronous "paste then
-    // restore the user's clipboard" on the only insert strategy left for apps
-    // with no settable AXValue/range. ponytail: accepted limitation for that
-    // fallback path — upgrade to a deferred run-loop/timer restore (keeping the
-    // heartbeat responsive) if a real app makes the 1s stall on accept felt.
-    thread::sleep(CLIPBOARD_RESTORE_DELAY);
-    restore_pasteboard_if_unchanged(&pasteboard, &previous_snapshot, completion_change_count);
+    if post_result.is_err() {
+        let _ =
+            restore_coordinated_pasteboard_if_unchanged(&pasteboard, &coordinator, restore_epoch);
+    }
     post_result
+}
+
+fn schedule_pasteboard_restore(
+    coordinator: Arc<ClipboardRestoreCoordinator>,
+    restore_epoch: u64,
+) -> Result<(), PlatformError> {
+    defer_pasteboard_restore_with(
+        coordinator,
+        restore_epoch,
+        |delay, coordinator, restore_epoch| {
+            let when =
+                DispatchTime::try_from(delay).map_err(|()| PlatformError::CannotComplete {
+                    reason: "clipboard restore deadline overflowed".into(),
+                })?;
+            DispatchQueue::main()
+                .after(when, move || {
+                    let pasteboard = NSPasteboard::generalPasteboard();
+                    let _ = restore_coordinated_pasteboard_if_unchanged(
+                        &pasteboard,
+                        &coordinator,
+                        restore_epoch,
+                    );
+                })
+                .map_err(|error| PlatformError::CannotComplete {
+                    reason: format!("failed to schedule clipboard restore: {error:?}"),
+                })
+        },
+    )
+}
+
+fn defer_pasteboard_restore_with(
+    coordinator: Arc<ClipboardRestoreCoordinator>,
+    restore_epoch: u64,
+    schedule: impl FnOnce(Duration, Arc<ClipboardRestoreCoordinator>, u64) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    schedule(CLIPBOARD_RESTORE_DELAY, coordinator, restore_epoch)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2472,57 +2518,188 @@ struct PasteboardTypeSnapshot {
     data: Vec<u8>,
 }
 
-fn snapshot_pasteboard(pasteboard: &NSPasteboard) -> PasteboardSnapshot {
+#[derive(Debug)]
+struct PendingClipboardRestore {
+    snapshot: PasteboardSnapshot,
+    expected_change_count: isize,
+    epoch: u64,
+}
+
+#[derive(Debug, Default)]
+struct ClipboardRestoreCoordinator {
+    pending: Mutex<Option<PendingClipboardRestore>>,
+    next_epoch: AtomicU64,
+}
+
+impl ClipboardRestoreCoordinator {
+    fn snapshot_for_insert(&self, captured: PasteboardSnapshot) -> PasteboardSnapshot {
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|pending| pending.snapshot.clone())
+            .unwrap_or(captured)
+    }
+
+    fn record_insert(&self, snapshot: PasteboardSnapshot, expected_change_count: isize) -> u64 {
+        let epoch = self.next_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match pending.as_mut() {
+            Some(pending) => {
+                pending.expected_change_count = expected_change_count;
+                pending.epoch = epoch;
+            }
+            None => {
+                *pending = Some(PendingClipboardRestore {
+                    snapshot,
+                    expected_change_count,
+                    epoch,
+                });
+            }
+        }
+        epoch
+    }
+
+    fn take_if_current_epoch_and_change_count(
+        &self,
+        epoch: u64,
+        actual: isize,
+    ) -> Option<PasteboardSnapshot> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if pending
+            .as_ref()
+            .is_none_or(|pending| pending.epoch != epoch)
+        {
+            return None;
+        }
+        let pending = pending.take()?;
+        (pending.expected_change_count == actual).then_some(pending.snapshot)
+    }
+}
+
+fn restore_coordinated_pasteboard_if_unchanged(
+    pasteboard: &NSPasteboard,
+    coordinator: &ClipboardRestoreCoordinator,
+    restore_epoch: u64,
+) -> PasteboardRestoreOutcome {
+    let Some(snapshot) =
+        coordinator.take_if_current_epoch_and_change_count(restore_epoch, pasteboard.changeCount())
+    else {
+        return PasteboardRestoreOutcome::SkippedChanged;
+    };
+    restore_pasteboard(pasteboard, &snapshot)
+}
+
+fn snapshot_pasteboard(pasteboard: &NSPasteboard) -> Result<PasteboardSnapshot, PlatformError> {
     let fallback_string = pasteboard
         .stringForType(pasteboard_string_type())
         .map(|value| value.to_string());
     let items = pasteboard
         .pasteboardItems()
         .map(|items| snapshot_pasteboard_items(&items))
+        .transpose()?
         .unwrap_or_default();
 
-    PasteboardSnapshot {
+    Ok(PasteboardSnapshot {
         items,
         fallback_string,
+    })
+}
+
+fn snapshot_pasteboard_items(
+    items: &NSArray<NSPasteboardItem>,
+) -> Result<Vec<PasteboardItemSnapshot>, PlatformError> {
+    let mut snapshots = Vec::with_capacity(items.len());
+    for item in items {
+        let advertised_types = item.types();
+        if advertised_types.is_empty() {
+            return Err(PlatformError::CannotComplete {
+                reason: "clipboard item advertised no restorable types".into(),
+            });
+        }
+        let mut types = Vec::with_capacity(advertised_types.len());
+        for pasteboard_type in advertised_types {
+            let type_name = pasteboard_type.to_string();
+            let data = item.dataForType(&pasteboard_type).ok_or_else(|| {
+                PlatformError::CannotComplete {
+                    reason: format!(
+                        "clipboard type {type_name:?} could not be materialized safely"
+                    ),
+                }
+            })?;
+            types.push(PasteboardTypeSnapshot {
+                type_name,
+                data: data.to_vec(),
+            });
+        }
+        snapshots.push(PasteboardItemSnapshot { types });
     }
+    Ok(snapshots)
 }
 
-fn snapshot_pasteboard_items(items: &NSArray<NSPasteboardItem>) -> Vec<PasteboardItemSnapshot> {
-    items
-        .iter()
-        .filter_map(|item| {
-            let types = item
-                .types()
-                .iter()
-                .filter_map(|pasteboard_type| {
-                    item.dataForType(&pasteboard_type)
-                        .map(|data| PasteboardTypeSnapshot {
-                            type_name: pasteboard_type.to_string(),
-                            data: data.to_vec(),
-                        })
-                })
-                .collect::<Vec<_>>();
-
-            (!types.is_empty()).then_some(PasteboardItemSnapshot { types })
-        })
-        .collect()
+fn restore_pasteboard(
+    pasteboard: &NSPasteboard,
+    snapshot: &PasteboardSnapshot,
+) -> PasteboardRestoreOutcome {
+    restore_pasteboard_with_writer(pasteboard, snapshot, write_pasteboard_items)
 }
 
-fn restore_pasteboard(pasteboard: &NSPasteboard, snapshot: &PasteboardSnapshot) {
+fn restore_pasteboard_with_writer(
+    pasteboard: &NSPasteboard,
+    snapshot: &PasteboardSnapshot,
+    mut writer: impl FnMut(&NSPasteboard, Vec<Retained<NSPasteboardItem>>) -> bool,
+) -> PasteboardRestoreOutcome {
+    if snapshot.items.is_empty() {
+        restore_pasteboard_string(pasteboard, snapshot.fallback_string.as_deref());
+        return PasteboardRestoreOutcome::Restored;
+    }
+
+    let (Some(items), Some(retry_items)) = (
+        materialize_pasteboard_items(&snapshot.items),
+        materialize_pasteboard_items(&snapshot.items),
+    ) else {
+        return PasteboardRestoreOutcome::FailedPreserved;
+    };
+    let current_string = pasteboard
+        .stringForType(pasteboard_string_type())
+        .map(|value| value.to_string());
     pasteboard.clearContents();
-    if !snapshot.items.is_empty() && restore_pasteboard_items(pasteboard, &snapshot.items) {
-        return;
+    if writer(pasteboard, items) {
+        return PasteboardRestoreOutcome::Restored;
     }
 
-    restore_pasteboard_string(pasteboard, snapshot.fallback_string.as_deref());
+    // `writeObjects:` can fail after the pasteboard has already been cleared.
+    // Retry from a separately materialized copy of the complete multi-format
+    // snapshot before falling back to the safest string content still known.
+    pasteboard.clearContents();
+    if writer(pasteboard, retry_items) {
+        return PasteboardRestoreOutcome::Restored;
+    }
+
+    restore_pasteboard_string(
+        pasteboard,
+        snapshot
+            .fallback_string
+            .as_deref()
+            .or(current_string.as_deref()),
+    );
+    PasteboardRestoreOutcome::FailedPreserved
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PasteboardRestoreOutcome {
     Restored,
     SkippedChanged,
+    FailedPreserved,
 }
 
+#[cfg(test)]
 fn restore_pasteboard_if_unchanged(
     pasteboard: &NSPasteboard,
     snapshot: &PasteboardSnapshot,
@@ -2532,25 +2709,42 @@ fn restore_pasteboard_if_unchanged(
         return PasteboardRestoreOutcome::SkippedChanged;
     }
 
-    restore_pasteboard(pasteboard, snapshot);
-    PasteboardRestoreOutcome::Restored
+    restore_pasteboard(pasteboard, snapshot)
 }
 
+#[cfg(test)]
 fn restore_pasteboard_items(
     pasteboard: &NSPasteboard,
     item_snapshots: &[PasteboardItemSnapshot],
 ) -> bool {
+    let Some(items) = materialize_pasteboard_items(item_snapshots) else {
+        return false;
+    };
+    write_pasteboard_items(pasteboard, items)
+}
+
+fn materialize_pasteboard_items(
+    item_snapshots: &[PasteboardItemSnapshot],
+) -> Option<Vec<Retained<NSPasteboardItem>>> {
     let mut items = Vec::with_capacity(item_snapshots.len());
     for item_snapshot in item_snapshots {
         let item = NSPasteboardItem::new();
         if !populate_pasteboard_item(&item, item_snapshot) {
-            return false;
+            return None;
         }
-        items.push(ProtocolObject::<dyn NSPasteboardWriting>::from_retained(
-            item,
-        ));
+        items.push(item);
     }
+    Some(items)
+}
 
+fn write_pasteboard_items(
+    pasteboard: &NSPasteboard,
+    items: Vec<Retained<NSPasteboardItem>>,
+) -> bool {
+    let items = items
+        .into_iter()
+        .map(ProtocolObject::<dyn NSPasteboardWriting>::from_retained)
+        .collect::<Vec<_>>();
     let item_refs = NSArray::from_retained_slice(&items);
     pasteboard.writeObjects(&item_refs)
 }
@@ -5554,12 +5748,13 @@ fn text_context_from_value(
     let start = (selected_range.location.max(0) as usize).min(utf16_len);
     let length = selected_range.length.max(0) as usize;
     let end = start.saturating_add(length).min(utf16_len);
-    let left_end = byte_index_for_utf16_units(&value, start);
+    let (left_end, left_scalars) = byte_index_and_scalar_count_for_utf16_units(&value, start);
     let right_start = byte_index_for_utf16_units(&value, end);
 
     TextContext {
         left: value[..left_end].to_string(),
         right: value[right_start..].to_string(),
+        left_scalars,
         selection: (end > start).then_some(TextRange { start, end }),
         caret: start,
         source: ContextSource::Accessibility,
@@ -5569,19 +5764,25 @@ fn text_context_from_value(
 }
 
 fn byte_index_for_utf16_units(value: &str, target_units: usize) -> usize {
+    byte_index_and_scalar_count_for_utf16_units(value, target_units).0
+}
+
+fn byte_index_and_scalar_count_for_utf16_units(value: &str, target_units: usize) -> (usize, usize) {
     if target_units == 0 {
-        return 0;
+        return (0, 0);
     }
 
     let mut units = 0usize;
+    let mut scalars = 0usize;
     for (byte_index, ch) in value.char_indices() {
         units = units.saturating_add(ch.len_utf16());
+        scalars += 1;
         if units >= target_units {
-            return byte_index + ch.len_utf8();
+            return (byte_index + ch.len_utf8(), scalars);
         }
     }
 
-    value.len()
+    (value.len(), scalars)
 }
 
 fn run_ax_worker_loop<L, F>(
@@ -5799,16 +6000,16 @@ pub struct CaretCoalescer {
 #[derive(Debug)]
 struct CaretFieldTracker {
     factory: FocusTokenFactory,
-    current: Option<FieldHandle>,
-    current_identity_key: Option<String>,
+    fields: HashMap<String, FieldHandle>,
+    recency: VecDeque<String>,
 }
 
 impl CaretFieldTracker {
     fn new() -> Self {
         Self {
             factory: FocusTokenFactory::new(),
-            current: None,
-            current_identity_key: None,
+            fields: HashMap::new(),
+            recency: VecDeque::new(),
         }
     }
 
@@ -5816,21 +6017,24 @@ impl CaretFieldTracker {
         let app = identity.app_id(fallback_pid);
         let pid = identity.pid(fallback_pid);
         let element_id = identity.field_element_id();
-        let identity_key = identity.stable_field_key();
         let pid = pid.or_else(|| u32::try_from(fallback_pid).ok());
-        if let Some(current) = &self.current {
-            if current.pid == pid
-                && (current.element_id == element_id
-                    || (self.current_identity_key.is_some()
-                        && self.current_identity_key == identity_key))
-            {
-                return current.clone();
-            }
+        let identity_key = identity
+            .stable_field_key()
+            .unwrap_or_else(|| format!("pid={}:element={element_id}", pid.unwrap_or_default()));
+        if let Some(field) = self.fields.get(&identity_key).cloned() {
+            self.recency.retain(|key| key != &identity_key);
+            self.recency.push_back(identity_key);
+            return field;
         }
 
         let field = self.factory.focused_field(app, pid, element_id);
-        self.current_identity_key = identity_key;
-        self.current = Some(field.clone());
+        if self.fields.len() >= FIELD_IDENTITY_REGISTRY_CAPACITY {
+            if let Some(oldest) = self.recency.pop_front() {
+                self.fields.remove(&oldest);
+            }
+        }
+        self.fields.insert(identity_key.clone(), field.clone());
+        self.recency.push_back(identity_key);
         field
     }
 }
@@ -7728,6 +7932,23 @@ mod tests {
         let first = tracker.field_for_event(42, &first_id);
         let other = tracker.field_for_event(42, &other_id);
         assert_ne!(other, first);
+    }
+
+    #[test]
+    fn field_identity_registry_evicts_the_oldest_entry_at_its_bound() {
+        let mut tracker = CaretFieldTracker::new();
+        let first = resolved_identity("ax:first", 42, Some("editor-first"));
+        let original = tracker.field_for_event(42, &first);
+
+        for index in 0..FIELD_IDENTITY_REGISTRY_CAPACITY {
+            let identity =
+                resolved_identity(&format!("ax:{index}"), 42, Some(&format!("editor-{index}")));
+            tracker.field_for_event(42, &identity);
+        }
+
+        let reminted = tracker.field_for_event(42, &first);
+        assert_ne!(reminted.generation, original.generation);
+        assert!(tracker.fields.len() <= FIELD_IDENTITY_REGISTRY_CAPACITY);
     }
 
     #[test]
@@ -9697,7 +9918,7 @@ mod tests {
             vec![first, second]
         ));
 
-        let snapshot = snapshot_pasteboard(&pasteboard);
+        let snapshot = snapshot_pasteboard(&pasteboard).unwrap();
         pasteboard.clearContents();
         assert!(pasteboard
             .setString_forType(&NSString::from_str("replacement"), pasteboard_string_type(),));
@@ -9729,7 +9950,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_drops_item_that_advertises_a_type_but_yields_no_data() {
+    fn snapshot_rejects_item_that_advertises_a_type_but_yields_no_data() {
         // A pasteboard item can advertise a type via a lazy data provider yet
         // produce no data when asked (the provider sets nothing). The
         // `(!types.is_empty())` guard in `snapshot_pasteboard_items` keys off
@@ -9751,8 +9972,8 @@ mod tests {
         let snapshot = snapshot_pasteboard_items(&NSArray::from_slice(&[&*item]));
 
         assert!(
-            snapshot.is_empty(),
-            "an item that advertises a type but yields no data must be dropped"
+            matches!(snapshot, Err(PlatformError::CannotComplete { .. })),
+            "an incomplete snapshot must abort before the pasteboard is changed"
         );
         assert!(
             provided_count.load(Ordering::SeqCst) >= 1,
@@ -9761,13 +9982,34 @@ mod tests {
     }
 
     #[test]
-    fn restore_falls_back_to_clear_when_items_fail_to_write() {
-        // `restore_pasteboard` clears, attempts the item restore, and on
-        // failure falls through to `restore_pasteboard_string`. With no
-        // fallback string the net effect is a cleared pasteboard. We force the
-        // item restore to fail deterministically with an empty type name, which
-        // makes `populate_pasteboard_item`'s `setData:forType:` reject the item
-        // (so `restore_pasteboard_items` returns false) — no flaky FFI needed.
+    fn snapshot_rejects_partially_materialized_multi_format_item() {
+        let provider_type = NSString::from_str("com.compme.test.empty");
+        let provided_count = Arc::new(AtomicUsize::new(0));
+        let provider = TestNoopPasteboardProvider::new(Arc::clone(&provided_count));
+        let item = NSPasteboardItem::new();
+        assert!(item.setString_forType(
+            &NSString::from_str("materialized text"),
+            pasteboard_string_type(),
+        ));
+        let provider_ref: &ProtocolObject<dyn NSPasteboardItemDataProvider> =
+            ProtocolObject::from_ref(&*provider);
+        assert!(
+            item.setDataProvider_forTypes(provider_ref, &NSArray::from_slice(&[&*provider_type]),)
+        );
+
+        let snapshot = snapshot_pasteboard_items(&NSArray::from_slice(&[&*item]));
+
+        assert!(matches!(
+            snapshot,
+            Err(PlatformError::CannotComplete { .. })
+        ));
+        assert!(provided_count.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn restore_failure_preserves_the_current_pasteboard() {
+        // Force item materialization to fail before the pasteboard is cleared.
+        // The user's safest current content must survive intact.
         let pasteboard = NSPasteboard::pasteboardWithUniqueName();
         pasteboard.clearContents();
         assert!(
@@ -9792,23 +10034,150 @@ mod tests {
         };
         restore_pasteboard(&pasteboard, &snapshot);
 
-        // The failed restore fell back to clearing: no string survives and the
-        // pasteboard holds nothing from the snapshot.
         assert_eq!(
             pasteboard
                 .stringForType(pasteboard_string_type())
                 .map(|value| value.to_string()),
-            None,
-            "a failed item restore with no fallback string must leave the pasteboard cleared"
+            Some("stale".into()),
+            "an invalid snapshot must not clear the safest current content"
         );
+    }
+
+    #[test]
+    fn post_clear_write_failure_retries_the_complete_multiformat_snapshot() {
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        let custom_type = NSString::from_str("com.compme.test.bytes");
+        pasteboard.clearContents();
+        let external = NSPasteboardItem::new();
         assert!(
-            pasteboard
-                .pasteboardItems()
-                .map(|items| items.len())
-                .unwrap_or(0)
-                == 0,
-            "no snapshot items should have been written after the restore failure"
+            external.setString_forType(&NSString::from_str("external"), pasteboard_string_type(),)
         );
+        assert!(external.setData_forType(&NSData::with_bytes(&[1, 2, 3]), &custom_type));
+        let external = ProtocolObject::<dyn NSPasteboardWriting>::from_retained(external);
+        assert!(pasteboard.writeObjects(&NSArray::from_slice(&[&*external])));
+        let snapshot = snapshot_pasteboard(&pasteboard).unwrap();
+
+        pasteboard.clearContents();
+        assert!(pasteboard
+            .setString_forType(&NSString::from_str("completion"), pasteboard_string_type(),));
+        let attempts = AtomicUsize::new(0);
+
+        let outcome =
+            restore_pasteboard_with_writer(&pasteboard, &snapshot, |pasteboard, items| {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    assert!(pasteboard
+                        .pasteboardItems()
+                        .map(|items| items.is_empty())
+                        .unwrap_or(true));
+                    return false;
+                }
+                write_pasteboard_items(pasteboard, items)
+            });
+
+        assert_eq!(outcome, PasteboardRestoreOutcome::Restored);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let item = pasteboard.pasteboardItems().unwrap().objectAtIndex(0);
+        assert_eq!(
+            item.stringForType(pasteboard_string_type())
+                .map(|value| value.to_string()),
+            Some("external".into())
+        );
+        assert_eq!(
+            item.dataForType(&custom_type).map(|data| data.to_vec()),
+            Some(vec![1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn repeated_restore_failure_preserves_the_original_snapshot_text() {
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        pasteboard.clearContents();
+        assert!(pasteboard
+            .setString_forType(&NSString::from_str("completion"), pasteboard_string_type(),));
+        let snapshot = PasteboardSnapshot {
+            items: vec![PasteboardItemSnapshot {
+                types: vec![PasteboardTypeSnapshot {
+                    type_name: pasteboard_string_type().to_string(),
+                    data: vec![1, 2, 3],
+                }],
+            }],
+            fallback_string: Some("original user text".into()),
+        };
+        let attempts = AtomicUsize::new(0);
+
+        let outcome = restore_pasteboard_with_writer(&pasteboard, &snapshot, |_, _| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            false
+        });
+
+        assert_eq!(outcome, PasteboardRestoreOutcome::FailedPreserved);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            pasteboard
+                .stringForType(pasteboard_string_type())
+                .map(|value| value.to_string()),
+            Some("original user text".into())
+        );
+    }
+
+    #[test]
+    fn clipboard_restore_is_deferred_without_waiting_for_the_deadline() {
+        let scheduled = Arc::new(Mutex::new(Vec::new()));
+        let scheduled_in_hook = Arc::clone(&scheduled);
+        let coordinator = Arc::new(ClipboardRestoreCoordinator::default());
+        let snapshot = PasteboardSnapshot {
+            items: Vec::new(),
+            fallback_string: Some("previous".into()),
+        };
+        let restore_epoch = coordinator.record_insert(snapshot, 7);
+
+        let start = std::time::Instant::now();
+        defer_pasteboard_restore_with(
+            Arc::clone(&coordinator),
+            restore_epoch,
+            move |delay, coordinator, restore_epoch| {
+                let snapshot = coordinator
+                    .take_if_current_epoch_and_change_count(restore_epoch, 7)
+                    .unwrap();
+                scheduled_in_hook.lock().unwrap().push((delay, snapshot));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(start.elapsed() < Duration::from_millis(100));
+        let scheduled = scheduled.lock().unwrap();
+        assert_eq!(scheduled.len(), 1);
+        assert_eq!(scheduled[0].0, CLIPBOARD_RESTORE_DELAY);
+        assert_eq!(scheduled[0].1.fallback_string.as_deref(), Some("previous"));
+    }
+
+    #[test]
+    fn clipboard_restore_coordinator_keeps_earliest_snapshot_for_back_to_back_inserts() {
+        let coordinator = ClipboardRestoreCoordinator::default();
+        let external = PasteboardSnapshot {
+            items: Vec::new(),
+            fallback_string: Some("external".into()),
+        };
+        let first_completion = PasteboardSnapshot {
+            items: Vec::new(),
+            fallback_string: Some("first completion".into()),
+        };
+
+        let first = coordinator.snapshot_for_insert(external.clone());
+        let first_epoch = coordinator.record_insert(first, 11);
+        let second = coordinator.snapshot_for_insert(first_completion);
+        let second_epoch = coordinator.record_insert(second, 12);
+
+        assert_eq!(
+            coordinator.take_if_current_epoch_and_change_count(first_epoch, 12),
+            None,
+            "the first insert's stale timer must leave the newer deadline pending"
+        );
+        let pending = coordinator
+            .take_if_current_epoch_and_change_count(second_epoch, 12)
+            .unwrap();
+        assert_eq!(pending, external);
     }
 
     #[test]
@@ -9827,7 +10196,7 @@ mod tests {
         assert_eq!(provided_count.load(Ordering::SeqCst), 0);
 
         let snapshot = PasteboardSnapshot {
-            items: snapshot_pasteboard_items(&NSArray::from_slice(&[&*item])),
+            items: snapshot_pasteboard_items(&NSArray::from_slice(&[&*item])).unwrap(),
             fallback_string: None,
         };
         assert_eq!(provided_count.load(Ordering::SeqCst), 1);
@@ -9874,7 +10243,7 @@ mod tests {
         pasteboard.clearContents();
         assert!(pasteboard
             .setString_forType(&NSString::from_str("previous"), pasteboard_string_type(),));
-        let snapshot = snapshot_pasteboard(&pasteboard);
+        let snapshot = snapshot_pasteboard(&pasteboard).unwrap();
 
         pasteboard.clearContents();
         assert!(pasteboard
@@ -9899,7 +10268,7 @@ mod tests {
         pasteboard.clearContents();
         assert!(pasteboard
             .setString_forType(&NSString::from_str("previous"), pasteboard_string_type(),));
-        let snapshot = snapshot_pasteboard(&pasteboard);
+        let snapshot = snapshot_pasteboard(&pasteboard).unwrap();
 
         pasteboard.clearContents();
         assert!(pasteboard
@@ -13851,6 +14220,65 @@ mod tests {
         assert_eq!(carets[0].1, None);
         assert_eq!(carets[1].0.element_id, "ax:ptr=ax:0x555");
         assert_ne!(carets[1].0.generation, carets[0].0.generation);
+    }
+
+    #[test]
+    fn focus_and_caret_callbacks_share_one_field_identity() {
+        let installs = Arc::new(Mutex::new(Vec::new()));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::clone(&installs), None);
+        let now = Arc::new(AtomicU64::new(0));
+        let now_for_hook = Arc::clone(&now);
+        config.now_ms = Arc::new(move || now_for_hook.fetch_add(30, Ordering::SeqCst));
+        let adapter = test_adapter_with_hooks(config);
+        let focused = Arc::new(Mutex::new(Vec::new()));
+        let carets = Arc::new(Mutex::new(Vec::new()));
+        let focused_in_cb = Arc::clone(&focused);
+        let carets_in_cb = Arc::clone(&carets);
+
+        let _focus = adapter
+            .subscribe_focus(Arc::new(move |field| {
+                focused_in_cb.lock().unwrap().push(field);
+            }))
+            .expect("focus subscription");
+        let _caret = adapter
+            .subscribe_caret(Arc::new(move |field, _| {
+                carets_in_cb.lock().unwrap().push(field);
+            }))
+            .expect("caret subscription");
+
+        let installs = installs.lock().unwrap();
+        (installs[1].dispatch)(observer_event(
+            ObserverNotification::CaretChanged,
+            resolved_identity("ax:0x222", 42, Some("editor-b")),
+        ));
+        (installs[1].dispatch)(observer_event(
+            ObserverNotification::CaretChanged,
+            resolved_identity("ax:0x333", 42, Some("editor-c")),
+        ));
+        (installs[0].dispatch)(observer_event(
+            ObserverNotification::FocusChanged,
+            resolved_identity("ax:0x222", 42, Some("editor-b")),
+        ));
+        (installs[0].dispatch)(observer_event(
+            ObserverNotification::FocusChanged,
+            resolved_identity("ax:0x444", 42, Some("editor-d")),
+        ));
+        (installs[0].dispatch)(observer_event(
+            ObserverNotification::FocusChanged,
+            resolved_identity("ax:0x555", 42, Some("editor-e")),
+        ));
+        (installs[1].dispatch)(observer_event(
+            ObserverNotification::CaretChanged,
+            resolved_identity("ax:0x444", 42, Some("editor-d")),
+        ));
+        drop(installs);
+
+        let focused = focused.lock().unwrap();
+        let carets = carets.lock().unwrap();
+        assert_eq!(focused.len(), 3);
+        assert_eq!(carets.len(), 3);
+        assert_eq!(focused[0], carets[0]);
+        assert_eq!(focused[1], carets[2]);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # Releasing
 
-Compme ships as a macOS `.app` bundle published to GitHub Releases and installed
-through a Homebrew cask after the first signed release. GitHub Actions runs the
+Compme ships as a Developer-ID signed and notarized macOS `.app` bundle published
+to GitHub Releases and installed through a Homebrew cask. GitHub Actions runs the
 root macOS checks and release build on Apple Silicon `macos-14` runners, and CI
 also runs scoped Windows/Linux adapter jobs.
 
@@ -21,16 +21,22 @@ Model-inference tests (`crates/model_client/tests/latency.rs` and the spike mode
 integration test) are `#[ignore]`d because they need a local GGUF, so branch/PR
 CI remains hermetic. The Release workflow CPU-forces the root `model_client`
 latency suite with `COMPME_MODEL_GPU_LAYERS=0`; the separate spike integration
-test remains Metal/GPU-oriented. The Release workflow runs
+test remains Metal/GPU-oriented. Hosted tag validation runs
 [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh) with
 `COMPME_REQUIRE_MODEL_TESTS=1`, `COMPME_REQUIRE_MODEL_CONTEXT=1`, and
-`COMPME_REQUIRE_LATENCY_BUDGET=1`; publishing a tag therefore downloads and
-validates model presence/load/warm-up, enforces backend-sensitive completion
-determinism plus the sub-500ms latency budget, and hash-verifies the base
-Qwen2.5 GGUF before running the model-backed gates on the macOS runner. The
+`COMPME_REQUIRE_LATENCY_BUDGET=0`; it downloads and hash-verifies the base
+Qwen2.5 GGUF and exercises functional model/context behavior without claiming a
+meaningful performance measurement on a virtualized runner. The strict sub-500
+ms budget remains a mandatory pre-tag command on a real, model-capable Mac with
+the wrapper's default `COMPME_REQUIRE_LATENCY_BUDGET=1`. The
 wrapper passes that verified model path into the spike integration test through
 `COMPME_SPIKE_MODEL_PATH`, so the spike gate uses the same GGUF as the root
 model-client gate.
+
+The release workflow runs `run-a1b-live-gates.sh --self-test` only to pin the
+runner and its 17 LOOK/manual checklist IDs. It does not execute a granted GUI
+session or convert those pending checks into release passes; current live status
+is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
 
 ## Cutting a release
 
@@ -73,13 +79,8 @@ model-client gate.
      Signing/notarization secrets may live at repo or environment scope;
      environment scope keeps them away from non-release workflows.
 
-   **Interim unsigned mode:** with NO Developer-ID secret configured, the
-   signing and notarization steps are skipped (gated on
-   `COMPME_DEVELOPER_ID_P12_BASE64`; pinned by `check-model-gates.sh`) and the
-   release ships an ad-hoc-signed bundle — Gatekeeper requires the user's
-   explicit approval on first launch, and the cask caveats say so. A partial
-   secret set still fails loud. Adding the full secret set later flips
-   releases back to signed+notarized with no workflow change.
+   Stable tag releases fail closed if any Developer-ID or notarization secret is
+   missing; there is no unsigned publication fallback.
 2. Bump the version in `crates/app/Cargo.toml`, `tools/bundle/Info.plist`
    (both `CFBundleShortVersionString` and `CFBundleVersion` to the same value —
    `check-bundle-metadata.sh` enforces equality), and `Casks/compme.rb`
@@ -236,9 +237,8 @@ roadmap.
 
 ## Installing (for users)
 
-Homebrew cask install is available only after the first signed `v*` release
-publishes the artifact and finalizes the cask checksum. Until then, build from
-source as described in the README.
+Homebrew cask installation uses the published signed/notarized release artifact
+and the checksum finalized by the tag workflow.
 
 ```sh
 brew tap mudrii/compme https://github.com/mudrii/compme

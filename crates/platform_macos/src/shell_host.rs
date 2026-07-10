@@ -6,6 +6,8 @@
 use std::path::Path;
 use std::time::Duration;
 
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::{NSString, NSURL};
 use platform::shell::{ConfirmPrompt, ShellHost, TrayHandle};
 use platform::{PlatformError, ScreenRect};
 
@@ -70,13 +72,18 @@ impl ShellHost for MacosShellHost {
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map(drop)
-            .map_err(|e| PlatformError::CannotComplete {
-                reason: format!("open {url}: {e}"),
+        let url = NSURL::URLWithString(&NSString::from_str(url)).ok_or_else(|| {
+            PlatformError::CannotComplete {
+                reason: format!("invalid URL {url:?}"),
+            }
+        })?;
+        if NSWorkspace::sharedWorkspace().openURL(&url) {
+            Ok(())
+        } else {
+            Err(PlatformError::CannotComplete {
+                reason: format!("failed to open {url:?}"),
             })
+        }
     }
 
     fn open_permission_settings(&self) -> Result<(), PlatformError> {

@@ -659,6 +659,10 @@ struct GrammarRequestGate<'a> {
 /// correction is a single word, so a few hundred caret-adjacent chars carry
 /// all the signal; the full AX field value can be arbitrarily large.
 const GRAMMAR_LEFT_CTX_CHARS: usize = 400;
+/// Maximum correction-token length accepted from an accessibility field.
+/// Longer adjacent runs are not useful spelling targets and must not become
+/// unbounded model prompts.
+const GRAMMAR_WORD_MAX_CHARS: usize = 128;
 
 fn grammar_fix_request(
     field: &FieldHandle,
@@ -683,9 +687,12 @@ fn grammar_fix_request(
         return None;
     }
 
-    let value = format!("{}{}", ctx.left, ctx.right);
-    let caret = ctx.left.chars().count();
-    let word = context::word_at_caret(&value, caret)?;
+    let word = context::word_at_split_caret(
+        &ctx.left,
+        &ctx.right,
+        ctx.left_scalars,
+        GRAMMAR_WORD_MAX_CHARS,
+    )?;
     Some(CompletionRequest {
         generation: field.generation,
         field: field.clone(),
@@ -696,10 +703,10 @@ fn grammar_fix_request(
         // DEFAULT_MAX_TOKENS/COMPME_MAX_TOKENS budget does not apply here.
         max_tokens: crate::inference::GRAMMAR_MAX_TOKENS,
         kind: RequestKind::GrammarFix {
-            word: word.word.to_string(),
+            word: word.word,
             // Tail-bounded: the prompt needs the word plus nearby context, and
             // the AX-read field value is unbounded attacker/user-sized input.
-            // correction_range stays in full-field coordinates (from `value`).
+            // correction_range stays in full-field scalar coordinates.
             left_ctx: context::tail_chars(&ctx.left, GRAMMAR_LEFT_CTX_CHARS).to_string(),
             correction_range: CorrectionRange {
                 start: word.range.start,
@@ -759,7 +766,7 @@ fn record_license_acceptance(
 }
 
 /// Build the worker request for a catalog entry, threading its pinned
-/// SHA-256 (when present) into model_fetch's verify-before-rename. The
+/// SHA-256 and advertised-size ceiling into model_fetch's guarded stream. The
 /// consume edge previously hardcoded `expected_sha256: None`, which would
 /// have silently ignored a pinned catalog hash.
 fn catalog_download_request(
@@ -771,6 +778,7 @@ fn catalog_download_request(
         url: entry.url.to_string(),
         dest,
         expected_sha256: entry.expected_sha256.map(String::from),
+        max_bytes: Some(u64::from(entry.size_mb) * 1024 * 1024),
         status,
     }
 }
@@ -10480,6 +10488,7 @@ mod tests {
         platform::TextContext {
             left: left.into(),
             right: String::new(),
+            left_scalars: left.chars().count(),
             selection: None,
             caret: left.chars().count(),
             source: platform::ContextSource::Accessibility,
@@ -10496,6 +10505,7 @@ mod tests {
         platform::TextContext {
             left: left.into(),
             right: right.into(),
+            left_scalars: left.chars().count(),
             selection: None,
             caret: left.chars().count(),
             source: platform::ContextSource::Accessibility,
@@ -10654,6 +10664,31 @@ mod tests {
             }
             RequestKind::Completion => panic!("expected grammar request"),
         }
+    }
+
+    #[test]
+    fn grammar_trigger_rejects_an_overlong_word_before_inference() {
+        let field = host_field("grammar-overlong");
+        let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+        let long_word = "x".repeat(GRAMMAR_WORD_MAX_CHARS + 1);
+
+        assert!(
+            grammar_fix_request(
+                &field,
+                &text_context_with_right(&field, &long_word, ""),
+                grammar_gate(
+                    &config,
+                    &config.prefs,
+                    Some("TextEdit"),
+                    None,
+                    true,
+                    &writable_axset_caps(),
+                    0,
+                ),
+            )
+            .is_none(),
+            "unbounded AX words must not become grammar-model prompts"
+        );
     }
 
     #[test]
@@ -13276,6 +13311,7 @@ mod tests {
         );
         assert_eq!(request.url, entry.url);
         assert_eq!(request.dest, PathBuf::from("/tmp/m.gguf"));
+        assert_eq!(request.max_bytes, Some(1024 * 1024));
         // The SAME status block must ride along — a helper constructing a
         // fresh one would silently break progress polling.
         assert!(std::sync::Arc::ptr_eq(&request.status, &status));

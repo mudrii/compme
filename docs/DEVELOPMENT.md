@@ -10,17 +10,19 @@ Rust workspace and the separate spike package.
 `com.compme.app`, and the `compme://` URL scheme declared (Launch Services
 registration). The bundle is the unlock for URL-scheme reception,
 `SMAppService` launch-at-login, and a stable TCC identity. Local source bundles
-are ad-hoc signed by default; the `v*` tag workflow Developer-ID signs,
-notarizes, and staples release artifacts when the required release secrets are
-configured.
+are ad-hoc signed by default; the stable `v*` tag workflow Developer-ID signs,
+notarizes, and staples release artifacts, and fails closed before building when
+required signing credentials are missing and before publication when any
+required notarization credential is missing.
 
 Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
 
 ## Repository State
 
-The current checkout is on `main` and has no git tags. Treat the code as
-unreleased workspace behavior unless a future release process adds tags, release
-notes, or packaged artifacts.
+The current checkout develops on `main`; signed and notarized releases are
+published through v0.1.4. Workspace behavior may be newer than the latest tag,
+so use the tag-specific release assets and notes when validating a published
+version.
 
 The root `Cargo.toml` is a Rust workspace with 25 members
 ([verified 2026-07-04] — keep in sync with `Cargo.toml`):
@@ -156,7 +158,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1791 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1816 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -220,7 +222,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1791 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1816 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
@@ -233,9 +235,11 @@ commands.
 For release-readiness audits with the local GGUF model installed, also run the
 ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md), the A2
 compatibility matrix ledger check against committed/tracked evidence, and the
-A1b manual checklist policy. A release-readiness run should fail on missing A2
-matrix rows, skip/fail ledger rows, unsafe or untracked A2 row logs, unresolved
-mandatory A1b manual gates, or model-gate policy drift.
+A1b manual checklist. The automated tag workflow validates fresh A2 evidence
+and self-tests the A1b checklist structure; it does **not** claim that the 17
+remaining LOOK/manual gates passed. Record those live results separately and
+keep unresolved gates pending. A release-readiness audit should fail on missing
+A2 rows, skip/fail rows, unsafe or untracked A2 logs, or model-gate policy drift.
 
 ```sh
 tools/release/check-a2-matrix-ledger.sh "$ledger"

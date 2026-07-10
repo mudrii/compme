@@ -52,8 +52,9 @@ invalidation remains unit-covered by `emoji_gender_edge_invalidates_stale_visibl
 Runner ID: `grammar-fix-textedit-look`.
 
 A scripted assisted-session live pass on 2026-07-07
-([`UI-ASSISTED-TEST-MATRIX.md`](UI-ASSISTED-TEST-MATRIX.md) Batch 5, after
-commit 5126509's few-shot grammar prompt) rendered the underline and banner
+recorded in the historical matrix and summarized in
+[`ACCEPTANCE.md`](ACCEPTANCE.md) (after commit 5126509's few-shot grammar prompt)
+rendered the underline and banner
 with a real model, accepted in place, and refused a stale correction. The
 checkboxes below remain unchecked because they record the formal human/physical
 pass.

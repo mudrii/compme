@@ -119,6 +119,21 @@ impl LinuxShellHost {
     }
 }
 
+fn spawn_and_reap_with(
+    command: &mut std::process::Command,
+    on_reaped: impl FnOnce(std::process::ExitStatus) + Send + 'static,
+) -> std::io::Result<()> {
+    let mut child = command.spawn()?;
+    std::thread::Builder::new()
+        .name("compme-url-reaper".into())
+        .spawn(move || {
+            if let Ok(status) = child.wait() {
+                on_reaped(status);
+            }
+        })?;
+    Ok(())
+}
+
 impl platform::shell::ShellHost for LinuxShellHost {
     fn pump_events(&self, heartbeat: std::time::Duration) {
         std::thread::sleep(heartbeat);
@@ -129,13 +144,11 @@ impl platform::shell::ShellHost for LinuxShellHost {
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map(drop)
-            .map_err(|e| PlatformError::CannotComplete {
+        spawn_and_reap_with(std::process::Command::new("xdg-open").arg(url), |_| {}).map_err(|e| {
+            PlatformError::CannotComplete {
                 reason: format!("xdg-open {url}: {e}"),
-            })
+            }
+        })
     }
 
     fn open_permission_settings(&self) -> Result<(), PlatformError> {
@@ -196,6 +209,25 @@ impl platform::OverlayPresenter for LinuxOverlayPresenter {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn url_launcher_reaps_child_without_blocking_the_caller() {
+        let (reaped_tx, reaped_rx) = std::sync::mpsc::channel();
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 0.15"]);
+
+        let start = std::time::Instant::now();
+        spawn_and_reap_with(&mut command, move |status| {
+            reaped_tx.send(status).unwrap();
+        })
+        .unwrap();
+
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        assert!(reaped_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .success());
+    }
 
     #[test]
     fn scaffold_reports_linux_and_fails_closed() {

@@ -126,7 +126,8 @@ After the app starts:
 4. Paste the screenshots plus:
    tail -80 /tmp/cm-ui.log
 
-The complete matrix is docs/UI-ASSISTED-TEST-MATRIX.md.
+Record current results against docs/ACCEPTANCE.md's Manual/Live Gate Ledger;
+docs/MANUAL-VALIDATION.md contains the detailed walkthroughs.
 EOF
 
 cd "$repo_root"

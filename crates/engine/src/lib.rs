@@ -558,13 +558,20 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     }
                 }
                 Command::Hide => {
-                    self.overlay.hide()?;
-                    if delay_next_hide {
-                        self.hide_tap_after(SYNTHETIC_INSERT_HIDE_DELAY)?;
+                    // The accept subscription must be torn down even when the
+                    // overlay fails to hide. The machine has already discarded
+                    // its showing state, so returning before teardown would leave
+                    // mapped keys intercepted with no later Hide to release them.
+                    let hide_result = self.overlay.hide();
+                    let tap_result = if delay_next_hide {
+                        let result = self.hide_tap_after(SYNTHETIC_INSERT_HIDE_DELAY);
                         delay_next_hide = false;
+                        result
                     } else {
-                        self.set_tap_visible(false, None)?;
-                    }
+                        self.set_tap_visible(false, None)
+                    };
+                    hide_result?;
+                    tap_result?;
                 }
             }
         }
@@ -3225,7 +3232,9 @@ mod tests {
 
     #[test]
     fn hide_error_propagates_on_dismiss() {
-        // Dismissing a shown suggestion must surface a failing overlay hide.
+        // Dismissing a shown suggestion must surface a failing overlay hide,
+        // while still disarming the accept subscription so the focused app gets
+        // its keys back.
         struct HideFailsOverlay;
         impl OverlayPresenter for HideFailsOverlay {
             fn show_ghost(&mut self, _rect: ScreenRect, _text: &str) -> Result<(), PlatformError> {
@@ -3240,12 +3249,36 @@ mod tests {
         }
 
         let mut engine = Engine::new(FakeAdapter::new(), HideFailsOverlay, 200, 4, 32);
+        let visible = Arc::new(Mutex::new(Vec::new()));
+        let visible_calls = Arc::clone(&visible);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |is_visible| {
+                visible_calls.lock().unwrap().push(is_visible);
+                if is_visible {
+                    Ok(())
+                } else {
+                    Err(PlatformError::StaleField)
+                }
+            },
+            |_| Ok(()),
+            |_| Ok(()),
+        ));
         engine.on_focus(field()).unwrap();
         engine.on_text_changed(typed("x", 1, 0)).unwrap();
         let requests = engine.on_tick(500).unwrap();
         engine.on_completion(&requests[0], "hello".into()).unwrap();
 
-        assert_eq!(engine.on_dismiss(), Err(PlatformError::Timeout));
+        assert_eq!(
+            engine.on_dismiss(),
+            Err(PlatformError::Timeout),
+            "the earlier overlay error wins over the teardown error"
+        );
+        assert_eq!(
+            *visible.lock().unwrap(),
+            vec![true, false],
+            "accept interception must disarm even when overlay hide fails"
+        );
     }
 
     #[test]

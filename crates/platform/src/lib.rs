@@ -43,6 +43,10 @@ pub struct FieldHandle {
 pub struct TextContext {
     pub left: String,
     pub right: String,
+    /// Unicode-scalar length of `left`, computed by the producer while it
+    /// resolves the native caret. Consumers use this absolute offset without
+    /// rescanning an otherwise unbounded field on the main thread.
+    pub left_scalars: usize,
     pub selection: Option<TextRange>,
     pub caret: usize,
     pub source: ContextSource,

@@ -26,8 +26,8 @@ popup / blocked / hotkey-only / unsupported), shows a non-activating AppKit
 ghost-text overlay, intercepts accept keys through transient Carbon hotkeys, and
 inserts accepted text through Accessibility, synthetic keys, or a clipboard-paste
 fallback. Tagged release artifacts are built through the GitHub Release workflow
-as Developer-ID signed and notarized bundles when the repository release secrets
-are configured.
+as Developer-ID signed, hardened-runtime, notarized, and stapled bundles; stable
+tag releases fail closed if the required signing credentials are unavailable.
 
 ## Install
 
@@ -40,11 +40,9 @@ brew tap mudrii/compme https://github.com/mudrii/compme
 brew install --cask compme
 ```
 
-Release artifacts are Developer-ID signed and notarized by the tag workflow once
-release secrets are configured (see [docs/RELEASING.md](docs/RELEASING.md)).
-Until then, releases ship **ad-hoc signed** (interim mode): Gatekeeper blocks
-the first launch, so approve the app under System Settings → Privacy &
-Security ("Open Anyway") after installing — the cask caveats explain this.
+Release artifacts are Developer-ID signed, notarized, and stapled by the tag
+workflow (see [docs/RELEASING.md](docs/RELEASING.md)); v0.1.4 is the current
+published signed release. Local source bundles remain ad-hoc signed by default.
 Enable Compme under System Settings → Privacy & Security → Accessibility. All
 inference is local; nothing leaves the machine.
 
@@ -314,7 +312,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,791 tests:
+suite is roughly 1,816 tests:
 
 ```sh
 cargo fmt --all -- --check
@@ -414,7 +412,7 @@ model's license for acceptance.
 ## Status
 
 This repository develops on `main`; documented behavior describes the current
-workspace. Published releases (if any) are listed on the
+workspace. Published releases, currently through v0.1.4, are listed on the
 [Releases page](https://github.com/mudrii/compme/releases) with signed,
 notarized artifacts and per-version release notes.
 

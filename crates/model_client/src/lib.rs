@@ -420,12 +420,22 @@ fn complete_on_worker(
         return Ok(String::new());
     }
 
+    let n_ctx = context.n_ctx() as usize;
+    if n_ctx <= 1 {
+        // A completion needs at least one prompt token and one output position.
+        // Avoid asking llama.cpp to decode/generate beyond a degenerate context;
+        // callers get a clean empty completion and the next request remains usable.
+        let _ = context.clear_kv_cache_seq(Some(0), None, None);
+        prev_tokens.clear();
+        return Ok(String::new());
+    }
+
     // All position arithmetic comes from the pure, unit-tested `plan_decode`:
     // clamp the prompt to the context window (drop leading tokens, keep the
     // caret-adjacent tail) and reuse the shared KV prefix, re-decoding only the
     // divergent suffix from `reuse` onward (which also drops any generated tokens
     // left over from the previous completion).
-    let plan = plan_decode(prev_tokens, &tokens, max_tokens, context.n_ctx() as usize);
+    let plan = plan_decode(prev_tokens, &tokens, max_tokens, n_ctx);
     if plan.skip > 0 {
         tokens.drain(..plan.skip);
     }
@@ -469,7 +479,8 @@ fn complete_on_worker(
     // Position math lives in the pure, unit-tested `generation_range`: the first
     // generated token sits right after the decoded prompt and the end saturates
     // so a pathological max_tokens can never wrap to a negative/empty range.
-    let (first_generated_pos, last_generated_pos) = generation_range(tokens.len(), max_tokens);
+    let (first_generated_pos, last_generated_pos) =
+        generation_range(tokens.len(), plan.generation_tokens);
     for position in first_generated_pos..last_generated_pos {
         let token = sampler.sample(context, batch.n_tokens() - 1);
         if model.is_eog_token(token) {
@@ -595,6 +606,11 @@ pub fn terse_continuation_prompt(prefix: &str) -> String {
 /// text instead of following directives — the 2026-07-07 live session showed
 /// the old instruction phrasing produced continuations like " If you want to"
 /// that never survived vetting, leaving the feature dead in practice.
+/// Grammar generation is deliberately one token: the completion model emits
+/// the corrected word first, while any larger budget invites explanatory text
+/// that the strict single-token safety filter must reject.
+pub const GRAMMAR_GENERATION_TOKENS: usize = 1;
+
 pub fn grammar_fix_prompt(word: &str, left_ctx: &str) -> String {
     let one_line_ctx = left_ctx.split_whitespace().collect::<Vec<_>>().join(" ");
     let one_line_word = word.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -618,6 +634,10 @@ mod grammar_prompt_tests {
         assert!(prompt.contains("teh"));
         assert!(prompt.contains("I typed"));
         assert!(!prompt.contains('\n'), "{prompt:?}");
+        assert_eq!(
+            GRAMMAR_GENERATION_TOKENS, 1,
+            "strict whole-output vetting relies on stopping after the correction token"
+        );
     }
 
     #[test]
@@ -705,6 +725,9 @@ pub struct DecodePlan {
     pub reuse: usize,
     /// Clamped prompt length; generation begins at this position.
     pub prompt_len: usize,
+    /// Output tokens that fit after the clamped prompt. This is at most the
+    /// caller's requested budget and never crosses the context boundary.
+    pub generation_tokens: usize,
 }
 
 /// The half-open llama.cpp position range `[first, end)` for the generation
@@ -745,10 +768,16 @@ pub fn plan_decode<T: PartialEq>(
     let skip = prompt_tokens_to_skip(current.len(), max_tokens, n_ctx);
     let clamped = &current[skip..];
     let reuse = reusable_prefix_len(prev, clamped);
+    let generation_tokens = if clamped.is_empty() {
+        0
+    } else {
+        max_tokens.min(n_ctx.saturating_sub(clamped.len()))
+    };
     DecodePlan {
         skip,
         reuse,
         prompt_len: clamped.len(),
+        generation_tokens,
     }
 }
 
@@ -1127,7 +1156,8 @@ mod tests {
             DecodePlan {
                 skip: 0,
                 reuse: 0,
-                prompt_len: 4
+                prompt_len: 4,
+                generation_tokens: 24,
             }
         );
     }
@@ -1141,7 +1171,8 @@ mod tests {
             DecodePlan {
                 skip: 0,
                 reuse: 2,
-                prompt_len: 3
+                prompt_len: 3,
+                generation_tokens: 24,
             }
         );
     }
@@ -1157,6 +1188,25 @@ mod tests {
         assert_eq!(plan.prompt_len, 4);
         // clamped == prev → reuse leaves one to re-decode → 3.
         assert_eq!(plan.reuse, 3);
+    }
+
+    #[test]
+    fn plan_decode_caps_generation_to_remaining_context_capacity() {
+        let plan = plan_decode::<i32>(&[], &[1, 2, 3, 4], 200, 64);
+
+        assert_eq!(plan.prompt_len, 1, "one prompt token must survive");
+        assert_eq!(
+            plan.generation_tokens, 63,
+            "generation must stop at the context boundary"
+        );
+    }
+
+    #[test]
+    fn plan_decode_disables_generation_when_context_cannot_hold_prompt_and_output() {
+        for n_ctx in [0, 1] {
+            let plan = plan_decode::<i32>(&[], &[1, 2, 3], 8, n_ctx);
+            assert_eq!(plan.generation_tokens, 0, "n_ctx={n_ctx}");
+        }
     }
 
     #[test]
@@ -1357,7 +1407,8 @@ mod tests {
             DecodePlan {
                 skip: 0,
                 reuse: 0,
-                prompt_len: 0
+                prompt_len: 0,
+                generation_tokens: 0,
             }
         );
     }

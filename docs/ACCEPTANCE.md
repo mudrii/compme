@@ -74,13 +74,16 @@ CPU-forced in release validation with `COMPME_MODEL_GPU_LAYERS=0`; the separate
 `COMPME_REQUIRE_MODEL_TESTS=1` they skip absent models for developer convenience;
 with it, a missing model is a failed acceptance gate. The root model-client gate
 also sets `COMPME_REQUIRE_MODEL_CONTEXT=1` so model load/context initialization
-failures cannot skip silently, and both ignored suites set
-`COMPME_REQUIRE_LATENCY_BUDGET=1` so warm-completion latency assertions cannot
-be skipped.
+failures cannot skip silently. The real-Mac pre-tag commands above set
+`COMPME_REQUIRE_LATENCY_BUDGET=1` for both ignored suites so warm-completion
+latency assertions cannot be skipped there.
 
 The Release workflow must invoke `tools/release/run-model-gates.sh` before
-publishing a tag; `tools/release/check-model-gates.sh` is the machine check that
-prevents the workflow from silently dropping that model-backed gate script.
+publishing a tag; hosted macOS validates model-backed correctness with
+`COMPME_REQUIRE_LATENCY_BUDGET=0` because its virtualized runner has no usable
+Metal. The strict 500 ms warm-latency budget remains mandatory in the real-Mac
+pre-tag run above. `tools/release/check-model-gates.sh` is the machine check that
+prevents the workflow from silently dropping or weakening that split.
 
 ## Live macOS Acceptance Runner
 
@@ -296,10 +299,10 @@ requires an unlocked macOS GUI session with Accessibility permission:
 
 After fixes 5126509 (few-shot grammar prompt for the base model) and 4c2f8d3
 (grammar `max_tokens` bound), a scripted assisted-session live pass on
-2026-07-07 ([`UI-ASSISTED-TEST-MATRIX.md`](UI-ASSISTED-TEST-MATRIX.md) Batch 5)
-confirmed the underline and banner render with a real model, in-place accept,
-and staleness refusal. The human/physical `grammar-fix-textedit-look` pass
-remains the formal residual.
+2026-07-07 confirmed the underline and banner render with a real model,
+in-place accept, and staleness refusal. The retired screenshot matrix is
+summarized here rather than treated as a current artifact. The human/physical
+`grammar-fix-textedit-look` pass remains the formal residual.
 
 ### Settings & Runtime LOOK Gates
 

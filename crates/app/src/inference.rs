@@ -24,7 +24,7 @@ use crate::model_select::{shape_prompt, PromptMode};
 /// Output budget for grammar-fix requests: the vetted result is a single word,
 /// so 8 tokens is ample. Set on the request in the run loop; the worker honors
 /// `request.max_tokens` for every request kind.
-pub(crate) const GRAMMAR_MAX_TOKENS: usize = 8;
+pub(crate) const GRAMMAR_MAX_TOKENS: usize = model_client::GRAMMAR_GENERATION_TOKENS;
 
 /// Per-app bounded rings of recent accepted completions (redacted), shared
 /// between the run loop (which records on accept) and the inference worker (which

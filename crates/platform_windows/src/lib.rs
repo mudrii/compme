@@ -117,6 +117,23 @@ impl WindowsShellHost {
     }
 }
 
+#[cfg(any(windows, test))]
+fn open_url_with(
+    url: &str,
+    launch: impl FnOnce(&[u16]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    if url.contains('\0') {
+        return Err(PlatformError::CannotComplete {
+            reason: "URL contains an interior NUL".into(),
+        });
+    }
+    let wide = url
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    launch(&wide)
+}
+
 impl platform::shell::ShellHost for WindowsShellHost {
     fn pump_events(&self, heartbeat: std::time::Duration) {
         std::thread::sleep(heartbeat);
@@ -127,13 +144,15 @@ impl platform::shell::ShellHost for WindowsShellHost {
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
-            .map(drop)
-            .map_err(|e| PlatformError::CannotComplete {
-                reason: format!("start {url}: {e}"),
-            })
+        #[cfg(windows)]
+        {
+            open_url_with(url, win_host::open_url)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = url;
+            Err(WindowsAdapter::unsupported("open_url"))
+        }
     }
 
     fn open_permission_settings(&self) -> Result<(), PlatformError> {
@@ -194,6 +213,21 @@ impl platform::OverlayPresenter for WindowsOverlayPresenter {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn native_url_launcher_receives_metacharacters_verbatim() {
+        let url = "https://example.test/a path?x=1&y=2|3<4>(5)%25\"quoted\"";
+        let seen = std::sync::Mutex::new(None);
+
+        open_url_with(url, |wide| {
+            assert_eq!(wide.last(), Some(&0));
+            *seen.lock().unwrap() = Some(String::from_utf16(&wide[..wide.len() - 1]).unwrap());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(seen.into_inner().unwrap().as_deref(), Some(url));
+    }
 
     #[test]
     fn scaffold_reports_windows_and_fails_closed() {
@@ -527,6 +561,32 @@ pub mod win_host {
         PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
     };
     use windows::Win32::System::Console::SetConsoleCtrlHandler;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    pub fn open_url(url: &[u16]) -> Result<(), platform::PlatformError> {
+        let operation = "open\0".encode_utf16().collect::<Vec<_>>();
+        // SAFETY: both strings are NUL-terminated for the duration of the call;
+        // null optional arguments ask the shell to use its defaults.
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                PCWSTR(operation.as_ptr()),
+                PCWSTR(url.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        let code = result.0 as isize;
+        if code > 32 {
+            Ok(())
+        } else {
+            Err(platform::PlatformError::CannotComplete {
+                reason: format!("ShellExecuteW failed with code {code}"),
+            })
+        }
+    }
 
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str()

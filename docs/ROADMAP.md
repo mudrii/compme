@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-08 (cross-platform Phase 0: NativeRangeSet + Windows DACL hardening + console ctrl handler; earlier same day: second review+tdd+ponytail pass, release prerelease-tag containment, privacy-scan denylist) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1791 workspace tests; spike separate)
+> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; release workflow now fails closed without signing credentials; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** full deterministic gates green on macOS (≈1816 workspace tests; spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -66,8 +66,9 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   facade.
 
 **Pending (🔒 needs Windows + Linux build+test environments — not doable on macOS):**
-- The actual **Windows** adapter behind `#[cfg(windows)]` (uncomment the `windows`
-  dep in its `Cargo.toml`): UIA focus/caret/text + `WH_KEYBOARD_LL` accept tap +
+- The actual **Windows** adapter behind `#[cfg(windows)]` (extend the existing
+  host-service `windows` feature set in its `Cargo.toml`): UIA focus/caret/text +
+  `WH_KEYBOARD_LL` accept tap +
   `SendInput`/ValuePattern insert + layered overlay, plus real ShellHost services
   (DPAPI/CredWrite key store, tray, confirm UI, launch-at-login, native event pump).
 - The actual **Linux** adapter behind `#[cfg(target_os = "linux")]`: AT-SPI2
@@ -105,7 +106,7 @@ API mapping, CI upgrades, and a risk register. Evidence re-verified against
 Each method's required Win32/Linux API is mapped in its crate's `src/lib.rs` doc
 comments — the scaffold doubles as the implementation guide.
 
-### 1.2 ◑🔒 Distribution hardening (signing, notarization, updater)
+### 1.2 ◑ Distribution hardening — signed/notarized releases shipped; native updater optional
 
 **Plan:** `2026-06-03-engine-macos-mvp-design.md §9` (A3 ship) — Developer-ID
 signing + hardened runtime + notarization + a native updater.
@@ -134,22 +135,21 @@ signing + hardened runtime + notarization + a native updater.
   manifest and finalized the cask sha on main. Release teething fixed en
   route: secrets-in-step-`if` startup failure, hosted-runner latency-budget
   opt-out, browser-row harness `COMPME_DEBUG`.
+- **v0.1.4 SHIPPED 2026-07-10 signed and notarized:** the protected release run
+  imported the Developer-ID identity, produced a hardened-runtime signature,
+  notarized and stapled the app, verified the packaged checksum, published all
+  three artifacts, and finalized the Homebrew cask. Stable tag releases now
+  fail closed if signing or notarization credentials are missing.
 
 **Pending:**
-- Add Developer-ID signing + notarization secrets (Apple Developer account,
-  human-gated) — flips releases back to signed+notarized automatically; the
-  Gatekeeper "Open Anyway" caveat then leaves the cask/README/notes.
 - Optional later upgrade: replace the GitHub-release menu handoff with a full
   Sparkle/appcast client (must add manifest signature verification first).
 
-**Effort:** Medium. **Blocked on an Apple Developer ID account ($99/yr) — human-gated.**
-The CI/release/cask glue is already written and locally validated; every gate
-and supply-chain hardening measure is enumerated (and machine-pinned by
-`tools/release/check-model-gates.sh`) in [`RELEASING.md`](RELEASING.md)'s
-pipelines table. The A2 evidence itself under `tools/acceptance/evidence/a2/`
-is still to be produced. First release now waits on the
-signing/notarization secrets and identity, committed A2 matrix ledger evidence
-plus the repo variable that points at it, and the maintainer-created first tag.
+**Effort:** Small/optional for the remaining updater upgrade. The signed release,
+CI/release/cask glue, and supply-chain hardening are implemented and machine-pinned
+by `tools/release/check-model-gates.sh`; see [`RELEASING.md`](RELEASING.md).
+Future tags require fresh committed A2 matrix evidence under
+`tools/acceptance/evidence/a2/` using the checker's 24-hour default.
 
 ---
 
@@ -220,10 +220,9 @@ LOOK of the mirror window plus hardware accept/cycle presses.
 
 the authoritative pass/fail ledger is [`ACCEPTANCE.md`](ACCEPTANCE.md)'s
 Manual/Live Gate Ledger (17 runner-pinned gate IDs); detailed walkthroughs live
-in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md), and the scripted assisted
-session driver (`tools/acceptance/run-ui-assisted-session.sh`,
-[`UI-ASSISTED-TEST-MATRIX.md`](UI-ASSISTED-TEST-MATRIX.md)) covers part of that
-live pass — plus optional UX enhancements explicitly called out below.
+in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md), and the assisted-session
+driver (`tools/acceptance/run-ui-assisted-session.sh`) supports those manual
+runs. The retired screenshot matrix is not current release evidence.
 
 ### 3.1 🔬 Per-app override editing rows (Apps pane) — code complete, LOOK pending
 - **Status:** the Apps pane ships a compact one-line policy grid. Each recorded
@@ -345,9 +344,11 @@ fail-closed range seams, `overlay-correction-presenter`, Apps-pane `GrammarFix`
 policy column, grammar-accept recorder/persistence, and correction-accept tap
 isolation are in code with focused tests plus `accept_tap_acceptance` correction
 requirements. Live-found+fixed: the shipped base (non-instruct) model never
-produced corrections until the few-shot prompt/first-token vet fix (`5126509`)
-plus the worker `max_tokens` fix (`4c2f8d3`). The Batch 5 assisted session
-([`UI-ASSISTED-TEST-MATRIX.md`](UI-ASSISTED-TEST-MATRIX.md)) live-proved
+produced corrections until the few-shot prompt fix (`5126509`) plus the worker
+`max_tokens` fix (`4c2f8d3`). The current safety boundary uses one-token grammar
+generation followed by strict whole-output vetting; the release GGUF probe
+passes 7/8 typo fixes with 0/4 false fixes. The historical Batch 5 assisted
+session, summarized in [`ACCEPTANCE.md`](ACCEPTANCE.md), live-proved
 underline/banner render, in-place accept, and stale-correction refusal with the
 real model. Residual: the formal `grammar-fix-textedit-look` A1b gate emitted by
 `tools/acceptance/run-a1b-live-gates.sh` (physical trigger/accept keypresses in
@@ -526,18 +527,17 @@ with physical trigger/accept keypresses.
 > **Status (2026-07-01): the macOS-buildable backlog is CODE-COMPLETE.** All six
 > residuals below are done in code (the last gap — the Personalization multi-line
 > instructions field, item 5 — shipped in `256eb14`), verified by a full-codebase
-> review + tdd + ponytail pass (1791 tests, clippy clean). What remains for
-> "ready to use" is **not development**: (a) a human **visual-LOOK pass** on a
-> granted Mac over the 9 settings panes + the Tier-4 live checklist, and (b)
-> **distribution** (Developer-ID signing + notarization + first `v*` tag), which is
-> Apple-ID-gated. The authoritative live-gate ledger is `docs/ACCEPTANCE.md`
+> review + tdd + ponytail pass (1816 tests, clippy clean). What remains for
+> "ready to use" is **not development**: a human **visual-LOOK pass** on a
+> granted Mac over the 9 settings panes + the Tier-4 live checklist. Developer-ID
+> signing, notarization, and the first stable tags are complete through v0.1.4;
+> a full native auto-updater remains optional. The authoritative live-gate ledger is `docs/ACCEPTANCE.md`
 > (Manual/Live Gate Ledger); `docs/MANUAL-VALIDATION.md` carries the detailed
 > walkthroughs.
 
-**Directive: finish macOS first.** Cross-platform adapters (1.1) and distribution
-(1.2) stay parked until the macOS feature set is complete — both are externally
-blocked anyway (1.1 needs Windows/Linux build+test environments; 1.2 needs an
-Apple Developer ID). Everything below is buildable on the macOS dev host today.
+**Directive: finish macOS first.** The cross-platform adapters (1.1) remain
+environment-gated on Windows/Linux build+test systems. Signed macOS distribution
+is shipped; the optional native updater does not block the remaining LOOK work.
 
 Verified complete-list facts (2026-06-30 plan-review pass): there is **no Tier
 1.3**, and **Tier 2 is a single ✅ DONE item (2.1)**. The six rows below were
@@ -577,10 +577,9 @@ per-app configurable.
 
 ### After macOS is complete — longer-term order (unchanged)
 
-1. **Tier 1.2** distribution — wire notarization the moment a Developer ID is
-   available; cut the first `v*` tag (CI/release/cask glue already written and
-   locally validated).
-2. **Tier 1.1** cross-platform adapters — a dedicated milestone of their own
+1. **Tier 1.1** cross-platform adapters — a dedicated milestone of their own
    (Windows/UIA, Linux/AT-SPI2, GNOME-Wayland IME path).
-3. **Tier 4** — opportunistic live LOOK gates, whenever a macOS GUI session is
+2. **Tier 4** — opportunistic live LOOK gates, whenever a macOS GUI session is
    available.
+3. **Tier 1.2 optional updater** — replace the release-page handoff only with a
+   signature-verifying native updater design.

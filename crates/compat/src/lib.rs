@@ -115,7 +115,7 @@ pub fn needs_accessibility_setup(bundle_id: &str, readable_text: bool) -> bool {
 const SHELL_LEADERS: &[&str] = &[
     "cd", "ls", "git", "cat", "rm", "cp", "mv", "mkdir", "sudo", "brew", "npm", "cargo", "python",
     "pip", "ssh", "curl", "grep", "rg", "echo", "vim", "nano", "make", "docker", "kubectl", "npx",
-    "pnpm", "rtk", "uv", "gh", "bun", "yarn",
+    "pnpm", "rtk", "uv", "gh", "bun", "yarn", "bash", "zsh", "sh", "fish",
 ];
 
 const GO_SUBCOMMANDS: &[&str] = &[
@@ -164,19 +164,24 @@ pub fn terminal_prompt_activates(bundle_id: &str, left_context: &str) -> bool {
         .trim();
     // Drop leading shell-prompt sigils ($ / % / > / #) that render as their own
     // tokens, so the real command word is inspected (not a bare sigil).
-    let mut saw_prompt_sigil = false;
-    let tokens: Vec<&str> = line
-        .split_whitespace()
-        .filter_map(|word| {
-            let trimmed = word.trim_start_matches(['$', '%', '>', '#', '➜', '❯']);
-            saw_prompt_sigil |= trimmed.len() != word.len();
-            (!trimmed.is_empty()).then_some(trimmed)
-        })
-        .collect();
+    let mut tokens = Vec::new();
+    let mut prompt_command_start = None;
+    for word in line.split_whitespace() {
+        let trimmed = word.trim_start_matches(['$', '%', '>', '#', '➜', '❯']);
+        if prompt_command_start.is_none()
+            && trimmed.len() != word.len()
+            && looks_like_prompt_decoration_prefix(&tokens)
+        {
+            prompt_command_start = Some(tokens.len());
+        }
+        if !trimmed.is_empty() {
+            tokens.push(trimmed);
+        }
+    }
     if tokens.len() < 3 {
         return false;
     }
-    let command_tokens = command_candidate_tokens(&tokens, saw_prompt_sigil);
+    let command_tokens = command_candidate_tokens(&tokens, prompt_command_start);
     if command_tokens.is_empty() {
         return false;
     }
@@ -187,33 +192,36 @@ pub fn terminal_prompt_activates(bundle_id: &str, left_context: &str) -> bool {
     line.chars().any(|c| c.is_ascii_lowercase())
 }
 
-fn command_candidate_tokens<'a>(tokens: &'a [&'a str], saw_prompt_sigil: bool) -> &'a [&'a str] {
-    let tokens = skip_env_assignments(tokens);
-    if saw_prompt_sigil {
-        if looks_like_shell_command(tokens) {
-            return tokens;
-        }
-        let mut index = 0;
-        while index < 2
-            && tokens
-                .get(index)
-                .is_some_and(|token| is_prompt_context_token(token))
-        {
-            index += 1;
-            if looks_like_shell_command(&tokens[index..]) {
-                return &tokens[index..];
-            }
-        }
+fn command_candidate_tokens<'a>(
+    tokens: &'a [&'a str],
+    prompt_command_start: Option<usize>,
+) -> &'a [&'a str] {
+    let start = prompt_command_start.unwrap_or(0).min(tokens.len());
+    let tokens = skip_env_assignments(&tokens[start..]);
+    if prompt_command_start.is_some()
+        && tokens
+            .first()
+            .is_some_and(|token| is_prompt_context_token(token))
+        && looks_like_shell_command(&tokens[1..])
+    {
+        return &tokens[1..];
     }
     tokens
 }
 
+fn looks_like_prompt_decoration_prefix(tokens: &[&str]) -> bool {
+    match tokens {
+        [] => true,
+        [only] => is_prompt_context_token(only),
+        [first, rest @ ..] => {
+            (first.contains('@') || is_path_token(first) || first.ends_with(':'))
+                && rest.iter().all(|token| is_prompt_context_token(token))
+        }
+    }
+}
+
 fn is_prompt_context_token(token: &str) -> bool {
-    let lower = token.to_ascii_lowercase();
-    if matches!(
-        lower.as_str(),
-        "why" | "what" | "how" | "when" | "where" | "who" | "can" | "could" | "should" | "please"
-    ) {
+    if is_natural_language_prompt_leader(token) {
         return false;
     }
     is_path_token(token)
@@ -224,6 +232,43 @@ fn is_prompt_context_token(token: &str) -> bool {
             .all(|c| c == '_' || c == '-' || c == '.' || c.is_ascii_alphanumeric())
 }
 
+fn is_natural_language_prompt_leader(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "why"
+            | "what"
+            | "how"
+            | "when"
+            | "where"
+            | "who"
+            | "can"
+            | "could"
+            | "should"
+            | "please"
+            | "summarize"
+            | "explain"
+            | "compare"
+            | "review"
+            | "refactor"
+            | "describe"
+            | "show"
+            | "tell"
+            | "analyze"
+            | "analyse"
+            | "help"
+            | "does"
+            | "do"
+            | "is"
+            | "are"
+            | "will"
+            | "would"
+            | "interpret"
+            | "inspect"
+            | "debug"
+            | "check"
+    )
+}
+
 fn looks_like_shell_command(tokens: &[&str]) -> bool {
     let tokens = skip_env_assignments(tokens);
     let Some(first) = tokens.first() else {
@@ -232,6 +277,30 @@ fn looks_like_shell_command(tokens: &[&str]) -> bool {
     let first_lower = first.to_lowercase();
     if SHELL_LEADERS.contains(&first_lower.as_str()) || is_go_command(tokens) {
         return true;
+    }
+    let rest = &tokens[1..];
+    if shell_operator_has_command_shape(tokens) {
+        return true;
+    }
+    if first_lower == "find" {
+        return rest
+            .iter()
+            .any(|token| token.starts_with('-') || *token == "." || is_path_token(token));
+    }
+    if matches!(first_lower.as_str(), "sed" | "awk") {
+        return rest.iter().any(|token| {
+            token.starts_with('-') || token.contains(['{', '}']) || is_path_token(token)
+        });
+    }
+    if first_lower == "source" {
+        return rest
+            .first()
+            .is_some_and(|token| is_path_token(token) || token.contains('/'));
+    }
+    if matches!(first_lower.as_str(), "export" | "unset") {
+        return rest
+            .iter()
+            .any(|token| token.starts_with('-') || is_env_assignment_token(token));
     }
     if first_lower == "env" {
         return looks_like_shell_command(skip_wrapper_options("env", &tokens[1..]));
@@ -249,6 +318,47 @@ fn looks_like_shell_command(tokens: &[&str]) -> bool {
             });
     }
     looks_like_shell_path_invocation(first, &tokens[1..])
+}
+
+fn shell_operator_has_command_shape(tokens: &[&str]) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    tokens.iter().enumerate().skip(1).any(|(index, token)| {
+        let strong_shell_operator = matches!(*token, "|" | "||" | ";");
+        match *token {
+            "|" | "||" | ";" | "&&" | ">" | ">>" | "<" | "2>" | "2>>" => {}
+            _ => return false,
+        }
+        let left_is_command_like = first.contains(['-', '/', '.'])
+            || tokens[1..index]
+                .iter()
+                .any(|part| part.starts_with('-') || is_path_token(part));
+        let right = skip_env_assignments(&tokens[index + 1..]);
+        let right_is_command_like = right.first().is_some_and(|next| {
+            let lower = next.to_ascii_lowercase();
+            SHELL_LEADERS.contains(&lower.as_str())
+                || matches!(
+                    lower.as_str(),
+                    "find"
+                        | "sed"
+                        | "awk"
+                        | "source"
+                        | "export"
+                        | "unset"
+                        | "env"
+                        | "time"
+                        | "command"
+                        | "just"
+                )
+                || is_path_token(next)
+                || next.contains('-')
+        }) || is_go_command(right);
+        if strong_shell_operator && !is_natural_language_prompt_leader(first) {
+            return true;
+        }
+        left_is_command_like || right_is_command_like
+    })
 }
 
 fn skip_env_assignments<'a>(tokens: &'a [&'a str]) -> &'a [&'a str] {
@@ -655,24 +765,70 @@ mod tests {
     }
 
     #[test]
-    fn prompt_context_token_skip_bound_is_two() {
-        // command_candidate_tokens (line ~196) skips AT MOST TWO leading
-        // prompt-decoration tokens (user@host, a repo/dir name) behind a
-        // sigil, looking for the real command word. TWO decorations → the
-        // `git` behind them is found, the line is shell input, no activation.
-        // THREE decorations → the bound stops the scan before `git`, the line
-        // reads as prose, and it activates. Pins the deliberate `index < 2`
-        // bound in both directions: lowering it to 1 flips the first case,
-        // raising it to 3 flips the second.
+    fn terminal_skips_commands_after_realistic_prompt_decorations() {
         let term = "com.googlecode.iterm2";
         assert!(
             !terminal_prompt_activates(term, "user@host repo1 % git push origin main"),
             "a shell command behind two decoration tokens is still shell input"
         );
         assert!(
-            terminal_prompt_activates(term, "user@host repo1 sess2 % git push origin main"),
-            "three decoration tokens exceed the skip bound, so the line reads as prose"
+            !terminal_prompt_activates(term, "user@host repo1 sess2 % git push origin main"),
+            "additional prompt decorations must not make a real command fail open"
         );
+        assert!(
+            !terminal_prompt_activates(
+                term,
+                "user@host repo session branch % git push origin main"
+            ),
+            "prompt parsing must use the sigil boundary, not a decoration-count cap"
+        );
+    }
+
+    #[test]
+    fn terminal_skips_common_shells_builtins_and_command_syntax() {
+        let term = "com.googlecode.iterm2";
+        for command in [
+            "bash -lc cargo test",
+            "zsh -c echo hello",
+            "sh ./scripts/check now",
+            "fish -c cargo test",
+            "find . -name lib.rs",
+            "sed -n 1,20p file",
+            "awk {print} input file",
+            "source .venv/bin/activate now",
+            "export RUST_LOG=debug cargo test",
+            "custom-tool input | sed output",
+            "foo input | bar output",
+        ] {
+            assert!(
+                !terminal_prompt_activates(term, command),
+                "{command:?} is executable shell input"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_keeps_natural_language_using_command_words_active() {
+        let term = "com.googlecode.iterm2";
+        for prompt in [
+            "find the failing tests",
+            "export the report please",
+            "source the relevant documentation",
+            "why does bash fail here",
+            "explain why x > y",
+            "compare foo && bar behavior",
+            "explain foo | bar behavior",
+            "compare x || y semantics",
+            "analyze foo | bar behavior",
+            "help explain x || y",
+            "does foo | bar work",
+            "$ summarize all of the recent git changes",
+        ] {
+            assert!(
+                terminal_prompt_activates(term, prompt),
+                "{prompt:?} is a natural-language agent prompt"
+            );
+        }
     }
 
     #[test]

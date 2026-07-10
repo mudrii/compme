@@ -369,6 +369,7 @@ release_steps.each_with_index do |step, idx|
   abort("missing release gate: no cargo command anywhere in signing job") if run.match?(/(^|[;&|[:space:]])cargo[[:space:]]/)
 end
 import_step = release_steps.fetch(import_index)
+abort("missing release gate: Developer ID import is unconditional") if import_step.key?("if")
 import_env = import_step.fetch("env")
 {
   "P12_BASE64" => "secrets.COMPME_DEVELOPER_ID_P12_BASE64",
@@ -384,7 +385,7 @@ import_run = import_step.fetch("run")
   "exit 1",
   "p12=\"$RUNNER_TEMP/developer-id.p12\"",
   "trap 'rm -f \"$p12\"' EXIT",
-  "chmod 600 \"$p12\"",
+  "install -m 600 /dev/null \"$p12\"",
   "rm -f \"$p12\"",
   "trap - EXIT",
   "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY",
@@ -439,6 +440,7 @@ step = steps.find { |candidate| candidate["name"] == "A2 matrix ledger live proo
 abort("missing release gate: release validates live A2 matrix ledger") unless step
 env = step.fetch("env")
 abort("missing release gate: release A2 ledger reads COMPME_A2_MATRIX_LEDGER") unless env.fetch("COMPME_A2_MATRIX_LEDGER").to_s.include?("COMPME_A2_MATRIX_LEDGER")
+abort("stale release gate: release A2 ledger weakens the 24-hour freshness policy") if env.key?("COMPME_A2_LEDGER_MAX_AGE_SECONDS")
 run = step.fetch("run")
 abort("missing release gate: release A2 live ledger variable guard") unless run.include?("missing required release variable: COMPME_A2_MATRIX_LEDGER")
 abort("missing release gate: release A2 live ledger path guard") unless run.include?("COMPME_A2_MATRIX_LEDGER must be a committed repo-relative TSV under tools/acceptance/evidence/a2/")
@@ -546,6 +548,15 @@ jobs:
 YAML
   check_live_a2_ledger_fixture "$good_a2_live_release"
 
+  stale_a2_live_release="$tmp_dir/stale-a2-live-release.yml"
+  cp "$good_a2_live_release" "$stale_a2_live_release"
+  ruby -0pi -e 'sub(/(COMPME_A2_MATRIX_LEDGER:.*\n)/, "\\1          COMPME_A2_LEDGER_MAX_AGE_SECONDS: 31536000\n")' "$stale_a2_live_release"
+  if check_live_a2_ledger_fixture "$stale_a2_live_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: weakened A2 freshness policy was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   echoed_a2_live_release="$tmp_dir/echoed-a2-live-release.yml"
   cat >"$echoed_a2_live_release" <<'YAML'
 jobs:
@@ -592,8 +603,8 @@ jobs:
           done
           p12="$RUNNER_TEMP/developer-id.p12"
           trap 'rm -f "$p12"' EXIT
+          install -m 600 /dev/null "$p12"
           printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
-          chmod 600 "$p12"
           rm -f "$p12"
           trap - EXIT
           echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
@@ -601,6 +612,30 @@ jobs:
         run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 YAML
   check_developer_id_fixture "$good_developer_id_release"
+
+  conditional_developer_id_release="$tmp_dir/conditional-developer-id-release.yml"
+  cp "$good_developer_id_release" "$conditional_developer_id_release"
+  ruby -0pi -e 'sub(/(      - name: Import Developer ID certificate\n)/, "\\1        if: false\n")' "$conditional_developer_id_release"
+  if check_developer_id_fixture "$conditional_developer_id_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: conditional Developer ID import was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  late_chmod_developer_id_release="$tmp_dir/late-chmod-developer-id-release.yml"
+  cp "$good_developer_id_release" "$late_chmod_developer_id_release"
+  ruby -0pi -e '
+    sub(/          install -m 600 \/dev\/null "\$p12"\n/, "")
+    sub(/(          printf .*base64 --decode > "\$p12"\n)/) do |decode|
+      decode + %q(          chmod 600 "$p12") + "\n"
+    end
+  ' "$late_chmod_developer_id_release"
+  grep -Fq 'chmod 600 "$p12"' "$late_chmod_developer_id_release"
+  if check_developer_id_fixture "$late_chmod_developer_id_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: P12 permissions applied only after decode were accepted" >&2
+    cleanup
+    return 1
+  fi
 
   cargo_in_signing_job_release="$tmp_dir/cargo-in-signing-job-release.yml"
   cat >"$cargo_in_signing_job_release" <<'YAML'
@@ -1180,6 +1215,7 @@ ruby -ryaml -e '
     abort("missing release gate: release validates live A2 matrix ledger") unless step
     env = step.fetch("env")
     abort("missing release gate: release A2 ledger reads COMPME_A2_MATRIX_LEDGER") unless env.fetch("COMPME_A2_MATRIX_LEDGER").to_s.include?("COMPME_A2_MATRIX_LEDGER")
+    abort("stale release gate: release A2 ledger weakens the 24-hour freshness policy") if env.key?("COMPME_A2_LEDGER_MAX_AGE_SECONDS")
     run = step.fetch("run")
     lines = active_shell_lines(run)
     [
@@ -1439,12 +1475,9 @@ ruby -ryaml -e '
   abort("missing release gate: imports Developer ID certificate") unless import_index
   abort("missing release gate: builds app bundle") unless build_index
   abort("missing release gate: notarizes and staples app") unless notarize_index
-  q = 39.chr
-  have_signing = "${{ secrets.COMPME_DEVELOPER_ID_P12_BASE64 != #{q}#{q} }}"
-  signing_gate = "${{ env.COMPME_HAVE_SIGNING == #{q}true#{q} }}"
-  abort("missing release gate: signing-secret presence surfaced as job env (secrets context is invalid in step if)") unless build_release.fetch("env", {})["COMPME_HAVE_SIGNING"].to_s == have_signing
-  abort("missing release gate: cert import gated on the signing switch (unsigned interim mode)") unless build_steps.fetch(import_index)["if"].to_s == signing_gate
-  abort("missing release gate: notarization paired with the signing switch") unless build_steps.fetch(notarize_index)["if"].to_s == signing_gate
+  abort("stale release gate: unsigned release switch remains") if build_release.fetch("env", {}).key?("COMPME_HAVE_SIGNING")
+  abort("missing release gate: Developer ID import is unconditional") if build_steps.fetch(import_index).key?("if")
+  abort("missing release gate: notarization is unconditional") if build_steps.fetch(notarize_index).key?("if")
   abort("missing release gate: deletes signing keychain") unless cleanup_index
   abort("missing release gate: packages release artifact") unless package_index
   abort("missing release gate: writes update manifest") unless manifest_index
@@ -1512,7 +1545,7 @@ ruby -ryaml -e '
     "exit 1",
     "p12=\"$RUNNER_TEMP/developer-id.p12\"",
     "trap #{39.chr}rm -f \"$p12\"#{39.chr} EXIT",
-    "chmod 600 \"$p12\"",
+    "install -m 600 /dev/null \"$p12\"",
     "rm -f \"$p12\"",
     "trap - EXIT",
   ].each do |needle|
@@ -1722,7 +1755,11 @@ require_line "$make_app_script" 'grep -Fq "lsregister -f \$app" "\$log"' "bundle
 require_line "$make_app_script" 'COMPME_BUNDLE_LSREGISTER="\$fake_bin/lsregister_fail"' "bundle self-test asserts Launch Services registration failure"
 require_line "$make_app_script" 'lsregister failure was accepted' "bundle self-test rejects masked Launch Services registration failure"
 require_line "$make_app_script" '^[[:space:]]*"\$lsregister" -f "\$app"[[:space:]]*$' "bundle Launch Services registration fails closed"
-require_line "$bundle_smoke_script" 'COMPME_RUN_MS="\${COMPME_RUN_MS:-1500}" COMPME_STUB_COMPLETION="\${COMPME_STUB_COMPLETION:- smoke}" "\$app_bin"' "bundle smoke runs packaged app hermetically"
+require_line "$bundle_smoke_script" 'COMPME_CONFIG="\$runtime_dir/config.env"' "bundle smoke isolates packaged app config"
+require_line "$bundle_smoke_script" 'COMPME_RUN_MS="\$run_ms"' "bundle smoke bounds packaged app runtime"
+require_line "$bundle_smoke_script" 'COMPME_STUB_COMPLETION="\${COMPME_STUB_COMPLETION:- smoke}"' "bundle smoke enables deterministic completion"
+require_line "$bundle_smoke_script" 'bundle smoke failed: isolated app exited as a duplicate instance' "bundle smoke rejects instance-lock collisions"
+require_line "$bundle_smoke_script" 'app never reached the bounded stub runtime' "bundle smoke verifies bounded stub startup"
 require_line "$bundle_smoke_script" 'COMPME_BUNDLE_SMOKE_MAKE_APP' "bundle smoke make-app override"
 require_line "$bundle_smoke_script" 'COMPME_BUNDLE_SMOKE_APP_EXIT=42' "bundle smoke self-test rejects app failure"
 require_line "$feature_script" 'llama-cpp-2 feature "metal"' "model_client macOS Metal feature assertion"

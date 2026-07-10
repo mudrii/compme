@@ -19,7 +19,10 @@ fn require_latency_budget() -> bool {
 }
 
 use grammar::vet_correction;
-use model_client::{grammar_fix_prompt, terse_continuation_prompt, LlamaModel, LocalModel};
+use model_client::{
+    grammar_fix_prompt, terse_continuation_prompt, LlamaModel, LocalModel,
+    GRAMMAR_GENERATION_TOKENS,
+};
 
 fn model_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -249,7 +252,9 @@ fn grammar_fix_real_model_output_is_vetted() {
     };
     model.warm_up().expect("warm up");
     let prompt = grammar_fix_prompt("teh", "Please fix");
-    let raw = model.complete(&prompt, 4).expect("grammar fix");
+    let raw = model
+        .complete(&prompt, GRAMMAR_GENERATION_TOKENS)
+        .expect("grammar fix");
     let vetted = vet_correction("teh", &raw);
     // Diagnostic for live-quality triage (2026-07-07 assisted-UI session found
     // corrections never surviving vetting with the default model): show what
@@ -305,7 +310,10 @@ fn model_quality_probe() {
     for (typo, want) in typos {
         let t0 = Instant::now();
         let raw = model
-            .complete(&grammar_fix_prompt(typo, "I wrote"), 8)
+            .complete(
+                &grammar_fix_prompt(typo, "I wrote"),
+                GRAMMAR_GENERATION_TOKENS,
+            )
             .expect("grammar completion");
         let vetted = vet_correction(typo, &raw);
         let ok = vetted.as_deref() == Some(want);
@@ -320,7 +328,10 @@ fn model_quality_probe() {
     let mut false_fixes = 0;
     for word in ["the", "receive", "weather", "morning"] {
         let raw = model
-            .complete(&grammar_fix_prompt(word, "I wrote"), 8)
+            .complete(
+                &grammar_fix_prompt(word, "I wrote"),
+                GRAMMAR_GENERATION_TOKENS,
+            )
             .expect("grammar completion");
         let vetted = vet_correction(word, &raw);
         if let Some(bad) = &vetted {

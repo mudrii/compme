@@ -387,6 +387,7 @@ mod tests {
         Ok(TextContext {
             left: left.into(),
             right: right.into(),
+            left_scalars: left.chars().count(),
             selection: None,
             caret: left.encode_utf16().count(),
             source: ContextSource::Accessibility,

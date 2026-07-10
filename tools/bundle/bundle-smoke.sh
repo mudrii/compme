@@ -30,7 +30,12 @@ mkdir -p "$app/Contents/MacOS"
 cat >"$app/Contents/MacOS/compme" <<'APP'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'compme COMPME_RUN_MS=%s COMPME_STUB_COMPLETION=%s args=%s\n' "${COMPME_RUN_MS:-}" "${COMPME_STUB_COMPLETION:-}" "$*" >>"$COMPME_BUNDLE_SMOKE_SELF_TEST_LOG"
+printf 'compme COMPME_RUN_MS=%s COMPME_STUB_COMPLETION=%s COMPME_CONFIG=%s args=%s\n' "${COMPME_RUN_MS:-}" "${COMPME_STUB_COMPLETION:-}" "${COMPME_CONFIG:-}" "$*" >>"$COMPME_BUNDLE_SMOKE_SELF_TEST_LOG"
+if [ "${COMPME_BUNDLE_SMOKE_APP_DUPLICATE:-0}" = 1 ]; then
+  echo 'compme: another instance is already running — exiting' >&2
+  exit 0
+fi
+printf 'compme: running (acceptance_pid=None stub=true run_ms=Some(%s))\n' "${COMPME_RUN_MS:-}" >&2
 exit "${COMPME_BUNDLE_SMOKE_APP_EXIT:-0}"
 APP
 chmod +x "$app/Contents/MacOS/compme"
@@ -44,7 +49,7 @@ SH
     COMPME_BUNDLE_SMOKE_SELF_TEST_LOG="$log" \
     "$0" "$tmp_dir/out" >"$tmp_dir/stdout"
   grep -Fq "make-app $tmp_dir/out" "$log"
-  grep -Fq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= smoke args=" "$log"
+  grep -Eq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= smoke COMPME_CONFIG=.+ args=" "$log"
 
   custom_log="$tmp_dir/custom.log"
   COMPME_RUN_MS=77 \
@@ -53,7 +58,7 @@ SH
     COMPME_BUNDLE_SMOKE_MAKE_APP="$fake_make_app" \
     COMPME_BUNDLE_SMOKE_SELF_TEST_LOG="$custom_log" \
     "$0" "$tmp_dir/custom-out" >"$tmp_dir/stdout-custom"
-  grep -Fq "compme COMPME_RUN_MS=77 COMPME_STUB_COMPLETION= smoke args=" "$custom_log"
+  grep -Eq "compme COMPME_RUN_MS=77 COMPME_STUB_COMPLETION= smoke COMPME_CONFIG=.+ args=" "$custom_log"
 
   custom_stub_log="$tmp_dir/custom-stub.log"
   COMPME_RUN_MS= \
@@ -62,7 +67,7 @@ SH
     COMPME_BUNDLE_SMOKE_MAKE_APP="$fake_make_app" \
     COMPME_BUNDLE_SMOKE_SELF_TEST_LOG="$custom_stub_log" \
     "$0" "$tmp_dir/custom-stub-out" >"$tmp_dir/stdout-custom-stub"
-  grep -Fq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= custom args=" "$custom_stub_log"
+  grep -Eq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= custom COMPME_CONFIG=.+ args=" "$custom_stub_log"
 
   fail_log="$tmp_dir/fail.log"
   if COMPME_RUN_MS= \
@@ -75,7 +80,18 @@ SH
     echo "bundle smoke self-test failed: app failure was accepted" >&2
     return 1
   fi
-  grep -Fq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= smoke args=" "$fail_log"
+  grep -Eq "compme COMPME_RUN_MS=1500 COMPME_STUB_COMPLETION= smoke COMPME_CONFIG=.+ args=" "$fail_log"
+
+  duplicate_log="$tmp_dir/duplicate.log"
+  if COMPME_BUNDLE_SMOKE_REPO_ROOT="$fake_repo" \
+    COMPME_BUNDLE_SMOKE_MAKE_APP="$fake_make_app" \
+    COMPME_BUNDLE_SMOKE_SELF_TEST_LOG="$duplicate_log" \
+    COMPME_BUNDLE_SMOKE_APP_DUPLICATE=1 \
+    "$0" "$tmp_dir/duplicate-out" >"$tmp_dir/stdout-duplicate" 2>"$tmp_dir/stderr-duplicate"; then
+    echo "bundle smoke self-test failed: duplicate-instance zero exit was accepted" >&2
+    return 1
+  fi
+  grep -Fq "another instance is already running" "$tmp_dir/stdout-duplicate"
 
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp_dir/self-test-argc.err"; then
     echo "bundle smoke self-test failed: extra self-test argument was accepted" >&2
@@ -115,4 +131,30 @@ if [[ ! -x "$app_bin" ]]; then
   exit 1
 fi
 
-COMPME_RUN_MS="${COMPME_RUN_MS:-1500}" COMPME_STUB_COMPLETION="${COMPME_STUB_COMPLETION:- smoke}" "$app_bin"
+runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/compme-bundle-smoke-run.XXXXXX")"
+cleanup_runtime() {
+  rm -rf "$runtime_dir"
+}
+trap cleanup_runtime EXIT
+
+run_ms="${COMPME_RUN_MS:-1500}"
+status=0
+output="$(
+  COMPME_CONFIG="$runtime_dir/config.env" \
+    COMPME_RUN_MS="$run_ms" \
+    COMPME_STUB_COMPLETION="${COMPME_STUB_COMPLETION:- smoke}" \
+    "$app_bin" 2>&1
+)" || status=$?
+printf '%s\n' "$output"
+if [[ "$status" -ne 0 ]]; then
+  echo "bundle smoke failed: app exited with status $status" >&2
+  exit "$status"
+fi
+if grep -Fq 'compme: another instance is already running — exiting' <<<"$output"; then
+  echo "bundle smoke failed: isolated app exited as a duplicate instance" >&2
+  exit 1
+fi
+if ! grep -Fq "compme: running (acceptance_pid=None stub=true run_ms=Some($run_ms))" <<<"$output"; then
+  echo "bundle smoke failed: app never reached the bounded stub runtime" >&2
+  exit 1
+fi

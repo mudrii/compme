@@ -136,14 +136,7 @@ impl MemoryStore {
                 {
                     use std::os::unix::fs::PermissionsExt;
                     if !parent_existed {
-                        if let Err(e) =
-                            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                        {
-                            eprintln!(
-                                "compme: failed to tighten permissions on {}: {e}",
-                                parent.display()
-                            );
-                        }
+                        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
                     }
                 }
             }
@@ -173,23 +166,17 @@ impl MemoryStore {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let restrict = |p: &Path| {
+            let restrict = |p: &Path| -> Result<()> {
                 if p.exists() {
-                    if let Err(e) =
-                        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))
-                    {
-                        eprintln!(
-                            "compme: failed to tighten permissions on {}: {e}",
-                            p.display()
-                        );
-                    }
+                    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))?;
                 }
+                Ok(())
             };
-            restrict(path);
+            restrict(path)?;
             for suffix in ["-journal", "-wal", "-shm"] {
                 let mut sidecar = path.as_os_str().to_owned();
                 sidecar.push(suffix);
-                restrict(Path::new(&sidecar));
+                restrict(Path::new(&sidecar))?;
             }
         }
 
@@ -1233,6 +1220,40 @@ mod tests {
         assert_eq!(
             mode, 0o600,
             "open() must restrict an existing sidecar to 0600, got {mode:o}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_fails_closed_when_a_sidecar_cannot_be_restricted() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(62), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "row").unwrap();
+        }
+
+        // DELETE journal mode leaves -shm unmanaged, so a pre-existing symlink
+        // reaches the owner-only hardening seam. /dev/null is owned by root on
+        // normal test hosts; skip under root rather than risk changing its mode.
+        let target = Path::new("/dev/null");
+        if std::fs::metadata(target).unwrap().uid() == std::fs::metadata(&path).unwrap().uid() {
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        let mut shm = path.as_os_str().to_owned();
+        shm.push("-shm");
+        let shm_path = std::path::PathBuf::from(shm);
+        symlink(target, &shm_path).unwrap();
+
+        let reopened = MemoryStore::open(&path, &key(62), StorageMode::AcceptedOnly);
+        let _ = std::fs::remove_file(&shm_path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            matches!(reopened, Err(MemoryError::Io(_))),
+            "memory must not open when an existing sidecar cannot be made owner-only"
         );
     }
 

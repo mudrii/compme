@@ -13,6 +13,7 @@
 //! result when its request stamp still matches, so async OCR cannot leak a prior
 //! request's visible text into a later prompt.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
@@ -25,6 +26,8 @@ use platform::{FieldHandle, ScreenRect};
 pub struct ScreenOcr {
     queue: Option<Arc<LatestRequestQueue>>,
     handle: Option<JoinHandle<()>>,
+    active: Arc<AtomicBool>,
+    screen: Arc<Mutex<Option<ScreenContext>>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -96,12 +99,26 @@ impl ScreenOcr {
         // unbounded backlog of field/caret metadata.
         let queue = Arc::new(LatestRequestQueue::default());
         let worker_queue = Arc::clone(&queue);
+        let active = Arc::new(AtomicBool::new(true));
+        let worker_active = Arc::clone(&active);
+        let worker_screen = Arc::clone(&screen);
         let handle = std::thread::Builder::new()
             .name("compme-screen-ocr".into())
-            .spawn(move || run(shell, worker_queue, screen, max_chars, diag))?;
+            .spawn(move || {
+                run(
+                    shell,
+                    worker_queue,
+                    worker_screen,
+                    worker_active,
+                    max_chars,
+                    diag,
+                )
+            })?;
         Ok(Self {
             queue: Some(queue),
             handle: Some(handle),
+            active,
+            screen,
         })
     }
 
@@ -128,6 +145,7 @@ impl ScreenOcr {
 
 impl Drop for ScreenOcr {
     fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
         // Close the latest-slot queue so the worker exits after its current
         // pass. We **detach** rather than join: a Vision OCR call can be
         // mid-flight (and, on a sleeping/reconfiguring display, could block for
@@ -137,6 +155,7 @@ impl Drop for ScreenOcr {
         if let Some(queue) = self.queue.take() {
             queue.close();
         }
+        *self.screen.lock().unwrap_or_else(|e| e.into_inner()) = None;
         drop(self.handle.take());
     }
 }
@@ -147,6 +166,7 @@ fn run(
     shell: Arc<dyn ShellHost>,
     queue: Arc<LatestRequestQueue>,
     screen: Arc<Mutex<Option<ScreenContext>>>,
+    active: Arc<AtomicBool>,
     max_chars: usize,
     diag: bool,
 ) {
@@ -155,7 +175,7 @@ fn run(
     }
     while let Some(request) = queue.recv() {
         let raw = shell.screen_context_text(request.caret_rect, max_chars);
-        publish_screen_context(&screen, &request, raw, diag);
+        publish_screen_context(&screen, &active, &request, raw, diag);
     }
 }
 
@@ -166,6 +186,7 @@ fn run(
 /// redact here would leak raw screen secrets into the model prompt.
 fn publish_screen_context(
     screen: &Mutex<Option<ScreenContext>>,
+    active: &AtomicBool,
     request: &ScreenOcrRequest,
     raw: Option<String>,
     diag: bool,
@@ -177,7 +198,11 @@ fn publish_screen_context(
             text.as_ref().map(|s| s.chars().count())
         );
     }
-    *screen.lock().unwrap_or_else(|e| e.into_inner()) = text.map(|text| ScreenContext {
+    let mut screen = screen.lock().unwrap_or_else(|e| e.into_inner());
+    if !active.load(Ordering::Acquire) {
+        return;
+    }
+    *screen = text.map(|text| ScreenContext {
         field: request.field.clone(),
         generation: request.generation,
         snapshot: request.snapshot,
@@ -190,6 +215,7 @@ mod tests {
     use super::*;
     use platform::PlatformError;
     use std::path::Path;
+    use std::sync::mpsc;
     use std::time::Duration;
 
     struct NoScreenHost;
@@ -260,8 +286,10 @@ mod tests {
             snapshot: 7,
             caret_rect: rect(1.0),
         };
+        let active = AtomicBool::new(true);
         publish_screen_context(
             &screen,
+            &active,
             &req,
             Some("login sk-abcdEFGH0123456789abcdEFGH0123 now".into()),
             false,
@@ -298,7 +326,7 @@ mod tests {
             snapshot: 2,
             caret_rect: rect(2.0),
         };
-        publish_screen_context(&screen, &req, None, false);
+        publish_screen_context(&screen, &AtomicBool::new(true), &req, None, false);
         assert!(
             screen.lock().unwrap().is_none(),
             "no OCR text clears the cell"
@@ -321,6 +349,7 @@ mod tests {
             Arc::new(NoScreenHost),
             Arc::clone(&queue),
             Arc::clone(&screen),
+            Arc::new(AtomicBool::new(true)),
             0,
             false,
         );
@@ -399,6 +428,7 @@ mod tests {
             Arc::clone(&host) as Arc<dyn ShellHost>,
             Arc::clone(&queue),
             Arc::clone(&screen),
+            Arc::new(AtomicBool::new(true)),
             40,
             false,
         );
@@ -483,6 +513,8 @@ mod tests {
         let ocr = ScreenOcr {
             queue: Some(Arc::clone(&queue)),
             handle: None,
+            active: Arc::new(AtomicBool::new(true)),
+            screen: Arc::new(Mutex::new(None)),
         };
         for x in 0..100 {
             ocr.request(field(x), x, x, rect(x as f64));
@@ -494,5 +526,75 @@ mod tests {
         assert_eq!(latest.caret_rect.unwrap().x, 99.0);
         queue.close();
         assert!(queue.recv().is_none());
+    }
+
+    struct BlockingScreenHost {
+        entered: Mutex<Option<mpsc::Sender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl ShellHost for BlockingScreenHost {
+        fn pump_events(&self, _heartbeat: Duration) {}
+        fn physical_memory_bytes(&self) -> u64 {
+            1
+        }
+        fn open_url(&self, _url: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn open_permission_settings(&self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn reveal_file(&self, _path: &Path) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn confirm(
+            &self,
+            _prompt: &platform::shell::ConfirmPrompt<'_>,
+        ) -> Result<bool, PlatformError> {
+            Ok(false)
+        }
+        fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
+            Err(PlatformError::UnsupportedField {
+                reason: "test".into(),
+            })
+        }
+        fn screen_context_text(
+            &self,
+            _rect: Option<ScreenRect>,
+            _max_chars: usize,
+        ) -> Option<String> {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+            }
+            self.release.lock().unwrap().recv().unwrap();
+            Some("late screen text".into())
+        }
+    }
+
+    #[test]
+    fn dropping_worker_revokes_an_in_flight_publish() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let host = Arc::new(BlockingScreenHost {
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        });
+        let screen = Arc::new(Mutex::new(None));
+        let ocr = ScreenOcr::spawn(host, Arc::clone(&screen), 100, false).unwrap();
+        ocr.request(field(1), 1, 1, rect(1.0));
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        *screen.lock().unwrap() = None;
+        drop(ocr);
+        release_tx.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        assert!(
+            screen.lock().unwrap().is_none(),
+            "a detached OCR pass must not republish after its worker is dropped"
+        );
     }
 }
