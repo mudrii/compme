@@ -1,7 +1,9 @@
 # A1b - macOS Adapter Contract Plan
 
 **Date:** 2026-06-04
-**Status:** Historical A1b macOS adapter acceptance tracker; current gate inventory lives in `docs/ACCEPTANCE.md`.
+**Status:** Historical, executed A1b macOS adapter plan. Scheduling language and
+acceptance bullets below preserve the implementation sequence; they are not open
+tasks. Current gate inventory lives in `docs/ACCEPTANCE.md`.
 **Purpose:** Make the macOS adapter risks concrete before the OS-agnostic engine hardens its `Event`, `Command`, `TextContext`, and `PlatformAdapter` shapes.
 
 ## Gate
@@ -123,7 +125,7 @@ Acceptance:
 
 ### Task 5b: Control semantics — Esc dismiss+suppress, Option+Tab bypass (D11)
 
-**[Added 2026-06-09 — resolves §15 D11.]** Cotypist parity gap, now scheduled (not deferred). Current code has `Dismiss` only; add:
+**[Added 2026-06-09 — historical scheduling note; implemented below.]** At this point in the plan, the code had `Dismiss` only and the following work was scheduled:
 
 - **Esc → dismiss + suppress current field.** Route an Escape KeyDown through the consuming tap (armed only while a suggestion is visible) to `engine_core`. New machine state: a per-field `suppressed` flag set on Esc, cleared on focus change to a different field or the next user edit in that field. While `suppressed`, the machine emits no `RequestCompletion`/`ShowGhost` for that field.
 - **Option+Tab → literal Tab passthrough.** In `accept_tap_decision`, when the Tab KeyDown carries the Option modifier, return `None` (do not consume, do not map to Word) so a real Tab reaches the field — the per-app Tab-bypass primitive Cotypist exposes.
@@ -181,10 +183,13 @@ Acceptance:
 
 ## A0/A1 Gate Evidence
 
-These criteria are historical readiness gates that have been satisfied or carried forward; remaining A1b product blockers are listed above.
+These criteria are historical readiness gates that were satisfied or carried
+forward. This file has no current A1b product-blocker ledger; use
+`docs/ACCEPTANCE.md` for remaining manual/live validation.
 
 - P3/P4/P5/P5b/P6/P7 manual acceptance is recorded.
-- Chromium/Web caret support is either proven or explicitly moved into A1b Task 4 as a blocker.
+- Chromium/Web caret support was carried into A1b Task 4 and implemented; current
+  browser calibration residuals are tracked in `docs/ACCEPTANCE.md`.
 - A1a plan is updated to the contract above.
 - Model choice is resolved in A0 findings: A1a development default is `tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf` with the terse continuation prompt, while model path/prompt strategy must remain configurable.
 - Deprecated `llama-cpp-2` decode calls are removed from the real-code plan.

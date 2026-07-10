@@ -58,9 +58,10 @@ brew tap mudrii/compme https://github.com/mudrii/compme
 brew install --cask compme
 ```
 
-Release artifacts are Developer-ID signed, notarized, and stapled by the tag
-workflow (see [docs/RELEASING.md](docs/RELEASING.md)); v0.1.4 is the current
-published signed release. Local source bundles remain ad-hoc signed by default.
+The current v0.1.4 release artifact is Developer-ID signed, notarized, and
+stapled (see [docs/RELEASING.md](docs/RELEASING.md)). Earlier release notes
+record their original signing status. Local source bundles remain ad-hoc signed
+by default.
 Enable Compme under System Settings → Privacy & Security → Accessibility. All
 inference and prompt context stay local. Model downloads and the update-link
 action use the network, but Compme sends no typed text or proprietary telemetry.
@@ -446,8 +447,9 @@ model's license for acceptance.
 
 This repository develops on `main`; documented behavior describes the current
 workspace. Published releases, currently through v0.1.4, are listed on the
-[Releases page](https://github.com/mudrii/compme/releases) with signed,
-notarized artifacts and per-version release notes.
+[Releases page](https://github.com/mudrii/compme/releases). The latest v0.1.4
+artifact is signed, notarized, and stapled; the per-version release notes record
+the original status of earlier artifacts.
 
 ## Support & Security
 

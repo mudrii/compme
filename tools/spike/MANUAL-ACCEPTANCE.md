@@ -1,11 +1,14 @@
-# A0 Manual Acceptance (human-run; needs Accessibility + Input Monitoring granted to the terminal)
+# A0 Manual Acceptance (historical human-run probe record)
 
-> These probes block on run loops (`CFRunLoop::run_current`, `app.run()`) or a 1s polling loop,
-> and need TCC grants + a GUI, so they cannot be auto-verified by a subagent — they are
-> compile-gated only (all six compile under `cargo build --release`). Behaviour is verified
-> here by a human. Grant **System Settings → Privacy & Security → Accessibility** AND
-> **Input Monitoring** to the terminal that launches the probes, then relaunch it.
-> Run each from `tools/spike/` (the model + `models/` paths are relative).
+> This completed A0 checklist records probe behavior, not current production
+> permissions or open acceptance work. The probes block on run loops
+> (`CFRunLoop::run_current`, `app.run()`) or a 1s polling loop and need a GUI, so
+> they were compile-gated and human-verified (all six compile under
+> `cargo build --release`). Grant **Accessibility** for the AX probes and
+> **Input Monitoring** for the historical P5/P5b `CGEventTap` probes, then
+> relaunch the terminal. Production accept now uses transient Carbon hotkeys and
+> does not require Input Monitoring. Run probes from `tools/spike/` (the model
+> and `models/` paths are relative); use `docs/ACCEPTANCE.md` for current gates.
 
 - [x] **P3 AX read** — `cargo run --release --bin p3_axread`; focus TextEdit, type "hello world".
       PASS: prints `caret=11 left_tail="hello world"`. Verified TextEdit, Safari address/search field, and Chrome textarea on 2026-06-04. For automation, `SPIKE_AX_PID=<pid>` targets one app's focused element.

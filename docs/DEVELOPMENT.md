@@ -10,19 +10,21 @@ Rust workspace and the separate spike package.
 `com.compme.app`, and the `compme://` URL scheme declared (Launch Services
 registration). The bundle is the unlock for URL-scheme reception,
 `SMAppService` launch-at-login, and a stable TCC identity. Local source bundles
-are ad-hoc signed by default; the stable `v*` tag workflow Developer-ID signs,
-notarizes, and staples release artifacts, and fails closed before building when
-required signing credentials are missing and before publication when any
-required notarization credential is missing.
+are ad-hoc signed by default; the `v*` tag workflow Developer-ID signs,
+notarizes, and staples release artifacts. It compiles the release binary first
+in a secretless prebuild job, then fails closed before bundling if signing
+credentials are missing and before packaging or publication if notarization
+credentials are missing.
 
 Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
 
 ## Repository State
 
-The current checkout develops on `main`; signed and notarized releases are
-published through v0.1.4. Workspace behavior may be newer than the latest tag,
-so use the tag-specific release assets and notes when validating a published
-version. Specifically, `v0.1.4` points to `18b8dc0`; current `main` adds
+The current checkout develops on `main`; the latest published release is the
+signed, notarized, and stapled v0.1.4. Earlier release notes preserve each
+artifact's original signing status. Workspace behavior may be newer than the
+latest tag, so use tag-specific release assets and notes when validating a
+published version. Specifically, `v0.1.4` points to `18b8dc0`; current `main` adds
 post-tag runtime/release hardening, moves A2 validation out of automation, and
 removes the duplicate model-location control. Those changes are unreleased
 until the next tag.

@@ -170,4 +170,5 @@ Additional Cotypist-alignment items are also out of P0: optional Screen Recordin
 ## Known P1 follow-ups (acknowledged, not addressed here)
 
 - A `read_context` AX round-trip runs per delivered caret event; no read-level debounce yet (the adapter already coalesces caret notifications).
-- Heartbeat interval (~12ms) is a fixed constant; not yet tuned or configurable.
+- **Resolved after P0:** the heartbeat remains 12ms by default but is configurable
+  through `COMPME_HEARTBEAT_MS`, clamped to `1..=100`ms.

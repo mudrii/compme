@@ -101,14 +101,15 @@ to record `replace_left` for the wiring test.
   unchanged; the exact count is historical). **Live AX
   deletion CONFIRMED (step 6, 2026-06-10):** the typed token is physically deleted
   and replaced in TextEdit.
-- **`platform_macos` honoring — SyntheticKeys / Clipboard:** cannot read-modify-write
-  a range. Honoring synthesizes N backspaces before the insert (the backspace
-  poster, all-events-created-before-posting). **Built and live-validated
-  2026-06-10**: the same machinery is the fallback when an AxSet write is
-  silently ignored (readback == original; live case iTerm2), proven by a
-  scripted accept whose terminal contents held the replacement alone. Safe because production emits `replace_left > 0` only
-  once the offer path + AxSet honoring ship together, and replacement features are
-  gated to AxSet-capable fields first.
+- **`platform_macos` honoring — SyntheticKeys / Clipboard (superseded prototype):**
+  the first implementation synthesized N backspaces before posting replacement
+  text. That is not atomic, so the committed adapter now refuses every non-zero
+  `replace_left` on `SyntheticKeys`/`Clipboard` before posting either deletion or
+  text. Replacement offers are gated on
+  `InsertStrategy::supports_atomic_range_replace()` (`AxSet` or future
+  `NativeRangeSet`). The 2026-06-10 iTerm2 run validated only the
+  silently-ignored-`AxSet` fallback for a **plain append** (`replace_left == 0`);
+  silently ignored AxSet replacements fail closed rather than falling back.
 
 ### 5. Flags / config (default off; host-read)
 `COMPME_EMOJI` (+ `_SKIN_TONE`, `_GENDER`), `COMPME_AUTOCORRECT`,

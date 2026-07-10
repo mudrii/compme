@@ -342,7 +342,12 @@ Update both job `name:` fields to `portable workspace + platform_windows (Window
 
 - [ ] **Step 2: Known risk — `model_client` native build**
 
-`model_client` builds `llama-cpp-2` with `dynamic-backends`/`vulkan` features off-macOS (`crates/model_client/Cargo.toml:18`). GitHub runners have cmake; if the vulkan feature demands SDK headers the job fails on that crate. Contingency (apply ONLY if the first CI run is red on llama build): add `--exclude model_client` to the clippy+test steps of the failing job with a comment `# llama-cpp vulkan needs SDK headers this runner lacks — re-include when the real adapter lands with its system-deps install step`, and `log` it in the commit message. Do not pre-emptively exclude.
+**Historical assumption, superseded:** this plan expected `model_client` to build
+`llama-cpp-2` with `dynamic-backends`/`vulkan` off macOS. The committed manifest
+now pins off-mac builds to CPU-only because Vulkan needs an SDK and
+`dynamic-backends` has a build-script hard-link race at `llama-cpp-2 =0.1.146`.
+The exclusion contingency below was therefore not adopted; current GPU work is
+tracked in the 2026-07-08 cross-platform implementation plan.
 
 - [ ] **Step 3: Validate YAML locally, push, watch CI**
 

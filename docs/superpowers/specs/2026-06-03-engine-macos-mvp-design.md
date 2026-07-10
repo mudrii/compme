@@ -67,11 +67,12 @@ Validated against the installed Cotypist binary (v2026.1 build 73; current shipp
 
 ## 2. Architecture
 
-Single process, **native Rust** (`crates/app`). **[CORR 06-07]** The shell is not Tauri: an AppKit `NSStatusItem` tray/menu (objc2) provides lifecycle + enable/disable; there is no settings webview (config is `config.env`). **Three run-loop contexts** (validated, §12):
+Single process, **native Rust** (`crates/app`). **[CORR 06-07]** The shell is not Tauri: an AppKit `NSStatusItem` tray/menu (objc2) provides lifecycle + enable/disable; there is no settings webview (config is `config.env`). **Three execution contexts** (current implementation):
 
 - **Main thread / AppKit run loop** — the process's own AppKit loop; all NSPanel/overlay calls run on the main thread.
 - **AX worker run loop** — owns AX observer resources and transient Carbon accept-hotkey resources; callbacks answer from **pre-computed state** and never perform synchronous AX reads.
-- **AX/inference worker** — background thread/queue; AX IPC (with short messaging timeout) + llama.cpp decode.
+- **Inference worker** — a separate background thread owns model warm-up,
+  llama.cpp decode, and completion outcomes; it does not own AX IPC.
 
 ```
 ┌─ Native Rust binary (one process, ActivationPolicy::Accessory) ────────┐
@@ -101,7 +102,7 @@ Current root workspace crates (Cargo.toml is authoritative):
 
 ```
 crates/engine_core      # state machine, generation tokens, invalidation, cancel, accept logic, policy (renamed from `core`)
-crates/context          # TextContext, Selection, Caret + AX+pasteboard capture model
+crates/context          # pure Unicode-safe left/right/word-at-caret/context-block helpers
 crates/ranker           # candidate trim/boundary/repetition/score
 crates/platform         # PlatformAdapter trait + shared types (cross-platform contract)
 crates/personalization  # instructions, sender identity, app/domain prompt policy
@@ -274,7 +275,10 @@ Prompt-based, not ML. Simpler, ships, and is what Cotypist actually does.
 | Labs | Experimental flags (`featureCotypistLabsAccess`); thesaurus auto/selection mode (also has a first-class enable toggle, not Labs-only) · autocorrect/typo-fix |
 | About / Update | Version · Check for Updates handoff to the latest GitHub Release; full Sparkle/appcast auto-update remains optional later |
 
-Stored in a `prefs` crate keyed like Cotypist (`CompletionManager_*`, `ModelRepository_*`, `feature*`, per-app override list). Cotypist also supports **web-driven config** (`cotypist.app/setPreference`, `/launchCotypist/setOverride` deep links via URL scheme) for pushing compatibility fixes — optional later.
+Compme's backing is split between the pure `prefs` policy crate and the app's
+`COMPME_*`/`config.env` persistence surface. Signed, reversible **web-driven
+config** for app/domain overrides has since shipped through the `compme://`
+URL scheme; broader remote configuration is not implemented.
 
 **Planned `COMPME_*` config keys for the new pure-feature toggles** (the crates exist + are tested; these keys are the wiring contract). **[2026-06-15] Now read by `app`: `COMPME_EMOJI*`, `COMPME_AUTOCORRECT`, `COMPME_THESAURUS`, `COMPME_BRITISH_ENGLISH`, and `COMPME_ACCEPT_*_KEY`.** Original list: `COMPME_EMOJI` (enable) + `COMPME_EMOJI_SKIN_TONE` + `COMPME_EMOJI_GENDER` (`crates/emoji`); `COMPME_THESAURUS` (enable + auto/selection mode, `crates/thesaurus`; current host wiring covers the enable/offer path, while selection-trigger UX remains future work); `COMPME_AUTOCORRECT` (typo-fix enable, `crates/autocorrect`); `COMPME_ACCEPT_WORD_KEY` + `COMPME_ACCEPT_FULL_KEY` (keycodes, `platform_macos::AcceptKeymap`). These join the ~28 keys already parsed in `app/run_loop.rs::Config::from_lookup`.
 
@@ -368,7 +372,15 @@ First-suggestion perceived latency <100–150 ms (warm); **<500 ms p95 is the ha
 
 **What we adopt:** prompt-based personalization (global+per-app/per-domain, **6-stop strength slider Off↔Max, full reach for all users — no tier caps**; §15 D2 + Project Scope), configurable shortcut matrix, word-capped length, pasteboard + previous-input context, optional screen-aware context, selectable model catalog (base+instruct), backdrop/mirror overlay, disable-native-inline-prediction where possible, pause/snooze, per-app overrides (incl. tab-key/smart-quotes/size-threshold/display), encrypted local stats/training data, compatibility guidance, quality/reuse thresholds.
 **What we change:** **[CORR 06-07]** native Rust shell (`crates/app` + objc2/AppKit tray), **not Tauri**; A3 chose Developer-ID signing/notarization plus a GitHub-release-driven update manifest and release-page handoff (full Sparkle/appcast remains optional later); Rust instead of Swift; `engine_core`/`model_client` built by hand (Cotypist's completion is Swift `CompletionManagerActor` + llama.cpp; `RepliesSDK` is unrelated feedback tooling). **[CORR 06-09]** Our input layer now matches Cotypist's no-CGEventTap accept-key architecture: AX + CGEvent synthesis + transient Carbon hotkeys; model fetch from HF or self-host TBD; telemetry disabled unless explicitly designed later.
-**Feature status:** emoji completion, full autocorrect, spelling localization, thesaurus lookup, and signed web-driven config are shipped in the local replacement / `compme://` paths. Still-sequenced parity work includes cross-app previous inputs and thesaurus selection-trigger UX. Domain/website overrides are no longer optional for personalization/privacy parity; they are A2/A3 requirements for browser use. **Dropped (out of scope — no monetization):** subscription, paid tiers, multi-device seat licensing, completion quotas. (Cotypist's `cotypist://subscription` route and seat flags have no analogue here.)
+**Feature status:** emoji completion, the curated typo-fix half of autocorrect,
+spelling localization, thesaurus lookup, and signed web-driven config are
+shipped in the local replacement / `compme://` paths. Still-sequenced parity
+work includes full statistical autocorrect, cross-app previous inputs, and
+thesaurus selection-trigger UX. Domain/website overrides are no longer optional
+for personalization/privacy parity; they are A2/A3 requirements for browser use.
+**Dropped (out of scope — no monetization):** subscription, paid tiers,
+multi-device seat licensing, completion quotas. (Cotypist's
+`cotypist://subscription` route and seat flags have no analogue here.)
 
 ---
 
@@ -379,9 +391,11 @@ First-suggestion perceived latency <100–150 ms (warm); **<500 ms p95 is the ha
 - **B. Windows** — `platform_windows`: UIA on a dedicated MTA worker thread + `WH_KEYBOARD_LL` accept + layered overlay (PMv2 DPI). Inference: Vulkan+CPU default, CUDA optional download. Strong tier = WPF/WinForms/Win32/native Qt; Electron/Chromium degrade to popup/hotkey.
 - **C1. Linux X11 + Wayland(KDE/wlroots)** — `platform_linux`: `atspi` adapter + XTEST/wtype insert + override-redirect/layer-shell overlay + **dedicated-hotkey** accept (plain Tab can't be grabbed globally). AppImage distribution.
 - **C2. Linux GNOME/Wayland + cross-platform IME path** — **separate architecture**: IBus **input-method-engine** backend with IME-native suggestion UI. GNOME/Wayland defeats overlay + key-intercept + front-app simultaneously, so the macOS model is *absent*, not degraded. Biggest single piece of Linux work.
-- **D.** Cloud provider abstraction (behind `LocalModel`), browser extension, IDE plugins, remote compat registry, web-driven config, domain/website overrides.
+- **D.** Cloud provider abstraction (behind `LocalModel`), browser extension,
+  IDE plugins, and a remote compat registry remain future work. Signed
+  web-driven config and domain/website overrides have since shipped on `main`.
 
-**Cross-cutting (from review):** **[CORR 06-08]** the shell is native AppKit (objc2), not Tauri; render overlays with **native** windows per OS (a webview can't host click-through overlays — the original reason the design avoided one). Engine/inference crate stays OS-agnostic — only the llama.cpp build feature (`metal`/`vulkan`/`cuda`) + shipped runtime differ; build with `dynamic-backends` for one-binary GPU/CPU adaptation.
+**Cross-cutting (from review):** **[CORR 06-08]** the shell is native AppKit (objc2), not Tauri; render overlays with **native** windows per OS (a webview can't host click-through overlays — the original reason the design avoided one). Engine/inference code stays OS-agnostic. Current macOS builds use Metal and current non-macOS builds are CPU-only; the future off-mac runtime plan adds Vulkan/CUDA features and may revisit `dynamic-backends` once its pinned build-script race is resolved.
 
 ---
 
@@ -400,12 +414,12 @@ Single source of truth for the parallel-agent audit (decompile of `/Applications
 | I10 | Debounce spec (150–300 ms) vs shipped default (120 ms) | EMD §4 reconciled to "~120–300 ms, P1 ships 120 ms default, configurable". |
 | G3 | No prefix/KV-cache reuse / long-lived llama context | **Closed (implemented + validated 2026-06-08).** `model_client::LlamaModel` now runs on a dedicated worker thread owning a **persistent** `LlamaContext`; `complete()` reuses the KV cache for the shared prompt prefix (`reusable_prefix_len` + `clear_kv_cache_seq`, re-decoding only the divergent suffix) and serializes calls via a mutex held across the round-trip. Backend is a `'static` singleton (fixes `BackendAlreadyInitialized` across instances). Proven by an ignored real-GGUF test (`prefix_reuse_matches_fresh_context_output`: reuse output == fresh-context output) and a live real-model run in the product binary. |
 
-### Open — architectural deltas from Cotypist (decisions, not bugs)
+### Architectural deltas from Cotypist (current dispositions)
 
 | ID | Finding | Status / decision needed |
 |---|---|---|
 | **F1** | **Accept-key interception previously required Input Monitoring.** The old consuming `CGEventTap` path imposed a TCC prompt Cotypist avoids. **[CORR 06-08 — confidence raised to HIGH, see D1]** Full re-decompile of the bundle (main + every framework) found **zero `CGEventTapCreate`/`CGEventTapEnable`** — Cotypist ships **no event tap at all**. Its input layer is AX + CGEvent synthesis + Carbon hotkeys; the Tab swallow is a Carbon `RegisterEventHotKey` Tab registration. | **CLOSED in production code (2026-06-09):** `platform_macos` now installs transient Carbon accept hotkeys for bare Tab, grave, Esc, and Down only while a suggestion is armed, advertises `accept_intercept = CarbonHotkey`, and removes the accept-flow `PermissionMissing{"Input Monitoring"}` path. Spike `tools/spike/.../p8_carbon_hotkey.rs` ran (M4 Max): bare Tab (48) and grave (50) both registered with status 0. **Residual:** manual live cross-app consume + Input-Monitoring-revoked confirmation in the product binary remains GUI-bound; the code path is build/unit-validated and aligned with Cotypist's Accessibility-only mechanism. |
-| **F2** | **Insertion default order is AxSet-first**; Cotypist's primary path is **pasteboard paste** (smart-insert + backspace + pasteboard restore), char/chunk fallback. We have all strategies but a different default. | Decide whether to flip to paste-first for Electron/web/terminal robustness, or keep AX-first with paste fallback. Currently AX-first (`platform_macos::insertion_strategy`). Low severity. |
+| **F2** | **Insertion default order is AxSet-first**; Cotypist's primary path is **pasteboard paste** (smart-insert + backspace + pasteboard restore), char/chunk fallback. We have all strategies but a different default. | **Closed by project decision:** keep the shipped fixed `AxSet → SyntheticKeys → Clipboard → None` order. Revisit only if the live compatibility pass proves an in-scope app needs a different strategy. |
 
 _(G3 moved to **Resolved this cycle** above — implemented + validated 2026-06-08.)_
 
