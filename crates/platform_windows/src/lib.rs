@@ -230,6 +230,18 @@ mod tests {
     }
 
     #[test]
+    fn open_url_with_rejects_interior_nul_without_launching() {
+        let launched = std::sync::Mutex::new(false);
+        let err = open_url_with("https://example.test/a\0b", |_| {
+            *launched.lock().unwrap() = true;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(matches!(err, PlatformError::CannotComplete { .. }));
+        assert!(!*launched.lock().unwrap());
+    }
+
+    #[test]
     fn scaffold_reports_windows_and_fails_closed() {
         let adapter = WindowsAdapter::new();
         // environment() is the one cheap, infallible method the scaffold answers.

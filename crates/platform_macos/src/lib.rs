@@ -10147,7 +10147,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(start.elapsed() < Duration::from_millis(100));
+        // "Deferred" means we returned before the restore deadline; a tighter
+        // wall-clock bound flakes under parallel-test CPU load.
+        assert!(start.elapsed() < CLIPBOARD_RESTORE_DELAY);
         let scheduled = scheduled.lock().unwrap();
         assert_eq!(scheduled.len(), 1);
         assert_eq!(scheduled[0].0, CLIPBOARD_RESTORE_DELAY);

@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening and Settings cleanup are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1830 workspace tests listed on current `main` (spike separate)
+> **Last updated:** 2026-07-10 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening and Settings cleanup are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1831 workspace tests listed on current `main` (spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and

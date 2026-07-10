@@ -700,6 +700,8 @@ mod tests {
         assert!(outcome.candidates.is_empty());
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
+        // Pin the alias to the one-token safety boundary, not just to itself.
+        assert_eq!(GRAMMAR_MAX_TOKENS, 1);
         assert_eq!(seen[0].1, GRAMMAR_MAX_TOKENS);
         assert!(seen[0].0.contains("teh"));
         assert!(seen[0].0.contains("I read teh"));

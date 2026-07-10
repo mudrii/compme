@@ -177,7 +177,9 @@ pub fn catalog() -> &'static [ModelEntry] {
         ModelEntry {
             name: "qwen2.5-1.5b-q4_k_m",
             url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-            size_mb: 986,
+            // Pinned file is 1,117,320,736 bytes; size_mb feeds the download
+            // max_bytes cap (size_mb * MiB), so undercounting rejects the fetch.
+            size_mb: 1118,
             min_ram_gb: 4,
             license: License::Apache2,
             expected_sha256: Some(
