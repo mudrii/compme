@@ -69,19 +69,6 @@ CASK
   grep -q "sha256 \"$expected_sha\"" "$fixture"
   grep -q "version=9.8.7 sha256=$expected_sha" "$tmp/out.log"
 
-  rc_artifact="$tmp/compme-9.8.7-rc.1-macos.zip"
-  rc_fixture="$tmp/rc.rb"
-  cat >"$rc_fixture" <<'CASK'
-cask "compme" do
-  version "0.0.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
-end
-CASK
-  printf 'rc fixture artifact\n' >"$rc_artifact"
-  COMPME_CASK_PATH="$rc_fixture" COMPME_CASK_ARTIFACT="$rc_artifact" "$0" v9.8.7-rc.1 >"$tmp/rc.out"
-  grep -q 'version "9.8.7-rc.1"' "$rc_fixture"
-
   if COMPME_CASK_PATH="$fixture" COMPME_CASK_ARTIFACT="$artifact" "$0" v9.8.7.6 >"$tmp/four-part.out" 2>"$tmp/four-part.err"; then
     echo "four-part version unexpectedly passed" >&2
     return 1
@@ -92,13 +79,13 @@ CASK
     return 1
   fi
   grep -q 'invalid version: 9.8.7+build' "$tmp/build-metadata.err"
-  leading_zero_artifact="$tmp/compme-9.8.7-rc.01-macos.zip"
-  printf 'invalid prerelease artifact\n' >"$leading_zero_artifact"
-  if COMPME_CASK_PATH="$fixture" COMPME_CASK_ARTIFACT="$leading_zero_artifact" "$0" v9.8.7-rc.01 >"$tmp/leading-zero-prerelease.out" 2>"$tmp/leading-zero-prerelease.err"; then
-    echo "numeric prerelease identifier with a leading zero unexpectedly passed" >&2
+  prerelease_artifact="$tmp/compme-9.8.7-rc.1-macos.zip"
+  printf 'invalid prerelease artifact\n' >"$prerelease_artifact"
+  if COMPME_CASK_PATH="$fixture" COMPME_CASK_ARTIFACT="$prerelease_artifact" "$0" v9.8.7-rc.1 >"$tmp/prerelease.out" 2>"$tmp/prerelease.err"; then
+    echo "prerelease version unexpectedly passed" >&2
     return 1
   fi
-  grep -q 'invalid version: 9.8.7-rc.01' "$tmp/leading-zero-prerelease.err"
+  grep -q 'invalid version: 9.8.7-rc.1' "$tmp/prerelease.err"
 
   mismatched_artifact="$tmp/compme-0.9.9-macos.zip"
   printf 'old artifact\n' >"$mismatched_artifact"

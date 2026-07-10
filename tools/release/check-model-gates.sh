@@ -60,6 +60,52 @@ workflow = YAML.load_file(ARGV.fetch(0))
 label = ARGV.fetch(1)
 runner = "tools/acceptance/run-a2-compat-gates.sh"
 ledger = "tools/release/check-a2-matrix-ledger.sh"
+def active_shell_lines(run)
+  lines = []
+  dead_depth = 0
+  function_depth = 0
+  pending_function = false
+  terminated = false
+  run.to_s.lines.each do |raw|
+    stripped = raw.strip
+    next if stripped.empty? || stripped.start_with?("#")
+    normalized = stripped.sub(/[[:space:]]+#.*$/, "")
+    next if terminated
+    if function_depth.positive?
+      function_depth += normalized.count("{") - normalized.count("}")
+      function_depth = 0 unless function_depth.positive?
+      next
+    end
+    if pending_function
+      if normalized == "{"
+        function_depth = 1
+        pending_function = false
+        next
+      end
+      pending_function = false
+    end
+    if normalized.match?(/\A(?:function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(?:[[:space:]]*\(\))?|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\))[[:space:]]*\z/)
+      pending_function = true
+      next
+    end
+    if normalized.match?(/\A(?:function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(?:\(\))?[[:space:]]*\{/)
+      function_depth = [normalized.count("{") - normalized.count("}"), 0].max
+      next
+    end
+    if dead_depth.positive?
+      dead_depth += 1 if normalized.match?(/\Aif[[:space:]]+/)
+      dead_depth -= 1 if normalized == "fi" || normalized.start_with?("fi ")
+      next
+    end
+    if normalized.match?(/\Aif[[:space:]]+false(?:[;[:space:]]|\z)/)
+      dead_depth = 1
+      next
+    end
+    lines << normalized
+    terminated = true if normalized.match?(/\A(?:exit|return)[[:space:]]+0\z/)
+  end
+  lines
+end
 reject_a2_env = lambda do |env, where|
   if env.keys.any? { |key| key.to_s.start_with?("COMPME_A2_") }
     abort("stale release gate: #{where} still injects automated A2 environment")
@@ -90,62 +136,165 @@ workflow.fetch("jobs").each do |job_name, job|
         abort("stale release gate: #{label} #{job_name} executes or validates A2 tooling")
       end
     end
+    next if name == "Script syntax"
+    if run.match?(%r{tools/(?:acceptance|release)/[^[:space:]\n]*\$[^[:space:]\n]*\.sh})
+      abort("stale release gate: #{label} #{job_name} constructs a validation-tool path dynamically")
+    end
+    if run.match?(/\bfind[[:space:]]+tools\/(acceptance|release)\b/m) ||
+       run.match?(/\b(xargs|find)[^\n]*(bash|sh)[[:space:]]+-n\b/m) ||
+       run.match?(/\b(bash|sh)[[:space:]]+-n[^\n]*tools\/(acceptance|release)/m)
+      abort("stale release gate: #{label} #{job_name} adds generic shell traversal that can reach local/manual A2 tooling")
+    end
   end
 end
 
 syntax_steps = workflow.fetch("jobs").values.flat_map { |job| Array(job["steps"]) }
-syntax = syntax_steps.find { |step| step.is_a?(Hash) && step["name"] == "Script syntax" }
-abort("missing release gate: #{label} keeps non-A2 script syntax validation") unless syntax
-syntax_run = syntax.fetch("run").to_s
-[
-  "find tools/acceptance tools/bundle tools/release",
-  "! -path 'tools/acceptance/run-a2-compat-gates.sh'",
-  "! -path 'tools/release/check-a2-matrix-ledger.sh'",
+syntax_matches = syntax_steps.select { |step| step.is_a?(Hash) && step["name"] == "Script syntax" }
+abort("missing release gate: #{label} keeps exactly one non-A2 script syntax validation") unless syntax_matches.length == 1
+syntax_lines = active_shell_lines(syntax_matches.first.fetch("run"))
+expected_syntax_lines = [
+  "find tools/acceptance tools/bundle tools/release -type f -name '*.sh' \\",
+  "! -path 'tools/acceptance/run-a2-compat-gates.sh' \\",
+  "! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 \\",
   "xargs -0 bash -n",
-].each do |needle|
-  abort("missing release gate: #{label} script syntax excludes only local/manual A2 tooling") unless syntax_run.include?(needle)
-end
+]
+abort("missing release gate: #{label} script syntax is the approved non-A2 traversal only") unless
+  syntax_lines.length == 4 &&
+  syntax_lines.fetch(0) == expected_syntax_lines.fetch(0) &&
+  syntax_lines.fetch(1) == expected_syntax_lines.fetch(1) &&
+  syntax_lines.fetch(2) == expected_syntax_lines.fetch(2) &&
+  syntax_lines.fetch(3) == "| #{expected_syntax_lines.fetch(3)}"
 RUBY
 }
 
 check_release_integrity_controls() {
   ruby -ryaml - "$1" <<'RUBY'
 def active_shell_lines(run)
-  run.to_s.lines.map do |line|
-    stripped = line.strip
+  lines = []
+  dead_depth = 0
+  function_depth = 0
+  pending_function = false
+  terminated = false
+  run.to_s.lines.each do |raw|
+    stripped = raw.strip
     next if stripped.empty? || stripped.start_with?("#")
-    stripped.sub(/[[:space:]]+#.*$/, "")
-  end.compact
+    normalized = stripped.sub(/[[:space:]]+#.*$/, "")
+    next if terminated
+    if function_depth.positive?
+      function_depth += normalized.count("{") - normalized.count("}")
+      function_depth = 0 unless function_depth.positive?
+      next
+    end
+    if pending_function
+      if normalized == "{"
+        function_depth = 1
+        pending_function = false
+        next
+      end
+      pending_function = false
+    end
+    if normalized.match?(/\A(?:function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(?:[[:space:]]*\(\))?|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\))[[:space:]]*\z/)
+      pending_function = true
+      next
+    end
+    if normalized.match?(/\A(?:function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(?:\(\))?[[:space:]]*\{/)
+      function_depth = [normalized.count("{") - normalized.count("}"), 0].max
+      next
+    end
+    if dead_depth.positive?
+      dead_depth += 1 if normalized.match?(/\Aif[[:space:]]+/)
+      dead_depth -= 1 if normalized == "fi" || normalized.start_with?("fi ")
+      next
+    end
+    if normalized.match?(/\Aif[[:space:]]+false(?:[;[:space:]]|\z)/)
+      dead_depth = 1
+      next
+    end
+    lines << normalized
+    terminated = true if normalized.match?(/\A(?:exit|return)[[:space:]]+0\z/)
+  end
+  lines
 end
 
 def require_run_fragment!(step, fragment, label)
-  abort("missing release gate: #{label}") unless step.fetch("run").include?(fragment)
+  found = active_shell_lines(step.fetch("run")).any? do |line|
+    next false unless line.include?(fragment)
+    output_line = line.match?(/\A(echo|printf)[[:space:]]/)
+    !output_line || fragment.match?(/\A(echo|printf)[[:space:]]/)
+  end
+  abort("missing release gate: #{label}") unless found
+end
+
+def require_exact_active_lines!(step, expected, label)
+  actual = active_shell_lines(step.fetch("run"))
+  abort("missing release gate: #{label} exact active command block") unless actual == expected
 end
 
 workflow = YAML.load_file(ARGV.fetch(0))
 jobs = workflow.fetch("jobs")
+checkout = "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"
+toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
+cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
+upload = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+download = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+expected_action_topology = {
+  "preflight" => [[checkout, {"fetch-depth" => 0}]],
+  "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "prebuild" => [[checkout, {"fetch-depth" => 0}], [toolchain, {"toolchain" => "1.96.1"}], [upload, {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "path" => "target/release/compme"}]],
+  "build_release" => [[checkout, {"persist-credentials" => false}], [download, {"name" => "compme-prebuilt-binary", "path" => "target/release"}], [upload, {"name" => "compme-release-artifacts", "if-no-files-found" => "error", "path" => "${{ steps.pkg.outputs.zip }}\n${{ steps.pkg.outputs.zip }}.sha256\n${{ steps.manifest.outputs.manifest }}\n"}]],
+  "publish_release" => [[checkout, {"fetch-depth" => 0}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
+  "finalize_cask" => [[checkout, {"fetch-depth" => 0}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
+}
+abort("missing release gate: exact release job topology") unless jobs.keys.sort == expected_action_topology.keys.sort
+expected_action_topology.each do |job_name, expected|
+  actual = Array(jobs.fetch(job_name)["steps"]).each_with_object([]) do |step, actions|
+    actions << [step.fetch("uses"), step.fetch("with", {})] if step.is_a?(Hash) && step.key?("uses")
+  end
+  abort("missing release gate: #{job_name} exact action and input topology") unless actual == expected
+end
+serialized_workflow = workflow.to_s
+abort("stale release gate: stable-only workflow contains prerelease branching") if
+  serialized_workflow.include?("contains(github.ref_name") || serialized_workflow.match?(/\bprerelease\b/i)
 
 preflight_steps = jobs.fetch("preflight").fetch("steps")
 preflight = preflight_steps.find { |step| step["name"] == "Verify release tag is valid and at default-branch HEAD" }
 abort("missing release gate: preflight validates release version and exact default-branch HEAD") unless preflight
-[
+abort("missing release gate: preflight exact protected-ref/default-branch environment") unless preflight.fetch("env") == {
+  "DEFAULT_BRANCH" => "${{ github.event.repository.default_branch }}",
+  "REF_PROTECTED" => "${{ github.ref_protected }}",
+}
+require_exact_active_lines!(preflight, [
+  "set -euo pipefail",
+  'if [ "$REF_PROTECTED" != "true" ]; then',
+  'echo "release tag must match a protected v* ruleset" >&2',
+  "exit 1",
+  "fi",
   'version="${GITHUB_REF_NAME#v}"',
   'tools/release/validate-version.sh "$version"',
   'git fetch origin "$DEFAULT_BRANCH"',
   'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
   'if [ "$GITHUB_SHA" != "$default_sha" ]; then',
+  'echo "release tag commit $GITHUB_SHA must equal current origin/$DEFAULT_BRANCH HEAD $default_sha" >&2',
   'exit 1',
-].each { |fragment| require_run_fragment!(preflight, fragment, "preflight #{fragment}") }
+  "fi",
+], "preflight")
 
 prebuild_steps = jobs.fetch("prebuild").fetch("steps")
+abort("missing release gate: secretless prebuild has exact read-only permissions") unless jobs.fetch("prebuild").fetch("permissions") == {"contents" => "read"}
 prebuild_head = prebuild_steps.find { |step| step["name"] == "Verify release tag is still at default-branch HEAD" }
 abort("missing release gate: prebuild revalidates exact default-branch HEAD") unless prebuild_head
-[
+abort("missing release gate: prebuild exact default-branch environment") unless prebuild_head.fetch("env") == {"DEFAULT_BRANCH" => "${{ github.event.repository.default_branch }}"}
+require_exact_active_lines!(prebuild_head, [
+  "set -euo pipefail",
   'git fetch origin "$DEFAULT_BRANCH"',
   'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
   'if [ "$GITHUB_SHA" != "$default_sha" ]; then',
+  'echo "release tag commit $GITHUB_SHA must still equal current origin/$DEFAULT_BRANCH HEAD $default_sha before prebuild" >&2',
   'exit 1',
-].each { |fragment| require_run_fragment!(prebuild_head, fragment, "prebuild #{fragment}") }
+  "fi",
+], "prebuild exact HEAD")
 prebuild_index = prebuild_steps.index { |step| step["name"] == "Prebuild release binary (no signing secrets in this job)" }
 prebuild_arch_index = prebuild_steps.index { |step| step["name"] == "Verify prebuilt binary is arm64 only" }
 prebuild_upload_index = prebuild_steps.index { |step| step["name"] == "Upload prebuilt release binary" }
@@ -195,33 +344,165 @@ cleanup_run = cleanup.fetch("run")
   'if [ -e "$keychain" ]; then',
   'cleanup_status=1',
   'unset COMPME_SIGNING_KEYCHAIN COMPME_CODESIGN_IDENTITY',
-  'COMPME_SIGNING_KEYCHAIN=',
-  'COMPME_CODESIGN_IDENTITY=',
+  'echo "COMPME_SIGNING_KEYCHAIN="',
+  'echo "COMPME_CODESIGN_IDENTITY="',
   '>> "$GITHUB_ENV"',
   'exit "$cleanup_status"',
 ].each { |fragment| require_run_fragment!(cleanup, fragment, "signing keychain cleanup #{fragment}") }
 abort("missing release gate: signing keychain deletion must not fail open") if active_shell_lines(cleanup_run).any? { |line| line.match?(/security delete-keychain.*\|\|[[:space:]]*true/) }
 
 publish_steps = jobs.fetch("publish_release").fetch("steps")
-collision_index = publish_steps.index { |step| step["name"] == "Reject existing release asset names" }
-publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
-abort("missing release gate: existing release asset names are rejected before publish") unless collision_index && publish_index && collision_index < publish_index
-collision = publish_steps.fetch(collision_index)
-abort("missing release gate: release asset collision check uses GitHub token") unless collision.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
-[
-  'gh api --paginate',
-  '"repos/$GITHUB_REPOSITORY/releases?per_page=100"',
-  '--jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .assets[].name"',
-  '"compme-${VERSION}-macos.zip"',
-  '"compme-${VERSION}-macos.zip.sha256"',
-  '"compme-${VERSION}-update.json"',
-  'if grep -Fxq "$asset" <<<"$existing_assets"; then',
-  'refusing to overwrite existing release asset: $asset',
+abort("missing release gate: publish job has exact immutable-publication step topology") unless publish_steps.map { |step| step["name"] } == [
+  nil,
+  "Download release artifacts",
+  "Verify downloaded artifact checksum",
+  "Verify release tag is still at default-branch HEAD before publication",
+  "Create draft GitHub release",
+  "Undraft GitHub release",
+]
+checksum_index = publish_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
+head_index = publish_steps.index { |step| step["name"] == "Verify release tag is still at default-branch HEAD before publication" }
+create_index = publish_steps.index { |step| step["name"] == "Create draft GitHub release" }
+undraft_index = publish_steps.index { |step| step["name"] == "Undraft GitHub release" }
+abort("missing release gate: checksum and exact default HEAD precede draft creation, which precedes undraft") unless checksum_index && head_index && create_index && undraft_index && checksum_index < head_index && head_index < create_index && create_index < undraft_index
+publish_head = publish_steps.fetch(head_index)
+abort("missing release gate: pre-publication exact default-branch environment") unless publish_head.fetch("env") == {"DEFAULT_BRANCH" => "${{ github.event.repository.default_branch }}"}
+require_exact_active_lines!(publish_head, [
+  "set -euo pipefail",
+  'git fetch origin "$DEFAULT_BRANCH"',
+  'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
+  'if [ "$GITHUB_SHA" != "$default_sha" ]; then',
+  'echo "release tag commit $GITHUB_SHA must still equal current origin/$DEFAULT_BRANCH HEAD $default_sha before publication" >&2',
   'exit 1',
-].each { |fragment| require_run_fragment!(collision, fragment, "release asset collision #{fragment}") }
-publish = publish_steps.find { |step| step["name"] == "Publish GitHub release" }
-abort("missing release gate: publishes GitHub release") unless publish
-abort("missing release gate: published release assets are not overwritten") unless publish.fetch("with").fetch("overwrite_files") == false
+  "fi",
+], "pre-publication exact HEAD")
+create = publish_steps.fetch(create_index)
+abort("missing release gate: draft creation uses GitHub token") unless create.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
+require_exact_active_lines!(create, [
+  "set -euo pipefail",
+  'VERSION="${GITHUB_REF_NAME#v}"',
+  'ZIP="compme-${VERSION}-macos.zip"',
+  'MANIFEST="compme-${VERSION}-update.json"',
+  'gh release create "$GITHUB_REF_NAME" \\',
+  '--verify-tag \\',
+  '--draft \\',
+  '--generate-notes \\',
+  '"release-artifacts/$ZIP" \\',
+  '"release-artifacts/$ZIP.sha256" \\',
+  '"release-artifacts/$MANIFEST"',
+], "draft release creation")
+
+finalize = jobs.fetch("finalize_cask")
+abort("missing release gate: cask finalization depends only on publication") unless Array(finalize.fetch("needs")) == ["publish_release"]
+abort("missing release gate: cask finalization uses protected release environment") unless finalize.fetch("environment") == "release"
+abort("missing release gate: cask finalization alone has contents write") unless finalize.fetch("permissions").fetch("contents") == "write"
+finalize_steps = finalize.fetch("steps")
+finalize_download = finalize_steps.index { |step| step["name"] == "Download release artifacts" }
+finalize_checksum = finalize_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
+finalize_run = finalize_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
+abort("missing release gate: separate cask job downloads and verifies artifacts before finalization") unless finalize_download && finalize_checksum && finalize_run && finalize_download < finalize_checksum && finalize_checksum < finalize_run
+require_run_fragment!(finalize_steps.fetch(finalize_run), 'tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"', "separate cask finalizer invocation")
+RUBY
+}
+
+check_finalizer_helper_contract() {
+  ruby - "$1" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.read(path)
+
+def function_body(source, name)
+  start = source.index(/^#{Regexp.escape(name)}\(\) \{[[:space:]]*$/)
+  abort("missing release gate: cask finalizer defines #{name}") unless start
+  body_start = source.index("\n", start) + 1
+  finish = source.index(/^\}[[:space:]]*$/, body_start)
+  abort("missing release gate: cask finalizer closes #{name}") unless finish
+  source[body_start...finish]
+end
+
+def active_shell_lines(body)
+  lines = []
+  dead_depth = 0
+  terminated = false
+  body.lines.each do |raw|
+    stripped = raw.strip
+    next if stripped.empty? || stripped.start_with?("#")
+    next if terminated
+    if dead_depth.positive?
+      dead_depth += 1 if stripped.match?(/\Aif[[:space:]]+/)
+      dead_depth -= 1 if stripped == "fi" || stripped.start_with?("fi ")
+      next
+    end
+    if stripped.match?(/\Aif[[:space:]]+false(?:[;[:space:]]|\z)/)
+      dead_depth = 1
+      next
+    end
+    lines << stripped.sub(/[[:space:]]+#.*$/, "")
+    terminated = true if stripped.sub(/[[:space:]]+#.*$/, "").match?(/\A(?:exit|return)[[:space:]]+0\z/)
+  end
+  lines
+end
+
+def require_active_fragment!(lines, fragment)
+  found = lines.any? do |line|
+    line.include?(fragment) && !line.match?(/\A(echo|printf)[[:space:]]/)
+  end
+  abort("missing release gate: cask finalizer helper contract #{fragment}") unless found
+end
+
+freeze_lines = active_shell_lines(function_body(source, "freeze_release_helpers"))
+validate_lines = active_shell_lines(function_body(source, "validate_finalized_cask"))
+finalize_lines = active_shell_lines(function_body(source, "finalize_cask"))
+[
+  'for helper in validate-version.sh update-cask.sh; do',
+  'source_path="$repo_root/tools/release/$helper"',
+  'cp "$source_path" "$frozen_root/tools/release/$helper"',
+].each { |fragment| require_active_fragment!(freeze_lines, fragment) }
+[
+  "expected_sha=\"$(shasum -a 256 \"$artifact_path\"",
+  'ruby -c "$cask_path"',
+  'require_exact_cask_line "$cask_path" "  version \"$version\"" "version"',
+  'require_exact_cask_line "$cask_path" "  sha256 \"$expected_sha\"" "artifact sha256"',
+  'url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"',
+  'depends_on macos: :sonoma',
+  'depends_on arch: :arm64',
+].each { |fragment| require_active_fragment!(validate_lines, fragment) }
+[
+  'freeze_release_helpers "$frozen_root"',
+  'frozen_validator="$frozen_root/tools/release/validate-version.sh"',
+  'frozen_updater="$frozen_root/tools/release/update-cask.sh"',
+  '"$frozen_validator" "$version"',
+  'COMPME_CASK_PATH="$cask_path"',
+  'COMPME_CASK_ARTIFACT="$artifact_path"',
+  '"$frozen_updater" "$tag"',
+  'validate_finalized_cask "$cask_path" "$version" "$artifact_path"',
+].each { |fragment| require_active_fragment!(finalize_lines, fragment) }
+
+freeze_index = finalize_lines.index { |line| line.include?('freeze_release_helpers "$frozen_root"') }
+fetch_index = finalize_lines.index { |line| line.include?('git fetch origin "$default_branch"') }
+checkout_index = finalize_lines.index { |line| line.include?('git checkout "$default_branch"') }
+pull_index = finalize_lines.index { |line| line.include?('git pull --ff-only origin "$default_branch"') }
+updater_index = finalize_lines.index { |line| line.include?('"$frozen_updater" "$tag"') }
+validation_index = finalize_lines.index { |line| line.include?('validate_finalized_cask "$cask_path" "$version" "$artifact_path"') }
+git_add_index = finalize_lines.index { |line| line.include?('git add Casks/compme.rb') }
+commit_index = finalize_lines.index { |line| line.include?('commit -m "chore(release): cask $tag"') }
+push_index = finalize_lines.index { |line| line.include?('git push origin "HEAD:$default_branch"') }
+abort("missing release gate: cask finalizer freezes tag-reviewed helpers before mutable branch operations") unless
+  freeze_index && fetch_index && checkout_index && pull_index && freeze_index < fetch_index && freeze_index < checkout_index && freeze_index < pull_index
+abort("missing release gate: cask finalizer validates the frozen-updater result before git publication") unless
+  updater_index && validation_index && git_add_index && commit_index && push_index &&
+  updater_index < validation_index && validation_index < git_add_index && validation_index < commit_index && validation_index < push_index
+
+finalize_lines.each do |line|
+  if line.match?(%r{(?:\A|[[:space:]])(?:"?\$repo_root/)?tools/release/update-cask\.sh["[:space:]]+"?\$tag"?})
+    abort("stale release gate: cask finalizer executes update-cask.sh from the moving default branch")
+  end
+end
+last_executable_line = source.lines.reverse.find do |raw|
+  stripped = raw.strip
+  !stripped.empty? && !stripped.start_with?("#")
+end&.strip
+abort("missing release gate: cask finalizer dispatches the reviewed finalize_cask function") unless
+  last_executable_line == 'finalize_cask "$@"'
 RUBY
 }
 
@@ -431,6 +712,24 @@ YAML
     return 1
   fi
 
+  bad_pipeline="$tmp_dir/bad-extra-a2-traversal.yml"
+  cp "$good_pipeline" "$bad_pipeline"
+  ruby -0pi -e 'sub(/(    steps:\n)/, "\\1      - name: Extra shell validation\\n        run: find tools/acceptance -type f -exec bash -n {} +\\n")' "$bad_pipeline"
+  if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: additional generic traversal reaching A2 tooling was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_pipeline="$tmp_dir/bad-constructed-a2-path.yml"
+  cp "$good_pipeline" "$bad_pipeline"
+  ruby -0pi -e 'sub(/(    steps:\n)/, "\\1      - name: Constructed validation path\\n        run: kind=a2; tools/acceptance/run-\"$kind\"-compat-gates.sh --self-test\\n")' "$bad_pipeline"
+  if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: dynamically constructed A2 runner path was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   old_grammar_spec="$grammar_spec"
   grammar_spec="$tmp_dir/good-spec.md"
   cat >"$grammar_spec" <<'MD'
@@ -611,7 +910,7 @@ end
 
 workflow = YAML.load_file(ARGV.fetch(0))
 release_steps = workflow.fetch("jobs").fetch("release").fetch("steps")
-publish_index = release_steps.index { |step| step["name"] == "Publish GitHub release" }
+publish_index = release_steps.index { |step| step["name"] == "Create draft GitHub release" }
 cask_index = release_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
 abort("missing release gate: publishes GitHub release") unless publish_index
 abort("missing release gate: finalizes Homebrew cask") unless cask_index
@@ -695,14 +994,62 @@ def approved_action_ref?(uses)
     "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
     "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
     "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
-    "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",
   ].include?(uses)
 end
+
+def validate_action_inputs!(job_name, step)
+  uses = step.fetch("uses")
+  allowed = case uses.split("@", 2).first
+            when "actions/checkout" then %w[fetch-depth persist-credentials]
+            when "actions/upload-artifact" then %w[name path if-no-files-found]
+            when "actions/download-artifact" then %w[name path]
+            when "dtolnay/rust-toolchain" then %w[toolchain components]
+            when "Swatinem/rust-cache" then []
+            else []
+            end
+  actual = step.fetch("with", {}).keys.map(&:to_s)
+  unexpected = actual - allowed
+  abort("missing release gate: #{job_name} action has unapproved provenance/input keys #{unexpected.join(', ')}") unless unexpected.empty?
+end
+def contains_credential_reference?(value, parent_key = nil)
+  case value
+  when String
+    value.include?("secrets.") || value.include?("github.token") ||
+      (parent_key.to_s == "secrets" && value == "inherit")
+  when Hash
+    value.any? do |key, child|
+      key_name = key.to_s
+      credential_input = key_name != "persist-credentials" &&
+        key_name.match?(/(?:^|[-_])(token|secret|password|credential|ssh-key)(?:s)?(?:$|[-_])/i)
+      (credential_input && !child.to_s.empty?) || contains_credential_reference?(child, key_name)
+    end
+  when Array
+    value.any? { |child| contains_credential_reference?(child, parent_key) }
+  else
+    false
+  end
+end
 jobs.each do |job_name, job|
+  abort("missing release gate: #{job_name} uses an unapproved reusable workflow") if job.key?("uses")
   Array(job["steps"]).each do |step|
     next unless step.key?("uses")
     abort("missing release gate: #{job_name} action uses an approved identity and commit SHA") unless approved_action_ref?(step["uses"])
+    validate_action_inputs!(job_name, step)
   end
+end
+expected_actions = {
+  "validate" => ["actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"],
+  "windows" => ["dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"],
+  "linux" => ["Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"],
+  "prebuild" => [],
+  "release" => ["actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"],
+}
+expected_actions.each do |job_name, expected|
+  actual = Array(jobs.fetch(job_name)["steps"]).map { |step| step["uses"] }.compact
+  abort("missing release gate: #{job_name} has the exact approved action sequence") unless actual == expected
+end
+if jobs.key?("prebuild")
+  abort("missing release gate: prebuild job carries no credential references") if contains_credential_reference?(jobs.fetch("prebuild"))
 end
 needs = Array(release.fetch("needs"))
 %w[validate windows linux].each do |job|
@@ -722,8 +1069,8 @@ RUBY
 jobs:
   release:
     steps:
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Create draft GitHub release
+        run: gh release create "$TAG" --draft
       - name: Finalize Homebrew cask
         run: |
           tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"
@@ -735,8 +1082,8 @@ YAML
 jobs:
   release:
     steps:
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Create draft GitHub release
+        run: gh release create "$TAG" --draft
       - name: Finalize Homebrew cask
         run: |
           # tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"
@@ -753,8 +1100,8 @@ YAML
 jobs:
   release:
     steps:
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Create draft GitHub release
+        run: gh release create "$TAG" --draft
       - name: Finalize Homebrew cask
         run: |
           : # tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"
@@ -773,8 +1120,8 @@ jobs:
       - name: Finalize Homebrew cask
         run: |
           tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Create draft GitHub release
+        run: gh release create "$TAG" --draft
 YAML
   if check_finalizer_fixture "$reordered_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: pre-publish cask finalizer was accepted" >&2
@@ -787,8 +1134,8 @@ YAML
 jobs:
   release:
     steps:
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Create draft GitHub release
+        run: gh release create "$TAG" --draft
       - name: Finalize Homebrew cask
         run: |
           echo "finalizer omitted"
@@ -969,6 +1316,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+  prebuild:
+    steps: []
   release:
     needs: [validate, windows, linux]
     environment: release
@@ -1045,6 +1394,51 @@ YAML
   ruby -0pi -e 'sub(%r{actions/checkout@[0-9a-f]{40}}, "attacker/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5")' "$attacker_action_release"
   if check_release_hardening_fixture "$attacker_action_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: attacker-owned pinned action was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  reusable_workflow_release="$tmp_dir/reusable-workflow-release.yml"
+  cp "$good_hardened_release" "$reusable_workflow_release"
+  ruby -0pi -e 'sub(/jobs:\n/, "jobs:\n  attacker_job:\n    uses: attacker/repo/.github/workflows/release.yml@34e114876b0b11c390a56381ad16ebd13914f8d5\n")' "$reusable_workflow_release"
+  if check_release_hardening_fixture "$reusable_workflow_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: job-level attacker reusable workflow was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  checkout_override_release="$tmp_dir/checkout-override-release.yml"
+  cp "$good_hardened_release" "$checkout_override_release"
+  ruby -0pi -e 'sub(/(          fetch-depth: 0\n)/, "\\1          repository: attacker/repo\n")' "$checkout_override_release"
+  if check_release_hardening_fixture "$checkout_override_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: checkout repository override was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  artifact_override_release="$tmp_dir/artifact-override-release.yml"
+  cp "$good_hardened_release" "$artifact_override_release"
+  ruby -0pi -e 'sub(/(  validate:\n    steps:\n)/, "\\1      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093\\n        with:\n          name: compme-prebuilt-binary\\n          path: target/release\\n          run-id: 1234\\n")' "$artifact_override_release"
+  if check_release_hardening_fixture "$artifact_override_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cross-run artifact provenance override was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  token_in_prebuild_release="$tmp_dir/token-in-prebuild-release.yml"
+  cp "$good_hardened_release" "$token_in_prebuild_release"
+  ruby -0pi -e 'sub(/(  prebuild:\n)/, "\\1    env:\n      GH_TOKEN: ${{ github.token }}\\n")' "$token_in_prebuild_release"
+  if check_release_hardening_fixture "$token_in_prebuild_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: explicit GitHub token in secretless prebuild was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  inherited_secrets_prebuild_release="$tmp_dir/inherited-secrets-prebuild-release.yml"
+  cp "$good_hardened_release" "$inherited_secrets_prebuild_release"
+  ruby -0pi -e 'sub(/(  prebuild:\n)/, "\\1    secrets: inherit\\n")' "$inherited_secrets_prebuild_release"
+  if check_release_hardening_fixture "$inherited_secrets_prebuild_release" >/dev/null 2>&1; then
+    echo "release gate self-test failed: inherited secrets in secretless prebuild were accepted" >&2
     cleanup
     return 1
   fi
@@ -1181,7 +1575,7 @@ upload_path = build_steps.fetch(upload_index).fetch("with").fetch("path").to_s
 abort("missing release gate: upload includes manifest output") unless upload_path.include?("${{ steps.manifest.outputs.manifest }}")
 download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
 checksum_index = publish_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
-publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
+publish_index = publish_steps.index { |step| step["name"] == "Create draft GitHub release" }
 cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
 abort("missing release gate: verifies downloaded artifact checksum before publishing release") unless download_index && checksum_index && publish_index && download_index < checksum_index && checksum_index < publish_index
 abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index && publish_index < cask_index
@@ -1258,7 +1652,7 @@ jobs:
           test -f "$ZIP"
           test -f "$ZIP.sha256"
           shasum -a 256 -c "$ZIP.sha256"
-      - name: Publish GitHub release
+      - name: Create draft GitHub release
         with:
           files: |
             release-artifacts/compme-*-macos.zip
@@ -1363,7 +1757,7 @@ jobs:
           # test -f "$ZIP"
           # test -f "$ZIP.sha256"
           echo 'shasum -a 256 -c "$ZIP.sha256"'
-      - name: Publish GitHub release
+      - name: Create draft GitHub release
         with:
           files: |
             release-artifacts/compme-*-macos.zip
@@ -1415,6 +1809,53 @@ YAML
   ruby -0pi -e 'sub(%q(tools/release/validate-version.sh "$version"), %q(echo "$version"))' "$integrity_fixture"
   if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: missing shared version validation was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(          tools/release/validate-version.sh "$version"), %q(          if false; then\n            tools/release/validate-version.sh "$version"\n          fi))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: shared version validation retained only in a dead branch was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(          tools/release/validate-version.sh "$version"), %q(          exit 0
+          tools/release/validate-version.sh "$version"))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: shared version validation after unconditional success was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(          tools/release/validate-version.sh "$version"), %q(          exit 0 # success
+          tools/release/validate-version.sh "$version"))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: shared version validation after commented unconditional success was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(          tools/release/validate-version.sh "$version"), %q(          never_called() {
+            tools/release/validate-version.sh "$version"
+          }))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: shared version validation in an unused function was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(          tools/release/validate-version.sh "$version"), %q(          never_called()
+          {
+            tools/release/validate-version.sh "$version"
+          }))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: shared version validation in a split-style unused function was accepted" >&2
     cleanup
     return 1
   fi
@@ -1511,11 +1952,27 @@ YAML
     path = ARGV.fetch(0)
     workflow = YAML.load_file(path)
     steps = workflow.fetch("jobs").fetch("publish_release").fetch("steps")
-    steps.reject! { |step| step["name"] == "Reject existing release asset names" }
+    steps.reject! { |step| step["name"] == "Verify release tag is still at default-branch HEAD before publication" }
     File.write(path, YAML.dump(workflow))
   ' "$integrity_fixture"
   if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
-    echo "release gate self-test failed: missing existing-asset collision check was accepted" >&2
+    echo "release gate self-test failed: missing pre-publication exact-HEAD check was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q( --verify-tag), %q())' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: draft creation without tag verification was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q("release-artifacts/$ZIP.sha256"), %q("release-artifacts/wrong.sha256"))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: draft creation with wrong checksum asset was accepted" >&2
     cleanup
     return 1
   fi
@@ -1524,12 +1981,167 @@ YAML
   ruby -ryaml -e '
     path = ARGV.fetch(0)
     workflow = YAML.load_file(path)
-    publish = workflow.fetch("jobs").fetch("publish_release").fetch("steps").find { |step| step["name"] == "Publish GitHub release" }
-    publish.fetch("with")["overwrite_files"] = true
+    workflow.fetch("jobs").fetch("finalize_cask").delete("environment")
     File.write(path, YAML.dump(workflow))
   ' "$integrity_fixture"
   if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
-    echo "release gate self-test failed: release asset overwrite was accepted" >&2
+    echo "release gate self-test failed: unprotected separate cask finalizer job was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("finalize_cask")["needs"] = ["build_release"]
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cask finalizer not serialized after publication was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("prebuild").fetch("permissions")["id-token"] = "write"
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: prebuild OIDC write permission was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    steps = workflow.fetch("jobs").fetch("publish_release").fetch("steps")
+    steps.find { |step| step["name"] == "Verify release tag is still at default-branch HEAD before publication" }.delete("env")
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: pre-publication HEAD check without default branch env was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    steps = workflow.fetch("jobs").fetch("publish_release").fetch("steps")
+    create = steps.find { |step| step["name"] == "Create draft GitHub release" }
+    create["run"] = "gh release upload \"$GITHUB_REF_NAME\" stale.zip --clobber\n" + create.fetch("run")
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: extra clobbering release command was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -0pi -e 'sub(%q(tools/release/validate-version.sh "$version"), %q(: '\''tools/release/validate-version.sh "$version"'\''))' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: no-op wrapped version validation was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("preflight").fetch("steps").first.fetch("with")["fetch-depth"] = 1
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: wrong allowed checkout input value was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs")["extra_approved_action_job"] = {"runs-on" => "ubuntu-latest", "steps" => [{"uses" => "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"}]}
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: extra approved-action job was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  finalizer_fixture="$tmp_dir/finalize-cask.sh"
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(    "$frozen_updater" "$tag"), %q(    tools/release/update-cask.sh "$tag"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: moving-default-branch cask updater was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root"), %q(  # freeze_release_helpers "$frozen_root"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: commented frozen-helper invocation was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root"), %q(  return 0
+  freeze_release_helpers "$frozen_root"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: frozen-helper path after early return was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root"), ""); sub(%q(  git pull --ff-only origin "$default_branch"), %q(  git pull --ff-only origin "$default_branch"
+  freeze_release_helpers "$frozen_root"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: helper freeze after mutable branch pull was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  expected_sha="$(shasum -a 256 "$artifact_path" | awk '\''{print $1}'\'')"), %q(  expected_sha="fixed"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cask SHA detached from artifact was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  validate_finalized_cask "$cask_path" "$version" "$artifact_path"), ""); sub(%q(  git push origin "HEAD:$default_branch"), %q(  git push origin "HEAD:$default_branch"
+  validate_finalized_cask "$cask_path" "$version" "$artifact_path"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: post-push finalized-cask validation was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(
+finalize_cask "$@"
+), %q(
+cat <<SH
+finalize_cask "$@"
+SH
+echo "dispatch omitted"
+))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cask finalizer dispatch retained only in a heredoc was accepted" >&2
     cleanup
     return 1
   fi
@@ -1578,11 +2190,50 @@ ruby -ryaml -e '
   end
 
   def active_shell_lines(run)
-    run.lines.map do |line|
-      stripped = line.strip
+    lines = []
+    dead_depth = 0
+    function_depth = 0
+    pending_function = false
+    terminated = false
+    run.to_s.lines.each do |raw|
+      stripped = raw.strip
       next if stripped.empty? || stripped.start_with?("#")
-      stripped.sub(/[[:space:]]+#.*$/, "")
-    end.compact
+      normalized = stripped.sub(/[[:space:]]+#.*$/, "")
+      next if terminated
+      if function_depth.positive?
+        function_depth += normalized.count("{") - normalized.count("}")
+        function_depth = 0 unless function_depth.positive?
+        next
+      end
+      if pending_function
+        if normalized == "{"
+          function_depth = 1
+          pending_function = false
+          next
+        end
+        pending_function = false
+      end
+      if normalized.match?(/\A(?:function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(?:[[:space:]]*\(\))?|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\))[[:space:]]*\z/)
+        pending_function = true
+        next
+      end
+      if normalized.match?(/\A(?:function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(?:\(\))?[[:space:]]*\{/)
+        function_depth = [normalized.count("{") - normalized.count("}"), 0].max
+        next
+      end
+      if dead_depth.positive?
+        dead_depth += 1 if normalized.match?(/\Aif[[:space:]]+/)
+        dead_depth -= 1 if normalized == "fi" || normalized.start_with?("fi ")
+        next
+      end
+      if normalized.match?(/\Aif[[:space:]]+false(?:[;[:space:]]|\z)/)
+        dead_depth = 1
+        next
+      end
+      lines << normalized
+      terminated = true if normalized.match?(/\A(?:exit|return)[[:space:]]+0\z/)
+    end
+    lines
   end
 
   def require_active_finalizer_command!(run, needle)
@@ -1594,14 +2245,20 @@ ruby -ryaml -e '
     abort("missing release gate: finalizes Homebrew cask command #{needle}") unless found
   end
 
-  def contains_secret_reference?(value)
+  def contains_secret_reference?(value, parent_key = nil)
     case value
     when String
-      value.include?("secrets.")
+      value.include?("secrets.") || value.include?("github.token") ||
+        (parent_key.to_s == "secrets" && value == "inherit")
     when Hash
-      value.any? { |_, child| contains_secret_reference?(child) }
+      value.any? do |key, child|
+        key_name = key.to_s
+        credential_input = key_name != "persist-credentials" &&
+          key_name.match?(/(?:^|[-_])(token|secret|password|credential|ssh-key)(?:s)?(?:$|[-_])/i)
+        (credential_input && !child.to_s.empty?) || contains_secret_reference?(child, key_name)
+      end
     when Array
-      value.any? { |child| contains_secret_reference?(child) }
+      value.any? { |child| contains_secret_reference?(child, parent_key) }
     else
       false
     end
@@ -1624,15 +2281,66 @@ ruby -ryaml -e '
       "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
       "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
       "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
-      "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",
     ].include?(uses)
   end
-  jobs.each do |job_name, job|
-    Array(job["steps"]).each do |step|
-      next unless step.key?("uses")
-      abort("missing release gate: CI #{job_name} action uses an approved identity and commit SHA") unless approved_action_ref?(step["uses"])
+  def validate_action_inputs!(job_name, step)
+    uses = step.fetch("uses")
+    actual = step.fetch("with", {})
+    approved = case uses.split("@", 2).first
+               when "actions/checkout"
+                 [{}, {"fetch-depth" => 0}, {"persist-credentials" => false}]
+               when "dtolnay/rust-toolchain"
+                 [
+                   {"toolchain" => "1.96.1"},
+                   {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"},
+                 ]
+               when "Swatinem/rust-cache"
+                 [{}]
+               when "actions/upload-artifact"
+                 [
+                   {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "path" => "target/release/compme"},
+                   {"name" => "compme-release-artifacts", "if-no-files-found" => "error", "path" => "${{ steps.pkg.outputs.zip }}\n${{ steps.pkg.outputs.zip }}.sha256\n${{ steps.manifest.outputs.manifest }}\n"},
+                 ]
+               when "actions/download-artifact"
+                 [
+                   {"name" => "compme-prebuilt-binary", "path" => "target/release"},
+                   {"name" => "compme-release-artifacts", "path" => "release-artifacts"},
+                 ]
+               else
+                 []
+               end
+    abort("missing release gate: #{job_name} action has exact approved provenance inputs") unless approved.include?(actual)
+  end
+  def validate_actions!(workflow, label)
+    workflow.fetch("jobs").each do |job_name, job|
+      abort("missing release gate: #{label} #{job_name} uses an unapproved reusable workflow") if job.key?("uses")
+      Array(job["steps"]).each do |step|
+        next unless step.is_a?(Hash) && step.key?("uses")
+        abort("missing release gate: #{label} #{job_name} action uses an approved identity and commit SHA") unless approved_action_ref?(step["uses"])
+        validate_action_inputs!("#{label} #{job_name}", step)
+      end
     end
   end
+  def require_exact_actions!(workflow, expected_by_job, label)
+    jobs = workflow.fetch("jobs")
+    abort("missing release gate: #{label} has the exact approved job topology") unless jobs.keys.sort == expected_by_job.keys.sort
+    expected_by_job.each do |job_name, expected|
+      actual = Array(jobs.fetch(job_name)["steps"]).map { |step| step["uses"] }.compact
+      abort("missing release gate: #{label} #{job_name} has the exact approved action sequence") unless actual == expected
+    end
+  end
+  validate_actions!(ci_workflow, "CI")
+  ci_action_sequence = [
+    "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+    "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
+    "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
+  ]
+  require_exact_actions!(ci_workflow, {
+    "check" => ci_action_sequence,
+    "spike" => ci_action_sequence,
+    "windows" => ci_action_sequence,
+    "linux" => ci_action_sequence,
+  }, "CI")
   jobs.each do |job_name, job|
     next unless %w[check spike windows linux].include?(job_name)
     abort("missing release gate: CI #{job_name} pins Rust toolchain") unless Array(job["steps"]).any? { |step| step.is_a?(Hash) && rust_toolchain_step_valid?(step) }
@@ -1741,17 +2449,31 @@ ruby -ryaml -e '
   prebuild = release_jobs.fetch("prebuild")
   build_release = release_jobs.fetch("build_release")
   publish_release = release_jobs.fetch("publish_release")
+  finalize_cask = release_jobs.fetch("finalize_cask")
   quote = 39.chr
   tag_job_guard = "${{ github.ref_type == #{quote}tag#{quote} && startsWith(github.ref_name, #{quote}v#{quote}) }}"
   abort("missing release gate: prebuild is limited to v* tag refs") unless prebuild.fetch("if") == tag_job_guard
   abort("missing release gate: build_release is limited to v* tag refs") unless build_release.fetch("if") == tag_job_guard
   abort("missing release gate: publish_release is limited to v* tag refs") unless publish_release.fetch("if") == tag_job_guard
-  release_jobs.each do |job_name, job|
-    Array(job["steps"]).each do |step|
-      next unless step.key?("uses")
-      abort("missing release gate: #{job_name} action uses an approved identity and commit SHA") unless approved_action_ref?(step["uses"])
-    end
-  end
+  abort("missing release gate: finalize_cask is limited to v* tag refs") unless finalize_cask.fetch("if") == tag_job_guard
+  serialized_release_workflow = workflow.to_s
+  abort("stale release gate: stable-only workflow contains prerelease branching") if serialized_release_workflow.include?("contains(github.ref_name") || serialized_release_workflow.match?(/\bprerelease\b/i)
+  validate_actions!(workflow, "release")
+  checkout = "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"
+  toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
+  cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
+  upload = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+  download = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+  require_exact_actions!(workflow, {
+    "preflight" => [checkout],
+    "validate" => [checkout, toolchain, cache],
+    "windows" => [checkout, toolchain, cache],
+    "linux" => [checkout, toolchain, cache],
+    "prebuild" => [checkout, toolchain, upload],
+    "build_release" => [checkout, download, upload],
+    "publish_release" => [checkout, download],
+    "finalize_cask" => [checkout, download],
+  }, "release")
 
   {
     "release root format" => ["Root format", "cargo fmt --all -- --check"],
@@ -1771,7 +2493,9 @@ ruby -ryaml -e '
   build_release_needs = Array(build_release.fetch("needs"))
   abort("missing release gate: build_release job depends on prebuild") unless build_release_needs.include?("prebuild")
   publish_release_needs = Array(publish_release.fetch("needs"))
-  abort("missing release gate: publish_release job depends on build_release") unless publish_release_needs.include?("build_release")
+  abort("missing release gate: publish_release job depends only on build_release") unless publish_release_needs == ["build_release"]
+  finalize_cask_needs = Array(finalize_cask.fetch("needs"))
+  abort("missing release gate: finalize_cask job depends only on publish_release") unless finalize_cask_needs == ["publish_release"]
   # The prebuild job compiles third-party code (build.rs, proc-macros) and must
   # therefore stay completely secretless: no protected environment, no secret
   # references anywhere in the job.
@@ -1780,8 +2504,10 @@ ruby -ryaml -e '
   abort("missing release gate: prebuild job has read-only contents permission") unless prebuild.fetch("permissions").fetch("contents") == "read"
   abort("missing release gate: build_release uses protected release environment") unless build_release.fetch("environment") == "release"
   abort("missing release gate: publish_release uses protected release environment") unless publish_release.fetch("environment") == "release"
+  abort("missing release gate: finalize_cask uses protected release environment") unless finalize_cask.fetch("environment") == "release"
   abort("missing release gate: build_release job has read-only contents permission") unless build_release.fetch("permissions").fetch("contents") == "read"
   abort("missing release gate: publish_release job has contents write permission") unless publish_release.fetch("permissions").fetch("contents") == "write"
+  abort("missing release gate: finalize_cask job has contents write permission") unless finalize_cask.fetch("permissions").fetch("contents") == "write"
   preflight_steps = release_jobs.fetch("preflight").fetch("steps")
   protected_tag_step = preflight_steps.find { |step| step["name"] == "Verify release tag is valid and at default-branch HEAD" }
   abort("missing release gate: preflight validates protected release tag") unless protected_tag_step
@@ -1955,15 +2681,6 @@ ruby -ryaml -e '
   ].each do |needle|
     abort("missing release gate: manifest step #{needle}") unless manifest_run.include?(needle)
   end
-  download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
-  abort("missing release gate: downloads release artifacts in publish job") unless download_index
-  checksum_index = publish_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
-  collision_index = publish_steps.index { |step| step["name"] == "Reject existing release asset names" }
-  publish_index = publish_steps.index { |step| step["name"] == "Publish GitHub release" }
-  cask_index = publish_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
-  abort("missing release gate: publishes GitHub release") unless publish_index
-  abort("missing release gate: finalizes Homebrew cask") unless cask_index
-  abort("missing release gate: verifies checksum and rejects existing assets before publishing release") unless checksum_index && collision_index && download_index < checksum_index && checksum_index < collision_index && collision_index < publish_index
   upload_step = build_steps.fetch(upload_index)
   upload_with = upload_step.fetch("with")
   abort("missing release gate: uploads artifacts with pinned upload-artifact action") unless upload_step.fetch("uses").match?(/\Aactions\/upload-artifact@[0-9a-f]{40}\z/)
@@ -1977,6 +2694,13 @@ ruby -ryaml -e '
   ].each do |needle|
     abort("missing release gate: upload includes #{needle}") unless upload_path.include?(needle)
   end
+
+  download_index = publish_steps.index { |step| step["name"] == "Download release artifacts" }
+  checksum_index = publish_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
+  publish_head_index = publish_steps.index { |step| step["name"] == "Verify release tag is still at default-branch HEAD before publication" }
+  create_index = publish_steps.index { |step| step["name"] == "Create draft GitHub release" }
+  undraft_index = publish_steps.index { |step| step["name"] == "Undraft GitHub release" }
+  abort("missing release gate: publish job downloads, verifies, rechecks HEAD, creates draft, then undrafts") unless download_index && checksum_index && publish_head_index && create_index && undraft_index && download_index < checksum_index && checksum_index < publish_head_index && publish_head_index < create_index && create_index < undraft_index
   download_step = publish_steps.fetch(download_index)
   download_with = download_step.fetch("with")
   abort("missing release gate: downloads artifacts with pinned download-artifact action") unless download_step.fetch("uses").match?(/\Aactions\/download-artifact@[0-9a-f]{40}\z/)
@@ -1986,28 +2710,46 @@ ruby -ryaml -e '
   ["cd release-artifacts", "test -f \"$ZIP\"", "test -f \"$ZIP.sha256\"", "shasum -a 256 -c \"$ZIP.sha256\""].each do |needle|
     abort("missing release gate: verifies downloaded artifact checksum #{needle}") unless checksum_lines.include?(needle)
   end
-  publish_step = publish_steps.fetch(publish_index)
-  abort("missing release gate: publishes GitHub release as draft until artifacts attach") unless publish_step.fetch("with").fetch("draft") == true
-  abort("missing release gate: release publisher refuses to overwrite files") unless publish_step.fetch("with").fetch("overwrite_files") == false
-  publish_files = publish_step.fetch("with").fetch("files").to_s
-  [
-    "release-artifacts/compme-*-macos.zip",
-    "release-artifacts/compme-*-macos.zip.sha256",
-    "release-artifacts/compme-*-update.json",
-  ].each do |needle|
-    abort("missing release gate: publishes downloaded artifact #{needle}") unless publish_files.include?(needle)
+  publish_head = publish_steps.fetch(publish_head_index)
+  publish_head_run = active_shell_lines(publish_head.fetch("run"))
+  ["git fetch origin \"$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then", "exit 1"].each do |needle|
+    abort("missing release gate: pre-publication exact default HEAD #{needle}") unless publish_head_run.any? { |line| line.include?(needle) && !line.match?(/\A(echo|printf)[[:space:]]/) }
   end
-  abort("missing release gate: finalizes Homebrew cask after publishing release") unless cask_index > publish_index
-  undraft_index = publish_steps.index { |step| step["name"] == "Undraft GitHub release" }
-  abort("missing release gate: undrafts GitHub release after publish and before cask finalization") unless undraft_index && undraft_index > publish_index && undraft_index < cask_index
+  create_step = publish_steps.fetch(create_index)
+  abort("missing release gate: draft creation uses GitHub token") unless create_step.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
+  create_lines = active_shell_lines(create_step.fetch("run"))
+  [
+    "VERSION=\"${GITHUB_REF_NAME#v}\"",
+    "ZIP=\"compme-${VERSION}-macos.zip\"",
+    "MANIFEST=\"compme-${VERSION}-update.json\"",
+    "gh release create \"$GITHUB_REF_NAME\" \\",
+    "--verify-tag \\",
+    "--draft \\",
+    "--generate-notes \\",
+    "\"release-artifacts/$ZIP\" \\",
+    "\"release-artifacts/$ZIP.sha256\" \\",
+    "\"release-artifacts/$MANIFEST\"",
+  ].each do |needle|
+    abort("missing release gate: exact fail-closed draft creation #{needle}") unless create_lines.include?(needle)
+  end
   undraft_step = publish_steps.fetch(undraft_index)
   abort("missing release gate: undraft uses GitHub token") unless undraft_step.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
   abort("missing release gate: undrafts current tag") unless undraft_step.fetch("run") == %q(gh release edit "$GITHUB_REF_NAME" --draft=false)
-  q = 39.chr
-  abort("missing release gate: hyphenated tags publish as prerelease") unless publish_step.fetch("with")["prerelease"].to_s == "${{ contains(github.ref_name, #{q}-#{q}) }}"
-  cask_step = publish_steps.fetch(cask_index)
-  abort("missing release gate: finalizes Homebrew cask") unless cask_step
-  abort("missing release gate: cask finalization skips prerelease tags") unless cask_step["if"].to_s == "${{ !contains(github.ref_name, #{q}-#{q}) }}"
+
+  finalize_steps = finalize_cask.fetch("steps")
+  finalize_checkout = finalize_steps.find { |step| step["uses"].to_s.start_with?("actions/checkout@") }
+  abort("missing release gate: finalize_cask checkout fetches full history") unless finalize_checkout&.fetch("with")&.fetch("fetch-depth") == 0
+  finalize_download_index = finalize_steps.index { |step| step["name"] == "Download release artifacts" }
+  finalize_checksum_index = finalize_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
+  cask_index = finalize_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
+  abort("missing release gate: separate cask job downloads and verifies artifacts before finalization") unless finalize_download_index && finalize_checksum_index && cask_index && finalize_download_index < finalize_checksum_index && finalize_checksum_index < cask_index
+  finalize_download_with = finalize_steps.fetch(finalize_download_index).fetch("with")
+  abort("missing release gate: finalize_cask downloads named release artifact bundle") unless finalize_download_with == {"name" => "compme-release-artifacts", "path" => "release-artifacts"}
+  finalize_checksum_lines = active_shell_lines(finalize_steps.fetch(finalize_checksum_index).fetch("run"))
+  ["cd release-artifacts", "test -f \"$ZIP\"", "test -f \"$ZIP.sha256\"", "shasum -a 256 -c \"$ZIP.sha256\""].each do |needle|
+    abort("missing release gate: finalize_cask verifies downloaded artifact checksum #{needle}") unless finalize_checksum_lines.include?(needle)
+  end
+  cask_step = finalize_steps.fetch(cask_index)
   cask_run = cask_step.fetch("run")
   cask_lines = active_shell_lines(cask_run)
   abort("missing release gate: derives cask ZIP from release version") unless cask_lines.include?("ZIP=\"compme-${VERSION}-macos.zip\"")
@@ -2043,6 +2785,13 @@ GITHUB_ACTIONS=true GITHUB_REF_TYPE=tag COMPME_MODEL_GATE_PATH=/tmp/compme-poiso
 "$notarize_script" --self-test >/dev/null
 "$update_manifest_script" --self-test >/dev/null
 "$version_validator_script" --self-test >/dev/null
+for invalid_release_version in 1.2.3-rc.1 1.2.3-alpha 1.2.3-beta.2 1.2.3+build.7; do
+  if "$version_validator_script" "$invalid_release_version" >/dev/null 2>&1; then
+    echo "release gate failed: prerelease/build version accepted: $invalid_release_version" >&2
+    exit 1
+  fi
+done
+check_finalizer_helper_contract "$finalize_cask_script"
 
 require_line "$readme_doc" "workspace of ${workspace_members_count}$" "README workspace member count"
 require_line "$development_doc" "workspace with ${workspace_members_count}[[:space:]]+members" "DEVELOPMENT workspace member count"
@@ -2156,7 +2905,6 @@ reject_line "$repo_root/crates/model_client/tests/latency.rs" 'Metal GPU' "root 
 require_line "$finalize_cask_script" 'git merge-base --is-ancestor "\$GITHUB_SHA" "origin/\$default_branch"' "cask finalizer ancestry check"
 require_line "$finalize_cask_script" 'tag/version mismatch' "cask finalizer tag/version guard"
 require_line "$finalize_cask_script" 'refusing to publish a stale or out-of-order cask update' "cask finalizer stale version refusal"
-require_line "$finalize_cask_script" 'COMPME_CASK_ARTIFACT="\$artifact_path" tools/release/update-cask\.sh "\$tag"' "cask finalizer artifact handoff"
 require_line "$finalize_cask_script" 'git push origin "HEAD:\$default_branch"' "cask finalizer push"
 require_line "$gate_script" '^require_latency_budget="\$\{COMPME_REQUIRE_LATENCY_BUDGET:-1\}"[[:space:]]*$' "latency budget defaults on, CI opt-out only"
 require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET="\$require_latency_budget" cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
@@ -2217,7 +2965,7 @@ require_line "$releasing_doc" 'tools/release/notarize-app\.sh --self-test' "rele
 require_line "$releasing_doc" 'tools/release/write-update-manifest\.sh --self-test' "release docs update manifest self-test"
 require_line "$releasing_doc" 'cargo build --locked -p platform_macos --examples' "release docs platform_macos examples build"
 require_line "$releasing_doc" 'git pull --ff-only origin main' "release docs require up-to-date default branch before tag"
-require_line "$releasing_doc" 'cask finalizer refuses to update `main`' "release docs cask finalizer ancestry guard"
+require_line "$releasing_doc" 'tag commit is not an ancestor' "release docs cask finalizer ancestry guard"
 require_line "$repo_root/tools/acceptance/run-a1b-live-gates.sh" 'overlay-correction-presenter' "A1b runner correction overlay gate"
 require_line "$readme_doc" '^A2 validation is local/manual-only' "README marks A2 validation local/manual-only"
 require_line "$development_doc" '^A2 validation is local/manual-only' "DEVELOPMENT marks A2 validation local/manual-only"

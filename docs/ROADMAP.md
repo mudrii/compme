@@ -6,12 +6,12 @@
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-10 through `88b22cd`
+> with symbol/function/gate anchors re-reviewed 2026-07-10 through `5fa5b6b`
 > (workspace review/tdd/ponytail: zero-alloc slice-based trigger gates, an
 > `InsertStrategy::supports_atomic_range_replace` capability predicate replacing
 > `== AxSet` gates, +8 mutation-pinning tests → 1787 with the dead UTF-16 guard
-> and the `trim_trailing` wrapper removed; release: hyphenated tags publish as
-> GitHub prereleases and skip cask finalization, privacy scan widened to all
+> and the `trim_trailing` wrapper removed; release: stable-only version
+> validation and fail-closed publication hardening, privacy scan widened to all
 > text files; cross-platform Phase 0: `InsertStrategy::NativeRangeSet`,
 > `platform_windows::win_host` DACL hardening + console ctrl handler, Windows
 > CI job runs the new windows-only tests; `18fbc4f` corrected the pinned
@@ -22,7 +22,8 @@
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
 > `618013d` (seam hardening and A2 local/manual-only automation policy),
 > `a5781fc` (single model-location control), `18fbc4f` (catalog metadata fix),
-> and the documentation reconciliations through `88b22cd` are post-tag `main`
+> the documentation reconciliations through `88b22cd`, and `5fa5b6b` (release
+> publication hardening) are post-tag `main`
 > changes. They require a later
 > release tag before they are available in the distributed binary. Unless a row
 > explicitly says otherwise, current implementation/test claims below describe
@@ -130,8 +131,8 @@ signing + hardened runtime + notarization + a native updater.
   `xcrun notarytool submit --wait`, staples the ticket with `xcrun stapler`, and
   validates the staple. The tag workflow imports the Developer-ID `.p12`, fails
   closed when signing/notarization secrets are missing, requires a protected
-  `v*` tag plus the protected `release` environment, validates the supported
-  release-version subset through one shared helper, requires the tag to equal
+  stable `vX.Y.Z` tag plus the protected `release` environment, validates the
+  stable release version through one shared helper, requires the tag to equal
   the current default-branch HEAD at preflight and again before prebuild, and
   verifies an exact-arm64 binary both before artifact upload and before signing
   secrets are exposed. It notarizes before zipping, fails closed unless the
@@ -159,11 +160,17 @@ signing + hardened runtime + notarization + a native updater.
   conditional unsigned stable-release fallback so future tags fail closed
   without signing/notarization credentials; `618013d` removed A2 validation from
   CI/tag-release automation. The current release-integrity review additionally
-  centralizes version validation, binds cask finalization to the tag commit,
-  makes a failed cask push recoverable on retry, rejects release-asset name
-  collisions, constrains the artifact/cask to arm64, and allowlists the exact
-  identities and commit SHAs of every workflow action. None of these post-tag
-  policy changes is part of the v0.1.4 tag.
+  enforces stable-only `X.Y.Z` / `vX.Y.Z` versions, repeats the exact-default-tip
+  check immediately before publication, creates the draft with
+  `gh release create --verify-tag --draft --generate-notes`, refuses an existing
+  release for the tag without overwriting assets, and separates cask finalization
+  into a rerunnable protected-environment job. That job re-downloads and verifies
+  the artifact, freezes the tag-reviewed cask updater and validator before
+  switching to the default branch, validates the resulting cask, and makes a
+  failed cask push recoverable without republishing. The workflow also constrains
+  the artifact/cask to arm64 and allowlists the exact identities and commit SHAs
+  of every workflow action. None of these post-tag policy changes is part of the
+  v0.1.4 tag.
 
 **Pending:**
 - Optional later upgrade: replace the GitHub-release menu handoff with a full
@@ -679,5 +686,10 @@ per-app configurable.
 8. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux
    packaging/signing/publication, and feature-by-platform acceptance/docs after
    the corresponding adapter is functional.
-9. **Tier 1.2 optional updater** — replace the release-page handoff only with a
+9. **Settle repository governance with the owner** — decide whether to protect
+   `main`, restrict release-tag creation and deployment branches, prevent
+   release-environment self-review, and align GitHub's Actions allowlist/SHA-pin
+   policy with the repository checker. Record any deliberately accepted trust
+   boundary if direct-to-`main` remains the chosen workflow.
+10. **Tier 1.2 optional updater** — replace the release-page handoff only with a
    signature-verifying native updater design; this remains non-blocking.

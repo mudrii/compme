@@ -92,11 +92,6 @@ run_self_test() {
     abort "sha256" unless data["sha256"] == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     abort "notes" unless data["release_notes_url"] == "https://github.com/mudrii/compme/releases/tag/v1.2.3"
   ' "$tmp/manifest.json"
-  COMPME_UPDATE_PUBLISHED_AT="2026-07-02T00:00:00Z" "$0" 1.2.3-rc.1 compme-1.2.3-rc.1-macos.zip "$sha" >"$tmp/manifest-rc.json"
-  ruby -rjson -e '
-    data = JSON.parse(File.read(ARGV[0]))
-    abort "version" unless data["version"] == "1.2.3-rc.1"
-  ' "$tmp/manifest-rc.json"
   if "$0" 1.2.3.4 compme-1.2.3.4-macos.zip "$sha" >"$tmp/four-part.out" 2>"$tmp/four-part.err"; then
     echo "self-test FAILED: four-part version passed" >&2
     return 1
@@ -107,11 +102,11 @@ run_self_test() {
     return 1
   fi
   grep -Fq "invalid version" "$tmp/build-metadata.err"
-  if "$0" 1.2.3-rc.01 compme-1.2.3-rc.01-macos.zip "$sha" >"$tmp/leading-zero-prerelease.out" 2>"$tmp/leading-zero-prerelease.err"; then
-    echo "self-test FAILED: numeric prerelease identifier with a leading zero passed" >&2
+  if "$0" 1.2.3-rc.1 compme-1.2.3-rc.1-macos.zip "$sha" >"$tmp/prerelease.out" 2>"$tmp/prerelease.err"; then
+    echo "self-test FAILED: prerelease version passed" >&2
     return 1
   fi
-  grep -Fq "invalid version" "$tmp/leading-zero-prerelease.err"
+  grep -Fq "invalid version" "$tmp/prerelease.err"
   if "$0" bad compme-bad-macos.zip "$sha" >"$tmp/bad.out" 2>"$tmp/bad.err"; then
     echo "self-test FAILED: bad version passed" >&2
     return 1

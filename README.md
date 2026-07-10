@@ -43,9 +43,10 @@ Accessibility, generates short local completions, classifies field UX (inline /
 popup / blocked / hotkey-only / unsupported), shows a non-activating AppKit
 ghost-text overlay, intercepts accept keys through transient Carbon hotkeys, and
 inserts accepted text through Accessibility, synthetic keys, or a clipboard-paste
-fallback. Tagged release artifacts are built through the GitHub Release workflow
-as Developer-ID signed, hardened-runtime, notarized, and stapled bundles; tag
-releases fail closed if the required signing credentials are unavailable.
+fallback. Stable `vX.Y.Z` release artifacts are built through the GitHub Release
+workflow as Developer-ID signed, hardened-runtime, notarized, and stapled
+bundles; stable tags fail closed if the required signing credentials are
+unavailable.
 
 ## Install
 

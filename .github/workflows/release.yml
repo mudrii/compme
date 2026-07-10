@@ -454,7 +454,7 @@ jobs:
             ${{ steps.manifest.outputs.manifest }}
 
   publish_release:
-    name: Publish release · finalize cask
+    name: Publish release
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     needs: [build_release]
     environment: release
@@ -482,57 +482,72 @@ jobs:
           test -f "$ZIP.sha256"
           shasum -a 256 -c "$ZIP.sha256"
 
-      - name: Reject existing release asset names
+      - name: Verify release tag is still at default-branch HEAD before publication
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$DEFAULT_BRANCH"
+          default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
+          if [ "$GITHUB_SHA" != "$default_sha" ]; then
+            echo "release tag commit $GITHUB_SHA must still equal current origin/$DEFAULT_BRANCH HEAD $default_sha before publication" >&2
+            exit 1
+          fi
+
+      - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          existing_assets="$(
-            gh api --paginate \
-              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-              --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .assets[].name"
-          )"
-          for asset in \
-            "compme-${VERSION}-macos.zip" \
-            "compme-${VERSION}-macos.zip.sha256" \
-            "compme-${VERSION}-update.json"; do
-            if grep -Fxq "$asset" <<<"$existing_assets"; then
-              echo "refusing to overwrite existing release asset: $asset" >&2
-              exit 1
-            fi
-          done
-
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
-        with:
-          draft: true
-          overwrite_files: false
-          # A hyphen in the tag (v1.2.3-rc.1) marks a prerelease: GitHub then
-          # excludes it from /releases/latest, which is the URL the app's
-          # Check-for-Updates opens.
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            release-artifacts/compme-*-macos.zip
-            release-artifacts/compme-*-macos.zip.sha256
-            release-artifacts/compme-*-update.json
+          ZIP="compme-${VERSION}-macos.zip"
+          MANIFEST="compme-${VERSION}-update.json"
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --draft \
+            --generate-notes \
+            "release-artifacts/$ZIP" \
+            "release-artifacts/$ZIP.sha256" \
+            "release-artifacts/$MANIFEST"
 
       - name: Undraft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false
 
-      # The cask's sha256 can only be known after the artifact is built. Finalize
-      # computes it from the locally downloaded artifact (it does not need the
-      # release to be public), so it runs after undraft: a finalize failure then
-      # leaves a public release without a cask update, never a cask on main
-      # pointing at a draft-only 404 URL.
-      # Prerelease tags never reach the cask: brew has no prerelease notion,
-      # so bumping the cask to an rc would ship it to every `brew upgrade`.
+  # Keep cask publication in its own protected-environment job. If the push
+  # fails after the GitHub release is public, GitHub can rerun this job directly
+  # without attempting to recreate or replace immutable release assets.
+  finalize_cask:
+    name: Finalize Homebrew cask
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    needs: [publish_release]
+    environment: release
+    permissions:
+      contents: write
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: compme-release-artifacts
+          path: release-artifacts
+
+      - name: Verify downloaded artifact checksum
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          ZIP="compme-${VERSION}-macos.zip"
+          cd release-artifacts
+          test -f "$ZIP"
+          test -f "$ZIP.sha256"
+          shasum -a 256 -c "$ZIP.sha256"
+
       - name: Finalize Homebrew cask
-        if: ${{ !contains(github.ref_name, '-') }}
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |

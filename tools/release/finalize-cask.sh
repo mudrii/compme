@@ -6,12 +6,54 @@
 #        finalize-cask.sh --self-test
 set -euo pipefail
 
-script_repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 repo_root="${COMPME_FINALIZE_CASK_REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
-version_validator="$script_repo_root/tools/release/validate-version.sh"
 
 usage() {
   echo "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH | --self-test" >&2
+}
+
+freeze_release_helpers() {
+  frozen_root="$1"
+  mkdir -p "$frozen_root/tools/release"
+  for helper in validate-version.sh update-cask.sh; do
+    source_path="$repo_root/tools/release/$helper"
+    if [ ! -f "$source_path" ]; then
+      echo "missing tag-reviewed release helper: $source_path" >&2
+      return 1
+    fi
+    cp "$source_path" "$frozen_root/tools/release/$helper"
+    chmod +x "$frozen_root/tools/release/$helper"
+  done
+}
+
+require_exact_cask_line() {
+  cask_path="$1"
+  expected_line="$2"
+  label="$3"
+  count="$(grep -Fxc "$expected_line" "$cask_path" || true)"
+  if [ "$count" -ne 1 ]; then
+    echo "$cask_path: expected exactly one $label line: $expected_line" >&2
+    return 1
+  fi
+}
+
+validate_finalized_cask() {
+  cask_path="$1"
+  version="$2"
+  artifact_path="$3"
+  expected_sha="$(shasum -a 256 "$artifact_path" | awk '{print $1}')"
+
+  if ! ruby -c "$cask_path" >/dev/null; then
+    echo "$cask_path: invalid Ruby syntax after cask update" >&2
+    return 1
+  fi
+  require_exact_cask_line "$cask_path" "  version \"$version\"" "version"
+  require_exact_cask_line "$cask_path" "  sha256 \"$expected_sha\"" "artifact sha256"
+  require_exact_cask_line "$cask_path" \
+    '  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"' \
+    "release URL"
+  require_exact_cask_line "$cask_path" "  depends_on macos: :sonoma" "macOS floor"
+  require_exact_cask_line "$cask_path" "  depends_on arch: :arm64" "arm64 dependency"
 }
 
 finalize_cask() {
@@ -20,7 +62,13 @@ finalize_cask() {
   version="$3"
   default_branch="$4"
 
-  "$version_validator" "$version"
+  frozen_root="$(mktemp -d "${TMPDIR:-/tmp}/compme-finalize-helpers.XXXXXX")"
+  trap 'rm -rf "$frozen_root"' EXIT
+  freeze_release_helpers "$frozen_root"
+  frozen_validator="$frozen_root/tools/release/validate-version.sh"
+  frozen_updater="$frozen_root/tools/release/update-cask.sh"
+
+  "$frozen_validator" "$version"
   if [ "$tag" != "v$version" ]; then
     echo "tag/version mismatch: $tag != v$version" >&2
     return 1
@@ -49,7 +97,11 @@ finalize_cask() {
     echo "refusing to publish a stale or out-of-order cask update" >&2
     return 1
   fi
-  COMPME_CASK_ARTIFACT="$artifact_path" tools/release/update-cask.sh "$tag"
+  cask_path="$repo_root/Casks/compme.rb"
+  COMPME_CASK_PATH="$cask_path" \
+    COMPME_CASK_ARTIFACT="$artifact_path" \
+    "$frozen_updater" "$tag"
+  validate_finalized_cask "$cask_path" "$version" "$artifact_path"
   if git diff --quiet -- Casks/compme.rb; then
     echo "Casks/compme.rb already matches $tag"
   else
@@ -73,6 +125,11 @@ finalize_cask() {
 make_fixture_repo() {
   root="$1"
   behavior="$2"
+  artifact_sha="$(shasum -a 256 "$(dirname "$root")/artifact.zip" | awk '{print $1}')"
+  initial_sha="$artifact_sha"
+  if [ "$behavior" = "modify" ]; then
+    initial_sha="0000000000000000000000000000000000000000000000000000000000000000"
+  fi
   mkdir -p "$root/remote.git"
   git init --bare "$root/remote.git" >/dev/null
   git clone "$root/remote.git" "$root/work" >/dev/null 2>&1
@@ -80,23 +137,45 @@ make_fixture_repo() {
     cd "$root/work"
     git checkout -b main >/dev/null 2>&1
     mkdir -p Casks tools/release
-    cat >Casks/compme.rb <<'CASK'
+    cat >Casks/compme.rb <<CASK
 cask "compme" do
   version "9.8.7"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "$initial_sha"
+  url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
+  depends_on macos: :sonoma
+  depends_on arch: :arm64
 end
 CASK
+    cat >tools/release/validate-version.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "tag-validator" >>"${COMPME_FINALIZE_CASK_HELPER_LOG:-/dev/null}"
+if [ "$#" -ne 1 ] || [ "$1" != "9.8.7" ]; then
+  echo "invalid version: ${1:-}" >&2
+  exit 1
+fi
+SH
     cat >tools/release/update-cask.sh <<SH
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "tag-updater" >>"\${COMPME_FINALIZE_CASK_HELPER_LOG:-/dev/null}"
 printf '%s\n' "\${COMPME_CASK_ARTIFACT:-}" >>"\${COMPME_FINALIZE_CASK_ARTIFACT_LOG:-/dev/null}"
+cask="\${COMPME_CASK_PATH:?explicit cask path is required}"
 case "$behavior" in
   noop) exit 0 ;;
-  modify) ruby -0pi -e 'sub(/sha256 "[0-9a-f]+"/, "sha256 \\"1111111111111111111111111111111111111111111111111111111111111111\\"")' Casks/compme.rb ;;
+  modify)
+    sha="\$(shasum -a 256 "\${COMPME_CASK_ARTIFACT:?}" | awk '{print \$1}')"
+    SHA="\$sha" ruby -0pi -e 'replacement = "sha256 \"" + ENV.fetch("SHA") + "\""; sub(/sha256 "[0-9a-f]+"/, replacement)' "\$cask"
+    ;;
+  bad-syntax) printf '%s\n' 'this is not (' >>"\$cask" ;;
+  wrong-arch) ruby -0pi -e 'sub(/depends_on arch: :arm64/, "depends_on arch: :x86_64")' "\$cask" ;;
+  wrong-version) ruby -0pi -e 'sub(/version "9\.8\.7"/, "version \\"9.9.9\\"")' "\$cask" ;;
+  wrong-url) ruby -0pi -e 'sub(%r{https://github\.com/mudrii/compme}, "https://example.invalid")' "\$cask" ;;
+  wrong-sha) ruby -0pi -e 'sub(/sha256 "[0-9a-f]+"/, "sha256 \\"0000000000000000000000000000000000000000000000000000000000000000\\"")' "\$cask" ;;
   fail) exit 42 ;;
 esac
 SH
-    chmod +x tools/release/update-cask.sh
+    chmod +x tools/release/validate-version.sh tools/release/update-cask.sh
     git add .
     git -c user.name=t -c user.email=t@example.test commit -m initial >/dev/null
     git tag v9.8.7
@@ -114,6 +193,7 @@ detach_release_checkout() {
 run_self_test() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-finalize-cask.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
+  printf 'fixture artifact\n' >"$tmp/artifact.zip"
 
   make_fixture_repo "$tmp/noop" noop
   noop_sha="$(git -C "$tmp/noop/work" rev-parse HEAD)"
@@ -153,6 +233,62 @@ run_self_test() {
   git -C "$tmp/modify/work" fetch origin main >/dev/null 2>&1
   git -C "$tmp/modify/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
   grep -Fxq "$tmp/artifact.zip" "$tmp/artifacts.log"
+
+  make_fixture_repo "$tmp/frozen-provenance" modify
+  frozen_sha="$(git -C "$tmp/frozen-provenance/work" rev-parse HEAD)"
+  cat >"$tmp/frozen-provenance/work/tools/release/validate-version.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "default-validator" >>"${COMPME_FINALIZE_CASK_HELPER_LOG:?}"
+exit 71
+SH
+  cat >"$tmp/frozen-provenance/work/tools/release/update-cask.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "default-updater" >>"${COMPME_FINALIZE_CASK_HELPER_LOG:?}"
+exit 72
+SH
+  chmod +x \
+    "$tmp/frozen-provenance/work/tools/release/validate-version.sh" \
+    "$tmp/frozen-provenance/work/tools/release/update-cask.sh"
+  git -C "$tmp/frozen-provenance/work" add tools/release
+  git -C "$tmp/frozen-provenance/work" \
+    -c user.name=t -c user.email=t@example.test \
+    commit -m default-helper-drift >/dev/null
+  git -C "$tmp/frozen-provenance/work" push origin main >/dev/null 2>&1
+  detach_release_checkout "$tmp/frozen-provenance/work" "$frozen_sha"
+  : >"$tmp/frozen-helpers.log"
+  COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/frozen-provenance/work" \
+    COMPME_FINALIZE_CASK_HELPER_LOG="$tmp/frozen-helpers.log" \
+    GITHUB_SHA="$frozen_sha" \
+    "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main >/dev/null
+  grep -Fxq "tag-validator" "$tmp/frozen-helpers.log"
+  grep -Fxq "tag-updater" "$tmp/frozen-helpers.log"
+  if grep -Fq "default-" "$tmp/frozen-helpers.log"; then
+    echo "finalize-cask self-test failed: default-branch helper executed" >&2
+    return 1
+  fi
+
+  for rejection in \
+    "bad-syntax|invalid Ruby syntax after cask update" \
+    "wrong-arch|expected exactly one arm64 dependency line" \
+    "wrong-version|expected exactly one version line" \
+    "wrong-url|expected exactly one release URL line" \
+    "wrong-sha|expected exactly one artifact sha256 line"; do
+    behavior="${rejection%%|*}"
+    expected_error="${rejection#*|}"
+    make_fixture_repo "$tmp/$behavior" "$behavior"
+    rejection_sha="$(git -C "$tmp/$behavior/work" rev-parse HEAD)"
+    detach_release_checkout "$tmp/$behavior/work" "$rejection_sha"
+    if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/$behavior/work" \
+      GITHUB_SHA="$rejection_sha" \
+      "$0" v9.8.7 "$tmp/artifact.zip" 9.8.7 main \
+      >/dev/null 2>"$tmp/$behavior.err"; then
+      echo "finalize-cask self-test failed: $behavior cask update was accepted" >&2
+      return 1
+    fi
+    grep -Fq "$expected_error" "$tmp/$behavior.err"
+  done
 
   make_fixture_repo "$tmp/update-fail" fail
   update_fail_sha="$(git -C "$tmp/update-fail/work" rev-parse HEAD)"
@@ -218,7 +354,8 @@ SH
   test "$before_count" = "$after_count"
   grep -q "tag/version mismatch" "$tmp/tag-version-mismatch.err"
 
-  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/not-a-repo" \
+  make_fixture_repo "$tmp/invalid-version" noop
+  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/invalid-version/work" \
     GITHUB_SHA=unused \
     "$0" v01.2.3 "$tmp/artifact.zip" 01.2.3 main >/dev/null 2>"$tmp/invalid-version.err"; then
     echo "finalize-cask self-test failed: invalid version was accepted" >&2

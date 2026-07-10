@@ -95,6 +95,12 @@ CASK
   ruby -0pi -e 'sub(/^  depends_on arch: :arm64\n/, "")' "$missing_arch_cask"
   malformed_cask="$tmp/malformed.rb"
   printf 'cask "compme" do\n  version "1.2.3\nend\n' >"$malformed_cask"
+  prerelease_plist="$tmp/prerelease.plist"
+  write_plist "$prerelease_plist" compme 14.0 com.compme.app compme 1.2.3-rc.1 true 1.2.3-rc.1
+  prerelease_cargo="$tmp/prerelease-Cargo.toml"
+  printf 'version = "1.2.3-rc.1"\n' >"$prerelease_cargo"
+  prerelease_cask="$tmp/prerelease.rb"
+  write_cask "$prerelease_cask" 1.2.3-rc.1
 
   # (a) version drift: cask version != Cargo.toml version -> non-zero + drift error.
   if out="$("$0" "$good_plist" "$cargo" "$drift_cask" 2>&1)"; then
@@ -189,6 +195,16 @@ CASK
   case "$out" in
     *"invalid Ruby syntax"*) ;;
     *) echo "self-test FAILED: expected Ruby syntax error, got: $out" >&2; exit 1 ;;
+  esac
+
+  if out="$("$0" "$prerelease_plist" "$prerelease_cargo" "$prerelease_cask" 2>&1)"; then
+    echo "self-test FAILED: prerelease bundle version should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"release version must be stable X.Y.Z"*) ;;
+    *) echo "self-test FAILED: expected stable-version error, got: $out" >&2; exit 1 ;;
   esac
 
   if out="$("$0" "$bad_id_plist" "$cargo" "$good_cask" 2>&1)"; then
@@ -349,7 +365,11 @@ ruby -rrexml/document -e '
   cask_macos = cask_text[/^\s*depends_on\s+macos:\s+:(\w+)/, 1]
   cask_arch = cask_text[/^\s*depends_on\s+arch:\s+:(\w+)/, 1]
   plist_version = value_after.call("CFBundleShortVersionString")
-  expect.call("CFBundleVersion", value_after.call("CFBundleVersion"), plist_version)
+  bundle_version = value_after.call("CFBundleVersion")
+  expect.call("CFBundleVersion", bundle_version, plist_version)
+  stable_version = /\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z/
+  versions = [cargo_version, cask_version, plist_version, bundle_version]
+  errors << "release version must be stable X.Y.Z" unless versions.all? { |version| version&.match?(stable_version) }
   errors << "crates/app Cargo.toml: missing package version" unless cargo_version
   errors << "Casks/compme.rb: missing cask version" unless cask_version
   errors << "Casks/compme.rb: macOS floor must be >= :sonoma" unless cask_macos == "sonoma"

@@ -10,7 +10,7 @@ Rust workspace and the separate spike package.
 `com.compme.app`, and the `compme://` URL scheme declared (Launch Services
 registration). The bundle is the unlock for URL-scheme reception,
 `SMAppService` launch-at-login, and a stable TCC identity. Local source bundles
-are ad-hoc signed by default; the `v*` tag workflow Developer-ID signs,
+are ad-hoc signed by default; the stable `vX.Y.Z` tag workflow Developer-ID signs,
 notarizes, and staples release artifacts. It compiles the release binary first
 in a secretless prebuild job, then fails closed before bundling if signing
 credentials are missing and before packaging or publication if notarization
@@ -239,11 +239,12 @@ root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
 surface and several macOS pasteboard checks share process-wide OS state.
-CI and the tag release workflow also run scoped Windows/Linux adapter gates on
-native runners: fmt, clippy, test, and build for `platform_windows` on
-`windows-latest`, and the same four commands for `platform_linux` on
-`ubuntu-latest`. Those are CI/release-runner gates rather than local macOS
-commands.
+Branch/PR CI also runs native Windows/Linux portability jobs: workspace fmt,
+portable-workspace clippy/tests excluding `platform_macos`, and an app-binary
+build through each fail-closed target facade. Tag release validation is
+narrower: it runs fmt, clippy, test, and build for `platform_windows` on
+`windows-latest` and for `platform_linux` on `ubuntu-latest`. Those are
+CI/release-runner gates rather than local macOS commands.
 For release-readiness audits with the local GGUF model installed, also run the
 ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md) and the A1b
 manual checklist. The automated tag workflow self-tests the A1b checklist

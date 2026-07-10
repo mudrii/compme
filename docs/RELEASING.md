@@ -19,12 +19,13 @@ validation runs scoped adapter-crate jobs on those platforms.
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push to `main` / `spike/**`, PR, or `workflow_dispatch` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, plus non-A2 acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), release-version validator self-test, Homebrew cask Ruby syntax (`ruby -c Casks/compme.rb`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), bundle smoke + self-test (`tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`), UI-assisted session self-test (`tools/acceptance/run-ui-assisted-session.sh --self-test`), A1b/E2E self-tests, agent-brief alignment + self-test (`tools/release/check-agent-briefs.sh` and `tools/release/check-agent-briefs.sh --self-test`), privacy policy + self-test (`tools/release/check-privacy-policy.sh` and `tools/release/check-privacy-policy.sh --self-test`), missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. Windows/Linux portability jobs fmt the workspace, clippy/test the workspace excluding `platform_macos`, and build the app binary through the target facade. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected tag `v*` | Preflight validates the supported SemVer release subset (no build metadata) with `validate-version.sh`, requires the tag commit to equal the current default-branch HEAD, and checks bundle metadata before starting expensive jobs. Release validation then runs serialized root fmt/clippy/test, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), root build, non-A2 acceptance/bundle/release script syntax + self-tests including the release-version validator, Homebrew cask Ruby syntax, spike fmt/clippy/test/build, and scoped Windows/Linux adapter fmt/clippy/test/build jobs. Only after all validation passes, a secretless prebuild job (read-only permissions, no `release` environment, no secrets) rechecks that the tag still equals default-branch HEAD, scrubs the checkout-persisted git credential, compiles cold without a build cache, verifies the binary contains exactly `arm64`, and uploads it. The protected `release` environment then gates the signing job, which runs no `cargo` and installs no Rust toolchain: it downloads the binary, restores its executable bit, re-verifies exact `arm64` before exposing signing secrets, registers a deterministic cleanup path, imports the Developer-ID certificate, assembles `Compme.app` with `COMPME_BUNDLE_SKIP_BUILD=1`, notarizes + staples it, and strictly deletes and verifies absence of the signing keychain before packaging. It then zips with `ditto`, computes sha256, writes the update manifest, and uploads the three artifacts. A separate publish job verifies the downloaded zip checksum, fails if the tag already has any expected asset name, creates a draft GitHub Release with same-name overwrite disabled, undrafts it, then finalizes the stable-only Homebrew cask checksum from that artifact. Hyphenated tags are GitHub prereleases and skip cask finalization. |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected stable tag `vX.Y.Z` | Preflight validates the stable-only `X.Y.Z` version with `validate-version.sh`, requires the tag commit to equal the current default-branch HEAD, and checks bundle metadata before starting expensive jobs. Release validation then runs serialized root fmt/clippy/test, [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh), root build, non-A2 acceptance/bundle/release script syntax + self-tests including the release-version validator, Homebrew cask Ruby syntax, spike fmt/clippy/test/build, and scoped Windows/Linux adapter fmt/clippy/test/build jobs. Only after all validation passes, a secretless prebuild job (read-only permissions, no `release` environment, no secrets) rechecks that the tag still equals default-branch HEAD, scrubs the checkout-persisted git credential, compiles cold without a build cache, verifies the binary contains exactly `arm64`, and uploads it. The protected `release` environment then gates the signing job, which runs no `cargo` and installs no Rust toolchain: it downloads the binary, restores its executable bit, re-verifies exact `arm64` before exposing signing secrets, registers a deterministic cleanup path, imports the Developer-ID certificate, assembles `Compme.app` with `COMPME_BUNDLE_SKIP_BUILD=1`, notarizes + staples it, and strictly deletes and verifies absence of the signing keychain before packaging. It then zips with `ditto`, computes sha256, writes the update manifest, and uploads the three artifacts. Publication and Homebrew finalization are separate protected-environment jobs so a cask failure can be retried without rebuilding or republishing. The publish job verifies the downloaded zip checksum, performs a late exact-default-tip check, refuses an existing release for the tag, creates a draft with `gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes` plus exactly the three release files, and undrafts it. The dependent finalizer downloads and verifies the artifact again, freezes the tag-reviewed cask updater and version validator before switching to the default branch, and validates the resulting cask before committing it. |
 
-Workflow permissions default to `contents: read`; only the publish job receives
-`contents: write`. The publish job also checks out full history
-(`fetch-depth: 0`) so the cask finalizer can prove the tag commit is on the
-default branch before it writes the finalized checksum.
+Workflow permissions default to `contents: read`; only the publication and cask
+finalization jobs receive `contents: write`, and both are gated by the protected
+`release` environment. Both check out full history (`fetch-depth: 0`) so their
+late tag/default-branch checks and the cask finalizer's ancestry proof use the
+complete repository history.
 
 A2 validation is local/manual-only. The automated workflows exclude
 `tools/acceptance/run-a2-compat-gates.sh` and
@@ -87,8 +88,9 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
      targeting pattern `v*` (this is what makes `github.ref_protected` true;
      an unprotected tag is rejected by the preflight).
    - `release` environment: Settings → Environments → create `release` with
-     required reviewers — both the signing and publish jobs declare
-     `environment: release`, so this is the human gate before any signing.
+     required reviewers — the signing, publication, and cask-finalization jobs
+     declare `environment: release`. A cask-only retry therefore requires a new
+     approval by design, preserving the human gate around each write-capable job.
      Signing/notarization secrets may live at repo or environment scope;
      environment scope keeps them away from non-release workflows.
 
@@ -102,15 +104,17 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    validate the version and both distribution metadata surfaces before committing:
 
    ```sh
-   version="X.Y.Z" # optionally X.Y.Z-prerelease
+   version="X.Y.Z"
    tools/release/validate-version.sh "$version"
    tools/bundle/check-bundle-metadata.sh
    ruby -c Casks/compme.rb
    ```
 
-   Use the supported SemVer release subset: build metadata (`+…`) is not allowed,
-   and numeric prerelease identifiers with leading zeroes are rejected by the
-   shared validator and release preflight.
+   Releases use one stable-only version contract: `X.Y.Z` in bundle, Cargo, and
+   cask metadata, and `vX.Y.Z` for the tag. Hyphenated prereleases, build
+   metadata (`+…`), leading-zero components, and additional components are
+   rejected by the shared validator and release preflight. Apple bundle version
+   metadata requires numeric components, so there is no prerelease-tag path.
    The pushed tag must be `v<version>` and must match
    bundle metadata; the release preflight runs
    `COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh`.
@@ -157,8 +161,8 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    it rejects staged-but-uncommitted evidence (the working tree must match HEAD
    for the ledger and its logs). The committed row logs matter: the checker
    rejects ledgers whose
-   `log_path` entries are missing on the GitHub runner, logs that do not prove
-   the expected app/domain/context behavior, stale ledgers older than
+   `log_path` entries are missing from the committed evidence checkout, logs that
+   do not prove the expected app/domain/context behavior, stale ledgers older than
    `COMPME_A2_LEDGER_MAX_AGE_SECONDS` (default `86400`), and future-dated
    ledgers beyond `COMPME_A2_LEDGER_MAX_FUTURE_SKEW_SECONDS` (default `300`).
 
@@ -167,14 +171,16 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    visible text on the focused display so OCR can produce non-empty context.
 
 4. Ensure the release commit is on the up-to-date default branch, then tag and
-   push. Use a protected `v*` tag in the supported SemVer release subset from the
+   push. Use a protected stable `vX.Y.Z` tag from the
    current default branch. The preflight fails before release validation if the
    tag is unprotected, outside that version subset, does not equal the current
    `origin/<default-branch>` HEAD, or does not match the bundle metadata. The
-   secretless prebuild repeats the exact-HEAD
-   check after validation so a default-branch advance cancels the release rather
-   than signing an older commit. The cask finalizer refuses to update `main` if
-   the tag commit is not an ancestor of the default branch or if the
+   secretless prebuild repeats the exact-HEAD check after validation so a
+   default-branch advance cancels the release rather than signing an older
+   commit. The publication job performs the same exact-tip check immediately
+   before creating the draft, closing the later build/signing window.
+   The cask finalizer refuses to update `main`
+   if the tag commit is not an ancestor of the default branch or if the
    default-branch cask version has already moved past the tag version:
 
    ```sh
@@ -188,34 +194,55 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
 
    The Release workflow builds and verifies an exact-arm64 binary before upload,
    re-verifies exact arm64 after download and before signing secrets are exposed,
-   then Developer-ID signs, notarizes, staples, and packages it. It
-   creates a draft `vX.Y.Z` GitHub Release with `compme-X.Y.Z-macos.zip`,
-   `compme-X.Y.Z-macos.zip.sha256`, and `compme-X.Y.Z-update.json`, undrafts the
-   release, then finalizes the cask checksum on the default branch. Existing
-   same-name release assets are never overwritten; a collision fails closed. A
-   hyphenated prerelease tag (`vX.Y.Z-rc.N`) is instead marked a GitHub
-   prerelease and skips cask finalization, so `brew upgrade` and the in-app
-   updater (`/releases/latest`) never pick it up.
-
-   The release body is auto-generated from commits; prepend the curated notes
-   (e.g. [`docs/RELEASE-NOTES-v0.1.0.md`](RELEASE-NOTES-v0.1.0.md)) after
-   publish with `gh release edit "$tag" --notes-file "docs/RELEASE-NOTES-$tag.md"`
-   when that curated file exists (or paste it above the generated list in the web
-   UI). Also refresh the README **Status** section if this is the first release.
-5. Confirm the workflow's **Finalize Homebrew cask** step committed the cask
-   sha256 back to the default branch. If branch protection blocks that bot push
-   or you need to recover manually, use the guarded finalizer path from a
-   checkout at the release tag commit so tag/version, default-branch ancestry,
-   and stale-version checks still run:
+   then Developer-ID signs, notarizes, staples, and packages it. The **Publish
+   release** job creates a draft `vX.Y.Z` GitHub Release by running
+   the equivalent of:
 
    ```sh
-   git fetch origin main
+   gh release create "$tag" \
+     --verify-tag \
+     --draft \
+     --generate-notes \
+     "release-artifacts/compme-$version-macos.zip" \
+     "release-artifacts/compme-$version-macos.zip.sha256" \
+     "release-artifacts/compme-$version-update.json"
+   ```
+
+   It then undrafts the release. `gh release create` fails if the tag already has
+   a release, and the workflow never uses an asset-upload overwrite/clobber path;
+   existing release assets are therefore never replaced in place. In short:
+   same-name release assets are never overwritten; a collision fails closed
+   because create-only publication refuses the existing release for the tag.
+
+   The release body is auto-generated from commits. When curated notes exist
+   (e.g. [`docs/RELEASE-NOTES-v0.1.0.md`](RELEASE-NOTES-v0.1.0.md)), paste them
+   above the generated list in the web UI or combine both sections into one file
+   before using `gh release edit "$tag" --notes-file <combined-file>`; that option
+   replaces the whole body rather than prepending text. Also refresh the README
+   **Status** section if this is the first release.
+5. After publication, the separate **Finalize Homebrew cask** job downloads the
+   artifact again, verifies its checksum, and commits the cask sha256 back to the
+   default branch. Before it checks out or pulls that mutable branch, the
+   finalizer freezes `update-cask.sh` and `validate-version.sh` from the reviewed
+   release tag; it then invokes those frozen helpers with explicit cask and
+   artifact paths. Before committing, it verifies Ruby syntax plus the exact
+   arm64 stanza, version, release URL, and artifact sha256.
+
+   If branch protection blocks that bot push or you need to recover manually,
+   use the guarded finalizer path from a checkout at the release tag commit so
+   tag/version, default-branch ancestry, frozen-helper, and stale-version checks
+   still run:
+
+   ```sh
    version="X.Y.Z" # replace with the published version
    tag="v$version"
-   GITHUB_SHA="$(git rev-parse "$tag")" \
+   git fetch origin main "refs/tags/$tag:refs/tags/$tag"
+   git checkout --detach "$tag"
+   artifact_path="$PWD/release-artifacts/compme-$version-macos.zip"
+   GITHUB_SHA="$(git rev-parse "$tag^{commit}")" \
      tools/release/finalize-cask.sh \
        "$tag" \
-       "$PWD/release-artifacts/compme-$version-macos.zip" \
+       "$artifact_path" \
        "$version" \
        main
    ```
@@ -223,11 +250,16 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    Release helpers are strict about arity; use the documented command forms
    exactly, because unexpected positional arguments exit with usage.
 
-   Re-run recovery: a publish job that fails before the undraft step leaves the
-   release drafted. Because same-name asset replacement is disabled, inspect
-   `gh release view "$tag"` and `gh release list`, then delete the incomplete
-   draft or its uploaded assets before re-running; never overwrite a published
-   artifact in place.
+   Retry boundaries are intentional:
+
+   - If publication fails after draft creation but before undrafting, inspect
+     `gh release view "$tag"` and `gh release list`, then delete the incomplete
+     draft before rerunning **Publish release**. The create-only publication path
+     refuses the existing release and never overwrites its assets in place.
+   - If the release is already published and only cask finalization fails, rerun
+     only the failed **Finalize Homebrew cask** job. Approve its protected
+     `release` environment again; it re-downloads and re-verifies the published
+     artifact without creating or uploading another release.
 
    Post-publish checklist:
    - `gh release view "vX.Y.Z"` (with the published tag substituted) shows all

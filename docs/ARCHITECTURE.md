@@ -18,9 +18,9 @@ and additions such as candidate cycling.
 page documents current `main`. Post-tag runtime/download/clipboard/OCR/deep-link
 hardening, local/manual-only A2 policy, single **Show Models Folder** Settings
 control, and release-integrity controls are unreleased until the next tag. The
-current tag pipeline uses a secretless exact-arm64 prebuild, re-verifies the
-binary before secrets, fails closed on signing-keychain cleanup or release-asset
-name collisions, and constrains the Homebrew cask to arm64.
+current stable `vX.Y.Z` pipeline uses a secretless exact-arm64 prebuild,
+re-verifies the binary before secrets, fails closed on signing-keychain cleanup
+or release-asset name collisions, and constrains the Homebrew cask to arm64.
 
 The workspace now holds 25 crates. The shape is deliberate: almost everything
 outside the model/download seams, platform adapters, and host is pure (text in →
@@ -492,8 +492,10 @@ Major responsibilities:
 - Dynamic rebind when the frontmost PID changes.
 - Focused-element safety polling.
 - Secure Input and secure-field blocking.
-- Stable field identity from AX owner PID, identifier, role, subrole, and raw
-  pointer fallback.
+- Stable field identity from AX owner PID plus `AXIdentifier` where available;
+  identifier-less elements use `CFHash` to survive fresh AX refs for the same
+  underlying node, with raw pointer identity only as the last-resort unstable
+  fallback when neither semantic identity nor hash is available.
 - Text reads through AX value and selected range.
 - Caret geometry through native range bounds and Chromium/WebKit marker
   attributes.
