@@ -343,25 +343,19 @@ SH
   grep -Fxq "$artifact" "$tmp/artifacts.log"
 
   make_fixture_repo "$tmp/ref-refresh" noop
-  echo "[DEBUG-ref-refresh] fixture ready" >&2
   ref_refresh_sha="$(git -C "$tmp/ref-refresh/work" rev-parse HEAD)"
-  echo "[DEBUG-ref-refresh] release sha resolved" >&2
   fixture_git "ref-refresh poison commit" \
     git -C "$tmp/ref-refresh/work" \
       -c user.name=t -c user.email=t@example.test -c commit.gpgsign=false \
       commit --allow-empty -m poison >/dev/null || return 1
-  echo "[DEBUG-ref-refresh] poison commit ready" >&2
   poison_sha="$(git -C "$tmp/ref-refresh/work" rev-parse HEAD)"
   fixture_git "ref-refresh poison tag" \
     git -C "$tmp/ref-refresh/work" -c tag.gpgSign=false \
       tag -f v9.8.7 "$poison_sha" >/dev/null || return 1
-  echo "[DEBUG-ref-refresh] poison tag ready" >&2
   fixture_git "ref-refresh detach" \
     detach_release_checkout "$tmp/ref-refresh/work" "$ref_refresh_sha" || return 1
-  echo "[DEBUG-ref-refresh] checkout detached" >&2
   fixture_git "ref-refresh tracking ref delete" \
     git -C "$tmp/ref-refresh/work" update-ref -d refs/remotes/origin/main || return 1
-  echo "[DEBUG-ref-refresh] tracking ref deleted" >&2
   if ! COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ref-refresh/work" \
     GITHUB_SHA="$ref_refresh_sha" \
     "$0" v9.8.7 "$artifact" 9.8.7 main \
@@ -391,15 +385,16 @@ SH
     echo "  actual:   $ref_refresh_local_tag" >&2
     return 1
   fi
-  echo "[DEBUG-ref-refresh] ref invariants passed" >&2
 
   tampered_dir="$tmp/tampered-artifact"
   mkdir -p "$tampered_dir"
   tampered_artifact="$tampered_dir/compme-9.8.7-macos.zip"
   printf 'tampered fixture artifact\n' >"$tampered_artifact"
-  if verify_published_artifact \
-    v9.8.7 "$tampered_artifact" 9.8.7 "$tampered_dir/published-checksum" \
-    2>"$tampered_dir/rejected.err"; then
+  if (
+    trap - ERR
+    verify_published_artifact \
+      v9.8.7 "$tampered_artifact" 9.8.7 "$tampered_dir/published-checksum"
+  ) 2>"$tampered_dir/rejected.err"; then
     echo "finalize-cask self-test failed: artifact differing from published checksum was accepted" >&2
     return 1
   fi
@@ -409,12 +404,13 @@ SH
     sed 's/^/  captured: /' "$tampered_dir/rejected.err" >&2
     return 1
   fi
-  echo "[DEBUG-ref-refresh] tampered artifact passed" >&2
 
   export COMPME_FINALIZE_CASK_TEST_GH_FAIL=1
-  if verify_published_artifact \
-    v9.8.7 "$artifact" 9.8.7 "$tmp/checksum-download-fail" \
-    2>"$tmp/checksum-download-fail.err"; then
+  if (
+    trap - ERR
+    verify_published_artifact \
+      v9.8.7 "$artifact" 9.8.7 "$tmp/checksum-download-fail"
+  ) 2>"$tmp/checksum-download-fail.err"; then
     unset COMPME_FINALIZE_CASK_TEST_GH_FAIL
     echo "finalize-cask self-test failed: published checksum download failure was accepted" >&2
     return 1
@@ -426,12 +422,13 @@ SH
     sed 's/^/  captured: /' "$tmp/checksum-download-fail.err" >&2
     return 1
   fi
-  echo "[DEBUG-ref-refresh] checksum download failure passed" >&2
 
   export COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE=true
-  if verify_published_artifact \
-    v9.8.7 "$artifact" 9.8.7 "$tmp/draft-release" \
-    2>"$tmp/draft-release.err"; then
+  if (
+    trap - ERR
+    verify_published_artifact \
+      v9.8.7 "$artifact" 9.8.7 "$tmp/draft-release"
+  ) 2>"$tmp/draft-release.err"; then
     unset COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE
     echo "finalize-cask self-test failed: draft release was accepted" >&2
     return 1
@@ -443,7 +440,6 @@ SH
     sed 's/^/  captured: /' "$tmp/draft-release.err" >&2
     return 1
   fi
-  echo "[DEBUG-ref-refresh] draft release passed" >&2
 
   make_fixture_repo "$tmp/summary" noop
   summary_sha="$(git -C "$tmp/summary/work" rev-parse HEAD)"
