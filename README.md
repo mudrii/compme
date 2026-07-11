@@ -353,6 +353,7 @@ tools/bundle/check-bundle-metadata.sh --self-test
 tools/release/validate-version.sh --self-test
 ruby -c Casks/compme.rb
 tools/bundle/make-app.sh --self-test
+tools/bundle/make-icon.sh --self-test
 tools/bundle/bundle-smoke.sh
 tools/bundle/bundle-smoke.sh --self-test
 tools/acceptance/e2e-complete-me.sh --self-test
@@ -398,9 +399,11 @@ Branch/PR CI also runs native Windows/Linux portability jobs: workspace fmt,
 portable-workspace clippy/tests excluding `platform_macos`, and an app-binary
 build through each target facade. Tag release validation is equally broad: it
 runs the same portable-workspace gates and app-binary build on `windows-latest`
-and `ubuntu-latest`. CI and tag validation also run the exact-SHA-pinned RustSec
-audit action; `cargo audit` is its local release-readiness equivalent. These are
-hosted-runner gates, not part of the platform-specific macOS checks above.
+and `ubuntu-latest`. CI and tag validation install
+`cargo-audit` 0.22.2 with `--locked` and run `cargo audit` under read-only
+workflow permissions. A separate read-only dependency-audit workflow repeats
+that pinned check every Monday at 06:17 UTC and supports manual dispatch. These
+are hosted-runner gates, not part of the platform-specific macOS checks above.
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full development workflow
 and [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for live macOS validation.

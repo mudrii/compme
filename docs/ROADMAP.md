@@ -1,22 +1,26 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-11 (implementation reviewed through `04a7fb8` plus this TDD audit; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1869 workspace tests listed on the current tree (spike separate)
+> **Last updated:** 2026-07-12 (implementation reviewed through `5cdd5f2`; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1869 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-11 on the current tree.
-> Evidence includes the full 21-commit delta from published `v0.1.4` through
-> `04a7fb8`: cross-platform Phase 0, the model-catalog size correction,
+> with symbol/function/gate anchors re-reviewed 2026-07-12 on the current tree.
+> Evidence includes the full 36-commit delta from published `v0.1.4` through
+> `5cdd5f2`: cross-platform Phase 0, the model-catalog size correction,
 > stale-focus/terminal/Finder/private-file/URL-handler fixes, mutation-backed
 > full-codebase cleanup through `dd102eb`, and the release pipeline hardening
 > through `0eadd99` (pinned RustSec audit, portable release parity, explicit
 > timeouts, packaged-app reassessment, late publication drift checks, stable
 > published-asset cask recovery, and hermetic helper self-tests), plus the
-> full-codebase review fixes through `04a7fb8` and this TDD audit's host-boundary
-> invalidation, download/memory no-follow enforcement, range completeness,
-> Carbon key bounds, and strict icon-generator CLI contract.
+> full-codebase review fixes through `04a7fb8`; TDD fixes through `30d00a5`
+> covering host-boundary invalidation, download/memory no-follow enforcement,
+> range completeness, Carbon key bounds, and the strict icon-generator CLI;
+> observer-rebind race closure in `cd036ea`; and CI/release hardening through
+> `5cdd5f2` covering pinned `cargo-audit` 0.22.2, weekly dependency auditing,
+> publication-time manifests, explicit provenance ref refresh, no-tag branch
+> pulls, frozen helper execution, and hermetic expected-failure self-tests.
 
 > **Release boundary:** the published v0.1.4 artifact is tag `18b8dc0`.
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
@@ -25,7 +29,8 @@
 > the documentation reconciliations through `88b22cd`, release hardening through
 > `5fa5b6b` / `5e39ae4`, audit/TDD fixes through `dd102eb`, and CI/release
 > hardening through `0eadd99`, documentation through `258aaab`, review fixes
-> through `04a7fb8`, and this TDD audit are post-tag `main` changes. They require a later
+> through `04a7fb8`, TDD fixes through `30d00a5`, and CI/runtime/release
+> hardening through `5cdd5f2` are post-tag `main` changes. They require a later
 > release tag before they are available in the distributed binary. Unless a row
 > explicitly says otherwise, current implementation/test claims below describe
 > `main`; the v0.1.4 bullets describe the published artifact.
@@ -177,7 +182,8 @@ signing + hardened runtime + notarization + a native updater.
   updater and validator directly from that verified commit before switching to
   the default branch, validates the resulting cask, and makes a
   failed cask push recoverable without republishing. CI and tag validation run a
-  pinned RustSec dependency audit; release Windows/Linux gates match branch CI's
+  pinned `cargo-audit` 0.22.2 dependency audit, with an additional weekly
+  read-only audit workflow; release Windows/Linux gates match branch CI's
   portable-workspace/app-binary coverage; every job has an explicit timeout.
   After packaging, the final zip is expanded and its sole top-level `Compme.app`
   must pass strict signature, staple, and Gatekeeper assessment. Hermetic helper

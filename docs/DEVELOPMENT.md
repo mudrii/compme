@@ -209,6 +209,7 @@ tools/bundle/check-bundle-metadata.sh
 tools/bundle/check-bundle-metadata.sh --self-test
 ruby -c Casks/compme.rb
 tools/bundle/make-app.sh --self-test
+tools/bundle/make-icon.sh --self-test
 tools/bundle/bundle-smoke.sh
 tools/bundle/bundle-smoke.sh --self-test
 tools/acceptance/e2e-complete-me.sh --self-test
@@ -246,10 +247,12 @@ Branch/PR CI also runs native Windows/Linux portability jobs: workspace fmt,
 portable-workspace clippy/tests excluding `platform_macos`, and an app-binary
 build through each fail-closed target facade. Tag release validation is
 equally broad: it runs the same portable-workspace gates and app-binary build on
-`windows-latest` and `ubuntu-latest`. CI and tag validation also run the
-exact-SHA-pinned RustSec audit action, and every workflow job has an explicit
-timeout. Those are hosted-runner gates rather than local macOS commands;
-`cargo audit` is their local equivalent.
+`windows-latest` and `ubuntu-latest`. CI and tag validation also install
+`cargo-audit` 0.22.2 with `--locked` and run `cargo audit` under read-only
+workflow permissions; a separate read-only workflow repeats that pinned audit
+every Monday at 06:17 UTC and supports manual dispatch. Every workflow job has
+an explicit timeout. Those are hosted-runner gates rather than
+platform-specific macOS commands.
 For release-readiness audits with the local GGUF model installed, also run the
 ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md) and the A1b
 manual checklist. The automated tag workflow self-tests the A1b checklist

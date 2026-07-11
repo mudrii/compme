@@ -32,6 +32,7 @@ tools/bundle/check-bundle-metadata.sh
 tools/bundle/check-bundle-metadata.sh --self-test
 ruby -c Casks/compme.rb
 tools/bundle/make-app.sh --self-test
+tools/bundle/make-icon.sh --self-test
 tools/bundle/bundle-smoke.sh
 tools/bundle/bundle-smoke.sh --self-test
 tools/acceptance/e2e-complete-me.sh --self-test
@@ -75,9 +76,10 @@ Native portability CI:
 - Tag validation runs the same workspace format, portable-workspace clippy/test,
   and app-binary build on Windows and Linux before the macOS release prebuild
   can start.
-- CI and tag validation run the exact-SHA-pinned RustSec audit action. The
-  workflow action publishes a check using `checks: write`; `cargo audit` is the
-  local release-readiness equivalent.
+- CI and tag validation install `cargo-audit` 0.22.2 with `--locked` and run
+  `cargo audit` under read-only workflow permissions. The isolated dependency
+  audit repeats that pinned check every Monday at 06:17 UTC and supports manual
+  dispatch.
 
 The root test gate must use `--all-targets` because `platform_macos` keeps
 acceptance regression tests in example targets. It is serialized because several
