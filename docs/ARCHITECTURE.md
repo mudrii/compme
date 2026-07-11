@@ -24,11 +24,11 @@ re-verifies the binary before secrets, fails closed on signing-keychain cleanup
 or release-asset name collisions, and constrains the Homebrew cask to arm64.
 
 The workspace now holds 25 crates. The shape is deliberate: almost everything
-outside the model/download seams, platform adapters, and host is pure (text in →
+outside the model/download/memory seams, platform adapters, and host is pure (text in →
 decision out, time and keys injected, no I/O), so it is unit-testable without a
 clock, a network, or AppKit. The impurity is fenced into `model_client`
-(llama.cpp), `model_fetch` (network), the `platform_*` adapter crates, and
-`app`.
+(llama.cpp), `model_fetch` (network), `memory` (SQLite/filesystem persistence),
+the `platform_*` adapter crates, and `app`.
 
 ## System Overview
 

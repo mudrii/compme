@@ -189,8 +189,8 @@ from `tools/spike/`.
 |-------|---------|
 | `platform` | Cross-platform contracts shared by the host and platform implementations: `PlatformAdapter` for field focus/read/write, `OverlayPresenter` for suggestions, `ShellHost` for product-shell services, and `TrayHandle` for status UI. |
 | `platform_macos` | macOS implementation of the adapter and overlay presenter using Accessibility, CoreGraphics, AppKit/Carbon, and pasteboard APIs; ghost overlay, tray, key recorder, and settings window. |
-| `platform_windows` | Windows adapter scaffold that fails closed for platform I/O/subscription methods until the real UIA adapter lands, plus real host services already shipped: owner-only DACL file hardening and a console Ctrl-C handler. |
-| `platform_linux` | Linux adapter scaffold that reports Linux and fails closed for platform I/O/subscription methods until a real adapter is implemented. |
+| `platform_windows` | Windows adapter scaffold that fails closed for platform I/O/subscription methods until the real UIA adapter lands, plus real host services already shipped: owner-only DACL file hardening, a console Ctrl-C handler, and native `ShellExecuteW` URL opening. |
+| `platform_linux` | Linux adapter scaffold that reports Linux and fails closed for platform I/O/subscription methods until a real adapter is implemented; URL opening uses `xdg-open` and reaps the child without blocking the host. |
 | `context` | Pure text-context helpers around a caret (left/right context, word-at-caret extraction, left-tail truncation, context-block assembly). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
@@ -345,6 +345,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
+cargo audit
 
 find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
 tools/bundle/check-bundle-metadata.sh
@@ -395,10 +396,11 @@ validation.
 
 Branch/PR CI also runs native Windows/Linux portability jobs: workspace fmt,
 portable-workspace clippy/tests excluding `platform_macos`, and an app-binary
-build through each target facade. Tag release validation is narrower: it runs
-fmt, clippy, test, and build for `platform_windows` on `windows-latest` and for
-`platform_linux` on `ubuntu-latest`. These are CI/release-runner gates, not part
-of the local macOS gate above.
+build through each target facade. Tag release validation is equally broad: it
+runs the same portable-workspace gates and app-binary build on `windows-latest`
+and `ubuntu-latest`. CI and tag validation also run the exact-SHA-pinned RustSec
+audit action; `cargo audit` is its local release-readiness equivalent. These are
+hosted-runner gates, not part of the platform-specific macOS checks above.
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full development workflow
 and [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for live macOS validation.

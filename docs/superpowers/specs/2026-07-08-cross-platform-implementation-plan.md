@@ -1,6 +1,6 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
-**Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1–6 pending/env-gated
+**Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1–6 pending (implementation actionable on hosted runners; native/live acceptance target-system-gated)
 **Prereqs:** clean `main` (builds, clippy clean, ≈1851 tests green).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
 status ledger; this doc is the execution guide.
@@ -118,7 +118,7 @@ adapter work so the contract is final when real impls land.
 Phase 0 exit: contract frozen for adapter work; ROADMAP 1.1 updated; all
 gates green on 3-OS CI.
 
-## Phase 1 — Windows adapter (env-gated: needs a Windows dev machine)
+## Phase 1 — Windows adapter (implementation actionable; live acceptance needs a Windows desktop)
 
 Order chosen so each step yields a testable increment. The `windows` dep is
 already active and pinned (`=0.61.3`, Phase 0.2/0.3, carrying
@@ -213,7 +213,7 @@ target-gated.
 Effort: 4-8 weeks single dev with Windows hardware. Exit: ROADMAP 1.1
 Windows flips ✅; acceptance matrix doc extended with Windows column.
 
-## Phase 2 — Linux adapter, X11-first (env-gated)
+## Phase 2 — Linux adapter, X11-first (implementation actionable; live acceptance needs a Linux desktop/session)
 
 Activate `atspi` (D-Bus) + `x11rb` deps. Wayland is Phase 3 — do not block
 X11 on it.

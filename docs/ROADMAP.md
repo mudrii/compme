@@ -1,35 +1,27 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-11 (v0.1.4 Developer-ID signed, hardened-runtime, notarized, stapled, and published; post-tag runtime/release hardening, Settings cleanup, and the full-codebase audit fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1851 workspace tests listed on current `main` (spike separate)
+> **Last updated:** 2026-07-11 (implementation reviewed through `0eadd99`; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1851 workspace tests listed on current `main` (spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-11 on the current tree
-> based on `b6da495` plus this audit
-> (workspace review/tdd/ponytail: zero-alloc slice-based trigger gates, an
-> `InsertStrategy::supports_atomic_range_replace` capability predicate replacing
-> `== AxSet` gates, +8 mutation-pinning tests → 1787 with the dead UTF-16 guard
-> and the `trim_trailing` wrapper removed; release: stable-only version
-> validation and fail-closed publication hardening, privacy scan widened to all
-> text files; cross-platform Phase 0: `InsertStrategy::NativeRangeSet`,
-> `platform_windows::win_host` DACL hardening + console ctrl handler, Windows
-> CI job runs the new windows-only tests; `18fbc4f` corrected the pinned
-> Qwen2.5-1.5B catalog byte size so the download cap admits the real artifact;
-> the 2026-07-11 audit closed stale-focus acceptance, terminal command-shape,
-> Finder path dispatch, private-file hardening, URL-handler teardown, and
-> verified-tag release-helper provenance gaps),
-> starting from baseline `ba4e805` since `b1c9264`.
+> with symbol/function/gate anchors re-reviewed 2026-07-11 on the current tree.
+> Evidence includes the full 19-commit delta from published `v0.1.4` through
+> `0eadd99`: cross-platform Phase 0, the model-catalog size correction,
+> stale-focus/terminal/Finder/private-file/URL-handler fixes, mutation-backed
+> full-codebase cleanup through `dd102eb`, and the release pipeline hardening
+> through `0eadd99` (pinned RustSec audit, portable release parity, explicit
+> timeouts, packaged-app reassessment, late publication drift checks, stable
+> published-asset cask recovery, and hermetic helper self-tests).
 
 > **Release boundary:** the published v0.1.4 artifact is tag `18b8dc0`.
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
 > `618013d` (seam hardening and A2 local/manual-only automation policy),
 > `a5781fc` (single model-location control), `18fbc4f` (catalog metadata fix),
-> the documentation reconciliations through `88b22cd`, `5fa5b6b` / `5e39ae4`
-> (release publication hardening), and the audit/TDD cleanup through `e10e682`
-> plus this 2026-07-11 audit/fix update are post-tag `main`
-> changes. They require a later
+> the documentation reconciliations through `88b22cd`, release hardening through
+> `5fa5b6b` / `5e39ae4`, audit/TDD fixes through `dd102eb`, and CI/release
+> hardening through `0eadd99` are post-tag `main` changes. They require a later
 > release tag before they are available in the distributed binary. Unless a row
 > explicitly says otherwise, current implementation/test claims below describe
 > `main`; the v0.1.4 bullets describe the published artifact.
@@ -51,7 +43,7 @@ tested**. Everything below is what the plan still calls for.
 
 ## Tier 1 — Largest committed deliverables
 
-### 1.1 ◑🔒 Cross-platform adapters (Windows + Linux) — foundation shipped, real impls env-gated
+### 1.1 ◑ Cross-platform adapters (Windows + Linux) — foundation shipped, real impls pending
 
 **Plan:** `README.md:10` — *"macOS ships first; Windows and Linux are committed
 deliverables built behind a shared cross-platform `PlatformAdapter` contract."*
@@ -71,18 +63,23 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
 - **Shell foundation + app cfg boundary** (`2c80e74`) — `platform::shell`
   defines the portable `ShellHost`/`TrayHandle` contract and shared settings/keymap
   data; `platform_macos::MacosShellHost` wraps existing macOS behavior; Windows/Linux
-  provide fail-closed `ShellHost` + `OverlayPresenter` scaffolds; `app` routes
-  platform construction and macOS-only shell surfaces through `crate::shell`.
+  provide partial fail-closed `ShellHost` + `OverlayPresenter` scaffolds, with
+  native URL opening already shipped via Windows `ShellExecuteW` and Linux
+  `xdg-open` plus non-blocking child reaping; `app` routes platform construction
+  and macOS-only shell surfaces through `crate::shell`.
 - **App target-gated platform deps** (`2c80e74`) — `app` no longer depends
   unconditionally on `platform_macos`; macOS, Windows, and Linux adapter crates are
-  selected behind Cargo target gates. Non-macOS runtime remains fail-closed until
-  the real adapters land.
+  selected behind Cargo target gates. Outside the shipped host services above,
+  non-macOS runtime remains fail-closed until the real adapters land.
 - **CI matrix** (`a7427c6`, widened by `2c80e74`) — `windows-latest` +
   `ubuntu-latest` jobs run fmt/clippy/test over the workspace excluding only
   Apple-only `platform_macos`, then build the `app` binary through its non-mac
   facade.
 
-**Pending (🔒 needs Windows + Linux build+test environments — not doable on macOS):**
+**Pending implementation:** hosted Windows/Linux runners already compile and test
+the portable workspace plus each app facade. Building the real adapters remains
+actionable engineering work; only native desktop/live acceptance requires target
+hardware, sessions, and permissions unavailable on macOS.
 - The actual **Windows** adapter behind `#[cfg(windows)]` (extend the existing
   host-service `windows` feature set in its `Cargo.toml`): UIA focus/caret/text +
   `WH_KEYBOARD_LL` accept tap +
@@ -180,7 +177,7 @@ signing + hardened runtime + notarization + a native updater.
   portable-workspace/app-binary coverage; every job has an explicit timeout.
   After packaging, the final zip is expanded and its sole top-level `Compme.app`
   must pass strict signature, staple, and Gatekeeper assessment. Hermetic helper
-  self-tests reject poisoned ambient `COMPME_*` controls. The workflow also
+  self-tests sanitize or ignore inherited `COMPME_*` controls. The workflow also
   constrains the artifact/cask to arm64 and allowlists the exact identities and
   commit SHAs of every workflow action. None of these post-tag policy changes is
   part of the v0.1.4 tag.

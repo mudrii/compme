@@ -65,6 +65,8 @@ Required for root workspace development:
 - Xcode Command Line Tools
 - CMake for the bundled llama.cpp build (`brew install cmake`; not included
   with Xcode CLT)
+- `cargo-audit` 0.22.2 for the local dependency-vulnerability gate:
+  `cargo install cargo-audit --version 0.22.2 --locked`
 
 Required for live macOS acceptance:
 

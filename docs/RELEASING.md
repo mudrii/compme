@@ -20,7 +20,7 @@ platforms.
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push to `main` / `spike/**`, PR, or `workflow_dispatch` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, plus non-A2 acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), release-version validator self-test, Homebrew cask Ruby syntax (`ruby -c Casks/compme.rb`), bundle assembler self-test (`tools/bundle/make-app.sh --self-test`), bundle smoke + self-test (`tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`), UI-assisted session self-test (`tools/acceptance/run-ui-assisted-session.sh --self-test`), A1b/E2E self-tests, agent-brief alignment + self-test (`tools/release/check-agent-briefs.sh` and `tools/release/check-agent-briefs.sh --self-test`), privacy policy + self-test (`tools/release/check-privacy-policy.sh` and `tools/release/check-privacy-policy.sh --self-test`), missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. Windows/Linux portability jobs fmt the workspace, clippy/test the workspace excluding `platform_macos`, and build the app binary through the target facade. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected stable tag `vX.Y.Z` | Preflight validates the stable version, exact default-branch tip, and bundle metadata. Validation runs pinned RustSec auditing, root/spike gates, release self-tests, and full portable-workspace plus app-binary gates on Windows/Linux. Secretless prebuild produces an exact-arm64 binary. Protected signing downloads and re-verifies it, signs, notarizes, staples, deletes the signing keychain, packages the zip, then expands the final zip and requires exactly one top-level `Compme.app` that passes strict `codesign`, staple, and Gatekeeper assessment. Publication creates a draft after an exact-tip check, then re-fetches tag/default branch immediately before undraft; drift deletes the stale draft and fails. The cask finalizer verifies its local zip against the published checksum asset before branch mutation. All jobs have explicit timeouts; signing/notary allows 360 minutes for multi-hour Apple queues. |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected stable tag `vX.Y.Z` | Preflight validates the stable version, exact default-branch tip, and bundle metadata. Validation runs pinned RustSec auditing, root/spike gates, release self-tests, and full portable-workspace plus app-binary gates on Windows/Linux. Secretless prebuild produces an exact-arm64 binary. Protected signing downloads and re-verifies it, signs, notarizes, staples, deletes the signing keychain, packages the zip, then expands the final zip and requires exactly one top-level `Compme.app` that passes strict `codesign`, staple, and Gatekeeper assessment. Publication creates a draft after an exact-tip check, then re-fetches tag/default branch immediately before undraft; drift deletes the stale draft and fails. The cask finalizer verifies its local zip against the published checksum asset before branch mutation. All jobs have explicit timeouts: the outer signing job allows 360 minutes, while the notary submission defaults to 60 minutes and can be raised with `COMPME_NOTARYTOOL_TIMEOUT` below the outer ceiling. |
 
 Both CI and tag validation run the exact-SHA-pinned RustSec audit action. Their
 audit jobs grant only `contents: read` plus the `checks: write` permission the
@@ -36,6 +36,13 @@ complete repository history.
 The workflow never overwrites an existing asset, but GitHub release assets are
 still inside the trust boundary of privileged contents writers unless the
 repository separately enables GitHub Immutable Releases.
+
+**Current live-governance caveat (verified 2026-07-11):** the workflow declares
+the `release` environment, but live settings allow reviewer self-approval,
+administrator bypass, and unrestricted deployment branches; `main` is not
+protected. These controls therefore do not provide an independent approval
+boundary. The owner decision and exact remediation choices remain tracked in
+[ROADMAP.md](ROADMAP.md).
 
 A2 validation is local/manual-only. The automated workflows exclude
 `tools/acceptance/run-a2-compat-gates.sh` and
@@ -99,10 +106,12 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
      an unprotected tag is rejected by the preflight).
    - `release` environment: Settings → Environments → create `release` with
      required reviewers — the signing, publication, and cask-finalization jobs
-     declare `environment: release`. A cask-only retry therefore requires a new
-     approval by design, preserving the human gate around each write-capable job.
-     Signing/notarization secrets may live at repo or environment scope;
-     environment scope keeps them away from non-release workflows.
+     declare `environment: release`. Signing/notarization secrets may live at
+     repo or environment scope;
+     environment scope keeps them away from non-release workflows. A cask-only
+     retry re-enters the environment approval step, but approval independence
+     depends on the live self-review, admin-bypass, and deployment-branch
+     settings described above.
 
    Tag releases fail closed if any Developer-ID or notarization secret is
    missing; there is no unsigned publication fallback.

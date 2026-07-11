@@ -20,6 +20,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
+cargo audit
 ```
 
 Acceptance harness syntax, deterministic self-tests, and release model gate:
@@ -71,9 +72,12 @@ Native portability CI:
   shared-crate portability leaks and prove the app compiles through each
   fail-closed platform facade; they do not claim a functional Windows/Linux
   product adapter.
-- Tag validation runs fmt, clippy, test, and build scoped to
-  `platform_windows` on Windows and `platform_linux` on Linux before the macOS
-  release prebuild can start.
+- Tag validation runs the same workspace format, portable-workspace clippy/test,
+  and app-binary build on Windows and Linux before the macOS release prebuild
+  can start.
+- CI and tag validation run the exact-SHA-pinned RustSec audit action. The
+  workflow action publishes a check using `checks: write`; `cargo audit` is the
+  local release-readiness equivalent.
 
 The root test gate must use `--all-targets` because `platform_macos` keeps
 acceptance regression tests in example targets. It is serialized because several
