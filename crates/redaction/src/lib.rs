@@ -143,11 +143,15 @@ fn credential_re() -> &'static Regex {
     })
 }
 
+// Unlike the colon/equals form above, the whitespace form deliberately omits
+// the `code` key: assignment-shaped `code=abc123` is an OAuth credential, but
+// space-separated "code 404" / "area code 212" / "status code 500" is everyday
+// prose and would be corrupted by the digit-bearing-value heuristic below.
 fn whitespace_credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b((?:password|passwd|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+            r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("whitespace credential regex")
     })
@@ -474,6 +478,37 @@ mod tests {
             );
             assert!(out.contains("[redacted-secret]"), "no placeholder: {out}");
         }
+    }
+
+    #[test]
+    fn redacts_whitespace_delimited_secret_key_values() {
+        // `secret` participates in the whitespace form like the colon form
+        // (parity fix): a digit/separator/long value after "secret " is scrubbed.
+        for input in [
+            "secret hunter2verysecretvalue",
+            "secret abc-def-ghi",
+            "SECRET \"quoted value\"",
+        ] {
+            let out = redact(input);
+            assert!(
+                out.contains("[redacted-secret]"),
+                "whitespace secret leaked: {input} -> {out}"
+            );
+        }
+        // Plain prose after "secret" survives — the value heuristic (digits,
+        // separators, quoting, length) still gates the whitespace form.
+        assert_eq!(redact("keep it secret garden"), "keep it secret garden");
+    }
+
+    #[test]
+    fn whitespace_code_prose_survives_by_design() {
+        // The whitespace form deliberately omits the `code` key (see
+        // whitespace_credential_re): these everyday phrases must never be
+        // corrupted, while assignment-shaped `code=` stays redacted.
+        assert_eq!(redact("status code 404"), "status code 404");
+        assert_eq!(redact("area code 212"), "area code 212");
+        assert_eq!(redact("code abc123"), "code abc123");
+        assert_eq!(redact("code=abc123"), "code=[redacted-secret]");
     }
 
     #[test]

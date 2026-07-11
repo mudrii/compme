@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-12 (implementation reviewed through `5cdd5f2`; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1874 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-12 (implementation reviewed through `5cdd5f2`; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1880 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and

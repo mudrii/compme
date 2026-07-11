@@ -6,7 +6,8 @@
 //!
 //! Scope is intentionally narrow and unambiguous: only a bare leading lowercase
 //! `i` that stands alone (`i`) or leads a known contraction (`i'm`, `i'll`,
-//! `i've`, `i'd`) is capitalized. A word merely *starting* with `i` (`in`, `if`,
+//! `i've`, `i'd`, and the informal possessive `i's` as in "Jim and i's") is
+//! capitalized. A word merely *starting* with `i` (`in`, `if`,
 //! `it`, `idea`) is never touched, and an already-capital `I`/`I'm` returns
 //! `None` (nothing to fix) so the host never offers a no-op replacement. The
 //! host passes a single trailing word, so word boundaries are not this crate's
@@ -36,9 +37,12 @@ pub fn capitalize_pronoun(word: &str) -> Option<String> {
         return None;
     }
     let rest: String = chars.collect();
-    // Standalone pronoun, or an `i`-leading contraction. Normalize a curly
-    // apostrophe to straight only for the suffix match; the original `rest`
-    // (apostrophe style and all) is preserved verbatim in the output.
+    // Standalone pronoun, or an `i`-leading contraction. `'s` covers the
+    // informal possessive ("Jim and i's house"), where capitalizing the pronoun
+    // is still the right fix even though the construction is nonstandard.
+    // Normalize a curly apostrophe to straight only for the suffix match; the
+    // original `rest` (apostrophe style and all) is preserved verbatim in the
+    // output.
     let rest_key = rest.to_lowercase().replace('\u{2019}', "'");
     if rest.is_empty() || matches!(rest_key.as_str(), "'m" | "'ll" | "'ve" | "'d" | "'s") {
         return Some(format!("I{rest}"));

@@ -368,9 +368,6 @@ fn dispatch_error(stage: &'static str, failure: DispatchFailure) -> LocalModelEr
     LocalModelError::new(stage, message)
 }
 
-/// Run one completion on the worker thread against the persistent context,
-/// reusing the KV cache for the shared prefix and re-decoding only the divergent
-/// suffix. On any FFI error the cache is reset so the next call starts clean.
 /// Generate `n` candidate continuations for one prompt. Each candidate decodes
 /// the prompt fresh (prev cleared) so candidates are independent; candidate 0 is
 /// greedy, the rest use temperature+seed sampling. `prev_tokens` is left holding
@@ -405,6 +402,9 @@ fn complete_candidates_on_worker(
     Ok(candidates)
 }
 
+/// Run one completion on the worker thread against the persistent context,
+/// reusing the KV cache for the shared prefix and re-decoding only the divergent
+/// suffix. On any FFI error the cache is reset so the next call starts clean.
 fn complete_on_worker(
     model: &LlamaCppModel,
     context: &mut LlamaContext<'_>,

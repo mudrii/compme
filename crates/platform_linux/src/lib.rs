@@ -119,11 +119,25 @@ impl LinuxShellHost {
     }
 }
 
+/// Spawn `command`, briefly poll for an immediate exit so a fast-failing
+/// launcher (missing handler, bad URL) can be reported fail-closed, then hand
+/// any still-running child to a reaper thread. Returns `Ok(Some(status))` when
+/// the child exited within the poll window, `Ok(None)` when the reaper owns it;
+/// `on_reaped` fires exactly once with the final status either way.
 fn spawn_and_reap_with(
     command: &mut std::process::Command,
     on_reaped: impl FnOnce(std::process::ExitStatus) + Send + 'static,
-) -> std::io::Result<()> {
+) -> std::io::Result<Option<std::process::ExitStatus>> {
     let mut child = command.spawn()?;
+    // Keep the window well under the caller-blocking budget pinned by
+    // `url_launcher_reaps_child_without_blocking_the_caller` (100ms).
+    for _ in 0..10 {
+        if let Some(status) = child.try_wait()? {
+            on_reaped(status);
+            return Ok(Some(status));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     std::thread::Builder::new()
         .name("compme-url-reaper".into())
         .spawn(move || {
@@ -131,7 +145,7 @@ fn spawn_and_reap_with(
                 on_reaped(status);
             }
         })?;
-    Ok(())
+    Ok(None)
 }
 
 impl platform::shell::ShellHost for LinuxShellHost {
@@ -144,11 +158,18 @@ impl platform::shell::ShellHost for LinuxShellHost {
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
-        spawn_and_reap_with(std::process::Command::new("xdg-open").arg(url), |_| {}).map_err(|e| {
-            PlatformError::CannotComplete {
+        // Fail closed on an immediate launcher failure, matching the macOS
+        // (NSWorkspace bool) and Windows (ShellExecuteW code) launch checks; a
+        // child that outlives the poll window is best-effort by construction.
+        match spawn_and_reap_with(std::process::Command::new("xdg-open").arg(url), |_| {}) {
+            Ok(Some(status)) if !status.success() => Err(PlatformError::CannotComplete {
+                reason: format!("xdg-open {url}: exited with {status}"),
+            }),
+            Ok(_) => Ok(()),
+            Err(e) => Err(PlatformError::CannotComplete {
                 reason: format!("xdg-open {url}: {e}"),
-            }
-        })
+            }),
+        }
     }
 
     fn open_permission_settings(&self) -> Result<(), PlatformError> {
@@ -217,16 +238,30 @@ mod tests {
         command.args(["-c", "sleep 0.15"]);
 
         let start = std::time::Instant::now();
-        spawn_and_reap_with(&mut command, move |status| {
+        let early = spawn_and_reap_with(&mut command, move |status| {
             reaped_tx.send(status).unwrap();
         })
         .unwrap();
 
         assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        assert!(early.is_none(), "long-lived child must go to the reaper");
         assert!(reaped_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap()
             .success());
+    }
+
+    #[test]
+    fn url_launcher_reports_immediate_child_failure() {
+        // A launcher that exits non-zero right away (missing handler, bad URL)
+        // must surface within the poll window so open_url can fail closed
+        // instead of silently discarding the exit status.
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "exit 3"]);
+        let status = spawn_and_reap_with(&mut command, |_| {})
+            .unwrap()
+            .expect("fast-failing child detected within the poll window");
+        assert!(!status.success());
     }
 
     #[test]
