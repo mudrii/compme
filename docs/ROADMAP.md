@@ -1,14 +1,14 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-12 (implementation reviewed through `5cdd5f2`; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1880 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-12 (implementation reviewed through `76e9987` plus the current review; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1881 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
 > with symbol/function/gate anchors re-reviewed 2026-07-12 on the current tree.
-> Evidence includes the full 36-commit delta from published `v0.1.4` through
-> `5cdd5f2`: cross-platform Phase 0, the model-catalog size correction,
+> Evidence includes the full 40-commit delta from published `v0.1.4` through
+> `76e9987`: cross-platform Phase 0, the model-catalog size correction,
 > stale-focus/terminal/Finder/private-file/URL-handler fixes, mutation-backed
 > full-codebase cleanup through `dd102eb`, and the release pipeline hardening
 > through `0eadd99` (pinned RustSec audit, portable release parity, explicit
@@ -20,7 +20,10 @@
 > observer-rebind race closure in `cd036ea`; and CI/release hardening through
 > `5cdd5f2` covering pinned `cargo-audit` 0.22.2, weekly dependency auditing,
 > publication-time manifests, explicit provenance ref refresh, no-tag branch
-> pulls, frozen helper execution, and hermetic expected-failure self-tests.
+> pulls, frozen helper execution, and hermetic expected-failure self-tests;
+> documentation reconciliation in `adb5c82`; config/domain-policy hardening in
+> `f66dee0`; harness cleanup plus startup/repetition regressions in `5479074`;
+> and the review fixes in `76e9987`.
 
 > **Release boundary:** the published v0.1.4 artifact is tag `18b8dc0`.
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
@@ -29,9 +32,10 @@
 > the documentation reconciliations through `88b22cd`, release hardening through
 > `5fa5b6b` / `5e39ae4`, audit/TDD fixes through `dd102eb`, and CI/release
 > hardening through `0eadd99`, documentation through `258aaab`, review fixes
-> through `04a7fb8`, TDD fixes through `30d00a5`, and CI/runtime/release
-> hardening through `5cdd5f2` are post-tag `main` changes. They require a later
-> release tag before they are available in the distributed binary. Unless a row
+> through `04a7fb8`, TDD fixes through `30d00a5`, CI/runtime/release hardening
+> through `5cdd5f2`, follow-up review fixes through `76e9987`, and the current
+> review fixes are post-tag `main` changes. They require a later release tag
+> before they are available in the distributed binary. Unless a row
 > explicitly says otherwise, current implementation/test claims below describe
 > `main`; the v0.1.4 bullets describe the published artifact.
 
@@ -74,7 +78,8 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   data; `platform_macos::MacosShellHost` wraps existing macOS behavior; Windows/Linux
   provide partial fail-closed `ShellHost` + `OverlayPresenter` scaffolds, with
   native URL opening already shipped via Windows `ShellExecuteW` and Linux
-  `xdg-open` plus non-blocking child reaping; `app` routes platform construction
+  `xdg-open` with immediate failure reporting plus non-blocking child reaping;
+  `app` routes platform construction
   and macOS-only shell surfaces through `crate::shell`.
 - **App target-gated platform deps** (`2c80e74`) — `app` no longer depends
   unconditionally on `platform_macos`; macOS, Windows, and Linux adapter crates are

@@ -1,24 +1,24 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
 **Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1–6 pending (implementation actionable on hosted runners; native/live acceptance target-system-gated)
-**Prereqs:** clean `main` (builds, clippy clean, ≈1874 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1881 tests green).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
 status ledger; this doc is the execution guide.
 
 Evidence base: full-codebase analysis 2026-07-08 (three-agent sweep: contract
-inventory, macOS-leakage audit, build/CI/packaging audit), every claim
-re-verified by grep against `b367f0f`. Status was reconciled again 2026-07-10
-through implementation commit `a5781fc` and documentation commit `58debca`:
-Phase 0 remains shipped, macOS v0.1.4 is released, and the real
-Windows/Linux adapters plus Phases 3–6 remain pending.
+inventory, macOS-leakage audit, build/CI/packaging audit), every claim initially
+re-verified by grep against `b367f0f`. Status was reconciled again 2026-07-12
+through `76e9987`: Phase 0 remains shipped, macOS v0.1.4 is released, and the
+real Windows/Linux adapters plus Phases 3–6 remain pending.
 
 **Release boundary:** v0.1.4 is tag `18b8dc0`. The runtime/release hardening,
 A2 local/manual-only automation policy, and single model-location-control fix
 described from later `main` are post-tag and require a subsequent release.
 The post-tag shell hardening also replaced Windows `cmd /C start` URL launch
 with `ShellExecuteW` (preserving metacharacters verbatim) and made Linux
-`xdg-open` child reaping non-blocking; the pre-Phase-0 baseline below retains
-the original launcher description only as historical derivation context.
+`xdg-open` report immediate launcher failures while reaping longer-running
+children without blocking; the pre-Phase-0 baseline below retains the original
+launcher description only as historical derivation context.
 
 ## Verified Phase 0 baseline (historical)
 

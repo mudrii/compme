@@ -44,7 +44,7 @@ The root `Cargo.toml` is a Rust workspace with 25 members
 - `crates/compat` — per-app compatibility tiers
 - `crates/model_catalog`, `crates/model_fetch`, `crates/model_client` — model catalog, downloads, llama.cpp client
 - `crates/platform_macos` — the macOS adapter (AX, overlay, tray, settings window)
-- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1; Windows additionally has owner-only DACL hardening, a console control handler, and native URL opening, while Linux URL opening reaps its `xdg-open` child
+- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1; Windows additionally has owner-only DACL hardening, a console control handler, and native URL opening, while Linux URL opening reports immediate launcher failures and reaps longer-running `xdg-open` children
 - `crates/app` — the `compme` binary
 
 `tools/spike` is excluded from the root workspace and must be checked
@@ -172,7 +172,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1880 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1881 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -238,7 +238,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1880 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1881 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
@@ -369,6 +369,12 @@ manual gates fail by default.
 tools/acceptance/run-a1b-live-gates.sh --skip-textedit --allow-incomplete --browser-pid <pid>
 tools/acceptance/run-a1b-live-gates.sh --skip-textedit --allow-incomplete --popup-pid <pid>
 ```
+
+For the UI-assisted walkthrough, `tools/acceptance/run-ui-assisted-session.sh`
+creates and removes a private temporary config directory by default so parallel
+or interrupted sessions do not share `/tmp/compme-ui-assisted-config.env`.
+Set `COMPME_UI_CONFIG` only when intentionally supplying a specific disposable
+config path.
 
 ## Model Development Notes
 

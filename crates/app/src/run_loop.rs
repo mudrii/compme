@@ -1161,21 +1161,25 @@ fn retain_memory_store_if_hardened<T>(
 #[cfg(any(windows, test))]
 fn ensure_memory_parent_posture_with(
     parent: &std::path::Path,
+    key: &mut [u8; 32],
     ensure: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
     verify: impl FnOnce(&std::path::Path) -> std::io::Result<bool>,
 ) -> std::io::Result<()> {
-    ensure(parent)?;
-    if verify(parent)? {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "{} is not an owner-only inherited directory",
-                parent.display()
-            ),
-        ))
+    let result = ensure(parent).and_then(|()| {
+        verify(parent)?.then_some(()).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} is not an owner-only inherited directory",
+                    parent.display()
+                ),
+            )
+        })
+    });
+    if result.is_err() {
+        key.zeroize();
     }
+    result
 }
 
 /// Open the encrypted memory store when enabled and fully configured. Returns
@@ -1222,6 +1226,7 @@ fn open_memory_store(
             .unwrap_or_else(|| std::path::Path::new("."));
         if let Err(err) = ensure_memory_parent_posture_with(
             parent,
+            &mut key,
             config::create_owner_only_dir_if_missing,
             platform_windows::win_host::is_owner_only_inherited_dir,
         ) {
@@ -10511,9 +10516,11 @@ mod tests {
     fn memory_parent_posture_gate_fails_closed_without_mutating_preexisting_parent() {
         let parent = PathBuf::from("/tmp/custom-memory-parent");
         let ensured = Cell::new(false);
+        let mut key = [0x5a; 32];
 
         let result = ensure_memory_parent_posture_with(
             &parent,
+            &mut key,
             |_| {
                 ensured.set(true);
                 Ok(())
@@ -10526,12 +10533,18 @@ mod tests {
             result.unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied
         );
+        assert_eq!(
+            key, [0; 32],
+            "the rejected pre-open key copy must be scrubbed"
+        );
     }
 
     #[test]
     fn memory_parent_posture_gate_propagates_readback_errors() {
+        let mut key = [0x5a; 32];
         let result = ensure_memory_parent_posture_with(
             std::path::Path::new("/tmp/unreadable-memory-parent"),
+            &mut key,
             |_| Ok(()),
             |_| {
                 Err(std::io::Error::new(
@@ -10545,6 +10558,24 @@ mod tests {
             result.unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied
         );
+        assert_eq!(
+            key, [0; 32],
+            "a posture probe error must scrub the key copy"
+        );
+    }
+
+    #[test]
+    fn memory_parent_posture_gate_keeps_key_for_a_verified_store_open() {
+        let mut key = [0x5a; 32];
+        ensure_memory_parent_posture_with(
+            std::path::Path::new("/tmp/private-memory-parent"),
+            &mut key,
+            |_| Ok(()),
+            |_| Ok(true),
+        )
+        .expect("verified parent");
+
+        assert_eq!(key, [0x5a; 32]);
     }
 
     fn private_memory_test_path(tag: &str) -> PathBuf {

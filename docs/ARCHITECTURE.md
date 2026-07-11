@@ -151,11 +151,12 @@ cases.
   exists to the right of the caret (small models regurgitate post-caret text);
   comparison is case- and punctuation-insensitive on whole words.
 - `is_degenerate_repetition`: report a single word or phrase repeated three or
-  more times (`the the the`) so the caller can suppress the loop.
+  more times (`the the the`) so the caller can suppress the loop; attached edge
+  punctuation cannot disguise the repetition.
 - `cap_words`
 - `next_word`
 - `repetition_penalty`: returns a sub-floor factor when the candidate repeats a
-  contiguous run of recent words verbatim.
+  contiguous run of recent words, ignoring case and attached edge punctuation.
 
 The implementation stays small; per-app scoring and learned ranking remain
 future work.
@@ -289,6 +290,8 @@ per-app collection-off settings. Missing store path/key configuration fails
 closed instead of silently writing plaintext. The host also hardens the
 database, sidecars, config, stats, and lock files to owner-only permissions;
 failure to secure a memory sidecar disables the store rather than continuing.
+On Windows, a failed pre-open parent-directory posture check also zeroizes the
+transient AES-key copy before returning the failure.
 Fresh host directories are claimed atomically before they are hardened, so a
 concurrently created custom directory is never mistaken for one owned by the
 app. Config/stats contents are written only after their temporary file is
@@ -318,7 +321,10 @@ scopes, and any percent-encoding. Anything non-reversible (custom instructions,
 model paths, security settings) requires `LinkTrust::Signed`:
 `parse_deep_link_with_trust` verifies a trailing `&sig=<128 hex>` **Ed25519**
 signature over the exact URL byte-prefix against a host-pinned `TrustedKey`,
-with no canonicalization and fail-closed when no key is configured. The §16
+with no canonicalization before verification and fail-closed when no key is
+configured. After verification, domain scopes are canonicalized to lowercase
+with one terminal DNS root dot removed; config, personalization, and preference
+lookups use the same canonical spelling. The §16
 web-config flow is wired end-to-end: `platform_macos::url_events` installs the
 Apple-Events `compme://` URL-scheme handler, and the run loop drains each link
 through a host confirmation prompt before `handle_deep_link` applies it. The
@@ -460,7 +466,8 @@ shutdown.
 
 Major responsibilities:
 
-- load dotenv-style config plus environment overrides
+- load dotenv-style config plus environment overrides, aborting startup on an
+  unreadable existing config rather than substituting defaults
 - choose `StubModel` or `LlamaModel`; warm the model before serving
 - resolve the prefs/compat gate, then drive the completion model path
   (engine → llama.cpp), the grammar-fix model path (word at caret → LLM →
@@ -537,8 +544,9 @@ services also fail closed.
 
 The current Windows foundation has real owner-only DACL hardening, a console
 control handler for orderly shutdown, and native `ShellExecuteW` URL opening.
-The Linux shell can open a URL through `xdg-open` and reaps the child without
-blocking. UI Automation/AT-SPI event paths, native insertion, overlays, key
+The Linux shell can open a URL through `xdg-open`, reports an immediate
+non-zero launcher exit, and reaps a longer-running child without blocking. UI
+Automation/AT-SPI event paths, native insertion, overlays, key
 stores, trays, autostart, packaging, and GPU backends remain roadmap work.
 
 ## macOS Runtime Model

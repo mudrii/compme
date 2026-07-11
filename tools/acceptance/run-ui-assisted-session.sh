@@ -3,6 +3,13 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 log_path="${COMPME_UI_LOG:-/tmp/cm-ui.log}"
+session_tmp_dir=""
+
+cleanup_session() {
+  if [[ -n "$session_tmp_dir" ]]; then
+    rm -rf "$session_tmp_dir"
+  fi
+}
 
 build_launch_env() {
   launch_env=(
@@ -19,7 +26,12 @@ build_launch_env() {
 }
 
 build_base_env() {
-  isolated_config="${COMPME_UI_CONFIG:-${TMPDIR:-/tmp}/compme-ui-assisted-config.env}"
+  if [[ -n "${COMPME_UI_CONFIG:-}" ]]; then
+    isolated_config="$COMPME_UI_CONFIG"
+  else
+    session_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/compme-ui-assisted.XXXXXX")"
+    isolated_config="$session_tmp_dir/config.env"
+  fi
   : >"$isolated_config"
   base_env=(
     env -i
@@ -87,6 +99,20 @@ run_self_test() {
     return 1
   fi
 
+  (
+    unset COMPME_UI_CONFIG
+    session_tmp_dir=""
+    build_base_env
+    [[ -d "$session_tmp_dir" ]]
+    [[ "$isolated_config" == "$session_tmp_dir/config.env" ]]
+    [[ -f "$isolated_config" ]]
+    [[ "$isolated_config" != "${TMPDIR:-/tmp}/compme-ui-assisted-config.env" ]]
+    cleanup_session
+  ) || {
+    echo "self-test failed: default config is not isolated in a private temporary directory" >&2
+    return 1
+  }
+
   COMPME_DEBUG=0 \
     COMPME_STUB_COMPLETION=" custom stub" \
     COMPME_EMOJI=0 \
@@ -148,6 +174,7 @@ docs/MANUAL-VALIDATION.md contains the detailed walkthroughs.
 EOF
 
 cd "$repo_root"
+trap cleanup_session EXIT
 # Keep the global grammar-check shortcut away from Shift+F5: Batch 2 records
 # Shift+F5 in the Shortcuts pane, and a registered Carbon shortcut consumes the
 # chord before the recorder's NSView receives keyDown.

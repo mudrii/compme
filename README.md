@@ -190,7 +190,7 @@ from `tools/spike/`.
 | `platform` | Cross-platform contracts shared by the host and platform implementations: `PlatformAdapter` for field focus/read/write, `OverlayPresenter` for suggestions, `ShellHost` for product-shell services, and `TrayHandle` for status UI. |
 | `platform_macos` | macOS implementation of the adapter and overlay presenter using Accessibility, CoreGraphics, AppKit/Carbon, and pasteboard APIs; ghost overlay, tray, key recorder, and settings window. |
 | `platform_windows` | Windows adapter scaffold that fails closed for platform I/O/subscription methods until the real UIA adapter lands, plus real host services already shipped: owner-only DACL file hardening, a console Ctrl-C handler, and native `ShellExecuteW` URL opening. |
-| `platform_linux` | Linux adapter scaffold that reports Linux and fails closed for platform I/O/subscription methods until a real adapter is implemented; URL opening uses `xdg-open` and reaps the child without blocking the host. |
+| `platform_linux` | Linux adapter scaffold that reports Linux and fails closed for platform I/O/subscription methods until a real adapter is implemented; URL opening uses `xdg-open`, reports an immediate launcher failure, and reaps a longer-running child without blocking the host. |
 | `context` | Pure text-context helpers around a caret (left/right context, word-at-caret extraction, left-tail truncation, context-block assembly). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
@@ -237,6 +237,9 @@ tools/spike/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 Settings layer as `env > config.env file > default`; keys with Settings
 switches persist to the file, and an env var overrides the file at relaunch.
+Missing `config.env` is treated as empty, but any other read failure aborts
+startup and names the unreadable path rather than falling back to permissive
+defaults.
 Many keys with a per-app split also accept `_ON_APPS` / `_OFF_APPS` lists of
 comma-separated bundle ids.
 
@@ -337,7 +340,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,880 tests:
+suite is roughly 1,881 tests:
 
 ```sh
 cargo fmt --all -- --check
