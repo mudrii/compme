@@ -165,7 +165,7 @@ finalize_cask() {
     "$tag" "$artifact_path" "$version" "$frozen_root/published-checksum"
 
   git checkout "$default_branch"
-  git pull --ff-only origin "$default_branch"
+  git pull --ff-only --no-tags origin "$default_branch"
   current_cask_version="$(ruby -ne 'puts $1 if /^  version "([^"]+)"/' Casks/compme.rb)"
   if [ "$current_cask_version" != "$version" ]; then
     echo "default-branch cask version is $current_cask_version, expected $version" >&2
@@ -354,12 +354,21 @@ SH
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ref-refresh/work" \
     GITHUB_SHA="$ref_refresh_sha" \
     "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null
-  test "$(git -C "$tmp/ref-refresh/work" rev-parse refs/remotes/origin/main)" = \
-    "$ref_refresh_sha"
-  test "$(git -C "$tmp/ref-refresh/work" rev-parse refs/compme-release/tags/v9.8.7)" = \
-    "$ref_refresh_sha"
-  test "$(git -C "$tmp/ref-refresh/work" rev-parse refs/tags/v9.8.7)" = \
-    "$poison_sha"
+  if [ "$(git -C "$tmp/ref-refresh/work" rev-parse refs/remotes/origin/main)" != \
+    "$ref_refresh_sha" ]; then
+    echo "finalize-cask self-test failed: origin/main was not restored" >&2
+    return 1
+  fi
+  if [ "$(git -C "$tmp/ref-refresh/work" rev-parse refs/compme-release/tags/v9.8.7)" != \
+    "$ref_refresh_sha" ]; then
+    echo "finalize-cask self-test failed: private release tag ref was not restored" >&2
+    return 1
+  fi
+  if [ "$(git -C "$tmp/ref-refresh/work" rev-parse refs/tags/v9.8.7)" != \
+    "$poison_sha" ]; then
+    echo "finalize-cask self-test failed: local release tag was modified" >&2
+    return 1
+  fi
 
   tampered_dir="$tmp/tampered-artifact"
   mkdir -p "$tampered_dir"

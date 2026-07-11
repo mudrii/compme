@@ -703,7 +703,7 @@ ancestry_index = finalize_lines.index { |line| line.include?('git merge-base --i
 freeze_index = finalize_lines.index { |line| line.include?('freeze_release_helpers "$frozen_root" "$tag_sha"') }
 published_index = finalize_lines.index { |line| line.include?('verify_published_artifact \\') }
 checkout_index = finalize_lines.index { |line| line.include?('git checkout "$default_branch"') }
-pull_index = finalize_lines.index { |line| line.include?('git pull --ff-only origin "$default_branch"') }
+pull_index = finalize_lines.index { |line| line.include?('git pull --ff-only --no-tags origin "$default_branch"') }
 updater_index = finalize_lines.index { |line| line.include?('"$frozen_updater" "$tag"') }
 validation_index = finalize_lines.index { |line| line.include?('validate_finalized_cask "$cask_path" "$version" "$artifact_path"') }
 git_add_index = finalize_lines.index { |line| line.include?('git add Casks/compme.rb') }
@@ -2682,7 +2682,7 @@ YAML
   fi
 
   cp "$finalize_cask_script" "$finalizer_fixture"
-  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root" "$tag_sha"), ""); sub(%q(  git pull --ff-only origin "$default_branch"), %q(  git pull --ff-only origin "$default_branch"
+  ruby -0pi -e 'sub(%q(  freeze_release_helpers "$frozen_root" "$tag_sha"), ""); sub(%q(  git pull --ff-only --no-tags origin "$default_branch"), %q(  git pull --ff-only --no-tags origin "$default_branch"
   freeze_release_helpers "$frozen_root" "$tag_sha"))' "$finalizer_fixture"
   if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: helper freeze after mutable branch pull was accepted" >&2
