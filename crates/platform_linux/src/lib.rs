@@ -234,21 +234,35 @@ mod tests {
     #[test]
     fn url_launcher_reaps_child_without_blocking_the_caller() {
         let (reaped_tx, reaped_rx) = std::sync::mpsc::channel();
+        let latch = std::env::temp_dir().join(format!(
+            "compme-linux-url-reaper-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let mut command = std::process::Command::new("sh");
-        command.args(["-c", "sleep 0.15"]);
+        command
+            .args(["-c", "while [ ! -e \"$1\" ]; do sleep 0.01; done", "sh"])
+            .arg(&latch);
 
-        let start = std::time::Instant::now();
         let early = spawn_and_reap_with(&mut command, move |status| {
             reaped_tx.send(status).unwrap();
         })
         .unwrap();
 
-        assert!(start.elapsed() < std::time::Duration::from_millis(100));
         assert!(early.is_none(), "long-lived child must go to the reaper");
+        assert!(matches!(
+            reaped_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        std::fs::write(&latch, []).unwrap();
         assert!(reaped_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap()
             .success());
+        std::fs::remove_file(latch).unwrap();
     }
 
     #[test]
