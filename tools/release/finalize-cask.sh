@@ -323,16 +323,15 @@ SH
   grep -Fq "local artifact checksum does not match published checksum" \
     "$tampered_dir/rejected.err"
 
-  make_fixture_repo "$tmp/checksum-download-fail" noop
-  checksum_fail_sha="$(git -C "$tmp/checksum-download-fail/work" rev-parse HEAD)"
-  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/checksum-download-fail/work" \
-    COMPME_FINALIZE_CASK_TEST_GH_FAIL=1 \
-    GITHUB_SHA="$checksum_fail_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main \
-    >/dev/null 2>"$tmp/checksum-download-fail.err"; then
+  export COMPME_FINALIZE_CASK_TEST_GH_FAIL=1
+  if verify_published_artifact \
+    v9.8.7 "$artifact" 9.8.7 "$tmp/checksum-download-fail" \
+    2>"$tmp/checksum-download-fail.err"; then
+    unset COMPME_FINALIZE_CASK_TEST_GH_FAIL
     echo "finalize-cask self-test failed: published checksum download failure was accepted" >&2
     return 1
   fi
+  unset COMPME_FINALIZE_CASK_TEST_GH_FAIL
   if ! grep -Fq "failed to download published checksum for v9.8.7" \
     "$tmp/checksum-download-fail.err"; then
     echo "finalize-cask self-test failed: checksum-download failure diagnostic mismatch" >&2
