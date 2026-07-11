@@ -6,7 +6,11 @@
 // — the product's core gesture (accept the ghost text after your cursor).
 import AppKit
 
-let outPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "icon-1024.png"
+guard CommandLine.arguments.count == 2 else {
+    FileHandle.standardError.write(Data("usage: swift make-icon.swift <output.png>\n".utf8))
+    exit(2)
+}
+let outPath = CommandLine.arguments[1]
 let size: CGFloat = 1024
 let rect = NSRect(x: 0, y: 0, width: size, height: size)
 

@@ -258,6 +258,7 @@ detach_release_checkout() {
 run_self_test() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-finalize-cask.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
+  trap 'status=$?; echo "finalize-cask self-test failed at line $LINENO: $BASH_COMMAND (status $status)" >&2; exit "$status"' ERR
   artifact="$tmp/compme-9.8.7-macos.zip"
   printf 'fixture artifact\n' >"$artifact"
   fake_bin="$tmp/bin"
@@ -332,8 +333,12 @@ SH
     echo "finalize-cask self-test failed: published checksum download failure was accepted" >&2
     return 1
   fi
-  grep -Fq "failed to download published checksum for v9.8.7" \
-    "$tmp/checksum-download-fail.err"
+  if ! grep -Fq "failed to download published checksum for v9.8.7" \
+    "$tmp/checksum-download-fail.err"; then
+    echo "finalize-cask self-test failed: checksum-download failure diagnostic mismatch" >&2
+    sed 's/^/  captured: /' "$tmp/checksum-download-fail.err" >&2
+    return 1
+  fi
 
   make_fixture_repo "$tmp/draft-release" noop
   draft_sha="$(git -C "$tmp/draft-release/work" rev-parse HEAD)"
