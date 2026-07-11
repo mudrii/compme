@@ -391,6 +391,7 @@ SH
     echo "  actual:   $ref_refresh_local_tag" >&2
     return 1
   fi
+  echo "[DEBUG-ref-refresh] ref invariants passed" >&2
 
   tampered_dir="$tmp/tampered-artifact"
   mkdir -p "$tampered_dir"
@@ -408,6 +409,7 @@ SH
     sed 's/^/  captured: /' "$tampered_dir/rejected.err" >&2
     return 1
   fi
+  echo "[DEBUG-ref-refresh] tampered artifact passed" >&2
 
   export COMPME_FINALIZE_CASK_TEST_GH_FAIL=1
   if verify_published_artifact \
@@ -424,6 +426,7 @@ SH
     sed 's/^/  captured: /' "$tmp/checksum-download-fail.err" >&2
     return 1
   fi
+  echo "[DEBUG-ref-refresh] checksum download failure passed" >&2
 
   export COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE=true
   if verify_published_artifact \
@@ -440,6 +443,7 @@ SH
     sed 's/^/  captured: /' "$tmp/draft-release.err" >&2
     return 1
   fi
+  echo "[DEBUG-ref-refresh] draft release passed" >&2
 
   make_fixture_repo "$tmp/summary" noop
   summary_sha="$(git -C "$tmp/summary/work" rev-parse HEAD)"
