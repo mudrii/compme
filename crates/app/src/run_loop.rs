@@ -183,7 +183,16 @@ fn enqueue_host_event(queue: &mut VecDeque<HostEvent>, event: HostEvent) -> bool
         let Some(drop_index) = queue.iter().position(host_event_is_backpressure_droppable) else {
             return false;
         };
+        let dropped_focus = match queue.get(drop_index) {
+            Some(HostEvent::Focus(field)) => Some(field.clone()),
+            _ => None,
+        };
         queue.remove(drop_index);
+        if let Some(field) = dropped_focus {
+            queue.retain(
+                |event| !matches!(event, HostEvent::Caret(caret_field, _) if caret_field == &field),
+            );
+        }
     }
     queue.push_back(event);
     true
@@ -4552,6 +4561,8 @@ pub fn run() -> Result<(), String> {
                             }
                         }
                         Err(err) => {
+                            let _ =
+                                log_err("on_context_unavailable", engine.on_context_unavailable());
                             // Squelched: identical failures repeat at heartbeat
                             // rate while focus sits on an unsupported element.
                             let message = format!("{err:?}");
@@ -4775,55 +4786,66 @@ pub fn run() -> Result<(), String> {
         }
 
         // 2. Inference outcomes → engine (stale ones are discarded internally).
-        for outcome in inference.drain_outcomes() {
-            if matches!(outcome.request.kind, RequestKind::GrammarFix { .. }) {
+        if !host_event_backlog_remaining {
+            for outcome in inference.drain_outcomes() {
+                if matches!(outcome.request.kind, RequestKind::GrammarFix { .. }) {
+                    if let Some(latency) =
+                        latency_sample(&mut submit_times, outcome.request.generation, now_ms)
+                    {
+                        usage.record_latency(wall_ms, latency);
+                    }
+                    match (outcome.correction, outcome.correction_range) {
+                        (Some(correction), Some(correction_range)) => {
+                            offer_all(
+                                &mut latest,
+                                log_err(
+                                    "on_correction",
+                                    engine.on_correction(
+                                        &outcome.request,
+                                        correction,
+                                        correction_range,
+                                    ),
+                                ),
+                            );
+                            eprintln!(
+                                "compme: grammar outcome gen={} correction_present=true",
+                                outcome.request.generation
+                            );
+                        }
+                        _ => {
+                            offer_all(
+                                &mut latest,
+                                log_err(
+                                    "on_correction_absent",
+                                    engine.on_correction_absent(&outcome.request),
+                                ),
+                            );
+                            eprintln!(
+                                "compme: grammar outcome gen={} correction_present=false",
+                                outcome.request.generation
+                            );
+                        }
+                    }
+                    continue;
+                }
+                eprintln!(
+                    "{}",
+                    completion_outcome_log_line(outcome.request.generation, &outcome.candidates)
+                );
+                // First-suggestion latency for this completed request (§11).
                 if let Some(latency) =
                     latency_sample(&mut submit_times, outcome.request.generation, now_ms)
                 {
                     usage.record_latency(wall_ms, latency);
                 }
-                match (outcome.correction, outcome.correction_range) {
-                    (Some(correction), Some(correction_range)) => {
-                        eprintln!(
-                            "compme: grammar outcome gen={} correction_present=true",
-                            outcome.request.generation
-                        );
-                        offer_all(
-                            &mut latest,
-                            log_err(
-                                "on_correction",
-                                engine.on_correction(
-                                    &outcome.request,
-                                    correction,
-                                    correction_range,
-                                ),
-                            ),
-                        );
-                    }
-                    _ => eprintln!(
-                        "compme: grammar outcome gen={} correction_present=false",
-                        outcome.request.generation
+                offer_all(
+                    &mut latest,
+                    log_err(
+                        "on_completion",
+                        engine.on_completion_multi(&outcome.request, outcome.candidates),
                     ),
-                }
-                continue;
+                );
             }
-            eprintln!(
-                "{}",
-                completion_outcome_log_line(outcome.request.generation, &outcome.candidates)
-            );
-            // First-suggestion latency for this completed request (§11).
-            if let Some(latency) =
-                latency_sample(&mut submit_times, outcome.request.generation, now_ms)
-            {
-                usage.record_latency(wall_ms, latency);
-            }
-            offer_all(
-                &mut latest,
-                log_err(
-                    "on_completion",
-                    engine.on_completion_multi(&outcome.request, outcome.candidates),
-                ),
-            );
         }
 
         // 3. Debounce tick.
@@ -15503,6 +15525,41 @@ mod tests {
         assert!(!queue.iter().any(
             |event| matches!(event, HostEvent::Focus(field) if field.element_id == "field-0")
         ));
+    }
+
+    #[test]
+    fn host_event_queue_never_orphans_caret_when_dropping_focus() {
+        let mut queue = VecDeque::new();
+        assert!(enqueue_host_event(
+            &mut queue,
+            HostEvent::Focus(host_field("dependent"))
+        ));
+        assert!(enqueue_host_event(
+            &mut queue,
+            HostEvent::Caret(host_field("dependent"), rect(1.0))
+        ));
+        for i in 2..MAX_HOST_EVENT_QUEUE {
+            assert!(enqueue_host_event(
+                &mut queue,
+                HostEvent::Caret(host_field(&format!("field-{i}")), rect(i as f64))
+            ));
+        }
+
+        assert!(enqueue_host_event(
+            &mut queue,
+            HostEvent::Accept(AcceptAction::Full)
+        ));
+
+        let focus = queue.iter().position(
+            |event| matches!(event, HostEvent::Focus(field) if field.element_id == "dependent"),
+        );
+        let caret = queue.iter().position(
+            |event| matches!(event, HostEvent::Caret(field, _) if field.element_id == "dependent"),
+        );
+        assert!(
+            caret.is_none() || focus.is_some_and(|focus| focus < caret.unwrap()),
+            "a retained caret must keep its preceding focus boundary"
+        );
     }
 
     #[test]

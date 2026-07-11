@@ -154,27 +154,84 @@ impl MemoryStore {
                     .create(true)
                     .truncate(false)
                     .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW)
                     .open(path)?;
             }
         }
 
-        let store = Self::from_connection(Connection::open(path)?, key, mode)?;
+        // Reject preplaced final-component links and other non-files before
+        // SQLite can inspect, remove, or write through a journal/WAL sidecar.
+        // The later handle-based pass still hardens regular sidecars SQLite
+        // creates during connection initialization.
+        #[cfg(unix)]
+        {
+            let validate = |p: &Path| -> Result<()> {
+                match std::fs::symlink_metadata(p) {
+                    Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+                    Ok(_) => Err(MemoryError::Io(format!(
+                        "refusing non-file memory database path {}",
+                        p.display()
+                    ))),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(err) => Err(err.into()),
+                }
+            };
+            validate(path)?;
+            for suffix in ["-journal", "-wal", "-shm"] {
+                let mut sidecar = path.as_os_str().to_owned();
+                sidecar.push(suffix);
+                validate(Path::new(&sidecar))?;
+            }
+        }
+
+        // SQLite's NOFOLLOW applies to every path component. Resolve the
+        // already-created parent first so legitimate aliases such as macOS's
+        // `/var -> /private/var` do not make every database fail, while the
+        // final database filename remains protected against symlink swaps.
+        let open_path = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+                std::fs::canonicalize(parent)?.join(name)
+            }
+            _ => path.to_path_buf(),
+        };
+        let flags = rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let store =
+            Self::from_connection(Connection::open_with_flags(&open_path, flags)?, key, mode)?;
 
         // Belt-and-suspenders: enforce 0600 on the main db and any journal/wal/shm
         // sidecar that exists alongside it (sidecars are NOT covered by
         // secure_delete and would otherwise inherit default perms).
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
             let restrict = |p: &Path| -> Result<()> {
-                if p.exists() {
-                    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))?;
+                let metadata = match std::fs::symlink_metadata(p) {
+                    Ok(metadata) => metadata,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                    Err(err) => return Err(err.into()),
+                };
+                if !metadata.file_type().is_file() {
+                    return Err(MemoryError::Io(format!(
+                        "refusing non-file memory database path {}",
+                        p.display()
+                    )));
                 }
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(p)?;
+                if !file.metadata()?.file_type().is_file() {
+                    return Err(MemoryError::Io(format!(
+                        "refusing non-file memory database handle {}",
+                        p.display()
+                    )));
+                }
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
                 Ok(())
             };
-            restrict(path)?;
+            restrict(&open_path)?;
             for suffix in ["-journal", "-wal", "-shm"] {
-                let mut sidecar = path.as_os_str().to_owned();
+                let mut sidecar = open_path.as_os_str().to_owned();
                 sidecar.push(suffix);
                 restrict(Path::new(&sidecar))?;
             }
@@ -1254,6 +1311,122 @@ mod tests {
         assert!(
             matches!(reopened, Err(MemoryError::Io(_))),
             "memory must not open when an existing sidecar cannot be made owner-only"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_rejects_sidecar_symlink_without_chmodding_user_owned_target() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(64), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "row").unwrap();
+        }
+        let victim = temp_db_path();
+        std::fs::write(&victim, b"user-owned victim").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut shm = path.as_os_str().to_owned();
+        shm.push("-shm");
+        let shm_path = PathBuf::from(shm);
+        symlink(&victim, &shm_path).unwrap();
+
+        let reopened = MemoryStore::open(&path, &key(64), StorageMode::AcceptedOnly);
+        let rejected = matches!(&reopened, Err(MemoryError::Io(_)));
+        let victim_mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+
+        drop(reopened);
+        let _ = std::fs::remove_file(&shm_path);
+        let _ = std::fs::remove_file(&victim);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            rejected,
+            "memory must reject a symlink sidecar even when its target is user-owned"
+        );
+        assert_eq!(
+            victim_mode, 0o644,
+            "sidecar hardening must not chmod the symlink target"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_rejects_journal_symlink_before_sqlite_can_touch_it() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(65), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "row").unwrap();
+        }
+        let victim = temp_db_path();
+        std::fs::write(&victim, b"user-owned journal victim").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut journal = path.as_os_str().to_owned();
+        journal.push("-journal");
+        let journal_path = PathBuf::from(journal);
+        symlink(&victim, &journal_path).unwrap();
+
+        let reopened = MemoryStore::open(&path, &key(65), StorageMode::AcceptedOnly);
+        let rejected = matches!(&reopened, Err(MemoryError::Io(_)));
+        let victim_after = std::fs::read(&victim).unwrap();
+        let victim_mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+        let journal_still_symlink = std::fs::symlink_metadata(&journal_path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink());
+
+        drop(reopened);
+        let _ = std::fs::remove_file(&journal_path);
+        let _ = std::fs::remove_file(&victim);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            rejected,
+            "journal symlink must be rejected before SQLite opens"
+        );
+        assert_eq!(victim_after, b"user-owned journal victim");
+        assert_eq!(victim_mode, 0o644);
+        assert!(
+            journal_still_symlink,
+            "pre-open validation must reject without unlinking the journal symlink"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_rejects_main_database_symlink_without_mutating_target() {
+        use std::os::unix::fs::symlink;
+
+        let path = temp_db_path();
+        let victim = temp_db_path();
+        let victim_conn = Connection::open(&victim).unwrap();
+        victim_conn
+            .execute("CREATE TABLE sentinel (value TEXT NOT NULL)", [])
+            .unwrap();
+        drop(victim_conn);
+        symlink(&victim, &path).unwrap();
+
+        let result = MemoryStore::open(&path, &key(63), StorageMode::AcceptedOnly);
+        let rejected = result.is_err();
+        drop(result);
+        let victim_conn = Connection::open(&victim).unwrap();
+        let memories_table_count: i64 = victim_conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'memories'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(victim_conn);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&victim);
+
+        assert!(rejected, "main memory database symlinks must fail closed");
+        assert_eq!(
+            memories_table_count, 0,
+            "opening a symlink must not create the memories schema in its target"
         );
     }
 

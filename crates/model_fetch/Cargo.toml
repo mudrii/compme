@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 sha2 = "0.10"
 ureq = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

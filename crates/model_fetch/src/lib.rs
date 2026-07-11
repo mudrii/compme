@@ -212,6 +212,14 @@ fn download_with_agent(
         })
         .flatten()
         .filter(|range| range.start == existing);
+    if let Some(range) = resumed_range {
+        if range.end.checked_add(1) != Some(range.total) {
+            return Err(FetchError::InvalidRange(format!(
+                "open-ended resume stopped at byte {} before total {}",
+                range.end, range.total
+            )));
+        }
+    }
     let resumed = resumed_range.is_some();
     // A 206 we could NOT validate after a ranged request is doubly suspect:
     // its body may genuinely be the tail slice we asked for (a server that
@@ -267,17 +275,42 @@ fn download_with_agent(
         .create(true)
         .append(resumed)
         .write(true)
-        .truncate(!resumed);
+        // Truncate only after the opened handle is verified as a regular file.
+        // Otherwise a Windows reparse point could reach its target before the
+        // final-type check below.
+        .truncate(false);
     // Owner-only like memory's db pre-create: weights aren't secret, but new
     // files in the app dir follow one permission convention.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Win32 FILE_FLAG_OPEN_REPARSE_POINT: open the final reparse point
+        // itself rather than following it to a victim file.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let mut file = options
         .open(&part)
         .map_err(|e| FetchError::Io(e.to_string()))?;
+    if !file
+        .metadata()
+        .map_err(|e| FetchError::Io(e.to_string()))?
+        .file_type()
+        .is_file()
+    {
+        return Err(FetchError::Io(format!(
+            "refusing non-file download part {}",
+            part.display()
+        )));
+    }
+    if !resumed {
+        file.set_len(0).map_err(|e| FetchError::Io(e.to_string()))?;
+    }
 
     let mut reader = response.into_reader();
     let mut written = if resumed { existing } else { 0 };
@@ -640,6 +673,10 @@ mod tests {
         /// Content-Length (close-framed) that streams FEWER bytes than the
         /// Content-Range declares — exercises the post-loop under-run guard.
         HonorNoLengthUnderBody,
+        /// Return a truthful, body-length-consistent but incomplete subrange for
+        /// an open-ended resume request. The client must not publish it as the
+        /// completed file merely because the declared subrange arrived intact.
+        PartialSubrange,
         /// LIE: reply 206 but serve the FULL body from offset 0 with a
         /// Content-Range that contradicts the request (corruption trap).
         Lie,
@@ -720,6 +757,11 @@ mod tests {
                         &body[s..body.len() - 1],
                         Some(format!("bytes {s}-{}/{}", body.len() - 1, body.len())),
                     ),
+                    (RangeMode::PartialSubrange, Some(s)) => (
+                        "206 Partial Content",
+                        &body[s..s + 3],
+                        Some(format!("bytes {s}-{}/{}", s + 2, body.len())),
+                    ),
                     _ => ("200 OK", body, None),
                 };
                 let _ = write!(stream, "HTTP/1.1 {status}\r\n");
@@ -750,6 +792,78 @@ mod tests {
 
     fn temp_dest(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("cm-fetch-{tag}-{}.bin", std::process::id()))
+    }
+
+    #[test]
+    fn content_range_parser_rejects_an_end_that_cannot_precede_total() {
+        assert!(ContentRange::parse("bytes 0-9/9").is_none());
+        assert!(ContentRange::parse("bytes 0-18446744073709551615/18446744073709551615").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_refuses_symlink_part_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let url = serve(b"0123456789", RangeMode::Ignore);
+        let dest = temp_dest("part-symlink");
+        let part = dest.with_extension("part");
+        let victim = temp_dest("part-symlink-victim");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&victim);
+        std::fs::write(&victim, b"do-not-touch").unwrap();
+        symlink(&victim, &part).unwrap();
+
+        let result = download_url(&url, &dest, None, |_, _| {});
+        let victim_after = std::fs::read(&victim).unwrap();
+        let dest_exists = dest.exists();
+
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&victim);
+
+        assert!(matches!(result, Err(FetchError::Io(_))), "got: {result:?}");
+        assert!(!dest_exists, "a symlink-backed part must not be promoted");
+        assert_eq!(victim_after, b"do-not-touch", "victim must be untouched");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn download_refuses_windows_symlink_part_without_touching_target() {
+        use std::os::windows::fs::symlink_file;
+
+        let url = serve(b"0123456789", RangeMode::Ignore);
+        let dest = temp_dest("part-windows-symlink");
+        let part = dest.with_extension("part");
+        let victim = temp_dest("part-windows-symlink-victim");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&victim);
+        std::fs::write(&victim, b"do-not-touch").unwrap();
+        match symlink_file(&victim, &part) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Windows requires Developer Mode or SeCreateSymbolicLinkPrivilege.
+                // Hosted CI normally permits this; an explicitly locked-down
+                // developer host cannot exercise the behavioral branch.
+                let _ = std::fs::remove_file(&victim);
+                return;
+            }
+            Err(err) => panic!("create Windows symlink fixture: {err}"),
+        }
+
+        let result = download_url(&url, &dest, None, |_, _| {});
+        let victim_after = std::fs::read(&victim).unwrap();
+        let dest_exists = dest.exists();
+
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&victim);
+
+        assert!(matches!(result, Err(FetchError::Io(_))), "got: {result:?}");
+        assert!(!dest_exists, "a reparse-backed part must not be promoted");
+        assert_eq!(victim_after, b"do-not-touch", "victim must be untouched");
     }
 
     #[test]
@@ -825,6 +939,33 @@ mod tests {
             );
             let _ = std::fs::remove_file(&part);
         }
+    }
+
+    #[test]
+    fn resumed_partial_subrange_is_not_promoted_as_complete() {
+        let url = serve(b"0123456789", RangeMode::PartialSubrange);
+        let dest = temp_dest("partial-subrange");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        std::fs::write(&part, b"0123").unwrap();
+
+        let result = download_url(&url, &dest, None, |_, _| {});
+        let dest_contents = std::fs::read(&dest).ok();
+        let part_exists = part.exists();
+
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+
+        assert!(
+            matches!(result, Err(FetchError::InvalidRange(_))),
+            "got: {result:?}"
+        );
+        assert!(
+            dest_contents.is_none(),
+            "incomplete range must not publish dest"
+        );
+        assert!(part_exists, "safe partial bytes should remain resumable");
     }
 
     #[test]

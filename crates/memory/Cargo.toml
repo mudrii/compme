@@ -10,3 +10,6 @@ rusqlite = { version = "=0.32.1", features = ["bundled"] }
 aes-gcm = { version = "=0.10.3", features = ["zeroize"] }
 getrandom = "0.2"
 zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

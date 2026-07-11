@@ -834,6 +834,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "getrandom 0.2.17",
+ "libc",
  "redaction",
  "rusqlite",
  "zeroize",
@@ -872,6 +873,7 @@ dependencies = [
 name = "model_fetch"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "sha2",
  "ureq",
 ]

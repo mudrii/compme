@@ -3155,7 +3155,7 @@ impl AcceptKeymap {
 
     /// Rebind the two accept keys (word/full) by keycode; `None` keeps the
     /// default for that key. Dismiss (Esc) and cycle (Down) are fixed. Fails if a
-    /// keycode is negative, or if any two of the four bindings would collide.
+    /// keycode is outside Carbon's `u32` width, or if any two bindings collide.
     pub fn from_accept_keys(word: Option<i64>, full: Option<i64>) -> Result<Self, KeymapError> {
         Self::from_accept_keys_with_mods(word, full, 0, 0)
     }
@@ -3165,7 +3165,8 @@ impl AcceptKeymap {
     /// identified by `(keycode, mask)`, so two keys collide only when BOTH match —
     /// Tab (word) and Shift+Tab (full) are distinct and may coexist. `word_mods`/
     /// `full_mods` of 0 reproduce the bare-key behavior exactly. Fails if a keycode
-    /// is negative, or if any two of the four bindings share a keycode AND mask.
+    /// is outside Carbon's `u32` width, or if any two of the four bindings share a
+    /// keycode AND mask.
     pub fn from_accept_keys_with_mods(
         word: Option<i64>,
         full: Option<i64>,
@@ -3199,7 +3200,11 @@ impl AcceptKeymap {
             Some(map.cycle),
             map.grammar_accept,
         ];
-        if let Some(bad) = keys.into_iter().flatten().find(|&k| k < 0) {
+        if let Some(bad) = keys
+            .into_iter()
+            .flatten()
+            .find(|&keycode| u32::try_from(keycode).is_err())
+        {
             return Err(KeymapError::InvalidKeycode(bad));
         }
         // Collision is on the full binding identity (keycode, mask), not keycode
@@ -11771,6 +11776,26 @@ mod tests {
         );
         // Zero is a valid macOS keycode (the 'a' key), so it is accepted.
         assert!(AcceptKeymap::from_accept_keys(Some(0), None).is_ok());
+    }
+
+    #[test]
+    fn accept_keymap_rejects_keycode_above_carbon_width_without_mutating_live_map() {
+        struct Restore(AcceptKeymap);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                set_accept_keymap(self.0);
+            }
+        }
+
+        let previous = accept_keymap();
+        let _restore = Restore(previous);
+        let too_large = i64::from(u32::MAX) + 1;
+
+        assert_eq!(
+            set_accept_keymap_from_config_with_mods(Some((too_large, 0)), None, None),
+            Err(KeymapError::InvalidKeycode(too_large))
+        );
+        assert_eq!(accept_keymap(), previous);
     }
 
     #[test]

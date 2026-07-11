@@ -8,9 +8,79 @@
 # generated glyph).
 #
 # Usage: tools/bundle/make-icon.sh   (writes tools/bundle/AppIcon.icns)
+#        tools/bundle/make-icon.sh --self-test
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  echo "usage: tools/bundle/make-icon.sh | --self-test" >&2
+}
+
+run_self_test() {
+  tmp_test="$(mktemp -d "${TMPDIR:-/tmp}/compme-make-icon-self-test.XXXXXX")"
+  cleanup_self_test() {
+    rm -rf "$tmp_test"
+  }
+  trap cleanup_self_test EXIT
+
+  fake_bin="$tmp_test/bin"
+  log="$tmp_test/commands.log"
+  source_png="$tmp_test/source.png"
+  icon_before="$tmp_test/AppIcon.icns.before"
+  mkdir -p "$fake_bin"
+  printf 'png fixture' >"$source_png"
+  cp "$here/AppIcon.icns" "$icon_before"
+
+  for tool in swift sips iconutil; do
+    cat >"$fake_bin/$tool" <<'SH'
+#!/usr/bin/env bash
+printf '%s %s\n' "$(basename "$0")" "$*" >>"$COMPME_ICON_SELF_TEST_LOG"
+SH
+    chmod +x "$fake_bin/$tool"
+  done
+
+  set +e
+  PATH="$fake_bin:$PATH" \
+  ICON_SRC="$source_png" \
+  COMPME_ICON_SELF_TEST_LOG="$log" \
+    "$0" unexpected-extra >"$tmp_test/stdout" 2>"$tmp_test/stderr"
+  status=$?
+  set -e
+  if [[ "$status" -ne 2 ]]; then
+    echo "make-icon self-test failed: unexpected argument exited $status, expected 2" >&2
+    return 1
+  fi
+  if [[ "$(cat "$tmp_test/stderr")" != "usage: tools/bundle/make-icon.sh | --self-test" ]]; then
+    echo "make-icon self-test failed: unexpected argument did not print exact usage" >&2
+    return 1
+  fi
+  if [[ -s "$log" ]]; then
+    echo "make-icon self-test failed: a tool ran after argument rejection" >&2
+    return 1
+  fi
+  if ! cmp -s "$icon_before" "$here/AppIcon.icns"; then
+    echo "make-icon self-test failed: rejected invocation modified AppIcon.icns" >&2
+    return 1
+  fi
+
+  echo "Self-test passed"
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+  if [[ "$#" -ne 1 ]]; then
+    usage
+    exit 2
+  fi
+  run_self_test
+  exit 0
+fi
+
+if [[ "$#" -ne 0 ]]; then
+  usage
+  exit 2
+fi
+
 out="$here/AppIcon.icns"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-icon.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT

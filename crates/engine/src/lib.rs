@@ -371,6 +371,22 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    /// Complete a grammar request that produced no acceptable correction.
+    /// Feeding an empty offer through the machine consumes the matching stamp,
+    /// making duplicate/late outcomes for the same request stale.
+    pub fn on_correction_absent(
+        &mut self,
+        request: &CompletionRequest,
+    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let RequestKind::GrammarFix {
+            correction_range, ..
+        } = &request.kind
+        else {
+            return Ok(Vec::new());
+        };
+        self.on_correction(request, String::new(), *correction_range)
+    }
+
     pub fn on_accept(
         &mut self,
         action: AcceptAction,
@@ -411,6 +427,17 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
     /// completion already submitted to the inference worker could pop a ghost
     /// back up after the user disabled the app.
     pub fn on_dismiss(&mut self) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self.machine.on_event(Event::DismissDiscard);
+        self.dispatch(commands)
+    }
+
+    /// Fail closed when the host received a field-change notification but could
+    /// not read the resulting context. The unread boundary may have changed the
+    /// caret or text, so both a visible suggestion and any in-flight request are
+    /// stale even though the host cannot supply a replacement snapshot.
+    pub fn on_context_unavailable(
+        &mut self,
+    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
         let commands = self.machine.on_event(Event::DismissDiscard);
         self.dispatch(commands)
     }
@@ -1051,6 +1078,27 @@ mod tests {
                 },
                 "the".into(),
             )]
+        );
+    }
+
+    #[test]
+    fn absent_correction_consumes_the_matching_grammar_request() {
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+
+        engine.on_correction_absent(&request).unwrap();
+        engine.on_correction(&request, "the".into(), range).unwrap();
+
+        assert!(
+            !overlay
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| matches!(call, OverlayCall::ShowCorrection(_, _))),
+            "a completed no-op grammar attempt must reject duplicate late outcomes"
         );
     }
 
@@ -2730,6 +2778,39 @@ mod tests {
                 .any(|c| matches!(c, OverlayCall::Show(_, _))),
             "a staled in-flight completion must never show after dismiss"
         );
+    }
+
+    #[test]
+    fn context_unavailable_hides_visible_and_stales_in_flight_suggestions() {
+        let (mut visible_engine, visible_adapter, visible_overlay) = showing("visible ghost");
+
+        visible_engine.on_context_unavailable().unwrap();
+        visible_engine.on_accept(AcceptAction::Full).unwrap();
+
+        assert_eq!(
+            *visible_overlay.calls.lock().unwrap(),
+            vec![OverlayCall::Hide]
+        );
+        assert!(visible_adapter.inserts.lock().unwrap().is_empty());
+
+        let (mut pending_engine, _adapter, pending_overlay) = engine();
+        pending_engine.on_focus(field()).unwrap();
+        pending_engine
+            .on_text_changed(typed("pending", 7, 0))
+            .unwrap();
+        let request = pending_engine.on_tick(500).unwrap().remove(0);
+
+        pending_engine.on_context_unavailable().unwrap();
+        pending_engine
+            .on_completion(&request, "stale completion".into())
+            .unwrap();
+
+        assert!(!pending_overlay
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| matches!(call, OverlayCall::Show(_, _))));
     }
 
     #[test]
