@@ -284,10 +284,10 @@ SH
 }
 
 detach_release_checkout() {
-  work="$1"
-  sha="$2"
-  git -C "$work" checkout --detach "$sha" >/dev/null 2>&1
-  git -C "$work" branch -D main >/dev/null 2>&1
+  local work="$1"
+  local sha="$2"
+  git -C "$work" checkout -q --detach "$sha" || return 1
+  git -C "$work" branch -D main >/dev/null || return 1
 }
 
 run_self_test() {
@@ -344,13 +344,18 @@ SH
 
   make_fixture_repo "$tmp/ref-refresh" noop
   ref_refresh_sha="$(git -C "$tmp/ref-refresh/work" rev-parse HEAD)"
-  git -C "$tmp/ref-refresh/work" \
-    -c user.name=t -c user.email=t@example.test \
-    commit --allow-empty -m poison >/dev/null
+  fixture_git "ref-refresh poison commit" \
+    git -C "$tmp/ref-refresh/work" \
+      -c user.name=t -c user.email=t@example.test -c commit.gpgsign=false \
+      commit --allow-empty -m poison >/dev/null || return 1
   poison_sha="$(git -C "$tmp/ref-refresh/work" rev-parse HEAD)"
-  git -C "$tmp/ref-refresh/work" tag -f v9.8.7 "$poison_sha" >/dev/null
-  detach_release_checkout "$tmp/ref-refresh/work" "$ref_refresh_sha"
-  git -C "$tmp/ref-refresh/work" update-ref -d refs/remotes/origin/main
+  fixture_git "ref-refresh poison tag" \
+    git -C "$tmp/ref-refresh/work" -c tag.gpgSign=false \
+      tag -f v9.8.7 "$poison_sha" >/dev/null || return 1
+  fixture_git "ref-refresh detach" \
+    detach_release_checkout "$tmp/ref-refresh/work" "$ref_refresh_sha" || return 1
+  fixture_git "ref-refresh tracking ref delete" \
+    git -C "$tmp/ref-refresh/work" update-ref -d refs/remotes/origin/main || return 1
   if ! COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ref-refresh/work" \
     GITHUB_SHA="$ref_refresh_sha" \
     "$0" v9.8.7 "$artifact" 9.8.7 main \
