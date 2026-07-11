@@ -129,14 +129,10 @@ fn spawn_and_reap_with(
     on_reaped: impl FnOnce(std::process::ExitStatus) + Send + 'static,
 ) -> std::io::Result<Option<std::process::ExitStatus>> {
     let mut child = command.spawn()?;
-    // Keep the window well under the caller-blocking budget pinned by
-    // `url_launcher_reaps_child_without_blocking_the_caller` (100ms).
-    for _ in 0..10 {
-        if let Some(status) = child.try_wait()? {
-            on_reaped(status);
-            return Ok(Some(status));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    let early = poll_for_immediate_exit_with(|| child.try_wait(), std::thread::sleep)?;
+    if let Some(status) = early {
+        on_reaped(status);
+        return Ok(Some(status));
     }
     std::thread::Builder::new()
         .name("compme-url-reaper".into())
@@ -145,6 +141,19 @@ fn spawn_and_reap_with(
                 on_reaped(status);
             }
         })?;
+    Ok(None)
+}
+
+fn poll_for_immediate_exit_with(
+    mut try_wait: impl FnMut() -> std::io::Result<Option<std::process::ExitStatus>>,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    for _ in 0..10 {
+        if let Some(status) = try_wait()? {
+            return Ok(Some(status));
+        }
+        sleep(std::time::Duration::from_millis(5));
+    }
     Ok(None)
 }
 
@@ -266,16 +275,25 @@ mod tests {
     }
 
     #[test]
-    fn url_launcher_reports_immediate_child_failure() {
-        // A launcher that exits non-zero right away (missing handler, bad URL)
-        // must surface within the poll window so open_url can fail closed
-        // instead of silently discarding the exit status.
-        let mut command = std::process::Command::new("sh");
-        command.args(["-c", "exit 3"]);
-        let status = spawn_and_reap_with(&mut command, |_| {})
-            .unwrap()
-            .expect("fast-failing child detected within the poll window");
+    fn url_launcher_reports_a_failure_detected_during_the_poll_window() {
+        let status = std::process::Command::new("sh")
+            .args(["-c", "exit 3"])
+            .status()
+            .unwrap();
+        let mut pending = Some(status);
+        let mut polls = 0;
+        let detected = poll_for_immediate_exit_with(
+            || {
+                polls += 1;
+                Ok(if polls == 2 { pending.take() } else { None })
+            },
+            |_| {},
+        )
+        .unwrap();
+
+        let status = detected.expect("the second poll must observe the launcher failure");
         assert!(!status.success());
+        assert_eq!(polls, 2);
     }
 
     #[test]
