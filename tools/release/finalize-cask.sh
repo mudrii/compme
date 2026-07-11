@@ -351,22 +351,33 @@ SH
   git -C "$tmp/ref-refresh/work" tag -f v9.8.7 "$poison_sha" >/dev/null
   detach_release_checkout "$tmp/ref-refresh/work" "$ref_refresh_sha"
   git -C "$tmp/ref-refresh/work" update-ref -d refs/remotes/origin/main
-  COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ref-refresh/work" \
+  if ! COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ref-refresh/work" \
     GITHUB_SHA="$ref_refresh_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null
-  if [ "$(git -C "$tmp/ref-refresh/work" rev-parse refs/remotes/origin/main)" != \
-    "$ref_refresh_sha" ]; then
+    "$0" v9.8.7 "$artifact" 9.8.7 main \
+    >"$tmp/ref-refresh.out" 2>"$tmp/ref-refresh.err"; then
+    echo "finalize-cask self-test failed: ref-refresh finalizer failed" >&2
+    sed 's/^/  captured: /' "$tmp/ref-refresh.err" >&2
+    return 1
+  fi
+  ref_refresh_branch="$(git -C "$tmp/ref-refresh/work" rev-parse refs/remotes/origin/main)"
+  if [ "$ref_refresh_branch" != "$ref_refresh_sha" ]; then
     echo "finalize-cask self-test failed: origin/main was not restored" >&2
+    echo "  expected: $ref_refresh_sha" >&2
+    echo "  actual:   $ref_refresh_branch" >&2
     return 1
   fi
-  if [ "$(git -C "$tmp/ref-refresh/work" rev-parse refs/compme-release/tags/v9.8.7)" != \
-    "$ref_refresh_sha" ]; then
+  ref_refresh_tag="$(git -C "$tmp/ref-refresh/work" rev-parse refs/compme-release/tags/v9.8.7)"
+  if [ "$ref_refresh_tag" != "$ref_refresh_sha" ]; then
     echo "finalize-cask self-test failed: private release tag ref was not restored" >&2
+    echo "  expected: $ref_refresh_sha" >&2
+    echo "  actual:   $ref_refresh_tag" >&2
     return 1
   fi
-  if [ "$(git -C "$tmp/ref-refresh/work" rev-parse refs/tags/v9.8.7)" != \
-    "$poison_sha" ]; then
+  ref_refresh_local_tag="$(git -C "$tmp/ref-refresh/work" rev-parse refs/tags/v9.8.7)"
+  if [ "$ref_refresh_local_tag" != "$poison_sha" ]; then
     echo "finalize-cask self-test failed: local release tag was modified" >&2
+    echo "  expected: $poison_sha" >&2
+    echo "  actual:   $ref_refresh_local_tag" >&2
     return 1
   fi
 
