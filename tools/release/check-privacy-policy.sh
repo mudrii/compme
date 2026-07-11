@@ -155,7 +155,7 @@ end
 paths.each do |path|
   text = File.read(path, invalid: :replace, undef: :replace)
   text.scan(%r{https?://([^/`"'\s)<>{}*]+)}) do |match|
-    host = match.first.downcase.sub(/:\d+\z/, "").gsub("\\.", ".").split("@").last
+    host = match.first.downcase.sub(/:\d+\z/, "").gsub("\\.", ".").split("@").last.sub(/\.\z/, "")
     if denied_host_patterns.any? { |pattern| pattern.match?(host) }
       rel = path.delete_prefix(root + "/")
       abort("privacy policy check failed: denied telemetry host #{host} in #{rel}")
@@ -191,6 +191,7 @@ LOCK
   cat >"$tmp/good/crates/demo/src/lib.rs" <<'RS'
 const MODEL_URL: &str = "https://huggingface.co/example/model.gguf";
 const UPDATE_URL: &str = "https://github.com/mudrii/compme/releases/latest";
+const ABSOLUTE_DNS_URL: &str = "https://example.test./absolute";
 RS
   check_repo "$tmp/good"
 

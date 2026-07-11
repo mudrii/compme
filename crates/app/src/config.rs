@@ -150,12 +150,21 @@ fn config_file_path_for(lookup: &impl Fn(&str) -> Option<String>, os: &str) -> O
     Some(dir.join("config.env"))
 }
 
-/// Load and parse the config file into a map. Missing/unreadable file → empty
-/// map (config is optional).
-pub fn load_file_map(path: &Path) -> HashMap<String, String> {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => parse_env_file(&contents).into_iter().collect(),
-        Err(_) => HashMap::new(),
+/// Load and parse the optional config file into a map. A missing file is an
+/// empty config; every other read failure is returned so callers cannot silently
+/// replace an existing policy file with permissive defaults.
+pub fn load_file_map(path: &Path) -> std::io::Result<HashMap<String, String>> {
+    load_file_map_with(path, |path| std::fs::read_to_string(path))
+}
+
+fn load_file_map_with(
+    path: &Path,
+    read: impl FnOnce(&Path) -> std::io::Result<String>,
+) -> std::io::Result<HashMap<String, String>> {
+    match read(path) {
+        Ok(contents) => Ok(parse_env_file(&contents).into_iter().collect()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(err) => Err(err),
     }
 }
 
@@ -873,7 +882,9 @@ mod tests {
         // Missing file + parent dirs → created with just the key.
         persist_setting(&path, "COMPME_ENABLED", "false").expect("create");
         assert_eq!(
-            load_file_map(&path).get("COMPME_ENABLED"),
+            load_file_map(&path)
+                .expect("reload persisted setting")
+                .get("COMPME_ENABLED"),
             Some(&"false".to_string())
         );
 
@@ -1204,7 +1215,7 @@ mod tests {
             "# comment\nCOMPME_MAX_WORDS=15\nCOMPME_PROMPT_MODE=raw\n",
         )
         .unwrap();
-        let map = load_file_map(&path);
+        let map = load_file_map(&path).expect("read config");
         let _ = std::fs::remove_file(&path);
         assert_eq!(map.get("COMPME_MAX_WORDS").map(String::as_str), Some("15"));
         assert_eq!(
@@ -1216,8 +1227,20 @@ mod tests {
 
     #[test]
     fn load_file_map_missing_file_is_empty() {
-        let map = load_file_map(Path::new("/no/such/compme/config.env"));
+        let map = load_file_map(Path::new("/no/such/compme/config.env")).expect("missing is empty");
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn load_file_map_propagates_an_unreadable_existing_config() {
+        let err = load_file_map_with(Path::new("config.env"), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "fixture unreadable config",
+            ))
+        })
+        .expect_err("an unreadable existing config must fail closed");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[test]

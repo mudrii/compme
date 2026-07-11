@@ -49,6 +49,17 @@ pub enum Scope {
     Domain(String),
 }
 
+/// Canonical spelling for a DNS host used by domain-scoped policy. DNS names
+/// are case-insensitive, and one terminal dot denotes the absolute root label
+/// without changing the host's identity.
+pub fn normalize_domain(domain: &str) -> String {
+    let mut normalized = domain.to_ascii_lowercase();
+    if normalized.ends_with('.') {
+        normalized.pop();
+    }
+    normalized
+}
+
 /// The reversible per-scope action. Exactly one per command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverrideAction {
@@ -355,6 +366,7 @@ fn valid_app_scope(s: String) -> Result<String, ParseError> {
 }
 
 fn valid_domain_scope(s: String) -> Result<String, ParseError> {
+    let s = normalize_domain(&s);
     valid_scope_lexical(&s)?;
 
     let labels: Vec<&str> = s.split('.').collect();
@@ -384,6 +396,14 @@ fn valid_domain_scope(s: String) -> Result<String, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn domain_normalization_folds_case_and_one_dns_root_dot() {
+        assert_eq!(normalize_domain("Bank.Example."), "bank.example");
+        assert_eq!(normalize_domain("BANK.EXAMPLE"), "bank.example");
+        assert_eq!(normalize_domain("example.com.."), "example.com.");
+        assert_eq!(normalize_domain("."), "");
+    }
 
     #[test]
     fn parses_app_enable() {
@@ -416,6 +436,17 @@ mod tests {
             parse_deep_link("compme://setOverride?domain=docs.google.com&excluded=true"),
             Ok(OverrideCommand {
                 scope: Scope::Domain("docs.google.com".into()),
+                action: OverrideAction::Exclude,
+            })
+        );
+    }
+
+    #[test]
+    fn domain_scope_canonicalizes_case_and_a_dns_root_dot() {
+        assert_eq!(
+            parse_deep_link("compme://setOverride?domain=Bank.Example.&excluded=true"),
+            Ok(OverrideCommand {
+                scope: Scope::Domain("bank.example".into()),
                 action: OverrideAction::Exclude,
             })
         );
@@ -457,7 +488,6 @@ mod tests {
             "com",
             "localhost",
             ".example.com",
-            "example.com.",
             "example..com",
             "bad_domain.com",
             "-example.com",

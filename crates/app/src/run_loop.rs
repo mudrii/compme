@@ -358,11 +358,16 @@ impl Drop for MemoryConfig {
 impl Config {
     /// Build config by layering the environment over the optional config file
     /// (env wins over file wins over default), all through `from_lookup`.
-    fn from_env() -> Self {
-        let file_map = config::config_file_path()
-            .map(|path| config::load_file_map(&path))
-            .unwrap_or_default();
-        Self::from_lookup(move |key| layered(env::var(key).ok(), file_map.get(key).cloned()))
+    fn from_env() -> Result<Self, String> {
+        let file_map = if let Some(path) = config::config_file_path() {
+            config::load_file_map(&path)
+                .map_err(|err| format!("failed to read config {}: {err}", path.display()))?
+        } else {
+            HashMap::new()
+        };
+        Ok(Self::from_lookup(move |key| {
+            layered(env::var(key).ok(), file_map.get(key).cloned())
+        }))
     }
 
     /// Pure config parsing from a key→value lookup, so the parsing rules
@@ -1278,7 +1283,7 @@ fn build_personalization(lookup: &impl Fn(&str) -> Option<String>) -> Personaliz
             lookup,
             "COMPME_INSTRUCTIONS_DOMAINS",
             "COMPME_INSTRUCTIONS_DOMAIN_",
-            |domain| domain.to_ascii_lowercase(),
+            webconfig::normalize_domain,
         ),
         sender: SenderIdentity {
             name: lookup("COMPME_SENDER_NAME").unwrap_or_default(),
@@ -1435,7 +1440,10 @@ fn instruction_map_from_config(
     normalize_target: impl Fn(&str) -> String,
 ) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    let targets = comma_list(lookup(list_key));
+    let targets: Vec<String> = comma_list(lookup(list_key))
+        .into_iter()
+        .map(|target| normalize_target(&target))
+        .collect();
     let mut key_counts = HashMap::new();
     for target in &targets {
         let value_key = format!("{value_prefix}{}", config_target_key_suffix(target));
@@ -1453,7 +1461,7 @@ fn instruction_map_from_config(
         if value.is_empty() {
             continue;
         }
-        map.insert(normalize_target(&target), value.to_string());
+        map.insert(target, value.to_string());
     }
     map
 }
@@ -1566,7 +1574,8 @@ fn domain_from_url(url: &str) -> Option<String> {
         .split(':')
         .next()
         .unwrap_or("");
-    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+    let host = webconfig::normalize_domain(host);
+    (!host.is_empty()).then_some(host)
 }
 
 /// Consecutive browser-focus detection misses before the one-shot inert
@@ -3494,7 +3503,9 @@ fn build_prefs(lookup: &impl Fn(&str) -> Option<String>) -> Prefs {
         ..Default::default()
     };
     for domain in comma_list(lookup("COMPME_EXCLUDED_DOMAINS")) {
-        prefs.excluded_domains.insert(domain.to_ascii_lowercase());
+        prefs
+            .excluded_domains
+            .insert(webconfig::normalize_domain(&domain));
     }
     for app in comma_list(lookup("COMPME_ENABLED_APPS")) {
         prefs.per_app.entry(app).or_default().enabled = Some(true);
@@ -3956,7 +3967,7 @@ pub fn run() -> Result<(), String> {
 
     // Mutable: General-tab switches update globals live (autocorrect today;
     // enabled/trailing-space later) — field writes between heartbeats only.
-    let mut config = Config::from_env();
+    let mut config = Config::from_env()?;
     install_signal_handlers();
     let shell = crate::shell::make_shell();
 
@@ -6476,13 +6487,13 @@ mod tests {
     #[test]
     fn personalization_per_domain_steers_a_subdomain_through_the_assembled_profile() {
         // End-to-end app wiring of the round-1 subdomain matcher: a `google.com`
-        // rule from config must steer `www.google.com` (the host is lowercased and
-        // matched on a dot boundary), but never a look-alike `evilgoogle.com`.
-        // This pins the app-level lowercasing + subdomain seam, not just the
+        // root-dotted rule from config must steer `www.google.com` (both rule and
+        // host are canonicalized and matched on a dot boundary), but never a
+        // look-alike `evilgoogle.com`. This pins the app-level normalization seam, not just the
         // personalization crate's resolve_instructions.
         let profile = build_personalization(&lookup(&[
             ("COMPME_STRENGTH", "5"),
-            ("COMPME_INSTRUCTIONS_DOMAINS", "Google.com"),
+            ("COMPME_INSTRUCTIONS_DOMAINS", "Google.com."),
             (
                 "COMPME_INSTRUCTIONS_DOMAIN_GOOGLE_COM",
                 "Prefer search-friendly phrasing.",
@@ -6508,6 +6519,18 @@ mod tests {
             !on_lookalike.contains("Prefer search-friendly phrasing."),
             "evilgoogle.com must not match the google.com rule: {on_lookalike:?}"
         );
+    }
+
+    #[test]
+    fn personalization_rejects_duplicate_canonical_domain_targets() {
+        let profile = build_personalization(&lookup(&[
+            ("COMPME_INSTRUCTIONS_DOMAINS", "Bank.Example,bank.example."),
+            (
+                "COMPME_INSTRUCTIONS_DOMAIN_BANK_EXAMPLE",
+                "Must not resolve ambiguously.",
+            ),
+        ]));
+        assert!(profile.per_domain.is_empty());
     }
 
     #[test]
@@ -6631,7 +6654,7 @@ mod tests {
     #[test]
     fn prefs_builds_web_override_policy_from_config_lists() {
         let prefs = build_prefs(&lookup(&[
-            ("COMPME_EXCLUDED_DOMAINS", "Docs.Google.com, bank.example"),
+            ("COMPME_EXCLUDED_DOMAINS", "Docs.Google.com, bank.example."),
             (
                 "COMPME_ENABLED_APPS",
                 "com.example.enabled, com.example.conflict",
@@ -6673,7 +6696,7 @@ mod tests {
         let path = dir.join("config.env");
         persist_web_override_prefs(&path, &prefs);
 
-        let map = config::load_file_map(&path);
+        let map = config::load_file_map(&path).expect("reload persisted prefs");
         assert_eq!(
             map.get("COMPME_EXCLUDED_DOMAINS"),
             Some(&"docs.google.com".to_string())
@@ -6732,7 +6755,7 @@ mod tests {
         let path = dir.join("config.env");
         persist_web_override_prefs(&path, &prefs);
 
-        let map = config::load_file_map(&path);
+        let map = config::load_file_map(&path).expect("reload persisted prefs");
         // Each field lands in its own key for this one app; the disabled/enabled
         // split is pinned so a polarity flip is caught.
         assert_eq!(map.get("COMPME_DISABLED_APPS"), Some(&app.to_string()));
@@ -6788,7 +6811,7 @@ mod tests {
         let path = dir.join("config.env");
         persist_web_override_prefs(&path, &prefs);
 
-        let map = config::load_file_map(&path);
+        let map = config::load_file_map(&path).expect("reload persisted prefs");
         // The polarity-split comma lists are written verbatim.
         assert_eq!(
             map.get("COMPME_MIDLINE_ON_APPS"),
@@ -7227,6 +7250,17 @@ mod tests {
             domain_from_url("https://example.com"),
             Some("example.com".to_string())
         );
+        // Absolute DNS names may carry one terminal root-label dot. Domain
+        // rules use their ordinary spelling, so the extractor must normalize
+        // that equivalent host form before caching or matching exclusions.
+        assert_eq!(
+            domain_from_url("https://Bank.Example./account"),
+            Some("bank.example".to_string())
+        );
+        assert_eq!(
+            domain_from_url("https://login.bank.example./"),
+            Some("login.bank.example".to_string())
+        );
     }
 
     #[test]
@@ -7268,6 +7302,15 @@ mod tests {
             Some("com.apple.Safari"),
             "hello",
             None,
+            &prefs,
+            0
+        ));
+        let fqdn =
+            domain_from_url("https://login.blocked.example./").expect("valid absolute DNS host");
+        assert!(!suggestion_gates_pass(
+            Some("com.apple.Safari"),
+            "hello",
+            Some(&fqdn),
             &prefs,
             0
         ));
@@ -8904,7 +8947,7 @@ mod tests {
         // Any prefs persistence edge rewrites every per-app policy category.
         // The config-only thesaurus override must survive that rewrite too.
         persist_web_override_prefs(&path, &configured.prefs);
-        let map = config::load_file_map(&path);
+        let map = config::load_file_map(&path).expect("reload persisted prefs");
         let reloaded = Config::from_lookup(|key| {
             (key == "COMPME_THESAURUS")
                 .then(|| "0".to_string())

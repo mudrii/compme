@@ -120,6 +120,7 @@ impl SenderIdentity {
 pub struct PersonalizationProfile {
     pub global_instructions: String,
     pub per_app: HashMap<String, String>,
+    /// Canonical lowercase DNS names with any terminal root dot removed.
     pub per_domain: HashMap<String, String>,
     pub sender: SenderIdentity,
     pub strength: Strength,
@@ -161,10 +162,10 @@ impl PersonalizationProfile {
     /// so a user who configures both surfaces sees consistent scoping. The
     /// longest matching rule wins, making the choice deterministic.
     ///
-    /// `host` is folded to lowercase here so the lookup is self-contained — like
-    /// `prefs`, it does not depend on every caller pre-lowercasing. Keys are
-    /// expected to be lowercased at insertion (the run loop does this for
-    /// config-sourced domains).
+    /// `host` is canonicalized here so the lookup is self-contained — like
+    /// `prefs`, it does not depend on every caller pre-normalizing. Keys must be
+    /// canonicalized at insertion (the run loop does this for config-sourced
+    /// domains), preventing equivalent spellings from competing during lookup.
     ///
     /// The `max_by_key(rule.len())` tie-break over an unordered `HashMap` is
     /// deterministic because the matching rules can never collide on length: every
@@ -173,7 +174,7 @@ impl PersonalizationProfile {
     /// lengths. So the maximum is unique — no two equal-length rules can both
     /// match one host, and the HashMap iteration order is irrelevant.
     fn per_domain_instruction(&self, host: &str) -> Option<&String> {
-        let host = host.to_ascii_lowercase();
+        let host = webconfig::normalize_domain(host);
         self.per_domain
             .iter()
             .filter(|(rule, _)| host_matches_domain_rule(&host, rule))
@@ -512,6 +513,12 @@ mod tests {
         assert_eq!(
             p.resolve_instructions(None, Some("docs.google.com")),
             "Be terse."
+        );
+        p.per_domain
+            .insert("bank.example".into(), "Be cautious.".into());
+        assert_eq!(
+            p.resolve_instructions(None, Some("login.bank.example.")),
+            "Be cautious."
         );
         // Look-alike host must NOT match on a non-dot boundary.
         assert_eq!(p.resolve_instructions(None, Some("evilgoogle.com")), "");

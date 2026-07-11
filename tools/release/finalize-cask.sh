@@ -203,7 +203,7 @@ finalize_cask() {
   fi
 }
 
-fixture_git() {
+fixture_step() {
   local label="$1"
   shift
   if ! "$@"; then
@@ -224,11 +224,11 @@ make_fixture_repo() {
     initial_sha="0000000000000000000000000000000000000000000000000000000000000000"
   fi
   mkdir -p "$root/remote.git" "$work"
-  fixture_git "$fixture_label bare init" \
+  fixture_step "$fixture_label bare init" \
     git init -q --bare --initial-branch=main "$root/remote.git" || return 1
-  fixture_git "$fixture_label work init" \
+  fixture_step "$fixture_label work init" \
     git init -q --initial-branch=main "$work" || return 1
-  fixture_git "$fixture_label origin setup" \
+  fixture_step "$fixture_label origin setup" \
     git -C "$work" remote add origin "$root/remote.git" || return 1
   mkdir -p "$work/Casks" "$work/tools/release"
   cat >"$work/Casks/compme.rb" <<CASK
@@ -270,13 +270,13 @@ case "$behavior" in
 esac
 SH
   chmod +x "$work/tools/release/validate-version.sh" "$work/tools/release/update-cask.sh"
-  fixture_git "$fixture_label add" git -C "$work" add . || return 1
-  fixture_git "$fixture_label commit" \
+  fixture_step "$fixture_label add" git -C "$work" add . || return 1
+  fixture_step "$fixture_label commit" \
     git -C "$work" -c user.name=t -c user.email=t@example.test \
       -c commit.gpgsign=false commit -m initial >/dev/null || return 1
-  fixture_git "$fixture_label tag" \
+  fixture_step "$fixture_label tag" \
     git -C "$work" -c tag.gpgSign=false tag v9.8.7 || return 1
-  fixture_git "$fixture_label push" \
+  fixture_step "$fixture_label push" \
     git -C "$work" -c push.gpgSign=false push -q origin \
       refs/heads/main:refs/heads/main \
       refs/tags/v9.8.7:refs/tags/v9.8.7 || return 1
@@ -362,17 +362,17 @@ SH
 
   make_fixture_repo "$tmp/ref-refresh" noop
   ref_refresh_sha="$(git -C "$tmp/ref-refresh/work" rev-parse HEAD)"
-  fixture_git "ref-refresh poison commit" \
+  fixture_step "ref-refresh poison commit" \
     git -C "$tmp/ref-refresh/work" \
       -c user.name=t -c user.email=t@example.test -c commit.gpgsign=false \
       commit --allow-empty -m poison >/dev/null || return 1
   poison_sha="$(git -C "$tmp/ref-refresh/work" rev-parse HEAD)"
-  fixture_git "ref-refresh poison tag" \
+  fixture_step "ref-refresh poison tag" \
     git -C "$tmp/ref-refresh/work" -c tag.gpgSign=false \
       tag -f v9.8.7 "$poison_sha" >/dev/null || return 1
-  fixture_git "ref-refresh detach" \
+  fixture_step "ref-refresh detach" \
     detach_release_checkout "$tmp/ref-refresh/work" "$ref_refresh_sha" || return 1
-  fixture_git "ref-refresh tracking ref delete" \
+  fixture_step "ref-refresh tracking ref delete" \
     git -C "$tmp/ref-refresh/work" update-ref -d refs/remotes/origin/main || return 1
   if ! COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ref-refresh/work" \
     GITHUB_SHA="$ref_refresh_sha" \

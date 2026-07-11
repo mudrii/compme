@@ -61,6 +61,7 @@ pub enum AppPolicyField {
 pub struct Prefs {
     pub default_enabled: bool,
     pub excluded_apps: HashSet<String>,
+    /// Canonical lowercase DNS names with any terminal root dot removed.
     pub excluded_domains: HashSet<String>,
     pub per_app: HashMap<String, AppPolicy>,
     /// When set and in the future, suggestions are paused until this instant.
@@ -117,7 +118,7 @@ impl Prefs {
             // mixed-case host from any source still matches a stored rule (c136).
             // A rule covers its subdomains (dot-boundary suffix), so "google.com"
             // blocks www.google.com too (2026-06-14 live finding).
-            let host = domain.to_ascii_lowercase();
+            let host = webconfig::normalize_domain(domain);
             if self
                 .excluded_domains
                 .iter()
@@ -239,9 +240,10 @@ impl Prefs {
     /// not a true allow/deny precedence tree, so include must remove both exact
     /// and suffix-covering rules to avoid a successful-looking no-op.
     fn clear_domain_exclusions_covering(&mut self, domain: &str) {
-        let domain = domain.to_ascii_lowercase();
+        let domain = webconfig::normalize_domain(domain);
         self.excluded_domains.retain(|rule| {
-            !host_matches_domain_rule(&domain, rule) && !host_matches_domain_rule(rule, &domain)
+            let rule = webconfig::normalize_domain(rule);
+            !host_matches_domain_rule(&domain, &rule) && !host_matches_domain_rule(&rule, &domain)
         });
     }
 
@@ -302,7 +304,8 @@ impl Prefs {
                 // would NEVER match — permanently inert, and invisible to
                 // the miss notice since detection itself succeeds
                 // (audit-tests-c135).
-                self.excluded_domains.insert(domain.to_ascii_lowercase());
+                self.excluded_domains
+                    .insert(webconfig::normalize_domain(domain));
             }
             (Scope::Domain(domain), Enable | Include) => {
                 self.clear_domain_exclusions_covering(domain);
@@ -909,6 +912,17 @@ mod tests {
             !p.should_suggest(Some("com.apple.Safari"), Some("Bank.Example.COM"), 1000),
             "a mixed-case host must still match a lowercase exclusion rule"
         );
+    }
+
+    #[test]
+    fn excluded_domain_lookup_normalizes_dns_root_dots_on_both_sides() {
+        let mut p = Prefs::default();
+        p.apply_override(&webconfig::OverrideCommand {
+            scope: webconfig::Scope::Domain("Bank.Example.".into()),
+            action: webconfig::OverrideAction::Exclude,
+        });
+        assert!(p.excluded_domains.contains("bank.example"));
+        assert!(!p.should_suggest(Some("com.apple.Safari"), Some("login.bank.example."), 0));
     }
 
     #[test]
