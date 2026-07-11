@@ -627,6 +627,11 @@ def require_active_fragment!(lines, fragment)
   abort("missing release gate: cask finalizer helper contract #{fragment}") unless found
 end
 
+def require_active_line!(lines, expected)
+  abort("missing release gate: cask finalizer helper contract #{expected}") unless
+    lines.include?(expected)
+end
+
 freeze_lines = active_shell_lines(function_body(source, "freeze_release_helpers"))
 published_body = function_body(source, "verify_published_artifact")
 published_lines = active_shell_lines(published_body)
@@ -676,8 +681,6 @@ abort("missing release gate: cask finalizer strictly parses published checksum")
   'if ! git fetch --no-tags origin',
   '"+refs/heads/$default_branch:$remote_branch_ref"',
   '"+refs/tags/$tag:$verified_tag_ref"; then',
-  'failed to fetch release tag $tag and origin/$default_branch',
-  'failed to resolve fetched release tag $tag',
   'freeze_release_helpers "$frozen_root" "$tag_sha"',
   'verify_published_artifact \\',
   'frozen_validator="$frozen_root/tools/release/validate-version.sh"',
@@ -688,6 +691,10 @@ abort("missing release gate: cask finalizer strictly parses published checksum")
   '"$frozen_updater" "$tag"',
   'validate_finalized_cask "$cask_path" "$version" "$artifact_path"',
 ].each { |fragment| require_active_fragment!(finalize_lines, fragment) }
+[
+  'echo "failed to fetch release tag $tag and origin/$default_branch" >&2',
+  'echo "failed to resolve fetched release tag $tag" >&2',
+].each { |line| require_active_line!(finalize_lines, line) }
 
 fetch_index = finalize_lines.index { |line| line.start_with?('if ! git fetch --no-tags origin') }
 tag_sha_index = finalize_lines.index { |line| line.include?('tag_sha="$(git rev-parse "$verified_tag_ref^{commit}")"') }
@@ -2584,6 +2591,14 @@ YAML
   fi
 
   finalizer_fixture="$tmp_dir/finalize-cask.sh"
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(    echo "failed to fetch release tag $tag and origin/$default_branch" >&2), %q(    # echo "failed to fetch release tag $tag and origin/$default_branch" >&2))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: commented cask finalizer fetch diagnostic was accepted" >&2
+    cleanup
+    return 1
+  fi
 
   cp "$finalize_cask_script" "$finalizer_fixture"
   ruby -0pi -e 'sub(%q(git fetch --no-tags origin), %q(git fetch origin))' "$finalizer_fixture"

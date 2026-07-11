@@ -205,12 +205,12 @@ make_fixture_repo() {
   if [ "$behavior" = "modify" ]; then
     initial_sha="0000000000000000000000000000000000000000000000000000000000000000"
   fi
-  mkdir -p "$root/remote.git"
-  git init --bare "$root/remote.git" >/dev/null
-  git clone "$root/remote.git" "$root/work" >/dev/null 2>&1
+  mkdir -p "$root/remote.git" "$root/work"
+  git init -q --bare --initial-branch=main "$root/remote.git"
+  git init -q --initial-branch=main "$root/work"
+  git -C "$root/work" remote add origin "$root/remote.git"
   (
     cd "$root/work"
-    git checkout -b main >/dev/null 2>&1
     mkdir -p Casks tools/release
     cat >Casks/compme.rb <<CASK
 cask "compme" do
@@ -252,10 +252,16 @@ esac
 SH
     chmod +x tools/release/validate-version.sh tools/release/update-cask.sh
     git add .
-    git -c user.name=t -c user.email=t@example.test commit -m initial >/dev/null
-    git tag v9.8.7
-    git push origin main refs/tags/v9.8.7 >/dev/null 2>&1
+    git -c user.name=t -c user.email=t@example.test -c commit.gpgsign=false \
+      commit -m initial >/dev/null
+    git -c tag.gpgSign=false tag v9.8.7
+    git -c push.gpgSign=false push -q origin \
+      refs/heads/main:refs/heads/main \
+      refs/tags/v9.8.7:refs/tags/v9.8.7
   )
+  fixture_sha="$(git -C "$root/work" rev-parse HEAD)"
+  test "$(git --git-dir="$root/remote.git" rev-parse refs/heads/main)" = "$fixture_sha"
+  test "$(git --git-dir="$root/remote.git" rev-parse refs/tags/v9.8.7)" = "$fixture_sha"
 }
 
 detach_release_checkout() {
