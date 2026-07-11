@@ -671,6 +671,13 @@ abort("missing release gate: cask finalizer strictly parses published checksum")
   'depends_on arch: :arm64',
 ].each { |fragment| require_active_fragment!(validate_lines, fragment) }
 [
+  'remote_branch_ref="refs/remotes/origin/$default_branch"',
+  'verified_tag_ref="refs/compme-release/tags/$tag"',
+  'if ! git fetch --no-tags origin',
+  '"+refs/heads/$default_branch:$remote_branch_ref"',
+  '"+refs/tags/$tag:$verified_tag_ref"; then',
+  'failed to fetch release tag $tag and origin/$default_branch',
+  'failed to resolve fetched release tag $tag',
   'freeze_release_helpers "$frozen_root" "$tag_sha"',
   'verify_published_artifact \\',
   'frozen_validator="$frozen_root/tools/release/validate-version.sh"',
@@ -682,10 +689,10 @@ abort("missing release gate: cask finalizer strictly parses published checksum")
   'validate_finalized_cask "$cask_path" "$version" "$artifact_path"',
 ].each { |fragment| require_active_fragment!(finalize_lines, fragment) }
 
-fetch_index = finalize_lines.index { |line| line.include?('git fetch origin "$default_branch"') }
-tag_sha_index = finalize_lines.index { |line| line.include?('tag_sha="$(git rev-parse "refs/tags/$tag^{commit}")"') }
+fetch_index = finalize_lines.index { |line| line.start_with?('if ! git fetch --no-tags origin') }
+tag_sha_index = finalize_lines.index { |line| line.include?('tag_sha="$(git rev-parse "$verified_tag_ref^{commit}")"') }
 tag_sha_verification_index = finalize_lines.index { |line| line.include?('if [ "$tag_sha" != "$GITHUB_SHA" ]; then') }
-ancestry_index = finalize_lines.index { |line| line.include?('git merge-base --is-ancestor "$GITHUB_SHA" "origin/$default_branch"') }
+ancestry_index = finalize_lines.index { |line| line.include?('git merge-base --is-ancestor "$GITHUB_SHA" "$remote_branch_ref"') }
 freeze_index = finalize_lines.index { |line| line.include?('freeze_release_helpers "$frozen_root" "$tag_sha"') }
 published_index = finalize_lines.index { |line| line.include?('verify_published_artifact \\') }
 checkout_index = finalize_lines.index { |line| line.include?('git checkout "$default_branch"') }
@@ -2579,6 +2586,30 @@ YAML
   finalizer_fixture="$tmp_dir/finalize-cask.sh"
 
   cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(git fetch --no-tags origin), %q(git fetch origin))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cask finalizer with implicit tag fetching was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q("+refs/heads/$default_branch:$remote_branch_ref"), %q("$default_branch"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: FETCH_HEAD-only cask finalizer branch fetch was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q("+refs/tags/$tag:$verified_tag_ref"), %q("refs/tags/$tag:refs/tags/$tag"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cask finalizer local-tag overwrite was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
   ruby -0pi -e 'sub(/^  if ! release_ineligible=.*$/, "  if ! release_ineligible=false; then")' "$finalizer_fixture"
   if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: cask finalizer without stable published-state check was accepted" >&2
@@ -3537,7 +3568,10 @@ require_line "$gate_script" 'COMPME_MODEL_GATE_CURL_BODY="wrong-model"' "model g
 require_line "$gate_script" 'latency=1 gpu=0 ctx_tokens=256 spike_model= args=test --locked -p model_client --test latency' "model gate root env self-test"
 require_line "$gate_script" 'tools/spike env=1 ctx= latency=1 gpu= ctx_tokens= spike_model=\$model_path args=test --locked --test model_integration' "model gate spike env self-test"
 reject_line "$repo_root/crates/model_client/tests/latency.rs" 'Metal GPU' "root model-client ignored tests stale GPU wording"
-require_line "$finalize_cask_script" 'git merge-base --is-ancestor "\$GITHUB_SHA" "origin/\$default_branch"' "cask finalizer ancestry check"
+require_line "$finalize_cask_script" 'git fetch --no-tags origin' "cask finalizer disables implicit tag fetches"
+require_line "$finalize_cask_script" '\+refs/heads/\$default_branch:\$remote_branch_ref' "cask finalizer refreshes the remote branch explicitly"
+require_line "$finalize_cask_script" '\+refs/tags/\$tag:\$verified_tag_ref' "cask finalizer fetches the release tag into a private ref"
+require_line "$finalize_cask_script" 'git merge-base --is-ancestor "\$GITHUB_SHA" "\$remote_branch_ref"' "cask finalizer ancestry check"
 require_line "$finalize_cask_script" 'tag/version mismatch' "cask finalizer tag/version guard"
 require_line "$finalize_cask_script" 'refusing to publish a stale or out-of-order cask update' "cask finalizer stale version refusal"
 require_line "$finalize_cask_script" 'git push origin "HEAD:\$default_branch"' "cask finalizer push"

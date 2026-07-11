@@ -134,13 +134,23 @@ finalize_cask() {
   fi
 
   cd "$repo_root"
-  git fetch origin "$default_branch" "refs/tags/$tag:refs/tags/$tag"
-  tag_sha="$(git rev-parse "refs/tags/$tag^{commit}")"
+  remote_branch_ref="refs/remotes/origin/$default_branch"
+  verified_tag_ref="refs/compme-release/tags/$tag"
+  if ! git fetch --no-tags origin \
+    "+refs/heads/$default_branch:$remote_branch_ref" \
+    "+refs/tags/$tag:$verified_tag_ref"; then
+    echo "failed to fetch release tag $tag and origin/$default_branch" >&2
+    return 1
+  fi
+  if ! tag_sha="$(git rev-parse "$verified_tag_ref^{commit}")"; then
+    echo "failed to resolve fetched release tag $tag" >&2
+    return 1
+  fi
   if [ "$tag_sha" != "$GITHUB_SHA" ]; then
     echo "GITHUB_SHA $GITHUB_SHA does not match tag $tag commit $tag_sha" >&2
     return 1
   fi
-  if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$default_branch"; then
+  if ! git merge-base --is-ancestor "$GITHUB_SHA" "$remote_branch_ref"; then
     echo "release tag commit $GITHUB_SHA is not on origin/$default_branch" >&2
     return 1
   fi
@@ -307,6 +317,25 @@ SH
   grep -q "already matches v9.8.7" "$tmp/noop.out"
   grep -Fxq "$artifact" "$tmp/artifacts.log"
 
+  make_fixture_repo "$tmp/ref-refresh" noop
+  ref_refresh_sha="$(git -C "$tmp/ref-refresh/work" rev-parse HEAD)"
+  git -C "$tmp/ref-refresh/work" \
+    -c user.name=t -c user.email=t@example.test \
+    commit --allow-empty -m poison >/dev/null
+  poison_sha="$(git -C "$tmp/ref-refresh/work" rev-parse HEAD)"
+  git -C "$tmp/ref-refresh/work" tag -f v9.8.7 "$poison_sha" >/dev/null
+  detach_release_checkout "$tmp/ref-refresh/work" "$ref_refresh_sha"
+  git -C "$tmp/ref-refresh/work" update-ref -d refs/remotes/origin/main
+  COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ref-refresh/work" \
+    GITHUB_SHA="$ref_refresh_sha" \
+    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null
+  test "$(git -C "$tmp/ref-refresh/work" rev-parse refs/remotes/origin/main)" = \
+    "$ref_refresh_sha"
+  test "$(git -C "$tmp/ref-refresh/work" rev-parse refs/compme-release/tags/v9.8.7)" = \
+    "$ref_refresh_sha"
+  test "$(git -C "$tmp/ref-refresh/work" rev-parse refs/tags/v9.8.7)" = \
+    "$poison_sha"
+
   tampered_dir="$tmp/tampered-artifact"
   mkdir -p "$tampered_dir"
   tampered_artifact="$tampered_dir/compme-9.8.7-macos.zip"
@@ -320,8 +349,12 @@ SH
     echo "finalize-cask self-test failed: artifact differing from published checksum was accepted" >&2
     return 1
   fi
-  grep -Fq "local artifact checksum does not match published checksum" \
-    "$tampered_dir/rejected.err"
+  if ! grep -Fq "local artifact checksum does not match published checksum" \
+    "$tampered_dir/rejected.err"; then
+    echo "finalize-cask self-test failed: tampered-artifact diagnostic mismatch" >&2
+    sed 's/^/  captured: /' "$tampered_dir/rejected.err" >&2
+    return 1
+  fi
 
   export COMPME_FINALIZE_CASK_TEST_GH_FAIL=1
   if verify_published_artifact \
