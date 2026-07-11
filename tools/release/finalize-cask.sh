@@ -197,22 +197,35 @@ finalize_cask() {
   fi
 }
 
+fixture_git() {
+  local label="$1"
+  shift
+  if ! "$@"; then
+    echo "finalize-cask self-test fixture failed: $label" >&2
+    return 1
+  fi
+}
+
 make_fixture_repo() {
-  root="$1"
-  behavior="$2"
+  local root="$1"
+  local behavior="$2"
+  local work="$root/work"
+  local fixture_label artifact_sha initial_sha fixture_sha remote_branch_sha remote_tag_sha
+  fixture_label="$(basename "$root")"
   artifact_sha="$(shasum -a 256 "$(dirname "$root")/compme-9.8.7-macos.zip" | awk '{print $1}')"
   initial_sha="$artifact_sha"
   if [ "$behavior" = "modify" ]; then
     initial_sha="0000000000000000000000000000000000000000000000000000000000000000"
   fi
-  mkdir -p "$root/remote.git" "$root/work"
-  git init -q --bare --initial-branch=main "$root/remote.git"
-  git init -q --initial-branch=main "$root/work"
-  git -C "$root/work" remote add origin "$root/remote.git"
-  (
-    cd "$root/work"
-    mkdir -p Casks tools/release
-    cat >Casks/compme.rb <<CASK
+  mkdir -p "$root/remote.git" "$work"
+  fixture_git "$fixture_label bare init" \
+    git init -q --bare --initial-branch=main "$root/remote.git" || return 1
+  fixture_git "$fixture_label work init" \
+    git init -q --initial-branch=main "$work" || return 1
+  fixture_git "$fixture_label origin setup" \
+    git -C "$work" remote add origin "$root/remote.git" || return 1
+  mkdir -p "$work/Casks" "$work/tools/release"
+  cat >"$work/Casks/compme.rb" <<CASK
 cask "compme" do
   version "9.8.7"
   sha256 "$initial_sha"
@@ -221,7 +234,7 @@ cask "compme" do
   depends_on arch: :arm64
 end
 CASK
-    cat >tools/release/validate-version.sh <<'SH'
+  cat >"$work/tools/release/validate-version.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "tag-validator" >>"${COMPME_FINALIZE_CASK_HELPER_LOG:-/dev/null}"
@@ -230,7 +243,7 @@ if [ "$#" -ne 1 ] || [ "$1" != "9.8.7" ]; then
   exit 1
 fi
 SH
-    cat >tools/release/update-cask.sh <<SH
+  cat >"$work/tools/release/update-cask.sh" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "tag-updater" >>"\${COMPME_FINALIZE_CASK_HELPER_LOG:-/dev/null}"
@@ -250,18 +263,24 @@ case "$behavior" in
   fail) exit 42 ;;
 esac
 SH
-    chmod +x tools/release/validate-version.sh tools/release/update-cask.sh
-    git add .
-    git -c user.name=t -c user.email=t@example.test -c commit.gpgsign=false \
-      commit -m initial >/dev/null
-    git -c tag.gpgSign=false tag v9.8.7
-    git -c push.gpgSign=false push -q origin \
+  chmod +x "$work/tools/release/validate-version.sh" "$work/tools/release/update-cask.sh"
+  fixture_git "$fixture_label add" git -C "$work" add . || return 1
+  fixture_git "$fixture_label commit" \
+    git -C "$work" -c user.name=t -c user.email=t@example.test \
+      -c commit.gpgsign=false commit -m initial >/dev/null || return 1
+  fixture_git "$fixture_label tag" \
+    git -C "$work" -c tag.gpgSign=false tag v9.8.7 || return 1
+  fixture_git "$fixture_label push" \
+    git -C "$work" -c push.gpgSign=false push -q origin \
       refs/heads/main:refs/heads/main \
-      refs/tags/v9.8.7:refs/tags/v9.8.7
-  )
-  fixture_sha="$(git -C "$root/work" rev-parse HEAD)"
-  test "$(git --git-dir="$root/remote.git" rev-parse refs/heads/main)" = "$fixture_sha"
-  test "$(git --git-dir="$root/remote.git" rev-parse refs/tags/v9.8.7)" = "$fixture_sha"
+      refs/tags/v9.8.7:refs/tags/v9.8.7 || return 1
+  fixture_sha="$(git -C "$work" rev-parse HEAD)"
+  remote_branch_sha="$(git --git-dir="$root/remote.git" rev-parse refs/heads/main)"
+  remote_tag_sha="$(git --git-dir="$root/remote.git" rev-parse refs/tags/v9.8.7)"
+  if [ "$remote_branch_sha" != "$fixture_sha" ] || [ "$remote_tag_sha" != "$fixture_sha" ]; then
+    echo "finalize-cask self-test fixture failed: $fixture_label remote refs mismatch" >&2
+    return 1
+  fi
 }
 
 detach_release_checkout() {
