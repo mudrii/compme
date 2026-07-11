@@ -2087,6 +2087,13 @@ struct AcceptSideEffects<'a> {
     usage: &'a mut stats::Stats,
 }
 
+fn accept_mutation_committed<T>(result: &Result<T, engine::AcceptError>) -> bool {
+    match result {
+        Ok(_) => true,
+        Err(err) => err.committed,
+    }
+}
+
 fn apply_accept_side_effects(accepted: bool, side_effects: AcceptSideEffects<'_>) {
     if !accepted {
         return;
@@ -2760,21 +2767,10 @@ fn persist_lifetime_stats(
 ) -> std::io::Result<()> {
     let Some(path) = path else { return Ok(()) };
     let merged = base.merged(session.counts, session.words);
-    let tmp = path.with_extension("env.tmp");
-    if let Some(parent) = path.parent() {
-        config::create_owner_only_dir_if_missing(parent)?;
-    }
-    {
-        use std::io::Write as _;
-        let mut file = config::open_owner_only_file(&tmp, true)?;
-        file.write_all(stats::render_stats_file(&merged).as_bytes())?;
-        // fsync before the rename: the periodic flush writes every ≤5 dirty
-        // minutes (vs once per run pre-c128), so the power-loss window where
-        // an unsynced rename persists a truncated file is no longer
-        // negligible (review-c128).
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)
+    // fsync before the rename: the periodic flush writes every ≤5 dirty
+    // minutes (vs once per run pre-c128), so the power-loss window where
+    // an unsynced rename persists a truncated file is no longer negligible.
+    config::atomic_write_owner_only(path, stats::render_stats_file(&merged).as_bytes(), true)
 }
 
 /// The Apps tab's rows: top apps by recorded-input count (capped at the
@@ -3846,7 +3842,7 @@ fn validate_gguf_model(path: &std::path::Path) -> Result<(), String> {
 /// The app-support models directory (sibling of the config file): where
 /// `Download Model` writes GGUFs. `None` when no config home resolves.
 fn app_support_models_dir() -> Option<PathBuf> {
-    config::config_file_path().map(|path| path.with_file_name("models"))
+    config::models_dir_path()
 }
 
 /// Create the models directory, then reveal that exact filesystem path.
@@ -3861,20 +3857,20 @@ fn show_models_folder_with(
     reveal_dir(path)
 }
 
-/// The most-recently-modified non-empty `*.gguf` in `dir`, if any. Downloads
+/// The most-recently-modified valid `*.gguf` in `dir`, if any. Downloads
 /// land in this dir, but the loader otherwise only consults COMPME_MODEL_PATH
 /// (env/config file) and the DEFAULT_MODEL fallback — a repo-relative dev path
 /// absent from a shipped `.app`. So a model the user already downloaded (this
 /// build or an older one) would sit unused and the Setup row stay ✗, with a
 /// re-download click reporting only "already present". Newest wins so the
-/// latest download is adopted; empty/partial stubs are skipped.
+/// latest download is adopted; unreadable, empty, and bad-magic files are skipped.
 // ponytail: newest-by-mtime, not the picker's selection — the Download button
 // persists the exact selected model; this is only the zero-click fallback.
 fn discover_downloaded_model(dir: &std::path::Path) -> Option<PathBuf> {
     let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("gguf") {
+        if validate_gguf_model(&path).is_err() {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -3890,6 +3886,17 @@ fn discover_downloaded_model(dir: &std::path::Path) -> Option<PathBuf> {
         }
     }
     newest.map(|(_, path)| path)
+}
+
+fn downloaded_model_to_adopt(
+    stub_completion: Option<&str>,
+    configured_path: &std::path::Path,
+    models_dir: Option<&std::path::Path>,
+) -> Option<PathBuf> {
+    if stub_completion.is_some() || validate_gguf_model(configured_path).is_ok() {
+        return None;
+    }
+    models_dir.and_then(discover_downloaded_model)
 }
 
 fn model_download_dest_present(
@@ -4062,23 +4069,22 @@ pub fn run() -> Result<(), String> {
     // stale/deleted path). Downloads land in the app-support models dir but
     // the loader only reads env/file/default, so a model the user already
     // downloaded would never load and the Setup row would stay ✗ forever. An
-    // explicit, existing COMPME_MODEL_PATH always wins (exists() short-circuits
-    // the scan). Persist the adoption so later launches skip the scan.
-    if config.stub_completion.is_none() && !config.model_path.exists() {
-        if let Some(found) = app_support_models_dir()
-            .as_deref()
-            .and_then(discover_downloaded_model)
-        {
-            eprintln!("compme: adopting downloaded model {}", found.display());
-            if let Some(cfg) = config::config_file_path() {
-                if let Err(err) =
-                    config::persist_setting(&cfg, "COMPME_MODEL_PATH", &found.to_string_lossy())
-                {
-                    eprintln!("compme: failed to persist adopted COMPME_MODEL_PATH: {err}");
-                }
+    // explicit COMPME_MODEL_PATH wins only when it is a readable GGUF with the
+    // expected magic. Persist fallback adoption so later launches skip the scan.
+    if let Some(found) = downloaded_model_to_adopt(
+        config.stub_completion.as_deref(),
+        &config.model_path,
+        app_support_models_dir().as_deref(),
+    ) {
+        eprintln!("compme: adopting downloaded model {}", found.display());
+        if let Some(cfg) = config::config_file_path() {
+            if let Err(err) =
+                config::persist_setting(&cfg, "COMPME_MODEL_PATH", &found.to_string_lossy())
+            {
+                eprintln!("compme: failed to persist adopted COMPME_MODEL_PATH: {err}");
             }
-            config.model_path = found;
         }
+        config.model_path = found;
     }
 
     let model = match load_model(resolve_source(
@@ -4585,34 +4591,34 @@ pub fn run() -> Result<(), String> {
                     // the two never read divergent engine snapshots.
                     let preview = engine.preview_accept_insert(action);
                     let correction_preview = engine.preview_accept_correction();
-                    match engine.on_accept(action) {
-                        Ok(requests) => {
-                            // Absorb the accept's own insertion echo (Word OR
-                            // Full) into the diff baseline so the AX readback of
-                            // the inserted text registers as a caret move, not new
-                            // typing — otherwise the echo would arm a spurious
-                            // post-accept completion request (engine-macos §4 step
-                            // 9: the accept's own insert is not a new edit).
-                            apply_accept_side_effects(
-                                true,
-                                AcceptSideEffects {
-                                    action,
-                                    preview: preview.as_ref(),
-                                    correction_preview: correction_preview.as_ref(),
-                                    wall_ms,
-                                    context_max_chars: config.context_max_chars,
-                                    previous_inputs: &previous_inputs,
-                                    memory: memory.as_ref(),
-                                    prefs: &prefs,
-                                    tracker: &mut tracker,
-                                    usage: &mut usage,
-                                },
-                            );
-                            offer_all(&mut latest, requests);
-                        }
+                    let accept_result = engine.on_accept(action);
+                    // The platform field mutation precedes overlay/tap teardown.
+                    // A teardown error is still surfaced, but an already-committed
+                    // mutation must absorb its AX echo and update acceptance sinks
+                    // exactly once. A pre-insert adapter error remains unaccepted.
+                    let committed = accept_mutation_committed(&accept_result);
+                    apply_accept_side_effects(
+                        committed,
+                        AcceptSideEffects {
+                            action,
+                            preview: preview.as_ref(),
+                            correction_preview: correction_preview.as_ref(),
+                            wall_ms,
+                            context_max_chars: config.context_max_chars,
+                            previous_inputs: &previous_inputs,
+                            memory: memory.as_ref(),
+                            prefs: &prefs,
+                            tracker: &mut tracker,
+                            usage: &mut usage,
+                        },
+                    );
+                    match accept_result {
+                        Ok(requests) => offer_all(&mut latest, requests),
                         Err(err) => {
-                            // no side effects on failed accept (see apply_accept_side_effects)
-                            eprintln!("compme: on_accept error: {err:?}");
+                            eprintln!(
+                                "compme: on_accept error after committed={}: {:?}",
+                                err.committed, err.error
+                            );
                         }
                     }
                 }
@@ -5302,7 +5308,7 @@ pub fn run() -> Result<(), String> {
             .swap(false, Ordering::Relaxed)
             && download_idle(model_download_status.as_deref())
         {
-            if let Some(home) = std::env::var_os("HOME") {
+            if let Some(models_dir) = app_support_models_dir() {
                 // Selected-or-recommended, RAM hard block, and license
                 // click-through live in a pure decision helper so this edge is
                 // covered as a single app-level policy before download IO.
@@ -5365,9 +5371,7 @@ pub fn run() -> Result<(), String> {
                             accepted.license_name, accepted.model
                         );
                     }
-                    let dest = std::path::PathBuf::from(home)
-                        .join("Library/Application Support/compme/models")
-                        .join(format!("{}.gguf", entry.name));
+                    let dest = models_dir.join(format!("{}.gguf", entry.name));
                     // Skip the fetch when the model is already on disk — a
                     // repeat "Download" click on a present model would otherwise
                     // re-fetch and clobber a good file. An interrupted 0-byte
@@ -5430,10 +5434,11 @@ pub fn run() -> Result<(), String> {
                     }
                 }
             } else {
-                // The click was already consumed by the swap above; without HOME
-                // there is no app-support dir to download into, so log the no-op
-                // rather than dropping the press silently.
-                eprintln!("compme: download-model click ignored \u{2014} HOME is not set");
+                // The click was already consumed by the swap above; without a
+                // resolvable config home there is no app-support model directory.
+                eprintln!(
+                    "compme: download-model click ignored \u{2014} config home is unavailable"
+                );
             }
         }
         // Download progress/terminal-state logging (one line per transition).
@@ -7004,7 +7009,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn lifetime_flush_preserves_custom_parent_but_hardens_existing_temp_and_final() {
+    fn lifetime_flush_preserves_custom_parent_and_ignores_legacy_temp_symlink() {
+        use std::os::unix::fs::symlink;
         use std::os::unix::fs::PermissionsExt;
 
         let dir = flush_temp_path("custom-perms");
@@ -7013,8 +7019,9 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = dir.join("stats.env");
         let tmp = path.with_extension("env.tmp");
-        std::fs::write(&tmp, b"stale").unwrap();
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"PRECIOUS").unwrap();
+        symlink(&victim, &tmp).unwrap();
 
         persist_lifetime_stats(
             Some(&path),
@@ -7026,9 +7033,10 @@ mod tests {
         let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o755, "custom parent mode is preserved");
         assert_eq!(mode(&path), 0o600, "renamed temp and final are owner-only");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"PRECIOUS");
         assert!(
-            !tmp.exists(),
-            "temp is renamed away after a successful flush"
+            tmp.is_symlink(),
+            "legacy fixed temp is never opened or replaced"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -9045,7 +9053,25 @@ mod tests {
     }
 
     #[test]
-    fn successful_accept_records_context_memory_and_accept_stats() {
+    fn accept_commit_status_distinguishes_cleanup_from_insert_failure() {
+        let requests: Vec<CompletionRequest> = Vec::new();
+        assert!(accept_mutation_committed(&Ok(requests)));
+        assert!(accept_mutation_committed::<Vec<CompletionRequest>>(&Err(
+            engine::AcceptError {
+                error: PlatformError::Timeout,
+                committed: true,
+            }
+        )));
+        assert!(!accept_mutation_committed::<Vec<CompletionRequest>>(&Err(
+            engine::AcceptError {
+                error: PlatformError::StaleField,
+                committed: false,
+            }
+        )));
+    }
+
+    #[test]
+    fn committed_cleanup_failure_records_context_memory_and_accept_stats_once() {
         let previous = PreviousInputs::default();
         let store = accepted_store();
         let mut tracker = FieldTracker::new();
@@ -9057,8 +9083,13 @@ mod tests {
             0usize,
         );
 
+        let cleanup_failure: Result<Vec<CompletionRequest>, engine::AcceptError> =
+            Err(engine::AcceptError {
+                error: PlatformError::Timeout,
+                committed: true,
+            });
         apply_accept_side_effects(
-            true,
+            accept_mutation_committed(&cleanup_failure),
             AcceptSideEffects {
                 action: AcceptAction::Full,
                 preview: Some(&preview),
@@ -14283,7 +14314,7 @@ mod tests {
     }
 
     #[test]
-    fn discover_downloaded_model_picks_newest_nonempty_gguf() {
+    fn discover_downloaded_model_picks_newest_valid_gguf() {
         use std::time::{Duration, SystemTime};
         let dir = std::env::temp_dir().join(format!("cm-discover-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -14292,20 +14323,21 @@ mod tests {
         // Empty dir → nothing to adopt.
         assert_eq!(discover_downloaded_model(&dir), None);
 
-        // A non-gguf file and an empty gguf stub are both ignored.
+        // A non-gguf file, an empty stub, and bad GGUF magic are ignored.
         std::fs::write(dir.join("notes.txt"), b"x").unwrap();
         std::fs::write(dir.join("partial.gguf"), b"").unwrap();
+        std::fs::write(dir.join("corrupt.gguf"), b"NOPE").unwrap();
         assert_eq!(
             discover_downloaded_model(&dir),
             None,
-            "non-gguf and empty stubs must be skipped"
+            "non-gguf, empty, and malformed candidates must be skipped"
         );
 
-        // Two real models: the one with the newer mtime wins, regardless of name.
+        // Two valid models: the one with the newer mtime wins, regardless of name.
         let older = dir.join("qwen2.5-0.5b-q4_k_m.gguf");
         let newer = dir.join("gemma-2-2b-q4_k_m.gguf");
-        std::fs::write(&older, b"aaaa").unwrap();
-        std::fs::write(&newer, b"bbbb").unwrap();
+        std::fs::write(&older, b"GGUF-old").unwrap();
+        std::fs::write(&newer, b"GGUF-new").unwrap();
         let base = SystemTime::now();
         set_mtime(&older, base - Duration::from_secs(60));
         set_mtime(&newer, base);
@@ -14320,6 +14352,62 @@ mod tests {
         assert_eq!(
             discover_downloaded_model(&dir).as_deref(),
             Some(older.as_path())
+        );
+
+        // A newer malformed file must never poison automatic adoption.
+        let corrupt = dir.join("newest-corrupt.gguf");
+        std::fs::write(&corrupt, b"NOPE-newest").unwrap();
+        set_mtime(&corrupt, base + Duration::from_secs(120));
+        assert_eq!(
+            discover_downloaded_model(&dir).as_deref(),
+            Some(older.as_path()),
+            "newest malformed candidate must be skipped in favor of a valid model"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn downloaded_model_adoption_uses_configured_file_validity() {
+        let dir = std::env::temp_dir().join(format!("cm-adopt-validity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let models = dir.join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        let downloaded = models.join("downloaded.gguf");
+        std::fs::write(&downloaded, b"GGUF-valid").unwrap();
+
+        let configured = dir.join("configured.gguf");
+        std::fs::write(&configured, b"GGUF-valid").unwrap();
+        assert_eq!(
+            downloaded_model_to_adopt(None, &configured, Some(&models)),
+            None,
+            "a valid configured model always wins"
+        );
+
+        for invalid in [
+            dir.join("missing.gguf"),
+            dir.join("empty.gguf"),
+            dir.join("bad-header.gguf"),
+            dir.join("directory.gguf"),
+        ] {
+            if invalid.file_name().unwrap() == "empty.gguf" {
+                std::fs::write(&invalid, b"").unwrap();
+            } else if invalid.file_name().unwrap() == "bad-header.gguf" {
+                std::fs::write(&invalid, b"NOPE").unwrap();
+            } else if invalid.file_name().unwrap() == "directory.gguf" {
+                std::fs::create_dir(&invalid).unwrap();
+            }
+            assert_eq!(
+                downloaded_model_to_adopt(None, &invalid, Some(&models)).as_deref(),
+                Some(downloaded.as_path()),
+                "invalid configured path {} must fall back",
+                invalid.display()
+            );
+        }
+        assert_eq!(
+            downloaded_model_to_adopt(Some("stub"), &dir.join("missing.gguf"), Some(&models)),
+            None,
+            "stub mode never scans downloaded models"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

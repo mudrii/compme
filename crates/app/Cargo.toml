@@ -28,6 +28,7 @@ grammar = { path = "../grammar" }
 localize = { path = "../localize" }
 thesaurus = { path = "../thesaurus" }
 zeroize = "1"
+getrandom = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 platform_macos = { path = "../platform_macos" }

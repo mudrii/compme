@@ -61,6 +61,33 @@ pub enum RequestKind {
     },
 }
 
+/// An accept dispatch failed, with an explicit record of whether the platform
+/// field mutation already committed before the failure. A post-insert overlay
+/// or accept-tap teardown error must remain visible to the host, but it must not
+/// make the host treat the inserted text as unaccepted typing.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AcceptError {
+    pub error: platform::PlatformError,
+    pub committed: bool,
+}
+
+impl std::fmt::Display for AcceptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for AcceptError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+struct DispatchError {
+    error: platform::PlatformError,
+    committed: bool,
+}
+
 /// Impure-but-deterministic wiring layer that connects the pure
 /// [`SuggestionMachine`] to a [`PlatformAdapter`] and an [`OverlayPresenter`].
 ///
@@ -347,14 +374,18 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
     pub fn on_accept(
         &mut self,
         action: AcceptAction,
-    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+    ) -> Result<Vec<CompletionRequest>, AcceptError> {
         let event = match action {
             AcceptAction::Full => Event::AcceptFull,
             AcceptAction::Word => Event::AcceptWord,
             AcceptAction::Correction => Event::AcceptCorrection,
         };
         let commands = self.machine.on_event(event);
-        self.dispatch(commands)
+        self.dispatch_with_commit(commands)
+            .map_err(|err| AcceptError {
+                error: err.error,
+                committed: err.committed,
+            })
     }
 
     pub fn preview_accept_insert(
@@ -397,9 +428,17 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         &mut self,
         commands: Vec<Command>,
     ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        self.dispatch_with_commit(commands).map_err(|err| err.error)
+    }
+
+    fn dispatch_with_commit(
+        &mut self,
+        commands: Vec<Command>,
+    ) -> Result<Vec<CompletionRequest>, DispatchError> {
         let mut requests = Vec::new();
         let mut delay_next_hide = false;
         let mut show_failed = false;
+        let mut committed = false;
         for command in commands {
             match command {
                 Command::RequestCompletion {
@@ -447,7 +486,10 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                             // accept cannot phantom-insert an unpainted ghost —
                             // mirroring the show_ghost/set_tap_visible paths below.
                             self.reconcile_failed_show();
-                            return Err(err);
+                            return Err(DispatchError {
+                                error: err,
+                                committed,
+                            });
                         }
                     };
                     if let Some(rect) = rect {
@@ -456,14 +498,20 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                             // but the UI never painted. Reconcile before returning
                             // so a later accept cannot insert an invisible ghost.
                             self.reconcile_failed_show();
-                            return Err(err);
+                            return Err(DispatchError {
+                                error: err,
+                                committed,
+                            });
                         }
                         if let Err(err) = self.set_tap_visible(true, Some(AcceptAction::Full)) {
                             // The ghost was painted but cannot be accepted. Reconcile
                             // immediately so a visible-but-unarmed suggestion does not
                             // remain in the UI or machine state.
                             self.reconcile_failed_show();
-                            return Err(err);
+                            return Err(DispatchError {
+                                error: err,
+                                committed,
+                            });
                         }
                     } else {
                         // No caret rect and no popup anchor: we cannot place the
@@ -494,18 +542,27 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                         Ok(rect) => rect,
                         Err(err) => {
                             self.reconcile_failed_show();
-                            return Err(err);
+                            return Err(DispatchError {
+                                error: err,
+                                committed,
+                            });
                         }
                     };
                     if let Some(rect) = rect {
                         if let Err(err) = self.overlay.show_correction(rect, &suggestion) {
                             self.reconcile_failed_show();
-                            return Err(err);
+                            return Err(DispatchError {
+                                error: err,
+                                committed,
+                            });
                         }
                         if let Err(err) = self.set_tap_visible(true, Some(AcceptAction::Correction))
                         {
                             self.reconcile_failed_show();
-                            return Err(err);
+                            return Err(DispatchError {
+                                error: err,
+                                committed,
+                            });
                         }
                     } else {
                         show_failed = true;
@@ -518,8 +575,12 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     let strategy = self.caps.insert_strategy;
                     if let Err(err) = self.adapter.insert(&field, &text, strategy) {
                         self.reconcile_visible_failure();
-                        return Err(err);
+                        return Err(DispatchError {
+                            error: err,
+                            committed,
+                        });
                     }
+                    committed = true;
                     // Cross-crate invariant: this flag is consumed by the *next*
                     // `Hide` to delay the synthetic-keys tap teardown. Correct only
                     // because `engine_core` always emits an `Insert`/`Replace`
@@ -542,8 +603,12 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                             .insert_replacing(&field, &text, replace_left, strategy)
                     {
                         self.reconcile_visible_failure();
-                        return Err(err);
+                        return Err(DispatchError {
+                            error: err,
+                            committed,
+                        });
                     }
+                    committed = true;
                     delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
                 }
                 Command::ReplaceRange {
@@ -561,14 +626,21 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                         strategy,
                     ) {
                         self.reconcile_visible_failure();
-                        return Err(err);
+                        return Err(DispatchError {
+                            error: err,
+                            committed,
+                        });
                     }
+                    committed = true;
                     delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
                 }
                 Command::UpdateGhost { text, .. } => {
                     if let Err(err) = self.overlay.update_ghost(&text) {
                         self.reconcile_visible_failure();
-                        return Err(err);
+                        return Err(DispatchError {
+                            error: err,
+                            committed,
+                        });
                     }
                 }
                 Command::Hide => {
@@ -584,8 +656,12 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     } else {
                         self.set_tap_visible(false, None)
                     };
-                    hide_result?;
-                    tap_result?;
+                    if let Err(error) = hide_result {
+                        return Err(DispatchError { error, committed });
+                    }
+                    if let Err(error) = tap_result {
+                        return Err(DispatchError { error, committed });
+                    }
                 }
             }
         }
@@ -598,7 +674,13 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
             // stat event the machine buffered (design spec §11 accuracy).
             self.machine.cancel_last_shown();
             let dismiss = self.machine.on_event(Event::Dismiss);
-            requests.extend(self.dispatch(dismiss)?);
+            match self.dispatch_with_commit(dismiss) {
+                Ok(dismiss_requests) => requests.extend(dismiss_requests),
+                Err(mut err) => {
+                    err.committed |= committed;
+                    return Err(err);
+                }
+            }
         }
         Ok(requests)
     }
@@ -1339,7 +1421,10 @@ mod tests {
         // machine so the engine is not left wedged.
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
-            Err(PlatformError::StaleField),
+            Err(AcceptError {
+                error: PlatformError::StaleField,
+                committed: false,
+            }),
             "a failing insert_replacing must surface, not be swallowed"
         );
         assert_eq!(
@@ -1418,7 +1503,10 @@ mod tests {
         // the machine so the engine is not left wedged.
         assert_eq!(
             engine.on_accept(AcceptAction::Correction),
-            Err(PlatformError::StaleField),
+            Err(AcceptError {
+                error: PlatformError::StaleField,
+                committed: false,
+            }),
             "a failing insert_replacing_range must surface, not be swallowed"
         );
         assert_eq!(
@@ -2231,7 +2319,10 @@ mod tests {
         // hide_suggestion_after surfaces via `?`.
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
-            Err(PlatformError::Timeout),
+            Err(AcceptError {
+                error: PlatformError::Timeout,
+                committed: true,
+            }),
             "a failing delayed-tap teardown must surface, not be swallowed"
         );
         // The overlay was still hidden before the teardown hook errored.
@@ -2267,7 +2358,7 @@ mod tests {
         // that disarm must surface out of on_accept, not be swallowed — a
         // swallowed disarm error would leave the accept tap live against a
         // dismissed suggestion.
-        let (mut engine, _adapter, overlay) = engine();
+        let (mut engine, adapter, overlay) = engine();
         engine.set_accept_subscription(AcceptSubscription::new(
             Subscription::new(0),
             // Fail only while DISARMING (visible=false) so the show-path arm
@@ -2296,14 +2387,82 @@ mod tests {
         // set_suggestion_visible(false) disarm surfaces via `?`.
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
-            Err(PlatformError::Timeout),
+            Err(AcceptError {
+                error: PlatformError::Timeout,
+                committed: true,
+            }),
             "a failing non-synthetic accept-tap disarm must surface, not be swallowed"
+        );
+        assert_eq!(
+            adapter.inserts.lock().unwrap().len(),
+            1,
+            "committed=true means the adapter inserted exactly once"
         );
         // The overlay was still hidden before the disarm hook errored.
         assert_eq!(
             *overlay.calls.lock().unwrap(),
             vec![OverlayCall::Hide],
             "the ghost is hidden before the immediate disarm runs"
+        );
+    }
+
+    #[test]
+    fn replacement_and_correction_report_committed_when_teardown_fails() {
+        let failing_disarm = || {
+            AcceptSubscription::new(
+                Subscription::new(0),
+                |visible| {
+                    if visible {
+                        Ok(())
+                    } else {
+                        Err(PlatformError::Timeout)
+                    }
+                },
+                |_| Ok(()),
+                |_| Ok(()),
+            )
+        };
+
+        let (mut replacement, replacement_adapter, _) = engine();
+        replacement.set_accept_subscription(failing_disarm());
+        replacement.on_focus(field()).unwrap();
+        replacement
+            .on_replacement(&field(), vec!["😄".into()], 5)
+            .unwrap();
+        assert_eq!(
+            replacement.on_accept(AcceptAction::Full),
+            Err(AcceptError {
+                error: PlatformError::Timeout,
+                committed: true,
+            })
+        );
+        assert_eq!(
+            replacement_adapter.replacing_inserts.lock().unwrap().len(),
+            1
+        );
+
+        let (mut correction, correction_adapter, _) = engine();
+        correction.set_accept_subscription(failing_disarm());
+        correction.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut correction, range);
+        correction
+            .on_correction(&request, "the".into(), range)
+            .unwrap();
+        assert_eq!(
+            correction.on_accept(AcceptAction::Correction),
+            Err(AcceptError {
+                error: PlatformError::Timeout,
+                committed: true,
+            })
+        );
+        assert_eq!(
+            correction_adapter
+                .range_replacing_inserts
+                .lock()
+                .unwrap()
+                .len(),
+            1
         );
     }
 
@@ -2339,7 +2498,10 @@ mod tests {
 
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
-            Err(PlatformError::StaleField)
+            Err(AcceptError {
+                error: PlatformError::StaleField,
+                committed: false,
+            })
         );
     }
 
@@ -2379,7 +2541,10 @@ mod tests {
 
         assert_eq!(
             engine.on_accept(AcceptAction::Full),
-            Err(PlatformError::StaleField),
+            Err(AcceptError {
+                error: PlatformError::StaleField,
+                committed: false,
+            }),
             "the Insert error must surface to the caller"
         );
         assert_eq!(
@@ -3267,7 +3432,8 @@ mod tests {
             calls: Arc::new(Mutex::new(Vec::new())),
         };
         let calls = Arc::clone(&overlay.calls);
-        let mut engine = Engine::new(FakeAdapter::new(), overlay, 200, 4, 32);
+        let adapter = FakeAdapter::new();
+        let mut engine = Engine::new(adapter.clone(), overlay, 200, 4, 32);
         engine.on_focus(field()).unwrap();
         engine.on_text_changed(typed("x", 1, 0)).unwrap();
         let requests = engine.on_tick(500).unwrap();
@@ -3279,7 +3445,15 @@ mod tests {
 
         assert_eq!(
             engine.on_accept(AcceptAction::Word),
-            Err(PlatformError::Timeout)
+            Err(AcceptError {
+                error: PlatformError::Timeout,
+                committed: true,
+            })
+        );
+        assert_eq!(
+            adapter.inserts.lock().unwrap().len(),
+            1,
+            "word insertion committed before the ghost update failed"
         );
         assert_eq!(
             *calls.lock().unwrap(),

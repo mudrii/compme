@@ -104,6 +104,16 @@ pub fn stats_file_path() -> Option<PathBuf> {
     config_file_path().map(|p| p.with_file_name("stats.env"))
 }
 
+/// Resolve the app-support models directory next to `config.env`, honoring a
+/// `COMPME_CONFIG` override just like every other app-owned file.
+pub fn models_dir_path() -> Option<PathBuf> {
+    models_dir_path_for(&|key| std::env::var(key).ok(), std::env::consts::OS)
+}
+
+fn models_dir_path_for(lookup: &impl Fn(&str) -> Option<String>, os: &str) -> Option<PathBuf> {
+    config_file_path_for(lookup, os).map(|path| path.with_file_name("models"))
+}
+
 /// Resolve the config file path: `COMPME_CONFIG` override, else the per-OS
 /// config home (`~/Library/Application Support` on macOS, XDG on Linux,
 /// `%APPDATA%` on Windows). `None` if the required env var is unavailable.
@@ -279,13 +289,13 @@ pub(crate) fn open_owner_only_file(path: &Path, truncate: bool) -> std::io::Resu
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     let file = options.open(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(windows)]
     platform_windows::win_host::harden_owner_only(path)?;
@@ -300,6 +310,33 @@ pub(crate) fn open_owner_only_file(path: &Path, truncate: bool) -> std::io::Resu
 /// Acceptable for a settings file toggled a few times a day; the tradeoff is
 /// intentional. Parent directories are created on first use.
 fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
+    atomic_write_owner_only(path, contents.as_bytes(), false)
+}
+
+pub(crate) fn atomic_write_owner_only(
+    path: &Path,
+    contents: &[u8],
+    sync: bool,
+) -> std::io::Result<()> {
+    atomic_write_owner_only_with(path, contents, sync, || {
+        let mut nonce = [0u8; 16];
+        getrandom::getrandom(&mut nonce)
+            .map_err(|err| std::io::Error::other(format!("temp-name randomness failed: {err}")))?;
+        let mut suffix = String::with_capacity(nonce.len() * 2);
+        use std::fmt::Write as _;
+        for byte in nonce {
+            write!(&mut suffix, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        Ok(suffix)
+    })
+}
+
+fn atomic_write_owner_only_with(
+    path: &Path,
+    contents: &[u8],
+    sync: bool,
+    mut next_suffix: impl FnMut() -> std::io::Result<String>,
+) -> std::io::Result<()> {
     let dir = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -311,19 +348,88 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     // same app-support tree — config.env holds no secret today, but the
     // permission shouldn't need revisiting if one is ever added.
     create_owner_only_dir_if_missing(dir)?;
-    let temp = dir.join(format!(
-        ".{}.tmp.{}",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("config"),
-        std::process::id()
-    ));
-    {
+    secure_atomic_write_parent(dir)?;
+    let target_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config");
+    let (temp, mut file) = (0..16)
+        .find_map(|_| {
+            let suffix = match next_suffix() {
+                Ok(suffix) => suffix,
+                Err(err) => return Some(Err(err)),
+            };
+            let temp = dir.join(format!(".{target_name}.tmp.{suffix}"));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            match options.open(&temp) {
+                Ok(file) => Some(Ok((temp, file))),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(err) => Some(Err(err)),
+            }
+        })
+        .transpose()?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate a unique atomic-write temp file",
+            )
+        })?;
+
+    let result = (|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        #[cfg(windows)]
+        platform_windows::win_host::harden_owner_only(&temp)?;
         use std::io::Write as _;
-        let mut file = open_owner_only_file(&temp, true)?;
-        file.write_all(contents.as_bytes())?;
+        file.write_all(contents)?;
+        if sync {
+            file.sync_all()?;
+        }
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
     }
-    std::fs::rename(&temp, path)
+    result
+}
+
+fn secure_atomic_write_parent(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir)?.permissions().mode();
+        if mode & 0o022 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing atomic write in group/world-writable directory {}",
+                    dir.display()
+                ),
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        // A random create-new temp prevents preplacement; hardening the parent
+        // prevents another principal from swapping that name before rename.
+        platform_windows::win_host::harden_owner_only(dir)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = dir;
+        Ok(())
+    }
 }
 
 /// Whether any non-comment line in `contents` assigns `key`.
@@ -955,6 +1061,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_never_follows_a_precreated_temp_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir =
+            std::env::temp_dir().join(format!("compme-atomic-symlink-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"PRECIOUS").unwrap();
+        let target = dir.join("config.env");
+        let trap = dir.join(".config.env.tmp.attack");
+        symlink(&victim, &trap).unwrap();
+
+        let err =
+            atomic_write_owner_only_with(&target, b"K=v\n", false, || Ok("attack".to_string()))
+                .unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"PRECIOUS");
+        assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_retries_collision_without_touching_the_stale_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "compme-atomic-collision-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.env");
+        let stale = dir.join(".config.env.tmp.collision");
+        std::fs::write(&stale, b"STALE").unwrap();
+        let calls = std::cell::Cell::new(0usize);
+
+        atomic_write_owner_only_with(&target, b"K=v\n", false, || {
+            let call = calls.get();
+            calls.set(call + 1);
+            Ok(if call == 0 { "collision" } else { "fresh" }.to_string())
+        })
+        .expect("second unique temp succeeds");
+
+        assert_eq!(calls.get(), 2);
+        assert_eq!(std::fs::read(&stale).unwrap(), b"STALE");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "K=v\n");
+        assert!(!dir.join(".config.env.tmp.fresh").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_a_group_writable_parent_before_temp_creation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "compme-atomic-writable-parent-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.env");
+        std::fs::write(&target, b"PRECIOUS\n").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        let err = atomic_write(&target, "K=v\n").unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(std::fs::read(&target).unwrap(), b"PRECIOUS\n");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "failure happens before any temp is created"
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn atomic_write_rejects_a_parentless_path() {
         // An empty path has no parent component (`Path::parent` → None; a
@@ -966,24 +1152,17 @@ mod tests {
     }
 
     #[test]
-    fn temp_name_derives_from_target_so_stats_and_config_never_share_a_scratch() {
-        // The scratch file is `.{target_file_name}.tmp.{pid}`, derived from the
-        // TARGET — so config.env and stats.env in one dir get DIFFERENT scratch
-        // paths and a write to one can never collide with the other's temp. We
-        // observe the scratch name directly: pointing atomic_write at a target
-        // that is itself a directory makes the final rename fail (file-over-dir),
-        // stranding the scratch so its name is inspectable. A shared/fixed temp
-        // name (the pre-fix behavior) would strand `.config.tmp.*` for both.
+    fn failed_atomic_rename_cleans_its_unique_scratch() {
         let dir = std::env::temp_dir().join(format!("cm-cfg-temp-name-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
-        // Make each target a directory so the rename-over fails and the scratch
-        // is left behind for inspection.
+        // Make the target a directory so rename-over fails after the unique temp
+        // has been written. Failure must remove that owned scratch.
         std::fs::create_dir(dir.join("stats.env")).expect("stats.env dir");
 
         assert!(
             atomic_write(&dir.join("stats.env"), "STATS=v\n").is_err(),
-            "rename over a directory must fail, stranding the scratch"
+            "rename over a directory must fail"
         );
 
         let scratch: Vec<String> = std::fs::read_dir(&dir)
@@ -991,12 +1170,7 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with('.') && n.contains(".tmp."))
             .collect();
-        assert_eq!(scratch.len(), 1, "exactly one scratch left");
-        assert!(
-            scratch[0].starts_with(".stats.env.tmp."),
-            "scratch must derive from the target name `stats.env`, got {:?}",
-            scratch[0]
-        );
+        assert!(scratch.is_empty(), "failed write must clean its scratch");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1110,6 +1284,19 @@ mod tests {
                 PathBuf::from("/tmp/override.env")
             );
         }
+    }
+
+    #[test]
+    fn models_dir_honors_config_override_without_home() {
+        let lookup = |key: &str| match key {
+            "COMPME_CONFIG" => Some("/custom/compme/settings.env".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(
+            models_dir_path_for(&lookup, "macos"),
+            Some(PathBuf::from("/custom/compme/models"))
+        );
     }
 
     #[test]

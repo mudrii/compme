@@ -1,19 +1,21 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-11 (implementation reviewed through `0eadd99`; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1851 workspace tests listed on current `main` (spike separate)
+> **Last updated:** 2026-07-11 (implementation reviewed through `258aaab` plus this audit; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1859 workspace tests listed on the current tree (spike separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
 > with symbol/function/gate anchors re-reviewed 2026-07-11 on the current tree.
-> Evidence includes the full 19-commit delta from published `v0.1.4` through
-> `0eadd99`: cross-platform Phase 0, the model-catalog size correction,
+> Evidence includes the full 20-commit delta from published `v0.1.4` through
+> `258aaab`: cross-platform Phase 0, the model-catalog size correction,
 > stale-focus/terminal/Finder/private-file/URL-handler fixes, mutation-backed
 > full-codebase cleanup through `dd102eb`, and the release pipeline hardening
 > through `0eadd99` (pinned RustSec audit, portable release parity, explicit
 > timeouts, packaged-app reassessment, late publication drift checks, stable
-> published-asset cask recovery, and hermetic helper self-tests).
+> published-asset cask recovery, and hermetic helper self-tests), plus this
+> audit's committed-accept outcome tracking, config-relative valid-only model
+> adoption, race-safe owner-only atomic writes, and DNS label bounds.
 
 > **Release boundary:** the published v0.1.4 artifact is tag `18b8dc0`.
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
@@ -21,7 +23,8 @@
 > `a5781fc` (single model-location control), `18fbc4f` (catalog metadata fix),
 > the documentation reconciliations through `88b22cd`, release hardening through
 > `5fa5b6b` / `5e39ae4`, audit/TDD fixes through `dd102eb`, and CI/release
-> hardening through `0eadd99` are post-tag `main` changes. They require a later
+> hardening through `0eadd99`, documentation through `258aaab`, and this audit's
+> runtime/config/webconfig fixes are post-tag `main` changes. They require a later
 > release tag before they are available in the distributed binary. Unless a row
 > explicitly says otherwise, current implementation/test claims below describe
 > `main`; the v0.1.4 bullets describe the published artifact.

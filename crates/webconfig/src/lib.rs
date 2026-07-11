@@ -363,7 +363,11 @@ fn valid_domain_scope(s: String) -> Result<String, ParseError> {
     }
 
     for label in &labels {
-        if label.is_empty() || label.starts_with('-') || label.ends_with('-') || label.contains('_')
+        if label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || label.contains('_')
         {
             return Err(ParseError::InvalidScope);
         }
@@ -427,6 +431,23 @@ mod tests {
                 scope: Scope::Domain("example.io".into()),
                 action: OverrideAction::Enable,
             })
+        );
+    }
+
+    #[test]
+    fn domain_labels_enforce_the_dns_63_byte_limit() {
+        let longest_valid = format!("{}.example.com", "a".repeat(63));
+        assert!(parse_deep_link(&format!(
+            "compme://setOverride?domain={longest_valid}&enabled=true"
+        ))
+        .is_ok());
+
+        let oversized_label = format!("{}.example.com", "a".repeat(64));
+        assert_eq!(
+            parse_deep_link(&format!(
+                "compme://setOverride?domain={oversized_label}&enabled=true"
+            )),
+            Err(ParseError::InvalidScope)
         );
     }
 
