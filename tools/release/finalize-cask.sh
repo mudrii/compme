@@ -374,12 +374,9 @@ SH
   mkdir -p "$tampered_dir"
   tampered_artifact="$tampered_dir/compme-9.8.7-macos.zip"
   printf 'tampered fixture artifact\n' >"$tampered_artifact"
-  make_fixture_repo "$tampered_dir/repo" noop
-  tampered_sha="$(git -C "$tampered_dir/repo/work" rev-parse HEAD)"
-  if COMPME_FINALIZE_CASK_REPO_ROOT="$tampered_dir/repo/work" \
-    GITHUB_SHA="$tampered_sha" \
-    "$0" v9.8.7 "$tampered_artifact" 9.8.7 main \
-    >/dev/null 2>"$tampered_dir/rejected.err"; then
+  if verify_published_artifact \
+    v9.8.7 "$tampered_artifact" 9.8.7 "$tampered_dir/published-checksum" \
+    2>"$tampered_dir/rejected.err"; then
     echo "finalize-cask self-test failed: artifact differing from published checksum was accepted" >&2
     return 1
   fi
@@ -406,18 +403,21 @@ SH
     return 1
   fi
 
-  make_fixture_repo "$tmp/draft-release" noop
-  draft_sha="$(git -C "$tmp/draft-release/work" rev-parse HEAD)"
-  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/draft-release/work" \
-    COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE=true \
-    GITHUB_SHA="$draft_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main \
-    >/dev/null 2>"$tmp/draft-release.err"; then
+  export COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE=true
+  if verify_published_artifact \
+    v9.8.7 "$artifact" 9.8.7 "$tmp/draft-release" \
+    2>"$tmp/draft-release.err"; then
+    unset COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE
     echo "finalize-cask self-test failed: draft release was accepted" >&2
     return 1
   fi
-  grep -Fq "must be published and stable before cask finalization" \
-    "$tmp/draft-release.err"
+  unset COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE
+  if ! grep -Fq "must be published and stable before cask finalization" \
+    "$tmp/draft-release.err"; then
+    echo "finalize-cask self-test failed: draft-release diagnostic mismatch" >&2
+    sed 's/^/  captured: /' "$tmp/draft-release.err" >&2
+    return 1
+  fi
 
   make_fixture_repo "$tmp/summary" noop
   summary_sha="$(git -C "$tmp/summary/work" rev-parse HEAD)"
