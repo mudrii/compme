@@ -1631,7 +1631,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
         let active_for_dispatch = Arc::clone(&active);
         let cb_for_dispatch = Arc::clone(&cb);
         let current_identity_key_for_dispatch = Arc::clone(&current_identity_key);
-        let binding_state_for_dispatch = Arc::clone(&binding_state);
+        let frontmost_pid_for_dispatch = Arc::clone(&self.frontmost_pid);
         let dispatch: ObserverDispatch = Arc::new(move |event: ObserverEvent| {
             if event.notification != ObserverNotification::FocusChanged {
                 return;
@@ -1639,7 +1639,11 @@ impl PlatformAdapter for MacosPlatformAdapter {
             if !active_for_dispatch.load(Ordering::Acquire) {
                 return;
             }
-            if current_binding_pid(&binding_state_for_dispatch) != Some(event.pid) {
+            // Installing a new observer necessarily happens before the rebind
+            // poller can publish it into `binding_state`. Use the desired
+            // frontmost pid so the new observer cannot lose its first event in
+            // that window, while stale observers stop dispatching immediately.
+            if (frontmost_pid_for_dispatch)() != Some(event.pid) {
                 return;
             }
 
@@ -1702,7 +1706,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
         let active = Arc::new(AtomicBool::new(true));
         let active_for_dispatch = Arc::clone(&active);
         let cb_for_dispatch = Arc::clone(&cb);
-        let binding_state_for_dispatch = Arc::clone(&binding_state);
+        let frontmost_pid_for_dispatch = Arc::clone(&self.frontmost_pid);
         let dispatch: ObserverDispatch = Arc::new(move |event: ObserverEvent| {
             if event.notification != ObserverNotification::CaretChanged {
                 return;
@@ -1710,7 +1714,9 @@ impl PlatformAdapter for MacosPlatformAdapter {
             if !active_for_dispatch.load(Ordering::Acquire) {
                 return;
             }
-            if current_binding_pid(&binding_state_for_dispatch) != Some(event.pid) {
+            // See `subscribe_focus`: observer callbacks may arrive after
+            // install succeeds but before the poller swaps `binding_state`.
+            if (frontmost_pid_for_dispatch)() != Some(event.pid) {
                 return;
             }
 
@@ -7397,6 +7403,20 @@ mod tests {
         installs: Arc<Mutex<Vec<FakeObserverInstall>>>,
         teardowns: Arc<Mutex<Vec<i32>>>,
     ) -> MacosPlatformAdapter {
+        test_adapter_with_dynamic_frontmost_and_install_hook(
+            frontmost_pid,
+            installs,
+            teardowns,
+            Arc::new(|_| {}),
+        )
+    }
+
+    fn test_adapter_with_dynamic_frontmost_and_install_hook(
+        frontmost_pid: Arc<Mutex<Option<i32>>>,
+        installs: Arc<Mutex<Vec<FakeObserverInstall>>>,
+        teardowns: Arc<Mutex<Vec<i32>>>,
+        after_install: Arc<dyn Fn(i32) + Send + Sync>,
+    ) -> MacosPlatformAdapter {
         let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
         let frontmost_pid = Arc::new(move || *frontmost_pid.lock().unwrap());
         let observer_installer = Arc::new(move |pid, target, notifications, dispatch| {
@@ -7406,6 +7426,7 @@ mod tests {
                 notifications,
                 dispatch,
             });
+            after_install(pid);
             Ok(ObserverResource::new(TeardownSignal {
                 pid,
                 log: Arc::clone(&teardowns),
@@ -14288,11 +14309,9 @@ mod tests {
 
         *frontmost_pid.lock().unwrap() = Some(99);
         wait_for_install_count(&installs, 2);
-        // The poller pushes install #1 *before* it swaps the live binding to
-        // pid 99 (and drops the old pid-42 binding). Waiting only on the install
-        // count races that swap: a dispatch could still filter against pid 42.
-        // The pid-42 teardown fires during the swap, so it is the correct
-        // happens-after signal that the live binding is now pid 99.
+        // The poller records install #1 before it drops the old pid-42 binding.
+        // The teardown is the deterministic happens-after signal that the
+        // binding lifecycle completed before the post-rebind assertions.
         wait_for_vec_count(&teardowns, 1);
         assert_eq!(teardowns.lock().unwrap().as_slice(), [42]);
         let installs_snapshot = installs.lock().unwrap().clone();
@@ -14325,10 +14344,24 @@ mod tests {
         let frontmost_pid = Arc::new(Mutex::new(Some(42)));
         let installs = Arc::new(Mutex::new(Vec::new()));
         let teardowns = Arc::new(Mutex::new(Vec::new()));
-        let adapter = test_adapter_with_dynamic_frontmost(
+        let (install_started_tx, install_started_rx) = mpsc::channel();
+        let (release_install_tx, release_install_rx) = mpsc::channel();
+        let release_install_rx = Arc::new(Mutex::new(release_install_rx));
+        let after_install = Arc::new(move |pid| {
+            if pid == 99 {
+                install_started_tx.send(()).expect("signal install");
+                release_install_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(WAIT_DEADLINE)
+                    .expect("release install");
+            }
+        });
+        let adapter = test_adapter_with_dynamic_frontmost_and_install_hook(
             Arc::clone(&frontmost_pid),
             Arc::clone(&installs),
             Arc::clone(&teardowns),
+            after_install,
         );
         let carets = Arc::new(Mutex::new(Vec::new()));
         let carets_in_cb = Arc::clone(&carets);
@@ -14348,12 +14381,9 @@ mod tests {
         ));
 
         *frontmost_pid.lock().unwrap() = Some(99);
-        wait_for_install_count(&installs, 2);
-        // Wait for the pid-42 teardown so the live binding swap to pid 99 has
-        // completed before dispatching (see the focus rebind test for why the
-        // install count alone races the swap).
-        wait_for_vec_count(&teardowns, 1);
-        assert_eq!(teardowns.lock().unwrap().as_slice(), [42]);
+        install_started_rx
+            .recv_timeout(WAIT_DEADLINE)
+            .expect("second install started");
         let installs_snapshot = installs.lock().unwrap().clone();
         assert_eq!(installs_snapshot[1].pid, 99);
         assert_eq!(
@@ -14373,8 +14403,13 @@ mod tests {
             pointer_identity("ax:same"),
             None,
         ));
+        let delivered_before_binding_swap = carets.lock().unwrap().len();
+        release_install_tx.send(()).expect("release second install");
+        wait_for_vec_count(&teardowns, 1);
+        assert_eq!(teardowns.lock().unwrap().as_slice(), [42]);
 
         let carets = carets.lock().unwrap();
+        assert_eq!(delivered_before_binding_swap, 2);
         assert_eq!(carets.len(), 2);
         assert_eq!(carets[0].0.app, "pid:42");
         assert_eq!(carets[0].0.pid, Some(42));
@@ -14388,10 +14423,24 @@ mod tests {
         let frontmost_pid = Arc::new(Mutex::new(Some(42)));
         let installs = Arc::new(Mutex::new(Vec::new()));
         let teardowns = Arc::new(Mutex::new(Vec::new()));
-        let adapter = test_adapter_with_dynamic_frontmost(
+        let (install_started_tx, install_started_rx) = mpsc::channel();
+        let (release_install_tx, release_install_rx) = mpsc::channel();
+        let release_install_rx = Arc::new(Mutex::new(release_install_rx));
+        let after_install = Arc::new(move |pid| {
+            if pid == 77 {
+                install_started_tx.send(()).expect("signal install");
+                release_install_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(WAIT_DEADLINE)
+                    .expect("release install");
+            }
+        });
+        let adapter = test_adapter_with_dynamic_frontmost_and_install_hook(
             Arc::clone(&frontmost_pid),
             Arc::clone(&installs),
             Arc::clone(&teardowns),
+            after_install,
         );
         let focused = Arc::new(Mutex::new(Vec::new()));
         let focused_in_cb = Arc::clone(&focused);
@@ -14419,7 +14468,9 @@ mod tests {
         assert!(focused.lock().unwrap().is_empty());
 
         *frontmost_pid.lock().unwrap() = Some(77);
-        wait_for_install_count(&installs, 2);
+        install_started_rx
+            .recv_timeout(WAIT_DEADLINE)
+            .expect("second install started");
         let second_dispatch = installs.lock().unwrap()[1].dispatch.clone();
         second_dispatch(observer_event_for_pid(
             77,
@@ -14427,8 +14478,10 @@ mod tests {
             pointer_identity("ax:reborn"),
             None,
         ));
+        let delivered_before_binding_swap = focused.lock().unwrap().len();
+        release_install_tx.send(()).expect("release second install");
 
-        wait_for_vec_count(&focused, 1);
+        assert_eq!(delivered_before_binding_swap, 1);
         let focused = focused.lock().unwrap();
         assert_eq!(focused.len(), 1);
         assert_eq!(focused[0].app, "pid:77");
