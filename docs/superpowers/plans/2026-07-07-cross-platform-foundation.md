@@ -23,7 +23,7 @@
 - Non-macOS packaging (MSI/deb) — ROADMAP 1.2.
 - Porting the AppKit settings window — it stays macOS-only behind the facade; long-term answer is webconfig-driven settings.
 
-**Working rules (from CLAUDE.md):** work on `main`, commit directly, all of `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` green before every commit. Run `graphify update .` after code changes.
+**Working rules (from CLAUDE.md):** work on `main`, commit directly, all of `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` green before every commit.
 
 ---
 
@@ -1360,11 +1360,7 @@ In both jobs, the Task 4 steps become full-workspace (keep a `model_client` excl
 
 Update the "Pending 🔒" block: the app's adapter selection is DONE (cfg-gated via `crate::shell`), the shell contract (`platform::shell::ShellHost`/`TrayHandle`) is DONE with fail-closed scaffolds; remaining pending = the real UIA / AT-SPI2 adapter internals + real ShellHost impls (key store, tray, pump) — still blocked on Windows/Linux machines. Keep the tier marker `◑🔒`.
 
-- [ ] **Step 3: Refresh the code graph**
-
-Run: `graphify update .`
-
-- [ ] **Step 4: Push and watch all three OS jobs**
+- [ ] **Step 3: Push and watch all three OS jobs**
 
 ```bash
 git add .github/workflows/ci.yml docs/ROADMAP.md

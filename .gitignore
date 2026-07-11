@@ -1,7 +1,9 @@
 /target/
 /tools/acceptance/logs/
-/graphify-out/
 .tokensave
 .gsd/
 .serena/
 .bg-shell/
+.claude/
+.playwright-mcp/
+skills-lock.json

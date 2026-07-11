@@ -110,9 +110,14 @@ pub fn strip_suffix_overlap(candidate: &str, right: &str) -> String {
 
 /// Report whether a completion is a single word or phrase repeated three or more
 /// times (`the the the`, `go home go home go home`) — a classic small-model
-/// degenerate loop that should be dropped rather than shown.
+/// degenerate loop that should be dropped rather than shown. Attached edge
+/// punctuation is ignored, while punctuation-only tokens such as emoji remain
+/// significant.
 pub fn is_degenerate_repetition(text: &str) -> bool {
-    let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(normalize_repetition_word)
+        .collect();
     let len = words.len();
     if len < 3 {
         return false;
@@ -129,26 +134,34 @@ pub fn is_degenerate_repetition(text: &str) -> bool {
     false
 }
 
+fn normalize_repetition_word(word: &str) -> String {
+    let bare = word.trim_matches(|c: char| !c.is_alphanumeric());
+    if bare.is_empty() {
+        word.to_lowercase()
+    } else {
+        bare.to_lowercase()
+    }
+}
+
 /// Score multiplier for a candidate against recently typed text: 0.25 when the
 /// candidate appears as a contiguous, case-insensitive whole-word run inside
 /// `recent`, else 1.0. Word-level only — substring hits ("cat" in "category")
-/// never count — and an empty candidate is never penalized. Callers drop
+/// never count — and attached edge punctuation does not disguise the same word.
+/// An empty candidate is never penalized. Callers drop
 /// candidates whose multiplier falls below their floor; the two return values
 /// are the entire contract (this is a gate, not a smooth score).
 pub fn repetition_penalty(candidate: &str, recent: &str) -> f64 {
     let candidate: Vec<String> = candidate
-        .to_lowercase()
         .split_whitespace()
-        .map(str::to_string)
+        .map(normalize_repetition_word)
         .collect();
     if candidate.is_empty() {
         return 1.0;
     }
 
     let recent: Vec<String> = recent
-        .to_lowercase()
         .split_whitespace()
-        .map(str::to_string)
+        .map(normalize_repetition_word)
         .collect();
 
     // Penalize only when the candidate appears as a contiguous run of whole
@@ -315,6 +328,11 @@ mod tests {
         let lower_recent = repetition_penalty("repeat me", "please repeat me now");
         assert_eq!(upper_recent, lower_recent);
         assert_eq!(upper_recent, 0.25); // a match, not the 1.0 no-match floor
+    }
+
+    #[test]
+    fn repetition_penalty_ignores_attached_punctuation() {
+        assert_eq!(repetition_penalty("hello", "well hello, there"), 0.25);
     }
 
     #[test]
@@ -581,6 +599,11 @@ mod tests {
     #[test]
     fn is_degenerate_repetition_flags_case_varied_loop() {
         assert!(is_degenerate_repetition("Go go GO"));
+    }
+
+    #[test]
+    fn is_degenerate_repetition_ignores_attached_punctuation() {
+        assert!(is_degenerate_repetition("go, go! go."));
     }
 
     #[test]

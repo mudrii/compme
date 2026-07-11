@@ -31,7 +31,20 @@ build_base_env() {
 }
 
 run_self_test() {
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/compme-ui-assisted-self-test.XXXXXX")"
+  cleanup_self_test() {
+    rm -rf "$tmp_dir"
+  }
+  trap cleanup_self_test EXIT
+  inherited_config="${COMPME_UI_CONFIG:-}"
+  inherited_snapshot=""
+  if [[ -n "$inherited_config" && -f "$inherited_config" ]]; then
+    inherited_snapshot="$tmp_dir/inherited-config.snapshot"
+    cp "$inherited_config" "$inherited_snapshot"
+  fi
+
   build_launch_env
+  COMPME_UI_CONFIG="$tmp_dir/config.env"
   build_base_env
   expected=(
     COMPME_DEBUG
@@ -69,6 +82,10 @@ run_self_test() {
       return 1
     fi
   done
+  if [[ -n "$inherited_snapshot" ]] && ! cmp -s "$inherited_config" "$inherited_snapshot"; then
+    echo "self-test failed: inherited COMPME_UI_CONFIG was modified" >&2
+    return 1
+  fi
 
   COMPME_DEBUG=0 \
     COMPME_STUB_COMPLETION=" custom stub" \

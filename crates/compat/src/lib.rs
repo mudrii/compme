@@ -1053,7 +1053,6 @@ mod tests {
             "> why did cargo test fail",
             "➜ why did rtk cargo test fail",
             "/review the current tracked diff",
-            "/graphify --update current repo",
             "/review --all current diff",
             "/Users/mudrii/src/compme has failing tests",
             "/tmp has failing tests",

@@ -1,15 +1,1 @@
-{
-  "hooks": {
-    "BeforeTool": [
-      {
-        "matcher": "read_file|list_directory",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/mudrii/.local/bin/graphify hook-guard gemini"
-          }
-        ]
-      }
-    ]
-  }
-}
+{}
