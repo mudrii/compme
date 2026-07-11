@@ -56,7 +56,10 @@ verify_published_artifact() {
     return 1
   fi
 
-  mkdir -p "$checksum_dir"
+  if ! mkdir -p "$checksum_dir"; then
+    echo "failed to create published checksum directory: $checksum_dir" >&2
+    return 1
+  fi
   if ! command gh release download "$tag" \
     --repo mudrii/compme \
     --pattern "$checksum_name" \
@@ -79,7 +82,10 @@ verify_published_artifact() {
   ' "$checksum_path" "$artifact_name")"; then
     return 1
   fi
-  local_sha="$(shasum -a 256 "$artifact_path" | awk '{print $1}')"
+  if ! local_sha="$(shasum -a 256 "$artifact_path" | awk '{print $1}')"; then
+    echo "failed to compute local artifact checksum: $artifact_path" >&2
+    return 1
+  fi
   if [ "$local_sha" != "$published_sha" ]; then
     echo "local artifact checksum does not match published checksum for $tag" >&2
     echo "  local:     $local_sha" >&2
@@ -294,10 +300,21 @@ run_self_test() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-finalize-cask.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   trap 'status=$?; echo "finalize-cask self-test failed at line $LINENO: $BASH_COMMAND (status $status)" >&2; exit "$status"' ERR
+  unset COMPME_FINALIZE_CASK_TEST_GH_FAIL
+  unset COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE
+  unset COMPME_FINALIZE_CASK_TEST_SHASUM_FAIL
   artifact="$tmp/compme-9.8.7-macos.zip"
   printf 'fixture artifact\n' >"$artifact"
   fake_bin="$tmp/bin"
   mkdir -p "$fake_bin"
+  export COMPME_FINALIZE_CASK_TEST_REAL_SHASUM="$(command -v shasum)"
+  cat >"$fake_bin/shasum" <<'SH'
+set -euo pipefail
+if [ "${COMPME_FINALIZE_CASK_TEST_SHASUM_FAIL:-0}" = "1" ]; then
+  exit 42
+fi
+exec "${COMPME_FINALIZE_CASK_TEST_REAL_SHASUM:?}" "$@"
+SH
   cat >"$fake_bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -320,10 +337,11 @@ done
 test -n "$download_dir"
 test -n "$pattern"
 mkdir -p "$download_dir"
-sha="$(shasum -a 256 "${COMPME_FINALIZE_CASK_TEST_PUBLISHED_ARTIFACT:?}" | awk '{print $1}')"
+sha="$("${COMPME_FINALIZE_CASK_TEST_REAL_SHASUM:?}" -a 256 \
+  "${COMPME_FINALIZE_CASK_TEST_PUBLISHED_ARTIFACT:?}" | awk '{print $1}')"
 printf '%s  %s\n' "$sha" "${pattern%.sha256}" >"$download_dir/$pattern"
 SH
-  chmod +x "$fake_bin/gh"
+  chmod +x "$fake_bin/gh" "$fake_bin/shasum"
   export PATH="$fake_bin:$PATH"
   export COMPME_FINALIZE_CASK_TEST_PUBLISHED_ARTIFACT="$artifact"
 
@@ -392,6 +410,7 @@ SH
   printf 'tampered fixture artifact\n' >"$tampered_artifact"
   if (
     trap - ERR
+    set +e
     verify_published_artifact \
       v9.8.7 "$tampered_artifact" 9.8.7 "$tampered_dir/published-checksum"
   ) 2>"$tampered_dir/rejected.err"; then
@@ -405,9 +424,29 @@ SH
     return 1
   fi
 
+  export COMPME_FINALIZE_CASK_TEST_SHASUM_FAIL=1
+  if (
+    trap - ERR
+    set +e
+    verify_published_artifact \
+      v9.8.7 "$artifact" 9.8.7 "$tmp/local-checksum-fail"
+  ) 2>"$tmp/local-checksum-fail.err"; then
+    unset COMPME_FINALIZE_CASK_TEST_SHASUM_FAIL
+    echo "finalize-cask self-test failed: local checksum failure was accepted" >&2
+    return 1
+  fi
+  unset COMPME_FINALIZE_CASK_TEST_SHASUM_FAIL
+  if ! grep -Fq "failed to compute local artifact checksum" \
+    "$tmp/local-checksum-fail.err"; then
+    echo "finalize-cask self-test failed: local checksum failure diagnostic mismatch" >&2
+    sed 's/^/  captured: /' "$tmp/local-checksum-fail.err" >&2
+    return 1
+  fi
+
   export COMPME_FINALIZE_CASK_TEST_GH_FAIL=1
   if (
     trap - ERR
+    set +e
     verify_published_artifact \
       v9.8.7 "$artifact" 9.8.7 "$tmp/checksum-download-fail"
   ) 2>"$tmp/checksum-download-fail.err"; then
@@ -426,6 +465,7 @@ SH
   export COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE=true
   if (
     trap - ERR
+    set +e
     verify_published_artifact \
       v9.8.7 "$artifact" 9.8.7 "$tmp/draft-release"
   ) 2>"$tmp/draft-release.err"; then
