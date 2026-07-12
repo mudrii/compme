@@ -178,10 +178,11 @@ checkout = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
 cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
 expected_actions = {
+  "actionlint" => [[checkout, {"persist-credentials" => false}]],
   "check" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
-  "spike" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "spike" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {"workspaces" => "tools/spike"}]],
   "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
-  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {"cache-directories" => "~/.cargo/advisory-db"}]],
 }
 abort("missing release gate: exact CI job topology") unless jobs.keys.sort == expected_actions.keys.sort
 expected_actions.each do |job_name, expected|
@@ -190,11 +191,14 @@ expected_actions.each do |job_name, expected|
   end
   abort("missing release gate: CI #{job_name} exact action and input topology") unless actual == expected
 end
-{"check" => 90, "spike" => 60, "windows" => 60, "linux" => 60}.each do |job_name, timeout|
+{"actionlint" => 10, "check" => 90, "spike" => 60, "windows" => 60, "linux" => 60}.each do |job_name, timeout|
   abort("missing release gate: CI #{job_name} exact timeout") unless jobs.fetch(job_name).fetch("timeout-minutes") == timeout
 end
 abort("missing release gate: CI check inherits read-only workflow permissions") if jobs.fetch("check").key?("permissions")
-audit_step = jobs.fetch("check").fetch("steps").find { |step| step["name"] == "Rust dependency audit" }
+actionlint_step = jobs.fetch("actionlint").fetch("steps").find { |step| step["name"] == "Run actionlint" }
+abort("missing release gate: CI actionlint runs the checksum-db pinned linter") unless
+  actionlint_step && actionlint_step.fetch("run") == "go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color"
+audit_step = jobs.fetch("linux").fetch("steps").find { |step| step["name"] == "Rust dependency audit" }
 abort("missing release gate: CI dependency audit installs and runs pinned cargo-audit") unless
   audit_step && audit_step.fetch("run") == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit\n"
 icon_step = jobs.fetch("check").fetch("steps").find { |step| step["name"] == "Bundle icon generator self-test" }
@@ -226,6 +230,7 @@ end
 expected_actions = [
   ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", {"persist-credentials" => false}],
   ["dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30", {"toolchain" => "1.96.1"}],
+  ["Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32", {"cache-directories" => "~/.cargo/advisory-db"}],
 ]
 abort("missing release gate: dependency audit exact action provenance") unless actions == expected_actions
 audit_step = steps.find { |step| step["name"] == "Audit locked dependencies" }
@@ -313,13 +318,14 @@ toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
 cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
 upload = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
 download = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+attest = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
 expected_action_topology = {
   "preflight" => [[checkout, {"fetch-depth" => 0}]],
-  "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {"workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"}]],
   "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
   "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
-  "prebuild" => [[checkout, {"fetch-depth" => 0}], [toolchain, {"toolchain" => "1.96.1"}], [upload, {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "path" => "target/release/compme"}]],
-  "build_release" => [[checkout, {"persist-credentials" => false}], [download, {"name" => "compme-prebuilt-binary", "path" => "target/release"}], [upload, {"name" => "compme-release-artifacts", "if-no-files-found" => "error", "path" => "${{ steps.pkg.outputs.zip }}\n${{ steps.pkg.outputs.zip }}.sha256\n"}]],
+  "prebuild" => [[checkout, {"fetch-depth" => 0}], [toolchain, {"toolchain" => "1.96.1"}], [upload, {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "retention-days" => 3, "path" => "target/release/compme"}]],
+  "build_release" => [[checkout, {"persist-credentials" => false}], [download, {"name" => "compme-prebuilt-binary", "path" => "target/release"}], [attest, {"subject-path" => "${{ steps.pkg.outputs.zip }}"}], [upload, {"name" => "compme-release-artifacts", "if-no-files-found" => "error", "retention-days" => 7, "path" => "${{ steps.pkg.outputs.zip }}\n${{ steps.pkg.outputs.zip }}.sha256\n"}]],
   "publish_release" => [[checkout, {"fetch-depth" => 0}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
   "finalize_cask" => [[checkout, {"fetch-depth" => 0}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
 }
@@ -351,6 +357,7 @@ expected_build_steps = [
   "Delete signing keychain",
   "Package + checksum",
   "Verify packaged app signature and notarization",
+  "Attest build provenance",
   "Upload release artifacts",
 ]
 abort("missing release gate: signing job has exact shell-step topology") unless
@@ -394,7 +401,7 @@ require_exact_active_lines!(preflight, [
   "fi",
   'version="${GITHUB_REF_NAME#v}"',
   'tools/release/validate-version.sh "$version"',
-  'git fetch origin "$DEFAULT_BRANCH"',
+  'git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"',
   'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
   'if [ "$GITHUB_SHA" != "$default_sha" ]; then',
   'echo "release tag commit $GITHUB_SHA must equal current origin/$DEFAULT_BRANCH HEAD $default_sha" >&2',
@@ -409,7 +416,7 @@ abort("missing release gate: prebuild revalidates exact default-branch HEAD") un
 abort("missing release gate: prebuild exact default-branch environment") unless prebuild_head.fetch("env") == {"DEFAULT_BRANCH" => "${{ github.event.repository.default_branch }}"}
 require_exact_active_lines!(prebuild_head, [
   "set -euo pipefail",
-  'git fetch origin "$DEFAULT_BRANCH"',
+  'git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"',
   'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
   'if [ "$GITHUB_SHA" != "$default_sha" ]; then',
   'echo "release tag commit $GITHUB_SHA must still equal current origin/$DEFAULT_BRANCH HEAD $default_sha before prebuild" >&2',
@@ -493,6 +500,7 @@ abort("missing release gate: publish job has exact create-only publication step 
   nil,
   "Download release artifacts",
   "Verify downloaded artifact checksum",
+  "Verify artifact build provenance",
   "Verify release tag is still at default-branch HEAD before publication",
   "Write publication-time update manifest",
   "Create draft GitHub release",
@@ -508,7 +516,7 @@ publish_head = publish_steps.fetch(head_index)
 abort("missing release gate: pre-publication exact default-branch environment") unless publish_head.fetch("env") == {"DEFAULT_BRANCH" => "${{ github.event.repository.default_branch }}"}
 require_exact_active_lines!(publish_head, [
   "set -euo pipefail",
-  'git fetch origin "$DEFAULT_BRANCH"',
+  'git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"',
   'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
   'if [ "$GITHUB_SHA" != "$default_sha" ]; then',
   'echo "release tag commit $GITHUB_SHA must still equal current origin/$DEFAULT_BRANCH HEAD $default_sha before publication" >&2',
@@ -551,7 +559,7 @@ abort("missing release gate: late undraft recheck uses exact default-branch/toke
 require_exact_active_lines!(undraft, [
   "set -euo pipefail",
   'git fetch --force origin \\',
-  '"$DEFAULT_BRANCH" \\',
+  '"refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH" \\',
   '"refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"',
   'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
   'tag_sha="$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")"',
@@ -2885,6 +2893,7 @@ ruby -ryaml -e '
       "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
       "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
       "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+      "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373",
     ].include?(uses)
   end
   def validate_action_inputs!(job_name, step)
@@ -2899,17 +2908,24 @@ ruby -ryaml -e '
                    {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"},
                  ]
                when "Swatinem/rust-cache"
-                 [{}]
+                 [
+                   {},
+                   {"workspaces" => "tools/spike"},
+                   {"cache-directories" => "~/.cargo/advisory-db"},
+                   {"workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"},
+                 ]
                when "actions/upload-artifact"
                  [
-                   {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "path" => "target/release/compme"},
-                   {"name" => "compme-release-artifacts", "if-no-files-found" => "error", "path" => "${{ steps.pkg.outputs.zip }}\n${{ steps.pkg.outputs.zip }}.sha256\n"},
+                   {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "retention-days" => 3, "path" => "target/release/compme"},
+                   {"name" => "compme-release-artifacts", "if-no-files-found" => "error", "retention-days" => 7, "path" => "${{ steps.pkg.outputs.zip }}\n${{ steps.pkg.outputs.zip }}.sha256\n"},
                  ]
                when "actions/download-artifact"
                  [
                    {"name" => "compme-prebuilt-binary", "path" => "target/release"},
                    {"name" => "compme-release-artifacts", "path" => "release-artifacts"},
                  ]
+               when "actions/attest-build-provenance"
+                 [{"subject-path" => "${{ steps.pkg.outputs.zip }}"}]
                else
                  []
                end
@@ -2940,12 +2956,13 @@ ruby -ryaml -e '
     "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
   ]
   require_exact_actions!(ci_workflow, {
+    "actionlint" => ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"],
     "check" => ci_action_sequence,
     "spike" => ci_action_sequence,
     "windows" => ci_action_sequence,
     "linux" => ci_action_sequence,
   }, "CI")
-  expected_ci_timeouts = {"check" => 90, "spike" => 60, "windows" => 60, "linux" => 60}
+  expected_ci_timeouts = {"actionlint" => 10, "check" => 90, "spike" => 60, "windows" => 60, "linux" => 60}
   expected_ci_timeouts.each do |job_name, timeout|
     abort("missing release gate: CI #{job_name} exact timeout") unless jobs.fetch(job_name).fetch("timeout-minutes") == timeout
   end
@@ -2989,10 +3006,16 @@ ruby -ryaml -e '
     "CI root test" => ["Test", "cargo test --locked --workspace --all-targets -- --test-threads=1"],
     "CI root build" => ["Build", "cargo build --locked --workspace --all-targets"],
     "CI platform_macos examples build" => ["Build macOS acceptance examples", "cargo build --locked -p platform_macos --examples"],
-    "CI pinned dependency audit" => ["Rust dependency audit", "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit\n"],
   }.merge(shared_gate_steps.transform_keys { |key| "CI #{key}" }).each do |label, (name, run)|
     abort("missing release gate: #{label}") unless step?(ci_steps, name, run)
   end
+  # The pinned dependency audit lives in the Linux job (platform-independent;
+  # keeps the premium macOS lane off the cargo-audit compile).
+  abort("missing release gate: CI pinned dependency audit") unless step?(
+    jobs.fetch("linux").fetch("steps"),
+    "Rust dependency audit",
+    "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit\n"
+  )
 
   # CI windows/linux jobs gate the whole portable workspace (everything but
   # the Apple-only platform_macos crate) plus the app binary through its
@@ -3029,7 +3052,7 @@ ruby -ryaml -e '
   preflight_tag = preflight_steps.find { |step| step["name"] == "Verify release tag is valid and at default-branch HEAD" }
   abort("missing release gate: preflight verifies release version and exact default-branch HEAD") unless preflight_tag
   preflight_run = preflight_tag.fetch("run")
-  ["version=\"${GITHUB_REF_NAME#v}\"", "tools/release/validate-version.sh \"$version\"", "git fetch origin \"$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then"].each do |needle|
+  ["version=\"${GITHUB_REF_NAME#v}\"", "tools/release/validate-version.sh \"$version\"", "git fetch --force origin \"refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then"].each do |needle|
     abort("missing release gate: preflight #{needle}") unless preflight_run.include?(needle)
   end
   abort("missing release gate: preflight checks release tag metadata") unless step?(
@@ -3074,13 +3097,14 @@ ruby -ryaml -e '
   cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
   upload = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
   download = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+  attest = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
   require_exact_actions!(workflow, {
     "preflight" => [checkout],
     "validate" => [checkout, toolchain, cache],
     "windows" => [checkout, toolchain, cache],
     "linux" => [checkout, toolchain, cache],
     "prebuild" => [checkout, toolchain, upload],
-    "build_release" => [checkout, download, upload],
+    "build_release" => [checkout, download, attest, upload],
     "publish_release" => [checkout, download],
     "finalize_cask" => [checkout, download],
   }, "release")
@@ -3179,6 +3203,7 @@ ruby -ryaml -e '
     "Delete signing keychain",
     "Package + checksum",
     "Verify packaged app signature and notarization",
+    "Attest build provenance",
     "Upload release artifacts",
   ]
   abort("missing release gate: signing job has exact shell-step topology") unless
@@ -3243,7 +3268,7 @@ ruby -ryaml -e '
     abort("missing release gate: downloads prebuilt binary before secret-bearing build step #{step["name"] || idx}") unless download_binary_index < idx
   end
   ancestry_run = prebuild_steps.fetch(ancestry_index).fetch("run")
-  ["git fetch origin \"$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then"].each do |needle|
+  ["git fetch --force origin \"refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then"].each do |needle|
     abort("missing release gate: early exact default-branch HEAD check") unless ancestry_run.include?(needle)
   end
   download_binary_step = build_steps.fetch(download_binary_index)
@@ -3365,7 +3390,7 @@ ruby -ryaml -e '
   end
   publish_head = publish_steps.fetch(publish_head_index)
   publish_head_run = active_shell_lines(publish_head.fetch("run"))
-  ["git fetch origin \"$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then", "exit 1"].each do |needle|
+  ["git fetch --force origin \"refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then", "exit 1"].each do |needle|
     abort("missing release gate: pre-publication exact default HEAD #{needle}") unless publish_head_run.any? { |line| line.include?(needle) && !line.match?(/\A(echo|printf)[[:space:]]/) }
   end
   create_step = publish_steps.fetch(create_index)
@@ -3393,7 +3418,7 @@ ruby -ryaml -e '
   undraft_lines = active_shell_lines(undraft_step.fetch("run"))
   [
     "git fetch --force origin \\",
-    "\"$DEFAULT_BRANCH\" \\",
+    "\"refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH\" \\",
     "\"refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME\"",
     "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"",
     "tag_sha=\"$(git rev-parse \"refs/tags/$GITHUB_REF_NAME^{commit}\")\"",
