@@ -3,12 +3,10 @@
 This document describes the current automated and live acceptance checks for
 Compme.
 
-> **Release boundary (2026-07-10):** this document tracks current `main`. The
-> latest published artifact, `v0.1.4` (`18b8dc0`), predates the post-tag change
-> that made A2 local/manual-only and the fix that replaced the two model-location
-> buttons with one **Show Models Folder** control. Build current `main` when
-> validating those checks; do not treat them as properties of the `v0.1.4`
-> binary.
+> **Release boundary (2026-07-13):** this document tracks current `main`. The
+> latest published artifact, `v0.1.5` (`14ae81e`), includes the
+> local/manual-only A2 policy and the single **Show Models Folder** control, so
+> those checks describe the published binary as well as `main`.
 
 ## Automated Gates
 

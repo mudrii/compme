@@ -7,13 +7,14 @@ CI also tests the portable workspace and app binary on Windows and Linux; tag
 validation runs the same portable workspace and app-binary gates on those
 platforms.
 
-> **Release boundary (2026-07-10):** this page describes the pipeline on current
-> `main` for the next tag. The latest published artifact is `v0.1.4` at
-> `18b8dc0`; its arm64 app is Developer-ID signed, hardened-runtime enabled,
-> notarized, and stapled. The fail-closed signing policy and local/manual-only A2
-> policy described below landed after that tag. The `v0.1.4` workflow still
-> contained the earlier optional unsigned fallback and automated A2 release
-> checks, although the published artifact itself used the signed/notarized path.
+> **Release boundary (2026-07-13):** this page describes the pipeline on current
+> `main` for the next tag. The latest published artifact is `v0.1.5` at
+> `14ae81e`; its arm64 app is Developer-ID signed, hardened-runtime enabled,
+> notarized, and stapled, and its zip carries a build-provenance attestation.
+> The fail-closed signing policy and local/manual-only A2 policy described below
+> are part of the `v0.1.5` workflow. (The earlier `v0.1.4` workflow still
+> contained the optional unsigned fallback and automated A2 release checks,
+> although that published artifact also used the signed/notarized path.)
 
 ## Pipelines
 

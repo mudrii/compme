@@ -1,14 +1,14 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-12 (implementation reviewed through `db4a55b` plus the current review; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1888 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-13 (implementation reviewed through `14ae81e` plus the current review; v0.1.5 (`14ae81e`) is the latest published artifact and includes the post-v0.1.4 runtime, release, audit, and Settings fixes; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1888 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
 > with symbol/function/gate anchors re-reviewed 2026-07-12 on the current tree.
-> Evidence includes the full 46-commit delta from published `v0.1.4` through
-> `db4a55b`: cross-platform Phase 0, the model-catalog size correction,
+> Evidence includes the full 48-commit delta from `v0.1.4` through `14ae81e`
+> (published as `v0.1.5`): cross-platform Phase 0, the model-catalog size correction,
 > stale-focus/terminal/Finder/private-file/URL-handler fixes, mutation-backed
 > full-codebase cleanup through `dd102eb`, and the release pipeline hardening
 > through `0eadd99` (pinned RustSec audit, portable release parity, explicit
@@ -30,7 +30,9 @@
 > build-provenance attestation with pre-publication verification,
 > explicit-refspec head gates, and spike build caching).
 
-> **Release boundary:** the published v0.1.4 artifact is tag `18b8dc0`.
+> **Release boundary:** the published v0.1.5 artifact is tag `14ae81e`
+> (the previous v0.1.4 artifact is tag `18b8dc0`). Everything between those
+> tags shipped in v0.1.5:
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
 > `618013d` (seam hardening and A2 local/manual-only automation policy),
 > `a5781fc` (single model-location control), `18fbc4f` (catalog metadata fix),
@@ -38,11 +40,12 @@
 > `5fa5b6b` / `5e39ae4`, audit/TDD fixes through `dd102eb`, and CI/release
 > hardening through `0eadd99`, documentation through `258aaab`, review fixes
 > through `04a7fb8`, TDD fixes through `30d00a5`, CI/runtime/release hardening
-> through `5cdd5f2`, follow-up review fixes through `76e9987`, and the current
-> review fixes are post-tag `main` changes. They require a later release tag
-> before they are available in the distributed binary. Unless a row
-> explicitly says otherwise, current implementation/test claims below describe
-> `main`; the v0.1.4 bullets describe the published artifact.
+> through `5cdd5f2`, follow-up review fixes through `76e9987`, and the
+> subsequent review fixes through `db4a55b`/`eaef2f3` shipped in the `v0.1.5`
+> tag (`14ae81e`, published 2026-07-13). Unless a row explicitly says
+> otherwise, current implementation/test claims below describe `main`, which
+> matches the published v0.1.5 artifact apart from the post-release cask
+> finalization (`f203fa6`).
 
 ## Status legend
 
@@ -173,11 +176,16 @@ signing + hardened runtime + notarization + a native updater.
   manifest and finalized the cask sha on main. Release teething fixed en
   route: secrets-in-step-`if` startup failure, hosted-runner latency-budget
   opt-out, browser-row harness `COMPME_DEBUG`.
+- **v0.1.5 SHIPPED 2026-07-13 signed, notarized, and provenance-attested:** the
+  protected release run built from `14ae81e` after the local pre-tag model
+  gates passed, attested build provenance for the packaged zip, verified the
+  attestation before publication and cask finalization, published all three
+  artifacts, and finalized the Homebrew cask (`f203fa6`).
 - **v0.1.4 SHIPPED 2026-07-10 signed and notarized:** the protected release run
   imported the Developer-ID identity, produced a hardened-runtime signature,
   notarized and stapled the app, verified the packaged checksum, published all
   three artifacts, and finalized the Homebrew cask.
-- **Post-v0.1.4 release policy on current `main`:** `216fa0a` removed the
+- **Post-v0.1.4 release policy (shipped in v0.1.5):** `216fa0a` removed the
   conditional unsigned stable-release fallback so future tags fail closed
   without signing/notarization credentials; `618013d` removed A2 validation from
   CI/tag-release automation. The current release-integrity review additionally
@@ -205,8 +213,8 @@ signing + hardened runtime + notarization + a native updater.
   build provenance for the packaged zip via `actions/attest-build-provenance`,
   publication and cask jobs verify the attestation with `gh attestation verify`
   before use, and every tag-at-HEAD gate refreshes the default branch with an
-  explicit refspec. None of these post-tag policy changes is
-  part of the v0.1.4 tag.
+  explicit refspec. These post-v0.1.4 policy changes shipped in the
+  v0.1.5 tag.
 
 **Pending:**
 - Optional later upgrade: replace the GitHub-release menu handoff with a full
@@ -643,12 +651,12 @@ with physical trigger/accept keypresses.
 > covers the six rows only; the broader parity audit now tracks the five committed
 > code gaps above in addition to a human visual-LOOK pass over the 9 settings
 > panes and the Tier-4 live checklist. Developer-ID
-> signing, notarization, and the first stable tags are complete through v0.1.4;
+> signing, notarization, and the first stable tags are complete through v0.1.5;
 > a full native auto-updater remains optional. The authoritative live-gate ledger is `docs/ACCEPTANCE.md`
 > (Manual/Live Gate Ledger); `docs/MANUAL-VALIDATION.md` carries the detailed
 > walkthroughs.
 
-**Setup-pane cleanup (2026-07-10, current `main` only; not in v0.1.4):** the
+**Setup-pane cleanup (2026-07-10; shipped in v0.1.5):** the
 redundant conditional **Reveal Model in Finder** control was removed; the
 always-visible **Show Models Folder** is the single model-location action
 alongside **Choose Model…** and **Download Model**.

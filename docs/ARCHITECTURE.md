@@ -14,11 +14,12 @@ behind Compme's own portable contracts and without pricing gates; deliberate
 product differences include local-only inference, no proprietary telemetry,
 and additions such as candidate cycling.
 
-**Release boundary:** the published `v0.1.4` artifact points to `18b8dc0`; this
-page documents current `main`. Post-tag runtime/download/clipboard/OCR/deep-link
+**Release boundary:** the published `v0.1.5` artifact points to `14ae81e`; this
+page documents current `main`, which matches it apart from post-release cask
+metadata. The runtime/download/clipboard/OCR/deep-link
 hardening, local/manual-only A2 policy, single **Show Models Folder** Settings
 control, stale-focus fail-closed cleanup, owner-only host files, URL-handler
-teardown, and release-integrity controls are unreleased until the next tag. The
+teardown, and release-integrity controls shipped in `v0.1.5`. The
 current stable `vX.Y.Z` pipeline uses a secretless exact-arm64 prebuild,
 re-verifies the binary before secrets, fails closed on signing-keychain cleanup
 or release-asset name collisions, and constrains the Homebrew cask to arm64.

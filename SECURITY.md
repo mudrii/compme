@@ -10,7 +10,7 @@ response within 7 days.
 ## Supported versions
 
 Only the latest published release receives security fixes. The current
-supported release is `v0.1.4`; earlier releases are unsupported.
+supported release is `v0.1.5`; earlier releases are unsupported.
 
 ## Scope notes
 

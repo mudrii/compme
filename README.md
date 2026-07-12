@@ -25,18 +25,18 @@ promoted into the workspace.
 
 | Platform | Product status | Current boundary |
 |---|---|---|
-| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.4` | Current `main` is newer than the artifact; its deterministic gates are green, while 17 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
+| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.5` | Current `main` matches the artifact apart from post-release cask metadata; its deterministic gates are green, while 17 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
 | Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | Adapter/overlay operations and most ShellHost services remain fail-closed; owner-only DACL hardening, console shutdown handling, and URL opening are real, but there is no usable Windows product or package yet. |
 | Linux | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `LinuxAdapter`, overlay, and most ShellHost operations remain fail-closed; no usable Linux product or package yet. |
 
 The detailed Windows, Linux/X11, Wayland, GPU, packaging, and per-OS acceptance
 sequence is tracked in [the cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md).
 
-**Release boundary:** `v0.1.4` points to `18b8dc0`. The feature and architecture
-descriptions below document current `main`. Post-tag runtime/release hardening,
-the local/manual-only A2 pipeline policy, and the single **Show Models Folder**
-control are current-main behavior and will not be in a published artifact until
-the next release.
+**Release boundary:** `v0.1.5` points to `14ae81e`. The feature and architecture
+descriptions below document current `main`, which matches the published
+artifact apart from the post-release cask-checksum finalization. The
+runtime/release hardening, the local/manual-only A2 pipeline policy, and the
+single **Show Models Folder** control shipped in `v0.1.5`.
 
 The macOS run loop is functional: it reads caret/text context through
 Accessibility, generates short local completions, classifies field UX (inline /
@@ -60,7 +60,7 @@ brew tap mudrii/compme https://github.com/mudrii/compme
 brew install --cask compme
 ```
 
-The current v0.1.4 release artifact is Developer-ID signed, notarized, and
+The current v0.1.5 release artifact is Developer-ID signed, notarized, and
 stapled (see [docs/RELEASING.md](docs/RELEASING.md)). Earlier release notes
 record their original signing status. Local source bundles remain ad-hoc signed
 by default.
@@ -463,8 +463,8 @@ model's license for acceptance.
 ## Status
 
 This repository develops on `main`; documented behavior describes the current
-workspace. Published releases, currently through v0.1.4, are listed on the
-[Releases page](https://github.com/mudrii/compme/releases). The latest v0.1.4
+workspace. Published releases, currently through v0.1.5, are listed on the
+[Releases page](https://github.com/mudrii/compme/releases). The latest v0.1.5
 artifact is signed, notarized, and stapled; the per-version release notes record
 the original status of earlier artifacts.
 

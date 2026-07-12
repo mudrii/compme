@@ -24,13 +24,13 @@ Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
 ## Repository State
 
 The current checkout develops on `main`; the latest published release is the
-signed, notarized, and stapled v0.1.4. Earlier release notes preserve each
+signed, notarized, and stapled v0.1.5. Earlier release notes preserve each
 artifact's original signing status. Workspace behavior may be newer than the
 latest tag, so use tag-specific release assets and notes when validating a
-published version. Specifically, `v0.1.4` points to `18b8dc0`; current `main` adds
-post-tag runtime/release hardening, moves A2 validation out of automation, and
-removes the duplicate model-location control. Those changes are unreleased
-until the next tag.
+published version. Specifically, `v0.1.5` points to `14ae81e`; current `main`
+matches it apart from the post-release cask-checksum finalization. The
+post-v0.1.4 runtime/release hardening, local/manual-only A2 policy, and single
+model-location control shipped in v0.1.5.
 
 The root `Cargo.toml` is a Rust workspace with 25 members
 ([verified 2026-07-10] — keep in sync with `Cargo.toml`):
