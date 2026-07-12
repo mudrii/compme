@@ -38,7 +38,10 @@ jobs:
           fi
           version="${GITHUB_REF_NAME#v}"
           tools/release/validate-version.sh "$version"
-          git fetch origin "$DEFAULT_BRANCH"
+          # Explicit refspec: a bare fetch only guarantees FETCH_HEAD; whether
+          # it also updates origin/<branch> depends on checkout's refspec
+          # config, and a stale remote-tracking ref would fail this gate open.
+          git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
           default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
           if [ "$GITHUB_SHA" != "$default_sha" ]; then
             echo "release tag commit $GITHUB_SHA must equal current origin/$DEFAULT_BRANCH HEAD $default_sha" >&2
@@ -66,6 +69,16 @@ jobs:
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          # This job builds both the root workspace and tools/spike; spike is
+          # excluded from the root workspace, so it needs its own cache entry
+          # or the native llama.cpp build recompiles cold every release.
+          workspaces: |
+            .
+            tools/spike
+          # cargo-audit clones the RustSec advisory DB outside rust-cache's
+          # default paths.
+          cache-directories: ~/.cargo/advisory-db
 
       - name: Rust dependency audit
         run: |
@@ -271,7 +284,8 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          git fetch origin "$DEFAULT_BRANCH"
+          # Explicit refspec: see the preflight fetch comment.
+          git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
           default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
           if [ "$GITHUB_SHA" != "$default_sha" ]; then
             echo "release tag commit $GITHUB_SHA must still equal current origin/$DEFAULT_BRANCH HEAD $default_sha before prebuild" >&2
@@ -308,6 +322,10 @@ jobs:
         with:
           name: compme-prebuilt-binary
           if-no-files-found: error
+          # Consumed only by build_release in this run; keep the unsigned
+          # binary around just long enough to survive an environment-approval
+          # gap, not the 90-day default.
+          retention-days: 3
           path: target/release/compme
 
   # Signing job: consumes the binary built by the secretless prebuild job and
@@ -322,6 +340,9 @@ jobs:
     environment: release
     permissions:
       contents: read
+      # For actions/attest-build-provenance on the packaged zip.
+      id-token: write
+      attestations: write
     runs-on: macos-14
     timeout-minutes: 360
     steps:
@@ -381,7 +402,19 @@ jobs:
           rm -f "$p12"
           trap - EXIT
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # Collect the existing user keychain search list without word
+          # splitting (paths could contain spaces); each line is an
+          # indented, quoted path.
+          existing_keychains=()
+          while IFS= read -r kc; do
+            kc="${kc#"${kc%%[![:space:]]*}"}"
+            kc="${kc%\"}"
+            kc="${kc#\"}"
+            if [ -n "$kc" ]; then
+              existing_keychains+=("$kc")
+            fi
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" ${existing_keychains[@]+"${existing_keychains[@]}"}
           {
             echo "COMPME_CODESIGN_IDENTITY=$SIGNING_IDENTITY"
           } >> "$GITHUB_ENV"
@@ -393,18 +426,18 @@ jobs:
         run: COMPME_BUNDLE_SKIP_BUILD=1 tools/bundle/make-app.sh "$RUNNER_TEMP/bundle"
 
       # Tagged release artifacts are always Developer-ID signed and notarized;
-      # the helper fails closed when either notarization credential set is absent.
+      # the helper fails closed when no notarization credential set is present.
+      # The hosted workflow passes only the App Store Connect API key set; the
+      # helper's Apple-ID fallback exists for manual runs and its secrets are
+      # deliberately not configured here.
       - name: Notarize and staple the .app
         env:
           COMPME_NOTARYTOOL_KEY_BASE64: ${{ secrets.COMPME_NOTARYTOOL_KEY_BASE64 }}
           COMPME_NOTARYTOOL_KEY_ID: ${{ secrets.COMPME_NOTARYTOOL_KEY_ID }}
           COMPME_NOTARYTOOL_ISSUER: ${{ secrets.COMPME_NOTARYTOOL_ISSUER }}
-          COMPME_NOTARYTOOL_APPLE_ID: ${{ secrets.COMPME_NOTARYTOOL_APPLE_ID }}
-          COMPME_NOTARYTOOL_PASSWORD: ${{ secrets.COMPME_NOTARYTOOL_PASSWORD }}
-          COMPME_NOTARYTOOL_TEAM_ID: ${{ secrets.COMPME_NOTARYTOOL_TEAM_ID }}
-          # Notary --wait cap. Raised above the 30m default for a freshly enrolled
-          # Apple account whose first notarizations queue for hours. Tune via the
-          # COMPME_NOTARYTOOL_TIMEOUT repo variable (no code change needed).
+          # Notary --wait cap, matching the helper's 60m default (raised for a
+          # freshly enrolled Apple account whose first notarizations queue for
+          # hours). Tune via the COMPME_NOTARYTOOL_TIMEOUT repo variable.
           COMPME_NOTARYTOOL_TIMEOUT: ${{ vars.COMPME_NOTARYTOOL_TIMEOUT || '60m' }}
         run: tools/release/notarize-app.sh "$RUNNER_TEMP/bundle/Compme.app"
 
@@ -464,11 +497,23 @@ jobs:
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
 
+      # Signed provenance for the exact shipped bytes: the sha256 asset is
+      # produced in this same job (transport integrity only), so downstream
+      # jobs and users verify the zip against a workflow-identity attestation
+      # instead (gh attestation verify).
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ steps.pkg.outputs.zip }}
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: compme-release-artifacts
           if-no-files-found: error
+          # Consumed by publish_release/finalize_cask in this run; the signed
+          # zip lives on as a release asset, so cap the artifact copy.
+          retention-days: 7
           path: |
             ${{ steps.pkg.outputs.zip }}
             ${{ steps.pkg.outputs.zip }}.sha256
@@ -503,12 +548,24 @@ jobs:
           test -f "$ZIP.sha256"
           shasum -a 256 -c "$ZIP.sha256"
 
+      # The sha256 asset was written in the same job that built the zip, so it
+      # proves transport integrity only; the attestation binds these bytes to
+      # this workflow's identity.
+      - name: Verify artifact build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh attestation verify "release-artifacts/compme-${VERSION}-macos.zip" --repo "$GITHUB_REPOSITORY"
+
       - name: Verify release tag is still at default-branch HEAD before publication
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          git fetch origin "$DEFAULT_BRANCH"
+          # Explicit refspec: see the preflight fetch comment.
+          git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
           default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
           if [ "$GITHUB_SHA" != "$default_sha" ]; then
             echo "release tag commit $GITHUB_SHA must still equal current origin/$DEFAULT_BRANCH HEAD $default_sha before publication" >&2
@@ -548,7 +605,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --force origin \
-            "$DEFAULT_BRANCH" \
+            "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH" \
             "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
           tag_sha="$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")"
@@ -564,6 +621,10 @@ jobs:
   # Keep cask publication in its own protected-environment job. If the push
   # fails after the GitHub release is public, GitHub can rerun this job directly
   # without attempting to recreate or replace published release assets.
+  # NOTE: between undraft and this job succeeding, main's cask already names
+  # the new version but still carries the previous release's sha256, so
+  # `brew install --cask compme` fails closed (checksum mismatch) in that
+  # window — approve and rerun this job promptly if it fails.
   finalize_cask:
     name: Finalize Homebrew cask
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
@@ -593,6 +654,14 @@ jobs:
           test -f "$ZIP"
           test -f "$ZIP.sha256"
           shasum -a 256 -c "$ZIP.sha256"
+
+      - name: Verify artifact build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh attestation verify "release-artifacts/compme-${VERSION}-macos.zip" --repo "$GITHUB_REPOSITORY"
 
       - name: Finalize Homebrew cask
         env:

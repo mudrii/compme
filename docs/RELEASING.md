@@ -19,16 +19,18 @@ platforms.
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push to `main` / `spike/**`, PR, or `workflow_dispatch` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, plus non-A2 acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), release-version validator self-test, Homebrew cask Ruby syntax (`ruby -c Casks/compme.rb`), bundle assembler and icon-generator self-tests (`tools/bundle/make-app.sh --self-test` and `tools/bundle/make-icon.sh --self-test`), bundle smoke + self-test (`tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`), UI-assisted session self-test (`tools/acceptance/run-ui-assisted-session.sh --self-test`), A1b/E2E self-tests, agent-brief alignment + self-test (`tools/release/check-agent-briefs.sh` and `tools/release/check-agent-briefs.sh --self-test`), privacy policy + self-test (`tools/release/check-privacy-policy.sh` and `tools/release/check-privacy-policy.sh --self-test`), missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. Windows/Linux portability jobs fmt the workspace, clippy/test the workspace excluding `platform_macos`, and build the app binary through the target facade. |
-| [`.github/workflows/audit.yml`](../.github/workflows/audit.yml) | Mondays at 06:17 UTC or `workflow_dispatch` | One isolated Ubuntu job installs `cargo-audit` 0.22.2 with `--locked` and audits `Cargo.lock`. It has read-only contents permission, a 20-minute timeout, and does not cancel an in-progress audit. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected stable tag `vX.Y.Z` | Preflight validates the stable version, exact default-branch tip, and bundle metadata. Validation installs pinned `cargo-audit` 0.22.2 and runs root/spike gates, release self-tests, and full portable-workspace plus app-binary gates on Windows/Linux. Secretless prebuild produces an exact-arm64 binary. Protected signing downloads and re-verifies it, signs, notarizes, staples, deletes the signing keychain, packages the zip, then expands the final zip and requires exactly one top-level `Compme.app` that passes strict `codesign`, staple, and Gatekeeper assessment. Publication verifies the downloaded zip, writes the update manifest from that checksum, and creates a draft after an exact-tip check; it then re-fetches tag/default branch immediately before undraft, deleting the stale draft and failing on drift. The cask finalizer verifies its local zip against the published checksum asset before branch mutation. All jobs have explicit timeouts: the outer signing job allows 360 minutes, while the notary submission defaults to 60 minutes and can be raised with `COMPME_NOTARYTOOL_TIMEOUT` below the outer ceiling. |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push to `main` / `spike/**`, PR, or `workflow_dispatch` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, plus non-A2 acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), release-version validator self-test, Homebrew cask Ruby syntax (`ruby -c Casks/compme.rb`), bundle assembler and icon-generator self-tests (`tools/bundle/make-app.sh --self-test` and `tools/bundle/make-icon.sh --self-test`), bundle smoke + self-test (`tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`), UI-assisted session self-test (`tools/acceptance/run-ui-assisted-session.sh --self-test`), A1b/E2E self-tests, agent-brief alignment + self-test (`tools/release/check-agent-briefs.sh` and `tools/release/check-agent-briefs.sh --self-test`), privacy policy + self-test (`tools/release/check-privacy-policy.sh` and `tools/release/check-privacy-policy.sh --self-test`), missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. Windows/Linux portability jobs fmt the workspace, clippy/test the workspace excluding `platform_macos`, and build the app binary through the target facade; the Linux job also runs the pinned `cargo-audit`. A separate Ubuntu job runs `actionlint` (with shellcheck over inline `run:` blocks) across all workflows. |
+| [`.github/workflows/audit.yml`](../.github/workflows/audit.yml) | Mondays at 06:17 UTC or `workflow_dispatch` | One isolated Ubuntu job installs `cargo-audit` 0.22.2 with `--locked` and audits `Cargo.lock`. It has read-only contents permission (plus `issues: write` for failure notification), a 20-minute timeout, and does not cancel an in-progress audit. On failure it opens or updates a tracking issue so scheduled breakage is not lost to email. |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected stable tag `vX.Y.Z` | Preflight validates the stable version, exact default-branch tip, and bundle metadata. Validation installs pinned `cargo-audit` 0.22.2 and runs root/spike gates, release self-tests, and full portable-workspace plus app-binary gates on Windows/Linux. Secretless prebuild produces an exact-arm64 binary. Protected signing downloads and re-verifies it, signs, notarizes, staples, deletes the signing keychain, packages the zip, then expands the final zip and requires exactly one top-level `Compme.app` that passes strict `codesign`, staple, and Gatekeeper assessment, and finally attests build provenance for the packaged zip. Publication verifies the downloaded zip's checksum and provenance attestation, writes the update manifest from that checksum, and creates a draft after an exact-tip check; it then re-fetches tag/default branch immediately before undraft, deleting the stale draft and failing on drift. The cask finalizer re-verifies checksum and attestation, then verifies its local zip against the published checksum asset before branch mutation. All jobs have explicit timeouts: the outer signing job allows 360 minutes, while the notary submission defaults to 60 minutes and can be raised with `COMPME_NOTARYTOOL_TIMEOUT` below the outer ceiling. |
 
-CI and tag validation install `cargo-audit` 0.22.2 with `--locked` and run
-`cargo audit` under the workflow-level `contents: read` permission. The weekly
-dependency-audit workflow runs the same pinned command with the same read-only
-permission. No audit job needs `checks: write`. Every CI and release job has an
-explicit timeout. The publish job verifies the downloaded zip checksum before
-writing the update manifest and creating the draft.
+CI (the Linux portability job) and tag validation install `cargo-audit` 0.22.2
+with `--locked` and run `cargo audit` under `contents: read`. The weekly
+dependency-audit workflow runs the same pinned command and additionally holds
+`issues: write`, used only to open or update a tracking issue when a scheduled
+run fails. No audit job needs `checks: write`. Every CI and release job has an
+explicit timeout. The publish job verifies the downloaded zip checksum and its
+build-provenance attestation before writing the update manifest and creating
+the draft.
 
 Workflow permissions default to `contents: read`; only the publication and cask
 finalization jobs receive `contents: write`, and both are gated by the protected
@@ -77,14 +79,14 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
 1. Ensure the repository has the release secrets and variables:
    `COMPME_DEVELOPER_ID_P12_BASE64`,
    `COMPME_DEVELOPER_ID_P12_PASSWORD`, `COMPME_CODESIGN_IDENTITY`, plus one
-   GitHub-runner notarization credential set accepted by
-   [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh): either
+   GitHub-runner notarization credential set:
    `COMPME_NOTARYTOOL_KEY_BASE64` + `COMPME_NOTARYTOOL_KEY_ID` +
-   `COMPME_NOTARYTOOL_ISSUER`, or `COMPME_NOTARYTOOL_APPLE_ID` +
-   `COMPME_NOTARYTOOL_PASSWORD` + `COMPME_NOTARYTOOL_TEAM_ID`. A
-   `COMPME_NOTARYTOOL_KEYCHAIN_PROFILE` is supported by the helper for a
-   preconfigured local keychain, but the GitHub-hosted workflow does not create
-   that profile.
+   `COMPME_NOTARYTOOL_ISSUER` (the App Store Connect API key set — the only
+   set the hosted workflow passes to the helper).
+   [`tools/release/notarize-app.sh`](../tools/release/notarize-app.sh) itself
+   also accepts `COMPME_NOTARYTOOL_APPLE_ID` + `COMPME_NOTARYTOOL_PASSWORD` +
+   `COMPME_NOTARYTOOL_TEAM_ID` or a `COMPME_NOTARYTOOL_KEYCHAIN_PROFILE` for
+   manual/local runs, but the hosted workflow does not read those secrets.
 
    **Producing the secrets** (first-time setup):
    - Developer-ID `.p12`: export the "Developer ID Application" certificate +
@@ -300,7 +302,10 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    - If the release is already published and only cask finalization fails, rerun
      only the failed **Finalize Homebrew cask** job. Approve its protected
      `release` environment again; it re-downloads and re-verifies the published
-     artifact without creating or uploading another release.
+     artifact without creating or uploading another release. Do this promptly:
+     until the job succeeds, the cask on `main` already names the new version
+     but still carries the previous release's `sha256`, so
+     `brew install --cask compme` fails closed with a checksum mismatch.
    - If the Actions rerun window or workflow artifacts have expired, do not
      rebuild and upload new bytes under the existing protected tag. If a draft
      already contains all three original assets, download them, verify the zip

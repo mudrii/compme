@@ -17,6 +17,10 @@ jobs:
     name: Rust dependency audit
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      # Needed only for the failure-notification step below.
+      issues: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -27,7 +31,33 @@ jobs:
         with:
           toolchain: 1.96.1
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          # cargo-audit clones the RustSec advisory DB outside rust-cache's
+          # default paths; cache it alongside the cargo-installed binary.
+          cache-directories: ~/.cargo/advisory-db
+
       - name: Audit locked dependencies
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
           cargo audit
+
+      # Scheduled-run failures otherwise rely on GitHub's default email, which
+      # is easy to miss; a failing weekly audit silently defeats its purpose.
+      - name: Open or update tracking issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Scheduled dependency audit failed"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$title\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --body "The weekly cargo-audit run failed: $run_url"
+          fi

@@ -17,6 +17,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Lints the workflow YAML itself (plus shellcheck over inline run: blocks,
+  # preinstalled on ubuntu-latest). Workflows are otherwise only exercised at
+  # push/tag time, so wiring bugs would surface mid-release. `go run` verifies
+  # the module against the Go checksum database, keeping the pin immutable.
+  actionlint:
+    name: actionlint (workflows)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Run actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+
   check:
     name: fmt · clippy · test (macOS)
     # Apple Silicon runner: Metal is available for the llama-cpp-2 build, and
@@ -36,11 +52,6 @@ jobs:
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-
-      - name: Rust dependency audit
-        run: |
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -162,6 +173,12 @@ jobs:
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          # tools/spike is excluded from the root workspace, so the default
+          # ". -> target" mapping never caches tools/spike/target — including
+          # the native llama.cpp build, which otherwise recompiles cold on
+          # every run.
+          workspaces: tools/spike
 
       - name: Format spike workspace
         working-directory: tools/spike
@@ -229,6 +246,10 @@ jobs:
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          # cargo-audit clones the RustSec advisory DB outside rust-cache's
+          # default paths; cache it alongside the cargo-installed binary.
+          cache-directories: ~/.cargo/advisory-db
 
       # The whole workspace minus `platform_macos` (Apple frameworks). This
       # gates portability leaks in shared crates and proves the app binary
@@ -238,6 +259,13 @@ jobs:
 
       - name: Clippy portable workspace (deny warnings)
         run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
+
+      # Platform-independent (reads Cargo.lock only); lives in the Linux job
+      # so the premium macOS lane never pays the cargo-audit compile.
+      - name: Rust dependency audit
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
 
       - name: Test portable workspace
         run: cargo test --locked --workspace --exclude platform_macos
