@@ -11411,6 +11411,39 @@ mod tests {
     }
 
     #[test]
+    fn accept_key_modifier_glyphs_emit_in_fixed_hig_order() {
+        // Shortcuts-pane label twin of format_accept_key: ⌃⌥⇧⌘ in HIG order
+        // regardless of mask bit order, one glyph per set bit, empty for a
+        // bare key. A reordered or dropped glyph would ship a wrong settings
+        // label undetected by the word-form tests above.
+        let all = CARBON_CMD_KEY | CARBON_SHIFT_KEY | CARBON_OPTION_KEY | CARBON_CONTROL_KEY;
+        assert_eq!(
+            accept_key_modifier_glyphs(all),
+            "\u{2303}\u{2325}\u{21e7}\u{2318}"
+        );
+        assert_eq!(accept_key_modifier_glyphs(CARBON_CMD_KEY), "\u{2318}");
+        assert_eq!(accept_key_modifier_glyphs(0), "");
+    }
+
+    #[test]
+    fn accept_consumer_kind_routes_correction_to_its_own_tap() {
+        // The accept-tap arming path picks the tap flavor from the pending
+        // action: only Correction gets the CorrectionConsumer tap; every other
+        // action (and no action) arms the plain Consumer.
+        assert_eq!(
+            accept_consumer_kind_for_action(Some(AcceptAction::Correction)),
+            AcceptTapKind::CorrectionConsumer
+        );
+        for action in [Some(AcceptAction::Full), Some(AcceptAction::Word), None] {
+            assert_eq!(
+                accept_consumer_kind_for_action(action),
+                AcceptTapKind::Consumer,
+                "{action:?}"
+            );
+        }
+    }
+
+    #[test]
     fn ns_event_modifier_flags_map_to_carbon_bits() {
         // Slice 2 recorder: NSEvent reports modifiers in the HIGH bits
         // (device-independent flags) while Carbon's RegisterEventHotKey wants

@@ -984,6 +984,8 @@ mod tests {
         assert!(terminal_prompt_activates(editor, "git commit -m wip"));
         assert!(terminal_prompt_activates(editor, "hi"));
         assert!(terminal_prompt_activates(editor, ""));
+        // A second non-terminal bundle id, with a bare shell leader.
+        assert!(terminal_prompt_activates("com.apple.mail", "cd"));
     }
 
     #[test]
@@ -1210,12 +1212,6 @@ mod tests {
             !terminal_prompt_activates(term, "/Applications/Foo.app/Contents/MacOS/bar runs now"),
             "the /Contents/MacOS/ form is an executable-path invocation"
         );
-    }
-
-    #[test]
-    fn non_terminal_apps_are_never_restricted_by_the_prompt_heuristic() {
-        assert!(terminal_prompt_activates("com.apple.TextEdit", "ls -la"));
-        assert!(terminal_prompt_activates("com.apple.mail", "cd"));
     }
 
     #[test]

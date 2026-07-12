@@ -273,9 +273,13 @@ mod tests {
     }
 
     #[test]
-    fn every_americanism_maps_to_its_exact_value() {
-        // Round-trips the whole table — a corrupted British value would pass the
-        // narrower spot-checks but fail here.
+    fn every_americanism_key_resolves_to_its_table_value() {
+        // Whole-table sweep. The expected value comes from the same tuple, so
+        // this cannot catch a corrupted British value (the literal spot-checks
+        // above do that); it pins that every key resolves at all, that the
+        // Lower case-pattern returns the value verbatim, and that a duplicated
+        // key with a conflicting value fails (first match wins, so the second
+        // entry's assertion would see the wrong value).
         for (us, uk) in US_TO_UK {
             assert_eq!(to_british(us).as_deref(), Some(*uk), "{us}");
         }

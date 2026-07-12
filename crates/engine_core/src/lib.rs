@@ -4075,6 +4075,49 @@ mod tests {
     }
 
     #[test]
+    fn preview_correction_action_on_a_plain_ghost_returns_none() {
+        // AcceptAction::Correction never previews an insertion on a plain
+        // completion ghost: corrections commit through the correction pipeline,
+        // not the preview/echo-absorb path. A regression returning Some here
+        // would make the host absorb a phantom echo for an insert that never
+        // happens. Distinct from the Presentation::Correction guard — the ghost
+        // here is a plain one; only the action is a Correction.
+        let machine = showing_three_words();
+
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Correction),
+            None
+        );
+        // The same ghost still previews normally for a real accept action.
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "world there friend".into(), 0))
+        );
+    }
+
+    #[test]
+    fn force_show_re_presents_a_replacement_ghost_and_keeps_replace_left() {
+        // ForceShow re-asserts the held candidate verbatim. For a replacement
+        // ghost that must mean a fresh ShowGhost AND an intact replace_left, so
+        // a subsequent accept still deletes the typed trigger text.
+        let mut machine = focused_machine();
+        machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+
+        assert_eq!(
+            machine.on_event(Event::ForceShow),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "😄".into(),
+            }]
+        );
+        assert_eq!(
+            machine.preview_accept_insert(AcceptAction::Full),
+            Some((field("field-a"), "😄".into(), 5))
+        );
+    }
+
+    #[test]
     fn long_completion_is_capped_to_max_words_when_shown() {
         // The `max_words` ceiling (set via `new`) flows through `on_completion_ready`
         // into `cap_words`: a non-degenerate completion with MORE words than the cap

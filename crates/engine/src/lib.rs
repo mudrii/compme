@@ -1103,6 +1103,39 @@ mod tests {
     }
 
     #[test]
+    fn absent_correction_ignores_non_grammar_requests_and_keeps_the_stamp() {
+        // A Completion-kind request routed to on_correction_absent is a no-op:
+        // it must return no follow-ups and must NOT consume the armed grammar
+        // stamp, so the real grammar outcome still presents afterwards.
+        let (mut engine, _adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        let range = CorrectionRange { start: 0, end: 3 };
+        let request = grammar_request(&mut engine, range);
+        let completion = CompletionRequest {
+            generation: request.generation,
+            field: field(),
+            domain: None,
+            snapshot: request.snapshot,
+            prompt: String::new(),
+            max_tokens: 8,
+            kind: RequestKind::Completion,
+        };
+
+        assert_eq!(engine.on_correction_absent(&completion).unwrap(), vec![]);
+        engine.on_correction(&request, "the".into(), range).unwrap();
+
+        assert!(
+            overlay
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| matches!(call, OverlayCall::ShowCorrection(_, _))),
+            "the grammar stamp must survive a non-grammar absent-correction call"
+        );
+    }
+
+    #[test]
     fn correction_range_geometry_error_fails_closed_without_caret_fallback() {
         let mut adapter = FakeAdapter::new();
         adapter.fail_range_rect = true;

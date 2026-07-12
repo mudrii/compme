@@ -386,6 +386,13 @@ mod tests {
     fn all_six_stops_are_distinct() {
         let stops: Vec<Strength> = (0u8..6).map(Strength::from_stop).collect();
         assert_eq!(stops, Strength::STOPS.to_vec());
+        // Earn the test name: the mapping assert above mirrors from_stop's own
+        // table indexing, so distinctness must be checked independently.
+        for i in 0..stops.len() {
+            for j in (i + 1)..stops.len() {
+                assert_ne!(stops[i], stops[j], "stops {i} and {j} collide");
+            }
+        }
     }
 
     #[test]

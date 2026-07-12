@@ -122,9 +122,13 @@ mod tests {
     }
 
     #[test]
-    fn every_typo_corrects_to_its_exact_value() {
-        // Round-trips the whole table — a corrupted correction value would pass
-        // the narrower spot-checks but fail here.
+    fn every_typo_key_resolves_to_its_table_value() {
+        // Whole-table sweep. The expected value comes from the same tuple, so
+        // this cannot catch a corrupted correction value (the literal
+        // spot-checks above do that); it pins that every key resolves at all,
+        // that the Lower case-pattern returns the value verbatim, and that a
+        // duplicated key with a conflicting value fails (first match wins, so
+        // the second entry's assertion would see the wrong fix).
         for (typo, fix) in TYPOS {
             assert_eq!(correct(typo).as_deref(), Some(*fix), "{typo}");
         }

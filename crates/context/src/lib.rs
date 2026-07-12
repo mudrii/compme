@@ -505,6 +505,14 @@ Recent: green blue\n"
     }
 
     #[test]
+    fn word_at_split_caret_rejects_zero_max_word_chars() {
+        // Pins the zero-cap contract: a word straddles the caret, yet a zero
+        // cap yields None. (Behavior-level pin — the explicit zero guard and
+        // the length-cap checks both enforce it internally.)
+        assert_eq!(word_at_split_caret("te", "h", 2, 0), None);
+    }
+
+    #[test]
     fn word_at_split_caret_preserves_boundary_word_semantics() {
         assert_eq!(
             word_at_split_caret("hello", " world", 5, 32).unwrap().word,

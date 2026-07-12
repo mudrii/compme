@@ -434,4 +434,32 @@ mod tests {
         assert_eq!(parse_key_with_mods("-1"), None);
         assert_eq!(parse_key_with_mods("wat+96"), None);
     }
+
+    #[test]
+    fn key_with_mods_formatter_orders_modifiers_and_round_trips() {
+        // Inverse of the parser: canonical cmd/shift/option/control word order
+        // regardless of mask bit order, bare keycode for an empty mask, and
+        // parse(format(x)) is the identity for persisted chords.
+        assert_eq!(
+            format_key_with_mods(96, (1 << 12) | (1 << 8)),
+            "cmd+control+96"
+        );
+        assert_eq!(format_key_with_mods(96, 0), "96");
+        assert_eq!(
+            parse_key_with_mods(&format_key_with_mods(49, 1 << 11)),
+            Some((49, 1 << 11))
+        );
+    }
+
+    #[test]
+    fn keymap_error_display_renders_each_variant() {
+        assert_eq!(
+            KeymapError::Collision(53).to_string(),
+            "keymap collision: keycode 53 bound more than once"
+        );
+        assert_eq!(
+            KeymapError::InvalidKeycode(-1).to_string(),
+            "invalid keycode: -1 (must be non-negative)"
+        );
+    }
 }
