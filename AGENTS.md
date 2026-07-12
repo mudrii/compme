@@ -12,3 +12,7 @@ committed deliverables behind the shared PlatformAdapter contract.
 ## Conventions
 - Minimal diffs, stdlib first, no speculative abstraction.
 - Non-trivial logic ships with a test.
+
+# Self-Learning
+
+When I correct you or catch you making a mistake, before continuing add the lesson as a one-line rule under `# Lessons` so it never happens again.

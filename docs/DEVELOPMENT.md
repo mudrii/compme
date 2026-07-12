@@ -243,13 +243,17 @@ root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
 surface and several macOS pasteboard checks share process-wide OS state.
-Branch/PR CI also runs native Windows/Linux portability jobs: workspace fmt,
-portable-workspace clippy/tests excluding `platform_macos`, and an app-binary
-build through each fail-closed target facade. Tag release validation is
-equally broad: it runs the same portable-workspace gates and app-binary build on
-`windows-latest` and `ubuntu-latest`. CI and tag validation also install
+Branch/PR CI also lints the workflow YAML itself (`actionlint`, with shellcheck
+over inline `run:` steps) and runs native Windows/Linux portability jobs:
+workspace fmt, portable-workspace clippy/tests excluding `platform_macos`, and
+an app-binary build through each fail-closed target facade. Tag release
+validation is equally broad: it runs the same portable-workspace gates and
+app-binary build on `windows-latest` and `ubuntu-latest`, and the signing job
+attests build provenance for the packaged zip, verified by the publication and
+cask jobs before use. CI and tag validation also install
 `cargo-audit` 0.22.2 with `--locked` and run `cargo audit` under read-only
-workflow permissions; a separate read-only workflow repeats that pinned audit
+workflow permissions; a separate workflow (read-only apart from opening a
+tracking issue on failure) repeats that pinned audit
 every Monday at 06:17 UTC and supports manual dispatch. Every workflow job has
 an explicit timeout. Those are hosted-runner gates rather than
 platform-specific macOS commands.

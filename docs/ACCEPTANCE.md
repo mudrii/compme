@@ -80,6 +80,9 @@ Native portability CI:
   `cargo audit` under read-only workflow permissions. The isolated dependency
   audit repeats that pinned check every Monday at 06:17 UTC and supports manual
   dispatch.
+- A separate Ubuntu `actionlint` job lints every workflow file (including
+  shellcheck over inline `run:` blocks) on branch/PR CI, so workflow wiring
+  bugs surface before tag time.
 
 The root test gate must use `--all-targets` because `platform_macos` keeps
 acceptance regression tests in example targets. It is serialized because several

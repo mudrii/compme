@@ -27,7 +27,7 @@ dependency-audit workflow and can be dispatched manually.
 
 Reports about the redaction layer, the opt-in encrypted typing memory,
 `compme://` signature verification and mandatory confirmation, secure-field
-handling, or the release pipeline's signing/notarization chain are especially
-welcome. Unsigned deep links are limited to the reversible command subset and
+handling, or the release pipeline's signing, notarization, and
+build-provenance attestation chain are especially welcome. Unsigned deep links are limited to the reversible command subset and
 still require host confirmation; signed links are verified only when a trusted
 public key is configured.

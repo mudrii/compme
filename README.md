@@ -45,8 +45,9 @@ ghost-text overlay, intercepts accept keys through transient Carbon hotkeys, and
 inserts accepted text through Accessibility, synthetic keys, or a clipboard-paste
 fallback. Stable `vX.Y.Z` release artifacts are built through the GitHub Release
 workflow as Developer-ID signed, hardened-runtime, notarized, and stapled
-bundles; stable tags fail closed if the required signing credentials are
-unavailable.
+bundles carrying a workflow-identity build-provenance attestation
+(`gh attestation verify <zip> --repo mudrii/compme`); stable tags fail closed
+if the required signing credentials are unavailable.
 
 ## Install
 
@@ -398,14 +399,16 @@ Then follow [the A2 manual procedure](docs/ACCEPTANCE.md#a2-compatibility-and-co
 for the required target mapping, evidence directory, matrix run, and ledger
 validation.
 
-Branch/PR CI also runs native Windows/Linux portability jobs: workspace fmt,
-portable-workspace clippy/tests excluding `platform_macos`, and an app-binary
-build through each target facade. Tag release validation is equally broad: it
-runs the same portable-workspace gates and app-binary build on `windows-latest`
-and `ubuntu-latest`. CI and tag validation install
+Branch/PR CI also lints the workflow YAML itself (`actionlint`, with shellcheck
+over inline `run:` steps) and runs native Windows/Linux portability jobs:
+workspace fmt, portable-workspace clippy/tests excluding `platform_macos`, and
+an app-binary build through each target facade. Tag release validation is
+equally broad: it runs the same portable-workspace gates and app-binary build
+on `windows-latest` and `ubuntu-latest`. CI and tag validation install
 `cargo-audit` 0.22.2 with `--locked` and run `cargo audit` under read-only
-workflow permissions. A separate read-only dependency-audit workflow repeats
-that pinned check every Monday at 06:17 UTC and supports manual dispatch. These
+workflow permissions. A separate dependency-audit workflow (read-only apart
+from opening a tracking issue when a scheduled run fails) repeats that pinned
+check every Monday at 06:17 UTC and supports manual dispatch. These
 are hosted-runner gates, not part of the platform-specific macOS checks above.
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full development workflow

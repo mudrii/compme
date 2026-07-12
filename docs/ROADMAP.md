@@ -1,14 +1,14 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-12 (implementation reviewed through `76e9987` plus the current review; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1888 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-12 (implementation reviewed through `db4a55b` plus the current review; v0.1.4 remains the latest published artifact; post-tag runtime, release, audit, and Settings fixes are on `main`; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1888 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
 > with symbol/function/gate anchors re-reviewed 2026-07-12 on the current tree.
-> Evidence includes the full 40-commit delta from published `v0.1.4` through
-> `76e9987`: cross-platform Phase 0, the model-catalog size correction,
+> Evidence includes the full 46-commit delta from published `v0.1.4` through
+> `db4a55b`: cross-platform Phase 0, the model-catalog size correction,
 > stale-focus/terminal/Finder/private-file/URL-handler fixes, mutation-backed
 > full-codebase cleanup through `dd102eb`, and the release pipeline hardening
 > through `0eadd99` (pinned RustSec audit, portable release parity, explicit
@@ -23,7 +23,12 @@
 > pulls, frozen helper execution, and hermetic expected-failure self-tests;
 > documentation reconciliation in `adb5c82`; config/domain-policy hardening in
 > `f66dee0`; harness cleanup plus startup/repetition regressions in `5479074`;
-> and the review fixes in `76e9987`.
+> the review fixes in `76e9987`; the audit reconciliation in `4a64002` with
+> deterministic Linux exit-polling tests through `a4d6564`; the full-suite TDD
+> audit closure in `b451cf8`; and the CI/release supply-chain hardening in
+> `5b81a8c`/`db4a55b` (workflow actionlint gate, Linux-lane `cargo-audit`,
+> build-provenance attestation with pre-publication verification,
+> explicit-refspec head gates, and spike build caching).
 
 > **Release boundary:** the published v0.1.4 artifact is tag `18b8dc0`.
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
@@ -194,7 +199,13 @@ signing + hardened runtime + notarization + a native updater.
   must pass strict signature, staple, and Gatekeeper assessment. Hermetic helper
   self-tests sanitize or ignore inherited `COMPME_*` controls. The workflow also
   constrains the artifact/cask to arm64 and allowlists the exact identities and
-  commit SHAs of every workflow action. None of these post-tag policy changes is
+  commit SHAs of every workflow action. CI additionally runs `actionlint` (with
+  shellcheck over inline `run:` steps) across every workflow, and the weekly
+  audit opens a tracking issue on failure. The release signing job attests
+  build provenance for the packaged zip via `actions/attest-build-provenance`,
+  publication and cask jobs verify the attestation with `gh attestation verify`
+  before use, and every tag-at-HEAD gate refreshes the default branch with an
+  explicit refspec. None of these post-tag policy changes is
   part of the v0.1.4 tag.
 
 **Pending:**
