@@ -120,11 +120,13 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
 
    Tag releases fail closed if any Developer-ID or notarization secret is
    missing; there is no unsigned publication fallback.
-2. Bump the version in `crates/app/Cargo.toml`, `tools/bundle/Info.plist`
+2. Bump the version in the root `Cargo.toml` (`[workspace.package]` — every
+   crate, including `app`, inherits it via `version.workspace = true`),
+   `tools/bundle/Info.plist`
    (both `CFBundleShortVersionString` and `CFBundleVersion` to the same value —
    `check-bundle-metadata.sh` enforces equality), and `Casks/compme.rb`
-   (`version`). Refresh `Cargo.lock` so its `app` package entry records the same
-   version (for example, run `cargo check -p app` once without `--locked`), then
+   (`version`). Refresh `Cargo.lock` so its package entries record the same
+   version (for example, run `cargo check --workspace` once without `--locked`), then
    validate the version and both distribution metadata surfaces before committing:
 
    ```sh

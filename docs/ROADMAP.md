@@ -494,7 +494,8 @@ a granted macOS GUI session).
    portable pre-pass.
 2. **Scope = the nearest word at the caret**, not a whole-field scan-and-cycle.
    Use a word-under-caret helper over `left_context + right_context` that returns
-   a scalar `CorrectionRange`; `trailing_word` is insufficient for mid-word cases
+   a scalar word range (`context::WordRange`, converted to `CorrectionRange` at
+   the run-loop boundary); `trailing_word` is insufficient for mid-word cases
    such as `te|h`. Multi-error cycling is a later extension, not v1.
 3. **Two dedicated keystrokes** (the user asked for a separate fix key), not a
    reuse of accept-word/full.
@@ -579,7 +580,7 @@ a granted macOS GUI session).
 | # | Phase | Effort | Notes |
 |---|---|---|---|
 | G1 | `grammar_fix_prompt` + output post-filter (model_client, pure) + word-under-caret helper (context) | S | ✅ Implemented with deterministic prompt, vetting, and caret-word tests. |
-| G2 | Grammar inference request/outcome kind + worker routing; `CorrectionRange`/`Showing`/`ReplaceRange` wiring; `Config`/`AppPolicy`/`AppPolicyField` toggle wiring | M | ✅ Implemented with fake model/adapter coverage and fail-closed platform stubs. |
+| G2 | Grammar inference request/outcome kind + worker routing; `CorrectionRange`/`Showing`/`ReplaceRange` wiring; `Config`/`AppPolicy`/`AppPolicyField` toggle wiring | M | ✅ Implemented with fake model/adapter coverage and fail-closed platform trait defaults. |
 | G3 | Two keystrokes: `ShortcutAction::GrammarCheck` + `AcceptBinding::GrammarAccept` registration + routing | M | ✅ Implemented with config parsing, shortcut routing, accept-action isolation, and Carbon plan tests; physical keypress remains part of live LOOK. |
 | G4 | Underline + correction-banner overlay (novel FFI) | L | ✅ Implemented with macOS range geometry and correction presenter tests; live visual LOOK remains pending on a granted Mac. |
 | G5 | Settings: grammar-accept recorder row + Apps-pane `GrammarFix` column; live validation | M | ✅ Implemented: recorder role/collision handling, live grammar-accept rebind persistence, Apps-pane `GrammarFix` mapping, and env-shadow/config tests are covered. |
@@ -595,8 +596,9 @@ a granted macOS GUI session).
 ### Cross-platform architecture (Linux · Windows · macOS)
 The portable core (G1-G2, plus policy/settings logic) is **written once** and
 shared by all three OSes. Only these four trait surfaces get a per-OS impl; the
-new range-bounds/range-replacement methods must land with fail-closed stubs in
-every adapter when the shared trait changes:
+new range-bounds/range-replacement methods ship as fail-closed **trait defaults**
+(`crates/platform/src/lib.rs`, pinned by test) that every adapter inherits until
+it overrides them:
 
 | Surface | macOS (reference) | Windows | Linux |
 |---|---|---|---|
@@ -607,17 +609,18 @@ every adapter when the shared trait changes:
 
 Detection (LLM inference) has **no per-OS surface at all** — it runs through the
 same portable `model_client`/`inference` path on every OS. Sequencing: macOS
-lands G1-G5 first as the reference; Windows and Linux first get fail-closed
-stubs for the new trait rows, then real implementations as follow-on platform
-work. Grammar-fix stays inert there until each row is built — never misbehaves.
+lands G1-G5 first as the reference; Windows and Linux inherit the fail-closed
+trait defaults for the new rows, then get real implementations as follow-on
+platform work. Grammar-fix stays inert there until each row is built — never misbehaves.
 This is the same parity model as Tier 1.1 foundation work, and it depends on the
 platform text-range read/replace impls that Windows/Linux owe regardless of this
 feature.
 
 **Effort/status:** Large milestone now code-complete for the macOS reference:
 portable core (G1-G2) and macOS reference surfaces (G3-G5) are implemented and
-headless-tested. Windows and Linux retain fail-closed stubs for the new range
-and correction surfaces until their real four-row trait impls are built. The
+headless-tested. Windows and Linux retain the inherited fail-closed trait
+defaults for the new range and correction surfaces until their real four-row
+trait impls are built. The
 remaining macOS risk narrowed 2026-07-07: underline/banner render, in-place
 accept, and stale-correction refusal live-proved with the real model (Batch 5
 assisted session); residual is the formal `grammar-fix-textedit-look` A1b gate

@@ -30,4 +30,5 @@ members = [
 exclude = ["tools/spike"]
 
 [workspace.package]
+version = "0.1.5"
 license = "Apache-2.0"

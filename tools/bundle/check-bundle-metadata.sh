@@ -281,6 +281,33 @@ CASK
     *) echo "self-test FAILED: expected OK message, got: $out" >&2; exit 1 ;;
   esac
 
+  # (g) workspace-inherited version resolves from the workspace root manifest.
+  mkdir -p "$tmp/ws/crates/app"
+  printf 'version.workspace = true\n' >"$tmp/ws/crates/app/Cargo.toml"
+  printf '[workspace.package]\nversion = "1.2.3"\n' >"$tmp/ws/Cargo.toml"
+  if ! out="$("$0" "$good_plist" "$tmp/ws/crates/app/Cargo.toml" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: workspace-inherited version should pass, got: $out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"Bundle metadata OK"*) ;;
+    *) echo "self-test FAILED: expected OK message for inherited version, got: $out" >&2; exit 1 ;;
+  esac
+
+  # (h) inherited version with no workspace root version -> missing-version error.
+  mkdir -p "$tmp/ws-broken/crates/app"
+  printf 'version.workspace = true\n' >"$tmp/ws-broken/crates/app/Cargo.toml"
+  printf '[workspace]\nmembers = []\n' >"$tmp/ws-broken/Cargo.toml"
+  if out="$("$0" "$good_plist" "$tmp/ws-broken/crates/app/Cargo.toml" "$good_cask" 2>&1)"; then
+    echo "self-test FAILED: unresolved inherited version should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"missing package version"*) ;;
+    *) echo "self-test FAILED: expected missing-version error, got: $out" >&2; exit 1 ;;
+  esac
+
   if "$0" "$good_plist" "$cargo" "$good_cask" unexpected-extra >/dev/null 2>"$tmp/normal-argc.err"; then
     echo "self-test FAILED: extra normal argument was accepted" >&2
     exit 1
@@ -364,7 +391,15 @@ ruby -rrexml/document -e '
   collect_schemes.call(dict)
   errors << "CFBundleURLSchemes: missing compme" unless schemes.include?("compme")
 
-  cargo_version = File.read(cargo_path)[/^version\s*=\s*"([^"]+)"/, 1]
+  cargo_text = File.read(cargo_path)
+  cargo_version = cargo_text[/^version\s*=\s*"([^"]+)"/, 1]
+  if cargo_version.nil? && cargo_text.match?(/^version\.workspace\s*=\s*true\s*$/)
+    workspace_manifest = File.expand_path("../../Cargo.toml", File.dirname(cargo_path))
+    if File.exist?(workspace_manifest)
+      workspace_package = File.read(workspace_manifest)[/^\[workspace\.package\]\n(?:(?!\[).*\n?)*/]
+      cargo_version = workspace_package[/^version\s*=\s*"([^"]+)"/, 1] if workspace_package
+    end
+  end
   cask_text = File.read(cask_path)
   cask_version = cask_text[/^\s*version\s+"([^"]+)"/, 1]
   cask_macos = cask_text[/^\s*depends_on\s+macos:\s+:(\w+)/, 1]
