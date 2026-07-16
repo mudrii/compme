@@ -4611,7 +4611,7 @@ fn capabilities_for_field(
         true,
     );
     let metadata = unsafe { read_sidebar_field_metadata(element, &identity) }?;
-    capabilities.assistant_field = sidebar_assistant_field(&metadata);
+    capabilities.assistant_field = assistant_field_evidence(&metadata).is_some();
     Ok(capabilities)
 }
 
@@ -4624,24 +4624,22 @@ struct SidebarFieldMetadata {
     help: Option<String>,
 }
 
-fn sidebar_assistant_field(metadata: &SidebarFieldMetadata) -> bool {
-    let identifier = metadata
-        .identifier
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let labels = [
-        metadata.description.as_deref(),
-        metadata.title.as_deref(),
-        metadata.placeholder.as_deref(),
-        metadata.help.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" ")
-    .to_ascii_lowercase();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssistantMetadataSource {
+    Identifier,
+    Description,
+    Title,
+    Placeholder,
+    Help,
+}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AssistantFieldEvidence {
+    source: AssistantMetadataSource,
+    marker: &'static str,
+}
+
+fn assistant_field_evidence(metadata: &SidebarFieldMetadata) -> Option<AssistantFieldEvidence> {
     const IDENTIFIER_MARKERS: [&str; 8] = [
         "chat",
         "copilot",
@@ -4665,10 +4663,40 @@ fn sidebar_assistant_field(metadata: &SidebarFieldMetadata) -> bool {
         "send a message",
     ];
 
-    IDENTIFIER_MARKERS
-        .iter()
-        .any(|marker| identifier.contains(marker))
-        || LABEL_MARKERS.iter().any(|marker| labels.contains(marker))
+    if let Some(identifier) = metadata.identifier.as_deref() {
+        let identifier = identifier.to_ascii_lowercase();
+        if let Some(marker) = IDENTIFIER_MARKERS
+            .iter()
+            .find(|marker| identifier.contains(**marker))
+        {
+            return Some(AssistantFieldEvidence {
+                source: AssistantMetadataSource::Identifier,
+                marker,
+            });
+        }
+    }
+
+    for (source, value) in [
+        (
+            AssistantMetadataSource::Description,
+            metadata.description.as_deref(),
+        ),
+        (AssistantMetadataSource::Title, metadata.title.as_deref()),
+        (
+            AssistantMetadataSource::Placeholder,
+            metadata.placeholder.as_deref(),
+        ),
+        (AssistantMetadataSource::Help, metadata.help.as_deref()),
+    ] {
+        let Some(value) = value else {
+            continue;
+        };
+        let value = value.to_ascii_lowercase();
+        if let Some(marker) = LABEL_MARKERS.iter().find(|marker| value.contains(**marker)) {
+            return Some(AssistantFieldEvidence { source, marker });
+        }
+    }
+    None
 }
 
 unsafe fn read_sidebar_field_metadata(
@@ -6954,21 +6982,39 @@ mod tests {
 
     #[test]
     fn sidebar_field_classifier_requires_positive_assistant_metadata() {
-        for metadata in [
-            SidebarFieldMetadata {
-                identifier: Some("workbench.panel.chat.view.input".into()),
-                ..SidebarFieldMetadata::default()
-            },
-            SidebarFieldMetadata {
-                placeholder: Some("Ask Copilot anything".into()),
-                ..SidebarFieldMetadata::default()
-            },
-            SidebarFieldMetadata {
-                description: Some("Cascade chat input".into()),
-                ..SidebarFieldMetadata::default()
-            },
+        for (metadata, expected) in [
+            (
+                SidebarFieldMetadata {
+                    identifier: Some("workbench.panel.chat.view.input".into()),
+                    ..SidebarFieldMetadata::default()
+                },
+                AssistantFieldEvidence {
+                    source: AssistantMetadataSource::Identifier,
+                    marker: "chat",
+                },
+            ),
+            (
+                SidebarFieldMetadata {
+                    placeholder: Some("Ask Copilot anything".into()),
+                    ..SidebarFieldMetadata::default()
+                },
+                AssistantFieldEvidence {
+                    source: AssistantMetadataSource::Placeholder,
+                    marker: "ask copilot",
+                },
+            ),
+            (
+                SidebarFieldMetadata {
+                    description: Some("Cascade chat input".into()),
+                    ..SidebarFieldMetadata::default()
+                },
+                AssistantFieldEvidence {
+                    source: AssistantMetadataSource::Description,
+                    marker: "chat input",
+                },
+            ),
         ] {
-            assert!(sidebar_assistant_field(&metadata), "{metadata:?}");
+            assert_eq!(assistant_field_evidence(&metadata), Some(expected));
         }
     }
 
@@ -6986,7 +7032,10 @@ mod tests {
                 ..SidebarFieldMetadata::default()
             },
         ] {
-            assert!(!sidebar_assistant_field(&metadata), "{metadata:?}");
+            assert!(
+                assistant_field_evidence(&metadata).is_none(),
+                "{metadata:?}"
+            );
         }
     }
 

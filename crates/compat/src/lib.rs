@@ -514,38 +514,106 @@ fn is_path_token(token: &str) -> bool {
         || token.starts_with("~/")
 }
 
+/// The combined policy for one application. Keeping compatibility, editor
+/// safety, and statistical-autocorrect eligibility in one typed value prevents
+/// the bundle-id lists from drifting across independent classifiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppPolicy {
+    pub compatibility: CompatTier,
+    pub code_editor: bool,
+    pub statistical_autocorrect: bool,
+}
+
+impl AppPolicy {
+    const fn new(
+        compatibility: CompatTier,
+        code_editor: bool,
+        statistical_autocorrect: bool,
+    ) -> Self {
+        Self {
+            compatibility,
+            code_editor,
+            statistical_autocorrect,
+        }
+    }
+}
+
+const UNKNOWN_APP_POLICY: AppPolicy = AppPolicy::new(CompatTier::Unknown, false, false);
+
+/// Resolve every exact app-level compatibility and prose-safety decision from a
+/// single normalized bundle-id match. Family fallbacks remain below the exact
+/// entries so a future app addition has one policy row to update.
+pub fn app_policy(bundle_id: &str) -> AppPolicy {
+    let id = normalize_bundle_id(bundle_id);
+    match id.as_str() {
+        // Known prose apps.
+        "com.apple.mail" | "com.microsoft.word" | "com.apple.textedit" | "com.apple.notes" => {
+            AppPolicy::new(CompatTier::Works, false, true)
+        }
+        // Known compatible apps without OS-backed statistical autocorrect.
+        "com.apple.safari"
+        | "com.google.chrome"
+        | "com.brave.browser"
+        | "com.microsoft.edgemac"
+        | "com.vivaldi.vivaldi"
+        | "notion.id"
+        | "md.obsidian"
+        | "com.apple.mobilesms"
+        | "com.apple.terminal"
+        | "com.googlecode.iterm2" => AppPolicy::new(CompatTier::Works, false, false),
+        // Setup needed — Arc/Dia need Text Metrics / a launch flag for inline.
+        "company.thebrowser.browser" | "company.thebrowser.dia" => {
+            AppPolicy::new(CompatTier::SetupNeeded, false, false)
+        }
+        // Mirror-window only.
+        "org.mozilla.firefox"
+        | "org.mozilla.firefoxdeveloperedition"
+        | "org.mozilla.nightly"
+        | "app.zen-browser.zen" => AppPolicy::new(CompatTier::MirrorOnly, false, false),
+        "com.tinyspeck.slackmacgap" => AppPolicy::new(CompatTier::Partial, false, false),
+        // Sidebar/AI-chat only: the main editor is code, but a positively
+        // identified assistant field may opt into prose-only features.
+        "com.microsoft.vscode" | "com.todesktop.230313mzl4w4u92" | "com.exafunction.windsurf" => {
+            AppPolicy::new(CompatTier::SidebarOnly, true, false)
+        }
+        // Unsupported editors.
+        "com.barebones.bbedit" | "com.sublimetext.3" | "com.sublimetext.4" => {
+            AppPolicy::new(CompatTier::Unsupported, true, false)
+        }
+        // Unsupported prose apps retain their explicit statistical-autocorrect
+        // classification even though the compatibility gate blocks suggestions.
+        "com.apple.iwork.pages" => AppPolicy::new(CompatTier::Unsupported, false, true),
+        "org.mozilla.thunderbird"
+        | "com.literatureandlatte.scrivener3"
+        | "com.microsoft.onenote.mac"
+        | "com.mitchellh.ghostty"
+        | "dev.warp.warp-stable" => AppPolicy::new(CompatTier::Unsupported, false, false),
+        // Known code editors that otherwise use the conservative Unknown tier.
+        "com.apple.dt.xcode" | "dev.zed.zed" | "dev.zed.zed-preview" => {
+            AppPolicy::new(CompatTier::Unknown, true, false)
+        }
+        // Known prose app that otherwise uses the conservative Unknown tier.
+        "com.microsoft.outlook" => AppPolicy::new(CompatTier::Unknown, false, true),
+        // Browser-family variants/helpers classify Works.
+        _ if is_browser_family(&id) => AppPolicy::new(CompatTier::Works, false, false),
+        // JetBrains products share one dot-bounded code-editor family.
+        _ if id.starts_with("com.jetbrains.") => AppPolicy::new(CompatTier::Unknown, true, false),
+        _ => UNKNOWN_APP_POLICY,
+    }
+}
+
 /// Conservative app-level code-editor classification for prose-only features
 /// such as statistical autocorrect. Sidebar assistant fields can explicitly
 /// override this at the field-capability boundary.
 pub fn is_code_editor(bundle_id: &str) -> bool {
-    let id = normalize_bundle_id(bundle_id);
-    matches!(
-        id.as_str(),
-        "com.apple.dt.xcode"
-            | "com.microsoft.vscode"
-            | "com.todesktop.230313mzl4w4u92"
-            | "com.exafunction.windsurf"
-            | "com.barebones.bbedit"
-            | "com.sublimetext.3"
-            | "com.sublimetext.4"
-            | "dev.zed.zed"
-            | "dev.zed.zed-preview"
-    ) || id.starts_with("com.jetbrains.")
+    app_policy(bundle_id).code_editor
 }
 
 /// Conservative allowlist for OS-backed statistical autocorrect. Unknown apps,
 /// browsers, and editor surfaces fail closed; positively identified assistant
 /// fields are admitted separately by the field-capability gate.
 pub fn supports_statistical_autocorrect(bundle_id: &str) -> bool {
-    matches!(
-        normalize_bundle_id(bundle_id).as_str(),
-        "com.apple.textedit"
-            | "com.apple.notes"
-            | "com.apple.mail"
-            | "com.apple.iwork.pages"
-            | "com.microsoft.word"
-            | "com.microsoft.outlook"
-    )
+    app_policy(bundle_id).statistical_autocorrect
 }
 
 /// Classify a macOS application bundle id into a compatibility tier. The id is
@@ -553,68 +621,7 @@ pub fn supports_statistical_autocorrect(bundle_id: &str) -> bool {
 /// trailing-dot id for an `Unsupported` app or terminal cannot fail open into the
 /// permissive `Unknown` fallthrough.
 pub fn compatibility_tier(bundle_id: &str) -> CompatTier {
-    let id = normalize_bundle_id(bundle_id);
-    match id.as_str() {
-        // Works — a representative set across families. The curated Chromium
-        // browsers (Brave/Edge/Vivaldi) classify like Chrome — they share its
-        // Blink engine and were previously fail-open Unknown despite being
-        // listed in `is_browser`, so they emitted no compat guidance.
-        "com.apple.safari"
-        | "com.google.chrome"
-        | "com.brave.browser"
-        | "com.microsoft.edgemac"
-        | "com.vivaldi.vivaldi"
-        | "com.apple.mail"
-        | "com.microsoft.word"
-        | "com.apple.textedit"
-        | "com.apple.notes"
-        | "notion.id"
-        | "md.obsidian"
-        | "com.apple.mobilesms"
-        | "com.apple.terminal"
-        | "com.googlecode.iterm2" => CompatTier::Works,
-
-        // Setup needed — Arc/Dia need Text Metrics / a launch flag for inline.
-        "company.thebrowser.browser" | "company.thebrowser.dia" => CompatTier::SetupNeeded,
-
-        // Mirror-window only. All Gecko/Firefox-family builds share the same
-        // lack of inline caret geometry, so the Developer Edition and Nightly
-        // variants must classify like the stable build (they were fail-open
-        // Unknown before — `is_browser` lists them but the tier arm didn't).
-        "org.mozilla.firefox"
-        | "org.mozilla.firefoxdeveloperedition"
-        | "org.mozilla.nightly"
-        | "app.zen-browser.zen" => CompatTier::MirrorOnly,
-
-        // Partial.
-        "com.tinyspeck.slackmacgap" => CompatTier::Partial,
-
-        // Sidebar/AI-chat only (code editors — editor pane stays disabled).
-        "com.microsoft.vscode" | "com.todesktop.230313mzl4w4u92" | "com.exafunction.windsurf" => {
-            CompatTier::SidebarOnly
-        }
-
-        // Explicitly unsupported.
-        "org.mozilla.thunderbird"
-        | "com.apple.iwork.pages"
-        | "com.literatureandlatte.scrivener3"
-        | "com.microsoft.onenote.mac"
-        | "com.barebones.bbedit"
-        | "com.sublimetext.3"
-        | "com.sublimetext.4"
-        | "com.mitchellh.ghostty"
-        | "dev.warp.warp-stable" => CompatTier::Unsupported,
-
-        // Browser-family variant/helper builds (Chrome canary, Edge Beta,
-        // Vivaldi snapshot, Chromium forks, in-family helpers). `is_browser`
-        // recognizes these, so the stated invariant — recognized browsers are
-        // compatible and never fall through to Unknown — must hold here too.
-        // They classify Works (the Chromium/Blink default): a concrete tier
-        // rather than the fail-open Unknown the comment claimed was fixed.
-        _ if is_browser_family(&id) => CompatTier::Works,
-
-        _ => CompatTier::Unknown,
-    }
+    app_policy(bundle_id).compatibility
 }
 
 #[cfg(test)]
@@ -681,6 +688,27 @@ mod tests {
         ] {
             assert_eq!(compatibility_tier(bundle), tier, "{bundle}");
         }
+    }
+
+    #[test]
+    fn app_policy_centralizes_overlapping_tier_editor_and_prose_decisions() {
+        assert_eq!(
+            app_policy("com.microsoft.VSCode"),
+            AppPolicy::new(CompatTier::SidebarOnly, true, false)
+        );
+        assert_eq!(
+            app_policy("com.apple.TextEdit"),
+            AppPolicy::new(CompatTier::Works, false, true)
+        );
+        assert_eq!(
+            app_policy("com.apple.iWork.Pages"),
+            AppPolicy::new(CompatTier::Unsupported, false, true)
+        );
+        assert_eq!(
+            app_policy("com.jetbrains.intellij"),
+            AppPolicy::new(CompatTier::Unknown, true, false)
+        );
+        assert_eq!(app_policy("com.example.Unknown"), UNKNOWN_APP_POLICY);
     }
 
     #[test]

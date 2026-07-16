@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-16 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1917 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-16 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, three non-critical architecture follow-ups, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1918 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -419,6 +419,26 @@ Their remaining work is live compatibility/UX validation, not missing code:
 
 ---
 
+## Non-critical architecture follow-ups — ✅ closed on current `main`
+
+The audit's three maintainability findings are behavior-preserving refactors,
+not new product scope:
+
+1. **Unified app policy registry:** `compat::AppPolicy` now resolves
+   compatibility tier, code-editor classification, and statistical-autocorrect
+   eligibility from one normalized bundle-id match. Existing public queries
+   delegate to the registry.
+2. **Structured SidebarOnly evidence:** macOS assistant-field classification now
+   retains the exact AX metadata source and conservative marker that matched;
+   fixture tests assert the provenance before the result is reduced to the
+   portable `Capabilities::assistant_field` bit.
+3. **Deeper app policy modules:** `run_loop.rs` remains the coordinator while
+   `feature_policy`, `context_policy`, `settings_runtime`, and `url_actions`
+   own deterministic suggestion decisions, context lifecycle invariants,
+   settings edges, and allowlisted external-link consumption.
+
+---
+
 ## Tier 4 — 🔬 Live validation (implemented rows need human/scripted evidence)
 
 These rows are implemented to a deterministic/build-verified standard. Selected A2
@@ -732,32 +752,35 @@ per-app configurable.
    SidebarOnly field classification, opt-in `NSSpellChecker` autocorrect,
    bounded cross-app previous-input context, exact-range selection thesaurus,
    and tray website/support actions are implemented with deterministic tests.
-2. **Run all 17 runner-pinned macOS manual/live gates plus the additional
+2. ✅ **Close the three non-critical architecture follow-ups (2026-07-16)** —
+   unify bundle policy, retain structured assistant-field evidence, and deepen
+   the app's feature/context/settings/URL module seams without changing behavior.
+3. **Run all 17 runner-pinned macOS manual/live gates plus the additional
    manually recorded Tier-4 rows** using the current local binary;
    record each result in `docs/ACCEPTANCE.md`. Prioritize the nine-tab Settings
    walkthrough, Setup single-location-control invariant, Apps/Personalization,
    physical hotkeys + grammar fix, Chromium-family caret calibration, and memory
    privacy residuals.
-3. ✅ **Synchronize plan/support/acceptance docs (2026-07-16)** — this update
+4. ✅ **Synchronize plan/support/acceptance docs (2026-07-16)** — this update
    refreshed the implementation anchor, atomic-replacement wording, Apps/memory
    status, Setup control invariant, A2 local-only policy, and platform-support
    matrix. Repeat the sync whenever manual gates close or adapter phases ship.
-4. **Settle non-atomic replacement scope** from that compatibility evidence; do
+5. **Settle non-atomic replacement scope** from that compatibility evidence; do
    not add backspace synthesis speculatively.
-5. **Windows Phase 1 (1.1–1.7)** — UIA read/caret, keyboard hook, insertion,
+6. **Windows Phase 1 (1.1–1.7)** — UIA read/caret, keyboard hook, insertion,
    layered overlay, ShellHost services, and native acceptance on Windows hardware.
-6. **Linux Phase 2 (2.1–2.7), X11-first** — start with the two-day accept-key
+7. **Linux Phase 2 (2.1–2.7), X11-first** — start with the two-day accept-key
    strategy spike, then AT-SPI2, insertion, overlay, ShellHost, and Xvfb fixtures.
-7. **Wayland Phase 3 decision spike** — compare IME and portal/global-shortcut
+8. **Wayland Phase 3 decision spike** — compare IME and portal/global-shortcut
    paths on GNOME, KDE, and sway before committing to an implementation.
-8. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux
+9. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux
    packaging/signing/publication, and feature-by-platform acceptance/docs after
    the corresponding adapter is functional.
-9. **Settle repository governance with the owner** — use the new read-only
+10. **Settle repository governance with the owner** — use the new read-only
    governance checker as the live mismatch inventory, then decide whether to protect
    `main`, restrict release-tag creation and deployment branches, prevent
    release-environment self-review, and align GitHub's Actions allowlist/SHA-pin
    policy with the repository checker. Record any deliberately accepted trust
    boundary if direct-to-`main` remains the chosen workflow.
-10. **Tier 1.2 optional updater** — replace the release-page handoff only with a
+11. **Tier 1.2 optional updater** — replace the release-page handoff only with a
    signature-verifying native updater design; this remains non-blocking.

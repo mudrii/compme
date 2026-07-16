@@ -46,8 +46,8 @@ platform contract types
         │  FieldHandle, TextContext, Capabilities, InsertStrategy
         ▼
 app run loop ──────────────────────────────────────────────┐
-        │  marshals platform callbacks onto the AppKit main  │ local-replacement
-        │  thread; owns policy (prefs, compat, personalize)  │ fast path:
+        │  marshals platform callbacks onto the AppKit main  │ feature_policy:
+        │  thread; composes pure policy modules              │ local-replacement
         ▼                                                    │ emoji / autocorrect
 engine::Engine ── engine_core::SuggestionMachine             │ / localize /
         │  deterministic event -> command state machine      │ thesaurus
@@ -179,7 +179,9 @@ corrections, shares the per-app Autocorrect policy, and runs only for a
 conservative known-prose app allowlist or a positively classified assistant
 field. Browsers, unknown apps, code editors, and code-like contexts fail closed.
 The curated path is gated by `COMPME_AUTOCORRECT`; the statistical path is gated
-by `COMPME_FULL_AUTOCORRECT`.
+by `COMPME_FULL_AUTOCORRECT`. App-level compatibility, editor classification,
+and statistical-autocorrect eligibility come from one `compat::AppPolicy`
+registry so their bundle-id decisions cannot drift independently.
 
 ### `grammar`
 
@@ -237,10 +239,10 @@ substituted word carries the same case the user typed. Pure and OS-agnostic.
 enable/exclude, per-app Tab-key disable, and a global pause/snooze. Pure — a
 policy struct plus deterministic resolution against a caller-supplied clock
 (`now_ms`), so every transition is unit-testable. The host wrapper
-`suggestion_gates_pass(app_key, text, domain, prefs, now_ms)` (in
-`app/run_loop.rs`, which composes `prefs.should_suggest` with the `compat` tier
-and the terminal-prompt check) resolves before either suggestion path produces
-output. Persistence and the settings UI live in the host.
+`feature_policy::suggestion_gates_pass(target, text, domain, prefs, now_ms)`
+composes `prefs.should_suggest` with compatibility, SidebarOnly field evidence,
+and terminal-prompt checks before any suggestion path produces output.
+Persistence and the settings UI live in the host.
 
 ### `compat`
 
@@ -249,8 +251,11 @@ that tier implies — the deterministic core behind the §16 compatibility-parit
 table (mirroring `cotypist.app/compatibility`). It encodes per-app UX quirks
 (e.g. apps whose caret rect collapses to a line, omnibox/address-bar detection,
 mirror-window and setup-needed apps) so the host can pick the right insertion
-and overlay behavior. Live per-app verification is environment-bound; this
-crate is the pure classifier that drives gating.
+and overlay behavior. `AppPolicy` is the single normalized bundle-id registry
+for compatibility tier, code-editor safety, and OS-backed statistical
+autocorrect eligibility; the legacy query functions delegate to it. Live
+per-app verification is environment-bound; this crate is the pure classifier
+that drives gating.
 
 ### `personalization`
 
@@ -473,6 +478,18 @@ dispatches all three suggestion paths. AppKit implementation remains in
 selection/download, the inference worker, signal handling, and ordered
 shutdown.
 
+The host keeps `run_loop.rs` as the process coordinator while focused internal
+modules own reusable policy:
+
+- `feature_policy.rs`: suggestion gating, local replacements, full
+  statistical autocorrect, and selected-word thesaurus decisions
+- `context_policy.rs`: auxiliary-context bounds plus clipboard/screen-context
+  enable/disable invariants
+- `settings_runtime.rs`: one-shot switch edges, environment-shadow notices,
+  live engine callbacks, and OS-first launch-at-login changes
+- `url_actions.rs`: the exact allowlisted external URLs and deterministic
+  one-shot tray-flag consumption
+
 Major responsibilities:
 
 - load dotenv-style config plus environment overrides, aborting startup on an
@@ -526,7 +543,9 @@ Major responsibilities:
   fallback when neither semantic identity nor hash is available.
 - Text reads through AX value and selected range.
 - Direct focused-element AX metadata classification for conservative
-  SidebarOnly assistant/sidebar fields.
+  SidebarOnly assistant/sidebar fields, retaining structured evidence for the
+  exact metadata source and marker before reducing it to the portable
+  `Capabilities::assistant_field` bit.
 - Caret geometry through native range bounds and Chromium/WebKit marker
   attributes.
 - Correction range geometry through AX bounds-for-range, used by the

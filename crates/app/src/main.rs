@@ -10,14 +10,18 @@
 mod about;
 mod adapter;
 mod config;
+mod context_policy;
+mod feature_policy;
 mod inference;
 mod model_picker;
 mod model_select;
 mod run_loop;
 mod screen_ocr;
+mod settings_runtime;
 mod setup_state;
 mod shell;
 mod status;
+mod url_actions;
 mod wiring;
 
 fn main() {

@@ -33,10 +33,31 @@ use zeroize::Zeroize;
 
 use crate::adapter::SharedAdapter;
 use crate::config::{self, parse_clamped};
+#[cfg(test)]
+use crate::context_policy::context_bound_chars;
+use crate::context_policy::{
+    apply_clipboard_context_edge, apply_screen_context_edge, settings_context_bound_chars,
+    ScreenContextEdge, ScreenContextToggleState, DEFAULT_CONTEXT_MAX_CHARS, SCREEN_CONTEXT_WAIT_MS,
+};
+#[cfg(test)]
+use crate::feature_policy;
+use crate::feature_policy::{
+    app_allows_suggestions as app_allows_suggestions_for_field,
+    suggestion_gates_pass as suggestion_gates_pass_for_field, FeaturePolicy, FeatureSwitches,
+    SuggestionTarget as SuggestionApp,
+};
 use crate::inference::{InferenceHandle, PreviousInputs, ScreenContext, WorkerContext};
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
 use crate::screen_ocr::ScreenOcr;
+#[cfg(test)]
+use crate::settings_runtime::env_shadow_warnings;
+use crate::settings_runtime::{
+    apply_autocorrect_settings_edge, apply_launch_at_login_settings_edge,
+    apply_midline_settings_edge, apply_trailing_space_settings_edge,
+    startup_env_shadow_notice_lines, switch_edge,
+};
 use crate::status::{derive_status, AppStatus, BlockReason};
+use crate::url_actions::{take_url_actions, UrlActionFlags};
 use crate::wiring::{FieldTracker, LatestRequest, Observation};
 
 const DEFAULT_DEBOUNCE_MS: u64 = 120;
@@ -46,11 +67,6 @@ const DEFAULT_MAX_TOKENS: usize = 24;
 const DEFAULT_HEARTBEAT_MS: u64 = 12;
 /// Candidate completions generated per request (1 = single, up to 5 for cycle).
 const DEFAULT_CANDIDATES: usize = 1;
-/// Bounded best-effort wait for exact-stamped screen OCR. Vision can be slower
-/// than this; late OCR is dropped rather than making suggestion latency unbounded.
-const SCREEN_CONTEXT_WAIT_MS: u64 = 250;
-/// Per-source character bound when previous-input context is enabled truthily.
-const DEFAULT_CONTEXT_MAX_CHARS: usize = 160;
 const MAX_MONITORED_BUFFER_CHARS: usize = 512;
 const DEFAULT_MODEL: &str = "tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf";
 const MAX_DEEP_LINK_URL_CHARS: usize = 4096;
@@ -62,9 +78,6 @@ const SECURE_POLL_INTERVAL_MS: u64 = 480;
 /// Periodic lifetime-stats flush cadence (c102 follow-up): bounds crash loss
 /// to ≤5 minutes of events; the file is ~120 bytes so the write is free.
 const STATS_FLUSH_INTERVAL_MS: u64 = 5 * 60 * 1000;
-const UPDATES_URL: &str = "https://github.com/mudrii/compme/releases/latest";
-const WEBSITE_URL: &str = "https://github.com/mudrii/compme";
-const SUPPORT_URL: &str = "https://github.com/mudrii/compme/issues/new";
 
 /// Set by the SIGINT/SIGTERM handler; observed by the loop to begin shutdown.
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -582,80 +595,58 @@ fn debug_enabled() -> bool {
     env_flag_on(std::env::var_os("COMPME_DEBUG").as_deref())
 }
 
+fn feature_switches(config: &Config) -> FeatureSwitches<'_> {
+    FeatureSwitches {
+        emoji: config.emoji.as_ref(),
+        autocorrect: config.autocorrect,
+        full_autocorrect: config.full_autocorrect,
+        british_english: config.british_english,
+        thesaurus: config.thesaurus,
+        thesaurus_selection: config.thesaurus_selection,
+    }
+}
+
+fn feature_policy<'a>(
+    config: &'a Config,
+    prefs: &'a Prefs,
+    app: SuggestionApp<'a>,
+    domain: Option<&'a str>,
+    enabled: bool,
+    now_ms: u64,
+) -> FeaturePolicy<'a> {
+    FeaturePolicy::new(
+        feature_switches(config),
+        prefs,
+        app,
+        domain,
+        enabled,
+        now_ms,
+    )
+}
+
+#[cfg(test)]
 fn emoji_offer(left: &str, cfg: &Option<EmojiPrefs>) -> Option<(String, usize)> {
-    let prefs = cfg.as_ref()?;
-    let suggestion = emoji::suggest(left, prefs)?;
-    Some((suggestion.glyph, suggestion.replace_chars))
+    feature_policy::emoji_offer(left, cfg.as_ref())
 }
 
-/// The trailing run of alphabetic characters at the caret (the word being typed),
-/// or `None` when the left context ends in a non-letter (boundary). Used to gate
-/// the word-based replacement offers (typo fix, US→UK) on an exact whole-word
-/// match — the same "token at the caret" model emoji uses for `:shortcode`.
+#[cfg(test)]
 fn trailing_word(left: &str) -> Option<&str> {
-    let start = left
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_alphabetic())
-        .last()
-        .map(|(i, _)| i)?;
-    let word = &left[start..];
-    (!word.is_empty()).then_some(word)
+    feature_policy::trailing_word(left)
 }
 
-/// A local *replacement* to offer for the typed left-context, or `None`. Tries the
-/// enabled features in priority order: emoji (`:shortcode`, explicit intent), then
-/// the word-based fixes on the trailing word — typo autocorrect, then US→UK
-/// spelling. Returns `(replacement_text, chars_to_replace)`. Pure over its inputs
-/// so the observe-path wiring stays testable.
+#[cfg(test)]
 fn replacement_offer(
     left: &str,
     config: &Config,
     autocorrect_enabled: bool,
     thesaurus_enabled: bool,
 ) -> Option<(Vec<String>, usize)> {
-    if let Some((glyph, len)) = emoji_offer(left, &config.emoji) {
-        return Some((vec![glyph], len));
-    }
-    let word = trailing_word(left)?;
-    let word_len = word.chars().count();
-    if autocorrect_enabled {
-        if let Some(fix) = autocorrect::correct(word) {
-            return Some((vec![fix], word_len));
-        }
-        // Grammar capitalization ("i" -> "I") rides the same autocorrect gate:
-        // it is a correction, and like typo-fixing it must stay off in code
-        // fields (where a bare `i` is a variable). Apostrophe-aware contractions
-        // are intentionally out of this trailing-word helper; they would require
-        // a caret-token model that includes apostrophes.
-        if let Some(fix) = grammar::capitalize_pronoun(word) {
-            return Some((vec![fix], word_len));
-        }
-    }
-    if config.british_english {
-        if let Some(uk) = localize::to_british(word) {
-            return Some((vec![uk], word_len));
-        }
-    }
-    if thesaurus_enabled {
-        let syns = thesaurus::synonyms(word);
-        if !syns.is_empty() {
-            return Some((syns, word_len));
-        }
-    }
-    None
-}
-
-/// The full observe-path decision for a local replacement: a `(text, replace_left)`
-/// to offer, or `None`. Combines the suggestion gate (tray `enabled` + per-app
-/// exclude / snooze / terminal-NL, the SAME policy as a model completion) with the
-/// feature lookup, so a local offer never shows where a model one wouldn't. Pure
-/// over its inputs so the gate+offer interaction is unit-testable (warm-up is
-/// intentionally not gated — replacements are local and need no model).
-#[derive(Clone, Copy)]
-struct SuggestionApp<'a> {
-    app_key: Option<&'a str>,
-    assistant_field: bool,
+    feature_policy::replacement_offer(
+        left,
+        feature_switches(config),
+        autocorrect_enabled,
+        thesaurus_enabled,
+    )
 }
 
 #[cfg(test)]
@@ -691,34 +682,7 @@ fn replacement_decision_for_field(
     enabled: bool,
     now_ms: u64,
 ) -> Option<(Vec<String>, usize)> {
-    // `prefs` is passed separately from `config` because the run loop mutates
-    // its prefs at runtime (snooze); reading `config.prefs` here would split
-    // the policy source and let a local offer show while the model is snoozed.
-    if !enabled || !suggestion_gates_pass_for_field(app, left, domain, prefs, now_ms) {
-        return None;
-    }
-    // Per-app autocorrect/thesaurus overrides (App Settings): prefs override,
-    // else the global config default.
-    let autocorrect = prefs.autocorrect_enabled(app.app_key, config.autocorrect);
-    let thesaurus = prefs.thesaurus_enabled(app.app_key, config.thesaurus);
-    replacement_offer(left, config, autocorrect, thesaurus)
-}
-
-fn code_like_autocorrect_context(left: &str) -> bool {
-    let tail: String = left
-        .chars()
-        .rev()
-        .take(120)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    ["::", "->", "=>", "//", "/*", "*/", "()", "{}", "[]"]
-        .iter()
-        .any(|marker| tail.contains(marker))
-        || tail
-            .chars()
-            .any(|ch| matches!(ch, '{' | '}' | ';' | '`' | '='))
+    feature_policy(config, prefs, app, domain, enabled, now_ms).local_replacement(left)
 }
 
 struct FullAutocorrectGate<'a> {
@@ -735,41 +699,15 @@ fn full_autocorrect_decision(
     gate: FullAutocorrectGate<'_>,
     spelling_correction: impl FnOnce(&str) -> Result<Option<String>, PlatformError>,
 ) -> Option<(Vec<String>, usize)> {
-    let supported_prose_surface = gate.app.assistant_field
-        || gate
-            .app
-            .app_key
-            .is_some_and(compat::supports_statistical_autocorrect);
-    if !gate.enabled
-        || !prefs.autocorrect_enabled(gate.app.app_key, config.full_autocorrect)
-        || !suggestion_gates_pass_for_field(gate.app, left, gate.domain, prefs, gate.now_ms)
-        || !supported_prose_surface
-        || gate
-            .app
-            .app_key
-            .is_some_and(|app_key| compat::is_code_editor(app_key) && !gate.app.assistant_field)
-        || code_like_autocorrect_context(left)
-    {
-        return None;
-    }
-
-    let word = trailing_word(left)?;
-    let word_len = word.chars().count();
-    if !(2..=64).contains(&word_len) {
-        return None;
-    }
-    let correction = spelling_correction(word).ok().flatten()?;
-    let correction = correction.trim();
-    if correction.is_empty()
-        || correction.eq_ignore_ascii_case(word)
-        || correction.chars().any(char::is_whitespace)
-        || !correction
-            .chars()
-            .all(|ch| ch.is_alphabetic() || ch == '\'')
-    {
-        return None;
-    }
-    Some((vec![correction.to_string()], word_len))
+    feature_policy(
+        config,
+        prefs,
+        gate.app,
+        gate.domain,
+        gate.enabled,
+        gate.now_ms,
+    )
+    .full_autocorrect(left, spelling_correction)
 }
 
 struct SelectionThesaurusGate<'a> {
@@ -786,44 +724,15 @@ fn selection_thesaurus_decision(
     ctx: &TextContext,
     gate: SelectionThesaurusGate<'_>,
 ) -> Option<(String, Vec<String>, CorrectionRange)> {
-    let selection = ctx.selection?;
-    if selection.start >= selection.end
-        || !gate.enabled
-        || !gate
-            .prefs
-            .thesaurus_enabled(gate.app.app_key, gate.config.thesaurus_selection)
-        || !suggestion_gates_pass_for_field(
-            gate.app,
-            ctx.selected_text.as_deref().unwrap_or_default(),
-            gate.domain,
-            gate.prefs,
-            gate.now_ms,
-        )
-        || !gate.caps.insert_strategy.supports_atomic_range_replace()
-    {
-        return None;
-    }
-
-    let original = ctx.selected_text.as_deref()?;
-    if original.trim() != original
-        || !(2..=64).contains(&original.chars().count())
-        || !original.chars().all(char::is_alphabetic)
-    {
-        return None;
-    }
-    let candidates = thesaurus::synonyms(original);
-    if candidates.is_empty() {
-        return None;
-    }
-    let start = ctx.left_scalars;
-    Some((
-        original.to_string(),
-        candidates,
-        CorrectionRange {
-            start,
-            end: start + original.chars().count(),
-        },
-    ))
+    feature_policy(
+        gate.config,
+        gate.prefs,
+        gate.app,
+        gate.domain,
+        gate.enabled,
+        gate.now_ms,
+    )
+    .selection_thesaurus(ctx, gate.caps)
 }
 
 struct GrammarRequestGate<'a> {
@@ -898,26 +807,6 @@ fn grammar_fix_request(
             },
         },
     })
-}
-
-/// The completion worker's context char bound. Clipboard/screen context need
-/// a positive bound even when previous-input context is off — with
-/// `context_max_chars == 0` the worker's block builder returns `""` and the
-/// enabled auxiliary sources would be a silent no-op. An explicit positive
-/// bound always wins.
-fn context_bound_chars(clipboard: bool, screen_active: bool, max_chars: usize) -> usize {
-    if (clipboard || screen_active) && max_chars == 0 {
-        DEFAULT_CONTEXT_MAX_CHARS
-    } else {
-        max_chars
-    }
-}
-
-fn settings_context_bound_chars(max_chars: usize) -> usize {
-    // Settings can enable clipboard context after launch. Keep the inference
-    // worker's bound positive enough for that later enable; with no cells
-    // populated, the generated context block remains empty.
-    context_bound_chars(true, false, max_chars)
 }
 
 fn clipboard_diagnostic_line(text: Option<&str>, marker: Option<&str>) -> String {
@@ -1578,65 +1467,6 @@ fn apply_live_personalization_edit(
     (key, value, persist_result)
 }
 
-fn apply_clipboard_context_edge(on: bool, clipboard_cell: &Mutex<Option<String>>) {
-    if !on {
-        *clipboard_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum ScreenContextEdge {
-    Disabled,
-    Enabled,
-    RevertedDenied,
-    RevertedSpawnFailed,
-}
-
-struct ScreenContextToggleState<'a, T> {
-    config_screen_context: &'a mut bool,
-    ui_flag: &'a AtomicBool,
-    screen_cell: &'a Mutex<Option<ScreenContext>>,
-    screen_ocr: &'a mut Option<T>,
-}
-
-fn apply_screen_context_edge<T>(
-    on: bool,
-    state: ScreenContextToggleState<'_, T>,
-    mut set_wait_ms: impl FnMut(u64),
-    screen_recording_permission: impl FnOnce() -> bool,
-    spawn_screen_ocr: impl FnOnce() -> Result<T, String>,
-) -> ScreenContextEdge {
-    if !on {
-        *state.screen_cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *state.screen_ocr = None;
-        set_wait_ms(0);
-        return ScreenContextEdge::Disabled;
-    }
-
-    if !screen_recording_permission() {
-        *state.config_screen_context = false;
-        state.ui_flag.store(false, Ordering::Relaxed);
-        *state.screen_ocr = None;
-        set_wait_ms(0);
-        return ScreenContextEdge::RevertedDenied;
-    }
-
-    match spawn_screen_ocr() {
-        Ok(ocr) => {
-            *state.screen_ocr = Some(ocr);
-            set_wait_ms(SCREEN_CONTEXT_WAIT_MS);
-            ScreenContextEdge::Enabled
-        }
-        Err(_) => {
-            *state.config_screen_context = false;
-            state.ui_flag.store(false, Ordering::Relaxed);
-            *state.screen_ocr = None;
-            set_wait_ms(0);
-            ScreenContextEdge::RevertedSpawnFailed
-        }
-    }
-}
-
 fn instruction_map_from_config(
     lookup: &impl Fn(&str) -> Option<String>,
     list_key: &str,
@@ -1741,13 +1571,6 @@ fn app_allows_suggestions(app_key: Option<&str>) -> bool {
     })
 }
 
-fn app_allows_suggestions_for_field(app: SuggestionApp<'_>) -> bool {
-    app.app_key.is_none_or(|app_key| {
-        let tier = compat::compatibility_tier(app_key);
-        tier.allows_suggestions() && (!tier.sidebar_only() || app.assistant_field)
-    })
-}
-
 /// Whether suggestions are allowed for `app_key` given `text` as the candidate
 /// prompt/context: the app's compatibility tier allows inline (and isn't
 /// sidebar-only), a terminal only when `text` reads as a natural-language prompt,
@@ -1776,21 +1599,6 @@ fn suggestion_gates_pass(
         prefs,
         now_ms,
     )
-}
-
-fn suggestion_gates_pass_for_field(
-    app: SuggestionApp<'_>,
-    text: &str,
-    domain: Option<&str>,
-    prefs: &Prefs,
-    now_ms: u64,
-) -> bool {
-    let terminal_ok = app
-        .app_key
-        .is_none_or(|app| compat::terminal_prompt_activates(app, text));
-    app_allows_suggestions_for_field(app)
-        && terminal_ok
-        && prefs.should_suggest(app.app_key, domain, now_ms)
 }
 
 /// Lowercased host of an http(s) URL, port stripped — the pure half of the
@@ -3389,157 +3197,6 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
     }
 }
 
-/// The runtime-persisted keys: anything the running app writes back to
-/// config.env (Settings switches, policy overrides, and one-shot acceptances).
-/// Env-over-file layering means a set env var silently wins at relaunch —
-/// `env_shadow_warnings` names the shadowed ones at startup.
-///
-/// KEEP IN SYNC with every `persist_setting` writer: a new runtime-persisted key
-/// must be added here or its shadow goes unwarned (review-c111/c127; the
-/// len-pinned test below backstops this). Deliberately conservative: a key
-/// set to "" still warns — it parses falsy but still occupies the env layer.
-const SWITCH_KEYS: [&str; 36] = [
-    "COMPME_ENABLED",
-    "COMPME_MIDLINE",
-    "COMPME_AUTOCORRECT",
-    "COMPME_FULL_AUTOCORRECT",
-    "COMPME_THESAURUS_SELECTION",
-    "COMPME_GRAMMAR_FIX",
-    "COMPME_TRAILING_SPACE",
-    "COMPME_CROSS_APP_PREVIOUS_INPUTS",
-    "COMPME_CLIPBOARD_CONTEXT",
-    "COMPME_SCREEN_CONTEXT",
-    "COMPME_INSTRUCTIONS",
-    "COMPME_SENDER_NAME",
-    "COMPME_SENDER_EMAIL",
-    "COMPME_STRENGTH",
-    "COMPME_EMOJI",
-    "COMPME_EMOJI_SKIN_TONE",
-    "COMPME_EMOJI_GENDER",
-    "COMPME_NO_COLLECT_APPS",
-    "COMPME_EXCLUDED_APPS",
-    "COMPME_EXCLUDED_DOMAINS",
-    "COMPME_ENABLED_APPS",
-    "COMPME_DISABLED_APPS",
-    "COMPME_MIDLINE_ON_APPS",
-    "COMPME_MIDLINE_OFF_APPS",
-    "COMPME_AUTOCORRECT_ON_APPS",
-    "COMPME_AUTOCORRECT_OFF_APPS",
-    "COMPME_GRAMMAR_FIX_ON_APPS",
-    "COMPME_GRAMMAR_FIX_OFF_APPS",
-    "COMPME_THESAURUS_ON_APPS",
-    "COMPME_THESAURUS_OFF_APPS",
-    "COMPME_TAB_DISABLED_APPS",
-    // License acceptances persist on the prompt's Accept; an env shadow
-    // resurrects the un-accepted state at relaunch → surprise re-prompt
-    // (fail-closed, but confusing without the warning) (review-c127).
-    "COMPME_LICENSE_ACCEPTED",
-    // Accept-key rebinds persist after a successful live re-arm (recorder
-    // 5b); an env shadow resurrects the OLD keys at relaunch while the
-    // Shortcuts pane read the file — the exact desync the warning names.
-    "COMPME_ACCEPT_WORD_KEY",
-    "COMPME_ACCEPT_FULL_KEY",
-    "COMPME_GRAMMAR_ACCEPT_KEY",
-    "COMPME_GRAMMAR_CHECK_KEY",
-];
-
-/// One warning line per switch key currently set in the environment
-/// (review-c109: a flipped switch persists to file, then the env var
-/// resurrects the old value at relaunch — confusing without this notice).
-fn env_shadow_warnings(is_env_set: impl Fn(&str) -> bool) -> Vec<String> {
-    SWITCH_KEYS
-        .iter()
-        .filter(|key| is_env_set(key))
-        .map(|key| {
-            format!(
-                "{key} is set in the environment \u{2014} Settings changes persist to \
-                 config.env but the environment wins at relaunch"
-            )
-        })
-        .collect()
-}
-
-fn startup_env_shadow_notice_lines(is_env_set: impl Fn(&str) -> bool) -> Vec<String> {
-    env_shadow_warnings(is_env_set)
-        .into_iter()
-        .map(|warning| format!("compme: {warning}"))
-        .collect()
-}
-
-/// Edge-detect a settings switch: if the UI atomic differs from the loop's
-/// current value, update the current value and return the new state — the
-/// caller applies + persists exactly once per edge (audit c121: three
-/// watchers shared this shape verbatim).
-fn switch_edge(flag: &AtomicBool, current: &mut bool) -> Option<bool> {
-    let now = flag.load(Ordering::Relaxed);
-    (now != *current).then(|| {
-        *current = now;
-        now
-    })
-}
-
-fn apply_autocorrect_settings_edge(
-    flag: &AtomicBool,
-    current: &mut bool,
-    persist: impl FnOnce(bool),
-    dismiss_existing: impl FnOnce(bool),
-) -> Option<bool> {
-    let on = switch_edge(flag, current)?;
-    persist(on);
-    if !on {
-        dismiss_existing(on);
-    }
-    Some(on)
-}
-
-fn apply_trailing_space_settings_edge(
-    flag: &AtomicBool,
-    current: &mut bool,
-    set_trailing_space: impl FnOnce(bool),
-    persist: impl FnOnce(bool),
-) -> Option<bool> {
-    let on = switch_edge(flag, current)?;
-    set_trailing_space(on);
-    persist(on);
-    Some(on)
-}
-
-fn apply_midline_settings_edge(
-    flag: &AtomicBool,
-    global_mid_word: &mut bool,
-    prefs: &Prefs,
-    focused_app: Option<&str>,
-    set_allow_mid_word: impl FnOnce(bool),
-    persist: impl FnOnce(bool),
-) -> Option<bool> {
-    let on = switch_edge(flag, global_mid_word)?;
-    set_allow_mid_word(prefs.mid_line_enabled(focused_app, on));
-    persist(on);
-    Some(on)
-}
-
-/// Apply a user launch-at-login change through the OS boundary before
-/// persisting it. A rejected OS mutation restores both the loop's truth and
-/// the shared UI atomic; persistence is never called for a rejected change.
-fn apply_launch_at_login_settings_edge(
-    flag: &AtomicBool,
-    current: &mut bool,
-    shell: &dyn platform::shell::ShellHost,
-    persist: impl FnOnce(bool),
-) -> Result<Option<bool>, PlatformError> {
-    let desired = flag.load(Ordering::Relaxed);
-    if desired == *current {
-        return Ok(None);
-    }
-    if let Err(err) = shell.set_launch_at_login(desired) {
-        flag.store(*current, Ordering::Relaxed);
-        return Err(err);
-    }
-    *current = desired;
-    persist(desired);
-    Ok(Some(desired))
-}
-
 fn apply_emoji_enabled(
     config_emoji: &mut Option<EmojiPrefs>,
     saved_prefs: &mut EmojiPrefs,
@@ -3732,20 +3389,6 @@ fn apply_snooze_request(requested: bool, prefs: &mut Prefs, now_ms: u64) -> bool
         prefs.snooze(now_ms, SNOOZE_MINUTES);
     }
     requested
-}
-
-/// Consume the tray "Check for Updates…" flag: one click opens the release
-/// page at most once (swap-consumed, the same one-shot contract as the snooze
-/// request). The opener is injected — the same closure-injection seam the
-/// submit path uses — so tests observe the URL instead of spawning `open(1)`.
-fn handle_check_updates_flag(flag: &AtomicBool, open: impl FnOnce(&'static str)) {
-    handle_url_flag(flag, UPDATES_URL, open);
-}
-
-fn handle_url_flag(flag: &AtomicBool, url: &'static str, open: impl FnOnce(&'static str)) {
-    if flag.swap(false, Ordering::Relaxed) {
-        open(url);
-    }
 }
 
 /// Strict tri-state boolean: explicit truthy → `Some(true)`, explicit falsy →
@@ -6505,21 +6148,15 @@ pub fn run() -> Result<(), String> {
                 eprintln!("compme: open settings failed: {err}");
             }
         }
-        handle_check_updates_flag(&flags.check_updates, |url| {
-            if let Err(err) = shell.open_url(url) {
-                eprintln!("compme: open updates failed: {err}");
+        for action in take_url_actions(UrlActionFlags {
+            check_updates: &flags.check_updates,
+            visit_website: &flags.visit_website,
+            contact_support: &flags.contact_support,
+        }) {
+            if let Err(err) = shell.open_url(action.url()) {
+                eprintln!("compme: open {} failed: {err}", action.label());
             }
-        });
-        handle_url_flag(&flags.visit_website, WEBSITE_URL, |url| {
-            if let Err(err) = shell.open_url(url) {
-                eprintln!("compme: open website failed: {err}");
-            }
-        });
-        handle_url_flag(&flags.contact_support, SUPPORT_URL, |url| {
-            if let Err(err) = shell.open_url(url) {
-                eprintln!("compme: open support failed: {err}");
-            }
-        });
+        }
         if flags.quit.load(Ordering::Relaxed) {
             eprintln!("compme: quit requested");
             break;
@@ -10037,34 +9674,6 @@ mod tests {
         assert!(prefs.is_snoozed(1_000));
         assert!(prefs.is_snoozed(1_000 + 59 * 60 * 1_000));
         assert!(!prefs.is_snoozed(1_000 + 60 * 60 * 1_000));
-    }
-
-    #[test]
-    fn check_updates_flag_opens_the_updates_url_once() {
-        // An armed "Check for Updates…" flag opens the release page exactly
-        // once and is consumed by the tick that observed it.
-        let flag = AtomicBool::new(true);
-        let mut opened: Vec<&'static str> = Vec::new();
-        handle_check_updates_flag(&flag, |url| opened.push(url));
-        assert_eq!(opened, [UPDATES_URL]);
-        assert!(!flag.load(Ordering::Relaxed));
-        // Second tick: the consumed flag opens nothing.
-        handle_check_updates_flag(&flag, |url| opened.push(url));
-        assert_eq!(opened, [UPDATES_URL]);
-    }
-
-    #[test]
-    fn website_and_support_flags_open_exact_allowlisted_urls_once() {
-        for (url, flag) in [
-            (WEBSITE_URL, AtomicBool::new(true)),
-            (SUPPORT_URL, AtomicBool::new(true)),
-        ] {
-            let mut opened = Vec::new();
-            handle_url_flag(&flag, url, |opened_url| opened.push(opened_url));
-            handle_url_flag(&flag, url, |opened_url| opened.push(opened_url));
-            assert_eq!(opened, [url]);
-            assert!(!flag.load(Ordering::Relaxed));
-        }
     }
 
     #[test]
