@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1914 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1917 tests green).
 **Release boundary:** this status describes current `main`. The published
 v0.1.4 tag predates the post-release runtime/grammar hardening in `216fa0a` and
 the A2 automation-policy change in `618013d`; those changes require a later tag.

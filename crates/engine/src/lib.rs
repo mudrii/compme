@@ -371,6 +371,13 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    pub fn on_selection_unavailable(
+        &mut self,
+    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self.machine.clear_selection_replacement();
+        self.dispatch(commands)
+    }
+
     pub fn arm_manual_grammar_request(&mut self, field: &FieldHandle) -> Option<(u64, SnapshotId)> {
         self.machine.arm_manual_grammar_request(field)
     }
@@ -1525,6 +1532,32 @@ mod tests {
                 InsertStrategy::AxSet
             )]
         );
+    }
+
+    #[test]
+    fn selection_replacement_is_not_armed_after_selection_disappears() {
+        let (mut engine, adapter, overlay) = engine();
+        let field = field();
+        engine.on_focus(field.clone()).unwrap();
+        engine
+            .on_selection_replacement(
+                &field,
+                "happy".into(),
+                vec!["glad".into()],
+                CorrectionRange { start: 0, end: 5 },
+            )
+            .unwrap();
+
+        engine.on_selection_unavailable().unwrap();
+        engine.on_accept(AcceptAction::Full).unwrap();
+
+        assert!(adapter.range_replacing_inserts.lock().unwrap().is_empty());
+        assert!(overlay
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| matches!(call, OverlayCall::Hide)));
     }
 
     #[test]

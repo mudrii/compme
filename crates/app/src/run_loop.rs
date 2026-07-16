@@ -4778,6 +4778,7 @@ pub fn run() -> Result<(), String> {
                             } else {
                                 tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms)
                             };
+                            let caps = engine.current_capabilities();
                             match observation {
                                 Observation::Typed(change) => {
                                     let observe_domain =
@@ -4880,7 +4881,6 @@ pub fn run() -> Result<(), String> {
                                     }
                                 }
                                 Observation::CaretMoved { field, caret } => {
-                                    let caps = engine.current_capabilities();
                                     offer_all(
                                         &mut latest,
                                         log_err(
@@ -4888,36 +4888,44 @@ pub fn run() -> Result<(), String> {
                                             engine.on_caret_moved(field.clone(), caret),
                                         ),
                                     );
-                                    let domain = cached_domain(&last_domain, app_key.as_deref());
-                                    if let Some((original, candidates, range)) =
-                                        selection_thesaurus_decision(
-                                            &ctx,
-                                            SelectionThesaurusGate {
-                                                config: &config,
-                                                prefs: &prefs,
-                                                app: SuggestionApp {
-                                                    app_key: app_key.as_deref(),
-                                                    assistant_field: current_assistant_field,
-                                                },
-                                                domain,
-                                                enabled: flags.enabled.load(Ordering::Relaxed),
-                                                caps: &caps,
-                                                now_ms,
-                                            },
-                                        )
-                                    {
-                                        latest.clear();
-                                        offer_all(
-                                            &mut latest,
-                                            log_err(
-                                                "on_selection_replacement",
-                                                engine.on_selection_replacement(
-                                                    &field, original, candidates, range,
-                                                ),
-                                            ),
-                                        );
-                                    }
                                 }
+                            }
+                            let domain = cached_domain(&last_domain, app_key.as_deref());
+                            if let Some((original, candidates, range)) =
+                                selection_thesaurus_decision(
+                                    &ctx,
+                                    SelectionThesaurusGate {
+                                        config: &config,
+                                        prefs: &prefs,
+                                        app: SuggestionApp {
+                                            app_key: app_key.as_deref(),
+                                            assistant_field: current_assistant_field,
+                                        },
+                                        domain,
+                                        enabled: flags.enabled.load(Ordering::Relaxed),
+                                        caps: &caps,
+                                        now_ms,
+                                    },
+                                )
+                            {
+                                latest.clear();
+                                offer_all(
+                                    &mut latest,
+                                    log_err(
+                                        "on_selection_replacement",
+                                        engine.on_selection_replacement(
+                                            &field, original, candidates, range,
+                                        ),
+                                    ),
+                                );
+                            } else {
+                                offer_all(
+                                    &mut latest,
+                                    log_err(
+                                        "on_selection_unavailable",
+                                        engine.on_selection_unavailable(),
+                                    ),
+                                );
                             }
                         }
                         Err(err) => {
@@ -14591,6 +14599,40 @@ mod tests {
         .expect("selection-only caret event should offer synonyms");
         assert_eq!(decision.0, "happy");
         assert_eq!(decision.2, CorrectionRange { start: 5, end: 10 });
+    }
+
+    #[test]
+    fn first_selected_snapshot_can_offer_even_when_the_tracker_calls_it_typed() {
+        let config = Config::from_lookup(lookup(&[("COMPME_THESAURUS_SELECTION", "1")]));
+        let field = host_field("selection-thesaurus-first-snapshot");
+        let mut selected = text_context_with_right(&field, "I am ", " today");
+        selected.selection = Some(platform::TextRange { start: 5, end: 10 });
+        selected.selected_text = Some("happy".into());
+
+        let mut tracker = FieldTracker::new();
+        assert!(matches!(
+            tracker.observe(&field, &selected, TriggerPolicy::Automatic, 0),
+            Observation::Typed(_)
+        ));
+        assert!(
+            selection_thesaurus_decision(
+                &selected,
+                SelectionThesaurusGate {
+                    config: &config,
+                    prefs: &config.prefs,
+                    app: SuggestionApp {
+                        app_key: Some("com.apple.TextEdit"),
+                        assistant_field: false,
+                    },
+                    domain: None,
+                    enabled: true,
+                    caps: &writable_axset_caps(),
+                    now_ms: 0,
+                },
+            )
+            .is_some(),
+            "selection evaluation runs after either tracker observation kind"
+        );
     }
 
     #[test]

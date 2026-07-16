@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-16 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1914 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-16 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1917 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and

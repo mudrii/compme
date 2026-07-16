@@ -1190,6 +1190,24 @@ impl SuggestionMachine {
         self.record_stat(StatEvent::Shown);
         out
     }
+
+    /// Clear only a selection-triggered replacement. Ordinary completion ghosts
+    /// and manual grammar corrections are unaffected. This is called whenever
+    /// the host observes that the exact selection disappeared or no longer
+    /// qualifies, including same-caret selection collapse.
+    pub fn clear_selection_replacement(&mut self) -> Vec<Command> {
+        if !self
+            .showing
+            .as_ref()
+            .is_some_and(|showing| showing.presentation == Presentation::SelectionReplacement)
+        {
+            return Vec::new();
+        }
+        self.showing = None;
+        self.record_stat(StatEvent::Superseded);
+        self.advance_snapshot();
+        vec![Command::Hide]
+    }
 }
 
 /// Cotypist's "Include trailing space after single-word completions": when
@@ -3685,6 +3703,18 @@ mod tests {
                 Command::Hide,
             ]
         );
+    }
+
+    #[test]
+    fn selection_replacement_clears_when_the_exact_selection_disappears() {
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        let range = CorrectionRange { start: 2, end: 7 };
+        machine.offer_selection_replacement_multi(&f, "happy".into(), vec!["glad".into()], range);
+
+        assert_eq!(machine.clear_selection_replacement(), vec![Command::Hide]);
+        assert_eq!(machine.preview_accept_range(AcceptAction::Full), None);
+        assert!(machine.clear_selection_replacement().is_empty());
     }
 
     #[test]
