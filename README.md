@@ -250,7 +250,7 @@ comma-separated bundle ids.
 | `COMPME_DEFAULT_ENABLED` | Per-app suggestion-policy default in `prefs` (distinct from the master `COMPME_ENABLED`). |
 | `COMPME_MIDLINE` | Allow mid-line completions (also a Settings switch). `_ON_APPS` / `_OFF_APPS` override per app. |
 | `COMPME_AUTOCORRECT` | Inline typo autocorrect (default off; also a Settings switch). `_ON_APPS` / `_OFF_APPS` override per app. |
-| `COMPME_FULL_AUTOCORRECT` | Opt-in macOS `NSSpellChecker` correction path (default off; also a Settings switch). It shares the per-app Autocorrect policy and fails closed in code editors unless the focused field is positively classified as an assistant field. |
+| `COMPME_FULL_AUTOCORRECT` | Opt-in macOS `NSSpellChecker` correction path (default off; also a Settings switch). It shares the per-app Autocorrect policy and runs only in a conservative known-prose app allowlist or a positively classified assistant field; browsers, unknown apps, code editors, and code-like contexts fail closed. |
 | `COMPME_GRAMMAR_FIX` | Standalone grammar/spell-fix trigger flow (default off). `_ON_APPS` / `_OFF_APPS` override per app. |
 | `COMPME_GRAMMAR_CHECK_KEY` | Always-on grammar trigger shortcut as a `modifier+keycode` string; runs detection for the word at the caret. |
 | `COMPME_GRAMMAR_ACCEPT_KEY` | Correction-only accept key as a `modifier+keycode` string; replaces the vetted word only while a correction is showing. |
@@ -274,7 +274,7 @@ comma-separated bundle ids.
 | `COMPME_CLIPBOARD_CONTEXT` | Opt-in: include clipboard text in the context block. |
 | `COMPME_SCREEN_CONTEXT` | Opt-in: include screen text in the context block. |
 | `COMPME_PREVIOUS_INPUT_CONTEXT` | Cap (characters) of previous-input context to include; off when unset. |
-| `COMPME_CROSS_APP_PREVIOUS_INPUTS` | Opt-in: use a redacted, deduplicated, bounded cross-app previous-input ring instead of the default same-app history (also a Context switch). |
+| `COMPME_CROSS_APP_PREVIOUS_INPUTS` | Opt-in: collect and use a redacted, deduplicated, bounded cross-app previous-input ring instead of the default same-app history (also a Context switch). Turning it off clears the global ring and stops cross-app collection. |
 | `COMPME_INSTRUCTIONS` | Custom steering instructions prepended to the prompt. |
 | `COMPME_INSTRUCTIONS_APPS` / `COMPME_INSTRUCTIONS_APP_<BUNDLE>` | Comma-separated bundle ids and sanitized per-app instruction values, e.g. `COMPME_INSTRUCTIONS_APP_COM_APPLE_TEXTEDIT`. |
 | `COMPME_INSTRUCTIONS_DOMAINS` / `COMPME_INSTRUCTIONS_DOMAIN_<HOST>` | Comma-separated hosts and sanitized per-domain instruction values, e.g. `COMPME_INSTRUCTIONS_DOMAIN_DOCS_GOOGLE_COM`. |
@@ -344,7 +344,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,905 tests:
+suite is roughly 1,914 tests:
 
 ```sh
 cargo fmt --all -- --check

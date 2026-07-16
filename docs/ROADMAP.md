@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-16 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1905 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-16 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1914 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -403,11 +403,13 @@ Their remaining work is live compatibility/UX validation, not missing code:
   unless a focused field matches a conservative AI-chat/sidebar marker.
 - **Full statistical autocorrect:** the General-pane opt-in uses macOS
   `NSSpellChecker`, requires a whole-word single-token correction, honors the
-  existing per-app Autocorrect policy, and blocks code editors/code-like
-  contexts unless the field is positively classified as an assistant field.
+  existing per-app Autocorrect policy, and admits only a conservative known-prose
+  app allowlist or a positively classified assistant field; browsers, unknown
+  apps, code editors, and code-like contexts fail closed.
 - **Cross-app previous-input context:** the Context-pane opt-in selects a
   redacted, deduplicated, bounded five-entry global ring; same-app isolation
-  remains the default, and disabling the switch clears the cross-app ring.
+  remains the default, and disabling the switch clears the cross-app ring and
+  stops collecting global history until it is re-enabled.
 - **Thesaurus selection-trigger UX:** exact selected text is carried separately
   in `TextContext`; single-word selections can show multiple synonyms, cycle
   them, and accept through an exact atomic `CorrectionRange` replacement.

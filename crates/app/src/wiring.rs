@@ -15,11 +15,16 @@ use platform::{CorrectionRange, FieldHandle, TextContext};
 /// Reconstruct the full field value and a char-indexed caret from a context read.
 ///
 /// `context::left_context` is char-indexed (`value.chars().take(caret)`), so pairing
-/// `left + right` with `caret = left.chars().count()` reproduces the adapter's
-/// left text exactly as the engine's prompt — independent of the adapter's own
-/// caret offset encoding (UTF-16 on macOS).
+/// `left + selected_text + right` with `caret = left.chars().count()` reproduces
+/// the full adapter value while keeping the engine caret at the selection start —
+/// independent of the adapter's own caret offset encoding (UTF-16 on macOS).
 fn value_and_caret(ctx: &TextContext) -> (String, usize) {
-    let value = format!("{}{}", ctx.left, ctx.right);
+    let value = format!(
+        "{}{}{}",
+        ctx.left,
+        ctx.selected_text.as_deref().unwrap_or_default(),
+        ctx.right
+    );
     let caret = ctx.left.chars().count();
     (value, caret)
 }
@@ -871,17 +876,41 @@ mod tests {
     }
 
     #[test]
-    fn selection_and_adapter_offset_metadata_do_not_change_reconstructed_text() {
-        let mut ctx = ctx("a😀", "b");
+    fn selected_text_restores_the_full_value_without_changing_the_scalar_caret() {
+        let mut ctx = ctx("a", "b");
         ctx.selection = Some(TextRange { start: 1, end: 3 });
-        ctx.caret = 3;
+        ctx.selected_text = Some("😀".into());
+        ctx.caret = 1;
         ctx.offset_encoding = OffsetEncoding::Utf16CodeUnits;
 
         let mut tracker = FieldTracker::new();
         let change = typed(tracker.observe(&field("f"), &ctx, TriggerPolicy::Automatic, 0));
 
         assert_eq!(change.value, "a😀b");
-        assert_eq!(change.caret, 2);
+        assert_eq!(change.caret, 1);
+    }
+
+    #[test]
+    fn selecting_existing_text_is_a_caret_move_not_a_delete() {
+        let mut tracker = FieldTracker::new();
+        tracker.observe(
+            &field("f"),
+            &ctx("hello world", ""),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        let mut selected = ctx("hello ", "");
+        selected.selection = Some(TextRange { start: 6, end: 11 });
+        selected.selected_text = Some("world".into());
+        selected.caret = 6;
+
+        assert_eq!(
+            tracker.observe(&field("f"), &selected, TriggerPolicy::Automatic, 1),
+            Observation::CaretMoved {
+                field: field("f"),
+                caret: 6,
+            }
+        );
     }
 
     #[test]

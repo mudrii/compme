@@ -735,9 +735,15 @@ fn full_autocorrect_decision(
     gate: FullAutocorrectGate<'_>,
     spelling_correction: impl FnOnce(&str) -> Result<Option<String>, PlatformError>,
 ) -> Option<(Vec<String>, usize)> {
+    let supported_prose_surface = gate.app.assistant_field
+        || gate
+            .app
+            .app_key
+            .is_some_and(compat::supports_statistical_autocorrect);
     if !gate.enabled
         || !prefs.autocorrect_enabled(gate.app.app_key, config.full_autocorrect)
         || !suggestion_gates_pass_for_field(gate.app, left, gate.domain, prefs, gate.now_ms)
+        || !supported_prose_surface
         || gate
             .app
             .app_key
@@ -2312,24 +2318,36 @@ fn replacement_debug_log_line(
 /// volatile `pid:N` field keys (unresolved bundle id, would never match the
 /// canonicalized lookup/personalization key) are skipped. Pure over its inputs so
 /// the accept-routing logic is testable without the run loop.
+struct AcceptRecording<'a> {
+    context_max_chars: usize,
+    cross_app_previous_inputs: bool,
+    previous_inputs: &'a PreviousInputs,
+    memory: Option<&'a memory::MemoryStore>,
+    collection_allowed: bool,
+}
+
 fn record_full_accept(
     action: AcceptAction,
     field: &FieldHandle,
     text: &str,
-    context_max_chars: usize,
-    previous_inputs: &PreviousInputs,
-    memory: Option<&memory::MemoryStore>,
-    collection_allowed: bool,
+    recording: AcceptRecording<'_>,
 ) {
     // Per-app "Input Collection off" (tray submenu / Cotypist parity) gates
     // BOTH sinks below — previous-inputs context AND encrypted memory.
-    if !collection_allowed || action != AcceptAction::Full || field.app.starts_with("pid:") {
+    if !recording.collection_allowed
+        || action != AcceptAction::Full
+        || field.app.starts_with("pid:")
+    {
         return;
     }
-    if context_max_chars > 0 {
-        previous_inputs.record(&field.app, redaction::redact(text));
+    if recording.context_max_chars > 0 {
+        recording.previous_inputs.record_with_cross_app(
+            &field.app,
+            redaction::redact(text),
+            recording.cross_app_previous_inputs,
+        );
     }
-    if let Some(store) = memory {
+    if let Some(store) = recording.memory {
         // The store redacts + encrypts before persisting; a no-op when its mode
         // is Off.
         if let Err(err) = store.remember(&field.app, text) {
@@ -2348,6 +2366,7 @@ struct AcceptSideEffects<'a> {
     range_preview: Option<&'a CorrectionPreview>,
     wall_ms: u64,
     context_max_chars: usize,
+    cross_app_previous_inputs: bool,
     previous_inputs: &'a PreviousInputs,
     memory: Option<&'a memory::MemoryStore>,
     prefs: &'a Prefs,
@@ -2392,10 +2411,13 @@ fn apply_accept_side_effects(accepted: bool, side_effects: AcceptSideEffects<'_>
         side_effects.action,
         field,
         text,
-        side_effects.context_max_chars,
-        side_effects.previous_inputs,
-        side_effects.memory,
-        side_effects.prefs.collection_allowed(Some(&field.app)),
+        AcceptRecording {
+            context_max_chars: side_effects.context_max_chars,
+            cross_app_previous_inputs: side_effects.cross_app_previous_inputs,
+            previous_inputs: side_effects.previous_inputs,
+            memory: side_effects.memory,
+            collection_allowed: side_effects.prefs.collection_allowed(Some(&field.app)),
+        },
     );
     // Absorb the accept's echo. A replacement (`replace_left > 0`, e.g. emoji)
     // deletes the typed token before inserting, so the baseline must
@@ -4962,6 +4984,7 @@ pub fn run() -> Result<(), String> {
                             } else {
                                 0
                             },
+                            cross_app_previous_inputs: config.cross_app_previous_inputs,
                             previous_inputs: &previous_inputs,
                             memory: memory.as_ref(),
                             prefs: &prefs,
@@ -9529,10 +9552,13 @@ mod tests {
             AcceptAction::Full,
             &field,
             "hello world",
-            100,
-            &previous,
-            Some(&store),
-            false, // collection disabled for this app
+            AcceptRecording {
+                context_max_chars: 100,
+                cross_app_previous_inputs: false,
+                previous_inputs: &previous,
+                memory: Some(&store),
+                collection_allowed: false,
+            },
         );
         assert_eq!(store.count().expect("count"), 0, "memory must not record");
         assert!(
@@ -9545,10 +9571,13 @@ mod tests {
             AcceptAction::Full,
             &field,
             "hello world",
-            100,
-            &previous,
-            Some(&store),
-            true,
+            AcceptRecording {
+                context_max_chars: 100,
+                cross_app_previous_inputs: false,
+                previous_inputs: &previous,
+                memory: Some(&store),
+                collection_allowed: true,
+            },
         );
         assert_eq!(store.count().expect("count"), 1);
         assert!(!previous.recent("com.apple.TextEdit").is_empty());
@@ -9576,6 +9605,7 @@ mod tests {
                 range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
+                cross_app_previous_inputs: false,
                 previous_inputs: &previous,
                 memory: Some(&store),
                 prefs: &prefs,
@@ -9636,6 +9666,7 @@ mod tests {
                 range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
+                cross_app_previous_inputs: false,
                 previous_inputs: &previous,
                 memory: Some(&store),
                 prefs: &prefs,
@@ -9685,6 +9716,7 @@ mod tests {
                 range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
+                cross_app_previous_inputs: false,
                 previous_inputs: &previous,
                 memory: Some(&store),
                 prefs: &prefs,
@@ -9744,6 +9776,7 @@ mod tests {
                 range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
+                cross_app_previous_inputs: false,
                 previous_inputs: &previous,
                 memory: Some(&store),
                 prefs: &prefs,
@@ -9805,6 +9838,7 @@ mod tests {
                 range_preview: Some(&replacement),
                 wall_ms: 10_000,
                 context_max_chars: 160,
+                cross_app_previous_inputs: false,
                 previous_inputs: &previous,
                 memory: Some(&store),
                 prefs: &prefs,
@@ -9873,6 +9907,7 @@ mod tests {
                 range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
+                cross_app_previous_inputs: false,
                 previous_inputs: &previous,
                 memory: Some(&store),
                 prefs: &prefs,
@@ -12651,13 +12686,56 @@ mod tests {
             AcceptAction::Full,
             &field_with_app("com.apple.TextEdit"),
             "the quick brown fox",
-            160,
-            &prev,
-            Some(&store),
-            true,
+            AcceptRecording {
+                context_max_chars: 160,
+                cross_app_previous_inputs: false,
+                previous_inputs: &prev,
+                memory: Some(&store),
+                collection_allowed: true,
+            },
         );
         assert_eq!(store.count().unwrap(), 1);
         assert_eq!(prev.recent("com.apple.TextEdit").len(), 1);
+    }
+
+    #[test]
+    fn full_accept_collects_cross_app_history_only_while_the_opt_in_is_on() {
+        let prev = PreviousInputs::default();
+        let field = field_with_app("com.apple.TextEdit");
+        record_full_accept(
+            AcceptAction::Full,
+            &field,
+            "private while off",
+            AcceptRecording {
+                context_max_chars: 160,
+                cross_app_previous_inputs: false,
+                previous_inputs: &prev,
+                memory: None,
+                collection_allowed: true,
+            },
+        );
+        assert!(prev.recent_for_scope("com.apple.TextEdit", true).is_empty());
+
+        record_full_accept(
+            AcceptAction::Full,
+            &field,
+            "shared while on",
+            AcceptRecording {
+                context_max_chars: 160,
+                cross_app_previous_inputs: true,
+                previous_inputs: &prev,
+                memory: None,
+                collection_allowed: true,
+            },
+        );
+        assert_eq!(
+            prev.recent_for_scope("com.apple.TextEdit", true),
+            vec!["shared while on"]
+        );
+        assert_eq!(
+            prev.recent("com.apple.TextEdit"),
+            vec!["shared while on", "private while off"]
+        );
     }
 
     #[test]
@@ -12668,10 +12746,13 @@ mod tests {
             AcceptAction::Word,
             &field_with_app("com.apple.TextEdit"),
             "fox",
-            160,
-            &prev,
-            Some(&store),
-            true,
+            AcceptRecording {
+                context_max_chars: 160,
+                cross_app_previous_inputs: false,
+                previous_inputs: &prev,
+                memory: Some(&store),
+                collection_allowed: true,
+            },
         );
         assert_eq!(store.count().unwrap(), 0);
         assert!(prev.recent("com.apple.TextEdit").is_empty());
@@ -12685,10 +12766,13 @@ mod tests {
             AcceptAction::Full,
             &field_with_app("pid:42"),
             "ignored",
-            160,
-            &prev,
-            Some(&store),
-            true,
+            AcceptRecording {
+                context_max_chars: 160,
+                cross_app_previous_inputs: false,
+                previous_inputs: &prev,
+                memory: Some(&store),
+                collection_allowed: true,
+            },
         );
         assert_eq!(store.count().unwrap(), 0);
         assert!(prev.recent("pid:42").is_empty());
@@ -12704,10 +12788,13 @@ mod tests {
             AcceptAction::Full,
             &field_with_app("com.apple.TextEdit"),
             "remembered",
-            0,
-            &prev,
-            Some(&store),
-            true,
+            AcceptRecording {
+                context_max_chars: 0,
+                cross_app_previous_inputs: false,
+                previous_inputs: &prev,
+                memory: Some(&store),
+                collection_allowed: true,
+            },
         );
         assert_eq!(store.count().unwrap(), 1);
         assert!(prev.recent("com.apple.TextEdit").is_empty());
@@ -14216,6 +14303,8 @@ mod tests {
         let on = Config::from_lookup(lookup(&[("COMPME_FULL_AUTOCORRECT", "1")]));
         for (app_key, assistant_field, left) in [
             (Some("com.apple.dt.Xcode"), false, "I teh"),
+            (Some("com.apple.Safari"), false, "I teh"),
+            (Some("com.example.Writer"), false, "I teh"),
             (Some("com.apple.TextEdit"), false, "let value = teh"),
         ] {
             let called = Cell::new(false);
@@ -14458,6 +14547,49 @@ mod tests {
         .expect("selected word has synonyms");
         assert_eq!(decision.0, "happy");
         assert!(decision.1.contains(&"glad".to_string()));
+        assert_eq!(decision.2, CorrectionRange { start: 5, end: 10 });
+    }
+
+    #[test]
+    fn selection_thesaurus_reaches_the_offer_after_a_selection_only_caret_event() {
+        let config = Config::from_lookup(lookup(&[("COMPME_THESAURUS_SELECTION", "1")]));
+        let field = host_field("selection-thesaurus-integration");
+        let mut tracker = FieldTracker::new();
+        tracker.observe(
+            &field,
+            &text_context_with_right(&field, "I am happy today", ""),
+            TriggerPolicy::Automatic,
+            0,
+        );
+
+        let mut selected = text_context_with_right(&field, "I am ", " today");
+        selected.selection = Some(platform::TextRange { start: 5, end: 10 });
+        selected.selected_text = Some("happy".into());
+        assert_eq!(
+            tracker.observe(&field, &selected, TriggerPolicy::Automatic, 1),
+            Observation::CaretMoved {
+                field: field.clone(),
+                caret: 5,
+            }
+        );
+
+        let decision = selection_thesaurus_decision(
+            &selected,
+            SelectionThesaurusGate {
+                config: &config,
+                prefs: &config.prefs,
+                app: SuggestionApp {
+                    app_key: Some("com.apple.TextEdit"),
+                    assistant_field: false,
+                },
+                domain: None,
+                enabled: true,
+                caps: &writable_axset_caps(),
+                now_ms: 1,
+            },
+        )
+        .expect("selection-only caret event should offer synonyms");
+        assert_eq!(decision.0, "happy");
         assert_eq!(decision.2, CorrectionRange { start: 5, end: 10 });
     }
 

@@ -403,9 +403,10 @@ Failure classification looks for common blockers:
 As of 2026-07-16, the previously open A2 code prerequisites are implemented:
 SidebarOnly fields use conservative direct AX assistant metadata; full
 statistical autocorrect uses `NSSpellChecker` with prose/code-field safety
-gates; cross-app previous-input context is opt-in, redacted, deduplicated, and
-bounded; and selected single-word thesaurus offers use exact atomic range
-replacement. These paths are unit/build-verified. The matrix and physical UX
+gates and a conservative known-prose/assistant allowlist; cross-app
+previous-input context is opt-in, redacted, deduplicated, bounded, and does not
+collect globally while disabled; and selected single-word thesaurus offers use
+exact atomic range replacement. These paths are unit/build-verified. The matrix and physical UX
 rows below remain the required live evidence, especially real editor/sidebar
 field metadata in VS Code, Cursor, and Windsurf.
 

@@ -533,6 +533,21 @@ pub fn is_code_editor(bundle_id: &str) -> bool {
     ) || id.starts_with("com.jetbrains.")
 }
 
+/// Conservative allowlist for OS-backed statistical autocorrect. Unknown apps,
+/// browsers, and editor surfaces fail closed; positively identified assistant
+/// fields are admitted separately by the field-capability gate.
+pub fn supports_statistical_autocorrect(bundle_id: &str) -> bool {
+    matches!(
+        normalize_bundle_id(bundle_id).as_str(),
+        "com.apple.textedit"
+            | "com.apple.notes"
+            | "com.apple.mail"
+            | "com.apple.iwork.pages"
+            | "com.microsoft.word"
+            | "com.microsoft.outlook"
+    )
+}
+
 /// Classify a macOS application bundle id into a compatibility tier. The id is
 /// normalized first (case/whitespace/trailing-dot tolerant) so a mis-cased or
 /// trailing-dot id for an `Unsupported` app or terminal cannot fail open into the
@@ -764,6 +779,28 @@ mod tests {
             "com.example.Writer",
         ] {
             assert!(!is_code_editor(app), "{app}");
+        }
+    }
+
+    #[test]
+    fn statistical_autocorrect_app_allowlist_fails_closed_for_unknown_and_browser_apps() {
+        for app in [
+            "com.apple.TextEdit",
+            "com.apple.Notes",
+            "com.apple.mail",
+            "com.apple.iWork.Pages",
+            "com.microsoft.Word",
+            "com.microsoft.Outlook",
+        ] {
+            assert!(supports_statistical_autocorrect(app), "{app}");
+        }
+        for app in [
+            "com.apple.Safari",
+            "com.google.Chrome",
+            "com.example.Writer",
+            "com.microsoft.VSCode",
+        ] {
+            assert!(!supports_statistical_autocorrect(app), "{app}");
         }
     }
 

@@ -87,6 +87,10 @@ exit 1
 RUBY
 }
 
+branch_protection_missing_error() {
+  grep -Eq 'Branch not protected|HTTP 404' "$1"
+}
+
 self_test() {
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-governance-self-test.XXXXXX")"
@@ -114,6 +118,17 @@ JSON
   printf '%s\n' '{"missing":true}' >"$tmp/bad.json"
   if validate "$tmp/bad.json" "$tmp/bad.json" "$tmp/bad.json" "$tmp/bad.json" >/dev/null 2>&1; then
     echo "self-test failed: insecure fixtures unexpectedly passed" >&2
+    return 1
+  fi
+
+  printf '%s\n' 'gh: Branch not protected (HTTP 404)' >"$tmp/branch-missing.err"
+  branch_protection_missing_error "$tmp/branch-missing.err" || {
+    echo "self-test failed: missing branch protection was not recognized" >&2
+    return 1
+  }
+  printf '%s\n' 'gh: API rate limit exceeded (HTTP 403)' >"$tmp/branch-failed.err"
+  if branch_protection_missing_error "$tmp/branch-failed.err"; then
+    echo "self-test failed: non-404 branch API error looked unprotected" >&2
     return 1
   fi
 
@@ -150,8 +165,14 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-governance.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 if ! gh api "repos/$repository/branches/$DEFAULT_BRANCH/protection" \
-  >"$tmp/branch.json" 2>/dev/null; then
-  printf '%s\n' '{"missing":true}' >"$tmp/branch.json"
+  >"$tmp/branch.json" 2>"$tmp/branch.err"; then
+  if branch_protection_missing_error "$tmp/branch.err"; then
+    printf '%s\n' '{"missing":true}' >"$tmp/branch.json"
+  else
+    echo "unable to read main branch protection:" >&2
+    cat "$tmp/branch.err" >&2
+    exit 1
+  fi
 fi
 
 gh api "repos/$repository/environments/$DEFAULT_ENVIRONMENT" >"$tmp/environment.json"

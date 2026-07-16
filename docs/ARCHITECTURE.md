@@ -175,10 +175,11 @@ real word is never "corrected", so there are no false positives on valid input;
 ambiguous strings that are also real words (`cant`, `wont`, `weve`) are
 deliberately excluded. The host also provides a separate opt-in full statistical
 path through macOS `NSSpellChecker`; it accepts only whole-token, single-word
-corrections, shares the per-app Autocorrect policy, and fails closed in code
-editors/code-like contexts unless the field is positively classified as an
-assistant field. The curated path is gated by `COMPME_AUTOCORRECT`; the
-statistical path is gated by `COMPME_FULL_AUTOCORRECT`.
+corrections, shares the per-app Autocorrect policy, and runs only for a
+conservative known-prose app allowlist or a positively classified assistant
+field. Browsers, unknown apps, code editors, and code-like contexts fail closed.
+The curated path is gated by `COMPME_AUTOCORRECT`; the statistical path is gated
+by `COMPME_FULL_AUTOCORRECT`.
 
 ### `grammar`
 
@@ -493,7 +494,7 @@ Major responsibilities:
   into the per-domain gate
 - keep previous-input context in separate bounded same-app and cross-app rings;
   inference reads a live atomic to choose the opt-in cross-app scope, and
-  disabling it clears the global ring
+  disabling it clears the global ring and stops global collection
 - apply per-app mid-line override live on focus via `Engine::set_allow_mid_word`
 - marshal platform callbacks onto the AppKit main-thread engine host
 - keep only the latest pending completion request

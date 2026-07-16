@@ -44,32 +44,43 @@ struct PreviousInputsState {
     cross_app: VecDeque<String>,
 }
 
+fn record_recent(buf: &mut VecDeque<String>, text: &str) {
+    if buf.back().is_some_and(|last| last == text) {
+        return;
+    }
+    if buf.len() == PreviousInputs::CAPACITY {
+        buf.pop_front();
+    }
+    buf.push_back(text.to_string());
+}
+
 impl PreviousInputs {
     const CAPACITY: usize = 5;
 
     /// Record an accepted completion for `app`, redacting before storage,
     /// evicting the oldest. Consecutive duplicates are ignored so word-by-word
-    /// repeats don't flood the ring.
+    /// repeats don't flood the same-app ring.
+    #[cfg(test)]
     pub fn record(&self, app: &str, text: String) {
+        self.record_with_cross_app(app, text, false);
+    }
+
+    /// Record into the same-app ring and, only while the live opt-in is enabled,
+    /// the cross-app ring. Keeping collection gated here prevents text accepted
+    /// while sharing is off from resurfacing after a later re-enable.
+    pub(crate) fn record_with_cross_app(&self, app: &str, text: String, cross_app: bool) {
         if text.trim().is_empty() {
             return;
         }
         let text = redaction::redact(&text);
         // Recover the guard on poisoning rather than silently dropping forever.
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let buf = state.per_app.entry(app.to_string()).or_default();
-        if buf.back() == Some(&text) {
-            return;
-        }
-        if buf.len() == Self::CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(text.clone());
-        if state.cross_app.back() != Some(&text) {
-            if state.cross_app.len() == Self::CAPACITY {
-                state.cross_app.pop_front();
-            }
-            state.cross_app.push_back(text);
+        record_recent(state.per_app.entry(app.to_string()).or_default(), &text);
+        if cross_app {
+            // Dedupe independently per scope: a repeated same-app value can
+            // still be the newest global event after another app accepted
+            // different text.
+            record_recent(&mut state.cross_app, &text);
         }
     }
 
@@ -915,7 +926,7 @@ mod tests {
     #[test]
     fn cross_app_previous_input_context_is_explicitly_opt_in() {
         let previous = PreviousInputs::default();
-        previous.record("Mail", "earlier mail sentence".into());
+        previous.record_with_cross_app("Mail", "earlier mail sentence".into(), true);
         let cross_app = Arc::new(AtomicBool::new(false));
         let context = WorkerContext {
             previous_inputs: previous,
@@ -1476,8 +1487,8 @@ mod tests {
     #[test]
     fn disabling_cross_app_context_clears_only_the_global_ring() {
         let previous = PreviousInputs::default();
-        previous.record("app.a", "from A".into());
-        previous.record("app.b", "from B".into());
+        previous.record_with_cross_app("app.a", "from A".into(), true);
+        previous.record_with_cross_app("app.b", "from B".into(), true);
         assert_eq!(
             previous.recent_for_scope("app.a", true),
             vec!["from B", "from A"]
@@ -1496,6 +1507,31 @@ mod tests {
         previous.record("app", "same".into());
         previous.record("app", "other".into());
         assert_eq!(previous.recent("app"), vec!["other", "same"]);
+    }
+
+    #[test]
+    fn same_app_duplicate_after_another_app_refreshes_cross_app_recency() {
+        let previous = PreviousInputs::default();
+        previous.record_with_cross_app("app.a", "from A".into(), true);
+        previous.record_with_cross_app("app.b", "from B".into(), true);
+        previous.record_with_cross_app("app.a", "from A".into(), true);
+
+        assert_eq!(previous.recent("app.a"), vec!["from A"]);
+        assert_eq!(
+            previous.recent_for_scope("app.a", true),
+            vec!["from A", "from B", "from A"]
+        );
+    }
+
+    #[test]
+    fn cross_app_history_does_not_collect_while_the_opt_in_is_off() {
+        let previous = PreviousInputs::default();
+        previous.record_with_cross_app("app.a", "shared while on".into(), true);
+        previous.clear_cross_app();
+        previous.record_with_cross_app("app.b", "private while off".into(), false);
+
+        assert!(previous.recent_for_scope("app.a", true).is_empty());
+        assert_eq!(previous.recent("app.b"), vec!["private while off"]);
     }
 
     #[test]

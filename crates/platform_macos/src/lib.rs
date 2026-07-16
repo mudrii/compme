@@ -4677,11 +4677,31 @@ unsafe fn read_sidebar_field_metadata(
 ) -> Result<SidebarFieldMetadata, PlatformError> {
     Ok(SidebarFieldMetadata {
         identifier: identity.identifier.clone(),
-        description: read_optional_ax_string_attribute(element, "AXDescription")?,
-        title: read_optional_ax_string_attribute(element, "AXTitle")?,
-        placeholder: read_optional_ax_string_attribute(element, "AXPlaceholderValue")?,
-        help: read_optional_ax_string_attribute(element, "AXHelp")?,
+        description: sidebar_metadata_attribute(read_optional_ax_string_attribute(
+            element,
+            "AXDescription",
+        ))?,
+        title: sidebar_metadata_attribute(read_optional_ax_string_attribute(element, "AXTitle"))?,
+        placeholder: sidebar_metadata_attribute(read_optional_ax_string_attribute(
+            element,
+            "AXPlaceholderValue",
+        ))?,
+        help: sidebar_metadata_attribute(read_optional_ax_string_attribute(element, "AXHelp"))?,
     })
+}
+
+fn sidebar_metadata_attribute(
+    result: Result<Option<String>, PlatformError>,
+) -> Result<Option<String>, PlatformError> {
+    match result {
+        // These labels are optional classification hints. A toolkit that
+        // transiently rejects one must degrade to an unknown/non-assistant
+        // field instead of making an otherwise usable field unsupported.
+        Err(PlatformError::CannotComplete { .. }) | Err(PlatformError::UnsupportedField { .. }) => {
+            Ok(None)
+        }
+        other => other,
+    }
 }
 
 fn secure_input_recheck_result(enabled: bool) -> Result<(), PlatformError> {
@@ -5085,9 +5105,13 @@ fn text_range_rect_for_field(
     let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
     let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
     let ctx = text_context_from_value(field, value, selected_range);
-    let Some(range) =
-        scalar_correction_range_to_utf16_range(&ctx.left, &ctx.right, selected_range, range)
-    else {
+    let Some(range) = scalar_correction_range_to_utf16_range(
+        &ctx.left,
+        ctx.selected_text.as_deref(),
+        &ctx.right,
+        selected_range,
+        range,
+    ) else {
         return Err(PlatformError::UnsupportedField {
             reason: "correction range is not contiguous in the field".into(),
         });
@@ -5118,9 +5142,13 @@ fn insert_range_for_field(
     let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
     let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
     let ctx = text_context_from_value(field, value.clone(), selected_range);
-    let Some(range) =
-        scalar_correction_range_to_utf16_range(&ctx.left, &ctx.right, selected_range, range)
-    else {
+    let Some(range) = scalar_correction_range_to_utf16_range(
+        &ctx.left,
+        ctx.selected_text.as_deref(),
+        &ctx.right,
+        selected_range,
+        range,
+    ) else {
         return Err(PlatformError::UnsupportedField {
             reason: "correction range is not contiguous in the field".into(),
         });
@@ -5700,6 +5728,7 @@ fn utf16_units_for_scalar_prefix(value: &str, scalar_count: usize) -> Option<usi
 
 fn scalar_correction_range_to_utf16_range(
     left: &str,
+    selected_text: Option<&str>,
     right: &str,
     selected_range: CFRange,
     range: CorrectionRange,
@@ -5707,43 +5736,22 @@ fn scalar_correction_range_to_utf16_range(
     if range.start > range.end {
         return None;
     }
-    let left_scalars = left.chars().count();
-    let right_scalars = right.chars().count();
-    if range.end > left_scalars.saturating_add(right_scalars) {
-        return None;
-    }
-
-    let selection_len = selected_range.length.max(0) as usize;
-    let caret_utf16 = (selected_range.location.max(0) as usize).saturating_add(selection_len);
+    let selected_text = selected_text.unwrap_or_default();
     let selection_start = selected_range.location.max(0) as usize;
-
-    let (start_utf16, end_utf16) = if range.end <= left_scalars {
-        let left_start = utf16_units_for_scalar_prefix(left, range.start)?;
-        let left_end = utf16_units_for_scalar_prefix(left, range.end)?;
-        (left_start, left_end)
-    } else if range.start >= left_scalars {
-        let right_start =
-            utf16_units_for_scalar_prefix(right, range.start.saturating_sub(left_scalars))?;
-        let right_end =
-            utf16_units_for_scalar_prefix(right, range.end.saturating_sub(left_scalars))?;
-        (
-            caret_utf16.saturating_add(right_start),
-            caret_utf16.saturating_add(right_end),
-        )
-    } else if selection_len == 0 {
-        let left_start = utf16_units_for_scalar_prefix(left, range.start)?;
-        let right_end =
-            utf16_units_for_scalar_prefix(right, range.end.saturating_sub(left_scalars))?;
-        (left_start, caret_utf16.saturating_add(right_end))
-    } else {
-        return None;
-    };
-
-    if start_utf16 > end_utf16
-        || (selection_len > 0 && start_utf16 < selection_start && end_utf16 > selection_start)
+    let selection_len = selected_range.length.max(0) as usize;
+    if selection_start != left.encode_utf16().count()
+        || selection_len != selected_text.encode_utf16().count()
     {
         return None;
     }
+
+    let value = format!("{left}{selected_text}{right}");
+    if range.end > value.chars().count() {
+        return None;
+    }
+    let start_utf16 = utf16_units_for_scalar_prefix(&value, range.start)?;
+    let end_utf16 = utf16_units_for_scalar_prefix(&value, range.end)?;
+
     Some(CFRange {
         location: start_utf16 as isize,
         length: end_utf16.saturating_sub(start_utf16) as isize,
@@ -6980,6 +6988,21 @@ mod tests {
         ] {
             assert!(!sidebar_assistant_field(&metadata), "{metadata:?}");
         }
+    }
+
+    #[test]
+    fn optional_sidebar_metadata_failure_does_not_block_an_editable_field() {
+        assert_eq!(
+            sidebar_metadata_attribute(Err(PlatformError::CannotComplete {
+                reason: "optional AXHelp read failed".into(),
+            })),
+            Ok(None)
+        );
+        assert_eq!(
+            sidebar_metadata_attribute(Err(PlatformError::StaleField)),
+            Err(PlatformError::StaleField),
+            "a genuinely stale field must still fail closed"
+        );
     }
 
     #[test]
@@ -12563,6 +12586,7 @@ mod tests {
         };
         let range = scalar_correction_range_to_utf16_range(
             "te",
+            None,
             "h later",
             selected_range,
             CorrectionRange { start: 0, end: 3 },
@@ -12698,6 +12722,7 @@ mod tests {
         };
         let range = scalar_correction_range_to_utf16_range(
             "I saw",
+            None,
             " teh",
             collapsed,
             CorrectionRange { start: 6, end: 9 },
@@ -12708,6 +12733,7 @@ mod tests {
 
         let empty = scalar_correction_range_to_utf16_range(
             "hello",
+            None,
             "",
             collapsed,
             CorrectionRange { start: 2, end: 2 },
@@ -12721,6 +12747,7 @@ mod tests {
     fn scalar_correction_range_to_utf16_range_accounts_for_astral_scalars() {
         let before = scalar_correction_range_to_utf16_range(
             "😀 t",
+            None,
             "eh",
             CFRange {
                 location: 4,
@@ -12734,6 +12761,7 @@ mod tests {
 
         let inside = scalar_correction_range_to_utf16_range(
             "a",
+            None,
             "😀b",
             CFRange {
                 location: 1,
@@ -12747,16 +12775,14 @@ mod tests {
     }
 
     #[test]
-    fn scalar_correction_range_to_utf16_range_fails_closed_across_selection_gap() {
-        // TextContext left/right omit the live selection. A correction entirely
-        // before or after the omitted gap is still contiguous in the raw field;
-        // a correction spanning the gap is not safely representable.
+    fn scalar_correction_range_to_utf16_range_restores_the_exact_selection_gap() {
         let selected = CFRange {
             location: 3,
             length: 2,
         };
         let before = scalar_correction_range_to_utf16_range(
             "abc",
+            Some("XY"),
             "def",
             selected,
             CorrectionRange { start: 0, end: 3 },
@@ -12767,27 +12793,44 @@ mod tests {
 
         let after = scalar_correction_range_to_utf16_range(
             "abc",
+            Some("XY"),
             "def",
             selected,
-            CorrectionRange { start: 3, end: 6 },
+            CorrectionRange { start: 5, end: 8 },
         )
         .expect("after selection");
         assert_eq!(after.location, 5);
         assert_eq!(after.length, 3);
 
-        assert!(scalar_correction_range_to_utf16_range(
+        let exact_selection = scalar_correction_range_to_utf16_range(
             "abc",
+            Some("XY"),
             "def",
             selected,
-            CorrectionRange { start: 2, end: 4 },
+            CorrectionRange { start: 3, end: 5 },
         )
-        .is_none());
+        .expect("selected text");
+        assert_eq!(exact_selection.location, 3);
+        assert_eq!(exact_selection.length, 2);
+
+        assert!(
+            scalar_correction_range_to_utf16_range(
+                "abc",
+                None,
+                "def",
+                selected,
+                CorrectionRange { start: 3, end: 5 },
+            )
+            .is_none(),
+            "a live selection without its exact text must fail closed"
+        );
     }
 
     #[test]
     fn scalar_correction_range_splice_allows_empty_text_to_delete_range() {
         let range = scalar_correction_range_to_utf16_range(
             "I saw ",
+            None,
             "teh",
             CFRange {
                 location: 6,

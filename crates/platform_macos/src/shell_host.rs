@@ -14,6 +14,18 @@ use platform::{PlatformError, ScreenRect};
 #[derive(Debug, Default)]
 pub struct MacosShellHost;
 
+fn validated_spelling_correction(
+    word: &str,
+    misspelled_location: usize,
+    misspelled_length: usize,
+    correction: Option<String>,
+) -> Option<String> {
+    if misspelled_location != 0 || misspelled_length != word.encode_utf16().count() {
+        return None;
+    }
+    correction.filter(|correction| !correction.is_empty() && correction != word)
+}
+
 impl MacosShellHost {
     pub fn new() -> Self {
         Self
@@ -76,17 +88,17 @@ impl ShellHost for MacosShellHost {
                 std::ptr::null_mut(),
             )
         };
-        if misspelled.location != 0 || misspelled.length != string.len_utf16() {
-            return Ok(None);
-        }
-
         let language = checker.language();
-        Ok(checker
-            .correctionForWordRange_inString_language_inSpellDocumentWithTag(
-                misspelled, &string, &language, 0,
-            )
-            .map(|correction| correction.to_string())
-            .filter(|correction| !correction.is_empty() && correction != word))
+        Ok(validated_spelling_correction(
+            word,
+            misspelled.location,
+            misspelled.length,
+            checker
+                .correctionForWordRange_inString_language_inSpellDocumentWithTag(
+                    misspelled, &string, &language, 0,
+                )
+                .map(|correction| correction.to_string()),
+        ))
     }
 
     fn screen_context_text(
@@ -170,5 +182,39 @@ mod tests {
         let start = std::time::Instant::now();
         MacosShellHost::new().pump_events(Duration::from_millis(10));
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn spelling_correction_requires_the_whole_utf16_token() {
+        assert_eq!(
+            validated_spelling_correction("café", 0, 4, Some("cafe".into())),
+            Some("cafe".into())
+        );
+        assert_eq!(
+            validated_spelling_correction("café", 1, 3, Some("cafe".into())),
+            None
+        );
+        assert_eq!(
+            validated_spelling_correction("😀x", 0, 2, Some("x".into())),
+            None,
+            "an astral scalar occupies two UTF-16 units"
+        );
+        assert_eq!(
+            validated_spelling_correction("😀x", 0, 3, Some("x".into())),
+            Some("x".into())
+        );
+    }
+
+    #[test]
+    fn spelling_correction_rejects_empty_and_identical_results() {
+        assert_eq!(
+            validated_spelling_correction("teh", 0, 3, Some(String::new())),
+            None
+        );
+        assert_eq!(
+            validated_spelling_correction("teh", 0, 3, Some("teh".into())),
+            None
+        );
+        assert_eq!(validated_spelling_correction("teh", 0, 3, None), None);
     }
 }

@@ -38,7 +38,9 @@ pub struct FieldHandle {
 /// `selection` are offsets in the units named by `offset_encoding` — consumers
 /// must convert (the `context` crate's helpers take Unicode-scalar offsets)
 /// before any indexing; mixing units silently corrupts caret math on non-ASCII
-/// text. The snapshot is not live: it may be stale by the time it is read.
+/// text. When `selection` is non-empty, `left` ends at the selection start,
+/// `right` begins at its end, and `selected_text` carries the omitted middle.
+/// The snapshot is not live: it may be stale by the time it is read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextContext {
     pub left: String,

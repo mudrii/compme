@@ -408,6 +408,24 @@ impl SuggestionMachine {
         }
     }
 
+    fn accept_selection_replacement(
+        &mut self,
+        showing: Showing,
+        out: &mut Vec<Command>,
+    ) -> Option<Showing> {
+        if showing.presentation != Presentation::SelectionReplacement {
+            return Some(showing);
+        }
+        if let Some(command) = selection_replacement_command(&showing) {
+            out.push(command);
+            out.push(Command::Hide);
+            self.advance_snapshot();
+        } else {
+            self.showing = Some(showing);
+        }
+        None
+    }
+
     fn advance_snapshot(&mut self) {
         self.generation += 1;
         self.snapshot += 1;
@@ -643,18 +661,11 @@ impl SuggestionMachine {
             }
             Event::AcceptFull => {
                 if let Some(showing) = self.showing.take() {
+                    let Some(showing) = self.accept_selection_replacement(showing, &mut out) else {
+                        return out;
+                    };
                     if showing.presentation == Presentation::Correction {
                         self.showing = Some(showing);
-                        return out;
-                    }
-                    if showing.presentation == Presentation::SelectionReplacement {
-                        if let Some(command) = selection_replacement_command(&showing) {
-                            out.push(command);
-                            out.push(Command::Hide);
-                            self.advance_snapshot();
-                        } else {
-                            self.showing = Some(showing);
-                        }
                         return out;
                     }
                     // A replacement (`replace_left > 0`) inserts its exact rendered
@@ -686,19 +697,13 @@ impl SuggestionMachine {
                 }
             }
             Event::AcceptWord => {
-                if let Some(mut showing) = self.showing.take() {
+                if let Some(showing) = self.showing.take() {
+                    let Some(mut showing) = self.accept_selection_replacement(showing, &mut out)
+                    else {
+                        return out;
+                    };
                     if showing.presentation == Presentation::Correction {
                         self.showing = Some(showing);
-                        return out;
-                    }
-                    if showing.presentation == Presentation::SelectionReplacement {
-                        if let Some(command) = selection_replacement_command(&showing) {
-                            out.push(command);
-                            out.push(Command::Hide);
-                            self.advance_snapshot();
-                        } else {
-                            self.showing = Some(showing);
-                        }
                         return out;
                     }
                     // A replacement (`replace_left > 0`, e.g. emoji/synonym) is
