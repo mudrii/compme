@@ -173,6 +173,17 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.accept = Some(accept);
     }
 
+    /// Whether the currently focused field was positively identified by the
+    /// platform as an AI-assistant/chat input. The app combines this with the
+    /// `SidebarOnly` compatibility tier; unknown fields remain fail-closed.
+    pub fn assistant_field(&self) -> bool {
+        self.caps.assistant_field
+    }
+
+    pub fn current_capabilities(&self) -> Capabilities {
+        self.caps.clone()
+    }
+
     /// Drop + re-register the platform's accept tap against the current
     /// keymap (recorder 5b live rebind). `Ok` with no subscription. Callers
     /// must NOT persist a rebind when this returns `Err` — the registered
@@ -347,6 +358,19 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch(commands)
     }
 
+    pub fn on_selection_replacement(
+        &mut self,
+        field: &FieldHandle,
+        original: String,
+        candidates: Vec<String>,
+        range: CorrectionRange,
+    ) -> Result<Vec<CompletionRequest>, platform::PlatformError> {
+        let commands = self
+            .machine
+            .offer_selection_replacement_multi(field, original, candidates, range);
+        self.dispatch(commands)
+    }
+
     pub fn arm_manual_grammar_request(&mut self, field: &FieldHandle) -> Option<(u64, SnapshotId)> {
         self.machine.arm_manual_grammar_request(field)
     }
@@ -413,6 +437,13 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
 
     pub fn preview_accept_correction(&self) -> Option<(FieldHandle, String, CorrectionRange)> {
         self.machine.preview_accept_correction()
+    }
+
+    pub fn preview_accept_range(
+        &self,
+        action: AcceptAction,
+    ) -> Option<(FieldHandle, String, CorrectionRange)> {
+        self.machine.preview_accept_range(action)
     }
 
     /// Drain machine-internal Shown/Superseded stat events for the host to record
@@ -553,6 +584,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     field,
                     suggestion,
                     correction_range,
+                    accept_action,
                     ..
                 } => {
                     let anchor = self
@@ -583,8 +615,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                                 committed,
                             });
                         }
-                        if let Err(err) = self.set_tap_visible(true, Some(AcceptAction::Correction))
-                        {
+                        if let Err(err) = self.set_tap_visible(true, Some(accept_action)) {
                             self.reconcile_failed_show();
                             return Err(DispatchError {
                                 error: err,
@@ -718,6 +749,7 @@ fn unsupported_caps() -> Capabilities {
         readable_text: false,
         readable_caret: false,
         writable: false,
+        assistant_field: false,
         secure: false,
         security_state: SecurityState::Unknown,
         toolkit: Toolkit::Unknown(String::new()),
@@ -765,6 +797,7 @@ mod tests {
             readable_text: true,
             readable_caret: true,
             writable: true,
+            assistant_field: false,
             secure: false,
             security_state: SecurityState::Normal,
             toolkit: Toolkit::AppKit,
@@ -1459,6 +1492,39 @@ mod tests {
             "the cycled candidate replaces via insert_replacing with replace_left"
         );
         assert!(adapter.inserts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn selection_replacement_accepts_the_cycled_candidate_via_range_insert() {
+        let (mut engine, adapter, _overlay) = engine();
+        let field = field();
+        let range = CorrectionRange { start: 1, end: 6 };
+        engine.on_focus(field.clone()).unwrap();
+        engine
+            .on_selection_replacement(
+                &field,
+                "happy".into(),
+                vec!["glad".into(), "joyful".into()],
+                range,
+            )
+            .unwrap();
+        engine.on_cycle().unwrap();
+        assert_eq!(
+            engine.preview_accept_range(AcceptAction::Full),
+            Some((field.clone(), "joyful".into(), range))
+        );
+        engine.on_accept(AcceptAction::Full).unwrap();
+
+        assert_eq!(
+            adapter.range_replacing_inserts.lock().unwrap().as_slice(),
+            &[(
+                field,
+                "happy".into(),
+                "joyful".into(),
+                range,
+                InsertStrategy::AxSet
+            )]
+        );
     }
 
     #[test]

@@ -405,6 +405,7 @@ mod tests {
             left_scalars: left.chars().count(),
             caret,
             selection: None,
+            selected_text: None,
             source: ContextSource::Accessibility,
             field_id: FieldHandle {
                 app: "pid:1".into(),

@@ -1676,7 +1676,7 @@ mod tests {
                 assert!(
                     matches!(&*state, DownloadState::Idle),
                     "dropped request {i} (returned false) must stay Idle, got {:?}",
-                    &*state
+                    *state
                 );
             }
         }

@@ -355,6 +355,7 @@ mod tests {
             right: right.into(),
             left_scalars: left.chars().count(),
             selection: None,
+            selected_text: None,
             caret: left.chars().count(),
             source: ContextSource::Accessibility,
             field_id: field("f"),

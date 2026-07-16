@@ -1233,11 +1233,10 @@ impl MacosPlatformAdapter {
     }
 
     /// Shared insert path. `replace_left` (characters to delete left of the caret
-    /// before inserting — a replacement) is honored by every strategy: `AxSet`
-    /// range-replaces atomically; `SyntheticKeys`/`Clipboard` cannot
-    /// read-modify-write a range, so they synthesize `replace_left` backspace
-    /// key presses BEFORE posting the text (a failed backspace post aborts the
-    /// insert — never insert without deleting first).
+    /// before inserting — a replacement) is honored atomically by `AxSet`.
+    /// `SyntheticKeys`/`Clipboard` cannot safely read-modify-write a range, so
+    /// non-zero replacement requests using those strategies fail closed before
+    /// posting any text.
     /// `replace_left == 0` is byte-identical to the prior append-only behavior
     /// (the backspace poster is never invoked). The empty-text early return
     /// precedes deletion: nothing is deleted when there is nothing to insert.
@@ -3962,6 +3961,7 @@ fn blocked_capabilities(security_state: SecurityState) -> Capabilities {
         readable_text: false,
         readable_caret: false,
         writable: false,
+        assistant_field: false,
         secure: true,
         security_state,
         toolkit: Toolkit::Unknown("macOS Accessibility".into()),
@@ -4603,13 +4603,85 @@ fn capabilities_for_field(
         Err(err) => return Err(err),
     };
 
-    Ok(editable_capabilities(
+    let mut capabilities = editable_capabilities(
         &identity,
         value_settable,
         selected_range_settable,
         has_caret_rect,
         true,
-    ))
+    );
+    let metadata = unsafe { read_sidebar_field_metadata(element, &identity) }?;
+    capabilities.assistant_field = sidebar_assistant_field(&metadata);
+    Ok(capabilities)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SidebarFieldMetadata {
+    identifier: Option<String>,
+    description: Option<String>,
+    title: Option<String>,
+    placeholder: Option<String>,
+    help: Option<String>,
+}
+
+fn sidebar_assistant_field(metadata: &SidebarFieldMetadata) -> bool {
+    let identifier = metadata
+        .identifier
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let labels = [
+        metadata.description.as_deref(),
+        metadata.title.as_deref(),
+        metadata.placeholder.as_deref(),
+        metadata.help.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_ascii_lowercase();
+
+    const IDENTIFIER_MARKERS: [&str; 8] = [
+        "chat",
+        "copilot",
+        "assistant",
+        "composer",
+        "interactive-input",
+        "prompt-input",
+        "cascade",
+        "aichat",
+    ];
+    const LABEL_MARKERS: [&str; 10] = [
+        "ask copilot",
+        "ask ai",
+        "ask anything",
+        "chat input",
+        "chat message",
+        "ai assistant",
+        "agent mode",
+        "composer",
+        "cascade",
+        "send a message",
+    ];
+
+    IDENTIFIER_MARKERS
+        .iter()
+        .any(|marker| identifier.contains(marker))
+        || LABEL_MARKERS.iter().any(|marker| labels.contains(marker))
+}
+
+unsafe fn read_sidebar_field_metadata(
+    element: AXUIElementRef,
+    identity: &AxElementIdentity,
+) -> Result<SidebarFieldMetadata, PlatformError> {
+    Ok(SidebarFieldMetadata {
+        identifier: identity.identifier.clone(),
+        description: read_optional_ax_string_attribute(element, "AXDescription")?,
+        title: read_optional_ax_string_attribute(element, "AXTitle")?,
+        placeholder: read_optional_ax_string_attribute(element, "AXPlaceholderValue")?,
+        help: read_optional_ax_string_attribute(element, "AXHelp")?,
+    })
 }
 
 fn secure_input_recheck_result(enabled: bool) -> Result<(), PlatformError> {
@@ -5696,6 +5768,7 @@ fn editable_capabilities(
         readable_text: true,
         readable_caret: selected_range_settable && has_caret_rect,
         writable: insert_strategy != InsertStrategy::None,
+        assistant_field: false,
         secure: false,
         security_state: SecurityState::Normal,
         toolkit: toolkit_for_identity(identity),
@@ -5756,6 +5829,7 @@ fn text_context_from_value(
         right: value[right_start..].to_string(),
         left_scalars,
         selection: (end > start).then_some(TextRange { start, end }),
+        selected_text: (end > start).then(|| value[left_end..right_start].to_string()),
         caret: start,
         source: ContextSource::Accessibility,
         field_id: field,
@@ -6869,6 +6943,44 @@ mod tests {
     use objc2::{define_class, msg_send, AnyThread, DefinedClass};
     use objc2_app_kit::NSPasteboardItemDataProvider;
     use objc2_foundation::{NSObject, NSObjectProtocol};
+
+    #[test]
+    fn sidebar_field_classifier_requires_positive_assistant_metadata() {
+        for metadata in [
+            SidebarFieldMetadata {
+                identifier: Some("workbench.panel.chat.view.input".into()),
+                ..SidebarFieldMetadata::default()
+            },
+            SidebarFieldMetadata {
+                placeholder: Some("Ask Copilot anything".into()),
+                ..SidebarFieldMetadata::default()
+            },
+            SidebarFieldMetadata {
+                description: Some("Cascade chat input".into()),
+                ..SidebarFieldMetadata::default()
+            },
+        ] {
+            assert!(sidebar_assistant_field(&metadata), "{metadata:?}");
+        }
+    }
+
+    #[test]
+    fn sidebar_field_classifier_keeps_editor_and_unknown_fields_closed() {
+        for metadata in [
+            SidebarFieldMetadata::default(),
+            SidebarFieldMetadata {
+                identifier: Some("workbench.editors.textResourceEditor".into()),
+                description: Some("Editor content".into()),
+                ..SidebarFieldMetadata::default()
+            },
+            SidebarFieldMetadata {
+                placeholder: Some("Search files by name".into()),
+                ..SidebarFieldMetadata::default()
+            },
+        ] {
+            assert!(!sidebar_assistant_field(&metadata), "{metadata:?}");
+        }
+    }
 
     #[test]
     fn cg_image_opaque_encodes_as_vision_expects() {
@@ -12344,6 +12456,7 @@ mod tests {
         assert_eq!(context.left_scalars, 4);
         assert_eq!(context.right, " there");
         assert_eq!(context.selection, None);
+        assert_eq!(context.selected_text, None);
         assert_eq!(context.caret, 5);
         assert_eq!(context.field_id, field);
         assert_eq!(context.source, ContextSource::Accessibility);
@@ -12351,7 +12464,7 @@ mod tests {
     }
 
     #[test]
-    fn text_context_omits_selected_text_from_left_and_right() {
+    fn text_context_carries_selected_text_separately_from_left_and_right() {
         let field = FocusTokenFactory::new().focused_field("TextEdit", Some(42), "element");
 
         let context = text_context_from_value(
@@ -12367,6 +12480,7 @@ mod tests {
         assert_eq!(context.left_scalars, 6);
         assert_eq!(context.right, "");
         assert_eq!(context.selection, Some(TextRange { start: 6, end: 11 }));
+        assert_eq!(context.selected_text.as_deref(), Some("world"));
         assert_eq!(context.caret, 6);
     }
 
@@ -12387,6 +12501,7 @@ mod tests {
         assert_eq!(context.left_scalars, 3);
         assert_eq!(context.right, "");
         assert_eq!(context.selection, None);
+        assert_eq!(context.selected_text, None);
         assert_eq!(context.caret, 3);
     }
 

@@ -389,6 +389,7 @@ mod tests {
             right: right.into(),
             left_scalars: left.chars().count(),
             selection: None,
+            selected_text: None,
             caret: left.encode_utf16().count(),
             source: ContextSource::Accessibility,
             field_id: FieldHandle {

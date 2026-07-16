@@ -170,7 +170,10 @@ pub struct SettingsFlags {
     pub general_launch_at_login: Arc<AtomicBool>,
     pub labs_midline: Arc<AtomicBool>,
     pub general_autocorrect: Arc<AtomicBool>,
+    pub general_full_autocorrect: Arc<AtomicBool>,
+    pub general_thesaurus_selection: Arc<AtomicBool>,
     pub general_trailing_space: Arc<AtomicBool>,
+    pub context_cross_app_previous_inputs: Arc<AtomicBool>,
     pub context_clipboard: Arc<AtomicBool>,
     pub context_screen: Arc<AtomicBool>,
     pub emoji_enabled: Arc<AtomicBool>,
@@ -261,6 +264,13 @@ pub trait ShellHost: Send + Sync {
         None
     }
 
+    /// Return the OS spell checker's preferred correction when `word` is a
+    /// wholly misspelled token. `Ok(None)` means correct, unknown, or
+    /// unsupported. The app owns prose/code-field and feature-policy gating.
+    fn spelling_correction(&self, _word: &str) -> Result<Option<String>, PlatformError> {
+        Ok(None)
+    }
+
     /// OCR'd text near the caret. `None` means unavailable.
     fn screen_context_text(
         &self,
@@ -328,6 +338,10 @@ pub struct TrayFlags {
     /// Set when the user picks "Check for Updates…"; the run loop opens the
     /// GitHub Releases updater surface.
     pub check_updates: Arc<AtomicBool>,
+    /// Set when the user picks "Visit Website".
+    pub visit_website: Arc<AtomicBool>,
+    /// Set when the user picks "Contact Support".
+    pub contact_support: Arc<AtomicBool>,
     /// Set when the user picks "Toggle Input Collection in Current App"; the
     /// run loop consumes it (swap false) and flips the frontmost app's
     /// typing-history collection override.

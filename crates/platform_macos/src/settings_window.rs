@@ -39,6 +39,8 @@ enum GeneralToggleAction {
     LaunchAtLogin,
     Midline,
     Autocorrect,
+    FullAutocorrect,
+    ThesaurusSelection,
     TrailingSpace,
 }
 
@@ -48,7 +50,7 @@ struct GeneralToggleSpec {
     action: GeneralToggleAction,
 }
 
-const GENERAL_TOGGLE_SPECS: [GeneralToggleSpec; 5] = [
+const GENERAL_TOGGLE_SPECS: [GeneralToggleSpec; 7] = [
     GeneralToggleSpec {
         title: "Enable completions",
         action: GeneralToggleAction::Enabled,
@@ -66,6 +68,14 @@ const GENERAL_TOGGLE_SPECS: [GeneralToggleSpec; 5] = [
         action: GeneralToggleAction::Autocorrect,
     },
     GeneralToggleSpec {
+        title: "Full autocorrect (macOS spelling suggestions, prose only)",
+        action: GeneralToggleAction::FullAutocorrect,
+    },
+    GeneralToggleSpec {
+        title: "Offer synonyms when a single word is selected",
+        action: GeneralToggleAction::ThesaurusSelection,
+    },
+    GeneralToggleSpec {
         title: "Trailing space after single-word completions",
         action: GeneralToggleAction::TrailingSpace,
     },
@@ -75,20 +85,33 @@ fn general_toggle_specs() -> &'static [GeneralToggleSpec] {
     &GENERAL_TOGGLE_SPECS
 }
 
-fn general_toggle_route<T: Copy>(
-    action: GeneralToggleAction,
+#[derive(Clone, Copy)]
+struct GeneralToggleFlags<T> {
     enabled: T,
     launch_at_login: T,
     midline: T,
     autocorrect: T,
+    full_autocorrect: T,
+    thesaurus_selection: T,
     trailing_space: T,
+}
+
+fn general_toggle_route<T: Copy>(
+    action: GeneralToggleAction,
+    flags: GeneralToggleFlags<T>,
 ) -> (T, objc2::runtime::Sel) {
     match action {
-        GeneralToggleAction::Enabled => (enabled, sel!(toggleEnabled:)),
-        GeneralToggleAction::LaunchAtLogin => (launch_at_login, sel!(toggleLaunchAtLogin:)),
-        GeneralToggleAction::Midline => (midline, sel!(toggleMidline:)),
-        GeneralToggleAction::Autocorrect => (autocorrect, sel!(toggleAutocorrect:)),
-        GeneralToggleAction::TrailingSpace => (trailing_space, sel!(toggleTrailingSpace:)),
+        GeneralToggleAction::Enabled => (flags.enabled, sel!(toggleEnabled:)),
+        GeneralToggleAction::LaunchAtLogin => (flags.launch_at_login, sel!(toggleLaunchAtLogin:)),
+        GeneralToggleAction::Midline => (flags.midline, sel!(toggleMidline:)),
+        GeneralToggleAction::Autocorrect => (flags.autocorrect, sel!(toggleAutocorrect:)),
+        GeneralToggleAction::FullAutocorrect => {
+            (flags.full_autocorrect, sel!(toggleFullAutocorrect:))
+        }
+        GeneralToggleAction::ThesaurusSelection => {
+            (flags.thesaurus_selection, sel!(toggleThesaurusSelection:))
+        }
+        GeneralToggleAction::TrailingSpace => (flags.trailing_space, sel!(toggleTrailingSpace:)),
     }
 }
 
@@ -540,6 +563,28 @@ define_class!(
             }
         }
 
+        #[unsafe(method(toggleFullAutocorrect:))]
+        fn toggle_full_autocorrect(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars()
+                    .flags
+                    .general_full_autocorrect
+                    .store(on, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(toggleThesaurusSelection:))]
+        fn toggle_thesaurus_selection(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars()
+                    .flags
+                    .general_thesaurus_selection
+                    .store(on, Ordering::Relaxed);
+            }
+        }
+
         #[unsafe(method(toggleMidline:))]
         fn toggle_midline(&self, sender: Option<&NSSwitch>) {
             if let Some(switch) = sender {
@@ -555,6 +600,17 @@ define_class!(
                 self.ivars()
                     .flags
                     .context_clipboard
+                    .store(on, Ordering::Relaxed);
+            }
+        }
+
+        #[unsafe(method(toggleCrossAppPreviousInputs:))]
+        fn toggle_cross_app_previous_inputs(&self, sender: Option<&NSSwitch>) {
+            if let Some(switch) = sender {
+                let on = switch.state() == NSControlStateValueOn;
+                self.ivars()
+                    .flags
+                    .context_cross_app_previous_inputs
                     .store(on, Ordering::Relaxed);
             }
         }
@@ -1713,11 +1769,15 @@ fn build_window(
         for (row, spec) in general_toggle_specs().iter().enumerate() {
             let (flag, action) = general_toggle_route(
                 spec.action,
-                &flags.general_enabled,
-                &flags.general_launch_at_login,
-                &flags.labs_midline,
-                &flags.general_autocorrect,
-                &flags.general_trailing_space,
+                GeneralToggleFlags {
+                    enabled: &flags.general_enabled,
+                    launch_at_login: &flags.general_launch_at_login,
+                    midline: &flags.labs_midline,
+                    autocorrect: &flags.general_autocorrect,
+                    full_autocorrect: &flags.general_full_autocorrect,
+                    thesaurus_selection: &flags.general_thesaurus_selection,
+                    trailing_space: &flags.general_trailing_space,
+                },
             );
             let label = NSTextField::labelWithString(&NSString::from_str(spec.title), mtm);
             label.setFrame(NSRect::new(
@@ -1985,7 +2045,12 @@ fn build_window(
     // also applies live when Screen Recording is already granted.
     {
         let context = &pane_views[4];
-        let rows: [(&str, &Arc<AtomicBool>, objc2::runtime::Sel); 2] = [
+        let rows: [(&str, &Arc<AtomicBool>, objc2::runtime::Sel); 3] = [
+            (
+                "Cross-app previous-input context",
+                &flags.context_cross_app_previous_inputs,
+                sel!(toggleCrossAppPreviousInputs:),
+            ),
             (
                 "Clipboard context",
                 &flags.context_clipboard,
@@ -2710,6 +2775,18 @@ mod tests {
                 sel!(toggleAutocorrect:),
             ),
             (
+                "Full autocorrect (macOS spelling suggestions, prose only)",
+                GeneralToggleAction::FullAutocorrect,
+                "full_autocorrect",
+                sel!(toggleFullAutocorrect:),
+            ),
+            (
+                "Offer synonyms when a single word is selected",
+                GeneralToggleAction::ThesaurusSelection,
+                "thesaurus_selection",
+                sel!(toggleThesaurusSelection:),
+            ),
+            (
                 "Trailing space after single-word completions",
                 GeneralToggleAction::TrailingSpace,
                 "trailing_space",
@@ -2721,11 +2798,15 @@ mod tests {
             .map(|spec| {
                 let (flag, selector) = general_toggle_route(
                     spec.action,
-                    "enabled",
-                    "launch_at_login",
-                    "midline",
-                    "autocorrect",
-                    "trailing_space",
+                    GeneralToggleFlags {
+                        enabled: "enabled",
+                        launch_at_login: "launch_at_login",
+                        midline: "midline",
+                        autocorrect: "autocorrect",
+                        full_autocorrect: "full_autocorrect",
+                        thesaurus_selection: "thesaurus_selection",
+                        trailing_space: "trailing_space",
+                    },
                 );
                 (spec.title, spec.action, flag, selector)
             })

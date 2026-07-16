@@ -370,6 +370,7 @@ mod tests {
             readable_text: true,
             readable_caret: false,
             writable: true,
+            assistant_field: false,
             secure: false,
             security_state: SecurityState::Normal,
             toolkit: Toolkit::AppKit,
@@ -395,6 +396,7 @@ mod tests {
             right: String::new(),
             left_scalars: left.chars().count(),
             selection: None,
+            selected_text: None,
             caret: left.encode_utf16().count(),
             source: ContextSource::Accessibility,
             field_id: FieldHandle {

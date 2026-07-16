@@ -514,6 +514,25 @@ fn is_path_token(token: &str) -> bool {
         || token.starts_with("~/")
 }
 
+/// Conservative app-level code-editor classification for prose-only features
+/// such as statistical autocorrect. Sidebar assistant fields can explicitly
+/// override this at the field-capability boundary.
+pub fn is_code_editor(bundle_id: &str) -> bool {
+    let id = normalize_bundle_id(bundle_id);
+    matches!(
+        id.as_str(),
+        "com.apple.dt.xcode"
+            | "com.microsoft.vscode"
+            | "com.todesktop.230313mzl4w4u92"
+            | "com.exafunction.windsurf"
+            | "com.barebones.bbedit"
+            | "com.sublimetext.3"
+            | "com.sublimetext.4"
+            | "dev.zed.zed"
+            | "dev.zed.zed-preview"
+    ) || id.starts_with("com.jetbrains.")
+}
+
 /// Classify a macOS application bundle id into a compatibility tier. The id is
 /// normalized first (case/whitespace/trailing-dot tolerant) so a mis-cased or
 /// trailing-dot id for an `Unsupported` app or terminal cannot fail open into the
@@ -725,6 +744,27 @@ mod tests {
         assert!(compatibility_tier("com.microsoft.VSCode").sidebar_only());
         assert!(!compatibility_tier("com.apple.TextEdit").sidebar_only());
         assert!(!compatibility_tier("com.example.unknown").sidebar_only());
+    }
+
+    #[test]
+    fn code_editor_classifier_is_normalized_and_conservative() {
+        for app in [
+            "com.apple.dt.Xcode",
+            "com.microsoft.VSCode",
+            "com.todesktop.230313mzl4w4u92",
+            "com.exafunction.windsurf",
+            "com.jetbrains.intellij",
+            "dev.zed.Zed",
+        ] {
+            assert!(is_code_editor(app), "{app}");
+        }
+        for app in [
+            "com.apple.TextEdit",
+            "com.apple.Notes",
+            "com.example.Writer",
+        ] {
+            assert!(!is_code_editor(app), "{app}");
+        }
     }
 
     #[test]

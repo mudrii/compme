@@ -150,6 +150,7 @@ pub enum Command {
         snapshot: SnapshotId,
         suggestion: String,
         correction_range: CorrectionRange,
+        accept_action: AcceptAction,
     },
     UpdateGhost {
         field: FieldHandle,
@@ -165,8 +166,9 @@ pub enum Command {
     /// the left of the caret — a *replacement* (e.g. emoji `:smile`→😄, typo fix,
     /// US→UK spelling). Emitted only for a `Showing` whose `replace_left > 0`
     /// (produced by `offer_replacement`). The host honors the deletion at the
-    /// insertion boundary (AxSet range-extend; SyntheticKeys/Clipboard backspaces
-    /// are the live-validated residual — see the integration-phase design note).
+    /// insertion boundary. The machine only offers replacements when the field
+    /// has an atomic range-replace strategy; SyntheticKeys/Clipboard fields
+    /// deliberately fail closed.
     Replace {
         field: FieldHandle,
         text: String,
@@ -184,6 +186,7 @@ pub enum Command {
 pub enum Presentation {
     Ghost,
     Correction,
+    SelectionReplacement,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,6 +203,15 @@ struct Showing {
     presentation: Presentation,
     correction_range: Option<CorrectionRange>,
     correction_original: Option<String>,
+}
+
+fn selection_replacement_command(showing: &Showing) -> Option<Command> {
+    Some(Command::ReplaceRange {
+        field: showing.field.clone(),
+        expected_text: showing.correction_original.clone()?,
+        text: showing.candidates.get(showing.index)?.clone(),
+        correction_range: showing.correction_range?,
+    })
 }
 
 struct CorrectionOffer {
@@ -517,11 +529,23 @@ impl SuggestionMachine {
                 if let Some(showing) = self.showing.as_mut() {
                     if showing.candidates.len() > 1 {
                         showing.index = (showing.index + 1) % showing.candidates.len();
-                        out.push(Command::UpdateGhost {
-                            field: showing.field.clone(),
-                            snapshot: showing.snapshot,
-                            text: showing.current().to_string(),
-                        });
+                        if showing.presentation == Presentation::SelectionReplacement {
+                            if let Some(correction_range) = showing.correction_range {
+                                out.push(Command::ShowCorrection {
+                                    field: showing.field.clone(),
+                                    snapshot: showing.snapshot,
+                                    suggestion: showing.current().to_string(),
+                                    correction_range,
+                                    accept_action: AcceptAction::Full,
+                                });
+                            }
+                        } else {
+                            out.push(Command::UpdateGhost {
+                                field: showing.field.clone(),
+                                snapshot: showing.snapshot,
+                                text: showing.current().to_string(),
+                            });
+                        }
                     }
                 }
             }
@@ -546,12 +570,22 @@ impl SuggestionMachine {
                     // correction span and arm the tap as AcceptFull, which
                     // deliberately no-ops on Presentation::Correction.
                     match (showing.presentation, showing.correction_range) {
-                        (Presentation::Correction, Some(correction_range)) => {
+                        (presentation, Some(correction_range))
+                            if matches!(
+                                presentation,
+                                Presentation::Correction | Presentation::SelectionReplacement
+                            ) =>
+                        {
                             out.push(Command::ShowCorrection {
                                 field: showing.field.clone(),
                                 snapshot: showing.snapshot,
                                 suggestion: showing.current().to_string(),
                                 correction_range,
+                                accept_action: if presentation == Presentation::Correction {
+                                    AcceptAction::Correction
+                                } else {
+                                    AcceptAction::Full
+                                },
                             });
                         }
                         _ => out.push(Command::ShowGhost {
@@ -613,6 +647,16 @@ impl SuggestionMachine {
                         self.showing = Some(showing);
                         return out;
                     }
+                    if showing.presentation == Presentation::SelectionReplacement {
+                        if let Some(command) = selection_replacement_command(&showing) {
+                            out.push(command);
+                            out.push(Command::Hide);
+                            self.advance_snapshot();
+                        } else {
+                            self.showing = Some(showing);
+                        }
+                        return out;
+                    }
                     // A replacement (`replace_left > 0`) inserts its exact rendered
                     // text (emoji glyph / synonym) — the trailing-space-after-
                     // single-word policy applies only to append-only completions.
@@ -645,6 +689,16 @@ impl SuggestionMachine {
                 if let Some(mut showing) = self.showing.take() {
                     if showing.presentation == Presentation::Correction {
                         self.showing = Some(showing);
+                        return out;
+                    }
+                    if showing.presentation == Presentation::SelectionReplacement {
+                        if let Some(command) = selection_replacement_command(&showing) {
+                            out.push(command);
+                            out.push(Command::Hide);
+                            self.advance_snapshot();
+                        } else {
+                            self.showing = Some(showing);
+                        }
                         return out;
                     }
                     // A replacement (`replace_left > 0`, e.g. emoji/synonym) is
@@ -888,6 +942,7 @@ impl SuggestionMachine {
             snapshot,
             suggestion: offer.suggestion,
             correction_range: offer.range,
+            accept_action: AcceptAction::Correction,
         });
         self.record_stat(StatEvent::Shown);
     }
@@ -933,7 +988,7 @@ impl SuggestionMachine {
         action: AcceptAction,
     ) -> Option<(FieldHandle, String, usize)> {
         let showing = self.showing.as_ref()?;
-        if showing.presentation == Presentation::Correction {
+        if showing.presentation != Presentation::Ghost {
             return None;
         }
         if showing.replace_left > 0 {
@@ -952,6 +1007,26 @@ impl SuggestionMachine {
     pub fn preview_accept_correction(&self) -> Option<(FieldHandle, String, CorrectionRange)> {
         let showing = self.showing.as_ref()?;
         if showing.presentation != Presentation::Correction {
+            return None;
+        }
+        let range = showing.correction_range?;
+        let text = showing.candidates.get(showing.index)?.clone();
+        (!text.is_empty()).then(|| (showing.field.clone(), text, range))
+    }
+
+    pub fn preview_accept_range(
+        &self,
+        action: AcceptAction,
+    ) -> Option<(FieldHandle, String, CorrectionRange)> {
+        let showing = self.showing.as_ref()?;
+        let accepted = match showing.presentation {
+            Presentation::Correction => action == AcceptAction::Correction,
+            Presentation::SelectionReplacement => {
+                matches!(action, AcceptAction::Full | AcceptAction::Word)
+            }
+            Presentation::Ghost => false,
+        };
+        if !accepted {
             return None;
         }
         let range = showing.correction_range?;
@@ -1055,6 +1130,61 @@ impl SuggestionMachine {
         self.record_stat(StatEvent::Shown);
         out
     }
+
+    pub fn offer_selection_replacement_multi(
+        &mut self,
+        field: &FieldHandle,
+        original: String,
+        candidates: Vec<String>,
+        range: CorrectionRange,
+    ) -> Vec<Command> {
+        let mut out = Vec::new();
+        if !self.enabled()
+            || self.suppressed
+            || original.is_empty()
+            || range.start >= range.end
+            || !self.caps.insert_strategy.supports_atomic_range_replace()
+            || self.field.as_ref() != Some(field)
+        {
+            return out;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let candidates: Vec<String> = candidates
+            .into_iter()
+            .filter(|candidate| {
+                !candidate.is_empty() && candidate != &original && seen.insert(candidate.clone())
+            })
+            .collect();
+        if candidates.is_empty() {
+            return out;
+        }
+        if self.showing.is_some() {
+            self.record_stat(StatEvent::Superseded);
+        }
+        let suggestion = candidates[0].clone();
+        self.showing = Some(Showing {
+            field: field.clone(),
+            snapshot: self.snapshot,
+            candidates,
+            index: 0,
+            caret: self.caret,
+            replace_left: 0,
+            presentation: Presentation::SelectionReplacement,
+            correction_range: Some(range),
+            correction_original: Some(original),
+        });
+        self.pending_since = None;
+        self.requested = None;
+        out.push(Command::ShowCorrection {
+            field: field.clone(),
+            snapshot: self.snapshot,
+            suggestion,
+            correction_range: range,
+            accept_action: AcceptAction::Full,
+        });
+        self.record_stat(StatEvent::Shown);
+        out
+    }
 }
 
 /// Cotypist's "Include trailing space after single-word completions": when
@@ -1096,6 +1226,7 @@ mod tests {
             readable_text: true,
             readable_caret: true,
             writable: true,
+            assistant_field: false,
             secure: false,
             security_state: SecurityState::Normal,
             toolkit: Toolkit::AppKit,
@@ -3504,6 +3635,54 @@ mod tests {
     }
 
     #[test]
+    fn selection_replacement_cycles_and_full_accept_emits_exact_range_replace() {
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        let range = CorrectionRange { start: 2, end: 7 };
+        assert_eq!(
+            machine.offer_selection_replacement_multi(
+                &f,
+                "happy".into(),
+                vec!["glad".into(), "joyful".into()],
+                range,
+            ),
+            vec![Command::ShowCorrection {
+                field: f.clone(),
+                snapshot: 1,
+                suggestion: "glad".into(),
+                correction_range: range,
+                accept_action: AcceptAction::Full,
+            }]
+        );
+        assert_eq!(
+            machine.preview_accept_range(AcceptAction::Full),
+            Some((f.clone(), "glad".into(), range))
+        );
+        assert_eq!(
+            machine.on_event(Event::Cycle),
+            vec![Command::ShowCorrection {
+                field: f.clone(),
+                snapshot: 1,
+                suggestion: "joyful".into(),
+                correction_range: range,
+                accept_action: AcceptAction::Full,
+            }]
+        );
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::ReplaceRange {
+                    field: f,
+                    expected_text: "happy".into(),
+                    text: "joyful".into(),
+                    correction_range: range,
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
     fn offer_replacement_shows_ghost_then_full_accept_emits_replace() {
         let mut machine = focused_machine();
         let f = field("field-a");
@@ -4521,6 +4700,7 @@ mod tests {
                 snapshot: snap,
                 suggestion: "the quick".into(),
                 correction_range: range,
+                accept_action: AcceptAction::Correction,
             }]
         );
         // The host previews the pending correction (echo absorption) before accept.

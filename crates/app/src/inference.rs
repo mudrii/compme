@@ -30,13 +30,18 @@ pub(crate) const GRAMMAR_MAX_TOKENS: usize = model_client::GRAMMAR_GENERATION_TO
 /// between the run loop (which records on accept) and the inference worker (which
 /// reads them as previous-input context). A2 §16.
 ///
-/// Scoping is **per app**: text accepted in one app only surfaces as context in
-/// that same app — cross-app previous inputs are a separate opt-in Cotypist
-/// ships behind `featureCrossAppPreviousInputs` (not cloned here), so the default
-/// must not leak prose across application boundaries.
+/// Scoping is **per app by default**. A separate live atomic enables a bounded
+/// cross-app ring; disabling it clears that ring so previously shared prose
+/// cannot reappear when the setting is re-enabled later.
 #[derive(Clone, Default)]
 pub struct PreviousInputs {
-    inner: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
+    inner: Arc<Mutex<PreviousInputsState>>,
+}
+
+#[derive(Default)]
+struct PreviousInputsState {
+    per_app: HashMap<String, VecDeque<String>>,
+    cross_app: VecDeque<String>,
 }
 
 impl PreviousInputs {
@@ -51,23 +56,48 @@ impl PreviousInputs {
         }
         let text = redaction::redact(&text);
         // Recover the guard on poisoning rather than silently dropping forever.
-        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let buf = map.entry(app.to_string()).or_default();
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let buf = state.per_app.entry(app.to_string()).or_default();
         if buf.back() == Some(&text) {
             return;
         }
         if buf.len() == Self::CAPACITY {
             buf.pop_front();
         }
-        buf.push_back(text);
+        buf.push_back(text.clone());
+        if state.cross_app.back() != Some(&text) {
+            if state.cross_app.len() == Self::CAPACITY {
+                state.cross_app.pop_front();
+            }
+            state.cross_app.push_back(text);
+        }
     }
 
-    /// The recent inputs for `app`, newest first.
+    /// The recent inputs for `app`, newest first. Cross-app mode returns the
+    /// global redacted ring; source app names never enter the prompt.
+    #[cfg(test)]
     pub(crate) fn recent(&self, app: &str) -> Vec<String> {
-        let map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        map.get(app)
+        self.recent_for_scope(app, false)
+    }
+
+    pub(crate) fn recent_for_scope(&self, app: &str, cross_app: bool) -> Vec<String> {
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if cross_app {
+            return state.cross_app.iter().rev().cloned().collect();
+        }
+        state
+            .per_app
+            .get(app)
             .map(|buf| buf.iter().rev().cloned().collect())
             .unwrap_or_default()
+    }
+
+    pub fn clear_cross_app(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cross_app
+            .clear();
     }
 }
 
@@ -78,6 +108,7 @@ impl PreviousInputs {
 #[derive(Clone, Default)]
 pub struct WorkerContext {
     pub previous_inputs: PreviousInputs,
+    pub cross_app_previous_inputs: Arc<AtomicBool>,
     pub clipboard: Arc<Mutex<Option<String>>>,
     pub screen: Arc<Mutex<Option<ScreenContext>>>,
     pub screen_wait_ms: Arc<AtomicU64>,
@@ -190,7 +221,10 @@ impl WorkerContext {
         if self.max_chars == 0 {
             return String::new();
         }
-        let recent = self.previous_inputs.recent(&request.field.app);
+        let recent = self.previous_inputs.recent_for_scope(
+            &request.field.app,
+            self.cross_app_previous_inputs.load(Ordering::Relaxed),
+        );
         let recent_refs = recent.iter().map(String::as_str).collect::<Vec<_>>();
         let clip = self
             .clipboard
@@ -879,6 +913,33 @@ mod tests {
     }
 
     #[test]
+    fn cross_app_previous_input_context_is_explicitly_opt_in() {
+        let previous = PreviousInputs::default();
+        previous.record("Mail", "earlier mail sentence".into());
+        let cross_app = Arc::new(AtomicBool::new(false));
+        let context = WorkerContext {
+            previous_inputs: previous,
+            cross_app_previous_inputs: Arc::clone(&cross_app),
+            max_chars: 160,
+            ..Default::default()
+        };
+        let req = request("now typing", 1);
+        assert!(
+            !context
+                .block_for(&req)
+                .contains("Recent: earlier mail sentence"),
+            "same-app isolation is the default"
+        );
+        cross_app.store(true, Ordering::Relaxed);
+        assert!(
+            context
+                .block_for(&req)
+                .contains("Recent: earlier mail sentence"),
+            "the live opt-in exposes only the redacted bounded global ring"
+        );
+    }
+
+    #[test]
     fn previous_inputs_record_redacts_before_prompt_context() {
         let previous = PreviousInputs::default();
         let token = "sk-abcdEFGH0123456789abcdEFGH0123";
@@ -1410,6 +1471,22 @@ mod tests {
         previous.record("app.a", "secret from A".into());
         assert_eq!(previous.recent("app.a"), vec!["secret from A"]);
         assert!(previous.recent("app.b").is_empty());
+    }
+
+    #[test]
+    fn disabling_cross_app_context_clears_only_the_global_ring() {
+        let previous = PreviousInputs::default();
+        previous.record("app.a", "from A".into());
+        previous.record("app.b", "from B".into());
+        assert_eq!(
+            previous.recent_for_scope("app.a", true),
+            vec!["from B", "from A"]
+        );
+
+        previous.clear_cross_app();
+        assert!(previous.recent_for_scope("app.a", true).is_empty());
+        assert_eq!(previous.recent("app.a"), vec!["from A"]);
+        assert_eq!(previous.recent("app.b"), vec!["from B"]);
     }
 
     #[test]

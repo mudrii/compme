@@ -179,10 +179,10 @@ toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
 cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
 expected_actions = {
   "actionlint" => [[checkout, {"persist-credentials" => false}]],
-  "check" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
-  "spike" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {"workspaces" => "tools/spike"}]],
-  "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
-  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {"cache-directories" => "~/.cargo/advisory-db"}]],
+  "check" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.97.0", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "spike" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.97.0", "components" => "rustfmt, clippy"}], [cache, {"workspaces" => "tools/spike"}]],
+  "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.97.0", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.97.0", "components" => "rustfmt, clippy"}], [cache, {"cache-directories" => "~/.cargo/advisory-db"}]],
 }
 abort("missing release gate: exact CI job topology") unless jobs.keys.sort == expected_actions.keys.sort
 expected_actions.each do |job_name, expected|
@@ -229,7 +229,7 @@ actions = steps.each_with_object([]) do |step, found|
 end
 expected_actions = [
   ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", {"persist-credentials" => false}],
-  ["dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30", {"toolchain" => "1.96.1"}],
+  ["dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30", {"toolchain" => "1.97.0"}],
   ["Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32", {"cache-directories" => "~/.cargo/advisory-db"}],
 ]
 abort("missing release gate: dependency audit exact action provenance") unless actions == expected_actions
@@ -321,10 +321,10 @@ download = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
 attest = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
 expected_action_topology = {
   "preflight" => [[checkout, {"fetch-depth" => 0}]],
-  "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {"workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"}]],
-  "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
-  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"}], [cache, {}]],
-  "prebuild" => [[checkout, {"fetch-depth" => 0}], [toolchain, {"toolchain" => "1.96.1"}], [upload, {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "retention-days" => 3, "path" => "target/release/compme"}]],
+  "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.97.0", "components" => "rustfmt, clippy"}], [cache, {"workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"}]],
+  "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.97.0", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"toolchain" => "1.97.0", "components" => "rustfmt, clippy"}], [cache, {}]],
+  "prebuild" => [[checkout, {"fetch-depth" => 0}], [toolchain, {"toolchain" => "1.97.0"}], [upload, {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "retention-days" => 3, "path" => "target/release/compme"}]],
   "build_release" => [[checkout, {"persist-credentials" => false}], [download, {"name" => "compme-prebuilt-binary", "path" => "target/release"}], [attest, {"subject-path" => "${{ steps.pkg.outputs.zip }}"}], [upload, {"name" => "compme-release-artifacts", "if-no-files-found" => "error", "retention-days" => 7, "path" => "${{ steps.pkg.outputs.zip }}\n${{ steps.pkg.outputs.zip }}.sha256\n"}]],
   "publish_release" => [[checkout, {"fetch-depth" => 0}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
   "finalize_cask" => [[checkout, {"fetch-depth" => 0}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
@@ -2881,7 +2881,7 @@ ruby -ryaml -e '
 
   def rust_toolchain_step_valid?(step)
     step["uses"].to_s.start_with?("dtolnay/rust-toolchain@") &&
-      step.fetch("with").fetch("toolchain") == "1.96.1"
+      step.fetch("with").fetch("toolchain") == "1.97.0"
   end
 
   jobs = ci_workflow.fetch("jobs")
@@ -2904,8 +2904,8 @@ ruby -ryaml -e '
                  [{}, {"fetch-depth" => 0}, {"persist-credentials" => false}]
                when "dtolnay/rust-toolchain"
                  [
-                   {"toolchain" => "1.96.1"},
-                   {"toolchain" => "1.96.1", "components" => "rustfmt, clippy"},
+                   {"toolchain" => "1.97.0"},
+                   {"toolchain" => "1.97.0", "components" => "rustfmt, clippy"},
                  ]
                when "Swatinem/rust-cache"
                  [
@@ -2992,6 +2992,7 @@ ruby -ryaml -e '
     "agent brief alignment self-test" => ["Agent brief alignment self-test", "tools/release/check-agent-briefs.sh --self-test"],
     "privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],
     "privacy policy self-test" => ["Privacy policy self-test", "tools/release/check-privacy-policy.sh --self-test"],
+    "GitHub governance checker self-test" => ["GitHub governance checker self-test", "tools/release/check-github-governance.sh --self-test"],
     "model gate policy" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
     "model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
     "cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],

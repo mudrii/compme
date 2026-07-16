@@ -63,6 +63,8 @@ const SECURE_POLL_INTERVAL_MS: u64 = 480;
 /// to ≤5 minutes of events; the file is ~120 bytes so the write is free.
 const STATS_FLUSH_INTERVAL_MS: u64 = 5 * 60 * 1000;
 const UPDATES_URL: &str = "https://github.com/mudrii/compme/releases/latest";
+const WEBSITE_URL: &str = "https://github.com/mudrii/compme";
+const SUPPORT_URL: &str = "https://github.com/mudrii/compme/issues/new";
 
 /// Set by the SIGINT/SIGTERM handler; observed by the loop to begin shutdown.
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -275,6 +277,7 @@ struct Config {
     diag_coords: bool,
     candidates: usize,
     context_max_chars: usize,
+    cross_app_previous_inputs: bool,
     clipboard_context: bool,
     screen_context: bool,
     diag_context: bool,
@@ -294,6 +297,9 @@ struct Config {
     /// Inline typo autocorrect (A2 §8/§16, `COMPME_AUTOCORRECT`, default off):
     /// offer the correction when the trailing word is a known typo.
     autocorrect: bool,
+    /// OS-backed statistical autocorrect (`COMPME_FULL_AUTOCORRECT`, default
+    /// off), distinct from the curated typo table and gated out of code fields.
+    full_autocorrect: bool,
     /// Standalone grammar/spell-fix trigger (`COMPME_GRAMMAR_FIX`, default off).
     grammar_fix: bool,
     /// British-English normalization (A2 §16, `COMPME_BRITISH_ENGLISH`, default
@@ -302,6 +308,9 @@ struct Config {
     /// Inline thesaurus / synonym suggestions (A2 §16, `COMPME_THESAURUS`,
     /// default off): offer synonyms for the trailing word as the user types.
     thesaurus: bool,
+    /// Explicit selection-triggered thesaurus mode
+    /// (`COMPME_THESAURUS_SELECTION`, default off).
+    thesaurus_selection: bool,
     /// Launch-at-login (A3 D13, `COMPME_LAUNCH_AT_LOGIN`): `Some(true/false)`
     /// registers/unregisters the SMAppService login item at startup; `None`
     /// (absent or unrecognized) leaves the user's Login Items setting alone.
@@ -430,6 +439,8 @@ impl Config {
             diag_coords: lookup("COMPME_DIAG_COORDS").is_some_and(|v| v == "1" || v == "true"),
             candidates: parse_clamped(lookup("COMPME_CANDIDATES"), DEFAULT_CANDIDATES, 1, 5),
             context_max_chars: parse_context_max_chars(lookup("COMPME_PREVIOUS_INPUT_CONTEXT")),
+            cross_app_previous_inputs: lookup("COMPME_CROSS_APP_PREVIOUS_INPUTS")
+                .is_some_and(|v| v == "1" || v == "true" || v == "on"),
             clipboard_context: lookup("COMPME_CLIPBOARD_CONTEXT")
                 .is_some_and(|v| v == "1" || v == "true"),
             screen_context: lookup("COMPME_SCREEN_CONTEXT")
@@ -445,11 +456,15 @@ impl Config {
             emoji: emoji_enabled.then_some(emoji_prefs),
             autocorrect: lookup("COMPME_AUTOCORRECT")
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
+            full_autocorrect: lookup("COMPME_FULL_AUTOCORRECT")
+                .is_some_and(|v| v == "1" || v == "true" || v == "on"),
             grammar_fix: lookup("COMPME_GRAMMAR_FIX")
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
             british_english: lookup("COMPME_BRITISH_ENGLISH")
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
             thesaurus: lookup("COMPME_THESAURUS")
+                .is_some_and(|v| v == "1" || v == "true" || v == "on"),
+            thesaurus_selection: lookup("COMPME_THESAURUS_SELECTION")
                 .is_some_and(|v| v == "1" || v == "true" || v == "on"),
         }
     }
@@ -637,6 +652,13 @@ fn replacement_offer(
 /// feature lookup, so a local offer never shows where a model one wouldn't. Pure
 /// over its inputs so the gate+offer interaction is unit-testable (warm-up is
 /// intentionally not gated — replacements are local and need no model).
+#[derive(Clone, Copy)]
+struct SuggestionApp<'a> {
+    app_key: Option<&'a str>,
+    assistant_field: bool,
+}
+
+#[cfg(test)]
 fn replacement_decision(
     left: &str,
     config: &Config,
@@ -646,17 +668,156 @@ fn replacement_decision(
     enabled: bool,
     now_ms: u64,
 ) -> Option<(Vec<String>, usize)> {
+    replacement_decision_for_field(
+        left,
+        config,
+        prefs,
+        SuggestionApp {
+            app_key,
+            assistant_field: false,
+        },
+        domain,
+        enabled,
+        now_ms,
+    )
+}
+
+fn replacement_decision_for_field(
+    left: &str,
+    config: &Config,
+    prefs: &Prefs,
+    app: SuggestionApp<'_>,
+    domain: Option<&str>,
+    enabled: bool,
+    now_ms: u64,
+) -> Option<(Vec<String>, usize)> {
     // `prefs` is passed separately from `config` because the run loop mutates
     // its prefs at runtime (snooze); reading `config.prefs` here would split
     // the policy source and let a local offer show while the model is snoozed.
-    if !enabled || !suggestion_gates_pass(app_key, left, domain, prefs, now_ms) {
+    if !enabled || !suggestion_gates_pass_for_field(app, left, domain, prefs, now_ms) {
         return None;
     }
     // Per-app autocorrect/thesaurus overrides (App Settings): prefs override,
     // else the global config default.
-    let autocorrect = prefs.autocorrect_enabled(app_key, config.autocorrect);
-    let thesaurus = prefs.thesaurus_enabled(app_key, config.thesaurus);
+    let autocorrect = prefs.autocorrect_enabled(app.app_key, config.autocorrect);
+    let thesaurus = prefs.thesaurus_enabled(app.app_key, config.thesaurus);
     replacement_offer(left, config, autocorrect, thesaurus)
+}
+
+fn code_like_autocorrect_context(left: &str) -> bool {
+    let tail: String = left
+        .chars()
+        .rev()
+        .take(120)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    ["::", "->", "=>", "//", "/*", "*/", "()", "{}", "[]"]
+        .iter()
+        .any(|marker| tail.contains(marker))
+        || tail
+            .chars()
+            .any(|ch| matches!(ch, '{' | '}' | ';' | '`' | '='))
+}
+
+struct FullAutocorrectGate<'a> {
+    app: SuggestionApp<'a>,
+    domain: Option<&'a str>,
+    enabled: bool,
+    now_ms: u64,
+}
+
+fn full_autocorrect_decision(
+    left: &str,
+    config: &Config,
+    prefs: &Prefs,
+    gate: FullAutocorrectGate<'_>,
+    spelling_correction: impl FnOnce(&str) -> Result<Option<String>, PlatformError>,
+) -> Option<(Vec<String>, usize)> {
+    if !gate.enabled
+        || !prefs.autocorrect_enabled(gate.app.app_key, config.full_autocorrect)
+        || !suggestion_gates_pass_for_field(gate.app, left, gate.domain, prefs, gate.now_ms)
+        || gate
+            .app
+            .app_key
+            .is_some_and(|app_key| compat::is_code_editor(app_key) && !gate.app.assistant_field)
+        || code_like_autocorrect_context(left)
+    {
+        return None;
+    }
+
+    let word = trailing_word(left)?;
+    let word_len = word.chars().count();
+    if !(2..=64).contains(&word_len) {
+        return None;
+    }
+    let correction = spelling_correction(word).ok().flatten()?;
+    let correction = correction.trim();
+    if correction.is_empty()
+        || correction.eq_ignore_ascii_case(word)
+        || correction.chars().any(char::is_whitespace)
+        || !correction
+            .chars()
+            .all(|ch| ch.is_alphabetic() || ch == '\'')
+    {
+        return None;
+    }
+    Some((vec![correction.to_string()], word_len))
+}
+
+struct SelectionThesaurusGate<'a> {
+    config: &'a Config,
+    prefs: &'a Prefs,
+    app: SuggestionApp<'a>,
+    domain: Option<&'a str>,
+    enabled: bool,
+    caps: &'a Capabilities,
+    now_ms: u64,
+}
+
+fn selection_thesaurus_decision(
+    ctx: &TextContext,
+    gate: SelectionThesaurusGate<'_>,
+) -> Option<(String, Vec<String>, CorrectionRange)> {
+    let selection = ctx.selection?;
+    if selection.start >= selection.end
+        || !gate.enabled
+        || !gate
+            .prefs
+            .thesaurus_enabled(gate.app.app_key, gate.config.thesaurus_selection)
+        || !suggestion_gates_pass_for_field(
+            gate.app,
+            ctx.selected_text.as_deref().unwrap_or_default(),
+            gate.domain,
+            gate.prefs,
+            gate.now_ms,
+        )
+        || !gate.caps.insert_strategy.supports_atomic_range_replace()
+    {
+        return None;
+    }
+
+    let original = ctx.selected_text.as_deref()?;
+    if original.trim() != original
+        || !(2..=64).contains(&original.chars().count())
+        || !original.chars().all(char::is_alphabetic)
+    {
+        return None;
+    }
+    let candidates = thesaurus::synonyms(original);
+    if candidates.is_empty() {
+        return None;
+    }
+    let start = ctx.left_scalars;
+    Some((
+        original.to_string(),
+        candidates,
+        CorrectionRange {
+            start,
+            end: start + original.chars().count(),
+        },
+    ))
 }
 
 struct GrammarRequestGate<'a> {
@@ -688,8 +849,11 @@ fn grammar_fix_request(
             .prefs
             .grammar_fix_enabled(gate.app_key, gate.config.grammar_fix)
         || !browser_domain_fresh_enough_for_rules(gate.app_key, gate.domain, gate.prefs)
-        || !suggestion_gates_pass(
-            gate.app_key,
+        || !suggestion_gates_pass_for_field(
+            SuggestionApp {
+                app_key: gate.app_key,
+                assistant_field: gate.caps.assistant_field,
+            },
             &ctx.left,
             gate.domain,
             gate.prefs,
@@ -1026,6 +1190,7 @@ fn download_log_transition(state: &model_fetch::DownloadState, logged: u8) -> (u
     }
 }
 
+#[cfg(test)]
 fn request_log_line(
     request: &CompletionRequest,
     app_key: Option<&str>,
@@ -1035,7 +1200,31 @@ fn request_log_line(
     acceptance_prompt_marker: Option<&str>,
     blocked: bool,
 ) -> String {
-    let app_allows = app_allows_suggestions(app_key);
+    request_log_line_for_field(
+        request,
+        SuggestionApp {
+            app_key,
+            assistant_field: false,
+        },
+        domain,
+        prefs,
+        now_ms,
+        acceptance_prompt_marker,
+        blocked,
+    )
+}
+
+fn request_log_line_for_field(
+    request: &CompletionRequest,
+    app: SuggestionApp<'_>,
+    domain: Option<&str>,
+    prefs: &Prefs,
+    now_ms: u64,
+    acceptance_prompt_marker: Option<&str>,
+    blocked: bool,
+) -> String {
+    let app_key = app.app_key;
+    let app_allows = app_allows_suggestions_for_field(app);
     let gate_text = request_gate_text(request);
     let terminal_ok = app_key.is_none_or(|app| compat::terminal_prompt_activates(app, gate_text));
     let domain_ready = browser_domain_fresh_enough_for_rules(app_key, domain, prefs);
@@ -1069,6 +1258,7 @@ fn request_gate_text(request: &CompletionRequest) -> &str {
 #[derive(Clone, Debug)]
 struct RequestLogContext {
     app_key: Option<String>,
+    assistant_field: bool,
     domain: Option<String>,
     prefs: Prefs,
     acceptance_prompt_marker: Option<String>,
@@ -1076,9 +1266,12 @@ struct RequestLogContext {
 
 impl RequestLogContext {
     fn line_for(&self, request: &CompletionRequest, now_ms: u64) -> String {
-        request_log_line(
+        request_log_line_for_field(
             request,
-            self.app_key.as_deref(),
+            SuggestionApp {
+                app_key: self.app_key.as_deref(),
+                assistant_field: self.assistant_field,
+            },
             self.domain.as_deref(),
             &self.prefs,
             now_ms,
@@ -1531,14 +1724,21 @@ fn log_compat_guidance(app: &str) {
 }
 
 /// Whether the focused app's compatibility tier permits suggestions (A2 §16).
-/// `Unsupported` hard-blocks. `SidebarOnly` is also blocked until A3 adds a real
-/// editor-vs-sidebar detector; fail-closed is safer than suggesting in editor
-/// panes the spec explicitly excludes. Unresolved app → allow (fail-open), since
-/// the field's own capabilities still gate.
+/// `Unsupported` hard-blocks. `SidebarOnly` permits only fields the platform
+/// positively identified as an AI-assistant/chat input; unknown/editor fields
+/// remain fail-closed. Unresolved app → allow (fail-open), since the field's own
+/// capabilities still gate.
 fn app_allows_suggestions(app_key: Option<&str>) -> bool {
-    app_key.is_none_or(|app| {
-        let tier = compat::compatibility_tier(app);
-        tier.allows_suggestions() && !tier.sidebar_only()
+    app_allows_suggestions_for_field(SuggestionApp {
+        app_key,
+        assistant_field: false,
+    })
+}
+
+fn app_allows_suggestions_for_field(app: SuggestionApp<'_>) -> bool {
+    app.app_key.is_none_or(|app_key| {
+        let tier = compat::compatibility_tier(app_key);
+        tier.allows_suggestions() && (!tier.sidebar_only() || app.assistant_field)
     })
 }
 
@@ -1552,6 +1752,7 @@ fn app_allows_suggestions(app_key: Option<&str>) -> bool {
 /// AX read via `domain_cache_entry`). This helper treats `None` as fail-open;
 /// callers that need browser-rule freshness must wrap it with
 /// `browser_domain_fresh_enough_for_rules`.
+#[cfg(test)]
 fn suggestion_gates_pass(
     app_key: Option<&str>,
     text: &str,
@@ -1559,8 +1760,31 @@ fn suggestion_gates_pass(
     prefs: &Prefs,
     now_ms: u64,
 ) -> bool {
-    let terminal_ok = app_key.is_none_or(|app| compat::terminal_prompt_activates(app, text));
-    app_allows_suggestions(app_key) && terminal_ok && prefs.should_suggest(app_key, domain, now_ms)
+    suggestion_gates_pass_for_field(
+        SuggestionApp {
+            app_key,
+            assistant_field: false,
+        },
+        text,
+        domain,
+        prefs,
+        now_ms,
+    )
+}
+
+fn suggestion_gates_pass_for_field(
+    app: SuggestionApp<'_>,
+    text: &str,
+    domain: Option<&str>,
+    prefs: &Prefs,
+    now_ms: u64,
+) -> bool {
+    let terminal_ok = app
+        .app_key
+        .is_none_or(|app| compat::terminal_prompt_activates(app, text));
+    app_allows_suggestions_for_field(app)
+        && terminal_ok
+        && prefs.should_suggest(app.app_key, domain, now_ms)
 }
 
 /// Lowercased host of an http(s) URL, port stripped — the pure half of the
@@ -1640,6 +1864,7 @@ fn domain_cache_entry(app_key: Option<&str>, url: Option<&str>) -> Option<(Strin
     Some((app.to_string(), host))
 }
 
+#[cfg(test)]
 fn request_passes_submit_gates(
     request: &CompletionRequest,
     app_key: Option<&str>,
@@ -1647,8 +1872,27 @@ fn request_passes_submit_gates(
     prefs: &Prefs,
     now_ms: u64,
 ) -> bool {
-    browser_domain_fresh_enough_for_rules(app_key, domain, prefs)
-        && suggestion_gates_pass(app_key, request_gate_text(request), domain, prefs, now_ms)
+    request_passes_submit_gates_for_field(
+        request,
+        SuggestionApp {
+            app_key,
+            assistant_field: false,
+        },
+        domain,
+        prefs,
+        now_ms,
+    )
+}
+
+fn request_passes_submit_gates_for_field(
+    request: &CompletionRequest,
+    app: SuggestionApp<'_>,
+    domain: Option<&str>,
+    prefs: &Prefs,
+    now_ms: u64,
+) -> bool {
+    browser_domain_fresh_enough_for_rules(app.app_key, domain, prefs)
+        && suggestion_gates_pass_for_field(app, request_gate_text(request), domain, prefs, now_ms)
 }
 
 fn browser_domain_fresh_enough_for_rules(
@@ -1745,7 +1989,7 @@ fn grammar_pre_read_policy_passes(
     enabled
         && prefs.grammar_fix_enabled(app_key, config.grammar_fix)
         && browser_domain_fresh_enough_for_rules(app_key, domain.as_deref(), prefs)
-        && app_allows_suggestions(app_key)
+        && app_key.is_none_or(|app| compat::compatibility_tier(app).allows_suggestions())
         && prefs.should_suggest(app_key, domain.as_deref(), now_ms)
 }
 
@@ -2101,6 +2345,7 @@ struct AcceptSideEffects<'a> {
     action: AcceptAction,
     preview: Option<&'a AcceptPreview>,
     correction_preview: Option<&'a CorrectionPreview>,
+    range_preview: Option<&'a CorrectionPreview>,
     wall_ms: u64,
     context_max_chars: usize,
     previous_inputs: &'a PreviousInputs,
@@ -2122,18 +2367,21 @@ fn apply_accept_side_effects(accepted: bool, side_effects: AcceptSideEffects<'_>
         return;
     }
     let Some((field, text, replace_left)) = side_effects.preview else {
-        if side_effects.action == AcceptAction::Correction {
-            if let Some((field, text, range)) = side_effects.correction_preview {
-                side_effects
-                    .tracker
-                    .apply_self_replace_range(field, text, *range);
-                side_effects.usage.record(
-                    side_effects.wall_ms,
-                    stats::Outcome::Accepted {
-                        words: accept_word_count(text),
-                    },
-                );
-            }
+        let range_preview = side_effects.range_preview.or_else(|| {
+            (side_effects.action == AcceptAction::Correction)
+                .then_some(side_effects.correction_preview)
+                .flatten()
+        });
+        if let Some((field, text, range)) = range_preview {
+            side_effects
+                .tracker
+                .apply_self_replace_range(field, text, *range);
+            side_effects.usage.record(
+                side_effects.wall_ms,
+                stats::Outcome::Accepted {
+                    words: accept_word_count(text),
+                },
+            );
         }
         return;
     };
@@ -2938,7 +3186,12 @@ fn build_settings_flags(
         general_launch_at_login: Arc::new(AtomicBool::new(launch_at_login_enabled)),
         labs_midline: Arc::new(AtomicBool::new(config.allow_mid_word)),
         general_autocorrect: Arc::new(AtomicBool::new(config.autocorrect)),
+        general_full_autocorrect: Arc::new(AtomicBool::new(config.full_autocorrect)),
+        general_thesaurus_selection: Arc::new(AtomicBool::new(config.thesaurus_selection)),
         general_trailing_space: Arc::new(AtomicBool::new(config.trailing_space)),
+        context_cross_app_previous_inputs: Arc::new(AtomicBool::new(
+            config.cross_app_previous_inputs,
+        )),
         context_clipboard: Arc::new(AtomicBool::new(config.clipboard_context)),
         context_screen: Arc::new(AtomicBool::new(config.screen_context)),
         emoji_enabled: Arc::new(AtomicBool::new(config.emoji.is_some())),
@@ -3123,12 +3376,15 @@ fn session_usage_snapshot(usage: &stats::Stats, wall_ms: u64) -> SessionUsageSna
 /// must be added here or its shadow goes unwarned (review-c111/c127; the
 /// len-pinned test below backstops this). Deliberately conservative: a key
 /// set to "" still warns — it parses falsy but still occupies the env layer.
-const SWITCH_KEYS: [&str; 33] = [
+const SWITCH_KEYS: [&str; 36] = [
     "COMPME_ENABLED",
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
+    "COMPME_FULL_AUTOCORRECT",
+    "COMPME_THESAURUS_SELECTION",
     "COMPME_GRAMMAR_FIX",
     "COMPME_TRAILING_SPACE",
+    "COMPME_CROSS_APP_PREVIOUS_INPUTS",
     "COMPME_CLIPBOARD_CONTEXT",
     "COMPME_SCREEN_CONTEXT",
     "COMPME_INSTRUCTIONS",
@@ -3461,8 +3717,12 @@ fn apply_snooze_request(requested: bool, prefs: &mut Prefs, now_ms: u64) -> bool
 /// request). The opener is injected — the same closure-injection seam the
 /// submit path uses — so tests observe the URL instead of spawning `open(1)`.
 fn handle_check_updates_flag(flag: &AtomicBool, open: impl FnOnce(&'static str)) {
+    handle_url_flag(flag, UPDATES_URL, open);
+}
+
+fn handle_url_flag(flag: &AtomicBool, url: &'static str, open: impl FnOnce(&'static str)) {
     if flag.swap(false, Ordering::Relaxed) {
-        open(UPDATES_URL);
+        open(url);
     }
 }
 
@@ -3657,6 +3917,7 @@ fn secure_input_caps() -> Capabilities {
         readable_text: false,
         readable_caret: false,
         writable: false,
+        assistant_field: false,
         secure: true,
         security_state: SecurityState::SecureInputEnabled,
         toolkit: Toolkit::Unknown("secure input".into()),
@@ -4240,8 +4501,10 @@ pub fn run() -> Result<(), String> {
     } else {
         Duration::ZERO
     });
+    let cross_app_previous_inputs = Arc::new(AtomicBool::new(config.cross_app_previous_inputs));
     let worker_context = WorkerContext {
         previous_inputs: previous_inputs.clone(),
+        cross_app_previous_inputs: Arc::clone(&cross_app_previous_inputs),
         clipboard: Arc::clone(&clipboard_cell),
         screen: Arc::clone(&screen_cell),
         screen_wait_ms: Arc::clone(&screen_wait_ms),
@@ -4268,6 +4531,8 @@ pub fn run() -> Result<(), String> {
         global_disable: Arc::new(Mutex::new(None)),
         open_settings_window: Arc::new(AtomicBool::new(false)),
         check_updates: Arc::new(AtomicBool::new(false)),
+        visit_website: Arc::new(AtomicBool::new(false)),
+        contact_support: Arc::new(AtomicBool::new(false)),
         collection_toggle: Arc::new(AtomicBool::new(false)),
         app_disable: Arc::new(Mutex::new(None)),
     };
@@ -4297,6 +4562,7 @@ pub fn run() -> Result<(), String> {
     let mut pending_monitored: Vec<PendingMonitoredText> = Vec::new();
     let mut monitored_buffers: HashMap<FieldHandle, MonitoredBuffer> = HashMap::new();
     let mut current_field: Option<FieldHandle> = None;
+    let mut current_assistant_field = false;
     let mut hinted_apps: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut prev_enabled = config.enabled;
     let mut secure = false;
@@ -4458,7 +4724,9 @@ pub fn run() -> Result<(), String> {
                             );
                         }
                     }
-                    offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
+                    let focus_requests = log_err("on_focus", engine.on_focus(field));
+                    current_assistant_field = engine.assistant_field();
+                    offer_all(&mut latest, focus_requests);
                 }
                 HostEvent::Caret(field, _rect) => {
                     let (field, app_key) =
@@ -4522,15 +4790,34 @@ pub fn run() -> Result<(), String> {
                                         domain.as_deref(),
                                         &prefs,
                                     ) {
-                                        replacement_decision(
+                                        let app = SuggestionApp {
+                                            app_key: app_key.as_deref(),
+                                            assistant_field: current_assistant_field,
+                                        };
+                                        let enabled = flags.enabled.load(Ordering::Relaxed);
+                                        replacement_decision_for_field(
                                             &ctx.left,
                                             &config,
                                             &prefs,
-                                            app_key.as_deref(),
+                                            app,
                                             domain.as_deref(),
-                                            flags.enabled.load(Ordering::Relaxed),
+                                            enabled,
                                             now_ms,
                                         )
+                                        .or_else(|| {
+                                            full_autocorrect_decision(
+                                                &ctx.left,
+                                                &config,
+                                                &prefs,
+                                                FullAutocorrectGate {
+                                                    app,
+                                                    domain: domain.as_deref(),
+                                                    enabled,
+                                                    now_ms,
+                                                },
+                                                |word| shell.spelling_correction(word),
+                                            )
+                                        })
                                     } else {
                                         None
                                     };
@@ -4570,10 +4857,45 @@ pub fn run() -> Result<(), String> {
                                         );
                                     }
                                 }
-                                Observation::CaretMoved { field, caret } => offer_all(
-                                    &mut latest,
-                                    log_err("on_caret_moved", engine.on_caret_moved(field, caret)),
-                                ),
+                                Observation::CaretMoved { field, caret } => {
+                                    let caps = engine.current_capabilities();
+                                    offer_all(
+                                        &mut latest,
+                                        log_err(
+                                            "on_caret_moved",
+                                            engine.on_caret_moved(field.clone(), caret),
+                                        ),
+                                    );
+                                    let domain = cached_domain(&last_domain, app_key.as_deref());
+                                    if let Some((original, candidates, range)) =
+                                        selection_thesaurus_decision(
+                                            &ctx,
+                                            SelectionThesaurusGate {
+                                                config: &config,
+                                                prefs: &prefs,
+                                                app: SuggestionApp {
+                                                    app_key: app_key.as_deref(),
+                                                    assistant_field: current_assistant_field,
+                                                },
+                                                domain,
+                                                enabled: flags.enabled.load(Ordering::Relaxed),
+                                                caps: &caps,
+                                                now_ms,
+                                            },
+                                        )
+                                    {
+                                        latest.clear();
+                                        offer_all(
+                                            &mut latest,
+                                            log_err(
+                                                "on_selection_replacement",
+                                                engine.on_selection_replacement(
+                                                    &field, original, candidates, range,
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                }
                             }
                         }
                         Err(err) => {
@@ -4618,6 +4940,7 @@ pub fn run() -> Result<(), String> {
                     // the two never read divergent engine snapshots.
                     let preview = engine.preview_accept_insert(action);
                     let correction_preview = engine.preview_accept_correction();
+                    let range_preview = engine.preview_accept_range(action);
                     let accept_result = engine.on_accept(action);
                     // The platform field mutation precedes overlay/tap teardown.
                     // A teardown error is still surfaced, but an already-committed
@@ -4630,8 +4953,15 @@ pub fn run() -> Result<(), String> {
                             action,
                             preview: preview.as_ref(),
                             correction_preview: correction_preview.as_ref(),
+                            range_preview: range_preview.as_ref(),
                             wall_ms,
-                            context_max_chars: config.context_max_chars,
+                            context_max_chars: if config.context_max_chars > 0
+                                || config.cross_app_previous_inputs
+                            {
+                                context_bound
+                            } else {
+                                0
+                            },
                             previous_inputs: &previous_inputs,
                             memory: memory.as_ref(),
                             prefs: &prefs,
@@ -5564,6 +5894,36 @@ pub fn run() -> Result<(), String> {
                 }
             },
         );
+        // Full autocorrect is a separate OS-backed spelling feature. It shares
+        // the per-app Autocorrect override but has its own global switch.
+        let _ = apply_autocorrect_settings_edge(
+            &settings_flags.general_full_autocorrect,
+            &mut config.full_autocorrect,
+            |on| persist_and_log_switch("COMPME_FULL_AUTOCORRECT", "full autocorrect", on),
+            |on| {
+                if !on {
+                    latest.clear();
+                    let _ = log_err("on_dismiss", engine.on_dismiss());
+                }
+            },
+        );
+        let _ = apply_autocorrect_settings_edge(
+            &settings_flags.general_thesaurus_selection,
+            &mut config.thesaurus_selection,
+            |on| {
+                persist_and_log_switch(
+                    "COMPME_THESAURUS_SELECTION",
+                    "selection-triggered thesaurus",
+                    on,
+                )
+            },
+            |on| {
+                if !on {
+                    latest.clear();
+                    let _ = log_err("on_dismiss", engine.on_dismiss());
+                }
+            },
+        );
         // General-tab Launch at Login watcher: mutate the OS first. Only a
         // successful registration/unregistration is persisted; rejection
         // restores the shared atomic and immediately redraws the visible switch.
@@ -5604,6 +5964,20 @@ pub fn run() -> Result<(), String> {
         // reads `config.clipboard_context` for each request. Screen OCR also
         // applies live: enabling starts the worker when Screen Recording is
         // granted, and disabling drops it plus clears the worker-side wait.
+        if let Some(on) = switch_edge(
+            &settings_flags.context_cross_app_previous_inputs,
+            &mut config.cross_app_previous_inputs,
+        ) {
+            cross_app_previous_inputs.store(on, Ordering::Relaxed);
+            if !on {
+                previous_inputs.clear_cross_app();
+            }
+            persist_and_log_switch(
+                "COMPME_CROSS_APP_PREVIOUS_INPUTS",
+                "cross-app previous-input context",
+                on,
+            );
+        }
         if let Some(on) = switch_edge(
             &settings_flags.context_clipboard,
             &mut config.clipboard_context,
@@ -5956,10 +6330,19 @@ pub fn run() -> Result<(), String> {
             if let Some(request) = manual_grammar_request.take() {
                 let app_key = effective_app_key(&request.field, |pid| shell.bundle_id_for_pid(pid));
                 let domain = cached_domain(&last_domain, app_key.as_deref());
-                if request_passes_submit_gates(&request, app_key.as_deref(), domain, &prefs, now_ms)
-                {
+                if request_passes_submit_gates_for_field(
+                    &request,
+                    SuggestionApp {
+                        app_key: app_key.as_deref(),
+                        assistant_field: current_assistant_field,
+                    },
+                    domain,
+                    &prefs,
+                    now_ms,
+                ) {
                     let log_context = RequestLogContext {
                         app_key,
+                        assistant_field: current_assistant_field,
                         domain: domain.map(str::to_owned),
                         prefs: prefs.clone(),
                         acceptance_prompt_marker: config.acceptance_prompt_marker.clone(),
@@ -5975,9 +6358,12 @@ pub fn run() -> Result<(), String> {
                 } else {
                     eprintln!(
                         "{}",
-                        request_log_line(
+                        request_log_line_for_field(
                             &request,
-                            app_key.as_deref(),
+                            SuggestionApp {
+                                app_key: app_key.as_deref(),
+                                assistant_field: current_assistant_field,
+                            },
                             domain,
                             &prefs,
                             now_ms,
@@ -5996,9 +6382,12 @@ pub fn run() -> Result<(), String> {
                 // The domain comes from the Focus arm's cache, guarded on the same
                 // app key (c131).
                 let app_key = effective_app_key(&request.field, |pid| shell.bundle_id_for_pid(pid));
-                if request_passes_submit_gates(
+                if request_passes_submit_gates_for_field(
                     &request,
-                    app_key.as_deref(),
+                    SuggestionApp {
+                        app_key: app_key.as_deref(),
+                        assistant_field: current_assistant_field,
+                    },
                     cached_domain(&last_domain, app_key.as_deref()),
                     &prefs,
                     now_ms,
@@ -6006,6 +6395,7 @@ pub fn run() -> Result<(), String> {
                     let domain = cached_domain(&last_domain, app_key.as_deref()).map(str::to_owned);
                     let log_context = RequestLogContext {
                         app_key,
+                        assistant_field: current_assistant_field,
                         domain,
                         prefs: prefs.clone(),
                         acceptance_prompt_marker: config.acceptance_prompt_marker.clone(),
@@ -6051,9 +6441,12 @@ pub fn run() -> Result<(), String> {
                 } else {
                     eprintln!(
                         "{}",
-                        request_log_line(
+                        request_log_line_for_field(
                             &request,
-                            app_key.as_deref(),
+                            SuggestionApp {
+                                app_key: app_key.as_deref(),
+                                assistant_field: current_assistant_field,
+                            },
                             cached_domain(&last_domain, app_key.as_deref()),
                             &prefs,
                             now_ms,
@@ -6084,6 +6477,16 @@ pub fn run() -> Result<(), String> {
         handle_check_updates_flag(&flags.check_updates, |url| {
             if let Err(err) = shell.open_url(url) {
                 eprintln!("compme: open updates failed: {err}");
+            }
+        });
+        handle_url_flag(&flags.visit_website, WEBSITE_URL, |url| {
+            if let Err(err) = shell.open_url(url) {
+                eprintln!("compme: open website failed: {err}");
+            }
+        });
+        handle_url_flag(&flags.contact_support, SUPPORT_URL, |url| {
+            if let Err(err) = shell.open_url(url) {
+                eprintln!("compme: open support failed: {err}");
             }
         });
         if flags.quit.load(Ordering::Relaxed) {
@@ -7119,7 +7522,10 @@ mod tests {
         let config = Config::from_lookup(lookup(&[
             ("COMPME_MIDLINE", "1"),
             ("COMPME_AUTOCORRECT", "1"),
+            ("COMPME_FULL_AUTOCORRECT", "1"),
+            ("COMPME_THESAURUS_SELECTION", "1"),
             ("COMPME_TRAILING_SPACE", "1"),
+            ("COMPME_CROSS_APP_PREVIOUS_INPUTS", "1"),
             ("COMPME_CLIPBOARD_CONTEXT", "0"),
             ("COMPME_SCREEN_CONTEXT", "1"),
             ("COMPME_EMOJI", "1"),
@@ -7140,8 +7546,22 @@ mod tests {
         );
         assert!(flags.general_autocorrect.load(Ordering::Relaxed) == config.autocorrect);
         assert_eq!(
+            flags.general_full_autocorrect.load(Ordering::Relaxed),
+            config.full_autocorrect
+        );
+        assert_eq!(
+            flags.general_thesaurus_selection.load(Ordering::Relaxed),
+            config.thesaurus_selection
+        );
+        assert_eq!(
             flags.general_trailing_space.load(Ordering::Relaxed),
             config.trailing_space
+        );
+        assert_eq!(
+            flags
+                .context_cross_app_previous_inputs
+                .load(Ordering::Relaxed),
+            config.cross_app_previous_inputs
         );
         assert!(flags.context_clipboard.load(Ordering::Relaxed) == config.clipboard_context);
         assert!(flags.context_screen.load(Ordering::Relaxed) == config.screen_context);
@@ -7921,7 +8341,7 @@ mod tests {
                 "{key} must warn when env shadows persisted config"
             );
         }
-        assert_eq!(every_warning.len(), 33);
+        assert_eq!(every_warning.len(), 36);
     }
 
     #[test]
@@ -8056,6 +8476,54 @@ mod tests {
         assert!(
             !Config::from_lookup(lookup(&[("COMPME_AUTOCORRECT", switch_value(false))]))
                 .autocorrect
+        );
+    }
+
+    #[test]
+    fn full_autocorrect_persist_value_round_trips_through_the_parser() {
+        assert!(
+            Config::from_lookup(lookup(&[("COMPME_FULL_AUTOCORRECT", switch_value(true),)]))
+                .full_autocorrect
+        );
+        assert!(
+            !Config::from_lookup(lookup(&[("COMPME_FULL_AUTOCORRECT", switch_value(false),)]))
+                .full_autocorrect
+        );
+    }
+
+    #[test]
+    fn cross_app_previous_inputs_persist_value_round_trips_through_the_parser() {
+        assert!(
+            Config::from_lookup(lookup(&[(
+                "COMPME_CROSS_APP_PREVIOUS_INPUTS",
+                switch_value(true),
+            )]))
+            .cross_app_previous_inputs
+        );
+        assert!(
+            !Config::from_lookup(lookup(&[(
+                "COMPME_CROSS_APP_PREVIOUS_INPUTS",
+                switch_value(false),
+            )]))
+            .cross_app_previous_inputs
+        );
+    }
+
+    #[test]
+    fn thesaurus_selection_persist_value_round_trips_through_the_parser() {
+        assert!(
+            Config::from_lookup(lookup(&[(
+                "COMPME_THESAURUS_SELECTION",
+                switch_value(true),
+            )]))
+            .thesaurus_selection
+        );
+        assert!(
+            !Config::from_lookup(lookup(&[(
+                "COMPME_THESAURUS_SELECTION",
+                switch_value(false),
+            )]))
+            .thesaurus_selection
         );
     }
 
@@ -9105,6 +9573,7 @@ mod tests {
                 action: AcceptAction::Full,
                 preview: Some(&preview),
                 correction_preview: None,
+                range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
                 previous_inputs: &previous,
@@ -9164,6 +9633,7 @@ mod tests {
                 action: AcceptAction::Full,
                 preview: Some(&preview),
                 correction_preview: None,
+                range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
                 previous_inputs: &previous,
@@ -9212,6 +9682,7 @@ mod tests {
                 action: AcceptAction::Full,
                 preview: Some(&preview),
                 correction_preview: None,
+                range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
                 previous_inputs: &previous,
@@ -9270,6 +9741,7 @@ mod tests {
                 action: AcceptAction::Correction,
                 preview: None,
                 correction_preview: Some(&correction),
+                range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
                 previous_inputs: &previous,
@@ -9300,6 +9772,67 @@ mod tests {
             store.count().unwrap(),
             0,
             "corrections are not full accepts"
+        );
+        assert!(previous.recent("com.apple.TextEdit").is_empty());
+    }
+
+    #[test]
+    fn selection_replacement_absorbs_exact_range_echo_and_records_stats() {
+        let previous = PreviousInputs::default();
+        let store = accepted_store();
+        let mut tracker = FieldTracker::new();
+        let mut usage = stats::Stats::new();
+        let prefs = Prefs::default();
+        let field = field_with_app("com.apple.TextEdit");
+        tracker.observe(
+            &field,
+            &text_context(&field, "I am happy"),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        let replacement = (
+            field.clone(),
+            "glad".to_string(),
+            CorrectionRange { start: 5, end: 10 },
+        );
+
+        apply_accept_side_effects(
+            true,
+            AcceptSideEffects {
+                action: AcceptAction::Full,
+                preview: None,
+                correction_preview: None,
+                range_preview: Some(&replacement),
+                wall_ms: 10_000,
+                context_max_chars: 160,
+                previous_inputs: &previous,
+                memory: Some(&store),
+                prefs: &prefs,
+                tracker: &mut tracker,
+                usage: &mut usage,
+            },
+        );
+
+        let observed = tracker.observe(
+            &field,
+            &text_context(&field, "I am glad"),
+            TriggerPolicy::Automatic,
+            1,
+        );
+        assert_eq!(
+            observed,
+            Observation::CaretMoved {
+                field: field.clone(),
+                caret: 9,
+            }
+        );
+        let totals = usage.session_totals();
+        assert_eq!(totals.counts.accepted, 1);
+        assert_eq!(totals.words, 1);
+        assert_eq!(
+            store.count().unwrap(),
+            0,
+            "selection replacements are not full completion accepts"
         );
         assert!(previous.recent("com.apple.TextEdit").is_empty());
     }
@@ -9337,6 +9870,7 @@ mod tests {
                 action: AcceptAction::Correction,
                 preview: None,
                 correction_preview: Some(&correction),
+                range_preview: None,
                 wall_ms: 10_000,
                 context_max_chars: 160,
                 previous_inputs: &previous,
@@ -9477,6 +10011,20 @@ mod tests {
     }
 
     #[test]
+    fn website_and_support_flags_open_exact_allowlisted_urls_once() {
+        for (url, flag) in [
+            (WEBSITE_URL, AtomicBool::new(true)),
+            (SUPPORT_URL, AtomicBool::new(true)),
+        ] {
+            let mut opened = Vec::new();
+            handle_url_flag(&flag, url, |opened_url| opened.push(opened_url));
+            handle_url_flag(&flag, url, |opened_url| opened.push(opened_url));
+            assert_eq!(opened, [url]);
+            assert!(!flag.load(Ordering::Relaxed));
+        }
+    }
+
+    #[test]
     fn config_enabled_reads_compme_enabled_and_defaults_on() {
         // The global tray-toggle state, persisted on toggle and read back at
         // launch. Distinct from COMPME_DEFAULT_ENABLED (the per-app
@@ -9550,12 +10098,20 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_only_apps_are_blocked_until_field_detector_exists() {
+    fn sidebar_only_apps_require_a_positive_assistant_field() {
         assert!(!app_allows_suggestions(Some("com.microsoft.VSCode")));
         assert!(!app_allows_suggestions(Some(
             "com.todesktop.230313mzl4w4u92"
         )));
         assert!(!app_allows_suggestions(Some("com.exafunction.windsurf")));
+        assert!(app_allows_suggestions_for_field(SuggestionApp {
+            app_key: Some("com.microsoft.VSCode"),
+            assistant_field: true,
+        }));
+        assert!(!app_allows_suggestions_for_field(SuggestionApp {
+            app_key: Some("com.microsoft.VSCode"),
+            assistant_field: false,
+        }));
     }
 
     #[test]
@@ -9573,6 +10129,16 @@ mod tests {
         // Sidebar-only app → blocked.
         assert!(!suggestion_gates_pass(
             Some("com.microsoft.VSCode"),
+            "color",
+            None,
+            &prefs,
+            0
+        ));
+        assert!(suggestion_gates_pass_for_field(
+            SuggestionApp {
+                app_key: Some("com.microsoft.VSCode"),
+                assistant_field: true,
+            },
             "color",
             None,
             &prefs,
@@ -10781,6 +11347,7 @@ mod tests {
     fn request_log_context_for_submit_tracking() -> RequestLogContext {
         RequestLogContext {
             app_key: Some("com.apple.TextEdit".into()),
+            assistant_field: false,
             domain: None,
             prefs: Prefs::default(),
             acceptance_prompt_marker: Some("hello".into()),
@@ -11107,6 +11674,7 @@ mod tests {
             right: String::new(),
             left_scalars: left.chars().count(),
             selection: None,
+            selected_text: None,
             caret: left.chars().count(),
             source: platform::ContextSource::Accessibility,
             field_id: field.clone(),
@@ -11124,6 +11692,7 @@ mod tests {
             right: right.into(),
             left_scalars: left.chars().count(),
             selection: None,
+            selected_text: None,
             caret: left.chars().count(),
             source: platform::ContextSource::Accessibility,
             field_id: field.clone(),
@@ -11136,6 +11705,7 @@ mod tests {
             readable_text: true,
             readable_caret: true,
             writable: true,
+            assistant_field: false,
             secure: false,
             security_state: SecurityState::Normal,
             toolkit: Toolkit::AppKit,
@@ -13619,12 +14189,144 @@ mod tests {
     }
 
     #[test]
+    fn full_autocorrect_off_or_code_context_never_calls_the_os_checker() {
+        let off = Config::from_lookup(lookup(&[]));
+        let called = Cell::new(false);
+        assert!(full_autocorrect_decision(
+            "I teh",
+            &off,
+            &off.prefs,
+            FullAutocorrectGate {
+                app: SuggestionApp {
+                    app_key: Some("com.apple.TextEdit"),
+                    assistant_field: false,
+                },
+                domain: None,
+                enabled: true,
+                now_ms: 0,
+            },
+            |_| {
+                called.set(true);
+                Ok(Some("the".into()))
+            },
+        )
+        .is_none());
+        assert!(!called.get());
+
+        let on = Config::from_lookup(lookup(&[("COMPME_FULL_AUTOCORRECT", "1")]));
+        for (app_key, assistant_field, left) in [
+            (Some("com.apple.dt.Xcode"), false, "I teh"),
+            (Some("com.apple.TextEdit"), false, "let value = teh"),
+        ] {
+            let called = Cell::new(false);
+            assert!(full_autocorrect_decision(
+                left,
+                &on,
+                &on.prefs,
+                FullAutocorrectGate {
+                    app: SuggestionApp {
+                        app_key,
+                        assistant_field,
+                    },
+                    domain: None,
+                    enabled: true,
+                    now_ms: 0,
+                },
+                |_| {
+                    called.set(true);
+                    Ok(Some("the".into()))
+                },
+            )
+            .is_none());
+            assert!(!called.get());
+        }
+    }
+
+    #[test]
+    fn full_autocorrect_offers_one_atomic_word_in_prose_and_assistant_fields() {
+        let config = Config::from_lookup(lookup(&[("COMPME_FULL_AUTOCORRECT", "1")]));
+        for app in [
+            SuggestionApp {
+                app_key: Some("com.apple.TextEdit"),
+                assistant_field: false,
+            },
+            SuggestionApp {
+                app_key: Some("com.microsoft.VSCode"),
+                assistant_field: true,
+            },
+        ] {
+            assert_eq!(
+                full_autocorrect_decision(
+                    "I teh",
+                    &config,
+                    &config.prefs,
+                    FullAutocorrectGate {
+                        app,
+                        domain: None,
+                        enabled: true,
+                        now_ms: 0,
+                    },
+                    |word| {
+                        assert_eq!(word, "teh");
+                        Ok(Some("the".into()))
+                    },
+                ),
+                Some((vec!["the".into()], 3))
+            );
+        }
+    }
+
+    #[test]
+    fn full_autocorrect_rejects_identical_multiword_and_disabled_app_results() {
+        let config = Config::from_lookup(lookup(&[("COMPME_FULL_AUTOCORRECT", "1")]));
+        let app = SuggestionApp {
+            app_key: Some("com.apple.TextEdit"),
+            assistant_field: false,
+        };
+        for correction in ["teh", "two words", ""] {
+            assert!(full_autocorrect_decision(
+                "I teh",
+                &config,
+                &config.prefs,
+                FullAutocorrectGate {
+                    app,
+                    domain: None,
+                    enabled: true,
+                    now_ms: 0,
+                },
+                |_| Ok(Some(correction.into())),
+            )
+            .is_none());
+        }
+
+        let prefs = build_prefs(&lookup(&[(
+            "COMPME_AUTOCORRECT_OFF_APPS",
+            "com.apple.TextEdit",
+        )]));
+        assert!(full_autocorrect_decision(
+            "I teh",
+            &config,
+            &prefs,
+            FullAutocorrectGate {
+                app,
+                domain: None,
+                enabled: true,
+                now_ms: 0,
+            },
+            |_| Ok(Some("the".into())),
+        )
+        .is_none());
+    }
+
+    #[test]
     fn autocorrect_and_british_off_by_default() {
         let config = Config::from_lookup(lookup(&[]));
         assert!(!config.autocorrect);
+        assert!(!config.full_autocorrect);
         assert!(!config.grammar_fix);
         assert!(!config.british_english);
         assert!(!config.thesaurus);
+        assert!(!config.thesaurus_selection);
         // Off → no word-based offer even on a known typo / americanism.
         assert!(replacement_offer("teh", &config, config.autocorrect, config.thesaurus).is_none());
         assert!(
@@ -13729,6 +14431,99 @@ mod tests {
         assert!(syns.contains(&"glad".to_string()));
         assert!(!syns.contains(&"happy".to_string()));
         assert_eq!(word_len, 5); // "happy"
+    }
+
+    #[test]
+    fn selection_thesaurus_offers_synonyms_for_one_selected_word() {
+        let config = Config::from_lookup(lookup(&[("COMPME_THESAURUS_SELECTION", "1")]));
+        let field = host_field("selection-thesaurus");
+        let mut ctx = text_context_with_right(&field, "I am ", " today");
+        ctx.selection = Some(platform::TextRange { start: 5, end: 10 });
+        ctx.selected_text = Some("happy".into());
+        let decision = selection_thesaurus_decision(
+            &ctx,
+            SelectionThesaurusGate {
+                config: &config,
+                prefs: &config.prefs,
+                app: SuggestionApp {
+                    app_key: Some("com.apple.TextEdit"),
+                    assistant_field: false,
+                },
+                domain: None,
+                enabled: true,
+                caps: &writable_axset_caps(),
+                now_ms: 0,
+            },
+        )
+        .expect("selected word has synonyms");
+        assert_eq!(decision.0, "happy");
+        assert!(decision.1.contains(&"glad".to_string()));
+        assert_eq!(decision.2, CorrectionRange { start: 5, end: 10 });
+    }
+
+    #[test]
+    fn selection_thesaurus_rejects_unknown_multiword_and_non_atomic_fields() {
+        let config = Config::from_lookup(lookup(&[("COMPME_THESAURUS_SELECTION", "1")]));
+        let field = host_field("selection-thesaurus-closed");
+        let mut ctx = text_context_with_right(&field, "", "");
+        ctx.selection = Some(platform::TextRange { start: 0, end: 9 });
+        ctx.selected_text = Some("two words".into());
+        let atomic = writable_axset_caps();
+        assert!(selection_thesaurus_decision(
+            &ctx,
+            SelectionThesaurusGate {
+                config: &config,
+                prefs: &config.prefs,
+                app: SuggestionApp {
+                    app_key: Some("com.apple.TextEdit"),
+                    assistant_field: false,
+                },
+                domain: None,
+                enabled: true,
+                caps: &atomic,
+                now_ms: 0,
+            },
+        )
+        .is_none());
+
+        ctx.selected_text = Some("happy".into());
+        let mut non_atomic = writable_axset_caps();
+        non_atomic.insert_strategy = InsertStrategy::SyntheticKeys;
+        assert!(selection_thesaurus_decision(
+            &ctx,
+            SelectionThesaurusGate {
+                config: &config,
+                prefs: &config.prefs,
+                app: SuggestionApp {
+                    app_key: Some("com.apple.TextEdit"),
+                    assistant_field: false,
+                },
+                domain: None,
+                enabled: true,
+                caps: &non_atomic,
+                now_ms: 0,
+            },
+        )
+        .is_none());
+
+        ctx.selection = None;
+        ctx.selected_text = None;
+        assert!(selection_thesaurus_decision(
+            &ctx,
+            SelectionThesaurusGate {
+                config: &config,
+                prefs: &config.prefs,
+                app: SuggestionApp {
+                    app_key: Some("com.apple.TextEdit"),
+                    assistant_field: false,
+                },
+                domain: None,
+                enabled: true,
+                caps: &atomic,
+                now_ms: 0,
+            },
+        )
+        .is_none());
     }
 
     #[test]

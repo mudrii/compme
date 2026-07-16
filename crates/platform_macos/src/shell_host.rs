@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use objc2_app_kit::NSWorkspace;
+use objc2_app_kit::{NSSpellChecker, NSWorkspace};
 use objc2_foundation::{NSString, NSURL};
 use platform::shell::{ConfirmPrompt, ShellHost, TrayHandle};
 use platform::{PlatformError, ScreenRect};
@@ -57,6 +57,36 @@ impl ShellHost for MacosShellHost {
 
     fn read_clipboard_text(&self) -> Option<String> {
         crate::read_pasteboard_text()
+    }
+
+    fn spelling_correction(&self, word: &str) -> Result<Option<String>, PlatformError> {
+        if word.is_empty() || word.chars().count() > 128 {
+            return Ok(None);
+        }
+
+        let checker = NSSpellChecker::sharedSpellChecker();
+        let string = NSString::from_str(word);
+        let misspelled = unsafe {
+            checker.checkSpellingOfString_startingAt_language_wrap_inSpellDocumentWithTag_wordCount(
+                &string,
+                0,
+                None,
+                false,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if misspelled.location != 0 || misspelled.length != string.len_utf16() {
+            return Ok(None);
+        }
+
+        let language = checker.language();
+        Ok(checker
+            .correctionForWordRange_inString_language_inSpellDocumentWithTag(
+                misspelled, &string, &language, 0,
+            )
+            .map(|correction| correction.to_string())
+            .filter(|correction| !correction.is_empty() && correction != word))
     }
 
     fn screen_context_text(

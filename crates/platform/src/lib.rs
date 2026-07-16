@@ -48,6 +48,10 @@ pub struct TextContext {
     /// rescanning an otherwise unbounded field on the main thread.
     pub left_scalars: usize,
     pub selection: Option<TextRange>,
+    /// Exact selected text when `selection` is non-empty. Keeping the payload
+    /// beside the native-unit range avoids reconstructing it with mismatched
+    /// UTF-8/UTF-16/scalar offsets in portable consumers.
+    pub selected_text: Option<String>,
     pub caret: usize,
     pub source: ContextSource,
     pub field_id: FieldHandle,
@@ -125,6 +129,10 @@ pub struct Capabilities {
     pub readable_text: bool,
     pub readable_caret: bool,
     pub writable: bool,
+    /// True only when the platform can positively identify this field as an
+    /// AI-assistant/chat input. App policy uses this to admit `SidebarOnly`
+    /// applications without enabling their main editor panes.
+    pub assistant_field: bool,
     pub secure: bool,
     pub security_state: SecurityState,
     pub toolkit: Toolkit,
@@ -718,6 +726,7 @@ mod tests {
             readable_text: true,
             readable_caret: true,
             writable: true,
+            assistant_field: false,
             secure: false,
             security_state: SecurityState::Normal,
             toolkit: Toolkit::AppKit,

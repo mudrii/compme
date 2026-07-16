@@ -29,6 +29,8 @@ pub enum TrayAction {
     Snooze,
     OpenSettingsWindow,
     CheckUpdates,
+    VisitWebsite,
+    ContactSupport,
     ToggleCollection,
     DisableApp(DisableArm),
 }
@@ -40,10 +42,20 @@ pub struct TrayMenuActionSpec {
 }
 
 pub fn tray_menu_action_specs() -> &'static [TrayMenuActionSpec] {
-    &[TrayMenuActionSpec {
-        title: "Check for Updates…",
-        action: TrayAction::CheckUpdates,
-    }]
+    &[
+        TrayMenuActionSpec {
+            title: "Check for Updates…",
+            action: TrayAction::CheckUpdates,
+        },
+        TrayMenuActionSpec {
+            title: "Visit Website",
+            action: TrayAction::VisitWebsite,
+        },
+        TrayMenuActionSpec {
+            title: "Contact Support",
+            action: TrayAction::ContactSupport,
+        },
+    ]
 }
 
 /// Apply a user-selected tray action to the state shared with the run loop.
@@ -70,6 +82,8 @@ pub fn apply_tray_action(flags: &TrayFlags, action: TrayAction) {
         TrayAction::Snooze => flags.snooze_requested.store(true, Ordering::Relaxed),
         TrayAction::OpenSettingsWindow => flags.open_settings_window.store(true, Ordering::Relaxed),
         TrayAction::CheckUpdates => flags.check_updates.store(true, Ordering::Relaxed),
+        TrayAction::VisitWebsite => flags.visit_website.store(true, Ordering::Relaxed),
+        TrayAction::ContactSupport => flags.contact_support.store(true, Ordering::Relaxed),
         TrayAction::ToggleCollection => flags.collection_toggle.store(true, Ordering::Relaxed),
         TrayAction::DisableApp(arm) => {
             *flags
@@ -153,6 +167,16 @@ define_class!(
         #[unsafe(method(checkUpdates:))]
         fn check_updates(&self, _sender: Option<&AnyObject>) {
             apply_tray_action(&self.ivars().flags, TrayAction::CheckUpdates);
+        }
+
+        #[unsafe(method(visitWebsite:))]
+        fn visit_website(&self, _sender: Option<&AnyObject>) {
+            apply_tray_action(&self.ivars().flags, TrayAction::VisitWebsite);
+        }
+
+        #[unsafe(method(contactSupport:))]
+        fn contact_support(&self, _sender: Option<&AnyObject>) {
+            apply_tray_action(&self.ivars().flags, TrayAction::ContactSupport);
         }
 
         #[unsafe(method(toggleCollection:))]
@@ -354,6 +378,23 @@ impl MacosTray {
         }
         menu.addItem(&check_updates_item);
 
+        for (action, selector) in [
+            (TrayAction::VisitWebsite, sel!(visitWebsite:)),
+            (TrayAction::ContactSupport, sel!(contactSupport:)),
+        ] {
+            let spec = tray_menu_action_specs()
+                .iter()
+                .find(|spec| spec.action == action)
+                .expect("tray URL action is present");
+            let item = NSMenuItem::new(mtm);
+            item.setTitle(&NSString::from_str(spec.title));
+            unsafe {
+                item.setTarget(Some(target_as_any(&target)));
+                item.setAction(Some(selector));
+            }
+            menu.addItem(&item);
+        }
+
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         // Quit (routes through the run loop's ordered teardown via the flag).
@@ -470,6 +511,8 @@ mod tests {
             global_disable: Arc::new(Mutex::new(None)),
             open_settings_window: Arc::new(AtomicBool::new(false)),
             check_updates: Arc::new(AtomicBool::new(false)),
+            visit_website: Arc::new(AtomicBool::new(false)),
+            contact_support: Arc::new(AtomicBool::new(false)),
             collection_toggle: Arc::new(AtomicBool::new(false)),
             app_disable: Arc::new(Mutex::new(None)),
         }
@@ -484,6 +527,8 @@ mod tests {
         global_disable: Option<DisableArm>,
         open_settings_window: bool,
         check_updates: bool,
+        visit_website: bool,
+        contact_support: bool,
         collection_toggle: bool,
         app_disable: Option<DisableArm>,
     }
@@ -500,6 +545,8 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             open_settings_window: flags.open_settings_window.load(Ordering::Relaxed),
             check_updates: flags.check_updates.load(Ordering::Relaxed),
+            visit_website: flags.visit_website.load(Ordering::Relaxed),
+            contact_support: flags.contact_support.load(Ordering::Relaxed),
             collection_toggle: flags.collection_toggle.load(Ordering::Relaxed),
             app_disable: *flags
                 .app_disable
@@ -544,6 +591,8 @@ mod tests {
         assert_action!(TrayAction::Snooze, snooze_requested = true);
         assert_action!(TrayAction::OpenSettingsWindow, open_settings_window = true);
         assert_action!(TrayAction::CheckUpdates, check_updates = true);
+        assert_action!(TrayAction::VisitWebsite, visit_website = true);
+        assert_action!(TrayAction::ContactSupport, contact_support = true);
         assert_action!(TrayAction::ToggleCollection, collection_toggle = true);
         assert_action!(
             TrayAction::DisableApp(DisableArm::Hour),
@@ -566,10 +615,22 @@ mod tests {
     }
 
     #[test]
-    fn tray_action_specs_include_check_for_updates() {
-        assert!(tray_menu_action_specs().contains(&TrayMenuActionSpec {
-            title: "Check for Updates…",
-            action: TrayAction::CheckUpdates,
-        }));
+    fn tray_action_specs_include_all_url_actions() {
+        for spec in [
+            TrayMenuActionSpec {
+                title: "Check for Updates…",
+                action: TrayAction::CheckUpdates,
+            },
+            TrayMenuActionSpec {
+                title: "Visit Website",
+                action: TrayAction::VisitWebsite,
+            },
+            TrayMenuActionSpec {
+                title: "Contact Support",
+                action: TrayAction::ContactSupport,
+            },
+        ] {
+            assert!(tray_menu_action_specs().contains(&spec), "{spec:?}");
+        }
     }
 }
