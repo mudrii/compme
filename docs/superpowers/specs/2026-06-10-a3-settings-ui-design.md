@@ -10,17 +10,18 @@
 > LOOK gate was completed 2026-06-17. A metric-picker redesign was closed by
 > design in the Roadmap.
 >
-> **Current-main release boundary:** the single model-location-control cleanup
-> (one **Show Models Folder**, no **Reveal Model in Finder**) landed after the
-> published v0.1.4 tag and requires the next release to reach distributed users.
+> **Current-main release boundary:** the latest published artifact is v0.1.5
+> (`14ae81e`) and includes the single model-location-control cleanup (one
+> **Show Models Folder**, no **Reveal Model in Finder**). Current `main` also
+> contains the tray website/support actions described below.
 >
-> **Live pending status (re-verified 2026-07-10): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
+> **Live pending status (re-verified 2026-07-16): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
 > and [`docs/ACCEPTANCE.md`](../../ACCEPTANCE.md) — the remaining Tier 3 work is
 > LOOK validation for shipped controls: Apps policy grid, Personalization pane,
 > Shortcuts recorder/physical hotkeys, Setup model picker, menu-bar icon, and the
-> nine-tab walkthrough. One small code gap also remains in this plan: the tray's
-> Visit Website / Contact Support actions. Inline per-line annotations below are
-> historical where a dated correction supersedes them.
+> nine-tab walkthrough. The tray's Visit Website / Contact Support actions are
+> now code-complete; inline per-line annotations below are historical where a
+> dated correction supersedes them.
 
 Reference: 13 Cotypist 2026.1 screenshots captured 2026-06-10 (tray menu +
 every settings pane). This maps each surface to compme's existing backing and
@@ -50,7 +51,7 @@ input-collection submenu, Settings (⌘,), support links, updates, Quit.
 | Disable Completions Globally ▸ (1h / until relaunch / always) | snooze (c54) = the 1h arm; "always" = enable toggle (c50) | shipped for 1h / until relaunch / always via `apply_global_disable`; remaining polish is stateful submenu text/dynamic app-name LOOK validation |
 | Input Collection in <app> ▸ | `memory` per-app collection override in `prefs` | shipped as a current-app toggle with persistence and run-loop gates; remaining polish is submenu state/dynamic app-name LOOK validation |
 | Settings… ⌘, | opens the S2 window | done |
-| Visit Website / Contact Support | repo URLs, `NSWorkspace.open` | pending small tray action + URL-dispatch wiring; tracked in ROADMAP |
+| Visit Website / Contact Support | repo URLs through the portable `ShellHost::open_url` seam | shipped as one-shot tray actions with exact URL tests; live menu-click/browser-opening LOOK remains |
 | Quit | exists | done |
 
 ## Phase S2 — Settings window skeleton + panes

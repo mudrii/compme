@@ -514,7 +514,9 @@ a granted macOS GUI session).
   not the existing `Command::Replace { replace_left }` model. Add a leaf-owned
   scalar `CorrectionRange` at the `platform` boundary, carry that same range
   through the request/outcome/showing state, and emit `Command::ReplaceRange` →
-  `insert_replacing_range`. `replace_left` remains for emoji/autocorrect only.
+  `insert_replacing_range`. `replace_left` remains for left-of-caret local
+  replacements (emoji, curated autocorrect, British English, and trailing-word
+  thesaurus); exact selection and grammar corrections use scalar ranges.
   **The same `InsertStrategy::supports_atomic_range_replace()` gate** applies
   (see the correction branch in `engine_core/src/lib.rs`): `AxSet` and
   `NativeRangeSet` can offer an atomic correction; non-atomic
