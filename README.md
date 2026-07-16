@@ -25,7 +25,7 @@ promoted into the workspace.
 
 | Platform | Product status | Current boundary |
 |---|---|---|
-| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.5` | Current `main` matches the artifact apart from post-release cask metadata; its deterministic gates are green, while 17 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
+| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.5` | Current `main` contains post-release build, release-tooling, cask, and documentation changes; its deterministic gates are green, while 17 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
 | Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | Adapter/overlay operations and most ShellHost services remain fail-closed; owner-only DACL hardening, console shutdown handling, and URL opening are real, but there is no usable Windows product or package yet. |
 | Linux | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `LinuxAdapter`, overlay, and most ShellHost operations remain fail-closed; no usable Linux product or package yet. |
 
@@ -33,10 +33,10 @@ The detailed Windows, Linux/X11, Wayland, GPU, packaging, and per-OS acceptance
 sequence is tracked in [the cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md).
 
 **Release boundary:** `v0.1.5` points to `14ae81e`. The feature and architecture
-descriptions below document current `main`, which matches the published
-artifact apart from the post-release cask-checksum finalization. The
-runtime/release hardening, the local/manual-only A2 pipeline policy, and the
-single **Show Models Folder** control shipped in `v0.1.5`.
+descriptions below document current `main`; use the tag and its release assets
+when validating the published artifact. The runtime/release hardening, the
+local/manual-only A2 pipeline policy, and the single **Show Models Folder**
+control shipped in `v0.1.5`.
 
 The macOS run loop is functional: it reads caret/text context through
 Accessibility, generates short local completions, classifies field UX (inline /
@@ -206,7 +206,7 @@ from `tools/spike/`.
 | `grammar` | Pure grammar helpers: current inline pronoun capitalization plus the LLM-backed standalone grammar/spell-fix post-filter. |
 | `localize` | Pure, high-precision US→British spelling normalization for American-only forms; deliberately skips ambiguous words. |
 | `emoji` | Pure `:shortcode`→emoji completion honoring skin-tone (Fitzpatrick) and gender preferences. |
-| `thesaurus` | Pure synonym lookup with the queried word's case pattern applied; the current host uses the trailing-word auto path, while selection-trigger UX remains future work. |
+| `thesaurus` | Pure synonym lookup with the queried word's case pattern applied; the host supports both trailing-word auto offers and exact single-word selection replacement with candidate cycling. |
 | `textcase` | Pure capitalization-pattern detection and application, shared by the text-suggestion crates. |
 | `redaction` | Pure best-effort scrubbing of emails, Luhn-valid card numbers, and high-entropy tokens before any persistence or diagnostics; biased to over-redact. |
 | `memory` | Encrypted local memory for accepted completions or all monitored typing: text is redacted then AES-256-GCM encrypted to SQLite, opt-in storage modes, Keychain-managed key, plaintext app metadata for per-app counts/delete. |
@@ -217,7 +217,7 @@ from `tools/spike/`.
 ## Requirements
 
 - macOS 14 (Sonoma) or later — the bundle sets `LSMinimumSystemVersion` 14.0.
-- Rust toolchain compatible with the workspace.
+- Rust 1.97.0, pinned by `rust-toolchain.toml`.
 - Xcode Command Line Tools for native macOS frameworks.
 - CMake for the bundled llama.cpp build (not included with Xcode CLT —
   `brew install cmake`).
@@ -250,11 +250,13 @@ comma-separated bundle ids.
 | `COMPME_DEFAULT_ENABLED` | Per-app suggestion-policy default in `prefs` (distinct from the master `COMPME_ENABLED`). |
 | `COMPME_MIDLINE` | Allow mid-line completions (also a Settings switch). `_ON_APPS` / `_OFF_APPS` override per app. |
 | `COMPME_AUTOCORRECT` | Inline typo autocorrect (default off; also a Settings switch). `_ON_APPS` / `_OFF_APPS` override per app. |
+| `COMPME_FULL_AUTOCORRECT` | Opt-in macOS `NSSpellChecker` correction path (default off; also a Settings switch). It shares the per-app Autocorrect policy and fails closed in code editors unless the focused field is positively classified as an assistant field. |
 | `COMPME_GRAMMAR_FIX` | Standalone grammar/spell-fix trigger flow (default off). `_ON_APPS` / `_OFF_APPS` override per app. |
 | `COMPME_GRAMMAR_CHECK_KEY` | Always-on grammar trigger shortcut as a `modifier+keycode` string; runs detection for the word at the caret. |
 | `COMPME_GRAMMAR_ACCEPT_KEY` | Correction-only accept key as a `modifier+keycode` string; replaces the vetted word only while a correction is showing. |
 | `COMPME_BRITISH_ENGLISH` | British-English normalization (default off). |
 | `COMPME_THESAURUS` | Inline thesaurus / synonym suggestions (default off). `_ON_APPS` / `_OFF_APPS` override per app. |
+| `COMPME_THESAURUS_SELECTION` | Offer multiple synonyms for an exact selected single word and replace the selected scalar range atomically (default off; also a Settings switch). |
 | `COMPME_TRAILING_SPACE` | Append a trailing space on single-word accept (default off; also a Settings switch). |
 | `COMPME_EMOJI` | Emoji completion on/off. |
 | `COMPME_EMOJI_SKIN_TONE` | Preferred skin tone (Fitzpatrick) for emoji completion. |
@@ -272,6 +274,7 @@ comma-separated bundle ids.
 | `COMPME_CLIPBOARD_CONTEXT` | Opt-in: include clipboard text in the context block. |
 | `COMPME_SCREEN_CONTEXT` | Opt-in: include screen text in the context block. |
 | `COMPME_PREVIOUS_INPUT_CONTEXT` | Cap (characters) of previous-input context to include; off when unset. |
+| `COMPME_CROSS_APP_PREVIOUS_INPUTS` | Opt-in: use a redacted, deduplicated, bounded cross-app previous-input ring instead of the default same-app history (also a Context switch). |
 | `COMPME_INSTRUCTIONS` | Custom steering instructions prepended to the prompt. |
 | `COMPME_INSTRUCTIONS_APPS` / `COMPME_INSTRUCTIONS_APP_<BUNDLE>` | Comma-separated bundle ids and sanitized per-app instruction values, e.g. `COMPME_INSTRUCTIONS_APP_COM_APPLE_TEXTEDIT`. |
 | `COMPME_INSTRUCTIONS_DOMAINS` / `COMPME_INSTRUCTIONS_DOMAIN_<HOST>` | Comma-separated hosts and sanitized per-domain instruction values, e.g. `COMPME_INSTRUCTIONS_DOMAIN_DOCS_GOOGLE_COM`. |
@@ -341,7 +344,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,888 tests:
+suite is roughly 1,905 tests:
 
 ```sh
 cargo fmt --all -- --check
@@ -426,8 +429,9 @@ At a high level:
    `RequestCompletion` command for the current field snapshot; the host fulfils it
    off the machine thread so inference never blocks.
 4. `model_client::LocalModel` generates a short continuation, or a local feature
-   (autocorrect / British / emoji / thesaurus) proposes a replacement, gated by
-   per-app and per-domain preferences.
+   (curated/statistical autocorrect, British English, emoji, or trailing/selected
+   thesaurus) proposes an atomic replacement, gated by per-app and per-domain
+   preferences.
 5. `engine_core` validates the returned generation/snapshot and emits `ShowGhost`,
    `UpdateGhost`, `Insert`, or `Hide`.
 6. `platform_macos` presents ghost text through an AppKit `NSPanel`, intercepts

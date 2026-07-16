@@ -44,6 +44,7 @@ tools/release/check-agent-briefs.sh
 tools/release/check-agent-briefs.sh --self-test
 tools/release/check-privacy-policy.sh
 tools/release/check-privacy-policy.sh --self-test
+tools/release/check-github-governance.sh --self-test
 bash tools/release/check-model-gates.sh
 bash tools/release/run-model-gates.sh
 tools/release/run-model-gates.sh --self-test
@@ -398,6 +399,15 @@ Failure classification looks for common blockers:
 - transient AX observer setup failures
 
 ## A2 Compatibility And Context Smoke Gates (Local/Manual Only)
+
+As of 2026-07-16, the previously open A2 code prerequisites are implemented:
+SidebarOnly fields use conservative direct AX assistant metadata; full
+statistical autocorrect uses `NSSpellChecker` with prose/code-field safety
+gates; cross-app previous-input context is opt-in, redacted, deduplicated, and
+bounded; and selected single-word thesaurus offers use exact atomic range
+replacement. These paths are unit/build-verified. The matrix and physical UX
+rows below remain the required live evidence, especially real editor/sidebar
+field metadata in VS Code, Cursor, and Windsurf.
 
 A2 validation is local/manual-only. CI, tag releases, and the release-policy
 checker do not execute or syntax-check these two tools. Run them explicitly on

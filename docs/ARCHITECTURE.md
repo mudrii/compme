@@ -15,8 +15,9 @@ product differences include local-only inference, no proprietary telemetry,
 and additions such as candidate cycling.
 
 **Release boundary:** the published `v0.1.5` artifact points to `14ae81e`; this
-page documents current `main`, which matches it apart from post-release cask
-metadata. The runtime/download/clipboard/OCR/deep-link
+page documents current `main`, which contains post-release build,
+release-tooling, cask, documentation, and macOS parity changes. The
+runtime/download/clipboard/OCR/deep-link
 hardening, local/manual-only A2 policy, single **Show Models Folder** Settings
 control, stale-focus fail-closed cleanup, owner-only host files, URL-handler
 teardown, and release-integrity controls shipped in `v0.1.5`. The
@@ -101,14 +102,17 @@ Key concepts:
 - `FieldHandle`: stable field identity used to tie completions and inserts to a
   focused field.
 - `TextContext`: text to the left and right of the caret, selection metadata,
-  source, field identity, offset encoding, and a producer-computed absolute
+  exact selected text when available, source, field identity, offset encoding,
+  and a producer-computed absolute
   Unicode-scalar offset (`left_scalars`) so consumers do not rescan an
   unbounded field.
 - `CorrectionRange`: Unicode-scalar range used by standalone grammar/spell-fix
   for both underline geometry and exact accept-time replacement.
 - `Capabilities`: what the focused field supports: readable text, readable
   caret, write support, secure-state information, toolkit, insertion strategy,
-  accept interception, and overlay placement.
+  accept interception, overlay placement, and a conservative
+  `assistant_field` bit derived from direct focused-element metadata for
+  SidebarOnly gating.
 - `InsertStrategy`: `AxSet`, `NativeRangeSet` (adapter-native atomic range
   replacement for the future Windows UIA / Linux AT-SPI adapters),
   `SyntheticKeys`, `Clipboard`, `ImeCommit`, or `None`. Replacement
@@ -169,9 +173,12 @@ curated, high-precision/low-recall table that maps an unambiguous misspelling
 to its correction, reapplying the query's capitalization (via `textcase`). A
 real word is never "corrected", so there are no false positives on valid input;
 ambiguous strings that are also real words (`cant`, `wont`, `weve`) are
-deliberately excluded. Full statistical autocorrect is a separate host concern.
-The host wires it into the local-replacement path (`replacement_offer`) and
-gates it on `COMPME_AUTOCORRECT`; it must not run in code editors.
+deliberately excluded. The host also provides a separate opt-in full statistical
+path through macOS `NSSpellChecker`; it accepts only whole-token, single-word
+corrections, shares the per-app Autocorrect policy, and fails closed in code
+editors/code-like contexts unless the field is positively classified as an
+assistant field. The curated path is gated by `COMPME_AUTOCORRECT`; the
+statistical path is gated by `COMPME_FULL_AUTOCORRECT`.
 
 ### `grammar`
 
@@ -199,12 +206,12 @@ through the local-replacement path.
 
 `thesaurus` looks a word up in a curated synonym table and returns the
 alternatives, applying the queried word's case pattern (`textcase`) so a host
-can drop a replacement straight in. The host gates it on the "thesaurus" toggle
-and currently offers synonyms for the trailing word at the caret (*auto* mode).
-Selection-trigger UX (highlight a word → offer synonyms) remains future A2/A3
-work; the same lookup table is intended to serve both modes once that host
-surface exists. Mirrors Cotypist's `featureThesaurusAutoMode` today and keeps
-`featureThesaurusSelectionMode` as tracked parity work.
+can drop a replacement straight in. The host supports two separately controlled
+surfaces: trailing-word auto offers (`COMPME_THESAURUS`) and exact selected
+single-word offers (`COMPME_THESAURUS_SELECTION`). Selection mode preserves the
+selected text separately in `TextContext`, presents multiple candidates through
+the correction banner, and accepts the active candidate through an exact atomic
+`CorrectionRange`.
 
 ### `emoji`
 
@@ -473,8 +480,9 @@ Major responsibilities:
 - resolve the prefs/compat gate, then drive the completion model path
   (engine → llama.cpp), the grammar-fix model path (word at caret → LLM →
   `grammar::vet_correction`), or the local-replacement path
-  (`replacement_offer`: emoji, autocorrect, localize, thesaurus) in the observe
-  path
+  (`replacement_offer`: emoji, curated autocorrect, localize, trailing
+  thesaurus), the macOS statistical-autocorrect path, or the selected-word
+  thesaurus range-replacement path in the observe path
 - route `ShortcutAction::GrammarCheck` to a manual grammar request, detect the
   word at the caret, carry its `CorrectionRange`, show the correction banner,
   and keep `AcceptCorrection` isolated from normal word/full ghost accepts
@@ -483,6 +491,9 @@ Major responsibilities:
   or rescanning the full field
 - compute the browser page domain from the focused element's AX URL and feed it
   into the per-domain gate
+- keep previous-input context in separate bounded same-app and cross-app rings;
+  inference reads a live atomic to choose the opt-in cross-app scope, and
+  disabling it clears the global ring
 - apply per-app mid-line override live on focus via `Engine::set_allow_mid_word`
 - marshal platform callbacks onto the AppKit main-thread engine host
 - keep only the latest pending completion request
@@ -513,6 +524,8 @@ Major responsibilities:
   underlying node, with raw pointer identity only as the last-resort unstable
   fallback when neither semantic identity nor hash is available.
 - Text reads through AX value and selected range.
+- Direct focused-element AX metadata classification for conservative
+  SidebarOnly assistant/sidebar fields.
 - Caret geometry through native range bounds and Chromium/WebKit marker
   attributes.
 - Correction range geometry through AX bounds-for-range, used by the
@@ -521,6 +534,8 @@ Major responsibilities:
 - Insert planning across `AxSet`, `SyntheticKeys`, and `Clipboard`.
 - Exact range replacement through `insert_replacing_range` for fields where
   `AxSet` can update the value and selected range safely.
+- Full statistical spelling correction through `NSSpellChecker`, exposed only
+  through the portable `ShellHost::spelling_correction` seam.
 - Stale-focus rejection before global synthetic or paste insertion.
 - Pasteboard snapshot/restore with `changeCount` guard.
 - Deferred pasteboard restoration through a coordinator that retains the
@@ -673,8 +688,10 @@ folder action creates the directory and calls the typed `reveal_file(Path)`
 shell seam; it never passes a raw filesystem path through URL parsing. The
 Statistics tab renders range/group-selectable `stats` sparkline rows; the Apps
 tab lists per-app recorded-input counts with per-row delete and five policy
-columns (Enabled, Tab key, Mid-line, Autocorrect, Grammar fix). General carries
-the master, mid-line, autocorrect, and trailing-space toggles; Personalization
+columns (Enabled, Tab key, Mid-line, Autocorrect, Grammar fix); the Autocorrect
+column gates both curated and full statistical paths. General carries the
+master, mid-line, curated autocorrect, full autocorrect, selection-thesaurus,
+and trailing-space toggles; Personalization
 edits global instructions, sender identity, and the six-stop strength; Context
 and Emoji own their live controls; Shortcuts records word/full/grammar-accept
 bindings.
@@ -694,8 +711,12 @@ ownership and decode to the separate `model-client-llama` worker.
 
 Independent of the model path, the run loop offers **local replacements** in the
 observe path: `replacement_offer` tries, in order, an emoji `:shortcode`, a
-typo fix (`autocorrect`), a US→UK normalization (`localize`), and a thesaurus
-synonym, each gated by its toggle and reapplying the typed case via `textcase`.
+curated typo fix (`autocorrect`), a US→UK normalization (`localize`), and a
+trailing-word thesaurus synonym, each gated by its toggle and reapplying the
+typed case via `textcase`. Full statistical autocorrect and selected-word
+thesaurus share the same policy/atomic-replacement boundary but are evaluated
+separately because they depend on an OS spelling service and exact selection
+metadata, respectively.
 These need no model and add no latency. They pass through the same
 `suggestion_gates_pass` per-app + per-domain gate as model completions; the
 domain is the focused browser page's host, read from the AX URL attribute when

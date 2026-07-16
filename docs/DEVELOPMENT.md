@@ -28,9 +28,9 @@ signed, notarized, and stapled v0.1.5. Earlier release notes preserve each
 artifact's original signing status. Workspace behavior may be newer than the
 latest tag, so use tag-specific release assets and notes when validating a
 published version. Specifically, `v0.1.5` points to `14ae81e`; current `main`
-matches it apart from the post-release cask-checksum finalization. The
-post-v0.1.4 runtime/release hardening, local/manual-only A2 policy, and single
-model-location control shipped in v0.1.5.
+contains post-release build, release-tooling, cask, and documentation changes.
+The post-v0.1.4 runtime/release hardening, local/manual-only A2 policy, and
+single model-location control shipped in v0.1.5.
 
 The root `Cargo.toml` is a Rust workspace with 25 members
 ([verified 2026-07-10] — keep in sync with `Cargo.toml`):
@@ -60,7 +60,8 @@ pure-Rust deps stay caret-ranged.
 
 Required for root workspace development:
 
-- Rust toolchain
+- Rust 1.97.0 (automatically selected by the repository's
+  `rust-toolchain.toml`)
 - macOS when building or testing `platform_macos`
 - Xcode Command Line Tools
 - CMake for the bundled llama.cpp build (`brew install cmake`; not included
@@ -172,7 +173,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1888 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1905 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -223,6 +224,7 @@ tools/release/check-agent-briefs.sh
 tools/release/check-agent-briefs.sh --self-test
 tools/release/check-privacy-policy.sh
 tools/release/check-privacy-policy.sh --self-test
+tools/release/check-github-governance.sh --self-test
 bash tools/release/check-model-gates.sh
 tools/release/run-model-gates.sh --self-test
 tools/release/update-cask.sh --self-test
@@ -238,7 +240,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1888 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1905 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance

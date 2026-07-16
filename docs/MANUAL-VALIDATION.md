@@ -6,10 +6,11 @@
 > [`ACCEPTANCE.md`](ACCEPTANCE.md). New evidence is promoted into that document's
 > authoritative Manual/Live Gate Ledger.
 >
-> **Release boundary (2026-07-13):** this checklist tracks current `main`,
-> which matches the latest published `v0.1.5` (`14ae81e`) binary apart from
-> post-release cask metadata. The local/manual-only A2 policy and the single
-> **Show Models Folder** invariant are included in v0.1.5.
+> **Release boundary (2026-07-13):** this checklist tracks current `main`.
+> Validate the latest published `v0.1.5` binary from tag `14ae81e` and its
+> release assets; current `main` contains post-release build, release-tooling,
+> cask, and documentation changes. The local/manual-only A2 policy and the
+> single **Show Models Folder** invariant are included in v0.1.5.
 >
 > Run the app and work down the list:
 > ```sh

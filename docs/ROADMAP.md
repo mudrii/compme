@@ -1,12 +1,12 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-13 (implementation reviewed through `14ae81e` plus the current review; v0.1.5 (`14ae81e`) is the latest published artifact and includes the post-v0.1.4 runtime, release, audit, and Settings fixes; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1888 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-16 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1905 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
-> with symbol/function/gate anchors re-reviewed 2026-07-12 on the current tree.
+> with symbol/function/gate anchors re-reviewed 2026-07-16 on the current tree.
 > Evidence includes the full 48-commit delta from `v0.1.4` through `14ae81e`
 > (published as `v0.1.5`): cross-platform Phase 0, the model-catalog size correction,
 > stale-focus/terminal/Finder/private-file/URL-handler fixes, mutation-backed
@@ -44,8 +44,9 @@
 > subsequent review fixes through `db4a55b`/`eaef2f3` shipped in the `v0.1.5`
 > tag (`14ae81e`, published 2026-07-13). Unless a row explicitly says
 > otherwise, current implementation/test claims below describe `main`, which
-> matches the published v0.1.5 artifact apart from the post-release cask
-> finalization (`f203fa6`).
+> contains post-release build, release-tooling, cask, and documentation changes.
+> Use tag `14ae81e` and its release assets when validating the published
+> v0.1.5 artifact.
 
 ## Status legend
 
@@ -224,7 +225,10 @@ signing + hardened runtime + notarization + a native updater.
   self-review and unrestricted deployment branches, and allow actions outside
   the repository's exact checker allowlist. Closing those external controls
   needs owner authorization because branch protection conflicts with the
-  current direct-to-`main` development policy. Until then, tag-controlled
+  current direct-to-`main` development policy. The read-only
+  `tools/release/check-github-governance.sh` now reports each live mismatch and
+  has a hermetic `--self-test` in CI/release validation; it deliberately does
+  not mutate repository settings. Until the owner decision, tag-controlled
   release helpers remain inside the trust boundary of whoever can advance
   `main` and create a release tag.
 
@@ -388,31 +392,34 @@ runs. The retired screenshot matrix is not current release evidence.
 
 ---
 
-## Remaining committed macOS/A2 code gaps
+## Committed macOS/A2 code gaps — ✅ closed on current `main`
 
-The six-item June 30 macOS UI backlog is complete, but the broader committed
-parity scope is not wholly code-complete. These implementation gaps must be
-resolved or explicitly re-scoped before their corresponding live rows can close:
+The five broader parity gaps are now implemented with deterministic tests.
+Their remaining work is live compatibility/UX validation, not missing code:
 
-- **SidebarOnly editor-vs-sidebar detector:** VS Code/Cursor/Windsurf currently
-  fail closed for every field; the host has no detector that enables only their
-  AI-chat/sidebar fields.
-- **Full statistical autocorrect:** the shipped `autocorrect` path is the curated
-  high-confidence typo table, not the distinct full-autocorrect behavior promised
-  by the parity spec; the code-field gate remains part of that work.
-- **Cross-app previous-input context:** same-app redacted bounded history ships;
-  the separate opt-in cross-app mode is not implemented.
-- **Thesaurus selection-trigger UX:** trailing-word lookup/offers ship, but
-  selection-triggered synonym behavior does not.
-- **Tray website/support actions:** Settings, updates, and Quit ship; the A3
-  **Visit Website** / **Contact Support** menu actions remain unimplemented.
+- **SidebarOnly editor-vs-sidebar detector:** macOS reads direct AX identifier,
+  description, title, placeholder, and help metadata into an
+  `assistant_field` capability. VS Code/Cursor/Windsurf remain fail-closed
+  unless a focused field matches a conservative AI-chat/sidebar marker.
+- **Full statistical autocorrect:** the General-pane opt-in uses macOS
+  `NSSpellChecker`, requires a whole-word single-token correction, honors the
+  existing per-app Autocorrect policy, and blocks code editors/code-like
+  contexts unless the field is positively classified as an assistant field.
+- **Cross-app previous-input context:** the Context-pane opt-in selects a
+  redacted, deduplicated, bounded five-entry global ring; same-app isolation
+  remains the default, and disabling the switch clears the cross-app ring.
+- **Thesaurus selection-trigger UX:** exact selected text is carried separately
+  in `TextContext`; single-word selections can show multiple synonyms, cycle
+  them, and accept through an exact atomic `CorrectionRange` replacement.
+- **Tray website/support actions:** **Visit Website** and **Contact Support**
+  are one-shot tray actions routed through the portable `ShellHost::open_url`
+  seam with exact URL tests.
 
 ---
 
 ## Tier 4 — 🔬 Live validation (implemented rows need human/scripted evidence)
 
-Except for the explicit code prerequisites above, these rows are implemented to
-a deterministic/build-verified standard. Selected A2
+These rows are implemented to a deterministic/build-verified standard. Selected A2
 scenarios have locally invoked script evidence via
 `tools/acceptance/run-a2-compat-gates.sh`, but that runner and its ledger checker
 are deliberately excluded from CI, tag releases, the release-policy checker,
@@ -430,7 +437,7 @@ folded settings LOOK gates (`personalization-pane-look`,
 |---|---|---|
 | Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking; Safari allow+exclude legs live-proven 2026-07-07 (Batch 6) | Chrome/Brave live rows with the A2 matrix; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
 | Multi-candidate Down-cycle | engine ✅; synthetic Down-cycle live-proven 2026-07-07 (`COMPME_CANDIDATES=3`, real model); `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before the next release |
-| Compatibility matrix | classifier ✅; Unsupported tiers fail closed; SidebarOnly remains blocked pending the editor-vs-sidebar detector above; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger as a local/manual tool | after the detector lands, supply live row PID map via `COMPME_A2_MATRIX_TARGETS`; dry runs may explicitly allow skips, while recorded evidence should pass every row and satisfy `check-a2-matrix-ledger.sh` locally |
+| Compatibility matrix | classifier ✅; Unsupported tiers fail closed; SidebarOnly now enables only positively identified assistant/sidebar fields and otherwise fails closed; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger as a local/manual tool | supply the live row PID map via `COMPME_A2_MATRIX_TARGETS`, including real VS Code/Cursor/Windsurf editor and assistant fields; dry runs may explicitly allow skips, while recorded evidence should pass every row and satisfy `check-a2-matrix-ledger.sh` locally |
 | Browser mirror-window | `set_mirror_mode` ✅; `mirror-window-firefox-zen-look` manual gate pins Firefox/Zen ghost-in-mirror confirmation | run the manual gate in a granted desktop session |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch; live submit-path pass 2026-07-07 after CGImageRef encoding panic fix (`e5c055b`) | OCR quality/perf on a granted desktop + multi-display caret confirm |
@@ -638,9 +645,9 @@ with physical trigger/accept keypresses.
   (`a2-parity-design.md:89`).
 - **Candidate cycling** is an intentional superset beyond Cotypist and is not a
   parity gap. Thesaurus evidence is mixed: public help omits it, while the
-  installed-binary audit exposed auto/selection feature flags. The current scope
-  therefore tracks shipped trailing-word lookup separately from the pending
-  selection-trigger UX above.
+  installed-binary audit exposed auto/selection feature flags. Both the
+  trailing-word and exact-selection host paths now ship on `main`; live UX
+  confirmation remains in Tier 4.
 
 ---
 
@@ -717,15 +724,17 @@ per-app configurable.
 
 ### Current execution order
 
-1. **Close the five committed macOS/A2 code gaps above** (or record an explicit
-   product-scope decision for any deliberate deferral), with deterministic tests.
+1. ✅ **Close the five committed macOS/A2 code gaps (2026-07-16)** — conservative
+   SidebarOnly field classification, opt-in `NSSpellChecker` autocorrect,
+   bounded cross-app previous-input context, exact-range selection thesaurus,
+   and tray website/support actions are implemented with deterministic tests.
 2. **Run all 17 runner-pinned macOS manual/live gates plus the additional
    manually recorded Tier-4 rows** using the current local binary;
    record each result in `docs/ACCEPTANCE.md`. Prioritize the nine-tab Settings
    walkthrough, Setup single-location-control invariant, Apps/Personalization,
    physical hotkeys + grammar fix, Chromium-family caret calibration, and memory
    privacy residuals.
-3. ✅ **Synchronize plan/support/acceptance docs (2026-07-10)** — this update
+3. ✅ **Synchronize plan/support/acceptance docs (2026-07-16)** — this update
    refreshed the implementation anchor, atomic-replacement wording, Apps/memory
    status, Setup control invariant, A2 local-only policy, and platform-support
    matrix. Repeat the sync whenever manual gates close or adapter phases ship.
@@ -740,7 +749,8 @@ per-app configurable.
 8. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux
    packaging/signing/publication, and feature-by-platform acceptance/docs after
    the corresponding adapter is functional.
-9. **Settle repository governance with the owner** — decide whether to protect
+9. **Settle repository governance with the owner** — use the new read-only
+   governance checker as the live mismatch inventory, then decide whether to protect
    `main`, restrict release-tag creation and deployment branches, prevent
    release-environment self-review, and align GitHub's Actions allowlist/SHA-pin
    policy with the repository checker. Record any deliberately accepted trust
