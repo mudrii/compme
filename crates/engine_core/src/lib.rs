@@ -1163,6 +1163,16 @@ impl SuggestionMachine {
         if candidates.is_empty() {
             return out;
         }
+        let identical_offer = self.showing.as_ref().is_some_and(|showing| {
+            showing.presentation == Presentation::SelectionReplacement
+                && &showing.field == field
+                && showing.correction_original.as_deref() == Some(original.as_str())
+                && showing.correction_range == Some(range)
+                && showing.candidates == candidates
+        });
+        if identical_offer {
+            return out;
+        }
         if self.showing.is_some() {
             self.record_stat(StatEvent::Superseded);
         }
@@ -3702,6 +3712,26 @@ mod tests {
                 },
                 Command::Hide,
             ]
+        );
+    }
+
+    #[test]
+    fn identical_selection_replacement_is_idempotent_and_preserves_the_cycle() {
+        let mut machine = focused_machine();
+        let f = field("field-a");
+        let range = CorrectionRange { start: 2, end: 7 };
+        let candidates = vec!["glad".into(), "joyful".into()];
+        machine.offer_selection_replacement_multi(&f, "happy".into(), candidates.clone(), range);
+        machine.on_event(Event::Cycle);
+        assert_eq!(machine.take_stat_events(), vec![StatEvent::Shown]);
+
+        assert!(machine
+            .offer_selection_replacement_multi(&f, "happy".into(), candidates, range)
+            .is_empty());
+        assert!(machine.take_stat_events().is_empty());
+        assert_eq!(
+            machine.preview_accept_range(AcceptAction::Full),
+            Some((f, "joyful".into(), range))
         );
     }
 
