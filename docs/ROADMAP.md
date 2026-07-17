@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-16 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, three non-critical architecture follow-ups, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1918 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-17 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, their deduplication/idempotence audit fixes and pinned live gates, three non-critical architecture follow-ups, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1920 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -286,7 +286,7 @@ instruction editor remains a future enhancement, not a runtime steering gap.
 
 ---
 
-## Tier 3 — A3 settings UI (controls shipped; tray links + live LOOK remain)
+## Tier 3 — A3 settings UI (controls and tray links shipped; live LOOK remains)
 
 Per `2026-06-10-a3-settings-ui-design.md`. The settings window now ships as 9
 tabs (Setup, General, Personalization, Apps, Context, Emoji, Shortcuts,
@@ -294,8 +294,8 @@ Statistics, About). The nine-tab controls have landed in code and deterministic
 tests. The General pane now includes the specified default-off Launch at Login
 toggle: successful `SMAppService` changes persist to config, while OS failures
 restore the prior visible state and do not persist a false value. The remaining
-Tier 3 work is the tray website/support action pair tracked
-below plus the live visual/physical LOOK pass —
+Tier 3 work is the live visual/physical LOOK pass, including the pinned tray-link
+browser handoff —
 **Live finding (2026-07-07 assisted-UI session) — FIXED same day:** Chrome
 delivers a fresh AX element ref per focus notification for identifier-less web
 fields, so pointer-based identity churned `StaleField` on every read (661
@@ -312,7 +312,7 @@ mirror-mode pipeline is log-proven end-to-end under ORGANIC hardware typing
 LOOK of the mirror window plus hardware accept/cycle presses.
 
 the authoritative pass/fail ledger is [`ACCEPTANCE.md`](ACCEPTANCE.md)'s
-Manual/Live Gate Ledger (17 runner-pinned gate IDs); detailed walkthroughs live
+Manual/Live Gate Ledger (22 runner-pinned gate IDs); detailed walkthroughs live
 in [`MANUAL-VALIDATION.md`](MANUAL-VALIDATION.md), and the assisted-session
 driver (`tools/acceptance/run-ui-assisted-session.sh`) supports those manual
 runs. The retired screenshot matrix is not current release evidence.
@@ -400,22 +400,27 @@ Their remaining work is live compatibility/UX validation, not missing code:
 - **SidebarOnly editor-vs-sidebar detector:** macOS reads direct AX identifier,
   description, title, placeholder, and help metadata into an
   `assistant_field` capability. VS Code/Cursor/Windsurf remain fail-closed
-  unless a focused field matches a conservative AI-chat/sidebar marker.
+  unless a focused field matches a conservative AI-chat/sidebar marker;
+  `sidebar-only-editor-assistant-look` pins the real-field residual.
 - **Full statistical autocorrect:** the General-pane opt-in uses macOS
   `NSSpellChecker`, requires a whole-word single-token correction, honors the
   existing per-app Autocorrect policy, and admits only a conservative known-prose
   app allowlist or a positively classified assistant field; browsers, unknown
-  apps, code editors, and code-like contexts fail closed.
+  apps, code editors, and code-like contexts fail closed. The OS-backed live
+  boundary is pinned by `full-autocorrect-prose-code-look`.
 - **Cross-app previous-input context:** the Context-pane opt-in selects a
-  redacted, deduplicated, bounded five-entry global ring; same-app isolation
-  remains the default, and disabling the switch clears the cross-app ring and
-  stops collecting global history until it is re-enabled.
+  redacted, globally deduplicated, recency-ordered, bounded five-entry ring;
+  same-app isolation remains the default, and disabling the switch clears the
+  cross-app ring and stops collecting global history until it is re-enabled.
+  `cross-app-previous-inputs-look` pins the two-app product loop.
 - **Thesaurus selection-trigger UX:** exact selected text is carried separately
   in `TextContext`; single-word selections can show multiple synonyms, cycle
   them, and accept through an exact atomic `CorrectionRange` replacement.
+  Repeated identical AX notifications are idempotent and preserve the cycled
+  candidate; `selection-thesaurus-look` pins the physical UX.
 - **Tray website/support actions:** **Visit Website** and **Contact Support**
   are one-shot tray actions routed through the portable `ShellHost::open_url`
-  seam with exact URL tests.
+  seam with exact URL tests; `tray-external-links-look` pins browser handoff.
 
 ---
 
@@ -448,18 +453,21 @@ are deliberately excluded from CI, tag releases, the release-policy checker,
 and generic shell-syntax validation. The listed residuals need a person at a
 granted macOS desktop after any linked code prerequisite closes. Sources:
 `2026-06-09-a2-parity-design.md §16`, `integration-phase-design.md`.
-Gate coverage note: only the AllMonitored row has a dedicated runner gate ID
-(`encrypted-memory-all-monitored-live`); the other residuals are covered by
-optional local `run-a2-compat-gates.sh` smoke kinds, the table-driven `matrix`
-ledger, and the
-folded settings LOOK gates (`personalization-pane-look`,
+Gate coverage note: the five 2026-07-17 parity-closure residuals and
+AllMonitored now have dedicated runner gate IDs. Other residuals are covered by
+optional local `run-a2-compat-gates.sh` smoke kinds, its exact 13-row `matrix`
+ledger, and folded settings LOOK gates (`personalization-pane-look`,
 `nine-tab-settings-walkthrough`).
 
 | Item | Status | Live residual |
 |---|---|---|
 | Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking; Safari allow+exclude legs live-proven 2026-07-07 (Batch 6) | Chrome/Brave live rows with the A2 matrix; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
 | Multi-candidate Down-cycle | engine ✅; synthetic Down-cycle live-proven 2026-07-07 (`COMPME_CANDIDATES=3`, real model); `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before the next release |
-| Compatibility matrix | classifier ✅; Unsupported tiers fail closed; SidebarOnly now enables only positively identified assistant/sidebar fields and otherwise fails closed; `run-a2-compat-gates.sh matrix` provides exact 13-row execution and TSV ledger as a local/manual tool | supply the live row PID map via `COMPME_A2_MATRIX_TARGETS`, including real VS Code/Cursor/Windsurf editor and assistant fields; dry runs may explicitly allow skips, while recorded evidence should pass every row and satisfy `check-a2-matrix-ledger.sh` locally |
+| Compatibility matrix | classifier ✅; Unsupported tiers fail closed; `run-a2-compat-gates.sh matrix` provides its exact 13-row execution and TSV ledger as a local/manual tool | supply all 13 documented row PIDs; dry runs may explicitly allow skips, while recorded evidence should pass every row and satisfy `check-a2-matrix-ledger.sh` locally |
+| SidebarOnly editor/assistant fields | direct focused-field AX metadata + conservative marker evidence ✅ | run `sidebar-only-editor-assistant-look` in real VS Code/Cursor/Windsurf main-editor and assistant fields; these are deliberately separate from the exact 13-row PID matrix |
+| Full statistical autocorrect | `NSSpellChecker` whole-token path + prose/editor gates ✅ | run `full-autocorrect-prose-code-look` in TextEdit and a code-editor main pane |
+| Cross-app previous inputs | opt-in redacted, globally deduplicated five-entry ring + disable-clear lifecycle ✅ | run `cross-app-previous-inputs-look` across two supported apps and verify privacy-safe context diagnostics |
+| Selection thesaurus | exact selected text/range, cycle, stale refusal, and idempotent duplicate notifications ✅ | run `selection-thesaurus-look` with physical cycle/full-accept and stale-selection legs |
 | Browser mirror-window | `set_mirror_mode` ✅; `mirror-window-firefox-zen-look` manual gate pins Firefox/Zen ghost-in-mirror confirmation | run the manual gate in a granted desktop session |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch; live submit-path pass 2026-07-07 after CGImageRef encoding panic fix (`e5c055b`) | OCR quality/perf on a granted desktop + multi-display caret confirm |
@@ -707,7 +715,7 @@ is shipped; the optional native updater does not block the remaining LOOK work.
 Verified complete-list facts (2026-06-30 plan-review pass): there is **no Tier
 1.3**, and **Tier 2 is a single ✅ DONE item (2.1)**. The six rows below were
 the remaining **macOS-buildable code backlog** at that point; the current
-readiness surface is broader because `docs/ACCEPTANCE.md` now pins 17
+readiness surface is broader because `docs/ACCEPTANCE.md` now pins 22
 manual/live gate IDs for visual LOOK checks, caret-marker calibration,
 Input-Monitoring-revoked Carbon-accept proof, and other live-only evidence.
 Correction to an earlier note: the **F2 insertion-order decision is already
@@ -755,13 +763,13 @@ per-app configurable.
 2. ✅ **Close the three non-critical architecture follow-ups (2026-07-16)** —
    unify bundle policy, retain structured assistant-field evidence, and deepen
    the app's feature/context/settings/URL module seams without changing behavior.
-3. **Run all 17 runner-pinned macOS manual/live gates plus the additional
+3. **Run all 22 runner-pinned macOS manual/live gates plus the additional
    manually recorded Tier-4 rows** using the current local binary;
    record each result in `docs/ACCEPTANCE.md`. Prioritize the nine-tab Settings
    walkthrough, Setup single-location-control invariant, Apps/Personalization,
    physical hotkeys + grammar fix, Chromium-family caret calibration, and memory
    privacy residuals.
-4. ✅ **Synchronize plan/support/acceptance docs (2026-07-16)** — this update
+4. ✅ **Synchronize plan/support/acceptance docs (2026-07-17)** — this update
    refreshed the implementation anchor, atomic-replacement wording, Apps/memory
    status, Setup control invariant, A2 local-only policy, and platform-support
    matrix. Repeat the sync whenever manual gates close or adapter phases ship.

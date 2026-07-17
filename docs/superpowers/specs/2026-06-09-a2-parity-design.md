@@ -51,8 +51,8 @@ instruction steering.
 | Feature | Plan | §16 gate |
 |---|---|---|
 | **Multi-candidate + cycle** | ✅ `model_client::complete_n` N-sample (greedy + temp/top_k/top_p/seed); `engine_core` `CompletionReadyMulti`/`Cycle` + candidate list; Down-arrow cycle key; accept inserts shown; AcceptWord collapses to active; public `Engine` behavior now has cycle/wrap/accept tests | Deterministic engine/model coverage done. The rebuilt scripted Carbon gate covers Down-cycle dispatch; physical Down-cycle remains UX confirmation. |
-| **Previous-input context** | ✅ `context::build_context_block` (bounded, newline-collapsed, opt-in); `app` `PreviousInputs` maintains a redacted, deduplicated, bounded same-app ring and records the separate cross-app ring only while its live opt-in is enabled; Full-accept recording uses the resolved bundle id (not volatile `pid:N`) | Same-app isolation remains the default. The Context-pane cross-app opt-in works live, clears global history and stops global collection when disabled, and still needs accepted-completion product-loop evidence. **Clipboard context remains a separate source** via `read_pasteboard_text` + run-loop refresh. |
-| **Compatibility tiers** | ✅ classifier for Works/SetupNeeded/MirrorOnly/Partial/SidebarOnly/Unsupported/Unknown; Unsupported fails closed. SidebarOnly reads direct focused-field AX metadata and enables only conservative AI-chat/sidebar markers through `Capabilities::assistant_field`. | Classifier/gating tests are done. Per-app live verification must confirm the AX metadata exposed by real VS Code, Cursor, and Windsurf editor/sidebar fields. |
+| **Previous-input context** | ✅ `context::build_context_block` (bounded, newline-collapsed, opt-in); `app` `PreviousInputs` maintains redacted, globally deduplicated, recency-ordered, bounded same-app and cross-app rings, recording the latter only while its live opt-in is enabled; Full-accept recording uses the resolved bundle id (not volatile `pid:N`) | Same-app isolation remains the default. Disabling cross-app context clears global history and stops global collection; `cross-app-previous-inputs-look` pins the remaining two-app product-loop evidence. **Clipboard context remains a separate source** via `read_pasteboard_text` + run-loop refresh. |
+| **Compatibility tiers** | ✅ classifier for Works/SetupNeeded/MirrorOnly/Partial/SidebarOnly/Unsupported/Unknown; Unsupported fails closed. SidebarOnly reads direct focused-field AX metadata and enables only conservative AI-chat/sidebar markers through `Capabilities::assistant_field`. | Classifier/gating tests are done. `sidebar-only-editor-assistant-look` separately pins real VS Code, Cursor, and Windsurf editor/sidebar fields because they are not rows in the exact 13-row PID matrix. |
 | **British English normalization** (Cotypist 0.22 Labs) | ✅ pure crate `localize` plus host integration: curated US→UK spelling map keyed only on US-only forms (shared spellings untouched), query-case reapplied via shared `crates/textcase::CasePattern`, default **off** via `COMPME_BRITISH_ENGLISH`; replacement offer reaches the shared AxSet accept path. | ✅ §16 live gate passed 2026-06-10 (`color`→`colour`, docs/ACCEPTANCE.md). Non-atomic SyntheticKeys/Clipboard replacements remain deliberately fail-closed pending compatibility evidence; no backspace-synthesis implementation is promised. |
 | **Trailing space after single-word completions** (Cotypist Shortcuts toggle) | ✅ **wired** end-to-end: `engine_core` self-gating `append_single_word_space` applied at AcceptFull/AcceptWord/preview behind `SuggestionMachine::with_trailing_space`; `engine` passthrough; `app` reads `COMPME_TRAILING_SPACE` (default **off** → byte-identical accept) and chains it onto the engine. Preview mirrors the inserted bytes so echo-absorption stays consistent. Unit + integration + config tests. | Deterministic accept-path coverage done; off by default. The A1b TextEdit product gate now covers exact inserted text through `e2e-compme-trailing-space` with deterministic `COMPME_E2E_ACCEPT=word-only`; real-model E2E intentionally rejects `word-only` and must use `full` or `word`. |
 
@@ -62,11 +62,15 @@ instruction steering.
   and the portable `assistant_field` capability.
 - Full statistical autocorrect through macOS `NSSpellChecker`, with separate
   opt-in control, shared per-app Autocorrect policy, and a conservative
-  known-prose/assistant allow gate before the code-like-context filter.
+  known-prose/assistant allow gate before the code-like-context filter;
+  `full-autocorrect-prose-code-look` pins the OS-backed residual.
 - Opt-in, privacy-bounded cross-app previous-input context with same-app default
-  isolation; disabling it clears the global ring and stops global collection.
+  isolation; rings are globally deduplicated by recency, and disabling sharing
+  clears the global ring and stops global collection. The two-app residual is
+  `cross-app-previous-inputs-look`.
 - Selection-triggered thesaurus UX with exact selected text, candidate cycling,
-  and exact atomic scalar-range replacement.
+  exact atomic scalar-range replacement, and idempotent duplicate AX offers;
+  `selection-thesaurus-look` pins the physical UX.
 
 ## Remaining A2 — GUI / permission / live-bound (specified; validation environment-bound)
 
@@ -84,7 +88,7 @@ features, a persisted UI/control surface.
 | Browser mirror-window fallback | ✅ `Engine::set_mirror_mode` — MirrorOnly apps (Firefox/Zen) render the ghost in the floating non-activating mirror window (front-app popup anchor) instead of inline; run loop sets it per focused app's tier; engine test pins it. | live Firefox/Zen confirmation. |
 | Terminal/iTerm AI-agent activation | ✅ `compat::terminal_prompt_activates` (sigil-aware; tested) gates terminals to natural-language prompts before submit. | live tuning vs real agent prompts. |
 | Clipboard context | ✅ `read_pasteboard_text` + run-loop refresh (redacted) into `WorkerContext.clipboard`; `COMPME_CLIPBOARD_CONTEXT` opt-in; `COMPME_DIAG_CONTEXT=1` gate proves a marker reaches the submit path. | — |
-| Compatibility matrix gating | ✅ classifier, Unsupported fail-closed behavior, onboarding, browser-domain allow/exclude smoke paths, and conservative SidebarOnly assistant-field gating. A local/manual pass can write a 13-row ledger under `tools/acceptance/evidence/a2/`; CI/tag workflows do not consume it. | perform per-app live confirmation, including editor-vs-sidebar AX metadata in VS Code/Cursor/Windsurf, and pass every manually recorded ledger row through `tools/release/check-a2-matrix-ledger.sh` locally. |
+| Compatibility matrix gating | ✅ classifier, Unsupported fail-closed behavior, onboarding, browser-domain allow/exclude smoke paths, and conservative SidebarOnly assistant-field gating. A local/manual pass can write the exact 13-row ledger under `tools/acceptance/evidence/a2/`; CI/tag workflows do not consume it. | pass every matrix row through `tools/release/check-a2-matrix-ledger.sh` locally; run the separate `sidebar-only-editor-assistant-look` gate for VS Code/Cursor/Windsurf editor and assistant fields. |
 
 ## Testing strategy
 Every pure feature is unit-tested (RED→GREEN). FFI is build-verified, and

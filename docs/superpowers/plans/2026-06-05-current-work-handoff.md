@@ -1,6 +1,6 @@
 # Current Work Handoff - 2026-06-05
 
-> **⚠️ SUPERSEDED — historical snapshot (2026-06-05).** Point-in-time handoff; do not treat as current. Since written: the **post-flip grave→Full live GUI gates are CLOSED** (design spec §15 G6/I11, M4 Max 2026-06-08) — references below to "live grave-accept validation pending" / "fresh desktop rerun needed" are stale. The crate **`core` was renamed `engine_core`** (`crates/core` no longer exists). G3 (KV-cache reuse / persistent model actor) is **implemented and closed**. The macOS app has shipped through v0.1.4. For current status use `docs/ROADMAP.md`; use `docs/ACCEPTANCE.md` for the 17 open manual/live gates and the 2026-07-08 cross-platform implementation plan for Windows/Linux work.
+> **⚠️ SUPERSEDED — historical snapshot (2026-06-05).** Point-in-time handoff; do not treat as current. Since written: the **post-flip grave→Full live GUI gates are CLOSED** (design spec §15 G6/I11, M4 Max 2026-06-08) — references below to "live grave-accept validation pending" / "fresh desktop rerun needed" are stale. The crate **`core` was renamed `engine_core`** (`crates/core` no longer exists). G3 (KV-cache reuse / persistent model actor) is **implemented and closed**. The macOS app has shipped through v0.1.5. For current status use `docs/ROADMAP.md`; use `docs/ACCEPTANCE.md` for the 22 open manual/live gates and the 2026-07-08 cross-platform implementation plan for Windows/Linux work.
 
 ## Scope
 

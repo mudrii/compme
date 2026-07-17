@@ -25,7 +25,7 @@ promoted into the workspace.
 
 | Platform | Product status | Current boundary |
 |---|---|---|
-| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.5` | Current `main` contains post-release build, release-tooling, cask, and documentation changes; its deterministic gates are green, while 17 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
+| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.5` | Current `main` contains post-release build, release-tooling, cask, and documentation changes; its deterministic gates are green, while 22 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
 | Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | Adapter/overlay operations and most ShellHost services remain fail-closed; owner-only DACL hardening, console shutdown handling, and URL opening are real, but there is no usable Windows product or package yet. |
 | Linux | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `LinuxAdapter`, overlay, and most ShellHost operations remain fail-closed; no usable Linux product or package yet. |
 
@@ -266,7 +266,7 @@ comma-separated bundle ids.
 | `COMPME_FORCE_ACTIVATE_KEY` | Always-on shortcut re-showing the currently held suggestion (alias: `COMPME_FORCE_ACTIVATE`); no fresh inference, no-op when nothing is pending. |
 | `COMPME_TOGGLE_APP_KEY` | Always-on shortcut toggling suggestions for the focused app. |
 | `COMPME_TOGGLE_GLOBAL_KEY` | Always-on shortcut toggling the global suggestion switch. |
-| `COMPME_EXCLUDED_APPS` | Comma-separated bundle ids excluded from completion (persisted by tray/deep-link/config today; Apps editing UI pending). |
+| `COMPME_EXCLUDED_APPS` | Comma-separated bundle ids excluded from completion (persisted by tray/deep-link/config; the Apps pane edits the focused/recorded app policy through the corresponding per-app enable fields). |
 | `COMPME_EXCLUDED_DOMAINS` | Comma-separated browser hosts excluded from completion. |
 | `COMPME_ENABLED_APPS` / `COMPME_DISABLED_APPS` | Per-app suggestion enable / disable overrides. |
 | `COMPME_TAB_DISABLED_APPS` | Comma-separated bundle ids where the Tab word-accept key is disabled (Tab types normally there). |
@@ -344,7 +344,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 ## Current Validation Gates
 
 Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,918 tests:
+suite is roughly 1,920 tests:
 
 ```sh
 cargo fmt --all -- --check

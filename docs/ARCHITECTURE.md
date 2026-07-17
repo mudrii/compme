@@ -214,7 +214,8 @@ surfaces: trailing-word auto offers (`COMPME_THESAURUS`) and exact selected
 single-word offers (`COMPME_THESAURUS_SELECTION`). Selection mode preserves the
 selected text separately in `TextContext`, presents multiple candidates through
 the correction banner, and accepts the active candidate through an exact atomic
-`CorrectionRange`.
+`CorrectionRange`. Repeated identical AX selection notifications are idempotent,
+so they neither reset the cycled candidate nor inflate shown/superseded stats.
 
 ### `emoji`
 
@@ -509,9 +510,10 @@ Major responsibilities:
   or rescanning the full field
 - compute the browser page domain from the focused element's AX URL and feed it
   into the per-domain gate
-- keep previous-input context in separate bounded same-app and cross-app rings;
-  inference reads a live atomic to choose the opt-in cross-app scope, and
-  disabling it clears the global ring and stops global collection
+- keep previous-input context in separate bounded, globally deduplicated,
+  recency-ordered same-app and cross-app rings; inference reads a live atomic to
+  choose the opt-in cross-app scope, and disabling it clears the global ring and
+  stops global collection
 - apply per-app mid-line override live on focus via `Engine::set_allow_mid_word`
 - marshal platform callbacks onto the AppKit main-thread engine host
 - keep only the latest pending completion request

@@ -1,6 +1,6 @@
 # A3 Settings UI + Tray Menu — Cotypist-Reference Plan
 
-> **Status annotations updated 2026-07-10:** window ships as 9 tabs
+> **Status annotations updated 2026-07-17:** window ships as 9 tabs
 > (Setup/General/Personalization/Apps/Context/Emoji/Shortcuts/Statistics/About)
 > via NSTabView. The Context tab exposes clipboard + screen-OCR context
 > switches, the Emoji tab exposes the live `COMPME_EMOJI` enable switch plus the
@@ -15,12 +15,13 @@
 > **Show Models Folder**, no **Reveal Model in Finder**). Current `main` also
 > contains the tray website/support actions described below.
 >
-> **Live pending status (re-verified 2026-07-16): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
+> **Live pending status (re-verified 2026-07-17): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
 > and [`docs/ACCEPTANCE.md`](../../ACCEPTANCE.md) — the remaining Tier 3 work is
 > LOOK validation for shipped controls: Apps policy grid, Personalization pane,
 > Shortcuts recorder/physical hotkeys, Setup model picker, menu-bar icon, and the
 > nine-tab walkthrough. The tray's Visit Website / Contact Support actions are
-> now code-complete; inline per-line annotations below are historical where a
+> code-complete and their browser handoff is pinned by
+> `tray-external-links-look`; inline per-line annotations below are historical where a
 > dated correction supersedes them.
 
 Reference: 13 Cotypist 2026.1 screenshots captured 2026-06-10 (tray menu +
@@ -64,7 +65,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 |---|---|---|---|
 | Setup | permission states (AX, Screen Recording), model downloaded, macOS text-suggestions off, clipboard context | `accessibility_trusted`, `screen_recording_permission`, model_select, compat | pane only; "disable macOS suggestions" helper is new — **[2026-06-10] DONE** (checklist + Grant/Request/Reveal buttons + 480ms visible-only poll) |
 | General | launch-at-login; menu-bar icon toggle; accessory button; model picker + folder reveal; enable-by-default; max length (S/M/L); autocorrect toggles | SMAppService (bundle exists, c80); tray exists; model_select + `COMPME_MODEL_PATH`; `COMPME_ENABLED`; `COMPME_MAX_WORDS`; `COMPME_AUTOCORRECT` | accessory floating button = new feature (defer) — **[2026-06-10] DONE** for 3 live switches (mid-line/autocorrect/trailing-space); launch-at-login wiring done via SMAppService; **[2026-06-17] model catalog/download shipped in Setup** with picker, RAM labels/gate, license gate, SHA verify, and dest-exists guard; **[2026-07-10, current main]** Setup has exactly one model-location action, **Show Models Folder**, and no **Reveal Model in Finder**; residual model work is recovery/visual LOOK validation |
-| Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | dedicated Context tab with clipboard + screen-OCR switches shipped; screen enable takes effect on next launch, screen disable gates new OCR submissions immediately; appearance sub-toggle has no equivalent (defer) |
+| Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | dedicated Context tab with clipboard + screen-OCR switches shipped; screen enable starts OCR live when Screen Recording is granted, while denial reverts the switch, and screen disable immediately drops the worker, clears cached OCR, and gates new submissions; appearance sub-toggle has no equivalent (defer) |
 | Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS`, `COMPME_INSTRUCTIONS_APPS` / `_APP_*`, `COMPME_INSTRUCTIONS_DOMAINS` / `_DOMAIN_*` | global instructions, sender identity, and 6-stop strength controls shipped in the dedicated Personalization tab; layout/edit persistence is live-validated, and the remaining LOOK is a visible steering effect. Memory mode/global delete controls are tracked separately from the profile editor |
 | Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | enable switch plus skin-tone and gender popups shipped in a dedicated Emoji tab; `includeVanillaVariants` is unmodeled and deferred until multi-candidate replacement display exists |
 | Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; `KeyRecorderField` rows persist live rebinds through `COMPME_ACCEPT_*` config; always-on force/toggle/grammar-check hotkeys are config-backed at startup | recorder UI and live rebind are implemented for Word, Full, and Grammar accept; modifier persistence is synthetic-validated. Force-activate, per-app toggle, global toggle, and grammar-check remain config-only startup bindings whose physical dispatch needs LOOK validation |

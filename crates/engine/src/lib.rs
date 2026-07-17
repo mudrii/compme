@@ -660,8 +660,8 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                 } => {
                     // A replacement deletes `replace_left` chars left of the caret
                     // before inserting (emoji/typo/spelling). Same self-insert echo
-                    // contract as `Insert`. Adapters that cannot range-replace fall
-                    // back to a plain insert (the deletion is the FFI/live residual).
+                    // contract as `Insert`. Adapters without atomic range replacement
+                    // fail closed; they must never append while leaving the old token.
                     let strategy = self.caps.insert_strategy;
                     if let Err(err) =
                         self.adapter
