@@ -45,10 +45,10 @@ struct PreviousInputsState {
 }
 
 fn record_recent(buf: &mut VecDeque<String>, text: &str) {
-    if buf.back().is_some_and(|last| last == text) {
-        return;
+    if let Some(index) = buf.iter().position(|entry| entry == text) {
+        buf.remove(index);
     }
-    if buf.len() == PreviousInputs::CAPACITY {
+    while buf.len() >= PreviousInputs::CAPACITY {
         buf.pop_front();
     }
     buf.push_back(text.to_string());
@@ -57,9 +57,9 @@ fn record_recent(buf: &mut VecDeque<String>, text: &str) {
 impl PreviousInputs {
     const CAPACITY: usize = 5;
 
-    /// Record an accepted completion for `app`, redacting before storage,
-    /// evicting the oldest. Consecutive duplicates are ignored so word-by-word
-    /// repeats don't flood the same-app ring.
+    /// Record an accepted completion for `app`, redacting before storage.
+    /// Existing duplicates move to newest and the oldest unique entry is evicted
+    /// at capacity, so repeated prose cannot flood the same-app ring.
     #[cfg(test)]
     pub fn record(&self, app: &str, text: String) {
         self.record_with_cross_app(app, text, false);
@@ -1501,12 +1501,12 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_duplicate_inputs_are_ignored() {
+    fn duplicate_inputs_are_unique_and_refresh_recency() {
         let previous = PreviousInputs::default();
         previous.record("app", "same".into());
-        previous.record("app", "same".into());
         previous.record("app", "other".into());
-        assert_eq!(previous.recent("app"), vec!["other", "same"]);
+        previous.record("app", "same".into());
+        assert_eq!(previous.recent("app"), vec!["same", "other"]);
     }
 
     #[test]
@@ -1519,7 +1519,21 @@ mod tests {
         assert_eq!(previous.recent("app.a"), vec!["from A"]);
         assert_eq!(
             previous.recent_for_scope("app.a", true),
-            vec!["from A", "from B", "from A"]
+            vec!["from A", "from B"]
+        );
+    }
+
+    #[test]
+    fn refreshed_cross_app_entry_does_not_consume_an_extra_capacity_slot() {
+        let previous = PreviousInputs::default();
+        for i in 0..PreviousInputs::CAPACITY {
+            previous.record_with_cross_app("app", format!("input{i}"), true);
+        }
+        previous.record_with_cross_app("app", "input0".into(), true);
+
+        assert_eq!(
+            previous.recent_for_scope("app", true),
+            vec!["input0", "input4", "input3", "input2", "input1"]
         );
     }
 
