@@ -337,7 +337,9 @@ These Settings-window checks are manual because they depend on visible AppKit
 layout and live control interaction. The runner-pinned IDs are
 `apps-policy-toggle-look`, `personalization-pane-look`, `menu-bar-icon-look`,
 `shortcuts-recorder-look`, `always-on-hotkeys-physical-look`,
-`setup-model-picker-look`, and `nine-tab-settings-walkthrough`:
+`setup-model-picker-look`, `nine-tab-settings-walkthrough`,
+`full-autocorrect-prose-code-look`, `cross-app-previous-inputs-look`,
+`selection-thesaurus-look`, and `tray-external-links-look`:
 
 - **Apps policy grid** — open Settings > Apps with at least two rows; verify the
   On / Tab / Mid / AC / GF checkbox columns do not overlap or truncate app names,
@@ -736,16 +738,43 @@ Exact runner-emitted manual gate IDs:
 - `always-on-hotkeys-physical-look`
 - `setup-model-picker-look`
 - `nine-tab-settings-walkthrough`
+- `full-autocorrect-prose-code-look`
+- `cross-app-previous-inputs-look`
+- `selection-thesaurus-look`
+- `tray-external-links-look`
 - `caret-marker-chromium-forks-calibration`
 - `caret-marker-chrome-marker`
 - `caret-marker-chromium-marker`
 - `caret-marker-electron-marker`
+- `sidebar-only-editor-assistant-look`
 - `encrypted-memory-all-monitored-live`
 - `grammar-fix-textedit-look`
 - `mirror-window-firefox-zen-look`
 - `setup-needed-docs-arc-onboarding`
 - `multi-candidate-cycle-physical-look`
 - `input-monitoring-revoked-carbon-accept`
+
+The five parity-closure gates added 2026-07-17 require this evidence:
+
+- **SidebarOnly editor/assistant:** with `COMPME_DEBUG=1`, focus the main editor
+  and an assistant/chat input in VS Code, Cursor, and Windsurf. Main editors
+  must submit no request; positively labelled assistant fields must submit with
+  `app_allows=true`. Record the app, focused surface, and request/gate line.
+- **Full autocorrect:** with `COMPME_FULL_AUTOCORRECT=1`, type a whole-word typo
+  in TextEdit, accept the macOS spelling offer, and verify exact field readback.
+  Repeat in a code-editor main pane and verify that no correction appears.
+- **Cross-app previous inputs:** with `COMPME_CROSS_APP_PREVIOUS_INPUTS=1` and
+  `COMPME_DIAG_CONTEXT=1`, Full-accept in one supported app and submit in a
+  second. The diagnostic must report `sources=recent` without content. Disable
+  the Context switch, then re-enable it and verify the old global entry does not
+  return; same-app history remains isolated.
+- **Selection thesaurus:** with `COMPME_THESAURUS_SELECTION=1`, select exactly
+  one word in TextEdit, verify the correction banner, cycle with Down, and
+  full-accept the active synonym into exactly that selected range. Repeat after
+  collapsing or moving the selection and verify the stale offer cannot apply.
+- **Tray external links:** click **Visit Website** and **Contact Support** once
+  each; verify the browser opens the exact repository and `/issues/new` URLs
+  once, without duplicate launches.
 
 - **Settings timed/behavioral gate (completed 2026-06-17):** live AppKit runs
   against disposable `COMPME_CONFIG` roots verified General switches apply

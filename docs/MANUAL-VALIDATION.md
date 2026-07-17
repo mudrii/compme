@@ -146,6 +146,17 @@ the set. Walkthrough detail lives in the ledger entries.
       keypresses without reopening Settings and persist across relaunch.
 - [ ] `nine-tab-settings-walkthrough` — all nine panes fit, hold state, and
       live-apply.
+- [ ] `full-autocorrect-prose-code-look` — TextEdit receives an exact
+      whole-word macOS spelling offer while a code-editor main pane remains
+      fail-closed.
+- [ ] `cross-app-previous-inputs-look` — a Full-accept in one supported app
+      contributes privacy-safe `sources=recent` diagnostics in another only
+      while the Context opt-in is enabled; disabling clears the global ring.
+- [ ] `selection-thesaurus-look` — an exact selected word shows a correction
+      banner, Down cycles, Full accepts the active synonym into that range, and
+      collapsing/moving the selection stales it.
+- [ ] `tray-external-links-look` — Visit Website and Contact Support each open
+      the exact allowlisted browser destination once.
 - [ ] `menu-bar-icon-look` — caret + double-chevron template icon renders
       (text title only as fallback).
 - [ ] `setup-model-picker-look` — exactly one **Show Models Folder** control is
@@ -157,6 +168,9 @@ the set. Walkthrough detail lives in the ledger entries.
       keeps the ghost out of mirrored monitor captures.
 - [ ] `setup-needed-docs-arc-onboarding` — Google Docs in Arc shows setup-needed
       onboarding instead of silently suppressing suggestions.
+- [ ] `sidebar-only-editor-assistant-look` — VS Code, Cursor, and Windsurf main
+      editors submit no request while positively labelled assistant/chat fields
+      submit with `app_allows=true`.
 - [ ] `multi-candidate-cycle-physical-look` — physical Down-arrow cycles visible
       candidates in order, wraps predictably, and accept inserts the selection.
 - [ ] `input-monitoring-revoked-carbon-accept` — accept keys still fire with

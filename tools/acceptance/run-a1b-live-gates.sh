@@ -745,10 +745,15 @@ run_self_tests() {
     always-on-hotkeys-physical-look \
     setup-model-picker-look \
     nine-tab-settings-walkthrough \
+    full-autocorrect-prose-code-look \
+    cross-app-previous-inputs-look \
+    selection-thesaurus-look \
+    tray-external-links-look \
     caret-marker-chromium-forks-calibration \
     caret-marker-chrome-marker \
     caret-marker-chromium-marker \
     caret-marker-electron-marker \
+    sidebar-only-editor-assistant-look \
     encrypted-memory-all-monitored-live \
     grammar-fix-textedit-look \
     mirror-window-firefox-zen-look \
@@ -799,6 +804,21 @@ run_self_tests() {
     || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-nine-tab-settings-walkthrough-checklist" "$dry_run_log" \
     '^MANUAL nine-tab-settings-walkthrough: .*all nine Settings panes.*Setup.*General.*Personalization.*Apps.*Context.*Emoji.*Shortcuts.*Statistics.*About' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-full-autocorrect-prose-code-look-checklist" "$dry_run_log" \
+    '^MANUAL full-autocorrect-prose-code-look: .*COMPME_FULL_AUTOCORRECT=1.*TextEdit.*whole misspelled word.*code editor.*no correction' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-cross-app-previous-inputs-look-checklist" "$dry_run_log" \
+    '^MANUAL cross-app-previous-inputs-look: .*COMPME_CROSS_APP_PREVIOUS_INPUTS=1.*two supported apps.*prompt_context.*sources=recent.*turn the switch off.*cleared' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-selection-thesaurus-look-checklist" "$dry_run_log" \
+    '^MANUAL selection-thesaurus-look: .*COMPME_THESAURUS_SELECTION=1.*select one word.*correction banner.*Down.*full-accept.*exact selected range.*stale selection' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-tray-external-links-look-checklist" "$dry_run_log" \
+    '^MANUAL tray-external-links-look: .*Visit Website.*Contact Support.*browser.*repository.*new-issue' \
+    || self_failures=$((self_failures + 1))
+  assert_log_contains "default-dry-run-sidebar-only-editor-assistant-look-checklist" "$dry_run_log" \
+    '^MANUAL sidebar-only-editor-assistant-look: .*VS Code.*Cursor.*Windsurf.*main editor.*no request.*assistant.*request.*app_allows=true' \
     || self_failures=$((self_failures + 1))
   assert_log_contains "default-dry-run-caret-marker-chromium-forks-calibration-checklist" "$dry_run_log" \
     '^MANUAL caret-marker-chromium-forks-calibration: .*Brave.*Edge.*Vivaldi.*RECT_IS_LINE_BUNDLE_PREFIXES' \
@@ -903,7 +923,7 @@ run_self_tests() {
       || self_failures=$((self_failures + 1))
   done
   assert_log_contains "skip-textedit-counts-option-tab-incomplete" "$skip_textedit_log" \
-    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=17 logs=' \
+    '^Summary: pass=0 fail=0 skip=[0-9]+ incomplete=[1-9][0-9]* manual=22 logs=' \
     || self_failures=$((self_failures + 1))
 
   skip_e2e_log="$self_test_dir/skip-e2e-dry-run.log"
@@ -924,7 +944,7 @@ run_self_tests() {
       || self_failures=$((self_failures + 1))
   done
   assert_log_contains "skip-e2e-counts-all-e2e-incomplete" "$skip_e2e_log" \
-    '^Summary: pass=[0-9]+ fail=0 skip=[0-9]+ incomplete=[3-9][0-9]* manual=17 logs=' \
+    '^Summary: pass=[0-9]+ fail=0 skip=[0-9]+ incomplete=[3-9][0-9]* manual=22 logs=' \
     || self_failures=$((self_failures + 1))
 
   skip_helper_log="$self_test_dir/e2e-skip-helper.log"
@@ -1096,10 +1116,15 @@ manual_gate "shortcuts-recorder-look" "open Settings > Shortcuts; click a record
 manual_gate "always-on-hotkeys-physical-look" "with shortcuts configured, press force-activate, per-app toggle, global toggle, and grammar-check as physical keypress hotkeys; confirm each dispatches without reopening Settings and persists across relaunch"
 manual_gate "setup-model-picker-look" "open Settings > Setup; verify exactly one Show Models Folder control is visible and no Reveal Model in Finder control remains; verify model picker rows show fit suffixes, Download uses the selected row, license prompts appear before encumbered fetches, and dest-exists blocks re-fetch"
 manual_gate "nine-tab-settings-walkthrough" "walk all nine Settings panes: Setup, General, Personalization, Apps, Context, Emoji, Shortcuts, Statistics, and About; verify controls fit, reflect current state, and live-apply where documented"
+manual_gate "full-autocorrect-prose-code-look" "launch with COMPME_FULL_AUTOCORRECT=1; in TextEdit type a whole misspelled word and confirm the macOS correction offer replaces it atomically, then type equivalent prose in a code editor main pane and confirm no correction appears"
+manual_gate "cross-app-previous-inputs-look" "launch with COMPME_CROSS_APP_PREVIOUS_INPUTS=1 and COMPME_DIAG_CONTEXT=1; Full-accept in one of two supported apps, type in the other, and confirm prompt_context reports sources=recent without logging content; turn the switch off and confirm the global ring is cleared before re-enable"
+manual_gate "selection-thesaurus-look" "launch with COMPME_THESAURUS_SELECTION=1; select one word in TextEdit, confirm the correction banner, use Down to cycle, full-accept into the exact selected range, then move or collapse the stale selection and confirm it cannot apply"
+manual_gate "tray-external-links-look" "click Visit Website and Contact Support once each; confirm the browser opens the exact repository and new-issue pages without duplicate launches"
 manual_gate "caret-marker-chromium-forks-calibration" "on a granted desktop, type in Brave, Edge, and Vivaldi; confirm whether each ghost lands one line low before adding any bundle prefix to RECT_IS_LINE_BUNDLE_PREFIXES"
 manual_gate "caret-marker-chrome-marker" "focus a Google Chrome textarea or content-editable field; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics"
 manual_gate "caret-marker-chromium-marker" "focus a Chromium build textarea or content-editable field; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics"
 manual_gate "caret-marker-electron-marker" "focus an Electron app text field such as VS Code; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics"
+manual_gate "sidebar-only-editor-assistant-look" "with COMPME_DEBUG=1, test VS Code, Cursor, and Windsurf: each main editor must produce no request, while a positively labelled assistant/chat field must submit a request with app_allows=true"
 manual_gate "encrypted-memory-all-monitored-live" "remaining residual after 2026-06-17 TextEdit and Chrome product-loop proofs: confirm secure-input, snoozed policy transition, and volatile-pid cases add no rows"
 manual_gate "grammar-fix-textedit-look" "launch compme with COMPME_GRAMMAR_FIX=1 plus COMPME_GRAMMAR_CHECK_KEY and COMPME_GRAMMAR_ACCEPT_KEY; in TextEdit verify 'teh' shows underline/banner, accept replaces exactly, and caret move/edit stales the correction"
 manual_gate "mirror-window-firefox-zen-look" "focus Firefox and Zen text fields with mirror-window mode enabled; confirm the ghost appears in the mirror window aligned to the focused text field and never in the source app window"
