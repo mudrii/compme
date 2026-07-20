@@ -40,6 +40,62 @@ Out of scope (unchanged owner-gated set): branch protection, release-tag
 creation restriction, environment self-review, Actions allowlist enforcement
 on GitHub's side — item 2 records the one decision this plan needs.
 
+## Findings traceability (complete ledger, all three audit rounds)
+
+Every finding from the 2026-07-19 audit maps to a plan item or an explicit
+no-action disposition. Nothing is silently dropped.
+
+| Finding (source round) | Verdict | Disposition |
+|---|---|---|
+| C1 version-docs checker misses DEVELOPMENT/ACCEPTANCE boundaries (docs) | confirmed ×3 | **Item 1** |
+| C2a governance job hard-fail arm unreachable under GITHUB_TOKEN (CI) | confirmed ×3 | **Item 2** (decision) |
+| C2b governance script unguarded environments/rulesets reads (fresh review) | confirmed ×2 | **Item 2** (mechanical guard) |
+| C3 dependabot SHA bumps vs hard-coded allowlist + ~33 fixture pins (CI) | confirmed ×3 | **Item 3** |
+| C4 `--test-threads=1` vestigial outside platform_macos + app; `SHORTCUT_BINDINGS` guard races (tests, corrected round 2) | confirmed ×3 | **Item 4** (4a guard-lock, 4b split) |
+| C5 quality.rs threshold comment says 20/16, corpus is 21/17 (tests) | confirmed ×3 | **Item 5** |
+| C6 post_verify RUN_MS deadline loop-only; 30-min timeout sole pre-loop backstop; no demonstrated blocker (CI + src, downgraded round 2) | confirmed ×3 | **Item 6** + watch (item 10) |
+| C7 docs-only pushes to main skip all CI incl. version-docs check (CI) | confirmed ×3 | **Item 7** — demonstrated live: the commit adding this plan (`9eb3726`) ran zero CI |
+| C8a `run()` retains ~1,900-line inline heartbeat loop, 34-mut preamble (arch) | confirmed ×3 | **Item 8a** |
+| C8b `platform_macos/src/lib.rs` 15,185 lines, 6+ concerns (arch) | confirmed ×3 | **Item 8b** |
+| C8c ~1k lines of pure config/personalization/memory/download builders in run_loop.rs (arch) | confirmed | **Item 8c** |
+| C9 fragile multi-word `contains` corpus cases; 20/21 baseline, margin 3 (tests) | confirmed ×3 | **Item 5** (contingency policy) |
+| Q1 rust-cache skips post-job save on exact key hit; model dir not in key derivation → eviction = re-download every run until rotation (CI, confirmed upstream round 3) | confirmed | **Item 10** watch; escalation path defined |
+| macOS check-lane wall-time growth: rustdoc + model smoke on every push AND unfiltered PR, 90-min budget (CI r1 #5) | accepted by parent plan | **Item 10** watch (added) |
+| Test-count prose ≈1937 stale after diff (docs r1 #4, tests r1 #4) | confirmed, not gate-pinned | **Phase 0** (refresh at commit) |
+| `make_overlay` failure path lacks the adapter-failure twin test (tests r1 #6) | confirmed | **Item 5** |
+| latency.rs 8-typo probe duplicates canonical corpus, will diverge silently (tests r1 #5) | confirmed | **Item 5** (cross-ref comment) |
+| ROADMAP header ~50 lines of commit-hash narration; 794-line file (docs r1 #2) | confirmed | **Item 9** |
+| ROADMAP:27 calls commit SHAs "tags" (docs r1 #3) | confirmed | **Item 9** |
+| TROUBLESHOOTING.md accurate but linked from README only (docs r1 #5) | confirmed | **Item 9** |
+| Full Local Gate = 45-command wall, no runner script (docs r1 #6) | confirmed | **Item 9** (`tools/dev/check.sh`) |
+| DEVELOPMENT gate-list live/self-test interleaving artifact (docs r1 #7) | confirmed | **Item 9** |
+| `RunContext` 30-field move-only struct (arch r1 #4) | confirmed, acceptable | **Item 8a** (group into sub-structs only alongside the LoopState work — not in isolation) |
+
+**No-action dispositions (recorded so they are not re-litigated):**
+
+- C10 the uncommitted diff is behavior-preserving — drop/teardown order
+  verbatim (run_loop.rs:6360-6365), `accept_sub` moved into the engine
+  (:4097), AxRangeTarget a pure test seam, keychain/login_item comment-only,
+  `getrandom::fill` rename correct. Verified by fresh review + final
+  re-derivation. No action.
+- Refuted bug-lookalikes (round 2 fresh review): the "missing" `accept_sub`
+  RunContext field and the de-`mut`ed `trusted`/`prefs`/`screen_ocr`
+  bindings are correct by construction (compiler-proven). No action.
+- OCR worker detaches instead of joining on Drop (arch r1 #5): deliberate —
+  joining could hang teardown on a wedged Vision call; leak is benign at
+  process exit. Keep.
+- `model_client → grammar` dependency: dev-dependency only, not a layering
+  violation (arch r1). Keep.
+- Original round-1 claim "only platform_macos needs serial tests": REFUTED
+  round 2 (`app` hazard above); the corrected form is C4/item 4. Do not
+  resurrect the broad claim.
+- `tools/spike/target/*.d` artifacts carry stale absolute paths from the
+  pre-rename checkout (round 3, incidental): untracked build artifacts,
+  regenerated on rebuild. No action.
+- Prior adjudicated keep-with-rationale list (test-seam generics, cfg(test)
+  duplication, named constants, prefs↔personalization dup, etc.) re-held
+  across all rounds. No action.
+
 ---
 
 ## 0 — Commit the Batch 3+4 delta (prerequisite)
@@ -270,7 +326,9 @@ the template: move verbatim, rebind names, per-step gates, revert on smell).
   `poll_downloads/poll_stats/poll_settings` helpers. `run()` becomes
   startup → state init → dispatch loop. Target: no function over ~300 lines
   in the file's coordinator section. Ordering tests from item 5's mirror
-  pattern cover the seams.
+  pattern cover the seams. In the same series (and only then), group
+  `RunContext`'s 30 fields into sub-structs (platform / context / runtime) —
+  the audit judged the flat struct acceptable in isolation.
 - **8b — `platform_macos/src/lib.rs` carve (15,185 lines):** four
   independent mechanical moves, one commit each: `ax_worker.rs` (actor +
   handle + resources + observer backend), `overlay.rs`
@@ -326,6 +384,12 @@ self-test green; links resolve.
 - **post_verify first live run (C6):** the job's end-to-end behavior on a
   real runner is validated at the next release; item 6's fail-fast makes a
   surprise cheap.
+- **macOS check-lane wall-time:** the lane now runs rustdoc plus the
+  model-backed smoke gate on every push and every (unfiltered) PR against a
+  90-minute budget. Measure the first post-commit runs; if the budget is
+  threatened, the parent plan's fallback stands — gate the smoke step to
+  `main`-branch pushes only (still pre-release, still per-day) rather than
+  dropping it.
 
 ## Sequencing
 
