@@ -500,6 +500,13 @@ modules own reusable policy:
   live engine callbacks, and OS-first launch-at-login changes
 - `url_actions.rs`: the exact allowlisted external URLs and deterministic
   one-shot tray-flag consumption
+- `builders.rs`: the pure builder/parsing groups — emoji prefs, prefs/config
+  builders, personalization preamble builders, and model download/path
+  builders
+- `loop_state.rs`: the heartbeat loop's state structs, grouped by
+  responsibility (suggestion, focus/context, policy, settings, download,
+  stats, session UI); drop-observable bindings stay locals in `run()` so
+  teardown order is preserved exactly
 
 Major responsibilities:
 
@@ -540,7 +547,10 @@ Major responsibilities:
 
 ### `platform_macos`
 
-`platform_macos` implements the platform contract for macOS.
+`platform_macos` implements the platform contract for macOS. Its Accessibility
+worker concern — the worker thread, job dispatch, observer bindings, safety
+polling, and run-loop pumping — lives in the focused `ax_worker.rs` module;
+`lib.rs` keeps the adapter, insertion, overlay, and classification surfaces.
 
 Major responsibilities:
 

@@ -14,6 +14,7 @@ mod config;
 mod context_policy;
 mod feature_policy;
 mod inference;
+mod loop_state;
 mod model_picker;
 mod model_select;
 mod run_loop;

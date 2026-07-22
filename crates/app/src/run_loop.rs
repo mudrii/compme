@@ -58,6 +58,10 @@ use crate::feature_policy::{
     SuggestionTarget as SuggestionApp,
 };
 use crate::inference::{InferenceHandle, PreviousInputs, ScreenContext, WorkerContext};
+use crate::loop_state::{
+    DownloadState, FocusContext, MonitoredInput, PolicyState, SessionUi, SettingsState,
+    SuggestionState, UsageStats,
+};
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
 use crate::screen_ocr::ScreenOcr;
 #[cfg(test)]
@@ -148,7 +152,7 @@ enum HostEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingMonitoredText {
+pub(crate) struct PendingMonitoredText {
     field: FieldHandle,
     inserted: String,
     oversized: bool,
@@ -158,7 +162,7 @@ struct PendingMonitoredText {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum MonitoredBuffer {
+pub(crate) enum MonitoredBuffer {
     Collecting(String),
     DroppedUntilBoundary,
 }
@@ -1459,7 +1463,7 @@ const DOMAIN_MISS_NOTICE_THRESHOLD: u32 = 5;
 /// only the FIRE is gated on rules — so rules added mid-session inherit the
 /// accumulated evidence and fire on the next miss.
 #[derive(Default)]
-struct DomainMissNotice {
+pub(crate) struct DomainMissNotice {
     misses: u32,
     fired: bool,
 }
@@ -2374,7 +2378,7 @@ fn canonicalize_field_app(
 /// `UnsupportedField` repeats per second). Log only when the message CHANGES;
 /// a successful read resets it so the next failure is a new episode.
 #[derive(Default)]
-struct LogSquelch {
+pub(crate) struct LogSquelch {
     last: Option<String>,
 }
 
@@ -3948,37 +3952,30 @@ pub fn run() -> Result<(), String> {
     } = ctx;
 
     let heartbeat = Duration::from_millis(config.heartbeat_ms);
-    let mut tracker = FieldTracker::new();
-    // Local 30-day usage stats (§11/§16). Accepts/dismisses are recorded from the
-    // host inputs; Shown/Superseded are drained from the engine each loop turn.
-    // The menu-bar display + persistence are A3 surfaces.
-    let mut usage = stats::Stats::new();
-    // Submit timestamps keyed by request generation, used to derive
-    // first-suggestion latency when the matching outcome returns (§11 p95 floor).
-    let mut submit_times: HashMap<u64, u64> = HashMap::new();
-    let mut latest = LatestRequest::new();
-    let mut pending_monitored: Vec<PendingMonitoredText> = Vec::new();
-    let mut monitored_buffers: HashMap<FieldHandle, MonitoredBuffer> = HashMap::new();
-    let mut current_field: Option<FieldHandle> = None;
-    let mut current_assistant_field = false;
-    let mut hinted_apps: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut prev_enabled = config.enabled;
-    let mut secure = false;
-    let mut prev_secure = false;
-    let mut last_secure_poll_ms: Option<u64> = None;
-    let mut last_render: Option<(crate::status::AppStatus, bool, bool)> = None;
-    let mut last_stats_line: Option<String> = None;
-    let mut read_err_squelch = LogSquelch::default();
-    // S2 settings window (lazy NSWindow) + the activation-policy poll state.
-    // Settings switches write flags; the watchers below persist and apply them.
-    // `global_mid_word` is the live global default because per-app overrides
-    // still derive from it. Emoji is stored as an Option<EmojiPrefs>, so track
-    // its bool edge separately from the config payload.
-    let mut global_mid_word = config.allow_mid_word;
-    let mut emoji_enabled = config.emoji.is_some();
-    let mut emoji_prefs = config.emoji_prefs;
-    let mut emoji_skin_tone_index = emoji_skin_tone_index(emoji_prefs.skin_tone);
-    let mut emoji_gender_index = emoji_gender_index(emoji_prefs.gender);
+    // Loop state lives in cohesive structs (crate::loop_state), one per
+    // responsibility; the bindings moved verbatim and references became field
+    // paths. Every field is pure data (no Drop impls anywhere in the moved
+    // types), so the regrouping cannot change teardown behavior — see the
+    // loop_state module doc for the teardown-order contract. The two
+    // drop-observable handles (`model_downloader`, `settings_window`) stay
+    // locals at their original declaration sites below.
+    let mut focus = FocusContext::new();
+    let mut usage_stats = UsageStats::default();
+    let mut suggestion = SuggestionState::new();
+    let mut monitored = MonitoredInput::default();
+    let mut session_ui = SessionUi::default();
+    let mut policy = PolicyState::new(config.enabled);
+    // S2 settings window (lazy NSWindow) mirror state + the activation-policy
+    // poll state. Settings switches write flags; the watchers below persist
+    // and apply them.
+    let mut settings = SettingsState::new(
+        config.allow_mid_word,
+        config.emoji.is_some(),
+        config.emoji_prefs,
+        emoji_skin_tone_index(config.emoji_prefs.skin_tone),
+        emoji_gender_index(config.emoji_prefs.gender),
+        launch_at_login_enabled,
+    );
     let available_ram_gb = model_catalog::bytes_to_whole_gb(shell.physical_memory_bytes());
     let settings_flags = build_settings_flags(
         &config,
@@ -3986,16 +3983,10 @@ pub fn run() -> Result<(), String> {
         launch_at_login_enabled,
         available_ram_gb,
     );
-    let mut current_launch_at_login = launch_at_login_enabled;
-    // The app ids behind the Apps rows as last rendered (index == row).
-    let mut apps_ids: Vec<String> = Vec::new();
     // One downloader per process (model_fetch contract); lazy — spawned on
     // the first Download click. Status polled per heartbeat for logging.
     let mut model_downloader: Option<model_fetch::ModelDownloader> = None;
-    let mut model_download_status: Option<std::sync::Arc<model_fetch::DownloadStatus>> = None;
-    let mut model_download_logged: u8 = 0; // 0=idle 1=running 2=terminal
-                                           // Visible-only Setup re-probe cadence (setup_poll_due).
-    let mut last_setup_poll_ms: Option<u64> = None;
+    let mut download = DownloadState::default();
     // Lifetime stats baseline, read once.
     // stats.env is SINGLE-WRITER (this loop): every write is the immutable
     // startup baseline + grow-only session totals, so this read stays the
@@ -4008,22 +3999,7 @@ pub fn run() -> Result<(), String> {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_default(),
     );
-    let mut last_stats_flush_ms: Option<u64> = None;
-    let mut last_flushed_session = stats::SessionTotals::default();
     let mut settings_window = crate::shell::SettingsWindow::new(settings_flags.clone());
-    let mut settings_was_visible = false;
-    // The most recent focused app key, so settings edges can re-apply per-app
-    // gates without waiting for the next Focus event.
-    let mut last_app_key: Option<String> = None;
-    // Browser host for the focused page, cached per Focus: (app key the read
-    // was taken under, extracted host). Populated by the Focus arm's AX read
-    // (is_browser-gated, one round-trip per browser focus); host only, never
-    // the full URL (privacy boundary). `cached_domain` guards consumption on
-    // the app key so a request resolved to a different app never inherits it.
-    let mut last_domain: Option<(String, String)> = None;
-    // One-shot inert-rules notice: counts browser-focus detection misses
-    // (c121 transparency, runtime-contingent since c131).
-    let mut domain_miss_notice = DomainMissNotice::default();
     let start = Instant::now();
 
     eprintln!(
@@ -4047,11 +4023,11 @@ pub fn run() -> Result<(), String> {
         let drained = drain_host_events(&host_events);
         let host_event_backlog_remaining = drained.backlog_remaining;
         if host_event_backlog_remaining {
-            latest.clear();
+            suggestion.latest.clear();
         }
         for event in coalesce_caret_reads(drained.events) {
             if host_event_invalidates_pending_request(&event) {
-                latest.clear();
+                suggestion.latest.clear();
             }
             match event {
                 HostEvent::Focus(field) => {
@@ -4059,8 +4035,8 @@ pub fn run() -> Result<(), String> {
                         canonicalize_field_app(field, |pid| shell.bundle_id_for_pid(pid));
                     eprintln!("compme: focus {}", field.element_id);
                     clear_monitored_state_for_policy_transition(
-                        &mut pending_monitored,
-                        &mut monitored_buffers,
+                        &mut monitored.pending_monitored,
+                        &mut monitored.monitored_buffers,
                     );
                     // Compatibility onboarding (A2 §16): surface tier-specific
                     // guidance once per app (mirror-window apps, setup-needed
@@ -4072,20 +4048,20 @@ pub fn run() -> Result<(), String> {
                     // engine's trigger gate for the newly focused app — the
                     // f8ebf33 model's deferred merge, now live.
                     engine.set_allow_mid_word(
-                        prefs.mid_line_enabled(app_key.as_deref(), global_mid_word),
+                        prefs.mid_line_enabled(app_key.as_deref(), settings.global_mid_word),
                     );
                     // Per-app Tab disable (§16): suppress the literal-Tab
                     // hotkey for this app's NEXT arm cycle (hotkeys are
                     // transient — armed per visible suggestion).
                     crate::shell::set_tab_hotkey_suppressed(prefs.tab_disabled(app_key.as_deref()));
-                    last_app_key = app_key.clone();
+                    focus.last_app_key = app_key.clone();
                     // Browser-domain detection (c131, slices 2-3 of the c128
                     // design): ONE AX round-trip per browser focus; the
                     // is_browser pre-gate keeps non-browsers at zero AX
                     // traffic. Any miss/failure → None = fail-open. The full
                     // URL dies inside domain_cache_entry; only the host is
                     // kept, and only the host is ever logged (debug only).
-                    last_domain = if app_key.as_deref().is_some_and(compat::is_browser) {
+                    focus.last_domain = if app_key.as_deref().is_some_and(compat::is_browser) {
                         let url = adapter.focused_page_url(&field).ok().flatten();
                         let entry = domain_cache_entry(app_key.as_deref(), url.as_deref());
                         if debug_enabled() {
@@ -4096,7 +4072,8 @@ pub fn run() -> Result<(), String> {
                         }
                         // Rules read LIVE (deep links/settings mutate prefs);
                         // observe before the move into last_domain.
-                        if let Some(msg) = domain_miss_notice
+                        if let Some(msg) = focus
+                            .domain_miss_notice
                             .observe(!prefs.excluded_domains.is_empty(), entry.is_some())
                         {
                             eprintln!("compme: {msg}");
@@ -4106,15 +4083,15 @@ pub fn run() -> Result<(), String> {
                         None
                     };
                     if let Some(app) = app_key {
-                        if hinted_apps.insert(app.clone()) {
+                        if session_ui.hinted_apps.insert(app.clone()) {
                             log_compat_guidance(&app);
                         }
                     }
-                    current_field = Some(field.clone());
-                    tracker.reset();
+                    focus.current_field = Some(field.clone());
+                    focus.tracker.reset();
                     if monitored_memory_active {
                         if let Ok(ctx) = adapter.read_context(&field) {
-                            let _ = tracker.observe_with_inserted_text(
+                            let _ = focus.tracker.observe_with_inserted_text(
                                 &field,
                                 &ctx,
                                 TriggerPolicy::Automatic,
@@ -4123,8 +4100,8 @@ pub fn run() -> Result<(), String> {
                         }
                     }
                     let focus_requests = log_err("on_focus", engine.on_focus(field));
-                    current_assistant_field = engine.assistant_field();
-                    offer_all(&mut latest, focus_requests);
+                    focus.current_assistant_field = engine.assistant_field();
+                    offer_all(&mut suggestion.latest, focus_requests);
                 }
                 HostEvent::Caret(field, _rect) => {
                     let (field, app_key) =
@@ -4134,8 +4111,8 @@ pub fn run() -> Result<(), String> {
                         // bare cursor move. Typing schedules a completion; a cursor
                         // move only invalidates a showing ghost (no re-request).
                         Ok(ctx) => {
-                            read_err_squelch.reset();
-                            current_field = Some(field.clone());
+                            session_ui.read_err_squelch.reset();
+                            focus.current_field = Some(field.clone());
                             if config.diag_coords {
                                 if let Ok(rect) = adapter.caret_rect(&field) {
                                     eprintln!(
@@ -4145,14 +4122,19 @@ pub fn run() -> Result<(), String> {
                                 }
                             }
                             let observation = if monitored_memory_active {
-                                tracker.observe_with_inserted_text(
+                                focus.tracker.observe_with_inserted_text(
                                     &field,
                                     &ctx,
                                     TriggerPolicy::Automatic,
                                     now_ms,
                                 )
                             } else {
-                                tracker.observe(&field, &ctx, TriggerPolicy::Automatic, now_ms)
+                                focus.tracker.observe(
+                                    &field,
+                                    &ctx,
+                                    TriggerPolicy::Automatic,
+                                    now_ms,
+                                )
                             };
                             let caps = engine.current_capabilities();
                             match observation {
@@ -4160,15 +4142,15 @@ pub fn run() -> Result<(), String> {
                                     let observe_domain =
                                         domain_observation_enabled(&prefs, &config.personalization);
                                     let domain = enqueue_monitored_change_for_current_domain(
-                                        &mut pending_monitored,
-                                        &mut last_domain,
+                                        &mut monitored.pending_monitored,
+                                        &mut focus.last_domain,
                                         &change,
                                         app_key.clone(),
                                         observe_domain,
                                         || adapter.focused_page_url(&field).ok().flatten(),
                                     );
                                     offer_all(
-                                        &mut latest,
+                                        &mut suggestion.latest,
                                         log_err("on_text_changed", engine.on_text_changed(change)),
                                     );
                                     // Local replacement (A2 §8/§16): a typed
@@ -4191,7 +4173,7 @@ pub fn run() -> Result<(), String> {
                                     ) {
                                         let app = SuggestionApp {
                                             app_key: app_key.as_deref(),
-                                            assistant_field: current_assistant_field,
+                                            assistant_field: focus.current_assistant_field,
                                         };
                                         let enabled = flags.enabled.load(Ordering::Relaxed);
                                         replacement_decision_for_field(
@@ -4242,9 +4224,9 @@ pub fn run() -> Result<(), String> {
                                     if let Some((candidates, replace_left)) = decision {
                                         // Drop the just-queued model request so it
                                         // can't supersede the emoji ghost.
-                                        latest.clear();
+                                        suggestion.latest.clear();
                                         offer_all(
-                                            &mut latest,
+                                            &mut suggestion.latest,
                                             log_err(
                                                 "on_replacement",
                                                 engine.on_replacement(
@@ -4258,7 +4240,7 @@ pub fn run() -> Result<(), String> {
                                 }
                                 Observation::CaretMoved { field, caret } => {
                                     offer_all(
-                                        &mut latest,
+                                        &mut suggestion.latest,
                                         log_err(
                                             "on_caret_moved",
                                             engine.on_caret_moved(field.clone(), caret),
@@ -4266,7 +4248,7 @@ pub fn run() -> Result<(), String> {
                                     );
                                 }
                             }
-                            let domain = cached_domain(&last_domain, app_key.as_deref());
+                            let domain = cached_domain(&focus.last_domain, app_key.as_deref());
                             if let Some((original, candidates, range)) =
                                 selection_thesaurus_decision(
                                     &ctx,
@@ -4275,7 +4257,7 @@ pub fn run() -> Result<(), String> {
                                         prefs: &prefs,
                                         app: SuggestionApp {
                                             app_key: app_key.as_deref(),
-                                            assistant_field: current_assistant_field,
+                                            assistant_field: focus.current_assistant_field,
                                         },
                                         domain,
                                         enabled: flags.enabled.load(Ordering::Relaxed),
@@ -4284,9 +4266,9 @@ pub fn run() -> Result<(), String> {
                                     },
                                 )
                             {
-                                latest.clear();
+                                suggestion.latest.clear();
                                 offer_all(
-                                    &mut latest,
+                                    &mut suggestion.latest,
                                     log_err(
                                         "on_selection_replacement",
                                         engine.on_selection_replacement(
@@ -4296,7 +4278,7 @@ pub fn run() -> Result<(), String> {
                                 );
                             } else {
                                 offer_all(
-                                    &mut latest,
+                                    &mut suggestion.latest,
                                     log_err(
                                         "on_selection_unavailable",
                                         engine.on_selection_unavailable(),
@@ -4310,7 +4292,7 @@ pub fn run() -> Result<(), String> {
                             // Squelched: identical failures repeat at heartbeat
                             // rate while focus sits on an unsupported element.
                             let message = format!("{err:?}");
-                            if read_err_squelch.should_log(&message) {
+                            if session_ui.read_err_squelch.should_log(&message) {
                                 eprintln!("compme: read_context: {message}");
                             }
                             // Setup-needed onboarding (A2 §16): a browser/Arc/Dia field
@@ -4320,7 +4302,7 @@ pub fn run() -> Result<(), String> {
                                 resolve_app_key(field.pid, |pid| shell.bundle_id_for_pid(pid))
                             {
                                 if compat::needs_accessibility_setup(&app, false)
-                                    && hinted_apps.insert(format!("setup:{app}"))
+                                    && session_ui.hinted_apps.insert(format!("setup:{app}"))
                                 {
                                     eprintln!(
                                         "compme: {app} field not readable — may need \
@@ -4372,12 +4354,12 @@ pub fn run() -> Result<(), String> {
                             previous_inputs: &previous_inputs,
                             memory: memory.as_ref(),
                             prefs: &prefs,
-                            tracker: &mut tracker,
-                            usage: &mut usage,
+                            tracker: &mut focus.tracker,
+                            usage: &mut usage_stats.usage,
                         },
                     );
                     match accept_result {
-                        Ok(requests) => offer_all(&mut latest, requests),
+                        Ok(requests) => offer_all(&mut suggestion.latest, requests),
                         Err(err) => {
                             eprintln!(
                                 "compme: on_accept error after committed={}: {:?}",
@@ -4388,15 +4370,18 @@ pub fn run() -> Result<(), String> {
                 }
                 HostEvent::Dismiss => {
                     eprintln!("compme: dismiss (Esc)");
-                    usage.record(wall_ms, stats::Outcome::Dismissed);
+                    usage_stats.usage.record(wall_ms, stats::Outcome::Dismissed);
                     offer_all(
-                        &mut latest,
+                        &mut suggestion.latest,
                         log_err("on_dismiss_suppress", engine.on_dismiss_suppress()),
                     );
                 }
                 HostEvent::Cycle => {
                     eprintln!("compme: cycle candidate");
-                    offer_all(&mut latest, log_err("on_cycle", engine.on_cycle()));
+                    offer_all(
+                        &mut suggestion.latest,
+                        log_err("on_cycle", engine.on_cycle()),
+                    );
                 }
                 HostEvent::Shortcut(action) => match action {
                     ShortcutAction::ForceActivate => {
@@ -4406,7 +4391,7 @@ pub fn run() -> Result<(), String> {
                         // RequestCompletion); a no-op when nothing is held.
                         eprintln!("compme: shortcut force-activate (re-show pending)");
                         offer_all(
-                            &mut latest,
+                            &mut suggestion.latest,
                             log_err("on_force_show", engine.on_force_show()),
                         );
                     }
@@ -4414,7 +4399,8 @@ pub fn run() -> Result<(), String> {
                         // Flip per-app Enabled for the focused app, mirroring the
                         // tray/settings per-app toggle. The focused app key comes
                         // from the same resolver the app-disable path uses.
-                        match current_field
+                        match focus
+                            .current_field
                             .as_ref()
                             .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
                         {
@@ -4444,7 +4430,7 @@ pub fn run() -> Result<(), String> {
                                 // otherwise still insert. Mirrors the snooze /
                                 // tray-disable paths below.
                                 if toggle_app_dismisses(current) {
-                                    latest.clear();
+                                    suggestion.latest.clear();
                                     let _ = log_err("on_dismiss", engine.on_dismiss());
                                 }
                             }
@@ -4460,14 +4446,14 @@ pub fn run() -> Result<(), String> {
                         let now = flags.enabled.load(Ordering::Relaxed);
                         flags.enabled.store(!now, Ordering::Relaxed);
                         clear_monitored_state_for_policy_transition(
-                            &mut pending_monitored,
-                            &mut monitored_buffers,
+                            &mut monitored.pending_monitored,
+                            &mut monitored.monitored_buffers,
                         );
                         // Disabling must retract any visible suggestion (and disarm
                         // its accept key); the enabled gate is only re-checked at
                         // submission. Mirrors the snooze / tray global-disable paths.
                         if now {
-                            latest.clear();
+                            suggestion.latest.clear();
                             let _ = log_err("on_dismiss", engine.on_dismiss());
                         }
                         eprintln!("compme: shortcut toggle-global enabled {now} -> {}", !now);
@@ -4477,7 +4463,7 @@ pub fn run() -> Result<(), String> {
                             host_event_route(&HostEvent::Shortcut(ShortcutAction::GrammarCheck)),
                             HostEventRoute::ManualGrammarDetection
                         );
-                        let Some(field) = current_field.clone() else {
+                        let Some(field) = focus.current_field.clone() else {
                             eprintln!("compme: shortcut grammar-check: no focused field");
                             continue;
                         };
@@ -4487,7 +4473,7 @@ pub fn run() -> Result<(), String> {
                             prefs: &prefs,
                             enabled: flags.enabled.load(Ordering::Relaxed),
                             now_ms,
-                            last_domain: &mut last_domain,
+                            last_domain: &mut focus.last_domain,
                             resolve_app_key: |field| {
                                 effective_app_key(&field, |pid| shell.bundle_id_for_pid(pid))
                             },
@@ -4501,7 +4487,7 @@ pub fn run() -> Result<(), String> {
                             },
                         });
                         apply_grammar_shortcut_pending_effect(
-                            &mut latest,
+                            &mut suggestion.latest,
                             &mut manual_grammar_request,
                             &outcome,
                         );
@@ -4542,15 +4528,17 @@ pub fn run() -> Result<(), String> {
         if !host_event_backlog_remaining {
             for outcome in inference.drain_outcomes() {
                 if matches!(outcome.request.kind, RequestKind::GrammarFix { .. }) {
-                    if let Some(latency) =
-                        latency_sample(&mut submit_times, outcome.request.generation, now_ms)
-                    {
-                        usage.record_latency(wall_ms, latency);
+                    if let Some(latency) = latency_sample(
+                        &mut suggestion.submit_times,
+                        outcome.request.generation,
+                        now_ms,
+                    ) {
+                        usage_stats.usage.record_latency(wall_ms, latency);
                     }
                     match (outcome.correction, outcome.correction_range) {
                         (Some(correction), Some(correction_range)) => {
                             offer_all(
-                                &mut latest,
+                                &mut suggestion.latest,
                                 log_err(
                                     "on_correction",
                                     engine.on_correction(
@@ -4567,7 +4555,7 @@ pub fn run() -> Result<(), String> {
                         }
                         _ => {
                             offer_all(
-                                &mut latest,
+                                &mut suggestion.latest,
                                 log_err(
                                     "on_correction_absent",
                                     engine.on_correction_absent(&outcome.request),
@@ -4586,13 +4574,15 @@ pub fn run() -> Result<(), String> {
                     completion_outcome_log_line(outcome.request.generation, &outcome.candidates)
                 );
                 // First-suggestion latency for this completed request (§11).
-                if let Some(latency) =
-                    latency_sample(&mut submit_times, outcome.request.generation, now_ms)
-                {
-                    usage.record_latency(wall_ms, latency);
+                if let Some(latency) = latency_sample(
+                    &mut suggestion.submit_times,
+                    outcome.request.generation,
+                    now_ms,
+                ) {
+                    usage_stats.usage.record_latency(wall_ms, latency);
                 }
                 offer_all(
-                    &mut latest,
+                    &mut suggestion.latest,
                     log_err(
                         "on_completion",
                         engine.on_completion_multi(&outcome.request, outcome.candidates),
@@ -4602,37 +4592,41 @@ pub fn run() -> Result<(), String> {
         }
 
         // 3. Debounce tick.
-        offer_all(&mut latest, log_err("on_tick", engine.on_tick(now_ms)));
+        offer_all(
+            &mut suggestion.latest,
+            log_err("on_tick", engine.on_tick(now_ms)),
+        );
 
         // 3b. Drain engine-internal Shown/Superseded events into usage stats
         // (§11/§16): the engine surfaces these; Accepted/Dismissed are recorded
         // from the host inputs above.
         for event in engine.take_stat_events() {
-            usage.record(wall_ms, stat_outcome(event));
+            usage_stats.usage.record(wall_ms, stat_outcome(event));
         }
 
         // 4. Derive status (permission/secure/ready/enabled) and update the tray.
         // Re-poll secure input and trust on a wall-clock throttle so granting
         // permission or a password field appearing is reflected without a restart.
-        if last_secure_poll_ms
+        if policy
+            .last_secure_poll_ms
             .is_none_or(|last| now_ms.saturating_sub(last) >= SECURE_POLL_INTERVAL_MS)
         {
-            secure = shell.secure_input_enabled();
+            policy.secure = shell.secure_input_enabled();
             trusted = shell.accessibility_trusted();
-            last_secure_poll_ms = Some(now_ms);
+            policy.last_secure_poll_ms = Some(now_ms);
         }
         // SIGUSR1 toggles enable/disable (headless equivalent of the tray item).
         if TOGGLE.swap(false, Ordering::Relaxed) {
             let now = flags.enabled.load(Ordering::Relaxed);
             flags.enabled.store(!now, Ordering::Relaxed);
             clear_monitored_state_for_policy_transition(
-                &mut pending_monitored,
-                &mut monitored_buffers,
+                &mut monitored.pending_monitored,
+                &mut monitored.monitored_buffers,
             );
             // Disabling must retract any visible suggestion (and disarm its accept
             // key); the enabled gate is only re-checked at submission.
             if now {
-                latest.clear();
+                suggestion.latest.clear();
                 let _ = log_err("on_dismiss", engine.on_dismiss());
             }
         }
@@ -4646,15 +4640,15 @@ pub fn run() -> Result<(), String> {
             .take();
         if let Some(arm) = global_arm {
             clear_monitored_state_for_policy_transition(
-                &mut pending_monitored,
-                &mut monitored_buffers,
+                &mut monitored.pending_monitored,
+                &mut monitored.monitored_buffers,
             );
             if apply_global_disable(arm, &mut prefs, now_ms) {
                 flags.enabled.store(false, Ordering::Relaxed);
                 eprintln!("compme: completions disabled (persistent)");
             } else {
                 eprintln!("compme: completions snoozed globally ({arm:?})");
-                latest.clear();
+                suggestion.latest.clear();
                 let _ = log_err("on_dismiss", engine.on_dismiss());
             }
         }
@@ -4668,14 +4662,14 @@ pub fn run() -> Result<(), String> {
         ) {
             eprintln!("compme: suggestions snoozed for {SNOOZE_MINUTES} minutes");
             clear_monitored_state_for_policy_transition(
-                &mut pending_monitored,
-                &mut monitored_buffers,
+                &mut monitored.pending_monitored,
+                &mut monitored.monitored_buffers,
             );
             // A snooze must retract an already-visible ghost, exactly like the
             // disable edge below: gating runs at request-submission, so without
             // this a ghost already on screen would survive the snooze — and its
             // armed accept key would still insert it (a2-parity review #2).
-            latest.clear();
+            suggestion.latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
         // Tray "Settings…": show the S2 window (promotes activation policy so
@@ -4694,7 +4688,7 @@ pub fn run() -> Result<(), String> {
                 // Span + bucketing chosen by the Statistics range/group pickers
                 // (defaults: 7 days, Daily → identity bucketing).
                 *lines = compose_stats_lines(
-                    &usage,
+                    &usage_stats.usage,
                     wall_ms,
                     settings_flags.stat_range_index.load(Ordering::Relaxed),
                     settings_flags.stat_group_index.load(Ordering::Relaxed),
@@ -4702,7 +4696,7 @@ pub fn run() -> Result<(), String> {
                 // Grow-only session totals, NOT window-derived counts: past
                 // 30 days the window prunes and the row would regress — and
                 // it must agree with what the periodic flush writes to disk.
-                let totals = usage.session_totals();
+                let totals = usage_stats.usage.session_totals();
                 lines.push(lifetime_line(
                     &lifetime_base.merged(totals.counts, totals.words),
                 ));
@@ -4720,9 +4714,9 @@ pub fn run() -> Result<(), String> {
                 subscriptions_require_relaunch,
                 shell.accessibility_trusted(),
                 shell.screen_capture_permission(),
-                model_download_status.as_deref(),
+                download.model_download_status.as_deref(),
             );
-            last_setup_poll_ms = Some(now_ms);
+            settings.last_setup_poll_ms = Some(now_ms);
             // Apps tab: per-app counts straight from the store (plaintext
             // GROUP BY, no decryption). Unlike setup_lines these are
             // show-time snapshots, same stance as stats_lines (c99): cheap
@@ -4733,7 +4727,7 @@ pub fn run() -> Result<(), String> {
                     .apps_lines
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                (*lines, apps_ids) = compose_apps_rows(memory.as_ref());
+                (*lines, settings.apps_ids) = compose_apps_rows(memory.as_ref());
             }
             // Publish the per-row policy bits alongside apps_lines (same order/
             // cap) so the Apps-pane checkboxes open reflecting the saved per-app
@@ -4743,8 +4737,8 @@ pub fn run() -> Result<(), String> {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = compose_apps_policy_bits(
                 &prefs,
-                &apps_ids,
-                global_mid_word,
+                &settings.apps_ids,
+                settings.global_mid_word,
                 config.autocorrect,
                 config.grammar_fix,
             );
@@ -4756,12 +4750,12 @@ pub fn run() -> Result<(), String> {
         // demote the activation policy back to Accessory exactly once on the
         // visible→hidden edge so no Dock icon is left stranded.
         let settings_visible = settings_window.is_visible();
-        if crate::shell::policy_restore_needed(settings_was_visible, settings_visible) {
+        if crate::shell::policy_restore_needed(settings.settings_was_visible, settings_visible) {
             if let Err(err) = settings_window.restore_accessory_policy() {
                 eprintln!("compme: activation policy restore failed: {err}");
             }
         }
-        settings_was_visible = settings_visible;
+        settings.settings_was_visible = settings_visible;
         // Setup buttons (tray-flags pattern): consume edges, perform the
         // privileged calls here on the main thread.
         if settings_flags.setup_grant_ax.swap(false, Ordering::Relaxed) {
@@ -4928,7 +4922,7 @@ pub fn run() -> Result<(), String> {
             .unwrap_or_else(|e| e.into_inner())
             .take();
         if let Some(row) = clicked_row {
-            if let (Some(store), Some(app)) = (&memory, apps_ids.get(row)) {
+            if let (Some(store), Some(app)) = (&memory, settings.apps_ids.get(row)) {
                 // Irreversible (secure_delete zeroes freed pages) — confirm
                 // first, Cancel-default (review-c112; deep-link precedent).
                 let confirmed = shell
@@ -4943,7 +4937,7 @@ pub fn run() -> Result<(), String> {
                 if !confirmed {
                     eprintln!("compme: delete for {app} cancelled");
                 } else if let Some((lines, ids)) =
-                    delete_app_row_and_recompose(store, &apps_ids, row)
+                    delete_app_row_and_recompose(store, &settings.apps_ids, row)
                 {
                     // Poison-recovery: skipping would leave the Apps pane
                     // showing the just-deleted row (refresh runs below).
@@ -4951,7 +4945,7 @@ pub fn run() -> Result<(), String> {
                         .apps_lines
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = lines;
-                    apps_ids = ids;
+                    settings.apps_ids = ids;
                     // Rows shifted — republish the policy bits in the new order
                     // before refresh_apps_labels re-seeds the checkboxes from them.
                     *settings_flags
@@ -4959,8 +4953,8 @@ pub fn run() -> Result<(), String> {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = compose_apps_policy_bits(
                         &prefs,
-                        &apps_ids,
-                        global_mid_word,
+                        &settings.apps_ids,
+                        settings.global_mid_word,
                         config.autocorrect,
                         config.grammar_fix,
                     );
@@ -4980,9 +4974,10 @@ pub fn run() -> Result<(), String> {
             .unwrap_or_else(|e| e.into_inner())
             .take();
         if let Some((row, field_index, on)) = edit {
-            if let (Some(app), Some(field)) =
-                (apps_ids.get(row), apps_policy_field_from_index(field_index))
-            {
+            if let (Some(app), Some(field)) = (
+                settings.apps_ids.get(row),
+                apps_policy_field_from_index(field_index),
+            ) {
                 prefs.set_app_policy_field(app, field, on);
                 eprintln!("compme: app policy {field:?} for {app} set to {on}");
                 if let Some(path) = config::config_file_path() {
@@ -4994,11 +4989,12 @@ pub fn run() -> Result<(), String> {
                 // shortcut/snooze/global-disable edges. Gated on the edited app
                 // being the focused one so editing another app's row never
                 // dismisses the focused field's ghost.
-                let focused_app = current_field
+                let focused_app = focus
+                    .current_field
                     .as_ref()
                     .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)));
                 if apps_edit_dismisses_focused(field, on, focused_app.as_deref(), app) {
-                    latest.clear();
+                    suggestion.latest.clear();
                     let _ = log_err("on_dismiss", engine.on_dismiss());
                 }
             }
@@ -5081,7 +5077,7 @@ pub fn run() -> Result<(), String> {
         if settings_flags
             .setup_download_model
             .swap(false, Ordering::Relaxed)
-            && download_idle(model_download_status.as_deref())
+            && download_idle(download.model_download_status.as_deref())
         {
             if let Some(models_dir) = app_support_models_dir() {
                 // Selected-or-recommended, RAM hard block, and license
@@ -5161,8 +5157,8 @@ pub fn run() -> Result<(), String> {
                         entry,
                         dest: &dest,
                         downloader: &mut model_downloader,
-                        model_download_status: &mut model_download_status,
-                        model_download_logged: &mut model_download_logged,
+                        model_download_status: &mut download.model_download_status,
+                        model_download_logged: &mut download.model_download_logged,
                         prepare: prepare_model_download_dest,
                         existing_model: model_download_dest_present,
                         spawn: || {
@@ -5217,15 +5213,16 @@ pub fn run() -> Result<(), String> {
             }
         }
         // Download progress/terminal-state logging (one line per transition).
-        if let Some(status) = &model_download_status {
+        if let Some(status) = &download.model_download_status {
             let state = status.state.lock().unwrap_or_else(|e| e.into_inner());
-            let (next_logged, line) = download_log_transition(&state, model_download_logged);
+            let (next_logged, line) =
+                download_log_transition(&state, download.model_download_logged);
             // The Done edge (logged advances to 2 with a Done state) fires once
             // per download — start_model_download_edge resets logged to 0 on
             // each new queue — so a second download re-persists its own path.
-            let done_edge = next_logged != model_download_logged
+            let done_edge = next_logged != download.model_download_logged
                 && matches!(&*state, model_fetch::DownloadState::Done(_));
-            model_download_logged = next_logged;
+            download.model_download_logged = next_logged;
             if let Some(line) = line {
                 eprintln!("{line}");
             }
@@ -5260,18 +5257,20 @@ pub fn run() -> Result<(), String> {
         // the disk; on a failed write the timestamp still advances (no
         // per-heartbeat hammering of a broken disk) but the dirty marker
         // does not, so the next interval retries.
-        let session_totals = usage.session_totals();
-        if stats_flush_due(last_stats_flush_ms, now_ms) && session_totals != last_flushed_session {
-            last_stats_flush_ms = Some(now_ms);
+        let session_totals = usage_stats.usage.session_totals();
+        if stats_flush_due(usage_stats.last_stats_flush_ms, now_ms)
+            && session_totals != usage_stats.last_flushed_session
+        {
+            usage_stats.last_stats_flush_ms = Some(now_ms);
             match persist_lifetime_stats(stats_path.as_deref(), &lifetime_base, session_totals) {
-                Ok(()) => last_flushed_session = session_totals,
+                Ok(()) => usage_stats.last_flushed_session = session_totals,
                 Err(err) => eprintln!("compme: stats persist failed: {err}"),
             }
         }
         // Visible-only Setup re-probe: granting a permission while the
         // window stays open flips its row within ~480ms.
-        if setup_poll_due(settings_visible, last_setup_poll_ms, now_ms) {
-            last_setup_poll_ms = Some(now_ms);
+        if setup_poll_due(settings_visible, settings.last_setup_poll_ms, now_ms) {
+            settings.last_setup_poll_ms = Some(now_ms);
             // Poison-recovery so a poisoned lock cannot silently disable the
             // visible Setup re-probe (uniform with the recovery policy).
             *settings_flags
@@ -5283,7 +5282,7 @@ pub fn run() -> Result<(), String> {
                 subscriptions_require_relaunch,
                 shell.accessibility_trusted(),
                 shell.screen_capture_permission(),
-                model_download_status.as_deref(),
+                download.model_download_status.as_deref(),
             );
             settings_window.refresh_setup_labels();
         }
@@ -5296,7 +5295,7 @@ pub fn run() -> Result<(), String> {
             |on| persist_and_log_switch("COMPME_AUTOCORRECT", "autocorrect", on),
             |on| {
                 if !on {
-                    latest.clear();
+                    suggestion.latest.clear();
                     let _ = log_err("on_dismiss", engine.on_dismiss());
                 }
             },
@@ -5309,7 +5308,7 @@ pub fn run() -> Result<(), String> {
             |on| persist_and_log_switch("COMPME_FULL_AUTOCORRECT", "full autocorrect", on),
             |on| {
                 if !on {
-                    latest.clear();
+                    suggestion.latest.clear();
                     let _ = log_err("on_dismiss", engine.on_dismiss());
                 }
             },
@@ -5326,7 +5325,7 @@ pub fn run() -> Result<(), String> {
             },
             |on| {
                 if !on {
-                    latest.clear();
+                    suggestion.latest.clear();
                     let _ = log_err("on_dismiss", engine.on_dismiss());
                 }
             },
@@ -5336,7 +5335,7 @@ pub fn run() -> Result<(), String> {
         // restores the shared atomic and immediately redraws the visible switch.
         if let Err(err) = apply_launch_at_login_settings_edge(
             &settings_flags.general_launch_at_login,
-            &mut current_launch_at_login,
+            &mut settings.current_launch_at_login,
             shell.as_ref(),
             |on| persist_and_log_switch("COMPME_LAUNCH_AT_LOGIN", "launch at login", on),
         ) {
@@ -5361,9 +5360,9 @@ pub fn run() -> Result<(), String> {
         // cost of config.env staying stale until the next successful write).
         apply_midline_settings_edge(
             &settings_flags.labs_midline,
-            &mut global_mid_word,
+            &mut settings.global_mid_word,
             &prefs,
-            last_app_key.as_deref(),
+            focus.last_app_key.as_deref(),
             |on| engine.set_allow_mid_word(on),
             |on| persist_and_log_switch("COMPME_MIDLINE", "mid-line completions", on),
         );
@@ -5433,7 +5432,7 @@ pub fn run() -> Result<(), String> {
                 subscriptions_require_relaunch,
                 shell.accessibility_trusted(),
                 shell.screen_capture_permission(),
-                model_download_status.as_deref(),
+                download.model_download_status.as_deref(),
             );
             settings_window.refresh_setup_labels();
         }
@@ -5443,34 +5442,34 @@ pub fn run() -> Result<(), String> {
         // it below, and gender remains config-backed until its control ships.
         let emoji_edge = handle_emoji_switch_edge(
             &settings_flags.emoji_enabled,
-            &mut emoji_enabled,
+            &mut settings.emoji_enabled,
             &mut config.emoji,
-            &mut emoji_prefs,
+            &mut settings.emoji_prefs,
             |on| persist_and_log_switch("COMPME_EMOJI", "emoji completions", on),
         );
         if emoji_edge == Some(false) {
-            latest.clear();
+            suggestion.latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
         handle_emoji_skin_tone_change_with_invalidation(
             &settings_flags.emoji_skin_tone_index,
-            &mut emoji_skin_tone_index,
+            &mut settings.emoji_skin_tone_index,
             &mut config.emoji,
-            &mut emoji_prefs,
+            &mut settings.emoji_prefs,
             |value| persist_and_log_value("COMPME_EMOJI_SKIN_TONE", "emoji skin tone", value),
             || {
-                latest.clear();
+                suggestion.latest.clear();
                 let _ = log_err("on_dismiss", engine.on_dismiss());
             },
         );
         handle_emoji_gender_change_with_invalidation(
             &settings_flags.emoji_gender_index,
-            &mut emoji_gender_index,
+            &mut settings.emoji_gender_index,
             &mut config.emoji,
-            &mut emoji_prefs,
+            &mut settings.emoji_prefs,
             |value| persist_and_log_value("COMPME_EMOJI_GENDER", "emoji gender", value),
             || {
-                latest.clear();
+                suggestion.latest.clear();
                 let _ = log_err("on_dismiss", engine.on_dismiss());
             },
         );
@@ -5507,13 +5506,13 @@ pub fn run() -> Result<(), String> {
                 Ok(summary) => {
                     eprintln!("compme: deep link {summary}");
                     clear_monitored_state_for_policy_transition(
-                        &mut pending_monitored,
-                        &mut monitored_buffers,
+                        &mut monitored.pending_monitored,
+                        &mut monitored.monitored_buffers,
                     );
                     if let Some(path) = config::config_file_path() {
                         persist_web_override_prefs(&path, &prefs);
                     }
-                    latest.clear();
+                    suggestion.latest.clear();
                     let _ = log_err("on_dismiss", engine.on_dismiss());
                 }
                 Err(err) => eprintln!("compme: deep link rejected: {err}"),
@@ -5524,10 +5523,11 @@ pub fn run() -> Result<(), String> {
         // dismiss edge — collection gates RECORDING, not suggestion display.
         if flags.collection_toggle.swap(false, Ordering::Relaxed) {
             clear_monitored_state_for_policy_transition(
-                &mut pending_monitored,
-                &mut monitored_buffers,
+                &mut monitored.pending_monitored,
+                &mut monitored.monitored_buffers,
             );
-            match current_field
+            match focus
+                .current_field
                 .as_ref()
                 .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
             {
@@ -5576,10 +5576,11 @@ pub fn run() -> Result<(), String> {
             .take()
         {
             clear_monitored_state_for_policy_transition(
-                &mut pending_monitored,
-                &mut monitored_buffers,
+                &mut monitored.pending_monitored,
+                &mut monitored.monitored_buffers,
             );
-            match current_field
+            match focus
+                .current_field
                 .as_ref()
                 .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
             {
@@ -5597,7 +5598,7 @@ pub fn run() -> Result<(), String> {
                             }
                         }
                     }
-                    latest.clear();
+                    suggestion.latest.clear();
                     let _ = log_err("on_dismiss", engine.on_dismiss());
                 }
                 None => eprintln!("compme: disable-in-app ignored — no focused app to resolve"),
@@ -5606,13 +5607,13 @@ pub fn run() -> Result<(), String> {
         let effective_trusted = runtime_trusted(trusted, subscriptions_require_relaunch);
         let enabled = flags.enabled.load(Ordering::Relaxed);
         flush_monitored_changes_after_secure_recheck(
-            &mut pending_monitored,
-            &mut monitored_buffers,
+            &mut monitored.pending_monitored,
+            &mut monitored.monitored_buffers,
             memory.as_ref(),
             &prefs,
             MonitoredFlushState {
-                secure: &mut secure,
-                last_secure_poll_ms: &mut last_secure_poll_ms,
+                secure: &mut policy.secure,
+                last_secure_poll_ms: &mut policy.last_secure_poll_ms,
             },
             MonitoredFlushRuntime {
                 monitored_memory_active,
@@ -5625,7 +5626,7 @@ pub fn run() -> Result<(), String> {
         let status = derive_status(
             trusted,
             subscriptions_require_relaunch,
-            secure,
+            policy.secure,
             model_available,
             inference.is_ready(),
             enabled,
@@ -5633,15 +5634,15 @@ pub fn run() -> Result<(), String> {
         // Secure input is a true engine-state transition, not only a UI state:
         // clear queued work and invalidate the machine so held requests cannot
         // submit after the secure block clears.
-        match secure_edge(prev_secure, secure, effective_trusted) {
+        match secure_edge(policy.prev_secure, policy.secure, effective_trusted) {
             SecureEdge::Enter => {
                 clear_monitored_state_for_policy_transition(
-                    &mut pending_monitored,
-                    &mut monitored_buffers,
+                    &mut monitored.pending_monitored,
+                    &mut monitored.monitored_buffers,
                 );
-                latest.clear();
+                suggestion.latest.clear();
                 offer_all(
-                    &mut latest,
+                    &mut suggestion.latest,
                     log_err(
                         "on_secure_state",
                         engine.on_secure_state(secure_input_caps()),
@@ -5652,34 +5653,37 @@ pub fn run() -> Result<(), String> {
                 // Rehydrate capabilities for the current field after the secure
                 // global block clears; otherwise the machine would stay blocked
                 // until a fresh focus event arrives.
-                if let Some(field) = current_field.clone() {
-                    tracker.reset();
-                    offer_all(&mut latest, log_err("on_focus", engine.on_focus(field)));
+                if let Some(field) = focus.current_field.clone() {
+                    focus.tracker.reset();
+                    offer_all(
+                        &mut suggestion.latest,
+                        log_err("on_focus", engine.on_focus(field)),
+                    );
                 }
             }
             SecureEdge::None => {}
         }
         // Disabling is user policy: dismiss visible UI and drop queued requests.
-        if should_dismiss_on_disable(prev_enabled, enabled) {
+        if should_dismiss_on_disable(policy.prev_enabled, enabled) {
             clear_monitored_state_for_policy_transition(
-                &mut pending_monitored,
-                &mut monitored_buffers,
+                &mut monitored.pending_monitored,
+                &mut monitored.monitored_buffers,
             );
-            latest.clear();
+            suggestion.latest.clear();
             let _ = log_err("on_dismiss", engine.on_dismiss());
         }
         if status_drops_pending_requests(status) {
             clear_monitored_state_for_policy_transition(
-                &mut pending_monitored,
-                &mut monitored_buffers,
+                &mut monitored.pending_monitored,
+                &mut monitored.monitored_buffers,
             );
-            latest.clear();
+            suggestion.latest.clear();
         }
         // Persist a user enable/disable toggle (tray or SIGUSR1) so the next
         // launch starts in the same state (A3 settings persistence). Skipped on
         // the first iteration (prev starts equal to the configured value) and
         // never fatal — a read-only disk only costs persistence, not operation.
-        if prev_enabled != enabled {
+        if policy.prev_enabled != enabled {
             if let Some(path) = config::config_file_path() {
                 match config::persist_setting(
                     &path,
@@ -5693,13 +5697,13 @@ pub fn run() -> Result<(), String> {
                 }
             }
         }
-        prev_enabled = enabled;
-        prev_secure = secure;
+        policy.prev_enabled = enabled;
+        policy.prev_secure = policy.secure;
         // Only touch AppKit when the rendered state actually changed. The
         // snoozed flag is part of the render state so the title/line flip both
         // when a snooze starts AND when it auto-expires mid-Ready.
         let snoozed = prefs.is_snoozed(now_ms);
-        if last_render != Some((status, enabled, snoozed)) {
+        if session_ui.last_render != Some((status, enabled, snoozed)) {
             eprintln!("compme: status={status:?} enabled={enabled} snoozed={snoozed}");
             if let Some(tray) = &tray {
                 if let Err(err) = tray.set_status(
@@ -5711,37 +5715,37 @@ pub fn run() -> Result<(), String> {
                     eprintln!("compme: tray update failed: {err:?}");
                 }
             }
-            last_render = Some((status, enabled, snoozed));
+            session_ui.last_render = Some((status, enabled, snoozed));
         }
         // Menu-bar 30-day usage line (§11). The string only changes when a
         // stat event landed or the window rolled, so the compare keeps AppKit
         // untouched on idle heartbeats.
         if let Some(tray) = &tray {
-            let stats_line = usage.summary_line(wall_ms);
-            if last_stats_line.as_deref() != Some(stats_line.as_str()) {
+            let stats_line = usage_stats.usage.summary_line(wall_ms);
+            if session_ui.last_stats_line.as_deref() != Some(stats_line.as_str()) {
                 if let Err(err) = tray.set_stats_line(&stats_line) {
                     eprintln!("compme: tray stats update failed: {err:?}");
                 }
-                last_stats_line = Some(stats_line);
+                session_ui.last_stats_line = Some(stats_line);
             }
         }
 
         // 5. Submit the newest pending request only when suggestions are allowed
         // (Ready ⇒ trusted + not secure + warm + enabled).
         if host_event_backlog_remaining {
-            latest.clear();
+            suggestion.latest.clear();
             if manual_grammar_request.take().is_some() {
                 eprintln!("compme: shortcut grammar-check dropped — host event backlog");
             }
         } else if status.suggestions_allowed() {
             if let Some(request) = manual_grammar_request.take() {
                 let app_key = effective_app_key(&request.field, |pid| shell.bundle_id_for_pid(pid));
-                let domain = cached_domain(&last_domain, app_key.as_deref());
+                let domain = cached_domain(&focus.last_domain, app_key.as_deref());
                 if request_passes_submit_gates_for_field(
                     &request,
                     SuggestionApp {
                         app_key: app_key.as_deref(),
-                        assistant_field: current_assistant_field,
+                        assistant_field: focus.current_assistant_field,
                     },
                     domain,
                     &prefs,
@@ -5749,13 +5753,13 @@ pub fn run() -> Result<(), String> {
                 ) {
                     let log_context = RequestLogContext {
                         app_key,
-                        assistant_field: current_assistant_field,
+                        assistant_field: focus.current_assistant_field,
                         domain: domain.map(str::to_owned),
                         prefs: prefs.clone(),
                         acceptance_prompt_marker: config.acceptance_prompt_marker.clone(),
                     };
                     let submitted_line = submit_request_and_track(
-                        &mut submit_times,
+                        &mut suggestion.submit_times,
                         request,
                         now_ms,
                         log_context,
@@ -5769,7 +5773,7 @@ pub fn run() -> Result<(), String> {
                             &request,
                             SuggestionApp {
                                 app_key: app_key.as_deref(),
-                                assistant_field: current_assistant_field,
+                                assistant_field: focus.current_assistant_field,
                             },
                             domain,
                             &prefs,
@@ -5779,9 +5783,9 @@ pub fn run() -> Result<(), String> {
                         )
                     );
                 }
-                latest.clear();
+                suggestion.latest.clear();
             }
-            if let Some(request) = latest.take() {
+            if let Some(request) = suggestion.latest.take() {
                 // Per-app/domain gating + pause/snooze (A2 §8). The exclude list
                 // is keyed on bundle ids. Prefer a fresh pid resolution, but keep
                 // the already-canonical request field app as the stable fallback;
@@ -5793,16 +5797,17 @@ pub fn run() -> Result<(), String> {
                     &request,
                     SuggestionApp {
                         app_key: app_key.as_deref(),
-                        assistant_field: current_assistant_field,
+                        assistant_field: focus.current_assistant_field,
                     },
-                    cached_domain(&last_domain, app_key.as_deref()),
+                    cached_domain(&focus.last_domain, app_key.as_deref()),
                     &prefs,
                     now_ms,
                 ) {
-                    let domain = cached_domain(&last_domain, app_key.as_deref()).map(str::to_owned);
+                    let domain =
+                        cached_domain(&focus.last_domain, app_key.as_deref()).map(str::to_owned);
                     let log_context = RequestLogContext {
                         app_key,
-                        assistant_field: current_assistant_field,
+                        assistant_field: focus.current_assistant_field,
                         domain,
                         prefs: prefs.clone(),
                         acceptance_prompt_marker: config.acceptance_prompt_marker.clone(),
@@ -5815,7 +5820,7 @@ pub fn run() -> Result<(), String> {
                     let (clipboard_diag, submitted_line) = submit_request_with_auxiliary_context(
                         request,
                         SubmitRequestContext {
-                            submit_times: &mut submit_times,
+                            submit_times: &mut suggestion.submit_times,
                             now_ms,
                             log_context,
                         },
@@ -5852,9 +5857,9 @@ pub fn run() -> Result<(), String> {
                             &request,
                             SuggestionApp {
                                 app_key: app_key.as_deref(),
-                                assistant_field: current_assistant_field,
+                                assistant_field: focus.current_assistant_field,
                             },
-                            cached_domain(&last_domain, app_key.as_deref()),
+                            cached_domain(&focus.last_domain, app_key.as_deref()),
                             &prefs,
                             now_ms,
                             config.acceptance_prompt_marker.as_deref(),
@@ -5916,7 +5921,7 @@ pub fn run() -> Result<(), String> {
     // Intentional: this is a diagnostic line and latency avg/p95 are
     // inherently windowed; the persist path uses grow-only session totals.
     let final_wall_ms = wall_now_ms();
-    let session_usage = session_usage_snapshot(&usage, final_wall_ms);
+    let session_usage = session_usage_snapshot(&usage_stats.usage, final_wall_ms);
     eprintln!(
         "compme: usage shown={} accepted={} dismissed={} superseded={} words={} \
          latency_avg={:?} latency_p95={:?}",
@@ -5936,7 +5941,7 @@ pub fn run() -> Result<(), String> {
     if let Err(err) = persist_lifetime_stats(
         stats_path.as_deref(),
         &lifetime_base,
-        usage.session_totals(),
+        usage_stats.usage.session_totals(),
     ) {
         eprintln!("compme: stats persist failed: {err}");
     }
