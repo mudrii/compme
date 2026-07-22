@@ -154,7 +154,7 @@ pub struct SettingsState {
     /// Live global mid-line default; per-app overrides still derive from it.
     pub global_mid_word: bool,
     /// Emoji on/off edge, tracked separately from the config payload (emoji
-    /// is stored as an Option<EmojiPrefs>).
+    /// is stored as an `Option<EmojiPrefs>`).
     pub emoji_enabled: bool,
     /// Parsed emoji prefs payload, kept across live off/on cycles.
     pub emoji_prefs: EmojiPrefs,

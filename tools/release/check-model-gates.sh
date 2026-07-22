@@ -3687,6 +3687,8 @@ require_line "$finalize_cask_script" 'git merge-base --is-ancestor "\$GITHUB_SHA
 require_line "$finalize_cask_script" 'tag/version mismatch' "cask finalizer tag/version guard"
 require_line "$finalize_cask_script" 'refusing to publish a stale or out-of-order cask update' "cask finalizer stale version refusal"
 require_line "$finalize_cask_script" 'git push origin "HEAD:\$default_branch"' "cask finalizer push"
+require_line "$finalize_cask_script" 'grep -Eq .\^v\(0\|\[1-9\]\[0-9\]\*\)' "cask finalizer previous-release selection filters to strict stable SemVer tags"
+require_line "$finalize_cask_script" 'previous_release_version "\$stray_tags_sha" v1\.2\.4.*= "1\.2\.3"' "cask finalizer self-test proves stray prerelease/malformed tags do not shadow the previous stable release"
 require_line "$gate_script" '^require_latency_budget="\$\{COMPME_REQUIRE_LATENCY_BUDGET:-1\}"[[:space:]]*$' "latency budget defaults on, CI opt-out only"
 require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET="\$require_latency_budget" cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
 require_line "$gate_script" '^  COMPME_SPIKE_MODEL_PATH="\$spike_model" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET="\$require_latency_budget" cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"

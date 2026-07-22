@@ -1,4 +1,13 @@
-#![allow(dead_code)]
+//! Portable shell stub.
+//!
+//! On Windows/Linux this module is glob-re-exported as the `shell` surface
+//! (`shell/mod.rs`: `pub use stub::*`), so every public item below is live.
+//! On macOS the module is compiled only in test builds, and solely to supply
+//! `stub::make_tray` for run-loop unit tests; the real shell comes from
+//! `macos::*` and the glob is disabled, so every other item here is unused on
+//! that one build. Each such item therefore carries `#[allow(dead_code)]` (the
+//! cfg-shaped "live on Windows/Linux, dead on the macOS test build" fact the
+//! code can't otherwise express). Items left un-annotated stay dead-code checked.
 
 use std::sync::{Arc, LazyLock, RwLock};
 
@@ -45,8 +54,10 @@ pub fn make_tray(_flags: TrayFlags) -> Result<Box<dyn TrayHandle>, PlatformError
     })
 }
 
+#[allow(dead_code)]
 pub struct UrlHandlerGuard;
 
+#[allow(dead_code)]
 pub fn install_url_event_handler(
     _on_url: Arc<shell_flags::UrlCallback>,
 ) -> Result<UrlHandlerGuard, PlatformError> {
@@ -61,23 +72,29 @@ pub use shell_flags::{
     APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES, SETUP_ROWS, STATS_ROWS,
 };
 
+#[allow(dead_code)]
 static SHORTCUT_BINDINGS: LazyLock<RwLock<ShortcutBindings>> =
     LazyLock::new(|| RwLock::new(ShortcutBindings::default()));
 
+#[allow(dead_code)]
 pub fn parse_accept_key(raw: &str) -> Option<(i64, u32)> {
     shell_flags::parse_key_with_mods(raw)
 }
 
+#[allow(dead_code)]
 pub fn format_accept_key(keycode: i64, mask: u32) -> String {
     shell_flags::format_key_with_mods(keycode, mask)
 }
 
+#[allow(dead_code)]
 pub fn keycode_label_with_mods(code: i64, mask: u32) -> String {
     format_accept_key(code, mask)
 }
 
+#[allow(dead_code)]
 pub fn set_tab_hotkey_suppressed(_suppressed: bool) {}
 
+#[allow(dead_code)]
 pub fn set_accept_keymap_from_config_with_mods(
     _word: Option<(i64, u32)>,
     _full: Option<(i64, u32)>,
@@ -86,22 +103,26 @@ pub fn set_accept_keymap_from_config_with_mods(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn effective_accept_keys_with_mods_and_grammar() -> EffectiveAcceptKeys {
     ((48, 0), (50, 0), None)
 }
 
+#[allow(dead_code)]
 pub fn effective_shortcut_bindings() -> ShortcutBindings {
     *SHORTCUT_BINDINGS
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[allow(dead_code)]
 pub fn set_shortcut_bindings(bindings: ShortcutBindings) {
     *SHORTCUT_BINDINGS
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = bindings;
 }
 
+#[allow(dead_code)]
 pub fn set_shortcut_bindings_from_config(
     force_activate: Option<&str>,
     toggle_app: Option<&str>,
@@ -119,12 +140,15 @@ pub fn set_shortcut_bindings_from_config(
     effective
 }
 
+#[allow(dead_code)]
 pub fn policy_restore_needed(was_visible: bool, visible_now: bool) -> bool {
     was_visible && !visible_now
 }
 
+#[allow(dead_code)]
 pub struct SettingsWindow;
 
+#[allow(dead_code)]
 impl SettingsWindow {
     pub fn new(_flags: SettingsFlags) -> Self {
         Self
