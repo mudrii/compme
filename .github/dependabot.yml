@@ -5,11 +5,12 @@
 version: 2
 updates:
   # Workflow action pins (SHA-pinned; dependabot rewrites to the new SHA).
+  # Monthly: every bump needs the check-model-gates.sh allowlist re-pin, so
+  # weekly cadence is SHA-reconciliation churn against the pinned allowlist.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: "monthly"
       time: "06:00"
     # One bundled PR per ecosystem keeps review noise low.
     groups:

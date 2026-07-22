@@ -127,11 +127,15 @@ validate_finalized_cask() {
 previous_release_version() {
   # Print the newest stable tag version (other than the release tag $2)
   # reachable from the release tag commit $1; empty when none is visible.
+  # The glob also matches prerelease/malformed tags (v9.8.7-rc.1, v9.8.7junk),
+  # which -version:refname sorts above the base release, so keep only the
+  # strict stable vX.Y.Z shape shared with check-bundle-metadata.sh.
   local tag_sha="$1"
   local tag="$2"
   local candidate
   for candidate in $(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname --merged "$tag_sha"); do
-    if [ "$candidate" != "$tag" ]; then
+    if printf '%s\n' "$candidate" | grep -Eq '^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$' &&
+      [ "$candidate" != "$tag" ]; then
       printf '%s\n' "${candidate#v}"
       return 0
     fi
@@ -588,6 +592,61 @@ SH
     return 1
   fi
   grep -q "refusing to publish a stale or out-of-order cask update" "$tmp/lagging-moved-past.err"
+
+  # Prerelease/malformed tags sort above their base release under
+  # -version:refname and must not shadow the previous stable release.
+  stray_tags="$tmp/stray-tags"
+  git init -q --initial-branch=main "$stray_tags"
+  git -C "$stray_tags" -c user.name=t -c user.email=t@example.test \
+    -c commit.gpgsign=false commit --allow-empty -m base >/dev/null
+  stray_tags_sha="$(git -C "$stray_tags" rev-parse HEAD)"
+  for stray_tag in v1.2.4 v1.2.4-rc.1 v1.2.4junk v1.2.3; do
+    git -C "$stray_tags" -c tag.gpgSign=false tag "$stray_tag" "$stray_tags_sha"
+  done
+  test "$(cd "$stray_tags" && previous_release_version "$stray_tags_sha" v1.2.4)" = "1.2.3"
+
+  # With only prerelease/malformed older tags, no previous release is visible.
+  prerelease_only="$tmp/prerelease-only"
+  git init -q --initial-branch=main "$prerelease_only"
+  git -C "$prerelease_only" -c user.name=t -c user.email=t@example.test \
+    -c commit.gpgsign=false commit --allow-empty -m base >/dev/null
+  prerelease_only_sha="$(git -C "$prerelease_only" rev-parse HEAD)"
+  for stray_tag in v1.2.4 v1.2.4-rc.1 v1.2.4junk; do
+    git -C "$prerelease_only" -c tag.gpgSign=false tag "$stray_tag" "$prerelease_only_sha"
+  done
+  test -z "$(cd "$prerelease_only" && previous_release_version "$prerelease_only_sha" v1.2.4)"
+
+  # Same stray tags in a full finalizer run: the lagging cask at the previous
+  # stable release is still accepted.
+  make_fixture_repo "$tmp/lagging-stray-tags" lag
+  lag_stray_sha="$(git -C "$tmp/lagging-stray-tags/work" rev-parse HEAD)"
+  git -C "$tmp/lagging-stray-tags/work" -c tag.gpgSign=false tag v9.8.7-rc.1 "$lag_stray_sha"
+  git -C "$tmp/lagging-stray-tags/work" -c tag.gpgSign=false tag v9.8.7junk "$lag_stray_sha"
+  detach_release_checkout "$tmp/lagging-stray-tags/work" "$lag_stray_sha"
+  COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging-stray-tags/work" \
+    GITHUB_SHA="$lag_stray_sha" \
+    "$0" v9.8.7 "$artifact" 9.8.7 main >"$tmp/lagging-stray-tags.out"
+  git -C "$tmp/lagging-stray-tags/work" fetch origin main >/dev/null 2>&1
+  git -C "$tmp/lagging-stray-tags/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
+  grep -q 'version "9.8.7"' "$tmp/lagging-stray-tags/work/Casks/compme.rb"
+
+  # A cask that moved past the previous stable release is still refused when
+  # stray prerelease/malformed tags are present.
+  make_fixture_repo "$tmp/lagging-stray-moved-past" lag
+  lag_stray_moved_sha="$(git -C "$tmp/lagging-stray-moved-past/work" rev-parse HEAD)"
+  git -C "$tmp/lagging-stray-moved-past/work" -c tag.gpgSign=false tag v9.8.7-rc.1 "$lag_stray_moved_sha"
+  git -C "$tmp/lagging-stray-moved-past/work" -c tag.gpgSign=false tag v9.8.7junk "$lag_stray_moved_sha"
+  ruby -0pi -e 'sub(/version "9\.8\.6"/, "version \"9.9.9\"")' "$tmp/lagging-stray-moved-past/work/Casks/compme.rb"
+  git -C "$tmp/lagging-stray-moved-past/work" add Casks/compme.rb
+  git -C "$tmp/lagging-stray-moved-past/work" -c user.name=t -c user.email=t@example.test commit -m moved-past >/dev/null
+  git -C "$tmp/lagging-stray-moved-past/work" push origin main >/dev/null 2>&1
+  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging-stray-moved-past/work" \
+    GITHUB_SHA="$lag_stray_moved_sha" \
+    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/lagging-stray-moved-past.err"; then
+    echo "finalize-cask self-test failed: stray-tag moved-past cask version was accepted" >&2
+    return 1
+  fi
+  grep -q "refusing to publish a stale or out-of-order cask update" "$tmp/lagging-stray-moved-past.err"
 
   make_fixture_repo "$tmp/frozen-provenance" modify
   frozen_sha="$(git -C "$tmp/frozen-provenance/work" rev-parse HEAD)"

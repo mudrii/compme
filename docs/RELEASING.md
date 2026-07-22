@@ -33,14 +33,17 @@ explicit timeout. The publish job verifies the downloaded zip checksum and its
 build-provenance attestation before writing the update manifest and creating
 the draft.
 
-Dependabot opens weekly grouped PRs (one per ecosystem; see
+Dependabot opens grouped PRs (one per ecosystem; see
 [`.github/dependabot.yml`](../.github/dependabot.yml)) that bump pinned action
-SHAs and Cargo deps. Each actions PR needs two manual follow-ups in the same
-PR before the gates go green: re-pin the action-SHA allowlists in
-`tools/release/check-model-gates.sh`, and hand-update the `# vX.Y.Z` trailing
-comments on the `uses:` lines (dependabot rewrites only the SHA). Until both
-land, `check-model-gates.sh` fails red — that fail-closed behavior is
-intended, and the dependabot.yml header comment pins the same contract.
+SHAs and Cargo deps — weekly for the two Cargo ecosystems, monthly for
+github-actions (each actions bump needs the re-pin below, so a weekly cadence
+is churn the checker rejects anyway). Each actions PR needs two manual
+follow-ups in the same PR before the gates go green: re-pin the action-SHA
+allowlists in `tools/release/check-model-gates.sh`, and hand-update the
+`# vX.Y.Z` trailing comments on the `uses:` lines (dependabot rewrites only
+the SHA). Until both land, `check-model-gates.sh` fails red — that
+fail-closed behavior is intended, and the dependabot.yml header comment pins
+the same contract.
 
 Workflow permissions default to `contents: read`; only the publication and cask
 finalization jobs receive `contents: write`, and both are gated by the protected

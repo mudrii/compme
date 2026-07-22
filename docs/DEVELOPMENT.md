@@ -293,6 +293,16 @@ every Monday at 06:17 UTC alongside a live read-only governance re-check, and
 supports manual dispatch. Every workflow job has
 an explicit timeout. Those are hosted-runner gates rather than
 platform-specific macOS commands.
+Dependabot opens grouped PRs — weekly for the two Cargo ecosystems, monthly
+for github-actions (see [`.github/dependabot.yml`](../.github/dependabot.yml))
+— that bump pinned action SHAs and Cargo deps. Each actions PR needs two
+manual follow-ups in the same PR before the gates go green: re-pin the
+action-SHA allowlists in `tools/release/check-model-gates.sh`, and hand-update
+the `# vX.Y.Z` trailing comments on the `uses:` lines (dependabot rewrites
+only the SHA) — until both land the checker fails red, which is intended
+fail-closed behavior; monthly cadence for actions keeps that re-pin churn low.
+[RELEASING.md](RELEASING.md) and the dependabot.yml header comment pin the
+same contract.
 For release-readiness audits with the local GGUF model installed, also run the
 ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md) and the A1b
 manual checklist. The automated tag workflow self-tests the A1b checklist

@@ -226,12 +226,16 @@ signing + hardened runtime + notarization + a native updater.
 **Pending:**
 - Optional later upgrade: replace the GitHub-release menu handoff with a full
   Sparkle/appcast client (must add manifest signature verification first).
-- 🔒 **Repository-governance decision:** live GitHub settings still leave
-  `main` unprotected, allow release-tag creation, permit release-environment
-  self-review and unrestricted deployment branches, and allow actions outside
-  the repository's exact checker allowlist. Closing those external controls
-  needs owner authorization because branch protection conflicts with the
-  current direct-to-`main` development policy. The read-only
+- 🔒 **Repository-governance decision:** the active `protect-main` ruleset
+  already blocks force-pushes and deletion on `main` with no bypass actors;
+  the open decision is whether to strengthen it with required pull-request
+  reviews or status checks, which conflicts with the current
+  direct-to-`main` development policy and so needs owner authorization. Six
+  live caveats remain accepted meanwhile: release-environment reviewer
+  self-approval, release-environment administrator bypass, unrestricted
+  deployment branches, an all-actions-allowed Actions policy with no
+  selected-actions allowlist, no enforced full-SHA pinning, and unrestricted
+  release-tag creation. The read-only
   `tools/release/check-github-governance.sh` now reports each live mismatch and
   has a hermetic `--self-test` in CI/release validation; it deliberately does
   not mutate repository settings. Until the owner decision, tag-controlled
@@ -791,10 +795,13 @@ per-app configurable.
    packaging/signing/publication, and feature-by-platform acceptance/docs after
    the corresponding adapter is functional.
 10. **Settle repository governance with the owner** — use the new read-only
-   governance checker as the live mismatch inventory, then decide whether to protect
-   `main`, restrict release-tag creation and deployment branches, prevent
-   release-environment self-review, and align GitHub's Actions allowlist/SHA-pin
-   policy with the repository checker. Record any deliberately accepted trust
-   boundary if direct-to-`main` remains the chosen workflow.
+   governance checker as the live mismatch inventory, then decide whether to
+   strengthen the active `protect-main` ruleset (already blocking force-pushes
+   and deletion, no bypass actors) with required reviews or status checks,
+   restrict release-tag creation and deployment branches, prevent
+   release-environment self-review and administrator bypass, and align
+   GitHub's Actions allowlist/SHA-pin policy with the repository checker.
+   Record any deliberately accepted trust boundary if direct-to-`main` remains
+   the chosen workflow.
 11. **Tier 1.2 optional updater** — replace the release-page handoff only with a
    signature-verifying native updater design; this remains non-blocking.

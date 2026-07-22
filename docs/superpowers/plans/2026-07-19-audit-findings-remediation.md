@@ -1,6 +1,6 @@
 # Audit-findings remediation plan (2026-07-19 full audit)
 
-**Date:** 2026-07-19 · **Status:** partially delivered in the working tree (2026-07-20, pending commit): items 1 (version-docs gating, extended to all 8 surfaces), 2 (settled via the restructured governance checker — admin-gated endpoints skip-with-warning, ruleset/environment checks always fail; no PAT required), 3 (dependabot re-pin procedure documented in `.github/dependabot.yml`), 5 (comment + `raw_contains` corpus pins), 6 (watchdog plus the marker-file fail), and 4a's guard lock are delivered; item 7 is a documented trade-off; items 0 (commit the stack), 4b (CI split), 8 (god-file series), and 9's runner remain open.
+**Date:** 2026-07-19 · **Status:** partially delivered in the working tree (2026-07-20, pending commit): items 1 (version-docs gating, extended to all 8 surfaces), 2 (settled via the restructured governance checker — admin-gated endpoints skip-with-warning, ruleset/environment checks always fail; no PAT required), 3 (github-actions dependabot cadence monthly, cargo retained weekly, re-pin procedure in docs/RELEASING.md), 5 (comment + `raw_contains` corpus pins), 6 (watchdog plus the marker-file fail), and 4a's guard lock are delivered; item 7 is a documented trade-off; items 0 (commit the stack), 4b (CI split), 8 (god-file series), and 9's runner remain open.
 **Evidence base:** three-round audit 2026-07-19 (five finder agents →
 adversarial verify → fresh independent review → final independent
 re-derivation). All ten consolidated findings CONFIRMED; live execution
@@ -198,6 +198,12 @@ section touched → gates.
 
 **Acceptance:** the procedure is greppable in docs; dependabot config shows
 monthly for actions, weekly retained for cargo.
+
+**Status (2026-07-22):** delivered — `.github/dependabot.yml` scopes the
+github-actions ecosystem to monthly (both cargo ecosystems retain weekly),
+with the rationale recorded in the config comment; the re-pin procedure
+paragraph landed in docs/RELEASING.md's maintenance section (the design's
+DEVELOPMENT-or-RELEASING choice resolved to RELEASING).
 
 ## 4 — Test-suite parallelization split (C4)
 

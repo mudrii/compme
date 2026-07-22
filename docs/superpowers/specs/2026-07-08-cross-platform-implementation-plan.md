@@ -1,7 +1,7 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
 **Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1–6 pending (implementation actionable on hosted runners; native/live acceptance target-system-gated)
-**Prereqs:** clean `main` (builds, clippy clean, ≈1920 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1942 tests green, re-verified 2026-07-21).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
 status ledger; this doc is the execution guide.
 
@@ -25,6 +25,7 @@ launcher description only as historical derivation context.
 This records the pre-Phase-0 state used to derive tasks 0.1–0.4. Current status
 is the header above plus `docs/ROADMAP.md`; do not read the G1–G6 baseline gaps
 below as still-open work after their corresponding Phase 0 item is marked shipped.
+The inventory counts below are frozen at `b367f0f`; re-verified 2026-07-21, `PlatformAdapter` has 14 methods and `ShellHost` has 8 required + 10 defaulted.
 
 - `platform::PlatformAdapter` (15 methods), `ShellHost` (8 required + 9
   defaulted), `OverlayPresenter`, `TrayHandle` — contract complete and
@@ -315,7 +316,7 @@ in-app consumption (ROADMAP 1.2 note stands).
 - Port the macOS worker-thread pattern (single owner thread + mpsc +
   generation stamps + poison-recovery) — UIA STA and D-Bus both need it;
   do not invent a second concurrency idiom.
-- No new abstraction layers: implement against the existing 15-method
+- No new abstraction layers: implement against the existing 14-method
   trait; if a method's shape fights an OS API, change the trait (one
   place) rather than wrapping.
 - Fail-closed stays the default for anything security-adjacent (secure
