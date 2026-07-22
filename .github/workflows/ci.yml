@@ -84,10 +84,15 @@ jobs:
       # #[ignore]d because they need a local GGUF; the tag-release wrapper runs
       # them CPU-forced. The separate spike integration test remains the
       # Metal/GPU-oriented path, so the default branch run stays hermetic.
-      # Note: a few platform_macos tests share the process-wide NSPasteboard and
-      # are serialized to avoid cross-test pasteboard state leaks.
-      - name: Test
-        run: cargo test --locked --workspace --all-targets -- --test-threads=1
+      - name: Test (parallel)
+        run: cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets
+
+      # A few platform_macos tests share the process-wide NSPasteboard and app
+      # tests share shortcut/pasteboard globals, so only these two crates pay
+      # the serial cost to avoid cross-test state leaks; the other 23 crates
+      # run in parallel above.
+      - name: Test (serial, macOS state)
+        run: cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1
 
       - name: Build
         run: cargo build --locked --workspace --all-targets

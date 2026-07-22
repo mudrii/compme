@@ -168,7 +168,8 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 Test:
 
 ```sh
-cargo test --locked --workspace --all-targets -- --test-threads=1
+cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets
+cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1
 ```
 
 Build:
@@ -177,7 +178,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1941 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1942 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -203,7 +204,8 @@ Run this before committing a change to main or treating local validation as comp
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace --all-targets -- --test-threads=1
+cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets
+cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1
 cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
@@ -250,11 +252,15 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1941 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1942 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
-The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
-because the `platform_macos` example regression tests are part of the acceptance
-surface and several macOS pasteboard checks share process-wide OS state.
+`tools/dev/check.sh` parses the fence above and runs it as one command.
+The full gate splits tests into a parallel run over the 23 portable crates and
+a serial run over `platform_macos` and `app` only: the `platform_macos` example
+regression tests are part of the acceptance surface and several macOS
+pasteboard checks share process-wide OS state, and `app` tests share
+shortcut/pasteboard globals, so the serial command keeps `--test-threads=1`
+while the other 23 crates no longer pay the serial cost.
 The `shellcheck` line needs a local shellcheck install (CI gates on it
 regardless); skip it when unavailable. For the cargo half of the gate, an
 opt-in pre-push hook runs `cargo fmt --check`, clippy, and the workspace tests
@@ -344,7 +350,7 @@ Root workspace coverage includes:
 
 The macOS example tests are important because they verify behavior used by live
 acceptance binaries. Compile them via the `--all-targets` gate; run them with
-`cargo test --locked --workspace --all-targets -- --test-threads=1`.
+`cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1`.
 
 **Known flake.** A small number of `platform_macos` tests share the process-wide
 general `NSPasteboard`, so running them in parallel can intermittently fail when

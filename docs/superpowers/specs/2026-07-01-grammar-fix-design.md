@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈1941 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1942 tests green).
 **Release boundary:** this status describes current `main`. The published
 v0.1.4 tag predates the post-release runtime/grammar hardening in `216fa0a` and
 the A2 automation-policy change in `618013d`; those changes require a later tag.
@@ -450,7 +450,8 @@ range bounds and range replacement, not just the existing left-of-caret
 ## Validation commands
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --workspace --all-targets -- -D warnings`
-- `cargo test --locked --workspace --all-targets -- --test-threads=1`
+- `cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets`
+- `cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1`
 - `cargo build --locked --workspace --all-targets`
 - `cargo build --locked -p platform_macos --examples`
 - `find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 | xargs -0 bash -n`

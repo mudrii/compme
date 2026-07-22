@@ -64,6 +64,67 @@ fn load_model_or_skip(path: &std::path::Path) -> Option<LlamaModel> {
     }
 }
 
+fn corpus_path() -> PathBuf {
+    // COMPME_QUALITY_CORPUS overrides the in-repo corpus; relative paths
+    // resolve against the repo root, mirroring tests/quality.rs.
+    if let Ok(raw) = std::env::var("COMPME_QUALITY_CORPUS") {
+        if !raw.trim().is_empty() {
+            let path = PathBuf::from(raw.trim());
+            if path.is_absolute() {
+                return path;
+            }
+            return PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(path);
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/release/quality-corpus.jsonl")
+}
+
+/// Decode the string value of `"key": "..."` in a flat JSON line fragment.
+/// Deliberately small: the corpus is authored in-repo, so the common escapes
+/// suffice and an unterminated or unsupported value simply yields no case.
+fn json_string_field(text: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\": \"");
+    let after = &text[text.find(&pattern)? + pattern.len()..];
+    let mut out = String::new();
+    let mut chars = after.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'r' => out.push('\r'),
+                _ => return None,
+            },
+            _ => out.push(ch),
+        }
+    }
+    None
+}
+
+/// The probe's grammar typo battery as `(typo, want)` pairs: corpus cases on
+/// the grammar path whose `single_word_vetted` expect carries a target value.
+/// The corpus JSONL is the canonical case list; this line-splitting loader
+/// keeps the probe free of a duplicate inline table without pulling the
+/// strict corpus parser out of tests/quality.rs (a separate test target).
+fn grammar_typo_cases(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter(|line| line.contains("\"path\": \"grammar\""))
+        .filter(|line| line.contains("\"type\": \"single_word_vetted\""))
+        .filter_map(|line| {
+            let word = json_string_field(line, "word")?;
+            let expect = line.split_once("\"expect\": {")?.1;
+            let value = json_string_field(expect, "value")?;
+            Some((word, value))
+        })
+        .collect()
+}
+
 // Pure env-parsing guard (no GGUF/GPU needed). The latency-budget gate must arm
 // only on an explicit truthy COMPME_REQUIRE_LATENCY_BUDGET and stay OFF for
 // absent/empty/falsy values, so a normal `cargo test` run never enforces the
@@ -296,18 +357,19 @@ fn model_quality_probe() {
     model.warm_up().expect("warm up");
     eprintln!("== model: {} ==", path.display());
 
-    let typos = [
-        ("teh", "the"),
-        ("recieve", "receive"),
-        ("adress", "address"),
-        ("definately", "definitely"),
-        ("wierd", "weird"),
-        ("occured", "occurred"),
-        ("seperate", "separate"),
-        ("beleive", "believe"),
-    ];
+    // The typo battery comes from the canonical quality corpus (the same
+    // JSONL the corpus quality gate parses), not an inline duplicate.
+    let corpus_path = corpus_path();
+    let corpus_text = std::fs::read_to_string(&corpus_path)
+        .unwrap_or_else(|err| panic!("read corpus {}: {err}", corpus_path.display()));
+    let typos = grammar_typo_cases(&corpus_text);
+    assert!(
+        !typos.is_empty(),
+        "corpus {} has no grammar typo cases",
+        corpus_path.display()
+    );
     let mut fixed = 0;
-    for (typo, want) in typos {
+    for (typo, want) in &typos {
         let t0 = Instant::now();
         let raw = model
             .complete(
@@ -316,7 +378,7 @@ fn model_quality_probe() {
             )
             .expect("grammar completion");
         let vetted = vet_correction(typo, &raw);
-        let ok = vetted.as_deref() == Some(want);
+        let ok = vetted.as_deref() == Some(want.as_str());
         fixed += ok as u32;
         eprintln!(
             "grammar {typo:>11} -> want {want:<11} got {:<11} raw {raw:?} ({} ms) {}",
@@ -380,4 +442,27 @@ fn model_quality_probe() {
     }
 
     Box::new(model).shutdown();
+}
+
+// Model-free branch-CI guard for the corpus loader: the shipped corpus must
+// keep supplying the grammar typo battery (a malformed or moved corpus fails
+// here, not only in the #[ignore]d probe).
+#[test]
+fn repo_corpus_supplies_grammar_typo_cases() {
+    let path = corpus_path();
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("read corpus {}: {err}", path.display()));
+    let cases = grammar_typo_cases(&text);
+    assert!(
+        cases.len() >= 8,
+        "corpus {} has too few grammar typo cases: {cases:?}",
+        path.display()
+    );
+    assert!(
+        cases
+            .iter()
+            .any(|(typo, want)| typo == "teh" && want == "the"),
+        "corpus {} lost the canonical teh -> the case: {cases:?}",
+        path.display()
+    );
 }

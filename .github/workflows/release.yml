@@ -90,8 +90,11 @@ jobs:
       - name: Root clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
-      - name: Root tests
-        run: cargo test --locked --workspace --all-targets -- --test-threads=1
+      - name: Root tests (parallel)
+        run: cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets
+
+      - name: Root tests (serial)
+        run: cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1
 
       # Correctness only on the hosted runner: virtualized macOS has no usable
       # Metal, so the 500ms warm-latency budget is enforced by the mandatory

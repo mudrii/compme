@@ -1,0 +1,48 @@
+name: Docs
+
+# ci.yml's paths-ignore skips docs-only pushes entirely, so this lane keeps the
+# docs-only surface (version docs, script syntax, cask syntax) gated on exactly
+# those pushes.
+on:
+  push:
+    paths:
+      - "docs/**"
+      - "*.md"
+      - "LICENSE"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: version docs · script syntax · cask syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Version docs check
+        run: tools/release/check-version-docs.sh
+
+      - name: Script syntax
+        run: |
+          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 \
+            | xargs -0 bash -n
+
+      # ubuntu-latest ships shellcheck preinstalled (no setup needed). Error
+      # severity only — style findings stay out of CI.
+      - name: Shellcheck (errors only)
+        run: |
+          find tools -type f -name '*.sh' -print0 \
+            | xargs -0 shellcheck --severity=error
+
+      - name: Homebrew cask syntax
+        run: ruby -c Casks/compme.rb

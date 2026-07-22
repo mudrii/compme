@@ -19,6 +19,11 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 if [[ "${COMPME_PREPUSH_SKIP_TESTS:-}" == "1" ]]; then
   echo "pre-push: skipping tests (COMPME_PREPUSH_SKIP_TESTS=1)"
 else
-  echo "pre-push: cargo test --locked --workspace --all-targets -- --test-threads=1"
-  cargo test --locked --workspace --all-targets -- --test-threads=1
+  echo "pre-push: cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets"
+  cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets
+
+  # platform_macos (NSPasteboard) and app (shortcut/pasteboard globals) share
+  # process-wide state, so only these two crates run serialized.
+  echo "pre-push: cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1"
+  cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1
 fi

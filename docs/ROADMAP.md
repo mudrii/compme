@@ -1,12 +1,16 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-18 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, their deduplication/idempotence audit fixes and pinned live gates, three non-critical architecture follow-ups, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped, and the workspace version is single-sourced in the root manifest (`1a12b50`); dated 2026-07-18 and delivered in the working tree pending commit: the Batch 1+2 CI/docs/cask-window/dependabot/pre-push hardening, the active `protect-main` ruleset plus the governance checker's baseline/warnings rework, the six Batch 3+4 quality-and-release-gate items — the corpus model-quality gate at its 20/21 baseline, the branch-CI model-backed smoke gate, the AX insertion-serialization tests, the `run()` startup extraction, the post-publish `post_verify` job, and the version-docs reconciliation check — and the nitpick sweep, all planned in [`docs/superpowers/plans/2026-07-18-quality-and-release-gates.md`](superpowers/plans/2026-07-18-quality-and-release-gates.md), followed by the 2026-07-19 full-audit remediation ([`docs/superpowers/plans/2026-07-19-audit-findings-remediation.md`](superpowers/plans/2026-07-19-audit-findings-remediation.md), committed) covering the version-docs extension, governance-checker rework, quality-corpus pins, and post_verify hardening, with the tree at ≈1941 workspace tests) · **Branch:** `main` · **Tests:** ≈1941 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-18 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, their deduplication/idempotence audit fixes and pinned live gates, three non-critical architecture follow-ups, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped, and the workspace version is single-sourced in the root manifest (`1a12b50`); dated 2026-07-18 and delivered in the working tree pending commit: the Batch 1+2 CI/docs/cask-window/dependabot/pre-push hardening, the active `protect-main` ruleset plus the governance checker's baseline/warnings rework, the six Batch 3+4 quality-and-release-gate items — the corpus model-quality gate at its 20/21 baseline, the branch-CI model-backed smoke gate, the AX insertion-serialization tests, the `run()` startup extraction, the post-publish `post_verify` job, and the version-docs reconciliation check — and the nitpick sweep, all planned in [`docs/superpowers/plans/2026-07-18-quality-and-release-gates.md`](superpowers/plans/2026-07-18-quality-and-release-gates.md), followed by the 2026-07-19 full-audit remediation ([`docs/superpowers/plans/2026-07-19-audit-findings-remediation.md`](superpowers/plans/2026-07-19-audit-findings-remediation.md), committed) covering the version-docs extension, governance-checker rework, quality-corpus pins, and post_verify hardening, with the tree at ≈1942 workspace tests) · **Branch:** `main` · **Tests:** ≈1942 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
 > records, in detail, what remains. It is the single source of truth for "what's
 > pending" — kept in sync as items ship. Status claims here are evidence-backed
 > with symbol/function/gate anchors re-reviewed 2026-07-16 on the current tree.
+
+<details>
+<summary>Commit-by-commit delivery log (v0.1.4 → v0.1.5 and post-release hardening)</summary>
+
 > Evidence includes the full 48-commit delta from `v0.1.4` through `14ae81e`
 > (published as `v0.1.5`): cross-platform Phase 0, the model-catalog size correction,
 > stale-focus/terminal/Finder/private-file/URL-handler fixes, mutation-backed
@@ -29,6 +33,8 @@
 > `5b81a8c`/`db4a55b` (workflow actionlint gate, Linux-lane `cargo-audit`,
 > build-provenance attestation with pre-publication verification,
 > explicit-refspec head gates, and spike build caching).
+
+</details>
 
 > **Release boundary:** the published v0.1.5 artifact is tag `v0.1.5` (commit
 > `14ae81e`); the previous v0.1.4 artifact is tag `v0.1.4` (commit `18b8dc0`).

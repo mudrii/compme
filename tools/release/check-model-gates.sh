@@ -20,6 +20,7 @@ update_manifest_script="$repo_root/tools/release/write-update-manifest.sh"
 version_validator_script="$repo_root/tools/release/validate-version.sh"
 quality_script="$repo_root/tools/release/check-quality.sh"
 version_docs_script="$repo_root/tools/release/check-version-docs.sh"
+check_runner_script="$repo_root/tools/dev/check.sh"
 acceptance_doc="$repo_root/docs/ACCEPTANCE.md"
 manual_validation_doc="$repo_root/docs/MANUAL-VALIDATION.md"
 development_doc="$repo_root/docs/DEVELOPMENT.md"
@@ -898,6 +899,8 @@ check_all_self_test_env_contracts() {
     COMPME_REQUIRE_MODEL_TESTS COMPME_REQUIRE_MODEL_CONTEXT \
     COMPME_QUALITY_CORPUS
   check_self_test_env_file "$version_docs_script" COMPME_VERSION_DOCS_ROOT
+  check_self_test_env_file "$check_runner_script" \
+    CDPATH COMPME_CHECK_FAKE_LOG COMPME_CHECK_FAKE_CARGO_FAIL
 }
 
 run_self_test() {
@@ -3030,7 +3033,8 @@ ruby -ryaml -e '
   {
     "CI root format" => ["Format", "cargo fmt --all -- --check"],
     "CI root clippy" => ["Clippy (deny warnings)", "cargo clippy --locked --workspace --all-targets -- -D warnings"],
-    "CI root test" => ["Test", "cargo test --locked --workspace --all-targets -- --test-threads=1"],
+    "CI root test parallel" => ["Test (parallel)", "cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets"],
+    "CI root test serial" => ["Test (serial, macOS state)", "cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1"],
     "CI root build" => ["Build", "cargo build --locked --workspace --all-targets"],
     "CI platform_macos examples build" => ["Build macOS acceptance examples", "cargo build --locked -p platform_macos --examples"],
     "CI rustdoc" => ["Rustdoc (deny warnings)", "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --workspace"],
@@ -3157,7 +3161,8 @@ ruby -ryaml -e '
   {
     "release root format" => ["Root format", "cargo fmt --all -- --check"],
     "release root clippy" => ["Root clippy", "cargo clippy --locked --workspace --all-targets -- -D warnings"],
-    "release root test" => ["Root tests", "cargo test --locked --workspace --all-targets -- --test-threads=1"],
+    "release root test parallel" => ["Root tests (parallel)", "cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets"],
+    "release root test serial" => ["Root tests (serial)", "cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1"],
     "release root build" => ["Root build", "cargo build --locked --workspace --all-targets"],
     "release platform_macos examples build" => ["Build macOS acceptance examples", "cargo build --locked -p platform_macos --examples"],
     "release quality gate" => ["Model-quality gate", "bash tools/release/check-quality.sh"],
@@ -3673,6 +3678,7 @@ require_line "$version_docs_script" 'points to' "version docs check covers DEVEL
 require_line "$version_docs_script" 'latest published artifact' "version docs check covers ACCEPTANCE header"
 require_line "$version_docs_script" 'Release boundary' "version docs check covers ARCHITECTURE boundary"
 require_line "$version_docs_script" 'Validate the latest published' "version docs check covers MANUAL-VALIDATION boundary"
+require_line "$check_runner_script" '## Full Local Gate' "gate runner consumes the canonical DEVELOPMENT fence"
 reject_line "$repo_root/crates/model_client/tests/latency.rs" 'Metal GPU' "root model-client ignored tests stale GPU wording"
 require_line "$finalize_cask_script" 'git fetch --no-tags origin' "cask finalizer disables implicit tag fetches"
 require_line "$finalize_cask_script" '\+refs/heads/\$default_branch:\$remote_branch_ref' "cask finalizer refreshes the remote branch explicitly"
@@ -3786,7 +3792,8 @@ require_development_gate_line '^tools/release/check-version-docs\.sh[[:space:]]*
 require_development_gate_line '^bash tools/release/check-quality\.sh[[:space:]]*$' "DEVELOPMENT model-quality gate"
 require_grammar_spec_validation_line '^cargo fmt --all -- --check[[:space:]]*$' "grammar spec fmt gate"
 require_grammar_spec_validation_line '^cargo clippy --locked --workspace --all-targets -- -D warnings[[:space:]]*$' "grammar spec clippy gate"
-require_grammar_spec_validation_line '^cargo test --locked --workspace --all-targets -- --test-threads=1[[:space:]]*$' "grammar spec workspace test gate"
+require_grammar_spec_validation_line '^cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets[[:space:]]*$' "grammar spec parallel test gate"
+require_grammar_spec_validation_line '^cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1[[:space:]]*$' "grammar spec serial test gate"
 require_grammar_spec_validation_line '^cargo build --locked --workspace --all-targets[[:space:]]*$' "grammar spec workspace build gate"
 require_grammar_spec_validation_line '^cargo build --locked -p platform_macos --examples[[:space:]]*$' "grammar spec platform_macos examples build gate"
 require_line "$grammar_spec" 'find tools/acceptance tools/bundle tools/release -type f -name.*-print0.*xargs -0 bash -n' "grammar spec script syntax gate"
