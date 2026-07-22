@@ -35,6 +35,6 @@ version = "0.1.5"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-getrandom = "0.3"
+getrandom = "0.4"
 libc = "0.2"
 zeroize = "1"
