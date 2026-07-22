@@ -124,6 +124,20 @@ validate_finalized_cask() {
   require_exact_cask_line "$cask_path" "  depends_on arch: :arm64" "arm64 dependency"
 }
 
+previous_release_version() {
+  # Print the newest stable tag version (other than the release tag $2)
+  # reachable from the release tag commit $1; empty when none is visible.
+  local tag_sha="$1"
+  local tag="$2"
+  local candidate
+  for candidate in $(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname --merged "$tag_sha"); do
+    if [ "$candidate" != "$tag" ]; then
+      printf '%s\n' "${candidate#v}"
+      return 0
+    fi
+  done
+}
+
 finalize_cask() {
   tag="$1"
   artifact_path="$2"
@@ -173,8 +187,19 @@ finalize_cask() {
   git checkout "$default_branch"
   git pull --ff-only --no-tags origin "$default_branch"
   current_cask_version="$(ruby -ne 'puts $1 if /^  version "([^"]+)"/' Casks/compme.rb)"
-  if [ "$current_cask_version" != "$version" ]; then
-    echo "default-branch cask version is $current_cask_version, expected $version" >&2
+  # The release-prep commit no longer touches the cask, so mid-release it
+  # intentionally lags: accept the previous release tag's version (or an
+  # already-finalized cask on retries) and refuse anything else.
+  previous_cask_version="$(previous_release_version "$tag_sha" "$tag")"
+  if [ -z "$previous_cask_version" ]; then
+    # Recovery checkouts may carry only the release tag; refresh tag refs
+    # best-effort so the one-release-lag allowance still applies.
+    git fetch --quiet --tags origin >/dev/null 2>&1 || true
+    previous_cask_version="$(previous_release_version "$tag_sha" "$tag")"
+  fi
+  if [ "$current_cask_version" != "$version" ] &&
+    { [ -z "$previous_cask_version" ] || [ "$current_cask_version" != "$previous_cask_version" ]; }; then
+    echo "default-branch cask version is $current_cask_version, expected $version or previous release ${previous_cask_version:-none}" >&2
     echo "refusing to publish a stale or out-of-order cask update" >&2
     return 1
   fi
@@ -216,12 +241,16 @@ make_fixture_repo() {
   local root="$1"
   local behavior="$2"
   local work="$root/work"
-  local fixture_label artifact_sha initial_sha fixture_sha remote_branch_sha remote_tag_sha
+  local fixture_label artifact_sha initial_sha cask_version fixture_sha remote_branch_sha remote_tag_sha
   fixture_label="$(basename "$root")"
   artifact_sha="$(shasum -a 256 "$(dirname "$root")/compme-9.8.7-macos.zip" | awk '{print $1}')"
   initial_sha="$artifact_sha"
-  if [ "$behavior" = "modify" ]; then
+  cask_version="9.8.7"
+  if [ "$behavior" = "modify" ] || [ "$behavior" = "lag" ]; then
     initial_sha="0000000000000000000000000000000000000000000000000000000000000000"
+  fi
+  if [ "$behavior" = "lag" ]; then
+    cask_version="9.8.6"
   fi
   mkdir -p "$root/remote.git" "$work"
   fixture_step "$fixture_label bare init" \
@@ -233,7 +262,7 @@ make_fixture_repo() {
   mkdir -p "$work/Casks" "$work/tools/release"
   cat >"$work/Casks/compme.rb" <<CASK
 cask "compme" do
-  version "9.8.7"
+  version "$cask_version"
   sha256 "$initial_sha"
   url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
   depends_on macos: :sonoma
@@ -261,6 +290,10 @@ case "$behavior" in
     sha="\$(shasum -a 256 "\${COMPME_CASK_ARTIFACT:?}" | awk '{print \$1}')"
     SHA="\$sha" ruby -0pi -e 'replacement = "sha256 \"" + ENV.fetch("SHA") + "\""; sub(/sha256 "[0-9a-f]+"/, replacement)' "\$cask"
     ;;
+  lag)
+    sha="\$(shasum -a 256 "\${COMPME_CASK_ARTIFACT:?}" | awk '{print \$1}')"
+    SHA="\$sha" ruby -0pi -e 'sub(/version "[0-9.]+"/, "version \"9.8.7\""); replacement = "sha256 \"" + ENV.fetch("SHA") + "\""; sub(/sha256 "[0-9a-f]+"/, replacement)' "\$cask"
+    ;;
   bad-syntax) printf '%s\n' 'this is not (' >>"\$cask" ;;
   wrong-arch) ruby -0pi -e 'sub(/depends_on arch: :arm64/, "depends_on arch: :x86_64")' "\$cask" ;;
   wrong-version) ruby -0pi -e 'sub(/version "9\.8\.7"/, "version \\"9.9.9\\"")' "\$cask" ;;
@@ -276,10 +309,19 @@ SH
       -c commit.gpgsign=false commit -m initial >/dev/null || return 1
   fixture_step "$fixture_label tag" \
     git -C "$work" -c tag.gpgSign=false tag v9.8.7 || return 1
+  if [ "$behavior" = "lag" ]; then
+    fixture_step "$fixture_label previous tag" \
+      git -C "$work" -c tag.gpgSign=false tag v9.8.6 || return 1
+  fi
   fixture_step "$fixture_label push" \
     git -C "$work" -c push.gpgSign=false push -q origin \
       refs/heads/main:refs/heads/main \
       refs/tags/v9.8.7:refs/tags/v9.8.7 || return 1
+  if [ "$behavior" = "lag" ]; then
+    fixture_step "$fixture_label previous tag push" \
+      git -C "$work" -c push.gpgSign=false push -q origin \
+        refs/tags/v9.8.6:refs/tags/v9.8.6 || return 1
+  fi
   fixture_sha="$(git -C "$work" rev-parse HEAD)"
   remote_branch_sha="$(git --git-dir="$root/remote.git" rev-parse refs/heads/main)"
   remote_tag_sha="$(git --git-dir="$root/remote.git" rev-parse refs/tags/v9.8.7)"
@@ -504,6 +546,48 @@ SH
   git -C "$tmp/modify/work" fetch origin main >/dev/null 2>&1
   git -C "$tmp/modify/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
   grep -Fxq "$artifact" "$tmp/artifacts.log"
+
+  # In-flight release window: the prep commit leaves the cask at the previous
+  # release tag's version, and finalization bumps version+sha256 together.
+  make_fixture_repo "$tmp/lagging" lag
+  lag_sha="$(git -C "$tmp/lagging/work" rev-parse HEAD)"
+  detach_release_checkout "$tmp/lagging/work" "$lag_sha"
+  lag_artifact_sha="$(shasum -a 256 "$artifact" | awk '{print $1}')"
+  COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging/work" \
+    GITHUB_SHA="$lag_sha" \
+    "$0" v9.8.7 "$artifact" 9.8.7 main >"$tmp/lagging.out"
+  git -C "$tmp/lagging/work" fetch origin main >/dev/null 2>&1
+  git -C "$tmp/lagging/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
+  grep -q 'version "9.8.7"' "$tmp/lagging/work/Casks/compme.rb"
+  grep -q "sha256 \"$lag_artifact_sha\"" "$tmp/lagging/work/Casks/compme.rb"
+
+  # Same window with only the release tag in the local checkout: the previous
+  # tag is recovered from origin by the finalizer's best-effort tag fetch.
+  make_fixture_repo "$tmp/lagging-fetch" lag
+  lagging_fetch_sha="$(git -C "$tmp/lagging-fetch/work" rev-parse HEAD)"
+  detach_release_checkout "$tmp/lagging-fetch/work" "$lagging_fetch_sha"
+  git -C "$tmp/lagging-fetch/work" tag -d v9.8.6 >/dev/null
+  COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging-fetch/work" \
+    GITHUB_SHA="$lagging_fetch_sha" \
+    "$0" v9.8.7 "$artifact" 9.8.7 main >"$tmp/lagging-fetch.out"
+  git -C "$tmp/lagging-fetch/work" fetch origin main >/dev/null 2>&1
+  git -C "$tmp/lagging-fetch/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
+  grep -q 'version "9.8.7"' "$tmp/lagging-fetch/work/Casks/compme.rb"
+
+  # A cask that moved past the previous release version is still refused.
+  make_fixture_repo "$tmp/lagging-moved-past" lag
+  lagging_moved_past_sha="$(git -C "$tmp/lagging-moved-past/work" rev-parse HEAD)"
+  ruby -0pi -e 'sub(/version "9\.8\.6"/, "version \"9.9.9\"")' "$tmp/lagging-moved-past/work/Casks/compme.rb"
+  git -C "$tmp/lagging-moved-past/work" add Casks/compme.rb
+  git -C "$tmp/lagging-moved-past/work" -c user.name=t -c user.email=t@example.test commit -m moved-past >/dev/null
+  git -C "$tmp/lagging-moved-past/work" push origin main >/dev/null 2>&1
+  if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging-moved-past/work" \
+    GITHUB_SHA="$lagging_moved_past_sha" \
+    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/lagging-moved-past.err"; then
+    echo "finalize-cask self-test failed: moved-past cask version was accepted" >&2
+    return 1
+  fi
+  grep -q "refusing to publish a stale or out-of-order cask update" "$tmp/lagging-moved-past.err"
 
   make_fixture_repo "$tmp/frozen-provenance" modify
   frozen_sha="$(git -C "$tmp/frozen-provenance/work" rev-parse HEAD)"

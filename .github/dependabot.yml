@@ -1,0 +1,43 @@
+# Action SHA bumps (github-actions ecosystem below) require two manual
+# follow-ups in the same PR: re-pin tools/release/check-model-gates.sh, which
+# pins the exact action SHAs, and update the `# vX.Y.Z` trailing comments on
+# the `uses:` lines by hand (dependabot rewrites only the SHA).
+version: 2
+updates:
+  # Workflow action pins (SHA-pinned; dependabot rewrites to the new SHA).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    # One bundled PR per ecosystem keeps review noise low.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+  # Cargo workspace deps. Exact-pinned deps (e.g. llama-cpp-2, ed25519-dalek)
+  # still get PRs; the maintainer reviews those case-by-case.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    groups:
+      cargo:
+        patterns:
+          - "*"
+  # tools/spike is a separate locked package tree with its own Cargo.lock and
+  # duplicated pins (llama-cpp-2 =0.1.146 etc.), invisible to the root
+  # workspace entry above.
+  - package-ecosystem: cargo
+    directory: "/tools/spike"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    groups:
+      cargo-spike:
+        patterns:
+          - "*"

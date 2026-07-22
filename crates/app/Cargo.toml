@@ -27,8 +27,8 @@ autocorrect = { path = "../autocorrect" }
 grammar = { path = "../grammar" }
 localize = { path = "../localize" }
 thesaurus = { path = "../thesaurus" }
-zeroize = "1"
-getrandom = "0.2"
+zeroize.workspace = true
+getrandom.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 platform_macos = { path = "../platform_macos" }
@@ -40,4 +40,4 @@ platform_windows = { path = "../platform_windows" }
 platform_linux = { path = "../platform_linux" }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true

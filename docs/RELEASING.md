@@ -20,9 +20,9 @@ platforms.
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push to `main` / `spike/**`, PR, or `workflow_dispatch` | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, plus non-A2 acceptance/bundle/release script syntax, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), release-version validator self-test, Homebrew cask Ruby syntax (`ruby -c Casks/compme.rb`), bundle assembler and icon-generator self-tests (`tools/bundle/make-app.sh --self-test` and `tools/bundle/make-icon.sh --self-test`), bundle smoke + self-test (`tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`), UI-assisted session self-test (`tools/acceptance/run-ui-assisted-session.sh --self-test`), A1b/E2E self-tests, agent-brief alignment + self-test (`tools/release/check-agent-briefs.sh` and `tools/release/check-agent-briefs.sh --self-test`), privacy policy + self-test (`tools/release/check-privacy-policy.sh` and `tools/release/check-privacy-policy.sh --self-test`), read-only GitHub-governance checker self-test (`tools/release/check-github-governance.sh --self-test`), missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. Windows/Linux portability jobs fmt the workspace, clippy/test the workspace excluding `platform_macos`, and build the app binary through the target facade; the Linux job also runs the pinned `cargo-audit`. A separate Ubuntu job runs `actionlint` (with shellcheck over inline `run:` blocks) across all workflows. |
-| [`.github/workflows/audit.yml`](../.github/workflows/audit.yml) | Mondays at 06:17 UTC or `workflow_dispatch` | One isolated Ubuntu job installs `cargo-audit` 0.22.2 with `--locked` and audits `Cargo.lock`. It has read-only contents permission (plus `issues: write` for failure notification), a 20-minute timeout, and does not cancel an in-progress audit. On failure it opens or updates a tracking issue so scheduled breakage is not lost to email. |
-| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected stable tag `vX.Y.Z` | Preflight validates the stable version, exact default-branch tip, and bundle metadata. Validation installs pinned `cargo-audit` 0.22.2 and runs root/spike gates and release self-tests, while separate Windows/Linux jobs run the full portable-workspace plus app-binary gates. Secretless prebuild produces an exact-arm64 binary. Protected signing downloads and re-verifies it, signs, notarizes, staples, deletes the signing keychain, packages the zip, then expands the final zip and requires exactly one top-level `Compme.app` that passes strict `codesign`, staple, and Gatekeeper assessment, and finally attests build provenance for the packaged zip. Publication verifies the downloaded zip's checksum and provenance attestation, writes the update manifest from that checksum, and creates a draft after an exact-tip check; it then re-fetches tag/default branch immediately before undraft, deleting the stale draft and failing on drift. The cask finalizer re-verifies checksum and attestation, then verifies its local zip against the published checksum asset before branch mutation. All jobs have explicit timeouts: the outer signing job allows 360 minutes, while the notary submission defaults to 60 minutes and can be raised with `COMPME_NOTARYTOOL_TIMEOUT` below the outer ceiling. |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | push to `main` / `spike/**`, PR, or `workflow_dispatch` (`paths-ignore` skips docs-only pushes) | Root gates: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets -- --test-threads=1`, `cargo build --locked --workspace --all-targets`, `cargo build --locked -p platform_macos --examples`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace`, a Model-backed smoke gate (`COMPME_REQUIRE_LATENCY_BUDGET=0 bash tools/release/run-model-gates.sh` against the rust-cache-cached pinned GGUF), plus acceptance/bundle/release script syntax and error-severity shellcheck over `tools/**/*.sh`, bundle metadata/version check + self-test (`tools/bundle/check-bundle-metadata.sh` and `tools/bundle/check-bundle-metadata.sh --self-test`), version-docs check + self-test (`tools/release/check-version-docs.sh` and `tools/release/check-version-docs.sh --self-test`), release-version validator self-test, Homebrew cask Ruby syntax (`ruby -c Casks/compme.rb`), bundle assembler and icon-generator self-tests (`tools/bundle/make-app.sh --self-test` and `tools/bundle/make-icon.sh --self-test`), bundle smoke + self-test (`tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`), UI-assisted session self-test (`tools/acceptance/run-ui-assisted-session.sh --self-test`), A1b/E2E self-tests, agent-brief alignment + self-test (`tools/release/check-agent-briefs.sh` and `tools/release/check-agent-briefs.sh --self-test`), privacy policy + self-test (`tools/release/check-privacy-policy.sh` and `tools/release/check-privacy-policy.sh --self-test`), read-only GitHub-governance checker self-test (`tools/release/check-github-governance.sh --self-test`), missing-model startup self-test + product smoke (`tools/acceptance/missing-model-startup.sh --self-test` and `tools/acceptance/missing-model-startup.sh`), model-client feature policy + self-test (`tools/release/check-model-client-features.sh` and `tools/release/check-model-client-features.sh --self-test`), release model-gate policy, model-gate self-test (`tools/release/run-model-gates.sh --self-test`), quality-gate self-test (`tools/release/check-quality.sh --self-test`), cask-updater self-test (`tools/release/update-cask.sh --self-test`), cask-finalizer self-test (`tools/release/finalize-cask.sh --self-test`), notarization helper self-test (`tools/release/notarize-app.sh --self-test`), and update-manifest self-test (`tools/release/write-update-manifest.sh --self-test`). Spike gates: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo build --locked --bins` in `tools/spike`. Windows/Linux portability jobs clippy/test the workspace excluding `platform_macos` and build the app binary through the target facade (workspace fmt runs once on the macOS lane; rustfmt output is platform-independent); the Linux job also runs the pinned `cargo-audit`. A separate Ubuntu job runs `actionlint` (with shellcheck over inline `run:` blocks) across all workflows. |
+| [`.github/workflows/audit.yml`](../.github/workflows/audit.yml) | Mondays at 06:17 UTC or `workflow_dispatch` | Two isolated Ubuntu jobs. The audit job installs `cargo-audit` 0.22.2 with `--locked` and audits `Cargo.lock`; the governance job runs `tools/release/check-github-governance.sh` live (read-only) against the repository settings, degrading to a warning when an endpoint requires the Administration permission that `GITHUB_TOKEN` cannot hold. Both have read-only contents permission (plus `issues: write` for failure notification), explicit timeouts, and do not cancel in-progress runs. On failure either job opens or updates a tracking issue so scheduled breakage is not lost to email. |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml) | protected stable tag `vX.Y.Z` | Preflight validates the stable version, exact default-branch tip, and bundle metadata. Validation installs pinned `cargo-audit` 0.22.2 and runs root/spike gates and release self-tests plus the model-backed gates — the release model-gate wrapper and the corpus-based Model-quality gate (`tools/release/check-quality.sh`) — while separate Windows/Linux jobs run the portable-workspace clippy/test plus app-binary gates (fmt runs once on the macOS lane). Secretless prebuild produces an exact-arm64 binary. Protected signing downloads and re-verifies it, signs, notarizes, staples, deletes the signing keychain, packages the zip, then expands the final zip and requires exactly one top-level `Compme.app` that passes strict `codesign`, staple, and Gatekeeper assessment, and finally attests build provenance for the packaged zip. Publication verifies the downloaded zip's checksum and provenance attestation, writes the update manifest from that checksum, and creates a draft after an exact-tip check; it then re-fetches tag/default branch immediately before undraft, deleting the stale draft and failing on drift. The cask finalizer re-verifies checksum and attestation, then verifies its local zip against the published checksum asset before branch mutation. A closing `post_verify` job (`needs: finalize_cask`) downloads the published assets, verifies the zip against its checksum asset, installs the published cask with `brew install --cask compme`, assesses the installed app with strict codesign, staple, and Gatekeeper checks, and runs a bounded startup smoke. All jobs have explicit timeouts: the outer signing job allows 360 minutes, while the notary submission defaults to 60 minutes and can be raised with `COMPME_NOTARYTOOL_TIMEOUT` below the outer ceiling. |
 
 CI (the Linux portability job) and tag validation install `cargo-audit` 0.22.2
 with `--locked` and run `cargo audit` under `contents: read`. The weekly
@@ -42,27 +42,39 @@ The workflow never overwrites an existing asset, but GitHub release assets are
 still inside the trust boundary of privileged contents writers unless the
 repository separately enables GitHub Immutable Releases.
 
-**Current live-governance caveat (verified 2026-07-16):** the workflow declares
-the `release` environment, but live settings allow reviewer self-approval,
-administrator bypass, and unrestricted deployment branches; `main` is not
-protected, repository Actions allow every action, required SHA pinning is off,
-and the active release-tag ruleset does not restrict tag creation. These
-controls therefore do not provide an independent approval boundary. Run
+**Current live-governance caveat (verified 2026-07-18):** `main` is covered by
+the active `protect-main` ruleset, which blocks force-pushes and deletion but
+requires no reviews or status checks, preserving the direct-to-`main`
+workflow. The remaining gaps are accepted owner decisions: live settings allow
+reviewer self-approval, administrator bypass, and unrestricted deployment
+branches; repository Actions allow every action, required SHA pinning is off,
+and the release-tag ruleset does not restrict tag creation. These controls
+therefore do not provide an independent approval boundary. Run
 `tools/release/check-github-governance.sh` for a read-only check of the live
 settings; `--self-test` validates the checker without network access and runs
-in CI/release validation. The live check intentionally remains outside CI and
-release execution until the owner chooses between protected-branch review and
-the documented direct-to-`main` workflow. The owner decision and exact
-remediation choices remain tracked in [ROADMAP.md](ROADMAP.md).
+in CI/release validation. The live check runs weekly in the `governance` job
+of `audit.yml`: endpoint reads that require the Administration permission are
+skipped with warnings, since `GITHUB_TOKEN` cannot hold it, while the ruleset
+and environment checks are always evaluated and fail — opening a tracking
+issue — on regressions from the documented baseline (main ruleset intact,
+reviewer requirement present, release-tag ruleset complete); the accepted gaps
+above print as warnings. The remaining
+hardening decision — protected-branch review versus the documented
+direct-to-`main` workflow — stays with the owner and is tracked in
+[ROADMAP.md](ROADMAP.md).
 
-A2 validation is local/manual-only. The automated workflows exclude
-`tools/acceptance/run-a2-compat-gates.sh` and
-`tools/release/check-a2-matrix-ledger.sh` from both execution and the generic
-shell-syntax pass; `check-model-gates.sh` rejects their reintroduction.
+A2 validation is local/manual-only. The automated workflows never execute
+`tools/acceptance/run-a2-compat-gates.sh` or
+`tools/release/check-a2-matrix-ledger.sh` (the generic `bash -n` script-syntax
+traversal only parses them); `check-model-gates.sh` rejects their automated
+execution.
 
 Model-inference tests (`crates/model_client/tests/latency.rs` and the spike model
-integration test) are `#[ignore]`d because they need a local GGUF, so branch/PR
-CI remains hermetic. The Release workflow CPU-forces the root `model_client`
+integration test) are `#[ignore]`d because they need a local GGUF, so the default
+`cargo test` lane on branch/PR CI stays hermetic; a separate Model-backed smoke
+gate step runs the release wrapper per push with
+`COMPME_REQUIRE_LATENCY_BUDGET=0` (functional load/complete/shutdown coverage on
+the cached, pinned GGUF). The Release workflow CPU-forces the root `model_client`
 latency suite with `COMPME_MODEL_GPU_LAYERS=0`; the separate spike integration
 test remains Metal/GPU-oriented. Hosted tag validation runs
 [`tools/release/run-model-gates.sh`](../tools/release/run-model-gates.sh) with
@@ -77,9 +89,10 @@ wrapper passes that verified model path into the spike integration test through
 model-client gate.
 
 The release workflow runs `run-a1b-live-gates.sh --self-test` only to pin the
-runner and its 17 LOOK/manual checklist IDs. It does not execute a granted GUI
-session or convert those pending checks into release passes; current live status
-is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
+runner and the runner-pinned manual gates listed in
+[ACCEPTANCE.md](ACCEPTANCE.md). It does not execute a granted GUI session or
+convert those pending checks into release passes; current live status is tracked
+in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
 
 ## Cutting a release
 
@@ -127,19 +140,21 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    Tag releases fail closed if any Developer-ID or notarization secret is
    missing; there is no unsigned publication fallback.
 2. Bump the version in the root `Cargo.toml` (`[workspace.package]` — every
-   crate, including `app`, inherits it via `version.workspace = true`),
+   crate, including `app`, inherits it via `version.workspace = true`) and
    `tools/bundle/Info.plist`
    (both `CFBundleShortVersionString` and `CFBundleVersion` to the same value —
-   `check-bundle-metadata.sh` enforces equality), and `Casks/compme.rb`
-   (`version`). Refresh `Cargo.lock` so its package entries record the same
+   `check-bundle-metadata.sh` enforces equality). Do NOT bump `Casks/compme.rb`
+   here: the published cask keeps serving the previous release (its `version`
+   and `sha256` stay a consistent pair) until the cask-finalization job rewrites
+   both lines from the published artifact, so `brew install --cask compme` keeps
+   working throughout the release. Refresh `Cargo.lock` so its package entries record the same
    version (for example, run `cargo check --workspace` once without `--locked`), then
-   validate the version and both distribution metadata surfaces before committing:
+   validate the version and bundle metadata before committing:
 
    ```sh
    version="X.Y.Z"
    tools/release/validate-version.sh "$version"
    tools/bundle/check-bundle-metadata.sh
-   ruby -c Casks/compme.rb
    ```
 
    Releases use one stable-only version contract: `X.Y.Z` in bundle, Cargo, and
@@ -169,6 +184,19 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    `COMPME_REQUIRE_LATENCY_BUDGET=1`, then runs the spike model integration test
    with `COMPME_SPIKE_MODEL_PATH` pointing at the same verified GGUF,
    `COMPME_REQUIRE_MODEL_TESTS=1`, and `COMPME_REQUIRE_LATENCY_BUDGET=1`.
+
+   Run the corpus-based model-quality gate alongside it. The gate reuses the
+   same pinned, hash-verified GGUF, runs every case in
+   `tools/release/quality-corpus.jsonl` through the real model, and fails when
+   the corpus pass rate drops below the 80% pass threshold:
+
+   ```sh
+   bash tools/release/check-quality.sh
+   ```
+
+   The release `validate` job runs the same command after the model-backed
+   release gates, so quality drift fails the pipeline even when skipped
+   locally.
 
    A2 is not an automated tag gate. For an explicit local/manual pre-release
    compatibility pass, run its matrix against the target apps and validate the
@@ -214,7 +242,8 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    immediately before undraft. Drift deletes the stale draft and fails closed.
    The cask finalizer refuses to update `main`
    if the tag commit is not an ancestor of the default branch or if the
-   default-branch cask version has already moved past the tag version:
+   default-branch cask version is neither the tag version nor the previous
+   release tag's version (a stale or out-of-order cask):
 
    ```sh
    git checkout main
@@ -250,15 +279,17 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    same-name release assets are never overwritten; a collision fails closed
    because create-only publication refuses the existing release for the tag.
 
-   The release body is auto-generated from commits. When curated notes exist
-   (e.g. [`docs/RELEASE-NOTES-v0.1.0.md`](RELEASE-NOTES-v0.1.0.md)), paste them
-   above the generated list in the web UI or combine both sections into one file
-   before using `gh release edit "$tag" --notes-file <combined-file>`; that option
-   replaces the whole body rather than prepending text. Also refresh the README
-   **Status** section if this is the first release.
+   The release body is auto-generated from commits (`--generate-notes`), and
+   those GitHub-generated notes are the policy going forward — v0.1.3 and later
+   shipped on them alone, with no hand-written file. The curated
+   [`docs/RELEASE-NOTES-v0.1.0.md`](RELEASE-NOTES-v0.1.0.md),
+   `RELEASE-NOTES-v0.1.1.md`, and `RELEASE-NOTES-v0.1.2.md` files are historical
+   pre-0.1.3 artifacts, kept for the record and no longer produced. Also refresh
+   the README **Status** section if this is the first release.
 5. After publication, the separate **Finalize Homebrew cask** job downloads the
-   artifact again and commits the cask sha256 back to the default branch. The
-   finalizer independently downloads the published release's
+   artifact again and commits the cask version and sha256 back to the default
+   branch — until then the cask intentionally still names the previous release.
+   The finalizer independently downloads the published release's
    `<zip>.sha256` with `gh`, requires its exact lowercase-SHA-256/filename format,
    and refuses a local artifact whose bytes do not match it. Before it checks out
    or pulls the mutable default branch, it also verifies the release tag commit
@@ -311,10 +342,13 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    - If the release is already published and only cask finalization fails, rerun
      only the failed **Finalize Homebrew cask** job. Approve its protected
      `release` environment again; it re-downloads and re-verifies the published
-     artifact without creating or uploading another release. Do this promptly:
-     until the job succeeds, the cask on `main` already names the new version
-     but still carries the previous release's `sha256`, so
-     `brew install --cask compme` fails closed with a checksum mismatch.
+     artifact without creating or uploading another release. There is no
+     broken-cask window: until the job succeeds, the cask on `main`
+     intentionally lags the release, still naming the previous version with its
+     matching `sha256`, so `brew install --cask compme` keeps installing the
+     previous, consistent release. The bundle-metadata check enforces exactly
+     this contract — the cask version must equal the app version or the latest
+     release tag's version.
    - If the Actions rerun window or workflow artifacts have expired, do not
      rebuild and upload new bytes under the existing protected tag. If a draft
      already contains all three original assets, download them, verify the zip
@@ -326,13 +360,16 @@ is tracked in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
      asset, not from the local file.
 
    Post-publish checklist:
-   - `gh release view "vX.Y.Z"` (with the published tag substituted) shows all
-     three assets (zip, `.sha256`,
+   - Confirm the `post_verify` job (Post-publish install verification) is
+     green: it downloads the published assets and verifies the zip against its
+     checksum asset, installs the published cask with `brew tap mudrii/compme
+     https://github.com/mudrii/compme && brew install --cask compme`, assesses
+     `/Applications/Compme.app` with strict codesign, staple, and Gatekeeper
+     checks, and runs a bounded startup smoke — the automated replacement for
+     the old clean-machine install check.
+   - One-line manual spot-check: `gh release view "vX.Y.Z"` (with the
+     published tag substituted) shows all three assets (zip, `.sha256`,
      `-update.json`) and the release is not a draft.
-   - `https://github.com/mudrii/compme/releases/latest` resolves to the tag.
-   - `ruby -c Casks/compme.rb` reports `Syntax OK` on the finalized default branch.
-   - On a clean machine: `brew tap mudrii/compme https://github.com/mudrii/compme
-     && brew install --cask compme` installs the signed, notarized app.
 
    Recovering from a published bad release: do NOT retag — the protected tag
    cannot move, and the cask finalizer's stale-version guard refuses to re-bump

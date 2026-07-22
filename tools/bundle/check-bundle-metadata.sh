@@ -8,10 +8,12 @@ usage() {
 }
 
 run_self_test() {
-  if printenv COMPME_EXPECTED_VERSION >/dev/null 2>&1; then
-    echo "self-test FAILED: inherited COMPME_EXPECTED_VERSION" >&2
-    return 1
-  fi
+  for name in COMPME_EXPECTED_VERSION COMPME_CASK_TAG_CANDIDATES; do
+    if printenv "$name" >/dev/null 2>&1; then
+      echo "self-test FAILED: inherited $name" >&2
+      return 1
+    fi
+  done
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-bundle-meta-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
 
@@ -116,6 +118,103 @@ CASK
     *"version drift"*) ;;
     *) echo "self-test FAILED: expected version-drift error, got: $out" >&2; exit 1 ;;
   esac
+
+  # In-flight release window: with stable release tags visible, the cask may
+  # also name the latest release tag's version (the cask is rewritten only at
+  # cask-finalization time), but never a third version.
+  window_repo="$tmp/window-repo"
+  mkdir -p "$window_repo"
+  git init -q --initial-branch=main "$window_repo"
+  git -C "$window_repo" -c user.name=t -c user.email=t@example.test \
+    -c commit.gpgsign=false commit --allow-empty -m init >/dev/null
+  git -C "$window_repo" -c tag.gpgSign=false tag v1.2.2
+  lagging_cask="$window_repo/lagging.rb"
+  write_cask "$lagging_cask" 1.2.2
+  if ! out="$("$0" "$good_plist" "$cargo" "$lagging_cask" 2>&1)"; then
+    echo "self-test FAILED: lagging cask in release window should pass, got: $out" >&2
+    exit 1
+  fi
+  # A tag matching the app version (just pushed) does not shrink the window.
+  git -C "$window_repo" -c tag.gpgSign=false tag v1.2.3
+  if ! out="$("$0" "$good_plist" "$cargo" "$lagging_cask" 2>&1)"; then
+    echo "self-test FAILED: lagging cask after tag push should pass, got: $out" >&2
+    exit 1
+  fi
+  finalized_cask="$window_repo/finalized.rb"
+  write_cask "$finalized_cask" 1.2.3
+  if ! out="$("$0" "$good_plist" "$cargo" "$finalized_cask" 2>&1)"; then
+    echo "self-test FAILED: finalized cask should pass, got: $out" >&2
+    exit 1
+  fi
+  wrong_window_cask="$window_repo/wrong.rb"
+  write_cask "$wrong_window_cask" 9.9.9
+  if out="$("$0" "$good_plist" "$cargo" "$wrong_window_cask" 2>&1)"; then
+    echo "self-test FAILED: third-version cask in release window should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"version drift"*) ;;
+    *) echo "self-test FAILED: expected version-drift error, got: $out" >&2; exit 1 ;;
+  esac
+  two_behind_cask="$window_repo/two-behind.rb"
+  write_cask "$two_behind_cask" 1.2.1
+  if out="$("$0" "$good_plist" "$cargo" "$two_behind_cask" 2>&1)"; then
+    echo "self-test FAILED: two-releases-behind cask should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"version drift"*) ;;
+    *) echo "self-test FAILED: expected version-drift error, got: $out" >&2; exit 1 ;;
+  esac
+
+  # No visible tags (shallow checkout, fetch unavailable): strict cask==app.
+  tagless_repo="$tmp/tagless-repo"
+  mkdir -p "$tagless_repo"
+  git init -q --initial-branch=main "$tagless_repo"
+  git -C "$tagless_repo" -c user.name=t -c user.email=t@example.test \
+    -c commit.gpgsign=false commit --allow-empty -m init >/dev/null
+  tagless_cask="$tagless_repo/lagging.rb"
+  write_cask "$tagless_cask" 1.2.2
+  if out="$("$0" "$good_plist" "$cargo" "$tagless_cask" 2>&1)"; then
+    echo "self-test FAILED: lagging cask without visible tags should have failed" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  case "$out" in
+    *"version drift"*) ;;
+    *) echo "self-test FAILED: expected version-drift error, got: $out" >&2; exit 1 ;;
+  esac
+
+  # Tag-checkout shape: actions/checkout on a tag push materializes only the
+  # release tag itself, so the previous release tag exists only on the remote.
+  # The best-effort fetch must pull it in for the cask window to engage.
+  tag_origin="$tmp/tag-origin"
+  git init -q --bare --initial-branch=main "$tag_origin"
+  tag_seed="$tmp/tag-seed"
+  git init -q --initial-branch=main "$tag_seed"
+  git -C "$tag_seed" -c user.name=t -c user.email=t@example.test \
+    -c commit.gpgsign=false commit --allow-empty -m init >/dev/null
+  git -C "$tag_seed" -c tag.gpgSign=false tag v1.2.2
+  git -C "$tag_seed" push -q "$tag_origin" main --tags
+  tag_checkout_repo="$tmp/tag-checkout-repo"
+  git init -q --initial-branch=main "$tag_checkout_repo"
+  git -C "$tag_checkout_repo" -c user.name=t -c user.email=t@example.test \
+    -c commit.gpgsign=false commit --allow-empty -m init >/dev/null
+  git -C "$tag_checkout_repo" -c tag.gpgSign=false tag v1.2.3
+  git -C "$tag_checkout_repo" remote add origin "$tag_origin"
+  visible_tags="$(git -C "$tag_checkout_repo" tag --list 'v[0-9]*')"
+  if [ "$visible_tags" != "v1.2.3" ]; then
+    echo "self-test FAILED: tag-checkout fixture should see only v1.2.3, got: $visible_tags" >&2
+    exit 1
+  fi
+  tag_checkout_cask="$tag_checkout_repo/lagging.rb"
+  write_cask "$tag_checkout_cask" 1.2.2
+  if ! out="$("$0" "$good_plist" "$cargo" "$tag_checkout_cask" 2>&1)"; then
+    echo "self-test FAILED: lagging cask in tag-checkout shape should pass, got: $out" >&2
+    exit 1
+  fi
 
   # (b) release tag drift: expected version != bundle metadata -> non-zero.
   if out="$(COMPME_EXPECTED_VERSION=9.9.9 "$0" "$good_plist" "$cargo" "$tag_drift_cask" 2>&1)"; then
@@ -328,7 +427,9 @@ if [ "${1:-}" = "--self-test" ]; then
     usage
     exit 2
   fi
-  unset COMPME_EXPECTED_VERSION
+  # The checker invokes this self-test with poisoned knobs and requires it to
+  # pass hermetically — unset them here rather than rejecting them.
+  unset COMPME_EXPECTED_VERSION COMPME_CASK_TAG_CANDIDATES
   run_self_test
   exit 0
 fi
@@ -341,6 +442,26 @@ fi
 info_plist="${1:-"$repo_root/tools/bundle/Info.plist"}"
 app_manifest="${2:-"$repo_root/crates/app/Cargo.toml"}"
 cask_file="${3:-"$repo_root/Casks/compme.rb"}"
+
+# The cask is rewritten only at cask-finalization time, so mid-release it may
+# still name the previous release. Discover stable release tags from the cask
+# file's repository so the ruby check can allow that one-release lag. Refresh
+# best-effort even when tags are already visible: actions/checkout on a tag
+# push materializes only the release tag itself, never the previous ones the
+# window needs (anonymous HTTPS fetch works on this public repo even with
+# persist-credentials: false). When the fetch is unavailable (offline, no
+# remote) the visible tags stand, which reduces to strict cask==app equality
+# outside a release window. BatchMode and terminal-prompt denial keep the
+# fetch non-interactive: an SSH remote without a loaded key or an unreachable
+# network fails fast into the same fallback instead of blocking the gate.
+cask_tag_candidates=""
+cask_dir="$(dirname "$cask_file")"
+if command -v git >/dev/null 2>&1 && git -C "$cask_dir" rev-parse --git-dir >/dev/null 2>&1; then
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+    git -C "$cask_dir" fetch --quiet --tags >/dev/null 2>&1 || true
+  cask_tag_candidates="$(git -C "$cask_dir" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname || true)"
+fi
+export COMPME_CASK_TAG_CANDIDATES="$cask_tag_candidates"
 
 if ! ruby -c "$cask_file" >/dev/null; then
   echo "Casks/compme.rb: invalid Ruby syntax" >&2
@@ -416,7 +537,16 @@ ruby -rrexml/document -e '
   errors << "Casks/compme.rb: architecture must be :arm64" unless cask_arch == "arm64"
   if cargo_version && cask_version
     expect.call("CFBundleShortVersionString", plist_version, cargo_version)
-    errors << "version drift: cask #{cask_version.inspect} != app #{cargo_version.inspect}" unless cask_version == cargo_version
+    # Mid-release the cask intentionally lags one release (it is rewritten only
+    # at cask-finalization time), so also allow the newest stable tag other than
+    # the app version. With no visible tags this reduces to strict equality.
+    latest_release_tag = ENV.fetch("COMPME_CASK_TAG_CANDIDATES", "").split("\n")
+      .map { |tag| tag.sub(/\Av/, "") }
+      .find { |tag_version| tag_version != cargo_version && tag_version.match?(stable_version) }
+    if cask_version != cargo_version && cask_version != latest_release_tag
+      drift_detail = latest_release_tag ? " or latest release tag #{latest_release_tag.inspect}" : ""
+      errors << "version drift: cask #{cask_version.inspect} != app #{cargo_version.inspect}#{drift_detail}"
+    end
   end
   if ENV.key?("COMPME_EXPECTED_VERSION")
     expected_version = ENV["COMPME_EXPECTED_VERSION"].to_s

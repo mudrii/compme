@@ -41,13 +41,33 @@ mod tests {
         let text = about_text();
         // Version comes from the crate, not a hand-maintained string.
         assert!(text.contains(&format!("Compme v{}", env!("CARGO_PKG_VERSION"))));
+        // The rendered version is non-empty and semver-shaped: "Compme vX.Y.Z"
+        // with three numeric dot-separated components. The strictness cannot
+        // false-fail a legitimate release: the project ships plain X.Y.Z
+        // only — prerelease/build suffixes (0.2.0-rc.1) are rejected by
+        // tools/release/validate-version.sh.
+        let version = text
+            .strip_prefix("Compme v")
+            .and_then(|rest| rest.split('\n').next())
+            .expect("about text opens with the version line");
+        let parts: Vec<&str> = version.split('.').collect();
+        assert_eq!(parts.len(), 3, "version must be X.Y.Z: {version}");
+        assert!(
+            parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+            "version components must be numeric: {version}"
+        );
         assert!(text.contains("Apache-2.0"));
         // The README's local-only guarantee, stated verbatim in the pane.
         assert!(text.contains("All inference is local (llama.cpp), with no proprietary telemetry."));
         assert!(text.contains("https://github.com/mudrii/compme"));
-        // Credits: the inference and crypto cornerstones must be named.
+        // Credits: the inference, storage, crypto, and CSPRNG cornerstones the
+        // app actually depends on must be named (present in every cfg's ACKS).
         assert!(text.contains("llama-cpp-2"));
+        assert!(text.contains("rusqlite"));
         assert!(text.contains("aes-gcm"));
+        assert!(text.contains("getrandom"));
         // The Apple stack is credited only in macOS builds — and must be
         // absent everywhere else (those builds do not link it).
         #[cfg(target_os = "macos")]

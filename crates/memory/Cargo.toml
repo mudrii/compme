@@ -8,8 +8,8 @@ license.workspace = true
 redaction = { path = "../redaction" }
 rusqlite = { version = "=0.32.1", features = ["bundled"] }
 aes-gcm = { version = "=0.10.3", features = ["zeroize"] }
-getrandom = "0.2"
-zeroize = "1"
+getrandom.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true

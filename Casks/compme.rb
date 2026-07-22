@@ -1,6 +1,6 @@
 cask "compme" do
   version "0.1.5"
-  # sha256 is rewritten from the published artifact by
+  # version and sha256 are rewritten from the published artifact by
   # tools/release/update-cask.sh during each tag release (see docs/RELEASING.md).
   sha256 "bf87db494d390ac39121f8cdd14f3302824faa17eb4d2919b66665cb08a53afc"
 

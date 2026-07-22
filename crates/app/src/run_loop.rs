@@ -14,7 +14,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,10 +23,10 @@ use engine::{CompletionRequest, Engine, RequestKind, TriggerPolicy};
 use personalization::{PersonalizationProfile, SenderIdentity, Strength};
 use platform::{
     env_flag_on,
-    shell::{DisableArm, TrayFlags},
+    shell::{DisableArm, ShellHost, TrayFlags, TrayHandle},
     AcceptAction, AcceptSubscription, Capabilities, CorrectionRange, FieldHandle, InsertStrategy,
-    KeyInterceptMode, OverlayPlacement, PlatformAdapter, PlatformError, ScreenRect, SecurityState,
-    ShortcutAction, Subscription, TapControl, TextContext, Toolkit,
+    KeyInterceptMode, OverlayPlacement, OverlayPresenter, PlatformAdapter, PlatformError,
+    ScreenRect, SecurityState, ShortcutAction, Subscription, TapControl, TextContext, Toolkit,
 };
 use prefs::Prefs;
 use zeroize::Zeroize;
@@ -3879,35 +3879,116 @@ fn model_download_ram_block_message(
     })
 }
 
-/// Build the whole stack, run until a signal (or the run-ms deadline), then tear
-/// down in order.
-pub fn run() -> Result<(), String> {
+/// Fatal startup condition, reported exactly as `run()` has always reported
+/// it. An alias (not a newtype) so the moved startup block's `?` operators
+/// and `format!` error arms compile unchanged.
+type StartupError = String;
+
+/// Factory-field aliases (clippy::type_complexity): the instance-lock
+/// acquisition and tray-construction closures.
+type InstanceLockAcquire =
+    Box<dyn Fn(&Path) -> Result<config::InstanceLock, config::InstanceLockError>>;
+type TrayFactory = Box<dyn Fn(TrayFlags) -> Result<Box<dyn TrayHandle>, PlatformError>>;
+
+/// The constructors [`startup`] calls instead of hard-wired platform/shell
+/// functions: production passes [`real_factories`]; tests pass recording
+/// fakes. Generic over the adapter/overlay (like `SharedAdapter<A>`) so tests
+/// can inject inert fakes without touching the real platform types.
+struct RunFactories<A: PlatformAdapter, O: OverlayPresenter> {
+    instance_lock_path: Box<dyn Fn() -> Option<PathBuf>>,
+    try_acquire_instance_lock: InstanceLockAcquire,
+    load_config: Box<dyn Fn() -> Result<Config, StartupError>>,
+    install_signal_handlers: Box<dyn Fn()>,
+    make_shell: Box<dyn Fn() -> Arc<dyn ShellHost>>,
+    make_adapter: Box<dyn Fn(Option<i32>) -> Result<A, PlatformError>>,
+    make_overlay: Box<dyn Fn() -> Result<O, PlatformError>>,
+    make_tray: TrayFactory,
+}
+
+/// The production constructors — the same functions `run()` called directly
+/// before the extraction.
+fn real_factories(
+) -> RunFactories<crate::shell::PlatformAdapterImpl, crate::shell::OverlayPresenterImpl> {
+    RunFactories {
+        instance_lock_path: Box::new(config::instance_lock_path),
+        try_acquire_instance_lock: Box::new(config::try_acquire_instance_lock),
+        load_config: Box::new(Config::from_env),
+        install_signal_handlers: Box::new(install_signal_handlers),
+        make_shell: Box::new(crate::shell::make_shell),
+        make_adapter: Box::new(crate::shell::make_adapter),
+        make_overlay: Box::new(crate::shell::make_overlay),
+        make_tray: Box::new(crate::shell::make_tray),
+    }
+}
+
+/// Everything the heartbeat loop (and the teardown after it) needs out of
+/// startup, in the order the pieces were originally bound.
+struct RunContext<A: PlatformAdapter, O: OverlayPresenter> {
+    instance_lock: config::InstanceLock,
+    config: Config,
+    shell: Arc<dyn ShellHost>,
+    trusted: bool,
+    adapter: Arc<A>,
+    engine: Engine<SharedAdapter<A>, O>,
+    host_events: Arc<Mutex<VecDeque<HostEvent>>>,
+    focus_sub: Subscription,
+    caret_sub: Subscription,
+    subscriptions_require_relaunch: bool,
+    model_available: bool,
+    deep_links: Arc<Mutex<Vec<String>>>,
+    url_handler: Option<crate::shell::UrlHandlerGuard>,
+    launch_at_login_enabled: bool,
+    previous_inputs: PreviousInputs,
+    memory: Option<memory::MemoryStore>,
+    monitored_memory_active: bool,
+    clipboard_cell: Arc<Mutex<Option<String>>>,
+    screen_cell: Arc<Mutex<Option<ScreenContext>>>,
+    context_bound: usize,
+    screen_ocr: Option<ScreenOcr>,
+    screen_wait_ms: Arc<AtomicU64>,
+    cross_app_previous_inputs: Arc<AtomicBool>,
+    inference: InferenceHandle,
+    flags: TrayFlags,
+    prefs: Prefs,
+    tray: Option<Box<dyn TrayHandle>>,
+}
+
+/// Build the whole stack the heartbeat loop needs: instance lock → config →
+/// signal handlers → permission prompt → adapter/overlay/engine construction
+/// → inference spawn. `Ok(None)` is the clean second-instance exit (the
+/// instance-lock gate's ExitOk arm — not an error): `run()` maps it to
+/// `Ok(())` exactly as the inline code did.
+fn startup<A: PlatformAdapter, O: OverlayPresenter>(
+    factories: &RunFactories<A, O>,
+) -> Result<Option<RunContext<A, O>>, StartupError> {
     // Single-instance guard FIRST — before any AX observer, hotkey
     // registration, or Apple Events handler exists. Two instances double all
     // of those (live c92 finding: open(1) launches a second copy via Launch
     // Services when the registered handler isn't already running). flock is
     // launch-method-agnostic and kernel-released on any exit.
-    let Some(_instance_lock) = instance_lock_startup_gate(
-        config::instance_lock_path(),
-        config::try_acquire_instance_lock,
+    let Some(instance_lock) = instance_lock_startup_gate(
+        (factories.instance_lock_path)(),
+        |path| (factories.try_acquire_instance_lock)(path),
         || {},
     )?
     else {
-        return Ok(());
+        return Ok(None);
     };
 
     // Mutable: General-tab switches update globals live (autocorrect today;
     // enabled/trailing-space later) — field writes between heartbeats only.
-    let mut config = Config::from_env()?;
-    install_signal_handlers();
-    let shell = crate::shell::make_shell();
+    let mut config = (factories.load_config)()?;
+    (factories.install_signal_handlers)();
+    let shell = (factories.make_shell)();
 
     // Permissions: if Accessibility isn't granted, fire the system prompt once.
     // The app keeps running and reflects the Blocked state in the tray. Focus,
     // caret, and accept subscriptions are installed once at startup; if any of
     // them degrade to no-op while permission is missing, granting Accessibility
     // later still requires a relaunch to install real event streams.
-    let mut trusted = shell.accessibility_trusted();
+    // (`mut` lives on the run-loop binding: the loop re-polls trust, startup
+    // only reads it.)
+    let trusted = shell.accessibility_trusted();
     if !trusted {
         eprintln!("compme: Accessibility not granted — requesting permission");
         shell.prompt_accessibility_trust();
@@ -3935,11 +4016,11 @@ pub fn run() -> Result<(), String> {
         eprintln!("compme: diag display_scales={:?}", shell.display_scales());
     }
 
-    let adapter = crate::shell::make_adapter(config.acceptance_pid)
+    let adapter = (factories.make_adapter)(config.acceptance_pid)
         .map_err(|err| format!("adapter init: {err:?}"))?;
     let adapter = Arc::new(adapter);
 
-    let overlay = crate::shell::make_overlay().map_err(|err| format!("overlay init: {err:?}"))?;
+    let overlay = (factories.make_overlay)().map_err(|err| format!("overlay init: {err:?}"))?;
 
     let mut engine = Engine::new(
         SharedAdapter::new(Arc::clone(&adapter)),
@@ -4143,7 +4224,7 @@ pub fn run() -> Result<(), String> {
     // publishes redacted text into `screen_cell`, which the inference worker
     // waits for briefly off the UI loop and accepts only when stamped for
     // the submitted request.
-    let mut screen_ocr = if screen_active {
+    let screen_ocr = if screen_active {
         match ScreenOcr::spawn(
             Arc::clone(&shell),
             Arc::clone(&screen_cell),
@@ -4203,16 +4284,85 @@ pub fn run() -> Result<(), String> {
     };
     // Runtime-mutable policy (snooze); starts from the configured prefs. The
     // ONE prefs the loop reads — never read config.prefs after this point, or
-    // the policy source splits.
-    let mut prefs = config.prefs.clone();
+    // the policy source splits. (`mut` lives on the run-loop binding.)
+    let prefs = config.prefs.clone();
     // A tray failure is non-fatal — the engine still runs headless.
-    let tray = match crate::shell::make_tray(flags.clone()) {
+    let tray = match (factories.make_tray)(flags.clone()) {
         Ok(tray) => Some(tray),
         Err(err) => {
             eprintln!("compme: tray unavailable: {err:?}");
             None
         }
     };
+
+    Ok(Some(RunContext {
+        instance_lock,
+        config,
+        shell,
+        trusted,
+        adapter,
+        engine,
+        host_events,
+        focus_sub,
+        caret_sub,
+        subscriptions_require_relaunch,
+        model_available,
+        deep_links,
+        url_handler: _url_handler,
+        launch_at_login_enabled,
+        previous_inputs,
+        memory,
+        monitored_memory_active,
+        clipboard_cell,
+        screen_cell,
+        context_bound,
+        screen_ocr,
+        screen_wait_ms,
+        cross_app_previous_inputs,
+        inference,
+        flags,
+        prefs,
+        tray,
+    }))
+}
+
+/// Build the whole stack, run until a signal (or the run-ms deadline), then tear
+/// down in order.
+pub fn run() -> Result<(), String> {
+    let Some(ctx) = startup(&real_factories())? else {
+        return Ok(());
+    };
+    // Rebind the context under the exact names (and mutability) the loop below
+    // was written against, so the heartbeat loop and teardown stay verbatim.
+    let RunContext {
+        instance_lock: _instance_lock,
+        mut config,
+        shell,
+        mut trusted,
+        adapter,
+        mut engine,
+        host_events,
+        focus_sub,
+        caret_sub,
+        subscriptions_require_relaunch,
+        model_available,
+        deep_links,
+        url_handler: _url_handler,
+        launch_at_login_enabled,
+        previous_inputs,
+        memory,
+        monitored_memory_active,
+        clipboard_cell,
+        screen_cell,
+        context_bound,
+        mut screen_ocr,
+        screen_wait_ms,
+        cross_app_previous_inputs,
+        inference,
+        flags,
+        mut prefs,
+        tray,
+    } = ctx;
 
     let heartbeat = Duration::from_millis(config.heartbeat_ms);
     let mut tracker = FieldTracker::new();
@@ -6222,19 +6372,30 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
-    struct ShortcutBindingsGuard(crate::shell::ShortcutBindings);
+    static SHORTCUT_BINDINGS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct ShortcutBindingsGuard {
+        previous: crate::shell::ShortcutBindings,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl ShortcutBindingsGuard {
         fn reset() -> Self {
+            let lock = SHORTCUT_BINDINGS_TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let previous = crate::shell::effective_shortcut_bindings();
             crate::shell::set_shortcut_bindings_from_config(None, None, None, None);
-            Self(previous)
+            Self {
+                previous,
+                _lock: lock,
+            }
         }
     }
 
     impl Drop for ShortcutBindingsGuard {
         fn drop(&mut self) {
-            crate::shell::set_shortcut_bindings(self.0);
+            crate::shell::set_shortcut_bindings(self.previous);
         }
     }
 
@@ -16291,5 +16452,584 @@ mod tests {
                 HostEvent::Caret(host_field("a"), rect(5.0)),
             ]
         );
+    }
+
+    // — run() startup seam: recording fakes + the ordering/failure contracts. —
+
+    /// Ordered record of every factory/seam call `startup()` makes, so the
+    /// startup sequence (the c92 wiring contract) is pinned by observation
+    /// rather than by re-reading the code. Blind window: work that bypasses
+    /// the factories and recorded seams — deep-link install, launch-at-login,
+    /// memory open, clipboard/screen cells, screen-OCR, and the inference
+    /// spawn between "subscribe-accept" and "tray" — is not observed here.
+    type StartupLog = Arc<Mutex<Vec<&'static str>>>;
+
+    fn startup_log() -> StartupLog {
+        Arc::new(Mutex::new(Vec::new()))
+    }
+
+    fn log_push(log: &StartupLog, step: &'static str) {
+        log.lock().unwrap().push(step);
+    }
+
+    fn log_steps(log: &StartupLog) -> Vec<&'static str> {
+        log.lock().unwrap().clone()
+    }
+
+    /// Shell double with a settable Accessibility grant; the two permission
+    /// probes are recorded so the permission step's place in the sequence is
+    /// observable.
+    struct RecordingShell {
+        trusted: bool,
+        log: StartupLog,
+    }
+
+    impl ShellHost for RecordingShell {
+        fn pump_events(&self, _heartbeat: Duration) {}
+        fn accessibility_trusted(&self) -> bool {
+            log_push(&self.log, "permissions");
+            self.trusted
+        }
+        fn prompt_accessibility_trust(&self) -> bool {
+            log_push(&self.log, "permission-prompt");
+            self.trusted
+        }
+        fn physical_memory_bytes(&self) -> u64 {
+            0
+        }
+        fn open_url(&self, _url: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn open_permission_settings(&self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn reveal_file(&self, _path: &Path) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn confirm(
+            &self,
+            _prompt: &platform::shell::ConfirmPrompt<'_>,
+        ) -> Result<bool, PlatformError> {
+            Ok(false)
+        }
+        fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
+            Ok([0; 32])
+        }
+    }
+
+    /// Adapter double: the three subscriptions are recorded and can be
+    /// programmed to fail; every other method is inert (`Err(StaleField)`).
+    struct FakeAdapter {
+        log: StartupLog,
+        focus_error: Option<PlatformError>,
+        caret_error: Option<PlatformError>,
+        accept_error: Option<PlatformError>,
+    }
+
+    impl FakeAdapter {
+        fn allow_all(log: StartupLog) -> Self {
+            Self {
+                log,
+                focus_error: None,
+                caret_error: None,
+                accept_error: None,
+            }
+        }
+
+        fn failing(log: StartupLog, err: PlatformError) -> Self {
+            Self {
+                log,
+                focus_error: Some(err.clone()),
+                caret_error: Some(err.clone()),
+                accept_error: Some(err),
+            }
+        }
+    }
+
+    impl PlatformAdapter for FakeAdapter {
+        fn environment(&self) -> platform::Environment {
+            platform::Environment {
+                os: platform::OperatingSystem::Macos,
+                version: "test".into(),
+            }
+        }
+        fn subscribe_focus(
+            &self,
+            _cb: platform::FocusCallback,
+        ) -> Result<Subscription, PlatformError> {
+            log_push(&self.log, "subscribe-focus");
+            match &self.focus_error {
+                Some(err) => Err(err.clone()),
+                None => Ok(Subscription::new(1)),
+            }
+        }
+        fn subscribe_caret(
+            &self,
+            _cb: platform::CaretCallback,
+        ) -> Result<Subscription, PlatformError> {
+            log_push(&self.log, "subscribe-caret");
+            match &self.caret_error {
+                Some(err) => Err(err.clone()),
+                None => Ok(Subscription::new(2)),
+            }
+        }
+        fn subscribe_accept(
+            &self,
+            _cb: platform::AcceptCallback,
+        ) -> Result<AcceptSubscription, PlatformError> {
+            log_push(&self.log, "subscribe-accept");
+            match &self.accept_error {
+                Some(err) => Err(err.clone()),
+                None => Ok(AcceptSubscription::new(
+                    Subscription::new(3),
+                    |_| Ok(()),
+                    |_| Ok(()),
+                    |_| Ok(()),
+                )),
+            }
+        }
+        fn front_app(&self) -> Option<platform::AppId> {
+            None
+        }
+        fn capabilities(&self, _field: &FieldHandle) -> Result<Capabilities, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn read_context(&self, _field: &FieldHandle) -> Result<TextContext, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn text_range_rect(
+            &self,
+            _field: &FieldHandle,
+            _range: CorrectionRange,
+        ) -> Result<Option<ScreenRect>, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn insert(
+            &self,
+            _field: &FieldHandle,
+            _text: &str,
+            _strategy: InsertStrategy,
+        ) -> Result<platform::Inserted, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn insert_replacing(
+            &self,
+            _field: &FieldHandle,
+            _text: &str,
+            _replace_left: usize,
+            _strategy: InsertStrategy,
+        ) -> Result<platform::Inserted, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+        fn insert_replacing_range(
+            &self,
+            _field: &FieldHandle,
+            _expected_text: &str,
+            _text: &str,
+            _range: CorrectionRange,
+            _strategy: InsertStrategy,
+        ) -> Result<platform::Inserted, PlatformError> {
+            Err(PlatformError::StaleField)
+        }
+    }
+
+    /// Inert overlay double — the engine is constructed but never driven by
+    /// these tests, so its methods only need to exist.
+    struct FakeOverlay;
+
+    impl OverlayPresenter for FakeOverlay {
+        fn show_ghost(&mut self, _rect: ScreenRect, _text: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn update_ghost(&mut self, _text: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn hide(&mut self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+    }
+
+    /// In-memory startup config: stub completion (the model "loads" without
+    /// file I/O, so startup reaches inference spawn and never touches the
+    /// app-support model-adoption path); every other knob at its default.
+    fn startup_test_config() -> Config {
+        Config::from_lookup(|key| {
+            if key == "COMPME_STUB_COMPLETION" {
+                Some(" test".to_string())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Hermetic temp dir for the instance lock, per the file's temp-dir
+    /// convention; callers `remove_dir_all` at the end.
+    fn startup_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("compme-startup-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Recording factories for a hermetic `startup()`: a REAL instance lock on
+    /// a temp path (so the flock gate runs for real), the given config/shell/
+    /// adapter/overlay behavior, no-op signal handlers, and the widened stub
+    /// shell's (unsupported) tray. One-shot values ride in slots because the
+    /// factory trait objects are `Fn`, not `FnMut`.
+    fn recording_factories(
+        log: &StartupLog,
+        dir: &Path,
+        shell: RecordingShell,
+        adapter: Result<FakeAdapter, PlatformError>,
+        overlay: Result<FakeOverlay, PlatformError>,
+        config: Result<Config, StartupError>,
+    ) -> RunFactories<FakeAdapter, FakeOverlay> {
+        let lock_path = dir.join("instance.lock");
+        RunFactories {
+            instance_lock_path: {
+                let log = Arc::clone(log);
+                Box::new(move || {
+                    log_push(&log, "instance-lock");
+                    Some(lock_path.clone())
+                })
+            },
+            try_acquire_instance_lock: Box::new(config::try_acquire_instance_lock),
+            load_config: {
+                let log = Arc::clone(log);
+                let slot = Mutex::new(Some(config));
+                Box::new(move || {
+                    log_push(&log, "config");
+                    slot.lock()
+                        .unwrap()
+                        .take()
+                        .expect("load_config called twice")
+                })
+            },
+            install_signal_handlers: {
+                let log = Arc::clone(log);
+                Box::new(move || log_push(&log, "signals"))
+            },
+            make_shell: {
+                let log = Arc::clone(log);
+                let slot = Mutex::new(Some(shell));
+                Box::new(move || {
+                    log_push(&log, "shell");
+                    Arc::new(
+                        slot.lock()
+                            .unwrap()
+                            .take()
+                            .expect("make_shell called twice"),
+                    ) as Arc<dyn ShellHost>
+                })
+            },
+            make_adapter: {
+                let log = Arc::clone(log);
+                let slot = Mutex::new(Some(adapter));
+                Box::new(move |_acceptance_pid| {
+                    log_push(&log, "adapter");
+                    slot.lock()
+                        .unwrap()
+                        .take()
+                        .expect("make_adapter called twice")
+                })
+            },
+            make_overlay: {
+                let log = Arc::clone(log);
+                let slot = Mutex::new(Some(overlay));
+                Box::new(move || {
+                    log_push(&log, "overlay");
+                    slot.lock()
+                        .unwrap()
+                        .take()
+                        .expect("make_overlay called twice")
+                })
+            },
+            make_tray: {
+                let log = Arc::clone(log);
+                Box::new(move |flags| {
+                    log_push(&log, "tray");
+                    crate::shell::stub::make_tray(flags)
+                })
+            },
+        }
+    }
+
+    #[test]
+    fn startup_orders_lock_config_signals_permissions_before_platform() {
+        // The c92 class: nothing that touches the platform (AX observers,
+        // hotkeys, engine) may run before the instance lock, config, signal
+        // handlers, and the permission check have. The sequence IS the
+        // contract, so pin it exactly — every adjacent pair is an invariant a
+        // wiring regression could silently swap while compiling green.
+        let log = startup_log();
+        let dir = startup_test_dir("order");
+        let factories = recording_factories(
+            &log,
+            &dir,
+            RecordingShell {
+                trusted: true,
+                log: Arc::clone(&log),
+            },
+            Ok(FakeAdapter::allow_all(Arc::clone(&log))),
+            Ok(FakeOverlay),
+            Ok(startup_test_config()),
+        );
+
+        let ctx = startup(&factories)
+            .expect("startup succeeds")
+            .expect("first instance proceeds");
+
+        assert_eq!(
+            log_steps(&log),
+            vec![
+                "instance-lock",
+                "config",
+                "signals",
+                "shell",
+                "permissions",
+                "adapter",
+                "overlay",
+                "subscribe-focus",
+                "subscribe-caret",
+                "subscribe-accept",
+                "tray",
+            ],
+            "startup order regressed — lock → config → signals → permissions → platform is the c92 contract"
+        );
+        assert!(
+            ctx.model_available,
+            "stub completion means a model is ready"
+        );
+        assert!(
+            !ctx.subscriptions_require_relaunch,
+            "all subscriptions installed against a trusted shell"
+        );
+        assert!(ctx.tray.is_none(), "stub tray is unsupported → headless");
+        drop(ctx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_config_failure_aborts_before_platform_construction() {
+        // Fail-closed config: an existing-but-unreadable config file aborts
+        // startup (complements the binary-level app/tests/config_startup.rs,
+        // which exercises the real unreadable file). This pins the abort
+        // POINT: after the instance lock, before any platform construction.
+        let log = startup_log();
+        let dir = startup_test_dir("config");
+        let factories = recording_factories(
+            &log,
+            &dir,
+            RecordingShell {
+                trusted: true,
+                log: Arc::clone(&log),
+            },
+            Ok(FakeAdapter::allow_all(Arc::clone(&log))),
+            Ok(FakeOverlay),
+            Err("failed to read config /private/tmp/x/config.env: permission denied".to_string()),
+        );
+
+        let err = startup(&factories)
+            .err()
+            .expect("config failure aborts startup");
+
+        assert!(
+            err.contains("failed to read config"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            log_steps(&log),
+            vec!["instance-lock", "config"],
+            "no shell/adapter/overlay/tray may be constructed after a config failure"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_degraded_subscriptions_surface_requires_relaunch() {
+        // AX permission missing → every subscription degrades to no-op
+        // ("grant it, then relaunch"). Startup still completes, but the
+        // requires-relaunch state must surface: the run reflects Blocked
+        // instead of silently running deaf.
+        let log = startup_log();
+        let dir = startup_test_dir("degraded");
+        let factories = recording_factories(
+            &log,
+            &dir,
+            RecordingShell {
+                trusted: false,
+                log: Arc::clone(&log),
+            },
+            Ok(FakeAdapter::failing(
+                Arc::clone(&log),
+                PlatformError::PermissionMissing {
+                    permission: "Accessibility".to_string(),
+                },
+            )),
+            Ok(FakeOverlay),
+            Ok(startup_test_config()),
+        );
+
+        let ctx = startup(&factories)
+            .expect("degraded subscriptions are non-fatal")
+            .expect("startup completes");
+
+        assert!(
+            ctx.subscriptions_require_relaunch,
+            "degraded focus/caret/accept subscriptions must surface as requires-relaunch"
+        );
+        assert!(
+            !runtime_trusted(true, ctx.subscriptions_require_relaunch),
+            "requires-relaunch keeps the run Blocked even after permission is granted"
+        );
+        // The permission prompt fired, all three subscriptions were attempted,
+        // and startup still ran to completion (the tray is built last).
+        assert_eq!(
+            log_steps(&log),
+            vec![
+                "instance-lock",
+                "config",
+                "signals",
+                "shell",
+                "permissions",
+                "permission-prompt",
+                "adapter",
+                "overlay",
+                "subscribe-focus",
+                "subscribe-caret",
+                "subscribe-accept",
+                "tray",
+            ]
+        );
+        drop(ctx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_instance_lock_collision_exits_before_touching_adapter() {
+        // Second instance: the real flock is already held (by this test, on a
+        // temp path — same-process flocks contend because each open() is a
+        // separate description). The gate takes the clean-exit arm without
+        // constructing a single platform object: the fast unit version of
+        // bundle-smoke's COMPME_ACCEPTANCE_PID=444 double-launch check.
+        let log = startup_log();
+        let dir = startup_test_dir("collision");
+        let held = config::try_acquire_instance_lock(&dir.join("instance.lock"))
+            .expect("test holds the lock");
+        let factories = recording_factories(
+            &log,
+            &dir,
+            RecordingShell {
+                trusted: true,
+                log: Arc::clone(&log),
+            },
+            Ok(FakeAdapter::allow_all(Arc::clone(&log))),
+            Ok(FakeOverlay),
+            Ok(startup_test_config()),
+        );
+
+        let outcome = startup(&factories).expect("lock contention is a clean exit, not an error");
+
+        assert!(
+            outcome.is_none(),
+            "second instance exits without a run context"
+        );
+        assert_eq!(
+            log_steps(&log),
+            vec!["instance-lock"],
+            "config/signals/shell/adapter must not run behind a held instance lock"
+        );
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_adapter_permission_failure_stops_before_engine() {
+        // AX-permission-negative adapter init: make_adapter fails closed on
+        // the missing grant → startup aborts at "adapter init" before the
+        // overlay exists, so the engine is never constructed.
+        let log = startup_log();
+        let dir = startup_test_dir("adapter-denied");
+        let factories = recording_factories(
+            &log,
+            &dir,
+            RecordingShell {
+                trusted: false,
+                log: Arc::clone(&log),
+            },
+            Err(PlatformError::PermissionMissing {
+                permission: "Accessibility".to_string(),
+            }),
+            Ok(FakeOverlay),
+            Ok(startup_test_config()),
+        );
+
+        let err = startup(&factories)
+            .err()
+            .expect("adapter init failure aborts startup");
+
+        assert!(err.starts_with("adapter init: "), "unexpected error: {err}");
+        assert_eq!(
+            log_steps(&log),
+            vec![
+                "instance-lock",
+                "config",
+                "signals",
+                "shell",
+                "permissions",
+                "permission-prompt",
+                "adapter",
+            ],
+            "overlay/engine/subscriptions/tray must not run after adapter init fails"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_overlay_failure_stops_before_engine() {
+        // Overlay-init twin of the adapter-permission arm above: make_overlay
+        // fails → startup aborts at "overlay init" after the adapter exists
+        // but before the engine is constructed, so no subscriptions or tray.
+        let log = startup_log();
+        let dir = startup_test_dir("overlay-init");
+        let factories = recording_factories(
+            &log,
+            &dir,
+            RecordingShell {
+                trusted: true,
+                log: Arc::clone(&log),
+            },
+            Ok(FakeAdapter::allow_all(Arc::clone(&log))),
+            Err(PlatformError::CannotComplete {
+                reason: "overlay unavailable".to_string(),
+            }),
+            Ok(startup_test_config()),
+        );
+
+        let err = startup(&factories)
+            .err()
+            .expect("overlay init failure aborts startup");
+
+        assert!(err.starts_with("overlay init: "), "unexpected error: {err}");
+        assert_eq!(
+            log_steps(&log),
+            vec![
+                "instance-lock",
+                "config",
+                "signals",
+                "shell",
+                "permissions",
+                "adapter",
+                "overlay",
+            ],
+            "engine/subscriptions/tray must not run after overlay init fails"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

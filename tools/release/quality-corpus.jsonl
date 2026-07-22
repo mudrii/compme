@@ -1,0 +1,21 @@
+{"id": "typo-teh", "path": "grammar", "left": "I wrote", "word": "teh", "expect": {"type": "single_word_vetted", "value": "the"}}
+{"id": "typo-recieve", "path": "grammar", "left": "I wrote", "word": "recieve", "expect": {"type": "single_word_vetted", "value": "receive"}}
+{"id": "typo-adress", "path": "grammar", "left": "I wrote", "word": "adress", "expect": {"type": "single_word_vetted", "value": "address"}}
+{"id": "typo-definately", "path": "grammar", "left": "I wrote", "word": "definately", "expect": {"type": "single_word_vetted", "value": "definitely"}}
+{"id": "typo-wierd", "path": "grammar", "left": "I wrote", "word": "wierd", "expect": {"type": "single_word_vetted", "value": "weird"}}
+{"id": "typo-occured", "path": "grammar", "left": "I wrote", "word": "occured", "expect": {"type": "single_word_vetted", "value": "occurred"}, "note": "known miss with the pinned model (the one failing case of 21); the 17-of-21 pass floor absorbs it"}
+{"id": "typo-seperate", "path": "grammar", "left": "I wrote", "word": "seperate", "expect": {"type": "single_word_vetted", "value": "separate"}}
+{"id": "typo-beleive", "path": "grammar", "left": "I wrote", "word": "beleive", "expect": {"type": "single_word_vetted", "value": "believe"}}
+{"id": "false-fix-the", "path": "grammar", "left": "I wrote", "word": "the", "expect": {"type": "single_word_vetted"}, "note": "already-correct word must not be altered"}
+{"id": "false-fix-receive", "path": "grammar", "left": "I wrote", "word": "receive", "expect": {"type": "single_word_vetted"}, "note": "already-correct word must not be altered"}
+{"id": "false-fix-weather", "path": "grammar", "left": "I wrote", "word": "weather", "expect": {"type": "single_word_vetted"}, "note": "already-correct word must not be altered"}
+{"id": "false-fix-morning", "path": "grammar", "left": "I wrote", "word": "morning", "expect": {"type": "single_word_vetted"}, "note": "already-correct word must not be altered"}
+{"id": "case-title-preserved", "path": "grammar", "left": "I wrote", "word": "Teh", "expect": {"type": "single_word_vetted", "value": "The"}, "note": "vetting reapplies the original case pattern"}
+{"id": "vet-multiword-rejected", "path": "grammar", "left": "I wrote", "word": "teh", "max_tokens": 8, "expect": {"type": "single_word_vetted"}, "raw_contains": "the. I", "note": "multi-word ramble must not survive vetting"}
+{"id": "vet-nonascii-rejected", "path": "grammar", "left": "Le café sert du vin", "word": "cafe", "expect": {"type": "single_word_vetted"}, "raw_contains": "café", "note": "model proposes café; the non-ASCII guard must reject it"}
+{"id": "vet-distance-rejected", "path": "grammar", "left": "I wrote", "word": "blorf", "expect": {"type": "single_word_vetted"}, "raw_contains": "bl", "note": "model proposes bl (>2 edits); the edit-distance guard must reject it"}
+{"id": "completion-dear-team", "path": "completion", "left": "Dear team, I wanted to", "expect": {"type": "contains", "value": "let you know"}}
+{"id": "completion-thanks", "path": "completion", "left": "Thanks for your email. I will", "expect": {"type": "contains", "value": "be in touch"}}
+{"id": "completion-terse", "path": "completion", "left": "The quarterly results show that", "expect": {"type": "max_words", "value": 20}, "note": "one bounded sentence, no token-dense runaway"}
+{"id": "completion-no-repetition-loop", "path": "completion", "left": "After the call, please send me", "expect": {"type": "not_contains", "value": "the the the"}, "note": "no degenerate repetition loops"}
+{"id": "completion-no-suffix-regurgitation", "path": "completion", "left": "The meeting is scheduled for", "right": " in the Redwood conference room", "expect": {"type": "not_contains", "value": "Redwood"}, "note": "completion must not parrot text after the caret"}

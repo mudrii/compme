@@ -1,6 +1,6 @@
 # Audit-findings remediation plan (2026-07-19 full audit)
 
-**Date:** 2026-07-19 · **Status:** pending — no implementation started
+**Date:** 2026-07-19 · **Status:** partially delivered in the working tree (2026-07-20, pending commit): items 1 (version-docs gating, extended to all 8 surfaces), 2 (settled via the restructured governance checker — admin-gated endpoints skip-with-warning, ruleset/environment checks always fail; no PAT required), 3 (dependabot re-pin procedure documented in `.github/dependabot.yml`), 5 (comment + `raw_contains` corpus pins), 6 (watchdog plus the marker-file fail), and 4a's guard lock are delivered; item 7 is a documented trade-off; items 0 (commit the stack), 4b (CI split), 8 (god-file series), and 9's runner remain open.
 **Evidence base:** three-round audit 2026-07-19 (five finder agents →
 adversarial verify → fresh independent review → final independent
 re-derivation). All ten consolidated findings CONFIRMED; live execution

@@ -329,7 +329,7 @@ pub(crate) fn atomic_write_owner_only(
 ) -> std::io::Result<()> {
     atomic_write_owner_only_with(path, contents, sync, || {
         let mut nonce = [0u8; 16];
-        getrandom::getrandom(&mut nonce)
+        getrandom::fill(&mut nonce)
             .map_err(|err| std::io::Error::other(format!("temp-name randomness failed: {err}")))?;
         let mut suffix = String::with_capacity(nonce.len() * 2);
         use std::fmt::Write as _;

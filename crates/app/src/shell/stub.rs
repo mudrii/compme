@@ -24,10 +24,16 @@ pub fn make_shell() -> Arc<dyn ShellHost> {
     Arc::new(platform_linux::LinuxShellHost::new())
 }
 
+// Adapter/overlay constructors exist only where a real platform adapter backs
+// the stub (Windows/Linux); macOS test builds compile this module for its
+// inert pieces (tray, URL handler, settings window) and inject their own
+// recording fakes for adapter/overlay/shell.
+#[cfg(any(windows, target_os = "linux"))]
 pub fn make_adapter(_acceptance_pid: Option<i32>) -> Result<PlatformAdapterImpl, PlatformError> {
     Ok(PlatformAdapterImpl::new())
 }
 
+#[cfg(any(windows, target_os = "linux"))]
 pub fn make_overlay() -> Result<OverlayPresenterImpl, PlatformError> {
     Ok(OverlayPresenterImpl::new())
 }

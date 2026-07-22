@@ -22,17 +22,17 @@ jobs:
       # Needed only for the failure-notification step below.
       issues: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
+      # Toolchain version comes from rust-toolchain.toml (single source); the
+      # action falls back to the file when `toolchain` is omitted.
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-        with:
-          toolchain: 1.97.0
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # cargo-audit clones the RustSec advisory DB outside rust-cache's
           # default paths; cache it alongside the cargo-installed binary.
@@ -60,4 +60,50 @@ jobs:
           else
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
               --body "The weekly cargo-audit run failed: $run_url"
+          fi
+
+  # Weekly live re-check of the GitHub-side controls (branch protection,
+  # release environment, Actions policy, tag ruleset). The script documents
+  # live read-only checks — it never changes repository settings.
+  governance:
+    name: GitHub governance check (live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Needed only for the failure-notification step below.
+      issues: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # The script handles admin-gated endpoints internally: reads refused
+      # under GITHUB_TOKEN (which cannot hold the Administration permission)
+      # are skipped with warnings, and the ruleset/environment checks always
+      # run. It exits 1 only when an evaluable hard-baseline check fails.
+      - name: Check GitHub governance (live, read-only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tools/release/check-github-governance.sh --repo "$GITHUB_REPOSITORY"
+
+      # Same rationale as the audit job above: a failing scheduled run must
+      # open an issue, not rely on GitHub's default email.
+      - name: Open or update tracking issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Scheduled GitHub governance check failed"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$title\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --body "The weekly GitHub governance check failed: $run_url"
           fi

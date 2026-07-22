@@ -174,10 +174,16 @@ unbundled `cargo run -p app` is still fine.
 │   ├── release/                       # Release gates, cask, notarization, update manifest
 │   └── spike/                         # Separate A0 prototype workspace
 └── docs/
+    ├── ACCEPTANCE.md
     ├── ARCHITECTURE.md
     ├── DEVELOPMENT.md
-    ├── ACCEPTANCE.md
+    ├── MANUAL-VALIDATION.md
+    ├── RELEASE-NOTES-v0.1.0.md
+    ├── RELEASE-NOTES-v0.1.1.md
+    ├── RELEASE-NOTES-v0.1.2.md
     ├── RELEASING.md
+    ├── ROADMAP.md
+    ├── TROUBLESHOOTING.md
     └── superpowers/                   # Detailed planning and validation notes
 ```
 
@@ -217,6 +223,8 @@ from `tools/spike/`.
 ## Requirements
 
 - macOS 14 (Sonoma) or later — the bundle sets `LSMinimumSystemVersion` 14.0.
+- Apple silicon (arm64) — the published Homebrew cask and release pipeline are
+  arm64-only; Intel Macs are not supported by the published cask.
 - Rust 1.97.0, pinned by `rust-toolchain.toml`.
 - Xcode Command Line Tools for native macOS frameworks.
 - CMake for the bundled llama.cpp build (not included with Xcode CLT —
@@ -261,8 +269,8 @@ comma-separated bundle ids.
 | `COMPME_EMOJI` | Emoji completion on/off. |
 | `COMPME_EMOJI_SKIN_TONE` | Preferred skin tone (Fitzpatrick) for emoji completion. |
 | `COMPME_EMOJI_GENDER` | Preferred gender (neutral / female / male) for emoji completion. |
-| `COMPME_ACCEPT_WORD_KEY` | Word-accept key as a `modifier+keycode` string (e.g. `48` or `shift+48`); default Tab (48). Applies at relaunch. |
-| `COMPME_ACCEPT_FULL_KEY` | Full-accept key as a `modifier+keycode` string (e.g. `50` or `ctrl+shift+50`); default grave/backtick (50). |
+| `COMPME_ACCEPT_WORD_KEY` | Word-accept key as a `modifier+keycode` string (e.g. `48` or `shift+48`); default Tab (48). Config/env changes apply at relaunch; the Shortcuts-pane key recorder rebinds it live. |
+| `COMPME_ACCEPT_FULL_KEY` | Full-accept key as a `modifier+keycode` string (e.g. `50` or `ctrl+shift+50`); default grave/backtick (50). Config/env changes apply at relaunch; the Shortcuts-pane key recorder rebinds it live. |
 | `COMPME_FORCE_ACTIVATE_KEY` | Always-on shortcut re-showing the currently held suggestion (alias: `COMPME_FORCE_ACTIVATE`); no fresh inference, no-op when nothing is pending. |
 | `COMPME_TOGGLE_APP_KEY` | Always-on shortcut toggling suggestions for the focused app. |
 | `COMPME_TOGGLE_GLOBAL_KEY` | Always-on shortcut toggling the global suggestion switch. |
@@ -343,55 +351,16 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 
 ## Current Validation Gates
 
-Use these gates before treating the workspace as development-ready. The root
-suite is roughly 1,920 tests:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace --all-targets -- --test-threads=1
-cargo build --locked --workspace --all-targets
-cargo build --locked -p platform_macos --examples
-cargo audit
-
-find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
-tools/bundle/check-bundle-metadata.sh
-tools/bundle/check-bundle-metadata.sh --self-test
-tools/release/validate-version.sh --self-test
-ruby -c Casks/compme.rb
-tools/bundle/make-app.sh --self-test
-tools/bundle/make-icon.sh --self-test
-tools/bundle/bundle-smoke.sh
-tools/bundle/bundle-smoke.sh --self-test
-tools/acceptance/e2e-complete-me.sh --self-test
-tools/acceptance/missing-model-startup.sh --self-test
-tools/acceptance/missing-model-startup.sh
-tools/acceptance/run-ui-assisted-session.sh --self-test
-tools/acceptance/run-a1b-live-gates.sh --self-test
-tools/release/check-model-client-features.sh
-tools/release/check-model-client-features.sh --self-test
-tools/release/check-agent-briefs.sh
-tools/release/check-agent-briefs.sh --self-test
-tools/release/check-privacy-policy.sh
-tools/release/check-privacy-policy.sh --self-test
-bash tools/release/check-model-gates.sh
-tools/release/run-model-gates.sh --self-test
-tools/release/update-cask.sh --self-test
-tools/release/finalize-cask.sh --self-test
-tools/release/notarize-app.sh --self-test
-tools/release/write-update-manifest.sh --self-test
-bash tools/release/run-model-gates.sh
-
-cd tools/spike
-cargo fmt -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo build --locked --bins
-```
+Use the full local gate before treating the workspace as development-ready. The
+canonical command list is single-sourced in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#full-local-gate); the root suite is
+roughly 1,941 tests.
 
 A2 validation is local/manual-only and is deliberately excluded from CI, tag
-releases, and the release-policy checker. Confirm the two local tools themselves
-before a manual compatibility pass:
+releases, and the release-policy checker: the automated workflows never execute
+its runner or ledger checker (the generic `bash -n` script-syntax traversal
+only parses them). Confirm the two local tools themselves before a manual
+compatibility pass:
 
 ```sh
 tools/acceptance/run-a2-compat-gates.sh --self-test
@@ -405,9 +374,20 @@ validation.
 Branch/PR CI also lints the workflow YAML itself (`actionlint`, with shellcheck
 over inline `run:` steps) and runs native Windows/Linux portability jobs:
 workspace fmt, portable-workspace clippy/tests excluding `platform_macos`, and
-an app-binary build through each target facade. Tag release validation is
-equally broad: it runs the same portable-workspace gates and app-binary build
-on `windows-latest` and `ubuntu-latest`. CI and tag validation install
+an app-binary build through each target facade. A Model-backed smoke gate runs
+`bash tools/release/run-model-gates.sh` with `COMPME_REQUIRE_LATENCY_BUDGET=0`
+per push against the cached, pinned GGUF, so real load/complete/shutdown
+inference breakage cannot ship green (the strict latency budget stays a
+pre-tag gate on a real Mac), and a version-docs check
+(`tools/release/check-version-docs.sh`, plus its self-test) fails the check job
+when a documented version surface lags the root `Cargo.toml`. Tag release
+validation is equally broad: it runs the same portable-workspace gates and
+app-binary build on `windows-latest` and `ubuntu-latest`, adds a corpus-based
+Model-quality gate (`tools/release/check-quality.sh`) that fails the pipeline
+when the pinned model's corpus pass rate drops below the 80% threshold, and
+closes with a `post_verify` job that installs the published cask, assesses the
+installed app with strict codesign, staple, and Gatekeeper checks, and runs a
+bounded startup smoke. CI and tag validation install
 `cargo-audit` 0.22.2 with `--locked` and run `cargo audit` under read-only
 workflow permissions. A separate dependency-audit workflow (read-only apart
 from opening a tracking issue when a scheduled run fails) repeats that pinned
@@ -447,11 +427,13 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 ## Documentation Index
 
 - [Roadmap & pending work](docs/ROADMAP.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Acceptance](docs/ACCEPTANCE.md)
 - [Manual validation](docs/MANUAL-VALIDATION.md)
 - [Releasing](docs/RELEASING.md)
+- [Release notes v0.1.3+ (GitHub Releases)](https://github.com/mudrii/compme/releases)
 - [Engine/macOS MVP design](docs/superpowers/specs/2026-06-03-engine-macos-mvp-design.md)
 - [A1b macOS adapter contract](docs/superpowers/plans/2026-06-04-a1b-macos-adapter-contract.md)
 - [Cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md)

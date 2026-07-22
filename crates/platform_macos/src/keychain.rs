@@ -163,6 +163,14 @@ fn keychain_write_secret(service: &str, account: &str, secret: &[u8]) -> Result<
     let accessible_key = unsafe { CFString::wrap_under_get_rule(kSecAttrAccessible) };
     let accessible_value =
         unsafe { CFString::wrap_under_get_rule(kSecAttrAccessibleWhenUnlockedThisDeviceOnly) };
+    // `PasswordOptions::query` is deprecated upstream ("This field should have
+    // been private. Please use setters that don't expose CFType"), but
+    // security-framework 3.7.0 has NO setter for `kSecAttrAccessible` — the
+    // setters cover access-control, access-group, synchronizable, and
+    // label/comment/description only — so this raw query push is the only way
+    // through the crate to device-pin the key (design A3). Migration path: an
+    // upstream `set_accessible`-style setter, or bypassing the crate with a
+    // hand-built SecItemAdd dictionary via security-framework-sys.
     #[allow(deprecated)]
     options
         .query

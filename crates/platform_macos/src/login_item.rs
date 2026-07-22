@@ -5,7 +5,10 @@
 //! run` binary gets an error from the framework, which callers treat as
 //! non-fatal. AppKit/FFI glue: build- and live-verified, not unit-tested
 //! (the tray convention); the decide-to-call policy is the unit-tested part
-//! (`Config.launch_at_login` tri-state in the app crate).
+//! (`Config.launch_at_login` tri-state in the app crate). This function is
+//! exercised end-to-end by the settings launch-at-login toggle
+//! (`settings_runtime` → `PlatformShell::set_launch_at_login`); unit-testing
+//! it would attempt a real login-item registration on the test machine.
 
 use objc2_service_management::SMAppService;
 use platform::PlatformError;

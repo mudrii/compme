@@ -32,3 +32,8 @@ exclude = ["tools/spike"]
 [workspace.package]
 version = "0.1.5"
 license = "Apache-2.0"
+
+[workspace.dependencies]
+getrandom = "0.3"
+libc = "0.2"
+zeroize = "1"

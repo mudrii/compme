@@ -356,6 +356,7 @@ pub struct MacosPlatformAdapter {
     backspace_poster: Arc<BackspacePoster>,
     observer_installer: AdapterObserverInstaller,
     accept_tap_installer: AdapterAcceptTapInstaller,
+    ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
 }
 
 pub struct MacosOverlayPresenter {
@@ -502,6 +503,7 @@ struct AdapterTestHooks {
     backspace_poster: Arc<BackspacePoster>,
     observer_installer: Arc<AdapterObserverInstallerFn>,
     accept_tap_installer: Arc<AcceptTapInstallerFn>,
+    ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
 }
 
 struct RebindPoller {
@@ -1339,6 +1341,7 @@ impl MacosPlatformAdapter {
             backspace_poster: Arc::new(post_synthetic_backspaces),
             observer_installer: AdapterObserverInstaller::Worker,
             accept_tap_installer: AdapterAcceptTapInstaller::Worker,
+            ax_range_target: Arc::new(RawAxRangeTarget),
         })
     }
 
@@ -1405,6 +1408,7 @@ impl MacosPlatformAdapter {
             backspace_poster,
             observer_installer,
             accept_tap_installer,
+            ax_range_target,
         } = hooks;
 
         Self {
@@ -1422,6 +1426,7 @@ impl MacosPlatformAdapter {
             backspace_poster,
             observer_installer: AdapterObserverInstaller::Custom(observer_installer),
             accept_tap_installer: AdapterAcceptTapInstaller::Custom(accept_tap_installer),
+            ax_range_target,
         }
     }
 
@@ -2041,6 +2046,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
         let field = field.clone();
         let app = field.app.clone();
         let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
+        let ax_range_target = Arc::clone(&self.ax_range_target);
         let expected_text = expected_text.to_string();
         let text = text.to_string();
         let pid = field
@@ -2062,6 +2068,7 @@ impl PlatformAdapter for MacosPlatformAdapter {
                     range,
                     strategy,
                     secure_input_enabled,
+                    ax_range_target.as_ref(),
                 )
             })?
             .and_then(|apply| match apply {
@@ -5147,6 +5154,75 @@ fn text_range_rect_for_field(
     unsafe { read_ax_bounds_for_range(element, range.location, range.length) }
 }
 
+/// Element-level AX access for the range-replacement write path, abstracted so
+/// tests can drive `insert_replacing_range` without a live AX element — the
+/// same role `ObserverBackend` plays for the observer path. Production uses
+/// [`RawAxRangeTarget`]'s forwarders to the raw FFI helpers; tests inject a
+/// recording fake and assert the exact attribute-set sequence.
+trait AxRangeTarget {
+    fn copy_focused_or_app_element(
+        &self,
+        pid: i32,
+    ) -> Result<(AXUIElementRef, Vec<CFType>), PlatformError>;
+    unsafe fn resolve_identity(
+        &self,
+        element: AXUIElementRef,
+    ) -> Result<AxElementIdentity, PlatformError>;
+    unsafe fn read_value(&self, element: AXUIElementRef) -> Result<String, PlatformError>;
+    unsafe fn read_selected_range(&self, element: AXUIElementRef)
+        -> Result<CFRange, PlatformError>;
+    unsafe fn set_value(
+        &self,
+        element: AXUIElementRef,
+        new_value: &str,
+    ) -> Result<(), PlatformError>;
+    /// Advisory caret set after a landed value write; failures stay non-fatal
+    /// exactly as in [`set_caret_after_value_write`].
+    unsafe fn set_caret_after_value_write(&self, element: AXUIElementRef, new_caret: usize);
+}
+
+struct RawAxRangeTarget;
+
+impl AxRangeTarget for RawAxRangeTarget {
+    fn copy_focused_or_app_element(
+        &self,
+        pid: i32,
+    ) -> Result<(AXUIElementRef, Vec<CFType>), PlatformError> {
+        copy_focused_or_app_element(pid)
+    }
+
+    unsafe fn resolve_identity(
+        &self,
+        element: AXUIElementRef,
+    ) -> Result<AxElementIdentity, PlatformError> {
+        resolve_ax_element_identity(element)
+    }
+
+    unsafe fn read_value(&self, element: AXUIElementRef) -> Result<String, PlatformError> {
+        read_required_ax_string_attribute(element, kAXValueAttribute)
+    }
+
+    unsafe fn read_selected_range(
+        &self,
+        element: AXUIElementRef,
+    ) -> Result<CFRange, PlatformError> {
+        read_required_ax_range_attribute(element)
+    }
+
+    unsafe fn set_value(
+        &self,
+        element: AXUIElementRef,
+        new_value: &str,
+    ) -> Result<(), PlatformError> {
+        set_required_ax_string_attribute(element, kAXValueAttribute, new_value)
+    }
+
+    unsafe fn set_caret_after_value_write(&self, element: AXUIElementRef, new_caret: usize) {
+        set_caret_after_value_write(element, new_caret);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn insert_range_for_field(
     pid: i32,
     field: FieldHandle,
@@ -5155,20 +5231,21 @@ fn insert_range_for_field(
     range: CorrectionRange,
     strategy: InsertStrategy,
     secure_input_enabled: Arc<SecureInputProvider>,
+    target: &dyn AxRangeTarget,
 ) -> Result<AxSetApply, PlatformError> {
     // TOCTOU re-check before AX identity/text reads, matching insert/read/caret
     // workers. Grammar range replacement must not touch the focused AX element
     // after global Secure Input turns on.
     recheck_global_secure_input(&secure_input_enabled)?;
 
-    let (element, _owners) = copy_focused_or_app_element(pid)?;
-    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    let (element, _owners) = target.copy_focused_or_app_element(pid)?;
+    let identity = unsafe { target.resolve_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
     }
 
-    let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
-    let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    let value = unsafe { target.read_value(element) }?;
+    let selected_range = unsafe { target.read_selected_range(element) }?;
     let ctx = text_context_from_value(field, value.clone(), selected_range);
     let Some(range) = scalar_correction_range_to_utf16_range(
         &ctx.left,
@@ -5186,8 +5263,8 @@ fn insert_range_for_field(
     }
     let (new_value, new_caret) = splice_text_at_utf16_range(&value, range, &text);
     unsafe {
-        set_required_ax_string_attribute(element, kAXValueAttribute, &new_value)?;
-        set_caret_after_value_write(element, new_caret);
+        target.set_value(element, &new_value)?;
+        target.set_caret_after_value_write(element, new_caret);
     }
 
     // Classify by readback exactly like `insert_for_field`: fail OPEN on a
@@ -5199,8 +5276,7 @@ fn insert_range_for_field(
     // would claim nothing happened after the field was already mutated (see the
     // `AxSetApply` doc). Only a readback byte-identical to the original is the
     // silent-write quirk.
-    let readback = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }
-        .unwrap_or_else(|_| new_value.clone());
+    let readback = unsafe { target.read_value(element) }.unwrap_or_else(|_| new_value.clone());
     // Log a divergent readback so a wrong-range/partial-splice failure stays
     // diagnosable while still reporting Applied. Lengths only: the field text
     // may be sensitive.
@@ -7421,6 +7497,7 @@ mod tests {
         /// drop-before-install pin): "install:<Kind>" per installer call,
         /// "drop" per fake tap-resource drop.
         accept_tap_events: Arc<Mutex<Vec<String>>>,
+        ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
     }
 
     impl TestAdapterConfig {
@@ -7441,6 +7518,7 @@ mod tests {
                 backspace_poster: Arc::new(|_, _| Ok(())),
                 accept_tap_installs: Arc::new(Mutex::new(Vec::new())),
                 accept_tap_events: Arc::new(Mutex::new(Vec::new())),
+                ax_range_target: Arc::new(RawAxRangeTarget),
             }
         }
     }
@@ -7525,6 +7603,7 @@ mod tests {
             backspace_poster,
             accept_tap_installs,
             accept_tap_events,
+            ax_range_target,
         } = config;
         let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
         let frontmost_pid = Arc::new(move || frontmost_pid);
@@ -7578,6 +7657,7 @@ mod tests {
                 backspace_poster,
                 observer_installer,
                 accept_tap_installer,
+                ax_range_target,
             },
         )
     }
@@ -7634,6 +7714,7 @@ mod tests {
                 backspace_poster: Arc::new(|_, _| Ok(())),
                 observer_installer,
                 accept_tap_installer,
+                ax_range_target: Arc::new(RawAxRangeTarget),
             },
         )
     }
@@ -9696,6 +9777,313 @@ mod tests {
                 state: SecurityState::SecureInputEnabled,
             })
         );
+    }
+
+    /// Recording fake for the AX range-replacement target seam: models one
+    /// focused text element (value + selected range + resolved identity) and
+    /// logs every attribute SET in order as "attribute=payload" strings — the
+    /// `FakeObserverBackend` log style — so a test asserts the exact
+    /// `AXUIElementSetAttributeValue` sequence byte-for-byte, Unicode payload
+    /// included. Reads are not logged (the mutation sequence is the contract
+    /// under test); `focused_element_copies` counts how often a dispatch
+    /// actually reached for an AX element, so reject-before-any-AX-call cases
+    /// can assert zero AX traffic.
+    struct FakeAxRangeTarget {
+        identity: AxElementIdentity,
+        value: Arc<Mutex<String>>,
+        selected_range: CFRange,
+        set_log: Arc<Mutex<Vec<String>>>,
+        focused_element_copies: Arc<AtomicUsize>,
+    }
+
+    impl FakeAxRangeTarget {
+        fn new(
+            identity: AxElementIdentity,
+            value: &str,
+            selected_range: CFRange,
+            set_log: Arc<Mutex<Vec<String>>>,
+            focused_element_copies: Arc<AtomicUsize>,
+        ) -> Self {
+            Self {
+                identity,
+                value: Arc::new(Mutex::new(value.to_string())),
+                selected_range,
+                set_log,
+                focused_element_copies,
+            }
+        }
+    }
+
+    impl AxRangeTarget for FakeAxRangeTarget {
+        fn copy_focused_or_app_element(
+            &self,
+            _pid: i32,
+        ) -> Result<(AXUIElementRef, Vec<CFType>), PlatformError> {
+            self.focused_element_copies.fetch_add(1, Ordering::SeqCst);
+            // The element ref must be backed by a real CF object: the returned
+            // owner releases it on drop, mirroring `create_app_ax_element`'s
+            // create-rule wrap. A retained CFString serves as the opaque token;
+            // the fake never dereferences it.
+            let token = CFString::new("fake-ax-element");
+            let element = token.as_concrete_TypeRef() as AXUIElementRef;
+            Ok((element, vec![token.as_CFType()]))
+        }
+
+        unsafe fn resolve_identity(
+            &self,
+            _element: AXUIElementRef,
+        ) -> Result<AxElementIdentity, PlatformError> {
+            Ok(self.identity.clone())
+        }
+
+        unsafe fn read_value(&self, _element: AXUIElementRef) -> Result<String, PlatformError> {
+            Ok(self.value.lock().unwrap().clone())
+        }
+
+        unsafe fn read_selected_range(
+            &self,
+            _element: AXUIElementRef,
+        ) -> Result<CFRange, PlatformError> {
+            Ok(self.selected_range)
+        }
+
+        unsafe fn set_value(
+            &self,
+            _element: AXUIElementRef,
+            new_value: &str,
+        ) -> Result<(), PlatformError> {
+            self.set_log
+                .lock()
+                .unwrap()
+                .push(format!("set:AXValue={new_value}"));
+            // Model the landed write so the post-write readback classifies
+            // Applied (a stale readback would read as the iTerm2 silent no-op).
+            *self.value.lock().unwrap() = new_value.to_string();
+            Ok(())
+        }
+
+        unsafe fn set_caret_after_value_write(&self, _element: AXUIElementRef, new_caret: usize) {
+            // The production path wraps `new_caret` as CFRange{location,0};
+            // logging the length component too keeps a non-collapsed-range
+            // regression visible.
+            self.set_log
+                .lock()
+                .unwrap()
+                .push(format!("set:AXSelectedTextRange={new_caret},0"));
+        }
+    }
+
+    #[test]
+    fn insert_replacing_range_applies_value_then_caret_in_order() {
+        struct AppliedCase {
+            name: &'static str,
+            field_value: &'static str,
+            caret_utf16: isize,
+            range: CorrectionRange,
+            expected_text: &'static str,
+            insert_text: &'static str,
+            want_value: &'static str,
+            want_caret: isize,
+        }
+
+        // Both rows pin the same contract at different caret positions: ONE
+        // AXValue write carrying the fully-spliced field text, then ONE
+        // AXSelectedTextRange write placing the caret after the inserted text.
+        let cases = [
+            AppliedCase {
+                // Happy path: suffix caret, and the payload mixes a non-ASCII
+                // BMP scalar with an astral emoji — the scalar-based
+                // CorrectionRange must land on the right UTF-16 span ("teh" is
+                // units 8..11, not scalars 7..10) and the byte-for-byte value
+                // write must carry the Unicode through untouched.
+                name: "suffix caret with unicode payload",
+                field_value: "cofé 😺 teh",
+                caret_utf16: 11, // c o f é ' ' 😺(2 units) ' ' t e h
+                range: CorrectionRange { start: 7, end: 10 }, // scalar span of "teh"
+                expected_text: "teh",
+                insert_text: "the",
+                want_value: "cofé 😺 the",
+                want_caret: 11,
+            },
+            AppliedCase {
+                // Mid-field range replacement: the caret sits PAST the replaced
+                // span, so the post-insert caret lands mid-field (9, after
+                // "the quick") — it must NOT jump to the end of the field.
+                name: "mid-field range with caret past the span",
+                field_value: "the quik brown fox jumps",
+                caret_utf16: 15, // caret after "the quik brown "
+                range: CorrectionRange { start: 4, end: 8 }, // scalar span of "quik"
+                expected_text: "quik",
+                insert_text: "quick",
+                want_value: "the quick brown fox jumps",
+                want_caret: 9,
+            },
+        ];
+
+        for case in cases {
+            let set_log = Arc::new(Mutex::new(Vec::new()));
+            let copies = Arc::new(AtomicUsize::new(0));
+            let identity = resolved_identity("ax:0x123", 42, Some("note"));
+            let mut config =
+                TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+            config.ax_range_target = Arc::new(FakeAxRangeTarget::new(
+                identity.clone(),
+                case.field_value,
+                CFRange {
+                    location: case.caret_utf16,
+                    length: 0,
+                },
+                Arc::clone(&set_log),
+                copies,
+            ));
+            let adapter = test_adapter_with_hooks(config);
+            let field = FieldHandle {
+                app: "pid:42".into(),
+                pid: Some(42),
+                element_id: identity.field_element_id(),
+                generation: 1,
+            };
+
+            let result = adapter.insert_replacing_range(
+                &field,
+                case.expected_text,
+                case.insert_text,
+                case.range,
+                InsertStrategy::AxSet,
+            );
+
+            // Invariant: an applied replacement reports the INSERTED TEXT's
+            // extent with the AxSet strategy — the accept path counts on this
+            // to stay honest about what landed.
+            assert_eq!(
+                result,
+                Ok(Inserted {
+                    bytes: case.insert_text.len(),
+                    chars: case.insert_text.chars().count(),
+                    strategy: InsertStrategy::AxSet,
+                }),
+                "{}: applied replacement must report the inserted text extent",
+                case.name,
+            );
+            // Invariant: the AXUIElementSetAttributeValue sequence IS the
+            // contract — the value write (full field text with the replacement
+            // spliced in, byte-for-byte including Unicode) must land BEFORE
+            // the selected-range write, and the caret payload must be the
+            // post-insert caret in UTF-16 units (splice start + inserted
+            // units). Swapping the two writes or miscomputing the offset
+            // corrupts the field/caret on live apps.
+            assert_eq!(
+                set_log.lock().unwrap().as_slice(),
+                [
+                    format!("set:AXValue={}", case.want_value),
+                    format!("set:AXSelectedTextRange={},0", case.want_caret),
+                ]
+                .as_slice(),
+                "{}: value write then caret write, exact payloads in order",
+                case.name,
+            );
+        }
+    }
+
+    #[test]
+    fn insert_replacing_range_refuses_stale_field_without_any_ax_write() {
+        let set_log = Arc::new(Mutex::new(Vec::new()));
+        let copies = Arc::new(AtomicUsize::new(0));
+        let mut config = TestAdapterConfig::new(Some(99), Arc::new(Mutex::new(Vec::new())), None);
+        config.ax_range_target = Arc::new(FakeAxRangeTarget::new(
+            // Focus moved after the field handle was captured: frontmost is now
+            // pid 99 and the focused element resolves a pid-99 identity, while
+            // the handle still names the pid-42 field. With no pid on the
+            // handle, the write would target the NEW frontmost app via the
+            // fallback — exactly the moved-frontmost scenario.
+            resolved_identity("ax:0x999", 99, Some("other")),
+            "teh",
+            CFRange {
+                location: 3,
+                length: 0,
+            },
+            Arc::clone(&set_log),
+            copies,
+        ));
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: None,
+            element_id: resolved_identity("ax:0x123", 42, Some("note")).field_element_id(),
+            generation: 1,
+        };
+
+        // Invariant: the element-targeted (AxSet) stale guard — identity match,
+        // the analog of the global strategies' frontmost-pid check — must
+        // surface an error instead of writing into whatever app now holds
+        // focus.
+        assert_eq!(
+            adapter.insert_replacing_range(
+                &field,
+                "teh",
+                "the",
+                CorrectionRange { start: 0, end: 3 },
+                InsertStrategy::AxSet,
+            ),
+            Err(PlatformError::StaleField),
+        );
+        // Invariant: the stale check precedes EVERY attribute-set call; the
+        // mutation log must stay empty even though the identity read ran. A
+        // single AXValue write slipping through corrupts the focused field of
+        // an unrelated app.
+        assert!(set_log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn insert_replacing_range_rejects_non_atomic_strategy_before_any_ax_call() {
+        let set_log = Arc::new(Mutex::new(Vec::new()));
+        let copies = Arc::new(AtomicUsize::new(0));
+        let identity = resolved_identity("ax:0x123", 42, Some("note"));
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.ax_range_target = Arc::new(FakeAxRangeTarget::new(
+            identity.clone(),
+            "teh",
+            CFRange {
+                location: 3,
+                length: 0,
+            },
+            Arc::clone(&set_log),
+            Arc::clone(&copies),
+        ));
+        let adapter = test_adapter_with_hooks(config);
+        let field = FieldHandle {
+            app: "pid:42".into(),
+            pid: Some(42),
+            element_id: identity.field_element_id(),
+            generation: 1,
+        };
+
+        // Invariant: a field whose negotiated capability lacks atomic range
+        // replace (any strategy but AxSet — here Clipboard) is refused with an
+        // UnsupportedField-class error. (The SyntheticKeys twin is
+        // insert_replacing_range_refuses_non_axset_without_posting_text.)
+        assert_eq!(
+            adapter.insert_replacing_range(
+                &field,
+                "teh",
+                "the",
+                CorrectionRange { start: 0, end: 3 },
+                InsertStrategy::Clipboard,
+            ),
+            Err(PlatformError::UnsupportedField {
+                reason: "range replacement requires AxSet".into(),
+            }),
+        );
+        // Invariant: the rejection fires BEFORE the worker touches any AX
+        // element — the range write is only safe as one atomic value swap, so
+        // a partial path (copy the element, read it, then fail) must never
+        // start.
+        assert_eq!(
+            copies.load(Ordering::SeqCst),
+            0,
+            "no AX element may be touched for a non-atomic strategy",
+        );
+        assert!(set_log.lock().unwrap().is_empty());
     }
 
     fn keep_handler(log: Arc<Mutex<Vec<i64>>>) -> Arc<AcceptTapHandler> {

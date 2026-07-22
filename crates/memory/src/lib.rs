@@ -428,7 +428,7 @@ impl MemoryStore {
         let mut nonce_bytes = [0u8; NONCE_LEN];
         // Fail closed: if the RNG is unavailable, error rather than store a record
         // with a weak/missing nonce.
-        getrandom::getrandom(&mut nonce_bytes).map_err(|_| MemoryError::Crypto)?;
+        getrandom::fill(&mut nonce_bytes).map_err(|_| MemoryError::Crypto)?;
         let nonce = Nonce::from_slice(&nonce_bytes);
         let ciphertext = self
             .cipher
@@ -478,7 +478,7 @@ mod tests {
 
     fn temp_db_path() -> PathBuf {
         let mut suffix = [0u8; 8];
-        getrandom::getrandom(&mut suffix).unwrap();
+        getrandom::fill(&mut suffix).unwrap();
         let hex: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
         std::env::temp_dir().join(format!("cm-memory-test-{hex}.db"))
     }
@@ -1491,7 +1491,7 @@ mod tests {
         // sidecar symlink test covers the shared fail-closed convention.)
         use std::os::unix::fs::PermissionsExt;
         let mut suffix = [0u8; 8];
-        getrandom::getrandom(&mut suffix).unwrap();
+        getrandom::fill(&mut suffix).unwrap();
         let hex: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
         let dir = std::env::temp_dir().join(format!("cm-memory-dirmode-{hex}"));
         let path = dir.join("store.db");
@@ -1515,7 +1515,7 @@ mod tests {
         // directory that was already present.
         use std::os::unix::fs::PermissionsExt;
         let mut suffix = [0u8; 8];
-        getrandom::getrandom(&mut suffix).unwrap();
+        getrandom::fill(&mut suffix).unwrap();
         let hex: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
         let dir = std::env::temp_dir().join(format!("cm-memory-existing-dirmode-{hex}"));
         let path = dir.join("store.db");
@@ -1540,7 +1540,7 @@ mod tests {
         // open() must create the parent dir; otherwise SQLite errors and the
         // store silently fails to init.
         let mut suffix = [0u8; 8];
-        getrandom::getrandom(&mut suffix).unwrap();
+        getrandom::fill(&mut suffix).unwrap();
         let hex: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
         let dir = std::env::temp_dir().join(format!("cm-memory-test-dir-{hex}"));
         let path = dir.join("nested").join("memory.db");

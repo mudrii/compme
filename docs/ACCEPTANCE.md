@@ -10,59 +10,12 @@ Compme.
 
 ## Automated Gates
 
-Root workspace:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace --all-targets -- --test-threads=1
-cargo build --locked --workspace --all-targets
-cargo build --locked -p platform_macos --examples
-cargo audit
-```
-
-Acceptance harness syntax, deterministic self-tests, and release model gate:
-
-```sh
-find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
-tools/release/validate-version.sh --self-test
-tools/bundle/check-bundle-metadata.sh
-tools/bundle/check-bundle-metadata.sh --self-test
-ruby -c Casks/compme.rb
-tools/bundle/make-app.sh --self-test
-tools/bundle/make-icon.sh --self-test
-tools/bundle/bundle-smoke.sh
-tools/bundle/bundle-smoke.sh --self-test
-tools/acceptance/e2e-complete-me.sh --self-test
-tools/acceptance/missing-model-startup.sh --self-test
-tools/acceptance/missing-model-startup.sh
-tools/acceptance/run-ui-assisted-session.sh --self-test
-tools/acceptance/run-a1b-live-gates.sh --self-test
-tools/release/check-model-client-features.sh
-tools/release/check-model-client-features.sh --self-test
-tools/release/check-agent-briefs.sh
-tools/release/check-agent-briefs.sh --self-test
-tools/release/check-privacy-policy.sh
-tools/release/check-privacy-policy.sh --self-test
-tools/release/check-github-governance.sh --self-test
-bash tools/release/check-model-gates.sh
-bash tools/release/run-model-gates.sh
-tools/release/run-model-gates.sh --self-test
-tools/release/update-cask.sh --self-test
-tools/release/finalize-cask.sh --self-test
-tools/release/notarize-app.sh --self-test
-tools/release/write-update-manifest.sh --self-test
-```
-
-Spike workspace:
-
-```sh
-cd tools/spike
-cargo fmt -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo build --locked --bins
-```
+The deterministic local gate — root workspace fmt/clippy/test/build,
+`cargo audit`, harness syntax checks and self-tests, the release model gates
+(`run-model-gates.sh` and `check-quality.sh`), and the separate spike workspace
+checks — runs before committing to main or treating local validation as
+complete. The canonical command list is
+single-sourced in [DEVELOPMENT.md](DEVELOPMENT.md#full-local-gate).
 
 Native portability CI:
 
@@ -413,7 +366,8 @@ rows below remain the required live evidence, especially real editor/sidebar
 field metadata in VS Code, Cursor, and Windsurf.
 
 A2 validation is local/manual-only. CI, tag releases, and the release-policy
-checker do not execute or syntax-check these two tools. Run them explicitly on
+checker never execute these two tools (the generic `bash -n` script-syntax
+traversal only parses them). Run them explicitly on
 a granted Mac when collecting manual pre-release compatibility evidence.
 
 Run:

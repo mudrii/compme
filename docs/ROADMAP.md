@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-17 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, their deduplication/idempotence audit fixes and pinned live gates, three non-critical architecture follow-ups, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped) · **Branch:** `main` · **Tests:** ≈1920 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-18 (implementation reviewed on the current `main` tree; v0.1.5 (`14ae81e`) remains the latest published artifact, while current `main` adds the five committed macOS parity closures, their deduplication/idempotence audit fixes and pinned live gates, three non-critical architecture follow-ups, a pinned Rust baseline, and a read-only GitHub-governance checker; cross-platform Phase 0 remains shipped, and the workspace version is single-sourced in the root manifest (`1a12b50`); dated 2026-07-18 and delivered in the working tree pending commit: the Batch 1+2 CI/docs/cask-window/dependabot/pre-push hardening, the active `protect-main` ruleset plus the governance checker's baseline/warnings rework, the six Batch 3+4 quality-and-release-gate items — the corpus model-quality gate at its 20/21 baseline, the branch-CI model-backed smoke gate, the AX insertion-serialization tests, the `run()` startup extraction, the post-publish `post_verify` job, and the version-docs reconciliation check — and the nitpick sweep, all planned in [`docs/superpowers/plans/2026-07-18-quality-and-release-gates.md`](superpowers/plans/2026-07-18-quality-and-release-gates.md), followed by the 2026-07-19 full-audit remediation ([`docs/superpowers/plans/2026-07-19-audit-findings-remediation.md`](superpowers/plans/2026-07-19-audit-findings-remediation.md), committed) covering the version-docs extension, governance-checker rework, quality-corpus pins, and post_verify hardening, with the tree at ≈1941 workspace tests) · **Branch:** `main` · **Tests:** ≈1941 workspace tests listed on the current tree (44 spike tests separate)
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
@@ -30,9 +30,9 @@
 > build-provenance attestation with pre-publication verification,
 > explicit-refspec head gates, and spike build caching).
 
-> **Release boundary:** the published v0.1.5 artifact is tag `14ae81e`
-> (the previous v0.1.4 artifact is tag `18b8dc0`). Everything between those
-> tags shipped in v0.1.5:
+> **Release boundary:** the published v0.1.5 artifact is tag `v0.1.5` (commit
+> `14ae81e`); the previous v0.1.4 artifact is tag `v0.1.4` (commit `18b8dc0`).
+> Everything between those tags shipped in v0.1.5:
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
 > `618013d` (seam hardening and A2 local/manual-only automation policy),
 > `a5781fc` (single model-location control), `18fbc4f` (catalog metadata fix),
@@ -45,8 +45,8 @@
 > tag (`14ae81e`, published 2026-07-13). Unless a row explicitly says
 > otherwise, current implementation/test claims below describe `main`, which
 > contains post-release build, release-tooling, cask, and documentation changes.
-> Use tag `14ae81e` and its release assets when validating the published
-> v0.1.5 artifact.
+> Use tag `v0.1.5` (commit `14ae81e`) and its release assets when validating
+> the published v0.1.5 artifact.
 
 ## Status legend
 
@@ -249,7 +249,7 @@ ledger checker. Teams may still collect committed pre-release evidence under
 **Plan:** `2026-06-09-a2-parity-design.md:13,27` called for per-app/per-domain
 instruction maps, with the settings design deferring the editing UI.
 
-**Status (re-validated 2026-06-15):**
+**Status:**
 - `build_personalization` parses `COMPME_INSTRUCTIONS_APPS` /
   `COMPME_INSTRUCTIONS_APP_<TARGET>` into `PersonalizationProfile.per_app`
   and `COMPME_INSTRUCTIONS_DOMAINS` /
@@ -461,7 +461,7 @@ ledger, and folded settings LOOK gates (`personalization-pane-look`,
 
 | Item | Status | Live residual |
 |---|---|---|
-| Browser-domain extraction | code ✅ (`c131`); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking; Safari allow+exclude legs live-proven 2026-07-07 (Batch 6) | Chrome/Brave live rows with the A2 matrix; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
+| Browser-domain extraction | code ✅ (AX browser-domain source per `2026-06-09-a2-parity-design.md` §Documented limitations, c131 slices 2-3); `run-a2-compat-gates.sh browser-domain-allow|browser-domain-exclude` validates host-only domain metadata and exclusion blocking; Safari allow+exclude legs live-proven 2026-07-07 (Batch 6) | Chrome/Brave live rows with the A2 matrix; exclusion gate requires `COMPME_A2_BROWSER_EXCLUDED_DOMAIN` |
 | Multi-candidate Down-cycle | engine ✅; synthetic Down-cycle live-proven 2026-07-07 (`COMPME_CANDIDATES=3`, real model); `multi-candidate-cycle-physical-look` manual gate pins the physical cycle/accept UX | run the physical Down-arrow gate before the next release |
 | Compatibility matrix | classifier ✅; Unsupported tiers fail closed; `run-a2-compat-gates.sh matrix` provides its exact 13-row execution and TSV ledger as a local/manual tool | supply all 13 documented row PIDs; dry runs may explicitly allow skips, while recorded evidence should pass every row and satisfy `check-a2-matrix-ledger.sh` locally |
 | SidebarOnly editor/assistant fields | direct focused-field AX metadata + conservative marker evidence ✅ | run `sidebar-only-editor-assistant-look` in real VS Code/Cursor/Windsurf main-editor and assistant fields; these are deliberately separate from the exact 13-row PID matrix |
@@ -479,7 +479,7 @@ ledger, and folded settings LOOK gates (`personalization-pane-look`,
 
 ---
 
-## Tier 5 — 🟢 Standalone grammar/spell-fix mode (CODE-COMPLETE, live LOOK pending)
+## Tier 5 — 🔬 Standalone grammar/spell-fix mode (CODE-COMPLETE, live LOOK pending)
 
 **Intent (2026-07-01 user request):** a *separate* feature from inline
 completion — press a **grammar-trigger** key, the nearest misspelled/ungrammatical
@@ -729,9 +729,9 @@ per-app configurable.
 |---|---|---|---|
 | 1 | ✅ **DONE (2026-06-30)** — Emoji gendered + skin-tone ZWJ assembly | S–M | Shipped: `with_skin_tone_zwj` splices the Fitzpatrick modifier into the base of the gendered ZWJ sequence (`emoji/src/lib.rs`). 27 tests pass, clippy clean. |
 | 2 | ✅ **DONE (2026-06-30, closed without picker)** — Statistics metric selector (3.3) | S / 0 | Decision taken: keep the existing layout, no `NSPopUpButton`. A single-select picker trades away at-a-glance comparison for an unrequested control. The `StatMetric`/`metric_series` scaffold has since been **removed** (a later ponytail pass cut it — zero references remain in `crates/`). |
-| 3 | 🟢 **CODE-COMPLETE — VISUAL LOOK pending (2026-07-01)** — Apps-pane editing rows (3.1) | M | Core + AppKit shell landed. `editAppPolicy:` checkboxes → `apps_edit` signal → run-loop resolves row→app → `set_app_policy_field` → persist. **LAYOUT BUG found + fixed (2026-07-01, `f5a81c5`):** the geometry-check pass caught a real overlap — each app was laid across 2 lines but rows advanced only 26px, so every row's policy checkboxes rendered *on top of the next app's name* (28 collisions, only visible with 2+ apps; headless "0 panics" validation couldn't see it). Redesigned to a **compact one-line grid** (name + 5 title-less checkbox columns under an `App | On Tab Mid AC GF` header + tooltips + Delete), all 8 apps fit, zero overlap, pinned by `apps_pane_grid_has_no_overlaps_within_budget` (mutation-verified). **Pre-check also resolved** — `compose_apps_policy_bits` publishes live per-app bits on show, seeded via `refresh_apps_policy_checkbox_states`. **Still needs eyes/fingers (pure visual LOOK):** bare-checkbox column look, name truncation, toggling changes behavior. |
-| 4 | 🟢 **REGISTRATION runtime-validated — FORCE/TOGGLE DISPATCH needs physical keypress (2026-06-30)** — Always-on hotkeys (3.4) | M | Core + FFI shell landed. **Headless LOOK confirmed for the pre-grammar hotkey set (with COMPME_DEBUG, env keys, TextEdit focus):** `global shortcuts configured` parses env correctly; on text-field focus Carbon hotkeys through ids 5/6/7 (keycodes 96/97/98, shift mask) register via `registration_plan`→`register_hotkey`; collision check passes. Hotkeys re-register per arm-cycle. **Accept hotkeys 1–4 are script-validated** by the rebuilt A1b Carbon accept gates; this row now tracks the remaining always-on force/toggle hotkeys only. Grammar hotkeys ids 8/9 are tracked by the grammar LOOK gate and A1b docs/scripts. **Cannot headless-validate force/toggle dispatch yet:** needs a PHYSICAL press of shift+F5/F6/F7 to confirm ForceActivate/ToggleApp/ToggleGlobal reactions. ForceActivate → `Engine::on_force_show` (re-presents held candidate, 3 tests); ToggleApp/Global call real mechanisms. **Deferred:** re-show only works while a suggestion is held (TODO(LOOK) in `engine_core`). |
-| 5 | 🟢 **CODE-COMPLETE — VISUAL LOOK pending (2026-07-01)** — Personalization pane (3.2) | L | Core (live `set_profile` reload) + pane shell landed. New "Personalization" pane (3 knobs) → `personalization_edit` signal → run loop applies + `set_profile` (live) + `persist_setting`. **Headless LOOK confirmed:** Settings window opens with the new pane present (AXTabButton focus events seen), **0 panics**. **Roadmap correction:** MemoryStore is governed by `config.memory.mode`, NOT the profile. **Last code gap closed (2026-07-01, `256eb14`):** the global-instructions input is now a **multi-line wrapping `NSTextField`** (`setUsesSingleLineMode(false)` + word-wrapping cell; Return commits, Option-Return inserts a newline — tested target/action path preserved), field grown to ~5–6 lines with sender/strength rows shifted down. **Still needs eyes/fingers (pure visual LOOK, no code):** pane + multi-line field render/commit correctly; edits visibly re-steer output (the re-steer *path* is already unit-tested via live `set_profile`). |
+| 3 | 🔬 **CODE-COMPLETE — VISUAL LOOK pending (2026-07-01)** — Apps-pane editing rows (3.1) | M | Core + AppKit shell landed. `editAppPolicy:` checkboxes → `apps_edit` signal → run-loop resolves row→app → `set_app_policy_field` → persist. **LAYOUT BUG found + fixed (2026-07-01, `f5a81c5`):** the geometry-check pass caught a real overlap — each app was laid across 2 lines but rows advanced only 26px, so every row's policy checkboxes rendered *on top of the next app's name* (28 collisions, only visible with 2+ apps; headless "0 panics" validation couldn't see it). Redesigned to a **compact one-line grid** (name + 5 title-less checkbox columns under an `App | On Tab Mid AC GF` header + tooltips + Delete), all 8 apps fit, zero overlap, pinned by `apps_pane_grid_has_no_overlaps_within_budget` (mutation-verified). **Pre-check also resolved** — `compose_apps_policy_bits` publishes live per-app bits on show, seeded via `refresh_apps_policy_checkbox_states`. **Still needs eyes/fingers (pure visual LOOK):** bare-checkbox column look, name truncation, toggling changes behavior. |
+| 4 | 🔬 **REGISTRATION runtime-validated — FORCE/TOGGLE DISPATCH needs physical keypress (2026-06-30)** — Always-on hotkeys (3.4) | M | Core + FFI shell landed. **Headless LOOK confirmed for the pre-grammar hotkey set (with COMPME_DEBUG, env keys, TextEdit focus):** `global shortcuts configured` parses env correctly; on text-field focus Carbon hotkeys through ids 5/6/7 (keycodes 96/97/98, shift mask) register via `registration_plan`→`register_hotkey`; collision check passes. Hotkeys re-register per arm-cycle. **Accept hotkeys 1–4 are script-validated** by the rebuilt A1b Carbon accept gates; this row now tracks the remaining always-on force/toggle hotkeys only. Grammar hotkeys ids 8/9 are tracked by the grammar LOOK gate and A1b docs/scripts. **Cannot headless-validate force/toggle dispatch yet:** needs a PHYSICAL press of shift+F5/F6/F7 to confirm ForceActivate/ToggleApp/ToggleGlobal reactions. ForceActivate → `Engine::on_force_show` (re-presents held candidate, 3 tests); ToggleApp/Global call real mechanisms. **Deferred:** re-show only works while a suggestion is held (TODO(LOOK) in `engine_core`). |
+| 5 | 🔬 **CODE-COMPLETE — VISUAL LOOK pending (2026-07-01)** — Personalization pane (3.2) | L | Core (live `set_profile` reload) + pane shell landed. New "Personalization" pane (3 knobs) → `personalization_edit` signal → run loop applies + `set_profile` (live) + `persist_setting`. **Headless LOOK confirmed:** Settings window opens with the new pane present (AXTabButton focus events seen), **0 panics**. **Roadmap correction:** MemoryStore is governed by `config.memory.mode`, NOT the profile. **Last code gap closed (2026-07-01, `256eb14`):** the global-instructions input is now a **multi-line wrapping `NSTextField`** (`setUsesSingleLineMode(false)` + word-wrapping cell; Return commits, Option-Return inserts a newline — tested target/action path preserved), field grown to ~5–6 lines with sender/strength rows shifted down. **Still needs eyes/fingers (pure visual LOOK, no code):** pane + multi-line field render/commit correctly; edits visibly re-steer output (the re-steer *path* is already unit-tested via live `set_profile`). |
 | — | Emoji `includeVanillaVariants` (3.5) | — | **Do not schedule.** Hard-blocked on a multi-candidate replacement *display* that does not exist yet. |
 
 ### Open decisions to settle (recommended defaults)

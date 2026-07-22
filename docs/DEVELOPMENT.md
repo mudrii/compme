@@ -80,6 +80,10 @@ Input Monitoring is not required for the production Carbon accept path or the
 root live runner. It is only relevant for historical `tools/spike` CGEventTap
 probes and the explicit revoked-permission spot-check in `docs/ACCEPTANCE.md`.
 
+When the app builds and launches but no suggestions appear, see
+[docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) — most causes are fail-closed
+permission or policy decisions, not build problems.
+
 Required for model-backed tests:
 
 - GGUF model files at the paths used by `model_client` and `tools/spike`
@@ -173,7 +177,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1920 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1941 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -202,11 +206,15 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 cargo audit
 
-find tools/acceptance tools/bundle tools/release -type f -name '*.sh' ! -path 'tools/acceptance/run-a2-compat-gates.sh' ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 | xargs -0 bash -n
+find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 | xargs -0 bash -n
+find tools -type f -name '*.sh' -print0 | xargs -0 shellcheck --severity=error
 tools/release/validate-version.sh --self-test
+tools/release/check-version-docs.sh --self-test
 tools/bundle/check-bundle-metadata.sh
+tools/release/check-version-docs.sh
 tools/bundle/check-bundle-metadata.sh --self-test
 ruby -c Casks/compme.rb
 tools/bundle/make-app.sh --self-test
@@ -227,11 +235,13 @@ tools/release/check-privacy-policy.sh --self-test
 tools/release/check-github-governance.sh --self-test
 bash tools/release/check-model-gates.sh
 tools/release/run-model-gates.sh --self-test
+tools/release/check-quality.sh --self-test
 tools/release/update-cask.sh --self-test
 tools/release/finalize-cask.sh --self-test
 tools/release/notarize-app.sh --self-test
 tools/release/write-update-manifest.sh --self-test
 bash tools/release/run-model-gates.sh
+bash tools/release/check-quality.sh
 
 cd tools/spike
 cargo fmt -- --check
@@ -240,15 +250,32 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1920 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1941 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 The full gate uses `cargo test --locked --workspace --all-targets -- --test-threads=1`
 because the `platform_macos` example regression tests are part of the acceptance
 surface and several macOS pasteboard checks share process-wide OS state.
+The `shellcheck` line needs a local shellcheck install (CI gates on it
+regardless); skip it when unavailable. For the cargo half of the gate, an
+opt-in pre-push hook runs `cargo fmt --check`, clippy, and the workspace tests
+on every push: `git config core.hooksPath tools/dev` installs
+`tools/dev/pre-push` (`COMPME_PREPUSH_SKIP_TESTS=1` skips the tests,
+`git push --no-verify` skips the hook). The full gate above remains the
+pre-commit standard.
 Branch/PR CI also lints the workflow YAML itself (`actionlint`, with shellcheck
-over inline `run:` steps) and runs native Windows/Linux portability jobs:
-workspace fmt, portable-workspace clippy/tests excluding `platform_macos`, and
-an app-binary build through each fail-closed target facade. Tag release
+over inline `run:` steps), shellchecks every `tools/**/*.sh` at error severity,
+and runs native Windows/Linux portability jobs covering
+portable-workspace clippy/tests excluding `platform_macos` and an app-binary
+build through each fail-closed target facade (workspace fmt runs once on the
+macOS lane; rustfmt output is platform-independent). Branch CI also
+exercises real model inference per push: a model-backed smoke gate runs
+`bash tools/release/run-model-gates.sh` with `COMPME_REQUIRE_LATENCY_BUDGET=0`
+against the pinned GGUF, cached from `tools/spike/models` via rust-cache —
+functional load/complete/shutdown coverage only, since the latency budget is
+meaningless on a virtualized runner and stays a pre-tag gate on a real Mac.
+Branch CI also enforces version-doc reconciliation:
+`tools/release/check-version-docs.sh` fails the check job when a documented
+version lags the root `Cargo.toml`. Tag release
 validation is equally broad: it runs the same portable-workspace gates and
 app-binary build on `windows-latest` and `ubuntu-latest`, and the signing job
 attests build provenance for the packaged zip, verified by the publication and
@@ -256,18 +283,21 @@ cask jobs before use. CI and tag validation also install
 `cargo-audit` 0.22.2 with `--locked` and run `cargo audit` under read-only
 workflow permissions; a separate workflow (read-only apart from opening a
 tracking issue on failure) repeats that pinned audit
-every Monday at 06:17 UTC and supports manual dispatch. Every workflow job has
+every Monday at 06:17 UTC alongside a live read-only governance re-check, and
+supports manual dispatch. Every workflow job has
 an explicit timeout. Those are hosted-runner gates rather than
 platform-specific macOS commands.
 For release-readiness audits with the local GGUF model installed, also run the
 ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md) and the A1b
 manual checklist. The automated tag workflow self-tests the A1b checklist
-structure; it does **not** claim that the 17 remaining LOOK/manual gates passed.
-Record those live results separately and keep unresolved gates pending.
+structure; it does **not** claim that the runner-pinned LOOK/manual gates
+listed in [ACCEPTANCE.md](ACCEPTANCE.md) passed. Record those live results
+separately and keep unresolved gates pending.
 
 A2 validation is local/manual-only. CI, tag releases, and
-`tools/release/check-model-gates.sh` neither execute nor syntax-check the A2
-runner or ledger checker. For an explicit manual pre-release compatibility pass:
+`tools/release/check-model-gates.sh` never execute the A2 runner or ledger
+checker (the generic `bash -n` script-syntax traversal only parses them). For
+an explicit manual pre-release compatibility pass:
 
 ```sh
 tools/acceptance/run-a2-compat-gates.sh --self-test
@@ -417,8 +447,12 @@ When changing behavior, update the relevant docs:
 - `docs/ARCHITECTURE.md`: crate responsibilities and runtime design.
 - `docs/DEVELOPMENT.md`: commands, gates, workflow.
 - `docs/ACCEPTANCE.md`: live macOS validation and harness behavior.
+- `docs/MANUAL-VALIDATION.md`: guided manual-validation walkthroughs for the
+  runner-pinned live gates.
 - `docs/RELEASING.md`: release workflow, model gates, cask finalization,
   signing, notarization, and update-manifest behavior.
+- `docs/TROUBLESHOOTING.md`: fail-closed behavior, permission, and model
+  troubleshooting.
 - `docs/superpowers/*`: detailed plans, decisions, and evidence.
 
 Do not replace detailed planning evidence with summaries. Keep summaries in the

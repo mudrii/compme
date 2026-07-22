@@ -3,6 +3,14 @@ name: CI
 on:
   push:
     branches: [main, "spike/**"]
+    # Docs-only pushes change nothing compiled; skip the expensive lanes.
+    # This also skips the check job's Version docs check, so a doc-surface
+    # break only surfaces at the next code push or the release validate job —
+    # the accepted price of skipping the macOS lanes for docs.
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "LICENSE"
   pull_request:
   workflow_dispatch:
 
@@ -26,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -40,18 +48,31 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
+      # Toolchain version/components come from rust-toolchain.toml (single
+      # source); the action falls back to the file when `toolchain` is omitted.
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          toolchain: 1.97.0
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The model-backed smoke gate below runs `cd tools/spike && cargo
+          # test` via run-model-gates.sh; spike is excluded from the root
+          # workspace, so it needs its own cache entry or the native
+          # llama.cpp build recompiles cold on every push.
+          workspaces: |
+            .
+            tools/spike
+          # The model-backed smoke gate below reuses run-model-gates.sh, which
+          # downloads the pinned GGUF into tools/spike/models; caching that
+          # directory means only the first run pays the download.
+          cache-directories: tools/spike/models
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -71,14 +92,26 @@ jobs:
       - name: Build
         run: cargo build --locked --workspace --all-targets
 
+      # cargo doc takes no -D flag; the deny rides in RUSTDOCFLAGS. Workspace-wide
+      # here because platform_macos docs only build on the macOS lane.
+      - name: Rustdoc (deny warnings)
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
+
       - name: Build macOS acceptance examples
         run: cargo build --locked -p platform_macos --examples
 
+      # Hosted runners exercise functional load/complete/shutdown only: the
+      # latency budget is meaningless on a virtualized runner, so the strict
+      # budget stays a pre-tag gate on a real Mac. The pinned GGUF is cached
+      # via the rust-cache `cache-directories` entry above.
+      - name: Model-backed smoke gate
+        env:
+          COMPME_REQUIRE_LATENCY_BUDGET: "0"
+        run: bash tools/release/run-model-gates.sh
+
       - name: Script syntax
         run: |
-          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' \
-            ! -path 'tools/acceptance/run-a2-compat-gates.sh' \
-            ! -path 'tools/release/check-a2-matrix-ledger.sh' -print0 \
+          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 \
             | xargs -0 bash -n
 
       - name: Bundle metadata
@@ -86,6 +119,12 @@ jobs:
 
       - name: Bundle metadata self-test
         run: tools/bundle/check-bundle-metadata.sh --self-test
+
+      - name: Version docs check
+        run: tools/release/check-version-docs.sh
+
+      - name: Version docs check self-test
+        run: tools/release/check-version-docs.sh --self-test
 
       - name: Release version validator self-test
         run: tools/release/validate-version.sh --self-test
@@ -147,6 +186,9 @@ jobs:
       - name: Release model gate self-test
         run: tools/release/run-model-gates.sh --self-test
 
+      - name: Quality gate self-test
+        run: tools/release/check-quality.sh --self-test
+
       - name: Release cask updater self-test
         run: tools/release/update-cask.sh --self-test
 
@@ -164,18 +206,17 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          toolchain: 1.97.0
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # tools/spike is excluded from the root workspace, so the default
           # ". -> target" mapping never caches tools/spike/target — including
@@ -204,25 +245,22 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          toolchain: 1.97.0
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # The whole workspace minus `platform_macos` (Apple frameworks). This
       # gates portability leaks in shared crates and proves the app binary
       # still compiles through its fail-closed Windows facade.
-      - name: Format (workspace)
-        run: cargo fmt --all -- --check
-
+      # fmt runs once on the macOS lane (platform-independent); portable parity here is clippy/test/build.
       - name: Clippy portable workspace (deny warnings)
         run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
 
@@ -237,18 +275,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
+      # ubuntu-latest ships shellcheck preinstalled (no setup needed). Error
+      # severity only — style findings stay out of CI — and it runs before the
+      # toolchain install because scripts need no Rust.
+      - name: Shellcheck (errors only)
+        run: |
+          find tools -type f -name '*.sh' -print0 \
+            | xargs -0 shellcheck --severity=error
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          toolchain: 1.97.0
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # cargo-audit clones the RustSec advisory DB outside rust-cache's
           # default paths; cache it alongside the cargo-installed binary.
@@ -257,9 +302,7 @@ jobs:
       # The whole workspace minus `platform_macos` (Apple frameworks). This
       # gates portability leaks in shared crates and proves the app binary
       # still compiles through its fail-closed Linux facade.
-      - name: Format (workspace)
-        run: cargo fmt --all -- --check
-
+      # fmt runs once on the macOS lane (platform-independent); portable parity here is clippy/test/build.
       - name: Clippy portable workspace (deny warnings)
         run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
 

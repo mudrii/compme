@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Pre-push hook mirroring the branch-CI macOS gates (fmt, clippy, test) so a
+# red run never reaches the hosted lane. The invocations below are copied from
+# .github/workflows/ci.yml — keep them in sync when CI changes.
+#
+# Install:        git config core.hooksPath tools/dev
+# Skip tests:     COMPME_PREPUSH_SKIP_TESTS=1 git push   (fmt + clippy still run)
+# Skip entirely:  git push --no-verify
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-push: cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "pre-push: cargo clippy --locked --workspace --all-targets -- -D warnings"
+cargo clippy --locked --workspace --all-targets -- -D warnings
+
+if [[ "${COMPME_PREPUSH_SKIP_TESTS:-}" == "1" ]]; then
+  echo "pre-push: skipping tests (COMPME_PREPUSH_SKIP_TESTS=1)"
+else
+  echo "pre-push: cargo test --locked --workspace --all-targets -- --test-threads=1"
+  cargo test --locked --workspace --all-targets -- --test-threads=1
+fi
