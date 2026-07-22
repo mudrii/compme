@@ -382,3 +382,49 @@ Not executed: local `shellcheck` (still not installed); model-backed gates, cove
 ### Prioritized next actions (unchanged order, two additions)
 
 The §10 list stands. Add: (8) move the macOS-shaped `SettingsFlags`/`TrayFlags`/`ConfirmPrompt` vocabulary out of `crates/platform/src/shell.rs` as part of action 5's interface deepening; (9) finish or re-scope remediation item 3 (Dependabot monthly interval + maintenance-doc paragraph).
+
+---
+
+## 13. 2026-07-22 implementation record (status: all addressable findings resolved)
+
+This section reconciles the 2026-07-20/21 findings with the implementation program executed on 2026-07-21/22. Every wave was validated after landing (fmt, clippy `-D warnings`, serial suite, `check-model-gates.sh` live + `--self-test`, actionlint, shellcheck, script self-tests) and committed separately. Validation at the end of the program: workspace clippy ✅, full serial suite ✅ (1,942 listed: 1,012 parallel-lane + 923 serial-lane + 6 ignored + 1 latency corpus guard), checker live ✅ / self-test ✅, actionlint ✅, shellcheck ✅, `check-version-docs.sh` (8 surfaces) ✅, `finalize-cask.sh --self-test` ✅, e2e + bundle smoke ✅.
+
+### Commits (all on `main`)
+
+| Commit | Contents |
+|---|---|
+| `c60d171` | Batch 1+2 CI/docs/cask-window/dependabot/pre-push hardening; Batch 3+4 (quality gate, CI smoke gate, AX insertion tests, `run()` startup extraction, `post_verify`, version-docs check); nitpick sweep; audit remediation; this ledger |
+| `e804924` | Test-lane split (parallel 23 crates + serial macOS/app), `docs.yml` docs-only lane, latency corpus dedup, `tools/dev/check.sh` gate runner, ROADMAP header slim |
+| `17da332` | F1 stable-tag filter; F4 governance wording; F7 guide drift; F13 dependabot monthly |
+| `509318e` | README test-count re-stamp |
+| `9fcc177` | F12: `shell_flags` crate — platform's `shell.rs` shrinks 479 → **183 lines** (2 portable traits) |
+| `4cbf0a8` | C8c `builders.rs` (run_loop −1,000 ln) + C8b `ax_worker.rs` (lib.rs −1,832 ln) |
+| `ffba136` | C8a `loop_state.rs` — 32 bindings in 8 cohesive structs; teardown order preserved bit-identically |
+
+### Finding status flips
+
+| Finding | Status |
+|---|---|
+| F1 stable-tag glob | **RESOLVED** — strict SemVer guard + 4 discriminating fixtures (prerelease/malformed skip, prerelease-only empty fallback, lag accept, moved-past reject); old code fails the new fixture |
+| F2 uncommitted stack | **RESOLVED** — everything committed across the 7 commits above; `keybindings.md` remains deliberately untracked (unrelated reference, verified accurate, owner's to keep or move) |
+| F3 22 live macOS gates | **OPEN** — requires the owner's granted-Mac sessions; the product critical path |
+| F4 ROADMAP vs live governance | **RESOLVED** — both passages now describe the active `protect-main` ruleset + the strengthen-or-not decision; six caveats still explicit |
+| F5/F6 god-file seams | **RESOLVED at the planned depth** — `run_loop.rs` 17,035 → **16,036** (startup extraction + builders.rs + loop_state.rs, heartbeat loop byte-identical, teardown order preserved); `platform_macos/lib.rs` 15,185 → **13,353** (`ax_worker.rs`, zero new pub surface); the deeper typed-commands settings/tray redesign remains as documented future work, not a gap |
+| F7 guide drift | **RESOLVED** — inventory frozen at `b367f0f`; active guidance corrected to 14-method trait; prerequisites re-verified |
+| F8 test serialization | **RESOLVED** — parallel lane (23 crates) + serial lane (macOS/app); 1,935 passed in ~half the serial cost |
+| F9 docs-only pushes | **RESOLVED** — `docs.yml` gates version-docs/script-syntax/shellcheck/cask-syntax on exactly those pushes |
+| F10 post_verify unproven | **TRACK** — first real exercise comes with the next tag |
+| F11/F13 dependabot | **RESOLVED** — actions monthly, cargo weekly; procedure mirrored in dependabot.yml, RELEASING, DEVELOPMENT; remediation-plan item 3 marked delivered |
+| F12 crate-placement | **RESOLVED** — `shell_flags` pure zero-dep crate; `platform`'s public surface is now the two portable traits |
+
+### Incidents worth recording (honesty)
+
+- The C8c builder move initially missed one import (`parse_enabled_default`) and left `SenderIdentity` unused in run_loop.rs — caught by the verification clippy run before commit, fixed in two lines.
+- An earlier env-guard "consistency" edit broke the checker's poison-invocation contract for `check-bundle-metadata.sh`; the live checker caught it the same run and it was reverted. Two deliberate self-test env patterns now exist and are documented at the scripts' entrypoints.
+
+### Remaining open (unchanged from §10)
+
+1. Close and record the 22 macOS live gates (owner action).
+2. Windows UIA Phase 1 → Linux X11/AT-SPI Phase 2 (largest committed deliverable).
+3. Let the next release prove `post_verify` operationally.
+4. Optional future deepening: typed settings/tray commands/snapshots/events (the F12 placement move is done; the redesign is a design task, not debt).
