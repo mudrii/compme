@@ -354,7 +354,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 Use the full local gate before treating the workspace as development-ready. The
 canonical command list is single-sourced in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#full-local-gate); the root suite is
-roughly 1,941 tests.
+roughly 1,942 tests.
 
 A2 validation is local/manual-only and is deliberately excluded from CI, tag
 releases, and the release-policy checker: the automated workflows never execute
