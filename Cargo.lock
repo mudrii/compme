@@ -98,6 +98,7 @@ dependencies = [
  "platform_windows",
  "prefs",
  "redaction",
+ "shell_flags",
  "stats",
  "thesaurus",
  "webconfig",
@@ -1127,12 +1128,16 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 [[package]]
 name = "platform"
 version = "0.1.5"
+dependencies = [
+ "shell_flags",
+]
 
 [[package]]
 name = "platform_linux"
 version = "0.1.5"
 dependencies = [
  "platform",
+ "shell_flags",
 ]
 
 [[package]]
@@ -1150,6 +1155,7 @@ dependencies = [
  "platform",
  "security-framework",
  "security-framework-sys",
+ "shell_flags",
  "zeroize",
 ]
 
@@ -1158,6 +1164,7 @@ name = "platform_windows"
 version = "0.1.5"
 dependencies = [
  "platform",
+ "shell_flags",
  "windows",
 ]
 
@@ -1427,6 +1434,10 @@ dependencies = [
  "cpufeatures",
  "digest",
 ]
+
+[[package]]
+name = "shell_flags"
+version = "0.1.5"
 
 [[package]]
 name = "shlex"

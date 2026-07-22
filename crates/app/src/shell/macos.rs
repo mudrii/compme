@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
-use platform::shell::{ShellHost, TrayFlags, TrayHandle};
+use platform::shell::{ShellHost, TrayHandle};
 use platform::PlatformError;
+use shell_flags::TrayFlags;
 
 pub type PlatformAdapterImpl = platform_macos::MacosPlatformAdapter;
 pub type OverlayPresenterImpl = platform_macos::MacosOverlayPresenter;

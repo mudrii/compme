@@ -81,8 +81,8 @@ All paths honor the same per-app/per-domain prefs gate.
 
 ## Workspace Crates
 
-The 25 crates fall into six groups: the **contract + core** (`platform`,
-`engine_core`, `engine`, `context`, `ranker`), the **model seam**
+The 26 crates fall into six groups: the **contract + core** (`platform`,
+`shell_flags`, `engine_core`, `engine`, `context`, `ranker`), the **model seam**
 (`model_client`, `model_catalog`, `model_fetch`), **pure text features**
 (`autocorrect`, `grammar`, `localize`, `thesaurus`, `emoji`, `textcase`), **policy &
 privacy** (`prefs`, `compat`, `personalization`, `redaction`, `memory`,
@@ -129,6 +129,16 @@ Key concepts:
 - `TrayHandle`: the platform status-UI seam driven by the shared run loop.
 - `ux_mode`: classifies capabilities as `Inline`, `Popup`, `Hotkey`,
   `Unsupported`, or `Blocked`.
+
+### `shell_flags`
+
+`shell_flags` holds the macOS-product-shaped shell state vocabulary —
+`SettingsFlags`, `TrayFlags`/`DisableArm`, `PersonalizationEdit`,
+`ShortcutBindings`, the persisted key-chord grammar, and the `ConfirmPrompt`
+payload `ShellHost::confirm` takes. It is pure data and sync types
+(`Arc<Atomic…>`/`Arc<Mutex<…>>`), std-only, with zero OS dependencies;
+`platform` depends on it (never the reverse) so the contract crate's own
+source stays free of product-shaped vocabulary.
 
 ### `context`
 

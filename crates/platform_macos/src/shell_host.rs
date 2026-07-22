@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use objc2_app_kit::{NSSpellChecker, NSWorkspace};
 use objc2_foundation::{NSString, NSURL};
-use platform::shell::{ConfirmPrompt, ShellHost, TrayHandle};
+use platform::shell::{ShellHost, TrayHandle};
 use platform::{PlatformError, ScreenRect};
+use shell_flags::ConfirmPrompt;
 
 #[derive(Debug, Default)]
 pub struct MacosShellHost;

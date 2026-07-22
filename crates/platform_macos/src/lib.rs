@@ -65,14 +65,14 @@ mod tray;
 mod ui_prompt;
 mod url_events;
 pub use login_item::set_launch_at_login;
-pub use platform::shell::{
-    AppsPolicyEdit, CurrentAcceptKeys, EffectiveAcceptKeys, KeyWithMods, KeymapError,
-    PersonalizationEdit, RebindRequest, SettingsFlags, ShortcutBindings, APPS_ROWS,
-    APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES, SETUP_ROWS, STATS_ROWS,
-};
 pub use settings_window::{
     keycode_label, keycode_label_with_mods, policy_restore_needed, rebind_request_for,
     record_decision, MacosSettingsWindow, RecordDecision, RecorderRole,
+};
+pub use shell_flags::{
+    AppsPolicyEdit, CurrentAcceptKeys, EffectiveAcceptKeys, KeyWithMods, KeymapError,
+    PersonalizationEdit, RebindRequest, SettingsFlags, ShortcutBindings, APPS_ROWS,
+    APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES, SETUP_ROWS, STATS_ROWS,
 };
 pub use shell_host::MacosShellHost;
 pub use tray::{apply_tray_action, DisableArm, MacosTray, TrayAction, TrayFlags};

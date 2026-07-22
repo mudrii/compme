@@ -15,6 +15,7 @@ license.workspace = true
 
 [dependencies]
 platform = { path = "../platform" }
+shell_flags = { path = "../shell_flags" }
 
 # Phase 0.2/0.3 host services and native ShellExecuteW URL launching are real
 # already. The full UIA adapter extends this target-specific feature set.

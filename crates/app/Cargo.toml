@@ -12,6 +12,7 @@ path = "src/main.rs"
 model_catalog = { path = "../model_catalog" }
 model_fetch = { path = "../model_fetch" }
 platform = { path = "../platform" }
+shell_flags = { path = "../shell_flags" }
 engine = { path = "../engine" }
 model_client = { path = "../model_client" }
 personalization = { path = "../personalization" }

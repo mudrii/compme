@@ -16,8 +16,8 @@ use objc2_app_kit::{
     NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSData, NSObjectProtocol, NSSize, NSString};
-pub use platform::shell::{DisableArm, TrayFlags};
 use platform::PlatformError;
+pub use shell_flags::{DisableArm, TrayFlags};
 
 /// Public tray actions that cross the AppKit target/action seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

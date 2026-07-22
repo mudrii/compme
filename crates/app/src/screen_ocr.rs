@@ -243,10 +243,7 @@ mod tests {
             Ok(())
         }
 
-        fn confirm(
-            &self,
-            _prompt: &platform::shell::ConfirmPrompt<'_>,
-        ) -> Result<bool, PlatformError> {
+        fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
             Ok(false)
         }
 
@@ -381,10 +378,7 @@ mod tests {
         fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
             Ok(())
         }
-        fn confirm(
-            &self,
-            _prompt: &platform::shell::ConfirmPrompt<'_>,
-        ) -> Result<bool, PlatformError> {
+        fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
             Ok(false)
         }
         fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
@@ -550,10 +544,7 @@ mod tests {
         fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
             Ok(())
         }
-        fn confirm(
-            &self,
-            _prompt: &platform::shell::ConfirmPrompt<'_>,
-        ) -> Result<bool, PlatformError> {
+        fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
             Ok(false)
         }
         fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {

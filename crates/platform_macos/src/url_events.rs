@@ -14,8 +14,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSObjectProtocol};
-pub use platform::shell::UrlCallback;
 use platform::PlatformError;
+pub use shell_flags::UrlCallback;
 
 /// `kInternetEventClass` == `kAEGetURL` == 'GURL'.
 const GURL: u32 = 0x4755_524C;

@@ -27,11 +27,11 @@ use objc2_app_kit::{
     NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
-use platform::shell::{
+use platform::PlatformError;
+use shell_flags::{
     AppsPolicyEditSlot, CurrentAcceptKeys, KeyWithMods, PersonalizationEdit, RebindRequest,
     SettingsFlags, APPS_ROWS, APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES, SETUP_ROWS, STATS_ROWS,
 };
-use platform::PlatformError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GeneralToggleAction {

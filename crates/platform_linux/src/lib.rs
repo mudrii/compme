@@ -193,7 +193,7 @@ impl platform::shell::ShellHost for LinuxShellHost {
         Err(LinuxAdapter::unsupported("set_launch_at_login"))
     }
 
-    fn confirm(&self, _prompt: &platform::shell::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
+    fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
         Err(LinuxAdapter::unsupported("confirm"))
     }
 
@@ -545,7 +545,8 @@ mod tests {
 
     #[test]
     fn shell_host_is_fail_closed() {
-        use platform::shell::{ConfirmPrompt, ShellHost};
+        use platform::shell::ShellHost;
+        use shell_flags::ConfirmPrompt;
 
         let h = LinuxShellHost::new();
         assert!(!h.secure_input_enabled());

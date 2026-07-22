@@ -32,7 +32,7 @@ contains post-release build, release-tooling, cask, and documentation changes.
 The post-v0.1.4 runtime/release hardening, local/manual-only A2 policy, and
 single model-location control shipped in v0.1.5.
 
-The root `Cargo.toml` is a Rust workspace with 25 members
+The root `Cargo.toml` is a Rust workspace with 26 members
 ([verified 2026-07-10] — keep in sync with `Cargo.toml`):
 
 - `crates/platform` — cross-platform adapter contract

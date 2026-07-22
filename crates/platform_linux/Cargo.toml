@@ -19,3 +19,4 @@ license.workspace = true
 
 [dependencies]
 platform = { path = "../platform" }
+shell_flags = { path = "../shell_flags" }

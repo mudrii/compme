@@ -12,7 +12,7 @@ contract. All inference is local (llama.cpp), with no proprietary telemetry.
 
 The current validated workspace has the deterministic macOS MVP and A2/A3 core
 surfaces implemented; the remaining live-validation backlog is tracked in
-[docs/ROADMAP.md](docs/ROADMAP.md). The repository is a Rust workspace of 25
+[docs/ROADMAP.md](docs/ROADMAP.md). The repository is a Rust workspace of 26
 crates: a pure completion core, a set of OS-agnostic text features
 (autocorrect, British-English, grammar, emoji, thesaurus, redaction, stats,
 personalization, ranking, compatibility tiers, model catalog), macOS/Windows/Linux

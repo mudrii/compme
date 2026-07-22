@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/platform",
+    "crates/shell_flags",
     "crates/context",
     "crates/ranker",
     "crates/engine_core",

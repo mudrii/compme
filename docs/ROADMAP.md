@@ -89,8 +89,10 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
 - **`crates/platform_linux`** (`5236a56`) — the same, for Linux (AT-SPI2 / XTEST /
   `wtype` / IBus / X11-or-layer-shell overlay).
 - **Shell foundation + app cfg boundary** (`2c80e74`) — `platform::shell`
-  defines the portable `ShellHost`/`TrayHandle` contract and shared settings/keymap
-  data; `platform_macos::MacosShellHost` wraps existing macOS behavior; Windows/Linux
+  defines the portable `ShellHost`/`TrayHandle` contract; the macOS-product-shaped
+  settings/tray/keymap state vocabulary lives in the pure `shell_flags` crate
+  (split out 2026-07-22, audit F12), consumed by `app` + `platform_macos`;
+  `platform_macos::MacosShellHost` wraps existing macOS behavior; Windows/Linux
   provide partial fail-closed `ShellHost` + `OverlayPresenter` scaffolds, with
   native URL opening already shipped via Windows `ShellExecuteW` and Linux
   `xdg-open` with immediate failure reporting plus non-blocking child reaping;

@@ -23,12 +23,13 @@ use engine::{CompletionRequest, Engine, RequestKind, TriggerPolicy};
 use personalization::{PersonalizationProfile, SenderIdentity, Strength};
 use platform::{
     env_flag_on,
-    shell::{DisableArm, ShellHost, TrayFlags, TrayHandle},
+    shell::{ShellHost, TrayHandle},
     AcceptAction, AcceptSubscription, Capabilities, CorrectionRange, FieldHandle, InsertStrategy,
     KeyInterceptMode, OverlayPlacement, OverlayPresenter, PlatformAdapter, PlatformError,
     ScreenRect, SecurityState, ShortcutAction, Subscription, TapControl, TextContext, Toolkit,
 };
 use prefs::Prefs;
+use shell_flags::{DisableArm, TrayFlags};
 use zeroize::Zeroize;
 
 use crate::adapter::SharedAdapter;
@@ -5349,7 +5350,7 @@ pub fn run() -> Result<(), String> {
                 // Irreversible (secure_delete zeroes freed pages) — confirm
                 // first, Cancel-default (review-c112; deep-link precedent).
                 let confirmed = shell
-                    .confirm(&platform::shell::ConfirmPrompt {
+                    .confirm(&shell_flags::ConfirmPrompt {
                         title: "Delete recorded inputs?",
                         message: &format!(
                             "All recorded inputs for {app} will be permanently erased."
@@ -5511,7 +5512,7 @@ pub fn run() -> Result<(), String> {
                     &mut config.license_accepted,
                     |model, license_name, terms_url| {
                         shell
-                            .confirm(&platform::shell::ConfirmPrompt {
+                            .confirm(&shell_flags::ConfirmPrompt {
                                 title: "Accept model license?",
                                 message: &format!(
                                     "{model} is distributed under the {license_name}.\n\
@@ -5911,7 +5912,7 @@ pub fn run() -> Result<(), String> {
                     trust,
                 } = decision;
                 shell
-                    .confirm(&platform::shell::ConfirmPrompt {
+                    .confirm(&shell_flags::ConfirmPrompt {
                         title: "Allow configuration change?",
                         message: &format!(
                             "A compme:// link wants to apply {action} for:\n{scope}\n({trust})"
@@ -9105,10 +9106,7 @@ mod tests {
             self.calls.lock().unwrap().push(enabled);
             self.result.clone()
         }
-        fn confirm(
-            &self,
-            _prompt: &platform::shell::ConfirmPrompt<'_>,
-        ) -> Result<bool, PlatformError> {
+        fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
             Ok(false)
         }
         fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
@@ -16509,10 +16507,7 @@ mod tests {
         fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
             Ok(())
         }
-        fn confirm(
-            &self,
-            _prompt: &platform::shell::ConfirmPrompt<'_>,
-        ) -> Result<bool, PlatformError> {
+        fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
             Ok(false)
         }
         fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {

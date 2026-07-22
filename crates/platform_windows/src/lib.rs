@@ -167,7 +167,7 @@ impl platform::shell::ShellHost for WindowsShellHost {
         Err(WindowsAdapter::unsupported("set_launch_at_login"))
     }
 
-    fn confirm(&self, _prompt: &platform::shell::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
+    fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
         Err(WindowsAdapter::unsupported("confirm"))
     }
 
@@ -490,7 +490,8 @@ mod tests {
 
     #[test]
     fn shell_host_is_fail_closed() {
-        use platform::shell::{ConfirmPrompt, ShellHost};
+        use platform::shell::ShellHost;
+        use shell_flags::ConfirmPrompt;
 
         let h = WindowsShellHost::new();
         assert!(!h.secure_input_enabled());

@@ -2,8 +2,9 @@
 
 use std::sync::{Arc, LazyLock, RwLock};
 
-use platform::shell::{ShellHost, TrayFlags, TrayHandle};
+use platform::shell::{ShellHost, TrayHandle};
 use platform::PlatformError;
+use shell_flags::TrayFlags;
 
 #[cfg(windows)]
 pub type PlatformAdapterImpl = platform_windows::WindowsAdapter;
@@ -47,14 +48,14 @@ pub fn make_tray(_flags: TrayFlags) -> Result<Box<dyn TrayHandle>, PlatformError
 pub struct UrlHandlerGuard;
 
 pub fn install_url_event_handler(
-    _on_url: Arc<platform::shell::UrlCallback>,
+    _on_url: Arc<shell_flags::UrlCallback>,
 ) -> Result<UrlHandlerGuard, PlatformError> {
     Err(PlatformError::UnsupportedField {
         reason: "deep links not yet implemented (Tier 1.1 scaffold)".into(),
     })
 }
 
-pub use platform::shell::{
+pub use shell_flags::{
     AppsPolicyEdit, AppsPolicyEditSlot, CurrentAcceptKeys, EffectiveAcceptKeys, KeyWithMods,
     KeymapError, PersonalizationEdit, RebindRequest, SettingsFlags, ShortcutBindings, APPS_ROWS,
     APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES, SETUP_ROWS, STATS_ROWS,
@@ -64,11 +65,11 @@ static SHORTCUT_BINDINGS: LazyLock<RwLock<ShortcutBindings>> =
     LazyLock::new(|| RwLock::new(ShortcutBindings::default()));
 
 pub fn parse_accept_key(raw: &str) -> Option<(i64, u32)> {
-    platform::shell::parse_key_with_mods(raw)
+    shell_flags::parse_key_with_mods(raw)
 }
 
 pub fn format_accept_key(keycode: i64, mask: u32) -> String {
-    platform::shell::format_key_with_mods(keycode, mask)
+    shell_flags::format_key_with_mods(keycode, mask)
 }
 
 pub fn keycode_label_with_mods(code: i64, mask: u32) -> String {
