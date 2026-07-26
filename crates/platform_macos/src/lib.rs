@@ -65,7 +65,10 @@ mod shell_host;
 mod tray;
 mod ui_prompt;
 mod url_events;
-pub use ax_worker::{AxWorker, AxWorkerResource, CallbackDispatcher, ObserverNotification};
+// Crate-internal: the AX worker is an implementation detail of
+// MacosPlatformAdapter. No consumer outside this crate (workspace or the
+// acceptance examples) names these types, so they stay off the public API.
+pub(crate) use ax_worker::{AxWorker, CallbackDispatcher, ObserverNotification};
 pub use login_item::set_launch_at_login;
 pub use settings_window::{
     keycode_label, keycode_label_with_mods, policy_restore_needed, rebind_request_for,
@@ -1164,7 +1167,7 @@ impl MacosPlatformAdapter {
         }
     }
 
-    pub fn with_worker(worker: AxWorker) -> Result<Self, PlatformError> {
+    pub(crate) fn with_worker(worker: AxWorker) -> Result<Self, PlatformError> {
         let clipboard_restore = Arc::new(ClipboardRestoreCoordinator::default());
         Ok(Self {
             worker,

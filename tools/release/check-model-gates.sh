@@ -27,6 +27,7 @@ development_doc="$repo_root/docs/DEVELOPMENT.md"
 releasing_doc="$repo_root/docs/RELEASING.md"
 readme_doc="$repo_root/README.md"
 roadmap_doc="$repo_root/docs/ROADMAP.md"
+architecture_doc="$repo_root/docs/ARCHITECTURE.md"
 grammar_spec="$repo_root/docs/superpowers/specs/2026-07-01-grammar-fix-design.md"
 cask_file="$repo_root/Casks/compme.rb"
 
@@ -3563,6 +3564,11 @@ check_finalizer_helper_contract "$finalize_cask_script"
 
 require_line "$readme_doc" "workspace of ${workspace_members_count}$" "README workspace member count"
 require_line "$development_doc" "workspace with ${workspace_members_count}[[:space:]]+members" "DEVELOPMENT workspace member count"
+# ARCHITECTURE states the crate count twice (overview + crate-group intro); the
+# 2026-07-25 audit found the shell_flags split had updated only the second one,
+# so both are pinned here rather than left to review.
+require_line "$architecture_doc" "workspace now holds ${workspace_members_count} crates" "ARCHITECTURE workspace crate count"
+require_line "$architecture_doc" "The ${workspace_members_count} crates fall into" "ARCHITECTURE crate-group count"
 require_line "$readme_doc" "roughly ${workspace_test_count_commas}[[:space:]]+tests" "README workspace test count"
 require_line "$development_doc" "~${workspace_test_count}[[:space:]]+tests" "DEVELOPMENT workspace test count"
 require_line "$roadmap_doc" "≈${workspace_test_count}[[:space:]]+workspace tests" "ROADMAP workspace test count"

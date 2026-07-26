@@ -43,7 +43,10 @@ allowlists in `tools/release/check-model-gates.sh`, and hand-update the
 `# vX.Y.Z` trailing comments on the `uses:` lines (dependabot rewrites only
 the SHA). Until both land, `check-model-gates.sh` fails red — that
 fail-closed behavior is intended, and the dependabot.yml header comment pins
-the same contract.
+the same contract. `llama-cpp-2` is ignored by both Cargo groups because it is
+exact-pinned twice per target in `crates/model_client` and again in
+`tools/spike`; bump all three entries by hand in one commit and re-run
+`tools/release/run-model-gates.sh`.
 
 Workflow permissions default to `contents: read`; only the publication and cask
 finalization jobs receive `contents: write`, and both are gated by the protected

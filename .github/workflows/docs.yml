@@ -5,6 +5,10 @@ name: Docs
 # those pushes.
 on:
   push:
+    # Same branch scope as ci.yml: PR branches already get these checks through
+    # ci.yml's check job, so unscoped pushes (dependabot branches, feature
+    # branches) would spend a runner for no extra coverage.
+    branches: [main, "spike/**"]
     paths:
       - "docs/**"
       - "*.md"

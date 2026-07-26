@@ -135,7 +135,7 @@ impl AxWorkerLoop for ChannelAxWorkerLoop {
     }
 }
 
-pub struct AxWorker {
+pub(crate) struct AxWorker {
     tx: mpsc::Sender<Message>,
     thread_id: ThreadId,
     handle: Option<JoinHandle<()>>,
@@ -149,14 +149,14 @@ pub(crate) struct AxWorkerHandle {
 }
 
 #[derive(Debug)]
-pub struct AxWorkerResource {
+pub(crate) struct AxWorkerResource {
     id: u64,
     tx: mpsc::Sender<Message>,
     closed: bool,
 }
 
 #[derive(Debug)]
-pub struct CallbackDispatcher {
+pub(crate) struct CallbackDispatcher {
     tx: mpsc::Sender<CallbackMessage>,
     handle: Option<JoinHandle<()>>,
 }
@@ -293,7 +293,11 @@ impl AxWorker {
             })
     }
 
-    pub fn install_resource<F>(&self, install: F) -> Result<AxWorkerResource, PlatformError>
+    /// Test-only convenience over `AxWorkerHandle::install_resource`;
+    /// production callers go through the handle (see `lib.rs`'s accept-tap
+    /// and observer installs).
+    #[cfg(test)]
+    fn install_resource<F>(&self, install: F) -> Result<AxWorkerResource, PlatformError>
     where
         F: FnOnce() -> Result<WorkerResource, PlatformError> + Send + 'static,
     {
@@ -410,7 +414,9 @@ impl AxWorkerHandle {
 }
 
 impl AxWorkerResource {
-    pub fn close(mut self) -> Result<bool, PlatformError> {
+    /// Test-only explicit close; production resources are removed by `Drop`.
+    #[cfg(test)]
+    fn close(mut self) -> Result<bool, PlatformError> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
             .send(Message::RemoveResource {
@@ -858,7 +864,7 @@ fn set_ax_messaging_timeout(timeout_seconds: f32) -> Result<(), PlatformError> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ObserverNotification {
+pub(crate) enum ObserverNotification {
     FocusChanged,
     CaretChanged,
 }

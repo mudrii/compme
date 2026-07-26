@@ -303,6 +303,12 @@ only the SHA) — until both land the checker fails red, which is intended
 fail-closed behavior; monthly cadence for actions keeps that re-pin churn low.
 [RELEASING.md](RELEASING.md) and the dependabot.yml header comment pin the
 same contract.
+`llama-cpp-2` is excluded from both Cargo groups: `crates/model_client`
+declares it once per target (macOS `metal`, non-macOS plain), both exact-pinned,
+and dependabot rewrites only one entry — which makes the requirements
+unsatisfiable and fails the whole grouped PR. Bump it by hand instead: edit
+both target entries plus `tools/spike/Cargo.toml` in one commit, then run
+`tools/release/run-model-gates.sh` before committing.
 For release-readiness audits with the local GGUF model installed, also run the
 ignored model-backed gates from [ACCEPTANCE.md](ACCEPTANCE.md) and the A1b
 manual checklist. The automated tag workflow self-tests the A1b checklist

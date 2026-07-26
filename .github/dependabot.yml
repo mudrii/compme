@@ -17,27 +17,43 @@ updates:
       github-actions:
         patterns:
           - "*"
-  # Cargo workspace deps. Exact-pinned deps (e.g. llama-cpp-2, ed25519-dalek)
-  # still get PRs; the maintainer reviews those case-by-case.
+  # Cargo workspace deps. Exact-pinned deps (e.g. ed25519-dalek) still get PRs;
+  # the maintainer reviews those case-by-case.
+  #
+  # llama-cpp-2 is ignored on purpose (2026-07-25 audit, finding F15).
+  # crates/model_client declares it TWICE — once per target
+  # (cfg(target_os = "macos") with "metal", cfg(not(...)) without) — both
+  # exact-pinned. Dependabot rewrites only one of the two entries, leaving two
+  # unsatisfiable `=` requirements, so the PR fails resolution on every lane
+  # ("failed to select a version for llama-cpp-2") and, because the group
+  # pattern is "*", it drags every unrelated bump down with it. ABI-sensitive
+  # llama bumps are a manual, gated change anyway: edit both target entries in
+  # crates/model_client/Cargo.toml AND tools/spike/Cargo.toml together, then
+  # run tools/release/run-model-gates.sh before committing.
   - package-ecosystem: cargo
     directory: "/"
     schedule:
       interval: weekly
       day: monday
       time: "06:00"
+    ignore:
+      - dependency-name: "llama-cpp-2"
     groups:
       cargo:
         patterns:
           - "*"
   # tools/spike is a separate locked package tree with its own Cargo.lock and
-  # duplicated pins (llama-cpp-2 =0.1.146 etc.), invisible to the root
-  # workspace entry above.
+  # duplicated pins (llama-cpp-2 etc.), invisible to the root workspace entry
+  # above. llama-cpp-2 is ignored here too: the two trees must move together
+  # (see the root entry above), so a spike-only bump would split the pin.
   - package-ecosystem: cargo
     directory: "/tools/spike"
     schedule:
       interval: weekly
       day: monday
       time: "06:00"
+    ignore:
+      - dependency-name: "llama-cpp-2"
     groups:
       cargo-spike:
         patterns:
