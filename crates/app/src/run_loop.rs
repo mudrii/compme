@@ -3915,6 +3915,631 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
 
 /// Build the whole stack, run until a signal (or the run-ms deadline), then tear
 /// down in order.
+/// Heartbeat phase: the Setup pane's Download Model click plus the
+/// download-progress log/auto-wire edge. Split out of `run()` verbatim
+/// (2026-07-25 audit, F16).
+fn model_download_phase(
+    settings_flags: &crate::shell::SettingsFlags,
+    shell: &Arc<dyn ShellHost>,
+    config: &mut Config,
+    available_ram_gb: u32,
+    model_downloader: &mut Option<model_fetch::ModelDownloader>,
+    download: &mut DownloadState,
+) {
+    // Setup "Download Model": fetch the model the picker has selected
+    // (setup_model_index; defaults to the recommended entry) into the
+    // app-support models dir. Progress is logged; on Done the log says
+    // how to point COMPME_MODEL_PATH at it.
+    if settings_flags
+        .setup_download_model
+        .swap(false, Ordering::Relaxed)
+        && download_idle(download.model_download_status.as_deref())
+    {
+        if let Some(models_dir) = app_support_models_dir() {
+            // Selected-or-recommended, RAM hard block, and license
+            // click-through live in a pure decision helper so this edge is
+            // covered as a single app-level policy before download IO.
+            let selected_index = settings_flags.setup_model_index.load(Ordering::Relaxed);
+            let decision = model_download_click_decision(
+                selected_index,
+                available_ram_gb,
+                &mut config.license_accepted,
+                |model, license_name, terms_url| {
+                    shell
+                        .confirm(&shell_flags::ConfirmPrompt {
+                            title: "Accept model license?",
+                            message: &format!(
+                                "{model} is distributed under the {license_name}.\n\
+                                 Downloading requires accepting its terms:\n{terms_url}"
+                            ),
+                            confirm_label: "Accept",
+                        })
+                        .unwrap_or(false)
+                },
+            );
+            let ready = match decision {
+                Some(ModelDownloadClickDecision::Ready {
+                    entry,
+                    accepted_license,
+                }) => Some((entry, accepted_license)),
+                Some(ModelDownloadClickDecision::BlockedByRam(message)) => {
+                    eprintln!("compme: {message}");
+                    None
+                }
+                Some(ModelDownloadClickDecision::LicenseDeclined { model }) => {
+                    eprintln!("compme: download of {model} cancelled (license not accepted)");
+                    None
+                }
+                None => None,
+            };
+            // Only the Ready decision runs the download body; blocked/
+            // declined/empty cases log above and fall through to the loop
+            // tail (event-pump + host-loop pace) like every other heartbeat
+            // branch. A `continue` here would skip that mandatory
+            // accept-event drain for one tick.
+            if let Some((entry, accepted_license)) = ready {
+                if let Some(accepted) = accepted_license {
+                    // In-memory FIRST (same-session re-prompt guard), then
+                    // persist; a failed write only logs — the user DID accept,
+                    // so the download proceeds.
+                    if let Some(path) = config::config_file_path() {
+                        if let Err(err) = config::persist_setting(
+                            &path,
+                            "COMPME_LICENSE_ACCEPTED",
+                            &accepted.value,
+                        ) {
+                            eprintln!("compme: failed to persist COMPME_LICENSE_ACCEPTED: {err}");
+                        }
+                    }
+                    eprintln!(
+                        "compme: {} accepted for {}",
+                        accepted.license_name, accepted.model
+                    );
+                }
+                let dest = models_dir.join(format!("{}.gguf", entry.name));
+                // Skip the fetch when the model is already on disk — a
+                // repeat "Download" click on a present model would otherwise
+                // re-fetch and clobber a good file. An interrupted 0-byte
+                // stub is NOT present, so it still re-downloads. This check
+                // sits AFTER the license gate on purpose: keeping every
+                // download-triggering path behind the gate is the simpler
+                // invariant, and accepted licenses are remembered, so a
+                // normal re-click on a present encumbered model never
+                // re-prompts (the prompt-then-skip is an unaccepted-yet
+                // edge case, inert for today's unencumbered catalog).
+                match start_model_download_edge(ModelDownloadEdge {
+                    entry,
+                    dest: &dest,
+                    downloader: model_downloader,
+                    model_download_status: &mut download.model_download_status,
+                    model_download_logged: &mut download.model_download_logged,
+                    prepare: prepare_model_download_dest,
+                    existing_model: model_download_dest_present,
+                    spawn: || model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string()),
+                    request: |downloader: &model_fetch::ModelDownloader, request| {
+                        downloader.request(request)
+                    },
+                }) {
+                    DownloadStartResult::PreparedFailed(err) => {
+                        eprintln!("compme: {err}");
+                    }
+                    DownloadStartResult::AlreadyPresent => {
+                        // The model is already on disk (this build or an
+                        // older one). A download Done edge will never fire,
+                        // so wire it here: persist the SELECTED model's path
+                        // so a re-click on a present model adopts it instead
+                        // of being an inert "already present" no-op.
+                        if let Some(cfg) = config::config_file_path() {
+                            if let Err(err) = config::persist_setting(
+                                &cfg,
+                                "COMPME_MODEL_PATH",
+                                &dest.to_string_lossy(),
+                            ) {
+                                eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}");
+                            }
+                        }
+                        eprintln!(
+                            "compme: {} already downloaded at {} \u{2014} COMPME_MODEL_PATH set, relaunch to use",
+                            entry.name,
+                            dest.display()
+                        )
+                    }
+                    DownloadStartResult::SpawnFailed(err) => {
+                        eprintln!("compme: failed to start model downloader \u{2014} {err}");
+                    }
+                    DownloadStartResult::Queued => eprintln!(
+                        "compme: downloading {} ({} MB) \u{2014} progress in this log",
+                        entry.name, entry.size_mb
+                    ),
+                    DownloadStartResult::Busy => {
+                        eprintln!("compme: model download queue busy \u{2014} try again");
+                    }
+                }
+            }
+        } else {
+            // The click was already consumed by the swap above; without a
+            // resolvable config home there is no app-support model directory.
+            eprintln!("compme: download-model click ignored \u{2014} config home is unavailable");
+        }
+    }
+    // Download progress/terminal-state logging (one line per transition).
+    if let Some(status) = &download.model_download_status {
+        let state = status.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (next_logged, line) = download_log_transition(&state, download.model_download_logged);
+        // The Done edge (logged advances to 2 with a Done state) fires once
+        // per download — start_model_download_edge resets logged to 0 on
+        // each new queue — so a second download re-persists its own path.
+        let done_edge = next_logged != download.model_download_logged
+            && matches!(&*state, model_fetch::DownloadState::Done(_));
+        download.model_download_logged = next_logged;
+        if let Some(line) = line {
+            eprintln!("{line}");
+        }
+        // Auto-wire the freshly downloaded model: persist COMPME_MODEL_PATH
+        // so the next launch loads it (env > file > default). Without this a
+        // completed download is unusable — the Setup "Model file" row stays
+        // ✗ forever and a Finder-launched .app has no way to point at the
+        // file (env vars aren't set for GUI launches). Persist failure only
+        // logs; the file is still on disk for a manual override.
+        if done_edge {
+            if let model_fetch::DownloadState::Done(path) = &*state {
+                if let Some(cfg) = config::config_file_path() {
+                    match config::persist_setting(
+                        &cfg,
+                        "COMPME_MODEL_PATH",
+                        &path.to_string_lossy(),
+                    ) {
+                        Ok(()) => eprintln!(
+                            "compme: COMPME_MODEL_PATH set to {} \u{2014} relaunch to use it",
+                            path.display()
+                        ),
+                        Err(err) => {
+                            eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Heartbeat phase: drain and apply queued `compme://` deep links.
+/// Split out of `run()` verbatim (2026-07-25 audit, F16); every branch,
+/// log line, and ordering is unchanged.
+fn drain_deep_links_phase<A: PlatformAdapter, O: OverlayPresenter>(
+    deep_links: &Mutex<Vec<String>>,
+    shell: &Arc<dyn ShellHost>,
+    config: &Config,
+    prefs: &mut Prefs,
+    monitored: &mut MonitoredInput,
+    suggestion: &mut SuggestionState,
+    engine: &mut Engine<SharedAdapter<A>, O>,
+) {
+    // Drain received compme:// deep links (strict fail-closed parse →
+    // reversible override). Every outcome is logged (the §16 user-visible
+    // requirement; a confirmation prompt is the follow-up). An applied
+    // override changes suggestion policy, so fire the dismiss edge
+    // (a2-parity review #2) and persist every round-trippable web-config
+    // policy field.
+    let pending_links: Vec<String> = {
+        let mut lock = deep_links
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *lock)
+    };
+    for url in pending_links {
+        let confirm = |decision: &webconfig::PromptDecision| -> bool {
+            let webconfig::PromptDecision {
+                scope,
+                action,
+                trust,
+            } = decision;
+            shell
+                .confirm(&shell_flags::ConfirmPrompt {
+                    title: "Allow configuration change?",
+                    message: &format!(
+                        "A compme:// link wants to apply {action} for:\n{scope}\n({trust})"
+                    ),
+                    confirm_label: "Allow",
+                })
+                .unwrap_or(false)
+        };
+        match handle_deep_link(&url, config.trusted_key.as_ref(), prefs, confirm) {
+            Ok(summary) => {
+                eprintln!("compme: deep link {summary}");
+                clear_monitored_state_for_policy_transition(
+                    &mut monitored.pending_monitored,
+                    &mut monitored.monitored_buffers,
+                );
+                if let Some(path) = config::config_file_path() {
+                    persist_web_override_prefs(&path, prefs);
+                }
+                suggestion.latest.clear();
+                let _ = log_err("on_dismiss", engine.on_dismiss());
+            }
+            Err(err) => eprintln!("compme: deep link rejected: {err}"),
+        }
+    }
+}
+
+/// Heartbeat phase: the Setup pane's privileged button edges — grant
+/// Accessibility, request Screen Recording, Show Models Folder, and the
+/// bring-your-own-model path. Split out of `run()` verbatim (F16).
+fn setup_pane_actions_phase(
+    settings_flags: &crate::shell::SettingsFlags,
+    shell: &Arc<dyn ShellHost>,
+    config: &Config,
+) {
+    // Setup buttons (tray-flags pattern): consume edges, perform the
+    // privileged calls here on the main thread.
+    if settings_flags.setup_grant_ax.swap(false, Ordering::Relaxed) {
+        shell.prompt_accessibility_trust();
+    }
+    if settings_flags
+        .setup_request_screen
+        .swap(false, Ordering::Relaxed)
+    {
+        if should_request_screen_recording(config.screen_context, shell.screen_capture_permission())
+        {
+            shell.request_screen_capture_permission();
+        } else {
+            eprintln!("compme: screen recording request ignored; screen context is off or already granted");
+        }
+    }
+    // "Show Models Folder": open the app-support models dir in Finder
+    // (created first so it opens even before the first download).
+    if settings_flags
+        .setup_reveal_models_dir
+        .swap(false, Ordering::Relaxed)
+    {
+        match app_support_models_dir() {
+            Some(dir) => {
+                if let Err(err) = show_models_folder_with(
+                    &dir,
+                    |path| std::fs::create_dir_all(path),
+                    |path| {
+                        shell
+                            .reveal_file(path)
+                            .map_err(|err| std::io::Error::other(format!("{err:?}")))
+                    },
+                ) {
+                    eprintln!("compme: open models folder failed: {err}");
+                }
+            }
+            None => eprintln!("compme: cannot resolve models folder (no config home)"),
+        }
+    }
+    // Bring-your-own-model: a path picked via the file panel. Validate it is
+    // a readable GGUF, then point COMPME_MODEL_PATH at it in place (no copy);
+    // the model loads on the next launch (same as adopt/download).
+    let chosen_model = settings_flags
+        .setup_choose_model
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(path) = chosen_model {
+        match validate_gguf_model(&path) {
+            Ok(()) => {
+                if let Some(cfg) = config::config_file_path() {
+                    match config::persist_setting(
+                        &cfg,
+                        "COMPME_MODEL_PATH",
+                        &path.to_string_lossy(),
+                    ) {
+                        Ok(()) => eprintln!(
+                            "compme: using model {} \u{2014} relaunch to load",
+                            path.display()
+                        ),
+                        Err(err) => {
+                            eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}")
+                        }
+                    }
+                }
+            }
+            Err(reason) => eprintln!("compme: chosen model rejected \u{2014} {reason}"),
+        }
+    }
+}
+
+/// Heartbeat phase: the Apps pane's Delete-row edge (confirm, secure
+/// delete, recompose, re-render). Split out of `run()` verbatim (F16).
+fn apps_row_delete_phase(
+    settings_flags: &crate::shell::SettingsFlags,
+    shell: &Arc<dyn ShellHost>,
+    memory: &Option<memory::MemoryStore>,
+    settings: &mut SettingsState,
+    prefs: &Prefs,
+    config: &Config,
+    settings_window: &crate::shell::SettingsWindow,
+) {
+    // Apps-row Delete: resolve the clicked row index against the ids
+    // rendered with the SAME cap/order, delete, recompose, re-render.
+    let clicked_row = settings_flags
+        .apps_delete_row
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(row) = clicked_row {
+        if let (Some(store), Some(app)) = (&memory, settings.apps_ids.get(row)) {
+            // Irreversible (secure_delete zeroes freed pages) — confirm
+            // first, Cancel-default (review-c112; deep-link precedent).
+            let confirmed = shell
+                .confirm(&shell_flags::ConfirmPrompt {
+                    title: "Delete recorded inputs?",
+                    message: &format!("All recorded inputs for {app} will be permanently erased."),
+                    confirm_label: "Delete",
+                })
+                .unwrap_or(false);
+            if !confirmed {
+                eprintln!("compme: delete for {app} cancelled");
+            } else if let Some((lines, ids)) =
+                delete_app_row_and_recompose(store, &settings.apps_ids, row)
+            {
+                // Poison-recovery: skipping would leave the Apps pane
+                // showing the just-deleted row (refresh runs below).
+                *settings_flags
+                    .apps_lines
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = lines;
+                settings.apps_ids = ids;
+                // Rows shifted — republish the policy bits in the new order
+                // before refresh_apps_labels re-seeds the checkboxes from them.
+                *settings_flags
+                    .apps_policy_bits
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = compose_apps_policy_bits(
+                    prefs,
+                    &settings.apps_ids,
+                    settings.global_mid_word,
+                    config.autocorrect,
+                    config.grammar_fix,
+                );
+                settings_window.refresh_apps_labels();
+            }
+        }
+    }
+}
+
+/// Heartbeat phase: the Apps pane's per-app policy checkbox edge, including
+/// the focused-app dismiss. Split out of `run()` verbatim (F16).
+fn apps_row_policy_edit_phase<A: PlatformAdapter, O: OverlayPresenter>(
+    settings_flags: &crate::shell::SettingsFlags,
+    settings: &SettingsState,
+    prefs: &mut Prefs,
+    focus: &FocusContext,
+    shell: &Arc<dyn ShellHost>,
+    suggestion: &mut SuggestionState,
+    engine: &mut Engine<SharedAdapter<A>, O>,
+) {
+    // Apps-row policy checkbox: resolve the clicked row against the SAME
+    // ids/cap/order as Delete, map the field index to an AppPolicyField,
+    // write the per-app override into the live prefs, and persist (the
+    // web-override persist path serializes every per_app field). No
+    // apps_lines recompose — the edit changes policy, not recorded-input
+    // counts.
+    let edit = settings_flags
+        .apps_edit
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some((row, field_index, on)) = edit {
+        if let (Some(app), Some(field)) = (
+            settings.apps_ids.get(row),
+            apps_policy_field_from_index(field_index),
+        ) {
+            prefs.set_app_policy_field(app, field, on);
+            eprintln!("compme: app policy {field:?} for {app} set to {on}");
+            if let Some(path) = config::config_file_path() {
+                persist_web_override_prefs(&path, prefs);
+            }
+            // Disabling the FOCUSED app must retract any suggestion already on
+            // screen (and disarm its accept key); the submit gate only blocks
+            // future submits, not an already-dispatched render. Mirrors the
+            // shortcut/snooze/global-disable edges. Gated on the edited app
+            // being the focused one so editing another app's row never
+            // dismisses the focused field's ghost.
+            let focused_app = focus
+                .current_field
+                .as_ref()
+                .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)));
+            if apps_edit_dismisses_focused(field, on, focused_app.as_deref(), app) {
+                suggestion.latest.clear();
+                let _ = log_err("on_dismiss", engine.on_dismiss());
+            }
+        }
+    }
+}
+
+/// Heartbeat phase: Personalization-pane knob edits — live `set_profile`,
+/// persist, and the flag mirrors. Split out of `run()` verbatim (F16).
+fn personalization_edits_phase(
+    settings_window: &crate::shell::SettingsWindow,
+    settings_flags: &crate::shell::SettingsFlags,
+    config: &mut Config,
+    inference: &InferenceHandle,
+) {
+    // Personalization pane edit: apply the recorded knob change to the
+    // source profile (so it survives restart via persist) AND push it to the
+    // running worker LIVE via set_profile — no respawn, takes effect on the
+    // next request. The seam carried a primitive; apply_personalization_edit
+    // rejoins it to the typed profile and returns the (key, value) to persist.
+    //
+    // NOTE: the three knobs here (global instructions, sender, strength)
+    // govern PROMPT STEERING only. The MemoryStore open/close lifecycle is
+    // NOT part of PersonalizationProfile — it is governed by the separate
+    // `config.memory.mode` (memory::StorageMode), opened once at startup
+    // above (`open_memory_store`). So there is no MemoryStore call to make
+    // from a profile edit.
+    // TODO(LOOK): if a future "remember my edits" mode is added to
+    // PersonalizationProfile that should gate the MemoryStore, wire it to
+    // open_memory_store / store.close() here; today the profile has no such
+    // knob, so the steering edit must not touch `memory`.
+    settings_window.flush_personalization_edits();
+    let pers_edits = settings_flags
+        .personalization_edit
+        .lock()
+        .map(|mut slot| std::mem::take(&mut *slot))
+        .unwrap_or_else(|poisoned| std::mem::take(&mut *poisoned.into_inner()));
+    for edit in pers_edits {
+        let edit_for_flags = edit.clone();
+        let (key, _value, persist_result) = apply_live_personalization_edit(
+            &mut config.personalization,
+            edit,
+            |profile| inference.set_profile(profile),
+            |key, value| {
+                if let Some(path) = config::config_file_path() {
+                    config::persist_setting(&path, key, value)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        eprintln!("compme: personalization {key} updated");
+        if let Err(err) = persist_result {
+            eprintln!("compme: failed to persist {key}: {err}");
+        }
+        use crate::shell::PersonalizationEdit as E;
+        match edit_for_flags {
+            E::GlobalInstructions(_) => {
+                *settings_flags
+                    .personalization_instructions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) =
+                    config.personalization.global_instructions.clone();
+            }
+            E::SenderName(_) => {
+                *settings_flags
+                    .personalization_sender_name
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) =
+                    config.personalization.sender.name.clone();
+            }
+            E::SenderEmail(_) => {
+                *settings_flags
+                    .personalization_sender_email
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) =
+                    config.personalization.sender.email.clone();
+            }
+            E::StrengthStop(_) => {
+                settings_flags.personalization_strength_index.store(
+                    personalization_strength_index(config.personalization.strength),
+                    Ordering::Relaxed,
+                );
+            }
+        }
+    }
+}
+
+/// Heartbeat phase: the tray's per-app input-collection toggle. Split out
+/// of `run()` verbatim (F16).
+fn tray_collection_toggle_phase(
+    flags: &TrayFlags,
+    shell: &Arc<dyn ShellHost>,
+    focus: &FocusContext,
+    prefs: &mut Prefs,
+    monitored: &mut MonitoredInput,
+) {
+    // Tray "Toggle Input Collection in Current App": flip the frontmost
+    // app's typing-history override and persist the no-collect list. No
+    // dismiss edge — collection gates RECORDING, not suggestion display.
+    if flags.collection_toggle.swap(false, Ordering::Relaxed) {
+        clear_monitored_state_for_policy_transition(
+            &mut monitored.pending_monitored,
+            &mut monitored.monitored_buffers,
+        );
+        match focus
+            .current_field
+            .as_ref()
+            .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
+        {
+            Some(app) => {
+                let allowed = toggle_app_collection(prefs, &app);
+                eprintln!(
+                    "compme: input collection in {app} now {}",
+                    if allowed { "ENABLED" } else { "DISABLED" }
+                );
+                if let Some(path) = config::config_file_path() {
+                    // Mirror persist_web_override_prefs: an emptied list is
+                    // REMOVED, not written as a blank `KEY=` line (which would
+                    // shadow the env-over-file layer). Re-enabling the last
+                    // no-collect app clears the key entirely.
+                    let value = no_collect_apps_value(prefs);
+                    if value.is_empty() {
+                        remove_setting_or_log(&path, "COMPME_NO_COLLECT_APPS", "no-collect apps");
+                    } else {
+                        persist_setting_or_log(
+                            &path,
+                            "COMPME_NO_COLLECT_APPS",
+                            &value,
+                            "no-collect apps",
+                        );
+                    }
+                }
+            }
+            None => {
+                eprintln!("compme: collection toggle ignored — no focused app to resolve")
+            }
+        }
+    }
+}
+
+/// Heartbeat phase: the tray's per-app disable arm (resolve the frontmost
+/// app at consumption time, apply, persist Always, dismiss). Split out of
+/// `run()` verbatim (F16).
+#[allow(clippy::too_many_arguments)]
+fn tray_app_disable_phase<A: PlatformAdapter, O: OverlayPresenter>(
+    flags: &TrayFlags,
+    shell: &Arc<dyn ShellHost>,
+    focus: &FocusContext,
+    prefs: &mut Prefs,
+    monitored: &mut MonitoredInput,
+    suggestion: &mut SuggestionState,
+    engine: &mut Engine<SharedAdapter<A>, O>,
+    now_ms: u64,
+) {
+    // Tray "Disable Completions in Current App" ▸ arm: resolve the CURRENT
+    // frontmost app at consumption time (the tray never knows app identity)
+    // and apply. Same dismiss edge as snooze/disable — the pref change must
+    // retract a visible ghost (a2-parity review #2, pre-documented for
+    // exactly this surface).
+    if let Some(arm) = flags
+        .app_disable
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        clear_monitored_state_for_policy_transition(
+            &mut monitored.pending_monitored,
+            &mut monitored.monitored_buffers,
+        );
+        match focus
+            .current_field
+            .as_ref()
+            .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
+        {
+            Some(app) => {
+                apply_app_disable(arm, &app, prefs, now_ms);
+                eprintln!("compme: completions disabled in {app} ({arm:?})");
+                if arm == DisableArm::Always {
+                    if let Some(path) = config::config_file_path() {
+                        if let Err(err) = config::persist_setting(
+                            &path,
+                            "COMPME_EXCLUDED_APPS",
+                            &excluded_apps_value(prefs),
+                        ) {
+                            eprintln!("compme: could not persist excluded apps: {err}");
+                        }
+                    }
+                }
+                suggestion.latest.clear();
+                let _ = log_err("on_dismiss", engine.on_dismiss());
+            }
+            None => eprintln!("compme: disable-in-app ignored — no focused app to resolve"),
+        }
+    }
+}
+
 pub fn run() -> Result<(), String> {
     let Some(ctx) = startup(&real_factories())? else {
         return Ok(());
@@ -4756,77 +5381,7 @@ pub fn run() -> Result<(), String> {
             }
         }
         settings.settings_was_visible = settings_visible;
-        // Setup buttons (tray-flags pattern): consume edges, perform the
-        // privileged calls here on the main thread.
-        if settings_flags.setup_grant_ax.swap(false, Ordering::Relaxed) {
-            shell.prompt_accessibility_trust();
-        }
-        if settings_flags
-            .setup_request_screen
-            .swap(false, Ordering::Relaxed)
-        {
-            if should_request_screen_recording(
-                config.screen_context,
-                shell.screen_capture_permission(),
-            ) {
-                shell.request_screen_capture_permission();
-            } else {
-                eprintln!("compme: screen recording request ignored; screen context is off or already granted");
-            }
-        }
-        // "Show Models Folder": open the app-support models dir in Finder
-        // (created first so it opens even before the first download).
-        if settings_flags
-            .setup_reveal_models_dir
-            .swap(false, Ordering::Relaxed)
-        {
-            match app_support_models_dir() {
-                Some(dir) => {
-                    if let Err(err) = show_models_folder_with(
-                        &dir,
-                        |path| std::fs::create_dir_all(path),
-                        |path| {
-                            shell
-                                .reveal_file(path)
-                                .map_err(|err| std::io::Error::other(format!("{err:?}")))
-                        },
-                    ) {
-                        eprintln!("compme: open models folder failed: {err}");
-                    }
-                }
-                None => eprintln!("compme: cannot resolve models folder (no config home)"),
-            }
-        }
-        // Bring-your-own-model: a path picked via the file panel. Validate it is
-        // a readable GGUF, then point COMPME_MODEL_PATH at it in place (no copy);
-        // the model loads on the next launch (same as adopt/download).
-        let chosen_model = settings_flags
-            .setup_choose_model
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        if let Some(path) = chosen_model {
-            match validate_gguf_model(&path) {
-                Ok(()) => {
-                    if let Some(cfg) = config::config_file_path() {
-                        match config::persist_setting(
-                            &cfg,
-                            "COMPME_MODEL_PATH",
-                            &path.to_string_lossy(),
-                        ) {
-                            Ok(()) => eprintln!(
-                                "compme: using model {} \u{2014} relaunch to load",
-                                path.display()
-                            ),
-                            Err(err) => {
-                                eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}")
-                            }
-                        }
-                    }
-                }
-                Err(reason) => eprintln!("compme: chosen model rejected \u{2014} {reason}"),
-            }
-        }
+        setup_pane_actions_phase(&settings_flags, &shell, &config);
         // Live accept-key rebind (recorder 5b slice 3): the recorder UI (or
         // a debug trigger — slice 4 supplies the producer) parks the request;
         // consume the edge here. Sequencing inside apply_live_accept_keymap:
@@ -4914,344 +5469,33 @@ pub fn run() -> Result<(), String> {
                 Err(err) => eprintln!("compme: accept-key rebind failed: {err}"),
             }
         }
-        // Apps-row Delete: resolve the clicked row index against the ids
-        // rendered with the SAME cap/order, delete, recompose, re-render.
-        let clicked_row = settings_flags
-            .apps_delete_row
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        if let Some(row) = clicked_row {
-            if let (Some(store), Some(app)) = (&memory, settings.apps_ids.get(row)) {
-                // Irreversible (secure_delete zeroes freed pages) — confirm
-                // first, Cancel-default (review-c112; deep-link precedent).
-                let confirmed = shell
-                    .confirm(&shell_flags::ConfirmPrompt {
-                        title: "Delete recorded inputs?",
-                        message: &format!(
-                            "All recorded inputs for {app} will be permanently erased."
-                        ),
-                        confirm_label: "Delete",
-                    })
-                    .unwrap_or(false);
-                if !confirmed {
-                    eprintln!("compme: delete for {app} cancelled");
-                } else if let Some((lines, ids)) =
-                    delete_app_row_and_recompose(store, &settings.apps_ids, row)
-                {
-                    // Poison-recovery: skipping would leave the Apps pane
-                    // showing the just-deleted row (refresh runs below).
-                    *settings_flags
-                        .apps_lines
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = lines;
-                    settings.apps_ids = ids;
-                    // Rows shifted — republish the policy bits in the new order
-                    // before refresh_apps_labels re-seeds the checkboxes from them.
-                    *settings_flags
-                        .apps_policy_bits
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = compose_apps_policy_bits(
-                        &prefs,
-                        &settings.apps_ids,
-                        settings.global_mid_word,
-                        config.autocorrect,
-                        config.grammar_fix,
-                    );
-                    settings_window.refresh_apps_labels();
-                }
-            }
-        }
-        // Apps-row policy checkbox: resolve the clicked row against the SAME
-        // ids/cap/order as Delete, map the field index to an AppPolicyField,
-        // write the per-app override into the live prefs, and persist (the
-        // web-override persist path serializes every per_app field). No
-        // apps_lines recompose — the edit changes policy, not recorded-input
-        // counts.
-        let edit = settings_flags
-            .apps_edit
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        if let Some((row, field_index, on)) = edit {
-            if let (Some(app), Some(field)) = (
-                settings.apps_ids.get(row),
-                apps_policy_field_from_index(field_index),
-            ) {
-                prefs.set_app_policy_field(app, field, on);
-                eprintln!("compme: app policy {field:?} for {app} set to {on}");
-                if let Some(path) = config::config_file_path() {
-                    persist_web_override_prefs(&path, &prefs);
-                }
-                // Disabling the FOCUSED app must retract any suggestion already on
-                // screen (and disarm its accept key); the submit gate only blocks
-                // future submits, not an already-dispatched render. Mirrors the
-                // shortcut/snooze/global-disable edges. Gated on the edited app
-                // being the focused one so editing another app's row never
-                // dismisses the focused field's ghost.
-                let focused_app = focus
-                    .current_field
-                    .as_ref()
-                    .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)));
-                if apps_edit_dismisses_focused(field, on, focused_app.as_deref(), app) {
-                    suggestion.latest.clear();
-                    let _ = log_err("on_dismiss", engine.on_dismiss());
-                }
-            }
-        }
-        // Personalization pane edit: apply the recorded knob change to the
-        // source profile (so it survives restart via persist) AND push it to the
-        // running worker LIVE via set_profile — no respawn, takes effect on the
-        // next request. The seam carried a primitive; apply_personalization_edit
-        // rejoins it to the typed profile and returns the (key, value) to persist.
-        //
-        // NOTE: the three knobs here (global instructions, sender, strength)
-        // govern PROMPT STEERING only. The MemoryStore open/close lifecycle is
-        // NOT part of PersonalizationProfile — it is governed by the separate
-        // `config.memory.mode` (memory::StorageMode), opened once at startup
-        // above (`open_memory_store`). So there is no MemoryStore call to make
-        // from a profile edit.
-        // TODO(LOOK): if a future "remember my edits" mode is added to
-        // PersonalizationProfile that should gate the MemoryStore, wire it to
-        // open_memory_store / store.close() here; today the profile has no such
-        // knob, so the steering edit must not touch `memory`.
-        settings_window.flush_personalization_edits();
-        let pers_edits = settings_flags
-            .personalization_edit
-            .lock()
-            .map(|mut slot| std::mem::take(&mut *slot))
-            .unwrap_or_else(|poisoned| std::mem::take(&mut *poisoned.into_inner()));
-        for edit in pers_edits {
-            let edit_for_flags = edit.clone();
-            let (key, _value, persist_result) = apply_live_personalization_edit(
-                &mut config.personalization,
-                edit,
-                |profile| inference.set_profile(profile),
-                |key, value| {
-                    if let Some(path) = config::config_file_path() {
-                        config::persist_setting(&path, key, value)
-                    } else {
-                        Ok(())
-                    }
-                },
-            );
-            eprintln!("compme: personalization {key} updated");
-            if let Err(err) = persist_result {
-                eprintln!("compme: failed to persist {key}: {err}");
-            }
-            use crate::shell::PersonalizationEdit as E;
-            match edit_for_flags {
-                E::GlobalInstructions(_) => {
-                    *settings_flags
-                        .personalization_instructions
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) =
-                        config.personalization.global_instructions.clone();
-                }
-                E::SenderName(_) => {
-                    *settings_flags
-                        .personalization_sender_name
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) =
-                        config.personalization.sender.name.clone();
-                }
-                E::SenderEmail(_) => {
-                    *settings_flags
-                        .personalization_sender_email
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) =
-                        config.personalization.sender.email.clone();
-                }
-                E::StrengthStop(_) => {
-                    settings_flags.personalization_strength_index.store(
-                        personalization_strength_index(config.personalization.strength),
-                        Ordering::Relaxed,
-                    );
-                }
-            }
-        }
-        // Setup "Download Model": fetch the model the picker has selected
-        // (setup_model_index; defaults to the recommended entry) into the
-        // app-support models dir. Progress is logged; on Done the log says
-        // how to point COMPME_MODEL_PATH at it.
-        if settings_flags
-            .setup_download_model
-            .swap(false, Ordering::Relaxed)
-            && download_idle(download.model_download_status.as_deref())
-        {
-            if let Some(models_dir) = app_support_models_dir() {
-                // Selected-or-recommended, RAM hard block, and license
-                // click-through live in a pure decision helper so this edge is
-                // covered as a single app-level policy before download IO.
-                let selected_index = settings_flags.setup_model_index.load(Ordering::Relaxed);
-                let decision = model_download_click_decision(
-                    selected_index,
-                    available_ram_gb,
-                    &mut config.license_accepted,
-                    |model, license_name, terms_url| {
-                        shell
-                            .confirm(&shell_flags::ConfirmPrompt {
-                                title: "Accept model license?",
-                                message: &format!(
-                                    "{model} is distributed under the {license_name}.\n\
-                                     Downloading requires accepting its terms:\n{terms_url}"
-                                ),
-                                confirm_label: "Accept",
-                            })
-                            .unwrap_or(false)
-                    },
-                );
-                let ready = match decision {
-                    Some(ModelDownloadClickDecision::Ready {
-                        entry,
-                        accepted_license,
-                    }) => Some((entry, accepted_license)),
-                    Some(ModelDownloadClickDecision::BlockedByRam(message)) => {
-                        eprintln!("compme: {message}");
-                        None
-                    }
-                    Some(ModelDownloadClickDecision::LicenseDeclined { model }) => {
-                        eprintln!("compme: download of {model} cancelled (license not accepted)");
-                        None
-                    }
-                    None => None,
-                };
-                // Only the Ready decision runs the download body; blocked/
-                // declined/empty cases log above and fall through to the loop
-                // tail (event-pump + host-loop pace) like every other heartbeat
-                // branch. A `continue` here would skip that mandatory
-                // accept-event drain for one tick.
-                if let Some((entry, accepted_license)) = ready {
-                    if let Some(accepted) = accepted_license {
-                        // In-memory FIRST (same-session re-prompt guard), then
-                        // persist; a failed write only logs — the user DID accept,
-                        // so the download proceeds.
-                        if let Some(path) = config::config_file_path() {
-                            if let Err(err) = config::persist_setting(
-                                &path,
-                                "COMPME_LICENSE_ACCEPTED",
-                                &accepted.value,
-                            ) {
-                                eprintln!(
-                                    "compme: failed to persist COMPME_LICENSE_ACCEPTED: {err}"
-                                );
-                            }
-                        }
-                        eprintln!(
-                            "compme: {} accepted for {}",
-                            accepted.license_name, accepted.model
-                        );
-                    }
-                    let dest = models_dir.join(format!("{}.gguf", entry.name));
-                    // Skip the fetch when the model is already on disk — a
-                    // repeat "Download" click on a present model would otherwise
-                    // re-fetch and clobber a good file. An interrupted 0-byte
-                    // stub is NOT present, so it still re-downloads. This check
-                    // sits AFTER the license gate on purpose: keeping every
-                    // download-triggering path behind the gate is the simpler
-                    // invariant, and accepted licenses are remembered, so a
-                    // normal re-click on a present encumbered model never
-                    // re-prompts (the prompt-then-skip is an unaccepted-yet
-                    // edge case, inert for today's unencumbered catalog).
-                    match start_model_download_edge(ModelDownloadEdge {
-                        entry,
-                        dest: &dest,
-                        downloader: &mut model_downloader,
-                        model_download_status: &mut download.model_download_status,
-                        model_download_logged: &mut download.model_download_logged,
-                        prepare: prepare_model_download_dest,
-                        existing_model: model_download_dest_present,
-                        spawn: || {
-                            model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string())
-                        },
-                        request: |downloader: &model_fetch::ModelDownloader, request| {
-                            downloader.request(request)
-                        },
-                    }) {
-                        DownloadStartResult::PreparedFailed(err) => {
-                            eprintln!("compme: {err}");
-                        }
-                        DownloadStartResult::AlreadyPresent => {
-                            // The model is already on disk (this build or an
-                            // older one). A download Done edge will never fire,
-                            // so wire it here: persist the SELECTED model's path
-                            // so a re-click on a present model adopts it instead
-                            // of being an inert "already present" no-op.
-                            if let Some(cfg) = config::config_file_path() {
-                                if let Err(err) = config::persist_setting(
-                                    &cfg,
-                                    "COMPME_MODEL_PATH",
-                                    &dest.to_string_lossy(),
-                                ) {
-                                    eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}");
-                                }
-                            }
-                            eprintln!(
-                                "compme: {} already downloaded at {} \u{2014} COMPME_MODEL_PATH set, relaunch to use",
-                                entry.name,
-                                dest.display()
-                            )
-                        }
-                        DownloadStartResult::SpawnFailed(err) => {
-                            eprintln!("compme: failed to start model downloader \u{2014} {err}");
-                        }
-                        DownloadStartResult::Queued => eprintln!(
-                            "compme: downloading {} ({} MB) \u{2014} progress in this log",
-                            entry.name, entry.size_mb
-                        ),
-                        DownloadStartResult::Busy => {
-                            eprintln!("compme: model download queue busy \u{2014} try again");
-                        }
-                    }
-                }
-            } else {
-                // The click was already consumed by the swap above; without a
-                // resolvable config home there is no app-support model directory.
-                eprintln!(
-                    "compme: download-model click ignored \u{2014} config home is unavailable"
-                );
-            }
-        }
-        // Download progress/terminal-state logging (one line per transition).
-        if let Some(status) = &download.model_download_status {
-            let state = status.state.lock().unwrap_or_else(|e| e.into_inner());
-            let (next_logged, line) =
-                download_log_transition(&state, download.model_download_logged);
-            // The Done edge (logged advances to 2 with a Done state) fires once
-            // per download — start_model_download_edge resets logged to 0 on
-            // each new queue — so a second download re-persists its own path.
-            let done_edge = next_logged != download.model_download_logged
-                && matches!(&*state, model_fetch::DownloadState::Done(_));
-            download.model_download_logged = next_logged;
-            if let Some(line) = line {
-                eprintln!("{line}");
-            }
-            // Auto-wire the freshly downloaded model: persist COMPME_MODEL_PATH
-            // so the next launch loads it (env > file > default). Without this a
-            // completed download is unusable — the Setup "Model file" row stays
-            // ✗ forever and a Finder-launched .app has no way to point at the
-            // file (env vars aren't set for GUI launches). Persist failure only
-            // logs; the file is still on disk for a manual override.
-            if done_edge {
-                if let model_fetch::DownloadState::Done(path) = &*state {
-                    if let Some(cfg) = config::config_file_path() {
-                        match config::persist_setting(
-                            &cfg,
-                            "COMPME_MODEL_PATH",
-                            &path.to_string_lossy(),
-                        ) {
-                            Ok(()) => eprintln!(
-                                "compme: COMPME_MODEL_PATH set to {} \u{2014} relaunch to use it",
-                                path.display()
-                            ),
-                            Err(err) => {
-                                eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}")
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        apps_row_delete_phase(
+            &settings_flags,
+            &shell,
+            &memory,
+            &mut settings,
+            &prefs,
+            &config,
+            &settings_window,
+        );
+        apps_row_policy_edit_phase(
+            &settings_flags,
+            &settings,
+            &mut prefs,
+            &focus,
+            &shell,
+            &mut suggestion,
+            &mut engine,
+        );
+        personalization_edits_phase(&settings_window, &settings_flags, &mut config, &inference);
+        model_download_phase(
+            &settings_flags,
+            &shell,
+            &mut config,
+            available_ram_gb,
+            &mut model_downloader,
+            &mut download,
+        );
         // Periodic lifetime-stats flush (c102): baseline + grow-only session
         // totals, idempotent overwrite. The dirty check keeps idle ticks off
         // the disk; on a failed write the timestamp still advances (no
@@ -5473,137 +5717,26 @@ pub fn run() -> Result<(), String> {
                 let _ = log_err("on_dismiss", engine.on_dismiss());
             },
         );
-        // Drain received compme:// deep links (strict fail-closed parse →
-        // reversible override). Every outcome is logged (the §16 user-visible
-        // requirement; a confirmation prompt is the follow-up). An applied
-        // override changes suggestion policy, so fire the dismiss edge
-        // (a2-parity review #2) and persist every round-trippable web-config
-        // policy field.
-        let pending_links: Vec<String> = {
-            let mut lock = deep_links
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::mem::take(&mut *lock)
-        };
-        for url in pending_links {
-            let confirm = |decision: &webconfig::PromptDecision| -> bool {
-                let webconfig::PromptDecision {
-                    scope,
-                    action,
-                    trust,
-                } = decision;
-                shell
-                    .confirm(&shell_flags::ConfirmPrompt {
-                        title: "Allow configuration change?",
-                        message: &format!(
-                            "A compme:// link wants to apply {action} for:\n{scope}\n({trust})"
-                        ),
-                        confirm_label: "Allow",
-                    })
-                    .unwrap_or(false)
-            };
-            match handle_deep_link(&url, config.trusted_key.as_ref(), &mut prefs, confirm) {
-                Ok(summary) => {
-                    eprintln!("compme: deep link {summary}");
-                    clear_monitored_state_for_policy_transition(
-                        &mut monitored.pending_monitored,
-                        &mut monitored.monitored_buffers,
-                    );
-                    if let Some(path) = config::config_file_path() {
-                        persist_web_override_prefs(&path, &prefs);
-                    }
-                    suggestion.latest.clear();
-                    let _ = log_err("on_dismiss", engine.on_dismiss());
-                }
-                Err(err) => eprintln!("compme: deep link rejected: {err}"),
-            }
-        }
-        // Tray "Toggle Input Collection in Current App": flip the frontmost
-        // app's typing-history override and persist the no-collect list. No
-        // dismiss edge — collection gates RECORDING, not suggestion display.
-        if flags.collection_toggle.swap(false, Ordering::Relaxed) {
-            clear_monitored_state_for_policy_transition(
-                &mut monitored.pending_monitored,
-                &mut monitored.monitored_buffers,
-            );
-            match focus
-                .current_field
-                .as_ref()
-                .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
-            {
-                Some(app) => {
-                    let allowed = toggle_app_collection(&mut prefs, &app);
-                    eprintln!(
-                        "compme: input collection in {app} now {}",
-                        if allowed { "ENABLED" } else { "DISABLED" }
-                    );
-                    if let Some(path) = config::config_file_path() {
-                        // Mirror persist_web_override_prefs: an emptied list is
-                        // REMOVED, not written as a blank `KEY=` line (which would
-                        // shadow the env-over-file layer). Re-enabling the last
-                        // no-collect app clears the key entirely.
-                        let value = no_collect_apps_value(&prefs);
-                        if value.is_empty() {
-                            remove_setting_or_log(
-                                &path,
-                                "COMPME_NO_COLLECT_APPS",
-                                "no-collect apps",
-                            );
-                        } else {
-                            persist_setting_or_log(
-                                &path,
-                                "COMPME_NO_COLLECT_APPS",
-                                &value,
-                                "no-collect apps",
-                            );
-                        }
-                    }
-                }
-                None => {
-                    eprintln!("compme: collection toggle ignored — no focused app to resolve")
-                }
-            }
-        }
-        // Tray "Disable Completions in Current App" ▸ arm: resolve the CURRENT
-        // frontmost app at consumption time (the tray never knows app identity)
-        // and apply. Same dismiss edge as snooze/disable — the pref change must
-        // retract a visible ghost (a2-parity review #2, pre-documented for
-        // exactly this surface).
-        if let Some(arm) = flags
-            .app_disable
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            clear_monitored_state_for_policy_transition(
-                &mut monitored.pending_monitored,
-                &mut monitored.monitored_buffers,
-            );
-            match focus
-                .current_field
-                .as_ref()
-                .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
-            {
-                Some(app) => {
-                    apply_app_disable(arm, &app, &mut prefs, now_ms);
-                    eprintln!("compme: completions disabled in {app} ({arm:?})");
-                    if arm == DisableArm::Always {
-                        if let Some(path) = config::config_file_path() {
-                            if let Err(err) = config::persist_setting(
-                                &path,
-                                "COMPME_EXCLUDED_APPS",
-                                &excluded_apps_value(&prefs),
-                            ) {
-                                eprintln!("compme: could not persist excluded apps: {err}");
-                            }
-                        }
-                    }
-                    suggestion.latest.clear();
-                    let _ = log_err("on_dismiss", engine.on_dismiss());
-                }
-                None => eprintln!("compme: disable-in-app ignored — no focused app to resolve"),
-            }
-        }
+        drain_deep_links_phase(
+            &deep_links,
+            &shell,
+            &config,
+            &mut prefs,
+            &mut monitored,
+            &mut suggestion,
+            &mut engine,
+        );
+        tray_collection_toggle_phase(&flags, &shell, &focus, &mut prefs, &mut monitored);
+        tray_app_disable_phase(
+            &flags,
+            &shell,
+            &focus,
+            &mut prefs,
+            &mut monitored,
+            &mut suggestion,
+            &mut engine,
+            now_ms,
+        );
         let effective_trusted = runtime_trusted(trusted, subscriptions_require_relaunch);
         let enabled = flags.enabled.load(Ordering::Relaxed);
         flush_monitored_changes_after_secure_recheck(
