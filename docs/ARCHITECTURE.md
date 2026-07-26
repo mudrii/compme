@@ -507,6 +507,9 @@ modules own reusable policy:
   responsibility (suggestion, focus/context, policy, settings, download,
   stats, session UI); drop-observable bindings stay locals in `run()` so
   teardown order is preserved exactly
+- `run_loop_tests.rs`: `run_loop`'s unit tests, split out of the module file
+  (`#[cfg(test)] #[path = …] mod tests;`) so the production surface is
+  visible in `wc -l`; same module path, same test names
 
 Major responsibilities:
 
@@ -550,7 +553,8 @@ Major responsibilities:
 `platform_macos` implements the platform contract for macOS. Its Accessibility
 worker concern — the worker thread, job dispatch, observer bindings, safety
 polling, and run-loop pumping — lives in the focused `ax_worker.rs` module;
-`lib.rs` keeps the adapter, insertion, overlay, and classification surfaces.
+`lib.rs` keeps the adapter, insertion, overlay, and classification surfaces,
+with its unit tests split into `lib_tests.rs` (same module path, same names).
 
 Major responsibilities:
 
