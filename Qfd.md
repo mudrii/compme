@@ -1,6 +1,6 @@
 # compme — Full Architecture, Source, Test, Documentation, and CI Audit
 
-**Audit date:** 2026-07-20 · **Re-audited:** 2026-07-21 (five-agent full re-audit; deltas and current finding statuses in §12)
+**Audit date:** 2026-07-20 · **Re-audited:** 2026-07-21 (five-agent full re-audit; deltas and current finding statuses in §12) · **Re-audited:** 2026-07-25 (post-implementation audit of the committed tree `67a74b2`; verification of every §13 flip, five new findings F14–F18, and corrections in §14) · **Remediated:** 2026-07-26 (F14–F18 closed in four commits; §15 has the current state — read §14 then §15)
 
 **Repository:** `compme`
 
@@ -428,3 +428,164 @@ This section reconciles the 2026-07-20/21 findings with the implementation progr
 2. Windows UIA Phase 1 → Linux X11/AT-SPI Phase 2 (largest committed deliverable).
 3. Let the next release prove `post_verify` operationally.
 4. Optional future deepening: typed settings/tray commands/snapshots/events (the F12 placement move is done; the redesign is a design task, not debt).
+
+---
+
+## 14. 2026-07-25 re-audit (post-implementation, committed tree)
+
+**Method:** single-orchestrator full audit (architecture, source, tests, docs/plan alignment, CI/release, live GitHub state) over `main` at `67a74b2`, the first audit of the *committed* program rather than a working tree. Every §13 status flip was re-verified against the cited file/line or a live run; no claim was accepted from the record. Metrics were re-measured, not copied.
+
+**Audited tree:** `HEAD == origin/main == 67a74b25824c2fd405c772526762ef6843b9fed2`, ahead/behind `0/0`, working tree clean except the deliberately untracked `keybindings.md`.
+
+**Verdict:** every §13 "RESOLVED" flip is real. The implementation program did what it claimed, and the deterministic surface is green end-to-end on the committed tree (this is the proof §13's F2 was still waiting for — CI ran green on `67a74b2` at 2026-07-22T09:39Z, CodeQL re-ran green 2026-07-25). No correctness, safety, or security defect was found in source, tests, or CI. Five new findings are process/documentation/architecture-framing issues (F14–F18), one of which — a dependabot PR that cannot merge by construction — is blocking three open PRs today. One §12 figure is corrected.
+
+### Re-measured ground truth
+
+| Surface | 2026-07-25 evidence | vs §3 / §13 |
+|---|---|---|
+| Git parity | `HEAD == origin/main == 67a74b2`, `0/0` | F2 closed for real |
+| Working tree | clean; only `keybindings.md` untracked | as recorded |
+| Workspace | **26** packages, 79 tracked `.rs` files, 80,435 tracked Rust lines | was 25 / 63 / 77,694 (pre-`shell_flags`) |
+| Deterministic suite | `cargo test --locked --workspace --all-targets -- --test-threads=1` → **1,936 passed, 0 failed, 6 ignored** (1,942 listed) | matches the ≈1,942 doc pins |
+| fmt / clippy | `cargo fmt --check` ✅; `clippy --locked --workspace --all-targets -D warnings` ✅ | green |
+| Doctests | none exist (`--doc` runs 0 tests) → the `--all-targets` lanes lose no coverage | new check, no gap |
+| `run_loop.rs` / `platform_macos/lib.rs` / `settings_window.rs` | 16,036 / 13,353 / 3,283 lines | matches F5 flip |
+| `platform/src/shell.rs` | 183 lines, 2 portable traits; `shell_flags` 318 lines, 4 tests | matches F12 flip |
+| `SettingsFlags` / `TrayFlags` | still 39 / 11 fields — *relocated*, not narrowed (as F12 said) | unchanged by design |
+| `PlatformAdapter` / `ShellHost` | 14 methods (**10 required + 4 defaulted**); ShellHost 8 required + 10 defaulted | see F7 correction below |
+| Manual ledger | exactly 22 runner-pinned IDs in `ACCEPTANCE.md:686-709` | unchanged |
+| `unsafe` | 1 site in `app` (signal install, `run_loop.rs:119`), 103 in `platform_macos/lib.rs`, 26 in `ax_worker.rs`, 8 in `platform_windows`, 0 in `platform_linux`, 0 in pure crates | confinement intact |
+| Debt markers | 2 `TODO(LOOK)`; no production `todo!()`/`unimplemented!()` (the 4 hits are `engine` test fakes) | unchanged |
+| Assertion-free tests | 0 (a 3-hit scan was a raw-string brace-counting artifact; all three assert) | test suite clean |
+| Relative Markdown links | 0 missing local targets across every tracked `.md` | unchanged |
+| Live governance | `check-github-governance.sh --repo mudrii/compme` exits 0, reports the same six accepted caveats | unchanged |
+| Helper gates | `check-version-docs.sh` (8 surfaces, v0.1.5) ✅, `check-model-gates.sh` live ✅, `finalize-cask.sh --self-test` ✅ | unchanged |
+
+### Verification of each §13 flip
+
+| Finding | §13 status | 2026-07-25 verification |
+|---|---|---|
+| F1 stable-tag glob | RESOLVED | **Confirmed.** `finalize-cask.sh:136-143` re-filters every candidate through the strict stable-SemVer anchor (the same no-leading-zero `vX.Y.Z` regex `check-bundle-metadata.sh` uses) inside the sorted loop, with the rationale comment naming the `-version:refname` prerelease-sort trap; `--self-test` passes. |
+| F2 uncommitted stack | RESOLVED | **Confirmed and now CI-proven** — the whole program is on `origin/main` with a green push run; `keybindings.md` correctly stayed out. |
+| F3 22 live gates | OPEN | **Still open.** Ledger re-counted at 22; no gate claims unearned evidence. Remains the product critical path and the only owner-blocked item. |
+| F4 governance wording | RESOLVED | **Confirmed.** `ROADMAP.md:231-245` and execution item 10 (`:799-807`) both describe the active `protect-main` ruleset and the strengthen-or-not decision; the six caveats are still enumerated and match the live checker's output verbatim. |
+| F5/F6 god-file seams | RESOLVED at planned depth | **Confirmed** on line counts; **re-framed** by F16 below — the metric everyone has been quoting is dominated by inline test modules, and the real concentration is `run()` itself. |
+| F7 guide drift | RESOLVED | **Confirmed.** The plan's inventory is explicitly frozen at `b367f0f` (`:28`) and the active cross-cutting rule at `:319` now says "14-method". Only §12's own parenthetical was wrong — corrected below. |
+| F8 test serialization | RESOLVED | **Confirmed.** `ci.yml` runs 24 crates in the parallel lane (`--exclude platform_macos --exclude app`) and only those two serially, with the shared-global rationale in-comment. |
+| F9 docs-only pushes | RESOLVED | **Confirmed.** `docs.yml` gates version-docs, `bash -n`, shellcheck, and cask syntax on exactly the `paths-ignore` set that `ci.yml` skips. Observed working live on a real docs push. See F18 for one cheap tightening. |
+| F10 `post_verify` | TRACK | **Still TRACK.** Job present at `release.yml:698-773`, `needs: finalize_cask`, tag-gated; no release has run it (latest published artifact is still v0.1.5). |
+| F11/F13 dependabot | RESOLVED | **Confirmed** as a config/doc change: actions monthly, cargo weekly ×2, procedure mirrored in `dependabot.yml:1-4`, `RELEASING.md:37-45`, `DEVELOPMENT.md:297-304`. But the *operational* cost is now visible — see F15. |
+| F12 crate placement | RESOLVED | **Confirmed.** `shell_flags` is pure/zero-dep; `platform` depends on it only for `ConfirmPrompt`, dependency direction non-cyclic and documented at the crate head. The related nit is closed too: `app/src/shell/stub.rs`'s file-level `#![allow(dead_code)]` is gone, replaced by 16 per-item allows plus a module-doc rationale (`67a74b2`). |
+
+### New findings
+
+#### F14. `ARCHITECTURE.md` contradicts itself on workspace size — NEW P2 DOCS
+
+`docs/ARCHITECTURE.md:28` says "The workspace now holds 25 crates"; `:84` says "The 26 crates fall into six groups" and then lists 26 names (6+3+6+7+3+1) including `shell_flags`. The actual count is **26** (`cargo metadata`). The `shell_flags` split updated the second mention and missed the first.
+
+Root cause worth fixing beyond the typo: **no checker pins the crate count**, unlike the eight version surfaces that `check-version-docs.sh` gates and the test count that the doc pins carry. Fix: one-word edit at `:28`, plus a `cargo metadata`-derived crate-count assertion in `check-version-docs.sh` (or `check-agent-briefs.sh`) so the next crate split cannot silently desync a doc again.
+
+#### F15. The grouped cargo dependabot PR cannot merge by construction, and it blocks 9 unrelated bumps — NEW P1 PROCESS
+
+Three dependabot PRs have been open and unattended since 2026-07-22:
+
+- **#3 "bump the cargo group with 10 updates" — fails all three build lanes in under a minute.** Root cause: `model_client` declares `llama-cpp-2` **twice**, once per target (`cfg(target_os = "macos")` with `metal`, `cfg(not(target_os = "macos"))` without), both exact-pinned `=0.1.146`. Dependabot rewrote only the macOS entry to `=0.1.152` and left the other at `=0.1.146`, producing two unsatisfiable exact requirements: `error: failed to select a version for llama-cpp-2` on macOS, Windows, and Linux. Because the group pattern is `*`, this one un-bumpable crate takes the other nine legitimate updates down with it.
+  Fix: `ignore` `llama-cpp-2` in the root `cargo` group (the maintainer already owns ABI-pin bumps by hand — the manifest comment says exactly that), or exclude it from the group pattern so the remaining nine can merge on their own.
+- **#1 "bump the github-actions group with 3 updates" — fails the macOS `check` job.** This is F11's fail-closed design working as intended: `check-model-gates.sh` hardcodes the approved action SHAs, so an unreconciled bump must fail. It is not a defect; it *is* the manual reconciliation cost, now measured — and it is what leaves a PR sitting.
+- **#2 "bump llama-cpp-2 0.1.146 → 0.1.152 in /tools/spike" — fully green.** Caveat before merging it alone: it would leave the spike tree at 0.1.152 while the root workspace stays pinned at 0.1.146, splitting the ABI pin the two trees deliberately duplicate. Bump root (both target entries) and spike in one change, then re-run the model gates.
+
+There is also one failing "Dependabot Updates" run on `67a74b2` (one of the three ecosystems failed to compute an update); harmless but worth a glance next time the queue is touched.
+
+#### F16. The god-file metric is misleading; the real concentration is `run()` — NEW P2 ARCHITECTURE (re-frames F5/F6)
+
+Both `Qfd.md` and `ROADMAP.md` quote raw file lengths (16,036 / 13,353). Measured against the last top-level `#[cfg(test)]` boundary:
+
+| File | Total | Production | Inline tests |
+|---|---:|---:|---:|
+| `crates/app/src/run_loop.rs` | 16,036 | **5,956** | 10,080 (63%) |
+| `crates/platform_macos/src/lib.rs` | 13,353 | **5,831** | 7,522 (56%) |
+
+So the "god files" are roughly 6k-line production modules with 8–10k-line test modules bolted on. Two consequences:
+
+1. **Stop quoting total lines as the architecture metric** — it overstates the debt by ~2.7× and makes each extraction look smaller than it is. The honest metric is production lines plus function-level complexity.
+2. **The remaining concentration is one function.** `run()` (`run_loop.rs:3918-5956`) is **2,039 lines**: one heartbeat `while`, 119 `if`s, 23 `match`es, ~221 distinct helper calls, and a maximum nesting depth of **13** (deepest at `run_loop.rs:4194`, inside the autocorrect/full-autocorrect decision chain). `loop_state.rs` correctly grouped the *state*; the next honest step is extracting heartbeat *phases* as functions over those structs (poll policy edges, pump settings watchers, drain engine outcomes, flush monitored input, render tray) — each taking `&mut PolicyState` / `&mut SettingsState` / etc., which is now possible precisely because the state is grouped. That reduces nesting and makes each phase independently testable; further file-splitting does not.
+3. Separately, a single 10,080-line inline `mod tests` is its own navigation cost. Splitting it into `#[path]`-included test modules by concern is behavior-free and low-risk, and it would make the production/test ratio visible in `wc -l` instead of hiding it.
+
+#### F17. The `ax_worker` carve preserved over-broad visibility — NEW P3 OPTIMIZATION
+
+`platform_macos/src/lib.rs:68` re-exports `AxWorker`, `AxWorkerResource`, `CallbackDispatcher`, and `ObserverNotification`. Grep across the workspace and the seven `platform_macos` examples finds **zero** consumers outside the crate; the only thing keeping `AxWorker` reachable is `pub fn with_worker`, itself called only from `MacosPlatformAdapter::new` (`:1076`) and the in-crate test-hook variant. The commit's "zero new pub surface" claim is accurate — these four were already `pub` before the move — but the carve was the natural moment to narrow them. Making the four types and `with_worker` `pub(crate)` shrinks the crate's public API and rustdoc surface with no behavior change and no test change.
+
+#### F18. `docs.yml` has no branch filter — NEW P3 CI
+
+`ci.yml` scopes pushes to `branches: [main, "spike/**"]`; `docs.yml` has `on: push` with paths only, so it also runs on every dependabot and feature branch (observed live: the Docs workflow ran on `dependabot/github_actions/github-actions-03481714fc`). PRs already get the same checks through `ci.yml`'s `check` job, so those runs are pure runner spend. Adding `branches: [main, "spike/**"]` gives parity with `ci.yml` at zero coverage cost.
+
+### Corrections to the earlier record
+
+- **§12 F7 sharpening was wrong in its split.** It said `PlatformAdapter` has "14 methods (12 required + 2 defaulted: `popup_anchor`, `focused_page_url`)". A signature-by-signature read of `crates/platform/src/lib.rs:491-593` gives 14 methods = **10 required** (`environment`, `subscribe_focus`, `subscribe_caret`, `subscribe_accept`, `front_app`, `capabilities`, `read_context`, `caret_rect`, `insert`, `insert_replacing`) + **4 defaulted** (`popup_anchor`, `focused_page_url`, `text_range_rect`, `insert_replacing_range`). The two missed defaults are exactly the Tier-5 grammar range surfaces that `ROADMAP.md` documents as fail-closed trait defaults, so the omission mattered: it hid the fact that a third of the contract is default-inherited by the Windows/Linux adapters. The total of 14 — the figure the docs actually carry — was and remains correct, so no documentation change follows from this; only this record needed the fix.
+- **§13's validation line "1,942 listed: 1,012 parallel-lane + 923 serial-lane + 6 ignored + 1 latency corpus guard"** does not add up (1,012 + 923 + 6 = 1,941) and mixes lane inventories with ignore counts. The clean statement is: **1,942 listed = 1,936 executed + 6 ignored** in the single serial workspace run; the CI lane split partitions the same inventory (24 crates parallel, `platform_macos` + `app` serial).
+
+### Alignment with objectives and plan
+
+| Objective | State on `67a74b2` | Alignment |
+|---|---|---|
+| Local, no-telemetry inline completion | Implemented; privacy boundaries enforced as policy and tested | Aligned |
+| macOS first | v0.1.5 signed/notarized/stapled and cask-backed; `main` adds hardening + the refactor program | Aligned |
+| Deterministic core behind `PlatformAdapter` | 14-method contract, 4 fail-closed defaults, pure core 98–100% covered | Aligned |
+| A2/A3 parity + grammar | Code complete; 22 live gates outstanding | Partially aligned pending live evidence (F3) |
+| Windows/Linux committed deliverables | Phase 0 + fail-closed facades + hosted CI parity; no real adapters | Largest implementation gap, unchanged |
+| Secure release pipeline | Strict tag guard, provenance, post-publish verification all in place | Aligned; `post_verify` still unproven operationally (F10) |
+| ROADMAP as source of truth | Governance wording, counts, and the refactor record are all current | Aligned, with one stale count in ARCHITECTURE (F14) |
+
+`ROADMAP.md`'s header is now accurate but is a single ~900-word sentence carrying the entire 2026-07-21/22 program. It reads as a changelog, not a header; moving the delivery narrative into the existing `<details>` log and leaving the header as date + branch + test count would make the pending-work ledger findable again. Cosmetic, not a defect.
+
+### 2026-07-25 validation record
+
+Passed: `cargo fmt --all -- --check`; `cargo clippy --locked --workspace --all-targets -- -D warnings`; `cargo test --locked --workspace --all-targets -- --test-threads=1` (**1,936 passed / 0 failed / 6 ignored**); `cargo test --locked --workspace --doc` (0 tests, no doctests exist); `tools/release/check-version-docs.sh`; `bash tools/release/check-model-gates.sh`; `tools/release/finalize-cask.sh --self-test`; `tools/release/check-github-governance.sh --repo mudrii/compme` (live, exit 0, six accepted caveats); full-repo relative-link check (0 missing); live GitHub run/PR inventory.
+
+Not executed this round: `shellcheck` (still not installed locally — CI's Linux and Docs lanes cover it, green on HEAD); `cargo llvm-cov` (unchanged production surface since §3's 86.50%/82.76%/85.49% measurement plus the verbatim moves; not re-measured); model-backed gates and bundle smokes (unchanged since §13's program validation); the 22 live macOS gates; Windows/Linux runtime acceptance; `post_verify` (needs a real tag).
+
+### Prioritized next actions (supersedes §13's list)
+
+1. **Unblock the dependabot queue (F15).** `ignore` `llama-cpp-2` in the root cargo group, then bump root (both target entries) + spike together in one commit and re-run the model gates; reconcile #1's action SHAs through `check-model-gates.sh`; re-run #3.
+2. **Fix `ARCHITECTURE.md:28` (25 → 26) and pin the crate count in a checker (F14).**
+3. **Close and record the 22 macOS live gates (F3)** — owner action, still the product critical path.
+4. **Extract heartbeat phases out of `run()` (F16)**, one behavior at a time over the `loop_state` structs; stop quoting total file lines as the architecture metric.
+5. **Windows UIA Phase 1 → Linux X11/AT-SPI Phase 2** — largest committed deliverable, unchanged.
+6. **Let the next release prove `post_verify` (F10)**, including cask/checksum consistency.
+7. Low-cost cleanups when convenient: `pub(crate)` the four `ax_worker` re-exports (F17), branch-filter `docs.yml` (F18), split the 10k-line inline test module (F16.3), slim the ROADMAP header sentence.
+8. Optional future deepening: typed settings/tray commands/snapshots/events — still a design task, not debt.
+
+---
+
+## 15. 2026-07-26 remediation of the §14 findings
+
+Every §14 finding that is fixable in-repo was implemented the day after the audit, in four commits on `main`, each validated before the next started.
+
+| Commit | Finding | What landed |
+|---|---|---|
+| `8aa70f7` | F14, F15 (config), F17, F18 | crate-count fix + checker pin; dependabot `ignore` for `llama-cpp-2`; `pub(crate)` AX-worker surface; `docs.yml` branch scope |
+| `8267518` | F16.3 | inline test modules split into `run_loop_tests.rs` / `lib_tests.rs`, nine checker pins repointed |
+| `1090aa5` | F16.2 | eight heartbeat phases extracted from `run()` |
+| this commit | F16.1, record | ROADMAP header restructure with corrected metrics; this section |
+
+### Finding status after remediation
+
+| Finding | Status |
+|---|---|
+| F14 crate-count contradiction | **RESOLVED** — `ARCHITECTURE.md:28` says 26, and `check-model-gates.sh` now pins *both* crate-count sentences against `cargo metadata`'s member count, alongside the existing README/DEVELOPMENT pins. A future crate split fails CI instead of drifting. |
+| F15 dependabot | **RESOLVED for the defect; the dependency review is the owner's.** `llama-cpp-2` is ignored by both cargo ecosystems, so the next grouped PR is resolvable; the manual bump procedure (both target entries + `tools/spike`, then `run-model-gates.sh`) is documented in `dependabot.yml`, DEVELOPMENT, and RELEASING. Deliberately **not** done here: adopting PR #3's remaining content, which is six *major* migrations — `getrandom` 0.3→0.4, `aes-gcm` 0.10→0.11, `rusqlite` 0.32→0.40, `sha2` 0.10→0.11, `ureq` 2→3, `ed25519-dalek` 2.2→3.0. Those touch the crypto, database, and HTTP seams, each needs code changes, and three of them are exact-pinned precisely because the maintainer reviews them case-by-case. Same for PR #1's `upload-artifact` v4→v7 / `download-artifact` v4→v8 majors: nothing in branch CI exercises artifact round-trips, so they would stay unproven until a real tag. Both are decisions, not defects. |
+| F16 god-file metric + `run()` | **RESOLVED.** Metric: the inline test modules moved to sibling files, so `wc -l` now reports the production surface directly (`run_loop.rs` 6,092, `platform_macos/lib.rs` 5,837), and ROADMAP/Qfd quote those numbers. Function: `run()` is **1,546 lines, down from 2,039**, with eight phases extracted — `setup_pane_actions_phase`, `apps_row_delete_phase`, `apps_row_policy_edit_phase`, `personalization_edits_phase`, `model_download_phase`, `drain_deep_links_phase`, `tray_collection_toggle_phase`, `tray_app_disable_phase`. Every move is verbatim; the only edits are `&mut x` → `x` where a binding became a reference parameter. |
+| F17 over-broad `pub` | **RESOLVED, and it paid for itself.** The four AX-worker types and `with_worker` are `pub(crate)`. Narrowing immediately exposed two methods the `pub` had been masking from dead-code analysis — `AxWorker::install_resource` (production goes through `AxWorkerHandle`) and `AxWorkerResource::close` (production relies on `Drop`) — both are test-only and are now `#[cfg(test)]`, out of the shipped binary. |
+| F18 `docs.yml` scope | **RESOLVED** — `branches: [main, "spike/**"]`, matching `ci.yml`. |
+| F7 split correction, §13 arithmetic | **RECORDED** in §14; no doc changed, because the docs only ever carried the correct total. |
+| F3 / F10 / Windows-Linux adapters | **OPEN, unchanged** — owner action, next tag, and the largest committed deliverable respectively. |
+
+### What was deliberately left inline (F16, honest scope)
+
+The settings-watcher run (autocorrect, full-autocorrect, thesaurus, launch-at-login, trailing space, midline, context, emoji) and the host-event arm were **not** extracted. Each needs 15–20 bindings, so a function would have taken a wide context struct — the exact "relocated state, not a deeper interface" failure that F5/F6 warns about, and that the 27-field `RunContext` already demonstrated. They need a real seam (typed settings commands; a host-event context type), which is a design task, not a move. `run()`'s maximum nesting depth is still 13, inside the host-event arm, for the same reason.
+
+### 2026-07-26 validation record
+
+After each commit and again at the end: `cargo fmt --all -- --check`; `cargo clippy --locked --workspace --all-targets -- -D warnings`; `cargo test --locked --workspace --all-targets -- --test-threads=1` → **1,936 passed, 0 failed, 6 ignored** (identical to the pre-remediation run — app 546 and platform_macos 346 unchanged through the test-module split); `check-model-gates.sh` live; `check-version-docs.sh` (8 surfaces); `actionlint`; `e2e-complete-me.sh --self-test`; `bundle-smoke.sh`.
+
+Not executed: local `shellcheck` (unavailable; CI's Linux and Docs lanes cover it), model-backed gates and coverage (unchanged model/policy surface — the refactors are verbatim moves), the 22 live macOS gates, Windows/Linux runtime acceptance.
