@@ -380,7 +380,9 @@ per push against the cached, pinned GGUF, so real load/complete/shutdown
 inference breakage cannot ship green (the strict latency budget stays a
 pre-tag gate on a real Mac), and a version-docs check
 (`tools/release/check-version-docs.sh`, plus its self-test) fails the check job
-when a documented version surface lags the root `Cargo.toml`. Tag release
+when a documented version surface lags the root `Cargo.toml`. Docs-only pushes
+skip that job by design, so a separate Docs workflow runs the version-docs,
+script-syntax, shellcheck, and cask-syntax gates on exactly those pushes. Tag release
 validation is equally broad: it runs the same portable-workspace gates and
 app-binary build on `windows-latest` and `ubuntu-latest`, adds a corpus-based
 Model-quality gate (`tools/release/check-quality.sh`) that fails the pipeline

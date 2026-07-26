@@ -494,7 +494,32 @@ not new product scope:
 3. **Deeper app policy modules:** `run_loop.rs` remains the coordinator while
    `feature_policy`, `context_policy`, `settings_runtime`, and `url_actions`
    own deterministic suggestion decisions, context lifecycle invariants,
-   settings edges, and allowlisted external-link consumption.
+   settings edges, and allowlisted external-link consumption. Extended
+   2026-07-22/26 by the god-file series: `builders.rs` (pure builder/parsing
+   groups), `loop_state.rs` (eight heartbeat state structs, teardown order
+   preserved), `ax_worker.rs` in `platform_macos`, the inline test modules
+   split into `run_loop_tests.rs`/`lib_tests.rs`, and eight heartbeat phases
+   lifted out of `run()` (2,039 → 1,546 lines).
+
+### ☐ Remaining architecture seam work (design task, not debt)
+
+The settings-watcher run (autocorrect, full-autocorrect, thesaurus, launch at
+login, trailing space, midline, context, emoji) and the host-event arm are the
+two blocks still inline in `run()`, because each touches 15–20 bindings: a
+plain extraction would hand a wide context struct to a function rather than
+hide state — the same "relocated state, not a deeper interface" trap the
+27-field startup result showed. Closing them properly means a real seam:
+
+- typed settings/tray **commands** and immutable **snapshots** replacing the
+  39-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses (the
+  `shell_flags` crate split moved this vocabulary out of the portable contract
+  crate; the redesign itself is still open);
+- a host-event context type so the caret/focus arm can be tested without the
+  whole loop.
+
+Both are prerequisites worth doing **before** the first real Windows/Linux UI
+adapter, so native shells translate events instead of mirroring macOS-shaped
+synchronization details. Neither blocks the current macOS product.
 
 ---
 

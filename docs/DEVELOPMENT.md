@@ -281,7 +281,11 @@ functional load/complete/shutdown coverage only, since the latency budget is
 meaningless on a virtualized runner and stays a pre-tag gate on a real Mac.
 Branch CI also enforces version-doc reconciliation:
 `tools/release/check-version-docs.sh` fails the check job when a documented
-version lags the root `Cargo.toml`. Tag release
+version lags the root `Cargo.toml`. Docs-only pushes skip `ci.yml` entirely
+(`paths-ignore`), so a separate [`docs.yml`](../.github/workflows/docs.yml)
+lane picks them up with the version-docs check, script syntax, shellcheck, and
+cask syntax — same `main` / `spike/**` branch scope as `ci.yml`, since pull
+requests already run the full check job. Tag release
 validation is equally broad: it runs the same portable-workspace gates and
 app-binary build on `windows-latest` and `ubuntu-latest`, and the signing job
 attests build provenance for the packaged zip, verified by the publication and

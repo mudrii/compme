@@ -511,6 +511,19 @@ modules own reusable policy:
   (`#[cfg(test)] #[path = …] mod tests;`) so the production surface is
   visible in `wc -l`; same module path, same test names
 
+`run()` itself is the heartbeat: it owns event ordering, teardown order, and
+the per-tick sequence, and delegates cohesive slices of the tick to phase
+functions that take the `loop_state` structs directly — `setup_pane_actions`
+(grant AX / screen, Show Models Folder, bring-your-own-model),
+`apps_row_delete` and `apps_row_policy_edit` (Apps pane),
+`personalization_edits` (live `set_profile` + persist + flag mirrors),
+`model_download` (Download Model click, progress log, auto-wire),
+`drain_deep_links`, `tray_collection_toggle`, and `tray_app_disable`. The
+settings-watcher run and the host-event arm deliberately stay inline: each
+touches 15–20 bindings, so a function would take a wide context struct
+instead of hiding state. Deepening those needs typed settings/tray commands
+and a host-event context type — a design change, not a move.
+
 Major responsibilities:
 
 - load dotenv-style config plus environment overrides, aborting startup on an
