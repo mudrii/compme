@@ -208,9 +208,14 @@ fn meminfo_total_bytes(meminfo: &str) -> Option<u64> {
 /// `app`'s config-path resolution; a relative `XDG_CONFIG_HOME` is ignored too,
 /// because the basedir spec requires an absolute path and a relative base would
 /// drop the entry under the process cwd.
+///
+/// "Absolute" is tested as a leading `/` rather than with `Path::is_absolute`,
+/// which answers for the host that *compiled* the code: this crate is also built
+/// on Windows CI, where `is_absolute("/home/u")` is false. The rule being encoded
+/// is POSIX, so it must not vary by build host.
 fn autostart_dir(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
-    let base = match xdg_config_home.filter(|v| !v.is_empty()).map(Path::new) {
-        Some(xdg) if xdg.is_absolute() => xdg.to_path_buf(),
+    let base = match xdg_config_home.filter(|v| !v.is_empty()) {
+        Some(xdg) if xdg.starts_with('/') => PathBuf::from(xdg),
         _ => Path::new(home.filter(|v| !v.is_empty())?).join(".config"),
     };
     Some(base.join("autostart"))
@@ -843,13 +848,22 @@ mod tests {
             PathBuf::from("/home/u/.cfg/autostart")
         );
         // Empty and relative XDG values fall back to $HOME/.config: a relative
-        // base would write the entry under the process cwd.
+        // base would write the entry under the process cwd. The absolute/relative
+        // verdict is POSIX and must not depend on the build host — this same test
+        // runs on the Windows CI lane, where `Path::is_absolute("/home/u")` is
+        // false.
         assert_eq!(
             autostart_dir(Some(""), Some("/home/u")).unwrap(),
             PathBuf::from("/home/u/.config/autostart")
         );
         assert_eq!(
             autostart_dir(Some("relative/cfg"), Some("/home/u")).unwrap(),
+            PathBuf::from("/home/u/.config/autostart")
+        );
+        // A Windows-shaped absolute path is NOT a POSIX absolute path: it falls
+        // back rather than being trusted as an XDG base.
+        assert_eq!(
+            autostart_dir(Some(r"C:\Users\u"), Some("/home/u")).unwrap(),
             PathBuf::from("/home/u/.config/autostart")
         );
         // No usable base at all: the caller must report failure, not write
