@@ -61,13 +61,34 @@ pure-Rust deps stay caret-ranged.
 Required for root workspace development:
 
 - Rust 1.97.0 (automatically selected by the repository's
-  `rust-toolchain.toml`)
+  `rust-toolchain.toml` — note that only rustup honors that file; a Homebrew
+  or distro-packaged toolchain silently uses its own version, so CI's pinned
+  build is the authority)
 - macOS when building or testing `platform_macos`
 - Xcode Command Line Tools
 - CMake for the bundled llama.cpp build (`brew install cmake`; not included
   with Xcode CLT)
 - `cargo-audit` 0.22.2 for the local dependency-vulnerability gate:
   `cargo install cargo-audit --version 0.22.2 --locked`
+
+Optional, for coverage (not part of any gate, and not run in CI):
+
+```sh
+cargo install cargo-llvm-cov --locked
+# rustup toolchains:
+rustup component add llvm-tools-preview
+cargo llvm-cov --locked --workspace --all-targets --summary-only -- --test-threads=1
+# Homebrew/distro toolchains have no llvm-tools-preview component; point
+# cargo-llvm-cov at the LLVM binaries instead:
+LLVM_COV=$(brew --prefix llvm)/bin/llvm-cov LLVM_PROFDATA=$(brew --prefix llvm)/bin/llvm-profdata \
+  cargo llvm-cov --locked --workspace --all-targets --summary-only -- --test-threads=1
+```
+
+Coverage counts production code only — `cargo-llvm-cov` excludes `tests/`,
+`examples/`, and the `*_tests.rs` modules — so the per-file numbers are lower,
+and more honest, than they were when the unit tests still lived inside
+`run_loop.rs` and `platform_macos/src/lib.rs`. Baseline on 2026-07-26:
+82.68% regions, 81.14% functions, 80.99% lines.
 
 Required for live macOS acceptance:
 
@@ -236,6 +257,9 @@ tools/release/check-privacy-policy.sh
 tools/release/check-privacy-policy.sh --self-test
 tools/release/check-github-governance.sh --self-test
 bash tools/release/check-model-gates.sh
+bash tools/release/check-model-gates.sh --self-test
+tools/dev/check.sh --self-test
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
 tools/release/run-model-gates.sh --self-test
 tools/release/check-quality.sh --self-test
 tools/release/update-cask.sh --self-test

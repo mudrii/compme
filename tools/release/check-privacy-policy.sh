@@ -153,7 +153,15 @@ paths = []
 end
 
 paths.each do |path|
-  text = File.read(path, invalid: :replace, undef: :replace)
+  # `invalid:`/`undef:` are inert without a transcoding pair, so a single
+  # non-UTF-8 byte anywhere in the scanned trees used to abort the whole gate
+  # with a raw ArgumentError from `scan` (2026-07-26: a stray coverage
+  # `.profraw` under crates/app did exactly that). Scrub instead: the scan
+  # still sees every text file, and a binary stray degrades to noise rather
+  # than taking the release gate down.
+  text = File.read(path, mode: "rb", encoding: "BINARY").encode(
+    "UTF-8", invalid: :replace, undef: :replace
+  )
   text.scan(%r{https?://([^/`"'\s)<>{}*]+)}) do |match|
     host = match.first.downcase.sub(/:\d+\z/, "").gsub("\\.", ".").split("@").last.sub(/\.\z/, "")
     if denied_host_patterns.any? { |pattern| pattern.match?(host) }
@@ -298,6 +306,24 @@ RS
 const USERINFO_FIXTURE_URL: &str = "https://evil.com@bank.example/login";
 RS
   check_repo "$tmp/userinfo-fixture"
+
+  # A non-UTF-8 stray (e.g. a coverage .profraw left in a crate dir) must not
+  # abort the scan — and must not blind it either: the denied host in a
+  # sibling file still has to fail the gate.
+  cp -R "$tmp/good" "$tmp/binary-stray"
+  printf '\x81\x82\x83binary\x00stray' >"$tmp/binary-stray/crates/demo/src/stray.profraw"
+  check_repo "$tmp/binary-stray"
+  cp -R "$tmp/binary-stray" "$tmp/binary-stray-denied"
+  # Split like the unreviewed-host fixture below: a contiguous denied host in
+  # this file would make the scan flag its own source (tools/ is scanned).
+  {
+    printf '%s' 'const TELEMETRY_URL: &str = "https:'
+    printf '%s\n' '//api.mixpanel.com/track";'
+  } >"$tmp/binary-stray-denied/crates/demo/src/lib.rs"
+  if check_repo "$tmp/binary-stray-denied" >/dev/null 2>&1; then
+    echo "privacy policy self-test failed: denied host missed next to a binary stray" >&2
+    return 1
+  fi
 
   cp -R "$tmp/good" "$tmp/unreviewed-host"
   {

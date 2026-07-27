@@ -1,5 +1,8 @@
 /target/
 /tools/acceptance/logs/
+# cargo-llvm-cov writes raw profiles into each test process's CWD (crate dirs).
+*.profraw
+*.profdata
 .tokensave
 .gsd/
 .serena/

@@ -1,6 +1,6 @@
 # compme — Full Architecture, Source, Test, Documentation, and CI Audit
 
-**Audit date:** 2026-07-20 · **Re-audited:** 2026-07-21 (five-agent full re-audit; deltas and current finding statuses in §12) · **Re-audited:** 2026-07-25 (post-implementation audit of the committed tree `67a74b2`; verification of every §13 flip, five new findings F14–F18, and corrections in §14) · **Remediated:** 2026-07-26 (F14–F18 closed in four commits; §15 has the current state — read §14 then §15)
+**Audit date:** 2026-07-20 · **Re-audited:** 2026-07-21 (five-agent full re-audit; deltas and current finding statuses in §12) · **Re-audited:** 2026-07-25 (post-implementation audit of the committed tree `67a74b2`; verification of every §13 flip, five new findings F14–F18, and corrections in §14) · **Remediated:** 2026-07-26 (F14–F18 closed in four commits; §15) · **Deep dive:** 2026-07-26/27 (§16 — refactor proven token-exact, coverage figures corrected, one live gate defect F20 fixed; read §14 → §15 → §16)
 
 **Repository:** `compme`
 
@@ -590,3 +590,71 @@ The settings-watcher run (autocorrect, full-autocorrect, thesaurus, launch-at-lo
 After each commit and again at the end: `cargo fmt --all -- --check`; `cargo clippy --locked --workspace --all-targets -- -D warnings`; `cargo test --locked --workspace --all-targets -- --test-threads=1` → **1,936 passed, 0 failed, 6 ignored** (identical to the pre-remediation run — app 546 and platform_macos 346 unchanged through the test-module split); `check-model-gates.sh` live; `check-version-docs.sh` (8 surfaces); `actionlint`; `e2e-complete-me.sh --self-test`; `bundle-smoke.sh`.
 
 Not executed: local `shellcheck` (unavailable; CI's Linux and Docs lanes cover it), model-backed gates and coverage (unchanged model/policy surface — the refactors are verbatim moves), the 22 live macOS gates, Windows/Linux runtime acceptance.
+
+---
+
+## 16. 2026-07-26/27 deep dive — what the previous rounds missed
+
+A dedicated pass asking "what could this audit method not see?", run after the §15 remediation. It found one live defect in a release gate, two gate-coverage holes, and a measurement error that had been repeated in every previous audit.
+
+### First: hard verification of the §15 refactor
+
+The §15 commits claimed "verbatim moves". That claim was asserted, not proven, so it was proven here: the old `run()` body was compared against the new `run()` **with all eight phase functions inlined back at their call sites**, as a normalized token sequence (comments and whitespace stripped).
+
+- Tokens present in the old body but missing from the new: **0**. Nothing was dropped.
+- Insertions: **0**.
+- 13 differing hunks, every one accounted for: 11 borrow adaptations (`&`/`&mut` removed where a binding became a reference parameter) and 2 rustfmt collapses (a trailing comma, and `|| { expr }` → `|| expr` now that the closure fits on one line four indents shallower).
+
+Same check on the test-module split: `run_loop_tests.rs` differs from the old inline module by 14 trailing commas, `lib_tests.rs` by 4 commas plus the `mod tests {` closing brace. Both splits are token-exact.
+
+This is now the standard for claiming a refactor is behavior-preserving here (recorded as an `AGENTS.md` lesson): green tests and clippy do not prove it, because the extracted code has no direct test coverage.
+
+#### F19. Per-file coverage was inflated by inline tests — the same error as the line counts, missed in §14
+
+§3 reported `app/src/run_loop.rs` at 82.86% and `platform_macos/src/lib.rs` at 79.18%, and a workspace total of 86.50% / 82.76% / 85.49% (regions/functions/lines). Those numbers counted each file's ~10,000 and ~7,500 lines of **inline test code**, which is ~100% covered by construction. With the tests in sibling files (`cargo-llvm-cov` excludes `tests/`, `examples/`, and `*_tests.rs`), the honest production numbers are:
+
+| Surface | Reported §3 | Actual 2026-07-26 |
+|---|---:|---:|
+| Workspace regions / functions / lines | 86.50% / 82.76% / 85.49% | **82.68% / 81.14% / 80.99%** |
+| `app/src/run_loop.rs` regions | 82.86% | **52.28%** |
+| `platform_macos/src/lib.rs` regions | 79.18% | **54.39%** |
+
+So `run_loop.rs`'s production code is roughly **half** covered, not four-fifths, and the aggregate is ~4.5 points lower than claimed. F16 caught this distortion in the *size* metric and stopped there; the *coverage* metric had the identical defect and went unexamined. The two biggest uncovered blocks are the same two the audit already refuses to extract without a real seam (`run_loop.rs` 2,377 missed regions, `platform_macos/lib.rs` 2,370), and the eight newly extracted phases are now individually unit-testable — that is the concrete path to raising it.
+
+Secondary discovery: coverage could not run at all. `rust-toolchain.toml` lists only `clippy`/`rustfmt` (profile `minimal`), so there is no `llvm-tools-preview`; on this machine the toolchain is Homebrew Rust, which ignores `rust-toolchain.toml` entirely and has no rustup components. `cargo llvm-cov` failed with `failed to find llvm-tools-preview` and no documentation existed anywhere in the repo. It now works via `LLVM_COV`/`LLVM_PROFDATA`, and `DEVELOPMENT.md` documents both paths plus the exclusion semantics and the new baseline.
+
+#### F20. A stray coverage `.profraw` crashes the privacy release gate — live defect, now fixed
+
+Running coverage leaves `default_*.profraw` files in each test process's CWD, i.e. inside crate directories. `check-privacy-policy.sh` walks `crates`, `tools`, `.github`, `Casks`, `README.md`, and `docs`, skipping only known-binary *extensions*, and read each file with `File.read(path, invalid: :replace, undef: :replace)`. Those options are **inert without a transcoding pair**, so the invalid bytes survived and `String#scan` aborted the whole gate with a raw Ruby backtrace:
+
+```
+-:144:in `scan': invalid byte sequence in UTF-8 (ArgumentError)
+```
+
+Impact: any non-UTF-8 byte anywhere in the scanned trees takes down a release gate with an error that names neither the file nor the cause — it took several steps to trace even while holding the diff that caused it. Worse, it fails *closed but opaque*: the gate never reports whether a denied host exists.
+
+Fixed by reading as binary and transcoding with replacement, plus a discriminating self-test fixture (a binary stray next to a file containing a denied telemetry host, asserting the scan survives **and** still catches the host). Mutation-verified: restoring the old `File.read` line kills the new fixture. `.gitignore` now covers `*.profraw`/`*.profdata` so the stray cannot reappear as untracked noise.
+
+#### F21. Two self-tests were never gated anywhere — the gate-of-gates gap
+
+Of 24 self-test-capable scripts, CI ran 20. Two of the four omissions are deliberate (the A2 runner and its ledger checker are local/manual-only, and the policy checker actively rejects their presence in CI). The other two were oversights:
+
+- **`check-model-gates.sh --self-test`** — CI ran the checker live but never its own fixture machinery. A broken `require_line`/`reject_line`/test-symbol helper could go dead-green while the live run still passed, which is precisely the failure mode that makes a gate-of-gates worthless.
+- **`tools/dev/check.sh --self-test`** — nothing anywhere ran the developer gate runner or verified its DEVELOPMENT-fence parser.
+
+Both pass today and are now CI steps. Related: the documented "Full Local Gate" omitted `actionlint`, which CI runs — so workflow edits (there were four this week) passed the local gate and were only linted remotely. The fence now includes `actionlint` and the two self-tests, which is also the fix for the deeper asymmetry: previous audits verified that CI covers the repo, never that the local gate covers CI.
+
+#### F22. Ignoring a dependency in Dependabot also suppresses its security PRs — documented, compensated
+
+The F15 fix (`ignore: llama-cpp-2`) has a side effect worth stating: Dependabot filters ignored dependencies before opening either kind of PR, so an ignored crate gets no security PR either. GitHub's own docs do not spell this out on the pages checked, so the safe reading is assumed. The compensating control already exists and is independent of Dependabot: `cargo audit` scans `Cargo.lock` against the RustSec advisory DB in CI's Linux lane and again weekly, and fails closed. `cargo audit` is clean on the current tree (220 dependencies, 0 advisories). This is now a comment in `dependabot.yml` so nobody has to re-derive it.
+
+### Also checked, nothing found
+
+Spike workspace (43 passed / 1 ignored, matching the documented 44), `cargo audit` clean, the 6 root ignored tests are all model-backed and are executed by `run-model-gates.sh` with `--ignored`, all 22 manual gate IDs present, zero assertion-free tests across 1,940 `#[test]` items (an earlier 3-hit scan was a raw-string brace-counting artifact), no dead-green `grep` guards in the checkers (`require_line`/`reject_line`/`require_test_symbol` all fail loudly on a missing target), and repo-wide relative Markdown links intact.
+
+### Prioritized next actions (delta on §14's list)
+
+1. **F3 / F10 / Windows-Linux adapters** — unchanged: owner action, next tag, largest deliverable.
+2. **Raise `run_loop.rs` production coverage from ~52%** by unit-testing the eight extracted phases with fakes; they are reachable now and each has a ≤8-argument signature.
+3. When the settings/tray typed-command seam lands, re-measure coverage — the watcher block is a large share of the uncovered half.
+4. Optional: add a coverage job to CI. Deliberately not done — it needs `llvm-tools-preview` on the macOS lane and there is no threshold anyone has agreed to; the documented local command is enough for now.

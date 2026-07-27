@@ -20,6 +20,12 @@ updates:
   # Cargo workspace deps. Exact-pinned deps (e.g. ed25519-dalek) still get PRs;
   # the maintainer reviews those case-by-case.
   #
+  # NOTE on `ignore` below: Dependabot filters ignored dependencies before it
+  # opens EITHER kind of PR, so an ignored crate also gets no Dependabot
+  # security PR. The compensating control is cargo-audit: CI's Linux lane and
+  # the weekly audit workflow both scan Cargo.lock against the RustSec
+  # advisory DB and fail closed regardless of Dependabot.
+  #
   # llama-cpp-2 is ignored on purpose (2026-07-25 audit, finding F15).
   # crates/model_client declares it TWICE — once per target
   # (cfg(target_os = "macos") with "metal", cfg(not(...)) without) — both

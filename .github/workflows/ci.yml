@@ -188,6 +188,17 @@ jobs:
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh
 
+      # The policy checker's own fixture machinery (require_line/reject_line,
+      # test-symbol and workflow-shape helpers) has a hermetic self-test that
+      # nothing used to run: a broken helper could go dead-green while the
+      # live run above still passed. Same for the developer gate runner, whose
+      # DEVELOPMENT-fence parser is only exercised by its self-test.
+      - name: Release model gate policy self-test
+        run: bash tools/release/check-model-gates.sh --self-test
+
+      - name: Gate runner self-test
+        run: tools/dev/check.sh --self-test
+
       - name: Release model gate self-test
         run: tools/release/run-model-gates.sh --self-test
 
