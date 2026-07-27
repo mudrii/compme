@@ -4,12 +4,13 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 
-# SCAFFOLD (ROADMAP Tier 1.1). The PlatformAdapter contract is implemented as a
-# fail-closed stub on every host so `cargo build/test --workspace` stays green on
-# the macOS-only dev/CI environment this was authored in. The real AT-SPI2 /
-# XTEST / wtype / IBus implementation lands behind `#[cfg(target_os = "linux")]`
-# on a Linux build+test environment — its Linux-only dependencies go under a
-# target table so non-Linux hosts never pull them:
+# SCAFFOLD (ROADMAP Tier 1.1) for the AT-SPI2/X11 surfaces: those are fail-closed
+# stubs on every host so `cargo build/test --workspace` stays green on the macOS
+# dev machines that also build this crate. The host surfaces needing no desktop
+# session (version/memory probes, XDG autostart, `xdg-open`) are real and use
+# only the standard library. The real AT-SPI2 / XTEST / wtype / IBus
+# implementation lands behind `#[cfg(target_os = "linux")]` — its Linux-only
+# dependencies go under a target table so non-Linux hosts never pull them:
 #
 #   [target.'cfg(target_os = "linux")'.dependencies]
 #   atspi = "..."        # AT-SPI2 accessibility over D-Bus (read/insert, focus/caret events)

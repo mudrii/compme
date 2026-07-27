@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-26 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈1942 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-27 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈1950 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -162,8 +162,34 @@ hardware, sessions, and permissions unavailable on macOS.
   read/insert/events + XTEST/`wtype` synthetic keys (IBus IME fallback on Wayland)
   + override-redirect/layer-shell overlay. (AT-SPI device key-listeners are
   deprecated → prefer XTEST/XGrabKey or libei for the accept tap.) Real ShellHost
-  services still need libsecret, tray/portal integration, confirm UI, autostart,
-  and a native event pump.
+  services still need libsecret, tray/portal integration, confirm UI, and a
+  native event pump.
+
+**Linux host surfaces ✅ DONE (2026-07-27) — the desktop-free half of Phase 2.6:**
+A headless Linux host (NixOS 26.05, 16 cores / 62 GB / Quadro RTX 4000) joined
+the loop as a native build+gate machine, which makes exactly the surfaces that
+need no display or accessibility bus verifiable rather than assumed. Shipped in
+`platform_linux`, stdlib-only, with the parsing/path rules as pure functions so
+they are also tested on the macOS lanes where `/proc` does not exist:
+- `environment()` reports the real distro (`os-release(5)` `PRETTY_NAME`, else
+  `NAME` + `VERSION_ID`, quote- and comment-aware) plus the kernel release from
+  `/proc/sys/kernel/osrelease` — no `uname` subprocess. It degrades to whichever
+  probe survives, and to `"unknown"` only when neither does, keeping the
+  contract's cheap-and-infallible promise.
+- `physical_memory_bytes()` parses `MemTotal` from `/proc/meminfo`, refusing an
+  unexpected unit and checking the KiB→byte multiply. This closes a real defect:
+  the previous hardcoded `0` made `model_catalog::ram_verdict` rate **every**
+  catalog entry `Exceeds`, so the Setup pane offered no downloadable model at all
+  on Linux.
+- `set_launch_at_login()` writes/removes the XDG autostart entry
+  `$XDG_CONFIG_HOME|$HOME/.config` + `/autostart/compme.desktop` through a
+  temp-file rename (no torn entry at login), with an unconditionally quoted
+  `Exec=` and `%%`-escaped field codes; disabling when absent succeeds, and every
+  other IO error is reported so the toggle restores its visible state.
+- Still fail-closed, and deliberately so until they can be *proven* on a real
+  session: libsecret key store, zenity/kdialog confirm, file-manager reveal, and
+  the portal permission hook. A headless box cannot exercise their success path,
+  and a stub that looks implemented is worse than one that says so.
 
 **Phase 0 pre-work ✅ DONE (2026-07-08, same-day as planned):**
 - **`InsertStrategy::NativeRangeSet`** shipped — variant + doc contract on the
@@ -856,8 +882,15 @@ per-app configurable.
    not add backspace synthesis speculatively.
 6. **Windows Phase 1 (1.1–1.7)** — UIA read/caret, keyboard hook, insertion,
    layered overlay, ShellHost services, and native acceptance on Windows hardware.
-7. **Linux Phase 2 (2.1–2.7), X11-first** — start with the two-day accept-key
-   strategy spike, then AT-SPI2, insertion, overlay, ShellHost, and Xvfb fixtures.
+7. **Linux Phase 2 (2.1–2.7), X11-first** — a native Linux build+gate host is
+   now in the loop, so this runs ahead of (or alongside) Windows Phase 1. The
+   desktop-free part of 2.6 shipped 2026-07-27 (see 1.1). Remaining order:
+   stand up the 2.7 fixture harness *first* — Xvfb + `at-spi2-core` + a
+   committed GTK fixture app — so 2.1–2.5 have a deterministic target instead of
+   needing a desktop; then the two-day 2.3 accept-key strategy spike; then
+   AT-SPI2 read, insertion, and overlay. The host is headless (tty session, no X
+   server, no a11y bus), so live-session acceptance still needs a graphical
+   session installed on it or physical access.
 8. **Wayland Phase 3 decision spike** — compare IME and portal/global-shortcut
    paths on GNOME, KDE, and sway before committing to an implementation.
 9. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux

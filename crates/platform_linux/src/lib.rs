@@ -1,18 +1,37 @@
-//! Linux platform adapter — SCAFFOLD (ROADMAP Tier 1.1).
+//! Linux platform adapter — SCAFFOLD (ROADMAP Tier 1.1), except for the host
+//! surfaces that need no desktop session.
 //!
 //! Implements the [`platform::PlatformAdapter`] contract so the cross-platform
-//! structure exists and CI can gate it, but the real Linux API integration is
-//! **not yet built** — it requires a Linux build+test environment (this scaffold
-//! was authored on a macOS-only host). Every method is a fail-closed stub
-//! returning [`PlatformError::UnsupportedField`] (IO/subscribe) or a safe empty
-//! value, so wiring this adapter in is inert, never a crash. Each method's doc
-//! names the Linux API its real implementation will use.
+//! structure exists and CI can gate it. The AT-SPI2/X11 surfaces — focus, caret,
+//! accept tap, read, insert, overlay — are **not yet built**: each is a
+//! fail-closed stub returning [`PlatformError::UnsupportedField`] or a safe empty
+//! value, so wiring this adapter in is inert, never a crash, and each method's
+//! doc names the Linux API its real implementation will use.
+//!
+//! Real today, because they need neither a display nor an accessibility bus and
+//! so are verifiable on a headless Linux host: `environment` (distro + kernel),
+//! `physical_memory_bytes` (`/proc/meminfo`), `set_launch_at_login` (XDG
+//! autostart entry), and `open_url` (`xdg-open`). Their parsing and path rules
+//! are factored into pure functions over file contents and env values, because
+//! this crate is also compiled and tested on the macOS development hosts, where
+//! `/proc` and `/etc/os-release` do not exist.
 
 use platform::{
     AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback, Environment,
     FieldHandle, FocusCallback, InsertStrategy, Inserted, OperatingSystem, PlatformAdapter,
     PlatformError, ScreenRect, Subscription, TextContext,
 };
+use std::path::{Path, PathBuf};
+
+/// `os-release(5)`: the distro identity file present on every distro compme
+/// targets.
+const OS_RELEASE_PATH: &str = "/etc/os-release";
+/// The kernel release, i.e. what `uname -r` prints — read as a file so the
+/// probe needs no subprocess.
+const KERNEL_RELEASE_PATH: &str = "/proc/sys/kernel/osrelease";
+const MEMINFO_PATH: &str = "/proc/meminfo";
+/// XDG autostart entry filename. One entry per application, so it is fixed.
+const AUTOSTART_ENTRY: &str = "compme.desktop";
 
 /// Linux implementation of [`PlatformAdapter`] — scaffold (see module docs).
 /// Implementation map for the real adapter (built on a Linux host):
@@ -41,11 +60,17 @@ impl LinuxAdapter {
 }
 
 impl PlatformAdapter for LinuxAdapter {
-    /// Real impl: `/etc/os-release` + `uname`. Cheap + infallible per the contract.
+    /// Distro name plus kernel release, from `/etc/os-release` and
+    /// `/proc/sys/kernel/osrelease`. Cheap and infallible per the contract:
+    /// whichever file is unreadable is simply dropped from the string, and
+    /// `"unknown"` survives only when neither can be read.
     fn environment(&self) -> Environment {
         Environment {
             os: OperatingSystem::Linux,
-            version: "unknown".to_string(),
+            version: linux_version(
+                std::fs::read_to_string(OS_RELEASE_PATH).ok().as_deref(),
+                std::fs::read_to_string(KERNEL_RELEASE_PATH).ok().as_deref(),
+            ),
         }
     }
 
@@ -106,10 +131,157 @@ impl PlatformAdapter for LinuxAdapter {
     }
 }
 
-/// Linux implementation of `platform::shell::ShellHost` — fail-closed scaffold.
-/// Future real impls: `/proc/meminfo` memory probe, libsecret key storage,
-/// zenity/GTK confirmation dialogs, XDG autostart `.desktop`, and desktop portal
-/// permission/settings hooks where available.
+/// Compose the reported host version from the two probe files. Pure over their
+/// contents so every branch — including "neither file exists" — is testable on
+/// the macOS hosts that also build this crate.
+fn linux_version(os_release: Option<&str>, kernel_release: Option<&str>) -> String {
+    let distro = os_release.and_then(distro_name);
+    let kernel = kernel_release.map(str::trim).filter(|k| !k.is_empty());
+    match (distro, kernel) {
+        (Some(distro), Some(kernel)) => format!("{distro} (kernel {kernel})"),
+        (Some(distro), None) => distro,
+        (None, Some(kernel)) => format!("kernel {kernel}"),
+        (None, None) => "unknown".to_string(),
+    }
+}
+
+/// `PRETTY_NAME` per `os-release(5)`, else `NAME` joined with `VERSION_ID` —
+/// the same fallback order `systemd` documents for display purposes.
+fn distro_name(os_release: &str) -> Option<String> {
+    if let Some(pretty) = os_release_field(os_release, "PRETTY_NAME") {
+        return Some(pretty);
+    }
+    let name = os_release_field(os_release, "NAME")?;
+    Some(match os_release_field(os_release, "VERSION_ID") {
+        Some(version) => format!("{name} {version}"),
+        None => name,
+    })
+}
+
+/// One `KEY=VALUE` lookup in `os-release(5)` format: `#` comment lines are
+/// skipped, the value may be single- or double-quoted, and the first occurrence
+/// of the key wins. An empty value reads as absent so a blank `PRETTY_NAME=""`
+/// falls through to the `NAME` path rather than reporting an empty version.
+fn os_release_field(os_release: &str, key: &str) -> Option<String> {
+    os_release
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .find_map(|line| {
+            let (found, value) = line.split_once('=')?;
+            (found.trim_end() == key).then(|| unquote(value.trim()).to_string())
+        })
+        .filter(|value| !value.is_empty())
+}
+
+/// Strip one layer of matching quotes — the only quoting `os-release(5)` values
+/// use in practice.
+fn unquote(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    value
+}
+
+/// `MemTotal` from `/proc/meminfo`, in bytes. The kernel prints kibibytes
+/// labelled `kB`; any other unit is refused rather than guessed at, and the
+/// scale-up is checked so a corrupt value cannot wrap.
+fn meminfo_total_bytes(meminfo: &str) -> Option<u64> {
+    let value = meminfo
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("MemTotal:"))?;
+    let mut fields = value.split_whitespace();
+    let kib: u64 = fields.next()?.parse().ok()?;
+    match fields.next() {
+        Some(unit) if !unit.eq_ignore_ascii_case("kB") => None,
+        _ => kib.checked_mul(1024),
+    }
+}
+
+/// The XDG autostart directory: `$XDG_CONFIG_HOME/autostart`, else
+/// `$HOME/.config/autostart`. Empty values are treated as unset, matching
+/// `app`'s config-path resolution; a relative `XDG_CONFIG_HOME` is ignored too,
+/// because the basedir spec requires an absolute path and a relative base would
+/// drop the entry under the process cwd.
+fn autostart_dir(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    let base = match xdg_config_home.filter(|v| !v.is_empty()).map(Path::new) {
+        Some(xdg) if xdg.is_absolute() => xdg.to_path_buf(),
+        _ => Path::new(home.filter(|v| !v.is_empty())?).join(".config"),
+    };
+    Some(base.join("autostart"))
+}
+
+/// The `Exec=` value for the autostart entry. Quoted unconditionally: a quoted
+/// string is valid for every path, so there is no "does this one need quoting"
+/// branch to get wrong. Per the desktop-entry spec, `"`, `\`, `` ` `` and `$`
+/// are backslash-escaped inside a quoted argument, and a literal `%` is written
+/// `%%` so it is not read as a field code.
+fn desktop_exec_value(exec: &Path) -> String {
+    let mut quoted = String::from("\"");
+    for ch in exec.to_string_lossy().chars() {
+        match ch {
+            '"' | '\\' | '`' | '$' => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+            '%' => quoted.push_str("%%"),
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// The autostart desktop entry. `X-GNOME-Autostart-enabled` is the key the GNOME
+/// startup UIs toggle; other desktops ignore it. `NoDisplay=true` keeps compme
+/// out of application menus — the tray is its entry point.
+fn autostart_desktop_entry(exec: &Path) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=compme\n\
+         Comment=Inline text completion\n\
+         Exec={}\n\
+         Terminal=false\n\
+         NoDisplay=true\n\
+         X-GNOME-Autostart-enabled=true\n",
+        desktop_exec_value(exec)
+    )
+}
+
+/// Create or remove the autostart entry under `dir`. Disabling when no entry
+/// exists succeeds — the requested state already holds — while every other IO
+/// error is returned, so the settings toggle restores its previous visible state
+/// instead of persisting a value the session will not honor.
+fn apply_autostart(dir: &Path, enabled: bool, exec: &Path) -> std::io::Result<()> {
+    let entry = dir.join(AUTOSTART_ENTRY);
+    if !enabled {
+        return match std::fs::remove_file(&entry) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        };
+    }
+    std::fs::create_dir_all(dir)?;
+    // Write a sibling temp file and rename, so an interrupted write cannot leave
+    // a truncated entry that the session silently fails to parse at login.
+    let temp = dir.join(format!("{AUTOSTART_ENTRY}.{}.tmp", std::process::id()));
+    std::fs::write(&temp, autostart_desktop_entry(exec))?;
+    std::fs::rename(&temp, &entry).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
+/// Linux implementation of `platform::shell::ShellHost`. Real: the
+/// `/proc/meminfo` memory probe, the XDG autostart entry, and the `xdg-open`
+/// URL launcher. Still fail-closed scaffolds: libsecret key storage,
+/// zenity/kdialog confirmation dialogs, file-manager reveal, and desktop-portal
+/// permission hooks — each needs a session bus or a display to do anything, so
+/// none can be proven on a headless host yet.
 #[derive(Debug, Default)]
 pub struct LinuxShellHost;
 
@@ -162,8 +334,16 @@ impl platform::shell::ShellHost for LinuxShellHost {
         std::thread::sleep(heartbeat);
     }
 
+    /// `MemTotal` from `/proc/meminfo`. 0 only when the file cannot be read or
+    /// parsed; the Setup pane's catalog then offers nothing, because
+    /// `model_catalog::ram_verdict` rates every entry `Exceeds` at 0 GB. That is
+    /// the fail-closed posture, but it is why this probe must be real: the
+    /// previous hardcoded 0 made every model unofferable on Linux.
     fn physical_memory_bytes(&self) -> u64 {
-        0
+        std::fs::read_to_string(MEMINFO_PATH)
+            .ok()
+            .and_then(|meminfo| meminfo_total_bytes(&meminfo))
+            .unwrap_or(0)
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
@@ -189,8 +369,24 @@ impl platform::shell::ShellHost for LinuxShellHost {
         Err(LinuxAdapter::unsupported("reveal_file"))
     }
 
-    fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
-        Err(LinuxAdapter::unsupported("set_launch_at_login"))
+    /// XDG autostart: write or remove `<config>/autostart/compme.desktop`
+    /// pointing at the running executable. Needs no display, portal, or session
+    /// bus, so it works on a bare Linux host — unlike macOS `SMAppService`, this
+    /// is a plain file, and the session reads it at next login.
+    fn set_launch_at_login(&self, enabled: bool) -> Result<(), PlatformError> {
+        let dir = autostart_dir(
+            std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+            std::env::var("HOME").ok().as_deref(),
+        )
+        .ok_or_else(|| PlatformError::CannotComplete {
+            reason: "autostart: neither XDG_CONFIG_HOME nor HOME is set".to_string(),
+        })?;
+        let exec = std::env::current_exe().map_err(|err| PlatformError::CannotComplete {
+            reason: format!("autostart: cannot resolve the running executable: {err}"),
+        })?;
+        apply_autostart(&dir, enabled, &exec).map_err(|err| PlatformError::CannotComplete {
+            reason: format!("autostart {}: {err}", dir.join(AUTOSTART_ENTRY).display()),
+        })
     }
 
     fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
@@ -301,10 +497,11 @@ mod tests {
         let adapter = LinuxAdapter::new();
         // environment() is the one cheap, infallible method the scaffold answers.
         assert_eq!(adapter.environment().os, OperatingSystem::Linux);
-        // The scaffold has no real version probe yet: it reports the fixed
-        // "unknown" version. Pin it so the real `/etc/os-release` + `uname` impl
-        // visibly replaces the placeholder.
-        assert_eq!(adapter.environment().version, "unknown");
+        // The version probe is real (see the `linux_version` tests). Its value is
+        // host-dependent — the macOS CI lane builds this crate too, and there
+        // neither probe file exists — so only the contract is pinned here: never
+        // empty, because `Environment::version` is displayed as-is.
+        assert!(!adapter.environment().version.is_empty());
         // No frontmost app until the real impl lands.
         assert_eq!(adapter.front_app(), None);
         // Subscribe/IO methods fail closed (UnsupportedField), never panic — the
@@ -562,12 +759,204 @@ mod tests {
                 confirm_label: "c"
             })
             .is_err());
-        assert!(h.set_launch_at_login(true).is_err());
+        // set_launch_at_login is real now (XDG autostart) and is covered by the
+        // `apply_autostart` round-trip below, which writes into a temp directory
+        // instead of the developer's real `~/.config`.
         assert!(h.reveal_file(std::path::Path::new("x")).is_err());
         assert!(h.open_permission_settings().is_err());
         let start = std::time::Instant::now();
         h.pump_events(std::time::Duration::from_millis(5));
         assert!(start.elapsed() >= std::time::Duration::from_millis(5));
+    }
+
+    #[test]
+    fn linux_version_prefers_pretty_name_and_names_the_kernel() {
+        // Real NixOS/Ubuntu shapes: quoted values, comments, and keys the probe
+        // must ignore. PRETTY_NAME wins over NAME/VERSION_ID.
+        let os_release = "# a comment\n\
+             NAME=NixOS\n\
+             VERSION_ID=\"26.05\"\n\
+             PRETTY_NAME=\"NixOS 26.05 (Warbler)\"\n\
+             ANSI_COLOR=\"0;38;2;126;186;228\"\n";
+        assert_eq!(
+            linux_version(Some(os_release), Some("6.18.39\n")),
+            "NixOS 26.05 (Warbler) (kernel 6.18.39)"
+        );
+    }
+
+    #[test]
+    fn linux_version_falls_back_to_name_and_version_id() {
+        // A blank PRETTY_NAME must fall through rather than report an empty
+        // version, and a single-quoted value unquotes the same as a double-quoted
+        // one. VERSION_ID is optional.
+        assert_eq!(
+            linux_version(
+                Some("PRETTY_NAME=\"\"\nNAME='Debian GNU/Linux'\nVERSION_ID=12\n"),
+                None
+            ),
+            "Debian GNU/Linux 12"
+        );
+        assert_eq!(linux_version(Some("NAME=Slackware\n"), None), "Slackware");
+    }
+
+    #[test]
+    fn linux_version_degrades_to_whatever_probe_survives() {
+        // environment() is contractually infallible, so every missing/garbage
+        // combination has to yield a usable string. The all-missing case is what
+        // the macOS CI lane exercises, where neither probe file exists.
+        assert_eq!(linux_version(None, Some("6.1.0")), "kernel 6.1.0");
+        assert_eq!(linux_version(None, None), "unknown");
+        // Whitespace-only kernel file and an os-release with no usable key both
+        // count as absent, not as an empty component.
+        assert_eq!(
+            linux_version(Some("# only comments\n"), Some("  \n")),
+            "unknown"
+        );
+        // A key that merely ends in NAME must not be mistaken for NAME itself.
+        assert_eq!(linux_version(Some("CODENAME=trixie\n"), None), "unknown");
+    }
+
+    #[test]
+    fn meminfo_total_converts_kibibytes_and_refuses_anything_else() {
+        // The real first line of /proc/meminfo, plus the neighbours the parser
+        // must skip past.
+        let meminfo = "MemTotal:       65760812 kB\nMemFree:        52000000 kB\n";
+        assert_eq!(meminfo_total_bytes(meminfo), Some(65_760_812 * 1024));
+        // A MemTotal-less file (or a truncated read) reports absent, so the
+        // caller falls back to 0 rather than a fabricated size.
+        assert_eq!(meminfo_total_bytes("MemFree: 1 kB\n"), None);
+        assert_eq!(meminfo_total_bytes(""), None);
+        // Unknown unit and non-numeric value are refused rather than guessed at.
+        assert_eq!(meminfo_total_bytes("MemTotal: 64 MB\n"), None);
+        assert_eq!(meminfo_total_bytes("MemTotal: lots kB\n"), None);
+        // A corrupt huge value must not wrap into a small (flattering) size.
+        assert_eq!(
+            meminfo_total_bytes("MemTotal: 18446744073709551615 kB\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn autostart_dir_prefers_an_absolute_xdg_config_home() {
+        assert_eq!(
+            autostart_dir(Some("/home/u/.cfg"), Some("/home/u")).unwrap(),
+            PathBuf::from("/home/u/.cfg/autostart")
+        );
+        // Empty and relative XDG values fall back to $HOME/.config: a relative
+        // base would write the entry under the process cwd.
+        assert_eq!(
+            autostart_dir(Some(""), Some("/home/u")).unwrap(),
+            PathBuf::from("/home/u/.config/autostart")
+        );
+        assert_eq!(
+            autostart_dir(Some("relative/cfg"), Some("/home/u")).unwrap(),
+            PathBuf::from("/home/u/.config/autostart")
+        );
+        // No usable base at all: the caller must report failure, not write
+        // somewhere arbitrary.
+        assert_eq!(autostart_dir(None, None), None);
+        assert_eq!(autostart_dir(Some(""), Some("")), None);
+    }
+
+    #[test]
+    fn autostart_exec_value_is_quoted_and_field_codes_are_escaped() {
+        assert_eq!(
+            desktop_exec_value(Path::new("/usr/bin/compme")),
+            "\"/usr/bin/compme\""
+        );
+        // A space needs the quoting; `%` must become `%%` or the session reads it
+        // as a field code and drops it; `"`/`\`/`` ` ``/`$` are backslash-escaped
+        // per the desktop-entry spec.
+        assert_eq!(
+            desktop_exec_value(Path::new("/opt/my apps/100% \"comp$me\"")),
+            "\"/opt/my apps/100%% \\\"comp\\$me\\\"\""
+        );
+        // The generated entry is a parseable desktop file carrying that value.
+        let entry = autostart_desktop_entry(Path::new("/usr/bin/compme"));
+        assert!(entry.starts_with("[Desktop Entry]\n"));
+        assert!(entry.contains("\nExec=\"/usr/bin/compme\"\n"));
+        assert!(entry.contains("\nType=Application\n"));
+        assert!(entry.ends_with('\n'));
+    }
+
+    #[test]
+    fn autostart_entry_round_trips_enable_and_disable() {
+        let dir = std::env::temp_dir().join(format!(
+            "compme-linux-autostart-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let exec = Path::new("/usr/bin/compme");
+        let entry = dir.join(AUTOSTART_ENTRY);
+
+        // Enabling creates the directory as well as the entry.
+        apply_autostart(&dir, true, exec).unwrap();
+        let written = std::fs::read_to_string(&entry).unwrap();
+        assert_eq!(written, autostart_desktop_entry(exec));
+        // Re-enabling is idempotent (the rename overwrites), and leaves no temp
+        // file behind.
+        apply_autostart(&dir, true, exec).unwrap();
+        assert_eq!(std::fs::read_to_string(&entry).unwrap(), written);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|name| name != AUTOSTART_ENTRY)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+
+        // Disabling removes it, and disabling again succeeds: the requested state
+        // already holds, so the settings toggle must not report a failure.
+        apply_autostart(&dir, false, exec).unwrap();
+        assert!(!entry.exists());
+        apply_autostart(&dir, false, exec).unwrap();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn autostart_reports_io_failure_instead_of_silently_not_enabling() {
+        // A path whose parent is a file, not a directory: create_dir_all fails, so
+        // the toggle must surface the error and restore its visible state rather
+        // than persist a launch-at-login value the session will never honor.
+        let file = std::env::temp_dir().join(format!(
+            "compme-linux-autostart-blocker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&file, []).unwrap();
+        let blocked = file.join("autostart");
+        assert!(apply_autostart(&blocked, true, Path::new("/usr/bin/compme")).is_err());
+        std::fs::remove_file(&file).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn live_probes_report_real_values_on_a_linux_host() {
+        // The pure parsers above run everywhere; this pins that the wiring reads
+        // the real files on a Linux host. It is the test that catches the
+        // placeholders regressing — a hardcoded 0 rated every catalog model
+        // `Exceeds`, so the Setup pane offered no model at all on Linux.
+        use platform::shell::ShellHost;
+
+        let version = LinuxAdapter::new().environment().version;
+        assert_ne!(
+            version, "unknown",
+            "a Linux host must expose /etc/os-release or /proc/sys/kernel/osrelease"
+        );
+        let bytes = LinuxShellHost::new().physical_memory_bytes();
+        assert!(
+            bytes >= 64 * 1024 * 1024,
+            "physical memory probe returned {bytes} bytes"
+        );
     }
 
     #[test]

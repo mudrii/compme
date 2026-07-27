@@ -619,10 +619,22 @@ services also fail closed.
 
 The current Windows foundation has real owner-only DACL hardening, a console
 control handler for orderly shutdown, and native `ShellExecuteW` URL opening.
-The Linux shell can open a URL through `xdg-open`, reports an immediate
-non-zero launcher exit, and reaps a longer-running child without blocking. UI
-Automation/AT-SPI event paths, native insertion, overlays, key
-stores, trays, autostart, packaging, and GPU backends remain roadmap work.
+
+The Linux foundation implements the host surfaces that need neither a display
+nor an accessibility bus, so each is verifiable on a headless Linux host:
+`environment()` reports the distro (`/etc/os-release` `PRETTY_NAME`, else
+`NAME` + `VERSION_ID`) plus the kernel release (`/proc/sys/kernel/osrelease`);
+`physical_memory_bytes` parses `MemTotal` from `/proc/meminfo`, without which
+the Setup pane's RAM verdict rated every catalog model `Exceeds`;
+`set_launch_at_login` writes or removes an XDG autostart
+`compme.desktop` entry through a temp-file rename; and `open_url` shells out to
+`xdg-open`, reports an immediate non-zero launcher exit, and reaps a
+longer-running child without blocking. All parsing and path rules are pure
+functions over file contents and env values, because this crate is also
+compiled and tested on macOS hosts where `/proc` does not exist.
+
+AT-SPI2 event paths, native insertion, overlays, key stores, dialogs, trays,
+file-manager reveal, packaging, and GPU backends remain roadmap work.
 
 ## macOS Runtime Model
 

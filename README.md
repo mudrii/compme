@@ -27,7 +27,7 @@ promoted into the workspace.
 |---|---|---|
 | macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.5` | Current `main` contains post-release build, release-tooling, cask, and documentation changes; its deterministic gates are green, while 22 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
 | Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | Adapter/overlay operations and most ShellHost services remain fail-closed; owner-only DACL hardening, console shutdown handling, and URL opening are real, but there is no usable Windows product or package yet. |
-| Linux | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `LinuxAdapter`, overlay, and most ShellHost operations remain fail-closed; no usable Linux product or package yet. |
+| Linux | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `LinuxAdapter`'s AT-SPI2/X11 surfaces, the overlay, and the key-store/dialog ShellHost services remain fail-closed; the desktop-free host probes are real (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, `xdg-open`). No usable Linux product or package yet. |
 
 The detailed Windows, Linux/X11, Wayland, GPU, packaging, and per-OS acceptance
 sequence is tracked in [the cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md).
@@ -146,7 +146,7 @@ unbundled `cargo run -p app` is still fine.
 │   ├── platform/                      # Cross-platform adapter + UX contract
 │   ├── platform_macos/                # macOS Accessibility/AppKit/Carbon adapter
 │   ├── platform_windows/              # Windows adapter scaffold + real host services
-│   ├── platform_linux/                # Linux adapter scaffold (fail-closed)
+│   ├── platform_linux/                # Linux adapter scaffold + real host probes
 │   ├── context/                       # Pure caret/text-context helpers
 │   ├── engine_core/                   # Deterministic suggestion state machine
 │   ├── engine/                        # Runtime host: engine_core ↔ platform ↔ overlay
@@ -197,7 +197,7 @@ from `tools/spike/`.
 | `platform` | Cross-platform contracts shared by the host and platform implementations: `PlatformAdapter` for field focus/read/write, `OverlayPresenter` for suggestions, `ShellHost` for product-shell services, and `TrayHandle` for status UI. |
 | `platform_macos` | macOS implementation of the adapter and overlay presenter using Accessibility, CoreGraphics, AppKit/Carbon, and pasteboard APIs; ghost overlay, tray, key recorder, and settings window. |
 | `platform_windows` | Windows adapter scaffold that fails closed for platform I/O/subscription methods until the real UIA adapter lands, plus real host services already shipped: owner-only DACL file hardening, a console Ctrl-C handler, and native `ShellExecuteW` URL opening. |
-| `platform_linux` | Linux adapter scaffold that reports Linux and fails closed for platform I/O/subscription methods until a real adapter is implemented; URL opening uses `xdg-open`, reports an immediate launcher failure, and reaps a longer-running child without blocking the host. |
+| `platform_linux` | Linux adapter scaffold that fails closed for platform I/O/subscription methods until a real AT-SPI2/X11 adapter is implemented, plus the host surfaces that need no desktop session: distro + kernel version from `/etc/os-release` and `/proc/sys/kernel/osrelease`, physical memory from `/proc/meminfo`, launch-at-login as an XDG autostart entry, and `xdg-open` URL opening that reports an immediate launcher failure and reaps a longer-running child without blocking the host. |
 | `context` | Pure text-context helpers around a caret (left/right context, word-at-caret extraction, left-tail truncation, context-block assembly). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
@@ -354,7 +354,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 Use the full local gate before treating the workspace as development-ready. The
 canonical command list is single-sourced in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#full-local-gate); the root suite is
-roughly 1,942 tests.
+roughly 1,950 tests.
 
 A2 validation is local/manual-only and is deliberately excluded from CI, tag
 releases, and the release-policy checker: the automated workflows never execute
