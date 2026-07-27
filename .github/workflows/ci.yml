@@ -334,3 +334,11 @@ jobs:
 
       - name: Build app binary
         run: cargo build --locked -p app
+
+      # Hermetic half of the AT-SPI2 harness (env sanitizing, display parsing,
+      # readiness waits, unprovisioned-host handling). The full Xvfb + a11y-bus
+      # run needs GTK/at-spi2 dev packages on the runner and lands with the first
+      # real AT-SPI adapter code (ROADMAP Phase 2.1); this keeps the harness from
+      # rotting until then.
+      - name: Linux AT-SPI harness self-test
+        run: tools/acceptance/run-linux-atspi-session.sh --self-test

@@ -249,6 +249,7 @@ tools/acceptance/missing-model-startup.sh --self-test
 tools/acceptance/missing-model-startup.sh
 tools/acceptance/run-ui-assisted-session.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
+tools/acceptance/run-linux-atspi-session.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
 tools/release/check-agent-briefs.sh
@@ -461,6 +462,44 @@ creates and removes a private temporary config directory by default so parallel
 or interrupted sessions do not share `/tmp/compme-ui-assisted-config.env`.
 Set `COMPME_UI_CONFIG` only when intentionally supplying a specific disposable
 config path.
+
+### Linux AT-SPI2 session harness
+
+`tools/acceptance/run-linux-atspi-session.sh` builds a throwaway accessibility
+session — Xvfb, a private D-Bus session bus, the AT-SPI bus launcher, and
+`at-spi2-registryd` — then compiles and runs a GTK3 fixture
+(`linux-atspi-fixture.c`) and an AT-SPI client probe (`linux-atspi-probe.c`)
+against it. It is the deterministic target for Phase 2.1-2.4 adapter work: a
+pass means this host can read field text, read the caret offset, read
+per-character screen extents, and perform an `EditableText` insert that reads
+back. No desktop environment, display, or root is needed.
+
+```sh
+# NixOS (no FHS, so run it inside a shell carrying the dev packages)
+nix-shell -p gcc pkg-config gtk3 at-spi2-core glib xvfb dbus \
+  --run tools/acceptance/run-linux-atspi-session.sh
+
+# Debian/Ubuntu
+sudo apt-get install build-essential pkg-config libgtk-3-dev libatspi2.0-dev xvfb dbus-x11
+tools/acceptance/run-linux-atspi-session.sh
+```
+
+Exit 3 means the host is not provisioned (a missing tool or dev package, or a
+non-Linux host) and prints what to install — it is deliberately distinct from
+exit 1, a real session or probe failure. `COMPME_ATSPI_KEEP=1` retains the
+session directory (build output plus the Xvfb, bus, registry, fixture, and probe
+logs) for debugging. Concurrent runs are safe: the display number comes from
+Xvfb's own `-displayfd` allocation and each run gets a private
+`XDG_RUNTIME_DIR`, so each session has its own accessibility bus.
+
+The harness sanitizes inherited accessibility environment variables, notably
+`NO_AT_BRIDGE`: when it is set — it is exported by default on some hosts — every
+GTK app silently skips accessibility registration, so the session comes up
+perfectly and the probe finds an empty desktop.
+
+`--self-test` covers the hermetic half (env sanitizing, `-displayfd` parsing,
+bounded readiness waits, unprovisioned-host reporting, and fixture/probe name
+agreement) and runs in the Linux CI job and the Full Local Gate on any host.
 
 ## Model Development Notes
 

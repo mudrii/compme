@@ -191,6 +191,34 @@ they are also tested on the macOS lanes where `/proc` does not exist:
   the portal permission hook. A headless box cannot exercise their success path,
   and a stub that looks implemented is worse than one that says so.
 
+**Linux AT-SPI2 session harness ✅ DONE (2026-07-27) — Phase 2.7's fixture half:**
+`tools/acceptance/run-linux-atspi-session.sh` stands up a throwaway
+accessibility session (Xvfb + private D-Bus session bus + AT-SPI bus launcher +
+`at-spi2-registryd`), builds and runs a GTK3 fixture
+(`linux-atspi-fixture.c`: a named `GtkEntry` and `GtkTextView`) plus a libatspi
+client probe (`linux-atspi-probe.c`), and asserts the capabilities Phase 2.1-2.4
+need. This is the deterministic target 2.1 builds against, so it lands *before*
+the adapter rather than after it. No desktop, display, or root required.
+- **Proven live on the headless host:** field text read (`teh quick brown`),
+  caret offset (`15`), real per-character screen extents (`17,16,5,17` — the
+  `caret_rect`/`text_range_rect` input), and an `EditableText` insert that reads
+  back (`zz teh quick brown` — the 2.4 insert mechanism). Written against
+  libatspi, the same C API the Rust `atspi` crate wraps, so a green run is
+  evidence about the stack the adapter will use.
+- **The trap that cost the most:** `NO_AT_BRIDGE=1` is exported by default on
+  some hosts, and it makes every GTK app skip accessibility registration
+  silently — the session comes up perfectly and the probe finds an empty
+  desktop. The harness sanitizes inherited a11y env rather than trusting it.
+- Display numbers come from Xvfb's own `-displayfd` allocation, not a shell
+  "find a free display" loop: the lock file only appears once the server starts,
+  so two concurrent runs both find `:99` free and the loser silently shares the
+  winner's display. Verified with three concurrent runs taking `:0`/`:1`/`:2`.
+- The hermetic `--self-test` runs in the Linux CI job and the Full Local Gate on
+  any host; exit 3 (host not provisioned) is kept distinct from exit 1 (real
+  failure). **Remaining 2.7 work:** installing the GTK/at-spi2 dev packages on
+  the ubuntu runner and running the *full* harness there, which lands with the
+  first real AT-SPI adapter code — an inert full run gates nothing today.
+
 **Phase 0 pre-work ✅ DONE (2026-07-08, same-day as planned):**
 - **`InsertStrategy::NativeRangeSet`** shipped — variant + doc contract on the
   shared enum, opted into `supports_atomic_range_replace()`; pinned by the
@@ -884,13 +912,12 @@ per-app configurable.
    layered overlay, ShellHost services, and native acceptance on Windows hardware.
 7. **Linux Phase 2 (2.1–2.7), X11-first** — a native Linux build+gate host is
    now in the loop, so this runs ahead of (or alongside) Windows Phase 1. The
-   desktop-free part of 2.6 shipped 2026-07-27 (see 1.1). Remaining order:
-   stand up the 2.7 fixture harness *first* — Xvfb + `at-spi2-core` + a
-   committed GTK fixture app — so 2.1–2.5 have a deterministic target instead of
-   needing a desktop; then the two-day 2.3 accept-key strategy spike; then
-   AT-SPI2 read, insertion, and overlay. The host is headless (tty session, no X
-   server, no a11y bus), so live-session acceptance still needs a graphical
-   session installed on it or physical access.
+   desktop-free part of 2.6 and the 2.7 fixture harness both shipped 2026-07-27
+   (see 1.1), so 2.1–2.5 now have a deterministic Xvfb target. Remaining order:
+   the two-day 2.3 accept-key strategy spike, then AT-SPI2 read (2.1), caret
+   geometry (2.2), insertion (2.4), and overlay (2.5). The host is headless (tty
+   session, no X server outside the harness), so live-session acceptance still
+   needs a graphical session installed on it or physical access.
 8. **Wayland Phase 3 decision spike** — compare IME and portal/global-shortcut
    paths on GNOME, KDE, and sway before committing to an implementation.
 9. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux

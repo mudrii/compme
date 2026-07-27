@@ -21,6 +21,7 @@ version_validator_script="$repo_root/tools/release/validate-version.sh"
 quality_script="$repo_root/tools/release/check-quality.sh"
 version_docs_script="$repo_root/tools/release/check-version-docs.sh"
 check_runner_script="$repo_root/tools/dev/check.sh"
+atspi_session_script="$repo_root/tools/acceptance/run-linux-atspi-session.sh"
 acceptance_doc="$repo_root/docs/ACCEPTANCE.md"
 manual_validation_doc="$repo_root/docs/MANUAL-VALIDATION.md"
 development_doc="$repo_root/docs/DEVELOPMENT.md"
@@ -902,6 +903,10 @@ check_all_self_test_env_contracts() {
   check_self_test_env_file "$version_docs_script" COMPME_VERSION_DOCS_ROOT
   check_self_test_env_file "$check_runner_script" \
     CDPATH COMPME_CHECK_FAKE_LOG COMPME_CHECK_FAKE_CARGO_FAIL
+  check_self_test_env_file "$atspi_session_script" \
+    COMPME_ATSPI_FIXTURE_SRC COMPME_ATSPI_PROBE_SRC COMPME_ATSPI_APP_NAME \
+    COMPME_ATSPI_FIELD_NAME COMPME_ATSPI_WAIT_TRIES COMPME_ATSPI_WAIT_SLEEP \
+    COMPME_ATSPI_KEEP
 }
 
 run_self_test() {
