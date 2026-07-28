@@ -91,6 +91,35 @@ require_tools() {
   done
 }
 
+# Locate an at-spi2 helper binary. Distributions disagree about where these live
+# and neither is on PATH: Nix puts them in `$prefix/libexec/`, Debian/Ubuntu in
+# `$prefix/libexec/at-spi2-core/`, and some builds in `$prefix/lib/at-spi2-core/`.
+# Deriving one path from the pkg-config prefix therefore works on exactly the
+# distribution it was written on — which is how CI caught this. Search the known
+# layouts and name every path tried when none matches.
+FIND_HELPER_ERROR=""
+find_atspi_helper() {
+  helper_name="$1"
+  prefix="${ATSPI_PREFIX:-/usr}"
+  for candidate in \
+    ${COMPME_ATSPI_LIBEXEC:+"$COMPME_ATSPI_LIBEXEC/$helper_name"} \
+    "$prefix/libexec/$helper_name" \
+    "$prefix/libexec/at-spi2-core/$helper_name" \
+    "$prefix/lib/at-spi2-core/$helper_name"; do
+    if [ -x "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  # Last resort: some distributions do ship them on PATH.
+  if command -v "$helper_name" >/dev/null 2>&1; then
+    command -v "$helper_name"
+    return 0
+  fi
+  FIND_HELPER_ERROR="missing at-spi2 helper $helper_name; looked in $prefix/libexec, $prefix/libexec/at-spi2-core, $prefix/lib/at-spi2-core, and PATH"
+  return 1
+}
+
 require_pkgconfig() {
   for pkg in "$@"; do
     pkg-config --exists "$pkg" || unprovisioned "missing dev package: $pkg"
@@ -107,6 +136,7 @@ run_self_test() {
   unset COMPME_ATSPI_FIXTURE_SRC COMPME_ATSPI_PROBE_SRC COMPME_ATSPI_KEYTAP_SRC
   unset COMPME_ATSPI_APP_NAME COMPME_ATSPI_FIELD_NAME
   unset COMPME_ATSPI_WAIT_TRIES COMPME_ATSPI_WAIT_SLEEP COMPME_ATSPI_KEEP
+  unset COMPME_ATSPI_LIBEXEC
   FIXTURE_SRC="$ROOT_DIR/tools/acceptance/linux-atspi-fixture.c"
   PROBE_SRC="$ROOT_DIR/tools/acceptance/linux-atspi-probe.c"
   KEYTAP_SRC="$ROOT_DIR/tools/acceptance/linux-keytap-spike.c"
@@ -181,7 +211,35 @@ run_self_test() {
     status=1
   fi
 
-  # 5. Argument handling: --run-in-session must require a command (an empty
+  # 5. Helper lookup must handle every packaging layout, not just the one this
+  # was developed on. CI found the Debian layout the hard way.
+  for layout in libexec libexec/at-spi2-core lib/at-spi2-core; do
+    helper_dir="$tmp_dir/prefix-$(echo "$layout" | tr / -)/$layout"
+    mkdir -p "$helper_dir"
+    printf '#!/bin/sh\n' >"$helper_dir/at-spi-bus-launcher"
+    chmod +x "$helper_dir/at-spi-bus-launcher"
+    found="$(ATSPI_PREFIX="$tmp_dir/prefix-$(echo "$layout" | tr / -)" find_atspi_helper at-spi-bus-launcher)"
+    if [ "$found" = "$helper_dir/at-spi-bus-launcher" ]; then
+      echo "PASS self-test-atspi-session-finds-helper-in-$layout"
+    else
+      echo "FAIL self-test-atspi-session-finds-helper-in-$layout: got '$found'" >&2
+      status=1
+    fi
+  done
+  if ATSPI_PREFIX="$tmp_dir/empty-prefix" find_atspi_helper compme-no-such-helper >/dev/null 2>&1; then
+    echo "FAIL self-test-atspi-session-missing-helper-reports-paths" >&2
+    status=1
+  elif [ -n "$FIND_HELPER_ERROR" ] && case "$FIND_HELPER_ERROR" in
+    *at-spi2-core*PATH*) true ;;
+    *) false ;;
+  esac then
+    echo "PASS self-test-atspi-session-missing-helper-reports-paths"
+  else
+    echo "FAIL self-test-atspi-session-missing-helper-reports-paths: $FIND_HELPER_ERROR" >&2
+    status=1
+  fi
+
+  # 6. Argument handling: --run-in-session must require a command (an empty
   # payload would otherwise silently fall through to the probe and "pass"), and
   # an unknown flag must be refused rather than ignored.
   set +e
@@ -199,7 +257,7 @@ run_self_test() {
     status=1
   fi
 
-  # 6. The fixture and probe sources must exist and agree with this script on the
+  # 7. The fixture and probe sources must exist and agree with this script on the
   # accessible names — a rename on one side would otherwise fail only at runtime,
   # on a Linux host, long after the change.
   for src in "$FIXTURE_SRC" "$PROBE_SRC" "$KEYTAP_SRC"; do
@@ -249,11 +307,10 @@ require_pkgconfig gtk+-3.0 atspi-2 x11
 [ -z "$build_keytap_spike" ] || require_pkgconfig x11 xtst
 
 ATSPI_PREFIX="$(pkg-config --variable=prefix atspi-2)"
-BUS_LAUNCHER="$ATSPI_PREFIX/libexec/at-spi-bus-launcher"
-REGISTRYD="$ATSPI_PREFIX/libexec/at-spi2-registryd"
-for helper in "$BUS_LAUNCHER" "$REGISTRYD"; do
-  [ -x "$helper" ] || unprovisioned "missing at-spi2 helper: $helper"
-done
+BUS_LAUNCHER="$(find_atspi_helper at-spi-bus-launcher)" ||
+  unprovisioned "$FIND_HELPER_ERROR"
+REGISTRYD="$(find_atspi_helper at-spi2-registryd)" ||
+  unprovisioned "$FIND_HELPER_ERROR"
 
 sanitize_a11y_env
 session_dir="$(mktemp -d 2>/dev/null || mktemp -d -t compme-atspi)"
