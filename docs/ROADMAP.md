@@ -292,7 +292,9 @@ the decisions testable everywhere and the I/O in one place:
   counts characters where AppKit/Chromium count UTF-16 units, so a
   live test seeds astral-plane text (`a😀b`: 3 scalars, 4 UTF-16 units) —
   an ASCII-only suite passes with a UTF-16 assumption still in place.
-- **7 live tests, all passing** in the harness against the GTK fixture: focused
+- **7 live tests from this phase, all passing** in the harness against the GTK
+  fixture (the suite total is in the pending statement above — each phase below
+  was measured on its own branch, so per-phase counts do not sum to it): focused
   field, text/caret round-trip, scalar offsets, selection as a scalar range plus
   its exact text, capabilities, on-screen caret geometry, `front_app`, and
   malformed/stale ids failing closed without panicking. They now also run in the
@@ -328,7 +330,7 @@ the decisions testable everywhere and the I/O in one place:
 - `insert_replacing` (left-of-caret `replace_left`) stays **deliberately
   fail-closed**: AT-SPI can only express it as delete-then-insert. The engine
   already routes atomic replacements through `insert_replacing_range`.
-- 4 more live tests (11 total, all passing on the Linux host and in CI): insert at
+- 4 more live tests, all passing on the Linux host and in CI: insert at
   the caret, exact-range replace of `teh`→`the`, and — the property that matters
   most — every rejection path (stale expected text, range past the end, inverted
   range, non-atomic strategy) refusing *and leaving the field byte-identical*.
@@ -376,11 +378,21 @@ and caret changes instead of only answering questions about a field it is handed
   string, so `capabilities`/`read_context` work on it with no translation, and `app`
   plus `pid` are filled in from the application accessible's name and the bus's own
   `GetConnectionUnixProcessID` (AT-SPI exposes no pid).
-- **2 more live tests (13 total, all passing** on the Linux host, three consecutive
+- **2 more live tests, all passing** on the Linux host, three consecutive
   harness runs**)**, driving real focus changes through AT-SPI's own
   `Component.GrabFocus` rather than synthetic X input: a focus change delivers a
   readable handle with app/pid and a fresh generation, a caret move delivers
   on-screen geometry, and each subscription stops dead when dropped.
+
+**Phase 2 revalidation (2026-07-28, whole merged tree):** full macOS gate green
+(49/50 — shellcheck is absent on the dev machine, CI runs it), full portable
+workspace on the Linux host clippy-clean at `-D warnings` over all targets with
+1,643 tests passing and the `app` binary building, **26 live tests passing twice
+in a row** in the harness and again in CI on Ubuntu, and the Phase 2.3 keytap
+spike verdict still holding. The `app` binary links none of libxcb, libatspi,
+libX11, or libsecret — the property every "D-Bus/pure-Rust, not the C library"
+decision below was made to preserve. Per-phase live-test counts in the entries
+that follow were each measured on their own branch and do not sum to 26.
 
 **Still pending for Phase 2 (2026-07-28, after the four parallel workstreams
 below landed):** the adapter surface is now complete except the **tray**
@@ -455,7 +467,7 @@ and a Linux editable field resolves to `UxMode::Inline` instead of `Popup`.
   `show_ghost` while the server had rejected `CreateWindow` — precisely what the
   `OverlayPresenter` contract forbids ("the engine assumes an emitted ghost is on
   screen"). Every void request is now `check()`ed.
-- **4 more live tests (15 total, all passing on the Linux host)**, asserting what
+- **4 more live tests, all passing on the Linux host**, asserting what
   the X11 protocol can actually show from a *second* connection: the window is
   override-redirect, mapped, at the caret with no Y-flip, holds no input focus and
   does not move it, has an empty input region, is *reused* by `update_ghost`
@@ -518,7 +530,7 @@ interesting logic is testable on every host:
   so nothing was given up. Linux-target-gated (+3 packages: `x11rb`,
   `x11rb-protocol`, `gethostname`); the `xtest` feature is dev-only, for the tests
   that synthesize keys.
-- **6 more live tests (17 total, all passing on the Linux host, three consecutive
+- **6 more live tests, all passing on the Linux host, three consecutive
   clean runs)** mirroring the spike's four observations against the GTK fixture:
   unarmed baseline delivery, consume keeping Tab from the app while the engine gets
   `Accept(Word)`, `ReplayKeyboard` pass-through *while grabbed* (a correction offer
