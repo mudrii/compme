@@ -684,9 +684,14 @@ overwritten, an unpersisted key never returned, transport buffer zeroized) and
 over libsecret so a host without the library cannot stop the binary from starting;
 a locked keyring is reported rather than prompted through, and blocks the create
 path so a hidden item plus a fresh key cannot leave the memory store
-undecryptable. `confirm` runs `zenity --question --default-cancel`, then
-`kdialog --warningyesno`, treating only exit 0 as an explicit confirm and no helper
-at all as an error; every field is passed as a glued `--option=value` argv element,
+undecryptable. `confirm` runs `zenity --question --default-cancel`, treating only exit 0 as an
+explicit confirm and no usable helper as an error. `kdialog` was removed from the
+chain after measurement rather than on taste: `--warningyesno` takes a value, so
+the `--` end-of-options guard became the message text and the real message never
+reached the dialog — and with the corrected `--warningyesno=<message>` form Return
+*still* exits 0, because kdialog has no equivalent of `--default-cancel`. A helper
+whose default button confirms cannot implement a contract whose whole point is
+that Return declines; every field is passed as a glued `--option=value` argv element,
 so there is no shell and no argument injection. `reveal` calls
 `org.freedesktop.FileManager1.ShowItems` with a percent-encoded `file://` URI —
 the only portable call that *selects* an item — and falls back to `xdg-open` on

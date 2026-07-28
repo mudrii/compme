@@ -35,20 +35,36 @@ pub const MEMORY_KEY_SERVICE: &str = "com.compme.memory";
 pub const MEMORY_KEY_ACCOUNT: &str = "aes-256-gcm-key";
 /// `xdg:schema` is the attribute libsecret-based tools read to know which
 /// application's schema an item follows; the value is an application-chosen
-/// dotted name, so this is compme's. Purely cosmetic for lookup (searches match
-/// on a subset of attributes), but it is what makes the item legible in
-/// seahorse instead of anonymous.
+/// dotted name, so this is compme's. It makes the item legible in seahorse
+/// instead of anonymous.
+///
+/// **It is deliberately not part of [`LOOKUP_ATTRIBUTES`].** `SearchItems`
+/// requires every attribute in the *query* to be present on the item, so a query
+/// that includes this one makes it load-bearing: renaming the value would make
+/// the lookup miss, which reads as `Absent`, which authorizes creating a second
+/// key — and every row encrypted under the first becomes undecryptable. Verified
+/// live: searching with a changed `xdg:schema` returns zero items while the item
+/// exists. Cosmetic on create, never on load.
 pub const MEMORY_KEY_SCHEMA: &str = "com.compme.MemoryKey";
 /// Item label — the human-readable string a keyring UI lists.
 pub const MEMORY_KEY_LABEL: &str = "compme memory-store key";
 
-/// The attribute set written on create and searched on load. Sorted-by-key order
-/// is irrelevant on the wire (D-Bus `a{ss}`), but the array keeps the set in one
-/// place so the write and the search cannot drift apart.
+/// The attribute set written on create. Order is irrelevant on the wire (D-Bus
+/// `a{ss}`); the array keeps the set in one place.
 pub const KEY_ATTRIBUTES: [(&str, &str); 3] = [
     ("service", MEMORY_KEY_SERVICE),
     ("account", MEMORY_KEY_ACCOUNT),
     ("xdg:schema", MEMORY_KEY_SCHEMA),
+];
+
+/// The attribute set queried on load — the identity of the secret and nothing
+/// else. `SearchItems` matches an item only when *every* queried attribute is
+/// present on it, so each attribute added here is one more string whose change
+/// silently turns a load into a first-use. Keep this the smallest set that names
+/// the secret; see [`MEMORY_KEY_SCHEMA`].
+pub const LOOKUP_ATTRIBUTES: [(&str, &str); 2] = [
+    ("service", MEMORY_KEY_SERVICE),
+    ("account", MEMORY_KEY_ACCOUNT),
 ];
 
 /// Reads the stored secret. `Ok(None)` means "no such item" (first use) and is

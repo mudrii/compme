@@ -60,15 +60,49 @@ fn keyring_behaves_as_the_runner_declared() {
     let expectation = declared_expectation();
 
     if expectation == "absent" {
-        // The path that matters most on a headless host: no key store means an
-        // error, never a fabricated key and never an on-disk plaintext fallback.
+        // The path that matters most on a headless host: no usable key store means
+        // an error, never a fabricated key and never an on-disk plaintext fallback.
+        //
+        // "Absent" is about the *outcome*, not one specific failure: D-Bus
+        // activates `org.freedesktop.secrets` from a system-wide service file, so a
+        // session with no keyring configured typically answers `OpenSession` and
+        // then refuses at the locked default keyring. On the harness bus that is
+        // exactly what happens, which is why the layer list below is a set.
         let result = read_memory_key_on(&connection);
         let Err(PlatformError::CannotComplete { reason }) = result else {
             panic!("a bus with no keyring daemon must fail closed, got {result:?}");
         };
+        // Every error this module produces is prefixed "secret-service", so that
+        // substring alone proves nothing about *which* failure happened. Require a
+        // named layer instead.
+        //
+        // More than one layer is legitimate here, and which one you get is a
+        // property of the bus, not of compme: D-Bus *activates*
+        // `org.freedesktop.secrets` from a system-wide service file, so a session
+        // that has no keyring configured usually answers `OpenSession` fine and
+        // then fails on the default collection. "Absent" therefore means "no
+        // usable key store", which is reachable at any of these layers — and all
+        // of them must land on the same fail-closed outcome.
+        const LAYERS: [&str; 5] = [
+            "session",
+            "OpenSession",
+            "SearchItems",
+            "locked",
+            "default keyring",
+        ];
         assert!(
-            reason.contains("secret-service"),
-            "the error must name the subsystem: {reason}"
+            LAYERS.iter().any(|layer| reason.contains(layer)),
+            "the error must identify the failing layer, not just the subsystem: {reason}"
+        );
+
+        // Stronger than any string match: whatever the layer, nothing was minted.
+        // A load that failed *after* creating a key would leave a store the next
+        // run cannot read, so assert the second attempt fails the same way rather
+        // than suddenly succeeding with a key that appeared from nowhere.
+        let second = read_memory_key_on(&connection);
+        assert!(
+            matches!(second, Err(PlatformError::CannotComplete { .. })),
+            "a failed read must not have created anything: {second:?}"
         );
 
         // The whole store, not just the transport: no key is returned, and no
@@ -129,6 +163,27 @@ fn keyring_behaves_as_the_runner_declared() {
         .expect("the item exists after the create above");
     assert_eq!(secret, created.to_vec());
     assert_eq!(secret.len(), KEY_LEN);
+
+    // A second *create* must be refused outright. `replace = false` only means
+    // "do not replace": before this guard, CreateItem added a second item and the
+    // search returned the newer one first, so the next load silently returned a
+    // different key and every row encrypted under the first became unreadable.
+    let duplicate = crate::keyring::write_memory_key_on(&connection, &[7u8; KEY_LEN]);
+    let Err(PlatformError::CannotComplete { reason }) = duplicate else {
+        panic!("writing over an existing key must be refused, got {duplicate:?}");
+    };
+    assert!(
+        reason.contains("already exists"),
+        "the refusal must say the item exists: {reason}"
+    );
+    // ...and the refusal must have changed nothing.
+    assert_eq!(
+        store
+            .load_or_create_memory_key()
+            .expect("the key must still load after a refused duplicate write"),
+        created,
+        "a refused duplicate write must leave the stored key untouched"
+    );
 
     // And the store's fail-closed length check is wired to this transport: a
     // foreign 16-byte secret is refused rather than overwritten.

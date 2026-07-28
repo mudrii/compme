@@ -1,5 +1,16 @@
-//! Blocking modal confirmation for Linux (ROADMAP Phase 2.6): `zenity`, falling
-//! back to `kdialog`.
+//! Blocking modal confirmation for Linux (ROADMAP Phase 2.6), through `zenity`.
+//!
+//! **`kdialog` was removed after measurement, not chosen against.** Two things
+//! were confirmed against kdialog 26.04.3 under Xvfb. First, `--warningyesno`
+//! takes a *value*, so the `--` end-of-options separator this module used to pass
+//! was consumed as the message text and the real message never reached the
+//! dialog. Second — and the reason the fix is removal rather than
+//! `--warningyesno=<message>` — kdialog has no equivalent of zenity's
+//! `--default-cancel`: with the corrected argv, **Return still exits 0**, i.e.
+//! confirms. That breaks the one invariant this module exists to hold, on the
+//! prompts that gate an irreversible delete and a deep-link trust change. A
+//! helper that cannot decline by default cannot implement this contract, so a
+//! host without zenity now gets a reported failure naming what to install.
 //!
 //! There is no toolkit-neutral system dialog on Linux, and linking GTK would make
 //! the binary refuse to *start* where GTK is absent — the same reason the AT-SPI
@@ -27,8 +38,9 @@
 use platform::PlatformError;
 use shell_flags::ConfirmPrompt;
 
-/// The helpers, in preference order.
-pub const HELPER_CHAIN: [ConfirmHelper; 2] = [ConfirmHelper::Zenity, ConfirmHelper::Kdialog];
+/// The helpers, in preference order. One entry: see the module docs for why
+/// `kdialog` cannot be in this list.
+pub const HELPER_CHAIN: [ConfirmHelper; 1] = [ConfirmHelper::Zenity];
 
 /// Label of the declining button. Fixed rather than taken from `ConfirmPrompt`,
 /// which carries only the confirming label — matching the macOS alert, whose
@@ -38,7 +50,6 @@ pub const DECLINE_LABEL: &str = "Cancel";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmHelper {
     Zenity,
-    Kdialog,
 }
 
 /// One helper's answer.
@@ -58,7 +69,6 @@ impl ConfirmHelper {
     pub fn program(self) -> &'static str {
         match self {
             Self::Zenity => "zenity",
-            Self::Kdialog => "kdialog",
         }
     }
 
@@ -69,15 +79,12 @@ impl ConfirmHelper {
     /// containing `<` or `&` is shown literally instead of being parsed as Pango
     /// markup (or failing to render at all).
     ///
-    /// kdialog: `--warningyesno`, whose KMessageBox warning styling makes the
-    /// declining button the default one; `--yes-label`/`--no-label` relabel the
-    /// buttons. kdialog has no explicit default-button switch, which is why it is
-    /// the fallback rather than the first choice.
     pub fn args(self, prompt: &ConfirmPrompt<'_>) -> Vec<String> {
-        // `--option=value` (glued) form throughout: a title, message, or label
-        // that begins with `--` stays a value instead of being parsed as an
-        // option. kdialog's positional text is the one exception, so it is
-        // guarded by the `--` end-of-options separator.
+        // Every field is a glued `--option=value` element, so a title, message, or
+        // label that begins with `--` stays a value instead of being parsed as an
+        // option. No positional arguments at all: the previous kdialog form needed
+        // one, guarded it with a bare `--`, and lost the message to an option that
+        // takes a value (see the module docs).
         match self {
             Self::Zenity => vec![
                 "--question".to_string(),
@@ -88,27 +95,17 @@ impl ConfirmHelper {
                 format!("--ok-label={}", prompt.confirm_label),
                 format!("--cancel-label={DECLINE_LABEL}"),
             ],
-            Self::Kdialog => vec![
-                format!("--title={}", prompt.title),
-                format!("--yes-label={}", prompt.confirm_label),
-                format!("--no-label={DECLINE_LABEL}"),
-                "--warningyesno".to_string(),
-                "--".to_string(),
-                prompt.message.to_string(),
-            ],
         }
     }
 
     /// Map the helper's exit code to a verdict. `None` is a signal death.
     ///
     /// zenity: 0 confirm, 1 cancel/close/Escape, 5 `--timeout` expiry, anything
-    /// else (255 on a GTK/display failure) is a failure.
-    /// kdialog: 0 yes, 1 no, 2 usage/error, and Qt exits non-zero when it cannot
-    /// open a display.
+    /// else (255 on a bad option) is a failure. Measured on zenity 4.2.2.
     pub fn outcome(self, code: Option<i32>) -> ConfirmOutcome {
         match (self, code) {
             (_, Some(0)) => ConfirmOutcome::Confirmed,
-            (Self::Zenity, Some(1 | 5)) | (Self::Kdialog, Some(1)) => ConfirmOutcome::Declined,
+            (Self::Zenity, Some(1 | 5)) => ConfirmOutcome::Declined,
             (_, Some(other)) => ConfirmOutcome::Failed(format!(
                 "{} exited with {other}, which is not an answer",
                 self.program()
@@ -200,27 +197,32 @@ mod tests {
     }
 
     #[test]
-    fn kdialog_argv_uses_the_warning_variant_and_ends_options_before_the_text() {
-        let args = ConfirmHelper::Kdialog.args(&prompt("T", "M", "Delete"));
-        assert_eq!(
-            args,
-            vec![
-                "--title=T",
-                "--yes-label=Delete",
-                "--no-label=Cancel",
-                "--warningyesno",
-                "--",
-                "M",
-            ]
-        );
+    fn the_helper_chain_contains_only_helpers_that_can_decline_by_default() {
+        // kdialog was in this chain and had to come out. Measured against kdialog
+        // 26.04.3: `--warningyesno` takes a value, so the `--` separator became
+        // the message text and the real message vanished; and with the corrected
+        // `--warningyesno=<message>` form Return *still* exits 0, because kdialog
+        // has no `--default-cancel`. A helper whose default button confirms cannot
+        // implement `ShellHost::confirm`, whose contract is that Return declines.
+        //
+        // This test is the guard against re-adding one: every helper in the chain
+        // must pass an argument that makes the declining button the default.
+        for helper in HELPER_CHAIN {
+            let args = helper.args(&prompt("T", "M", "Delete"));
+            assert!(
+                args.iter().any(|a| a == "--default-cancel"),
+                "{} has no default-decline argument, so Return would confirm",
+                helper.program()
+            );
+        }
     }
 
     #[test]
     fn hostile_prompt_text_stays_one_argv_element_per_field() {
         // A message that is shell metacharacters, starts with `--`, and contains
         // newlines and quotes: there is no shell, and the glued `--option=value`
-        // form means none of it can be read as an option. The `--` separator
-        // covers kdialog's positional text.
+        // form means none of it can be read as an option. There are no positional
+        // arguments left to guard.
         let nasty = "--yes-label=Pwn; rm -rf ~ && echo \"$(id)\"\n`whoami`";
         // Prefixes this module chooses itself; anything else starting with `--`
         // would be an option the prompt text smuggled in.
@@ -281,25 +283,30 @@ mod tests {
     }
 
     #[test]
-    fn the_chain_tries_kdialog_when_zenity_is_absent() {
+    fn an_absent_zenity_is_an_error_naming_it_and_never_a_confirm() {
+        // With kdialog out of the chain there is nothing to fall through to, and
+        // the important half is what that does *not* do: a host without zenity must
+        // get a reported failure that says what to install, never a silent
+        // `Ok(true)` and never a silent `Ok(false)` that looks like the user
+        // declining something they were never shown.
         let mut tried = Vec::new();
-        let confirmed = confirm_with(&prompt("t", "m", "c"), |program, args| {
+        let error = confirm_with(&prompt("t", "m", "c"), |program, _| {
             tried.push(program.to_string());
-            match program {
-                "zenity" => Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "No such file or directory",
-                )),
-                _ => {
-                    assert!(args.contains(&"--warningyesno".to_string()));
-                    Ok(Some(0))
-                }
-            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No such file or directory",
+            ))
         })
-        .unwrap();
+        .expect_err("no usable helper must be an error");
 
-        assert!(confirmed);
-        assert_eq!(tried, vec!["zenity", "kdialog"]);
+        assert_eq!(tried, vec!["zenity"]);
+        let PlatformError::CannotComplete { reason } = error else {
+            panic!("expected CannotComplete, got {error:?}");
+        };
+        assert!(
+            reason.contains("zenity"),
+            "the error must name the helper to install: {reason}"
+        );
     }
 
     #[test]
@@ -340,16 +347,17 @@ mod tests {
 
     #[test]
     fn a_broken_helper_falls_through_but_never_confirms() {
-        // zenity present but unable to open a display (255) must not be read as
-        // an answer; kdialog is tried, and if it also fails the result is an
-        // error — never `Ok(true)`.
+        // A helper that ran but did not collect an answer (255 on a bad option)
+        // must not be read as one. With a single-helper chain that means a
+        // reported error — never `Ok(true)`, and never `Ok(false)` either, because
+        // "the dialog failed" is not "the user declined".
         let mut tried = Vec::new();
         let result = confirm_with(&prompt("t", "m", "c"), |program, _| {
             tried.push(program.to_string());
             Ok(Some(255))
         });
 
-        assert_eq!(tried, vec!["zenity", "kdialog"]);
+        assert_eq!(tried, vec!["zenity"]);
         let Err(PlatformError::CannotComplete { reason }) = result else {
             panic!("expected fail-closed, got {result:?}");
         };

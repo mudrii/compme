@@ -217,13 +217,14 @@ live on the headless NixOS box.
   item; against a locked collection — read and load both refuse with a "locked"
   reason; and on a session bus with no keyring daemon — an error, never a
   fabricated or on-disk key.
-- `confirm()` — `zenity --question`, falling back to `kdialog --warningyesno`, with
-  neither present reported as an error (never a silent confirm on a destructive
-  action). `--default-cancel` keeps the confirming button off the default, and
-  `--no-markup` stops a message with `<` or `&` being parsed as Pango markup.
-  Title/message/label are `argv` elements in glued `--option=value` form (kdialog's
-  positional text sits after `--`), so shell metacharacters are inert and a value
-  beginning with `--` cannot become an option. Only exit 0 is a confirm.
+- `confirm()` — `zenity --question --default-cancel` only, with
+  it absent reported as an error naming it (never a silent confirm on a destructive
+  action, and never a silent decline either). `--default-cancel` keeps the
+  confirming button off the default, and `--no-markup` stops a message with `<` or
+  `&` being parsed as Pango markup. Title/message/label are `argv` elements in
+  glued `--option=value` form with no positional arguments at all, so shell
+  metacharacters are inert and a value beginning with `--` cannot become an option.
+  Only exit 0 is a confirm.
   **Verified live** with zenity 4.2.2 under Xvfb: the production `argv` is accepted
   and the dialog displays (a `--timeout=1` run exits 5, not 255); driven with
   xdotool, **Return → exit 1 and Escape → exit 1 (both decline)** while an explicit
@@ -241,12 +242,22 @@ live on the headless NixOS box.
   (`toolkit-accessibility`, `GTK_MODULES`, `NO_AT_BRIDGE`, compositor policy) is
   per-desktop with no portable settings URL. The error says so instead of opening
   `gnome-control-center` and lying on KDE, XFCE, and Sway.
+- **`kdialog` removed 2026-07-28 after the revalidation measured it** (it was the
+  fallback when this entry was first written). Against kdialog 26.04.3 under Xvfb:
+  `--warningyesno` takes a *value*, so the `--` end-of-options guard was consumed
+  as the message text and the real message never reached the dialog — the user was
+  asked to approve an unstated action; and with the corrected
+  `--warningyesno=<message>` form **Return still exits 0**, because kdialog has no
+  equivalent of `--default-cancel`. Both halves reproduced independently. That
+  breaks `ShellHost::confirm`'s stated contract ("Return/Enter declines",
+  "`Ok(true)` only on an explicit confirm click") on the prompts gating an
+  irreversible delete and a `compme://` trust change, so a host without zenity now
+  gets a reported failure naming what to install. The unit tests had *blessed* the
+  broken argv, which is why only running the helper found it.
 - **Not proven, and stated as such:** no real desktop file manager (only the fake),
-  no kdialog anywhere — its `--warningyesno` default-button behavior follows
-  KMessageBox's warning styling and is *unverified*, which is why it is the
-  fallback and why only exit 0 confirms; and `reveal_file` on a host that has
-  `xdg-open` but no desktop returns `Ok(())`, since only failures inside the
-  launcher's ~50 ms poll window are visible (identical to `open_url`).
+  and `reveal_file` on a host that has `xdg-open` but no desktop returns `Ok(())`,
+  since only failures inside the launcher's ~50 ms poll window are visible
+  (identical to `open_url`).
 
 **Linux AT-SPI2 session harness ✅ DONE (2026-07-27) — Phase 2.7's fixture half:**
 `tools/acceptance/run-linux-atspi-session.sh` stands up a throwaway
@@ -409,7 +420,7 @@ left-of-caret form (AT-SPI can only express it as delete-then-insert).
 Live-session residuals no headless run can close: caret/ghost placement
 calibration on GNOME-Xorg, KDE-Xorg, and XFCE; `BadAccess` degradation against a
 window manager that already holds the accept key (Xvfb has none to contend with);
-`kdialog`'s default-button behavior; and any Wayland session.
+and any Wayland session.
 
 **Phase 2.5 overlay ✅ DONE (2026-07-28) — live-verified:**
 The ghost and correction overlay is a real **override-redirect X11 window**, so

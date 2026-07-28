@@ -33,7 +33,10 @@ use platform::PlatformError;
 use zbus::blocking::Connection;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
-use crate::memory_key::{classify_lookup, KeyLookup, KEY_ATTRIBUTES, MEMORY_KEY_LABEL};
+use crate::memory_key::{
+    classify_lookup, KeyLookup, KEY_ATTRIBUTES, LOOKUP_ATTRIBUTES, MEMORY_KEY_ACCOUNT,
+    MEMORY_KEY_LABEL, MEMORY_KEY_SERVICE,
+};
 
 const SECRETS_NAME: &str = "org.freedesktop.secrets";
 const SECRETS_PATH: &str = "/org/freedesktop/secrets";
@@ -117,6 +120,27 @@ pub fn read_memory_key_on(connection: &Connection) -> Result<Option<Vec<u8>>, Pl
 
 /// The create path. See [`write_memory_key`].
 pub fn write_memory_key_on(connection: &Connection, key: &[u8]) -> Result<(), PlatformError> {
+    // Refuse if any item already exists. `replace = false` below means "do not
+    // replace", NOT "fail if present": without this check `CreateItem` happily
+    // adds a *second* item, and `SearchItems` returns the newest first, so the
+    // next load returns a different key and every row encrypted under the first
+    // becomes silently unreadable — `MemoryStore::recent` skips rows it cannot
+    // decrypt, so the store just looks empty. Verified live against
+    // gnome-keyring: two writes produced `…/login/1` and `…/login/2` and the
+    // search returned the newer one first.
+    //
+    // The load path calls this only after a search said `Absent`, so reaching
+    // this error means the store changed underneath us (a restored keyring, or
+    // another tool writing the same attributes) — exactly the case where creating
+    // would destroy data.
+    let (unlocked, locked) = search_items(connection)?;
+    if !unlocked.is_empty() || !locked.is_empty() {
+        return Err(refused(format!(
+            "an item for {MEMORY_KEY_SERVICE}/{MEMORY_KEY_ACCOUNT} already exists              ({} unlocked, {} locked) — refusing to create a second key, which would              make the existing memory store unreadable",
+            unlocked.len(),
+            locked.len()
+        )));
+    }
     let session = open_session(connection)?;
     let attributes: HashMap<&str, &str> = KEY_ATTRIBUTES.iter().copied().collect();
     let mut properties: HashMap<&str, Value<'_>> = HashMap::new();
@@ -178,12 +202,16 @@ fn open_session(connection: &Connection) -> Result<OwnedObjectPath, PlatformErro
     Ok(session)
 }
 
-/// `SearchItems(attributes)` → `(unlocked, locked)`. Matching is by attribute
-/// subset, so extra attributes on the stored item do not prevent a match.
+/// `SearchItems(attributes)` → `(unlocked, locked)`.
+///
+/// Queried with [`LOOKUP_ATTRIBUTES`], not the full create set: an item matches
+/// only when every *queried* attribute is present on it, so querying an attribute
+/// that is not part of the secret's identity makes that attribute load-bearing
+/// for data recovery. Extra attributes on the stored item never prevent a match.
 fn search_items(
     connection: &Connection,
 ) -> Result<(Vec<OwnedObjectPath>, Vec<OwnedObjectPath>), PlatformError> {
-    let attributes: HashMap<&str, &str> = KEY_ATTRIBUTES.iter().copied().collect();
+    let attributes: HashMap<&str, &str> = LOOKUP_ATTRIBUTES.iter().copied().collect();
     let reply = connection
         .call_method(
             Some(SECRETS_NAME),
