@@ -480,7 +480,7 @@ nix-shell -p gcc pkg-config gtk3 at-spi2-core glib xvfb dbus \
   --run tools/acceptance/run-linux-atspi-session.sh
 
 # Debian/Ubuntu
-sudo apt-get install build-essential pkg-config libgtk-3-dev libatspi2.0-dev xvfb dbus-x11
+sudo apt-get install build-essential pkg-config libgtk-3-dev libatspi2.0-dev libx11-dev xvfb dbus-x11 at-spi2-core
 tools/acceptance/run-linux-atspi-session.sh
 ```
 

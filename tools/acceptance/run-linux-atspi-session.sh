@@ -45,7 +45,10 @@ unprovisioned() {
   echo "atspi-session SKIP: $*" >&2
   echo "atspi-session: on NixOS, run this script inside:" >&2
   echo "  nix-shell -p gcc pkg-config gtk3 at-spi2-core glib xvfb dbus --run tools/acceptance/run-linux-atspi-session.sh" >&2
-  echo "atspi-session: on Debian/Ubuntu: apt-get install build-essential pkg-config libgtk-3-dev libatspi2.0-dev xvfb dbus-x11" >&2
+  # at-spi2-core is the runtime package carrying at-spi-bus-launcher and
+  # at-spi2-registryd; libatspi2.0-dev ships only headers and the client library,
+  # so a dev-packages-only install builds everything and then finds no session.
+  echo "atspi-session: on Debian/Ubuntu: apt-get install build-essential pkg-config libgtk-3-dev libatspi2.0-dev libx11-dev xvfb dbus-x11 at-spi2-core" >&2
   exit 3
 }
 
@@ -97,7 +100,9 @@ require_tools() {
 # Deriving one path from the pkg-config prefix therefore works on exactly the
 # distribution it was written on — which is how CI caught this. Search the known
 # layouts and name every path tried when none matches.
-FIND_HELPER_ERROR=""
+# The diagnostic goes to stderr, not a variable: callers use this in a command
+# substitution, which runs it in a subshell, so anything it assigned would be
+# discarded — that is exactly how the first fix shipped an empty SKIP message.
 find_atspi_helper() {
   helper_name="$1"
   prefix="${ATSPI_PREFIX:-/usr}"
@@ -116,7 +121,7 @@ find_atspi_helper() {
     command -v "$helper_name"
     return 0
   fi
-  FIND_HELPER_ERROR="missing at-spi2 helper $helper_name; looked in $prefix/libexec, $prefix/libexec/at-spi2-core, $prefix/lib/at-spi2-core, and PATH"
+  echo "atspi-session: no $helper_name in $prefix/libexec, $prefix/libexec/at-spi2-core, $prefix/lib/at-spi2-core, or PATH" >&2
   return 1
 }
 
@@ -226,16 +231,18 @@ run_self_test() {
       status=1
     fi
   done
-  if ATSPI_PREFIX="$tmp_dir/empty-prefix" find_atspi_helper compme-no-such-helper >/dev/null 2>&1; then
-    echo "FAIL self-test-atspi-session-missing-helper-reports-paths" >&2
+  # Called exactly as production does — inside a command substitution — because a
+  # subshell discards anything the function assigns. The first version of this
+  # check called the function directly, so it passed while production printed an
+  # empty message.
+  helper_err="$tmp_dir/helper.err"
+  if found="$(ATSPI_PREFIX="$tmp_dir/empty-prefix" find_atspi_helper compme-no-such-helper 2>"$helper_err")"; then
+    echo "FAIL self-test-atspi-session-missing-helper-reports-paths: unexpectedly found '$found'" >&2
     status=1
-  elif [ -n "$FIND_HELPER_ERROR" ] && case "$FIND_HELPER_ERROR" in
-    *at-spi2-core*PATH*) true ;;
-    *) false ;;
-  esac then
+  elif grep -q 'at-spi2-core' "$helper_err" && grep -q 'PATH' "$helper_err"; then
     echo "PASS self-test-atspi-session-missing-helper-reports-paths"
   else
-    echo "FAIL self-test-atspi-session-missing-helper-reports-paths: $FIND_HELPER_ERROR" >&2
+    echo "FAIL self-test-atspi-session-missing-helper-reports-paths: $(cat "$helper_err")" >&2
     status=1
   fi
 
@@ -308,9 +315,9 @@ require_pkgconfig gtk+-3.0 atspi-2 x11
 
 ATSPI_PREFIX="$(pkg-config --variable=prefix atspi-2)"
 BUS_LAUNCHER="$(find_atspi_helper at-spi-bus-launcher)" ||
-  unprovisioned "$FIND_HELPER_ERROR"
+  unprovisioned "missing at-spi2 helper: at-spi-bus-launcher"
 REGISTRYD="$(find_atspi_helper at-spi2-registryd)" ||
-  unprovisioned "$FIND_HELPER_ERROR"
+  unprovisioned "missing at-spi2 helper: at-spi2-registryd"
 
 sanitize_a11y_env
 session_dir="$(mktemp -d 2>/dev/null || mktemp -d -t compme-atspi)"
