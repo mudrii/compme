@@ -8,18 +8,25 @@
 # capabilities the Linux adapter needs: field text read, caret offset,
 # per-character screen extents, and an EditableText insert that reads back.
 #
+# With `--run-in-session CMD [ARG...]` the probe is skipped and CMD runs instead,
+# inside the live session, with DISPLAY, DBUS_SESSION_BUS_ADDRESS,
+# XDG_RUNTIME_DIR, COMPME_ATSPI_SESSION_DIR, and COMPME_ATSPI_FIXTURE_LOG
+# exported. That is how the accept-key spike and the adapter's own tests run
+# against a real accessibility stack without each re-implementing the bring-up.
+#
 # No desktop environment, display, or root is required, so it runs on a headless
 # Linux box or a CI runner. It is a *harness*, not product code: it proves the
 # session is usable before Phase 2.1-2.4 code exists to be tested in it, and
 # afterwards it is where those tests run.
 #
-# Exit codes: 0 pass · 1 probe/session failure · 3 host not provisioned
+# Exit codes: 0 pass · 1 probe/session/payload failure · 3 host not provisioned
 # (missing tool or dev package — printed with what to install).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE_SRC="${COMPME_ATSPI_FIXTURE_SRC:-$ROOT_DIR/tools/acceptance/linux-atspi-fixture.c}"
 PROBE_SRC="${COMPME_ATSPI_PROBE_SRC:-$ROOT_DIR/tools/acceptance/linux-atspi-probe.c}"
+KEYTAP_SRC="${COMPME_ATSPI_KEYTAP_SRC:-$ROOT_DIR/tools/acceptance/linux-keytap-spike.c}"
 # The accessible names the fixture publishes; overridable so a future test can
 # target the text view instead of the entry.
 APP_NAME="${COMPME_ATSPI_APP_NAME:-compme-fixture}"
@@ -97,11 +104,12 @@ run_self_test() {
   # One `unset` per line: the release checker's hermetic-self-test contract reads
   # the names off lines beginning with `unset`, so a line continuation would hide
   # everything after the first line from it.
-  unset COMPME_ATSPI_FIXTURE_SRC COMPME_ATSPI_PROBE_SRC
+  unset COMPME_ATSPI_FIXTURE_SRC COMPME_ATSPI_PROBE_SRC COMPME_ATSPI_KEYTAP_SRC
   unset COMPME_ATSPI_APP_NAME COMPME_ATSPI_FIELD_NAME
   unset COMPME_ATSPI_WAIT_TRIES COMPME_ATSPI_WAIT_SLEEP COMPME_ATSPI_KEEP
   FIXTURE_SRC="$ROOT_DIR/tools/acceptance/linux-atspi-fixture.c"
   PROBE_SRC="$ROOT_DIR/tools/acceptance/linux-atspi-probe.c"
+  KEYTAP_SRC="$ROOT_DIR/tools/acceptance/linux-keytap-spike.c"
   APP_NAME="compme-fixture"
   FIELD_NAME="compme-fixture-entry"
 
@@ -173,10 +181,28 @@ run_self_test() {
     status=1
   fi
 
-  # 5. The fixture and probe sources must exist and agree with this script on the
+  # 5. Argument handling: --run-in-session must require a command (an empty
+  # payload would otherwise silently fall through to the probe and "pass"), and
+  # an unknown flag must be refused rather than ignored.
+  set +e
+  ("$0" --run-in-session) >"$tmp_dir/no-payload.out" 2>&1
+  no_payload_rc=$?
+  ("$0" --bogus-flag) >"$tmp_dir/bogus.out" 2>&1
+  bogus_rc=$?
+  set -e
+  if [ "$no_payload_rc" -eq 1 ] && grep -q 'needs a command to run' "$tmp_dir/no-payload.out" &&
+    [ "$bogus_rc" -eq 1 ] && grep -q 'unknown argument' "$tmp_dir/bogus.out"; then
+    echo "PASS self-test-atspi-session-argument-handling"
+  else
+    echo "FAIL self-test-atspi-session-argument-handling: rc=$no_payload_rc/$bogus_rc" >&2
+    cat "$tmp_dir/no-payload.out" "$tmp_dir/bogus.out" >&2
+    status=1
+  fi
+
+  # 6. The fixture and probe sources must exist and agree with this script on the
   # accessible names — a rename on one side would otherwise fail only at runtime,
   # on a Linux host, long after the change.
-  for src in "$FIXTURE_SRC" "$PROBE_SRC"; do
+  for src in "$FIXTURE_SRC" "$PROBE_SRC" "$KEYTAP_SRC"; do
     [ -f "$src" ] || { echo "FAIL self-test-atspi-session-sources-present: missing $src" >&2; status=1; }
   done
   if grep -q "\"$APP_NAME\"" "$FIXTURE_SRC" && grep -q "\"$FIELD_NAME\"" "$FIXTURE_SRC" &&
@@ -192,19 +218,33 @@ run_self_test() {
   exit 0
 }
 
+payload=()
+build_keytap_spike=""
 case "${1:-}" in
   --self-test)
     run_self_test
     ;;
+  --run-in-session)
+    shift
+    [ "$#" -gt 0 ] || fail "--run-in-session needs a command to run"
+    payload=("$@")
+    ;;
+  --keytap-spike)
+    # Convenience wrapper over --run-in-session: the spike needs x11/xtst link
+    # flags, and keeping them here rather than in a documented copy-paste command
+    # is what makes the Phase 2.3 experiment reproducible.
+    build_keytap_spike=1
+    ;;
   "") ;;
   *)
-    fail "unknown argument: $1 (use --self-test or no arguments)"
+    fail "unknown argument: $1 (use --self-test, --keytap-spike, --run-in-session CMD, or no arguments)"
     ;;
 esac
 
 [ "$(uname -s)" = Linux ] || unprovisioned "this harness targets Linux (host is $(uname -s))"
 require_tools gcc pkg-config Xvfb dbus-daemon dbus-send
 require_pkgconfig gtk+-3.0 atspi-2
+[ -z "$build_keytap_spike" ] || require_pkgconfig x11 xtst
 
 ATSPI_PREFIX="$(pkg-config --variable=prefix atspi-2)"
 BUS_LAUNCHER="$ATSPI_PREFIX/libexec/at-spi-bus-launcher"
@@ -246,6 +286,13 @@ gcc -Wall -Wextra -o "$session_dir/fixture" "$FIXTURE_SRC" "${gtk_flags[@]}" ||
 gcc -Wall -Wextra -o "$session_dir/probe" "$PROBE_SRC" "${atspi_flags[@]}" ||
   fail "probe build failed"
 
+if [ -n "$build_keytap_spike" ]; then
+  read -r -a x11_flags <<<"$(pkg-config --cflags --libs x11 xtst)"
+  gcc -Wall -Wextra -o "$session_dir/keytap-spike" "$KEYTAP_SRC" "${x11_flags[@]}" ||
+    fail "keytap spike build failed"
+  payload=("$session_dir/keytap-spike")
+fi
+
 Xvfb -displayfd 3 -screen 0 1280x1024x24 -nolisten tcp \
   3>"$session_dir/display" >"$session_dir/xvfb.log" 2>&1 &
 xvfb_pid=$!
@@ -284,6 +331,21 @@ wait_until grep -q 'well-known name' "$session_dir/registryd.log" ||
 fixture_pid=$!
 wait_until grep -q FIXTURE_READY "$session_dir/fixture.log" ||
   fail "the GTK fixture never mapped (see $session_dir/fixture.log)"
+
+export COMPME_ATSPI_SESSION_DIR="$session_dir"
+export COMPME_ATSPI_FIXTURE_LOG="$session_dir/fixture.log"
+
+if [ "${#payload[@]}" -gt 0 ]; then
+  # The payload owns the verdict; the harness only guarantees the session. Its
+  # output is not captured, so a test runner's progress stays live.
+  payload_status=0
+  "${payload[@]}" || payload_status=$?
+  if [ "$payload_status" -ne 0 ]; then
+    fail "in-session command exited $payload_status: ${payload[*]}"
+  fi
+  echo "atspi-session PASS: display=$DISPLAY ran ${payload[*]}"
+  exit 0
+fi
 
 probe_status=0
 "$session_dir/probe" "$APP_NAME" "$FIELD_NAME" >"$session_dir/probe.log" 2>"$session_dir/probe.err" ||

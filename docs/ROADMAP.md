@@ -219,6 +219,27 @@ the adapter rather than after it. No desktop, display, or root required.
   the ubuntu runner and running the *full* harness there, which lands with the
   first real AT-SPI adapter code — an inert full run gates nothing today.
 
+**Phase 2.3 accept-key strategy ✅ RESOLVED (2026-07-27) — decision, measured:**
+Linux accept-key interception will use **`KeyInterceptMode::XGrabKey`** with a
+passive grab in keyboard `GrabModeSync`, resolving each keystroke through
+`XAllowEvents`: `AsyncKeyboard` to consume (accept), `ReplayKeyboard` to deliver
+it to the focused app untouched (Tab means Tab). That reproduces the macOS
+CGEventTap semantics with no synthetic re-send.
+- `tools/acceptance/linux-keytap-spike.c`, run via
+  `run-linux-atspi-session.sh --keytap-spike`, confirms all four observations on
+  a real X server (baseline delivery, interception, consume, pass-through,
+  post-ungrab delivery). The fixture now logs every key it receives, which is
+  what separates "we swallowed it" from "we saw it and the app got it anyway".
+- **This overturns the plan's original premise** that `XGrabKey` is too
+  invasive, and **rejects XInput2 raw events outright**: they cannot consume, so
+  a Tab accept would also insert a literal Tab.
+- Carried into the implementation as risks, not open questions: a `GrabModeSync`
+  grab freezes the keyboard *system-wide* until `XAllowEvents`, so the resolve
+  must happen on every path including panic and Drop; `BadAccess` (a WM or IME
+  already holding the key) must degrade to `UxMode::Hotkey` rather than fail; and
+  the spike must be re-run on GNOME-Xorg/KDE-Xorg/XFCE, since Xvfb has no window
+  manager competing for Tab.
+
 **Phase 0 pre-work ✅ DONE (2026-07-08, same-day as planned):**
 - **`InsertStrategy::NativeRangeSet`** shipped — variant + doc contract on the
   shared enum, opted into `supports_atomic_range_replace()`; pinned by the
@@ -913,11 +934,12 @@ per-app configurable.
 7. **Linux Phase 2 (2.1–2.7), X11-first** — a native Linux build+gate host is
    now in the loop, so this runs ahead of (or alongside) Windows Phase 1. The
    desktop-free part of 2.6 and the 2.7 fixture harness both shipped 2026-07-27
-   (see 1.1), so 2.1–2.5 now have a deterministic Xvfb target. Remaining order:
-   the two-day 2.3 accept-key strategy spike, then AT-SPI2 read (2.1), caret
-   geometry (2.2), insertion (2.4), and overlay (2.5). The host is headless (tty
-   session, no X server outside the harness), so live-session acceptance still
-   needs a graphical session installed on it or physical access.
+   (see 1.1), so 2.1–2.5 now have a deterministic Xvfb target, and the 2.3
+   accept-key strategy is resolved (`XGrabKey` + `XAllowEvents`). Remaining
+   order: AT-SPI2 read (2.1), caret geometry (2.2), insertion (2.4), the accept
+   tap against the resolved 2.3 design, and overlay (2.5). The host is headless
+   (tty session, no X server outside the harness), so live-session acceptance
+   still needs a graphical session installed on it or physical access.
 8. **Wayland Phase 3 decision spike** — compare IME and portal/global-shortcut
    paths on GNOME, KDE, and sway before committing to an implementation.
 9. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux

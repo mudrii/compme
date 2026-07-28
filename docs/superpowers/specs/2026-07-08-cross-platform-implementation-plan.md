@@ -228,12 +228,49 @@ X11 on it.
     flush; the context-crate contract already wants scalars).
 2.2 **Caret geometry**: `Text.GetCharacterExtents` at caret offset,
     `coords_global_screen=true` (CoordType::Screen).
-2.3 **Accept tap (X11)**: `XGrabKey` on Tab/Esc only-while-visible is too
-    invasive (grabs are exclusive) → prefer XTEST-passive approach:
-    `x11rb` + XInput2 raw key events with a synthetic re-send suppress, or
-    fall back to `KeyInterceptMode::FocusScopedInhibit`. Decision spike
-    first (2 days, prototype both; AT-SPI device listeners are deprecated,
-    libei is future-proof but compositor-gated).
+2.3 **Accept tap (X11)** — ✅ **SPIKE RESOLVED 2026-07-27.** Decision:
+    **`KeyInterceptMode::XGrabKey`**, using a *passive* grab with the keyboard
+    in `GrabModeSync` and each keystroke resolved by `XAllowEvents`:
+    `AsyncKeyboard` consumes it (the accept path), `ReplayKeyboard` delivers it
+    to the focused application as if no grab existed (Tab means Tab). That pair
+    reproduces the macOS CGEventTap semantics exactly — per-keystroke consume or
+    pass-through, with no synthetic re-send and no window where a keystroke is
+    dropped or duplicated.
+
+    Measured, not reasoned: `tools/acceptance/linux-keytap-spike.c` run through
+    `run-linux-atspi-session.sh --keytap-spike` against the GTK fixture (which
+    logs every key it receives) confirms all four observations on a real X
+    server — ungrabbed key reaches the app, the grab delivers it to the
+    interceptor, `AsyncKeyboard` keeps it from the app, `ReplayKeyboard` passes
+    it through, and ungrabbing restores plain delivery. The baseline and
+    post-ungrab legs exist so a "no key ever arrives" rig failure cannot
+    masquerade as a successful consume.
+
+    This **supersedes this plan's original premise** that `XGrabKey` is "too
+    invasive because grabs are exclusive". That holds for a *held* grab; a
+    passive grab on Tab/Esc, armed only while a suggestion is visible and
+    replaying whatever it does not consume, has no observable effect on other
+    clients. **XInput2 raw key events are rejected**: they are observe-only, so
+    accepting with Tab would also insert a literal Tab — the requirement cannot
+    be met at all. The XTEST re-send workaround is rejected as strictly worse
+    than `ReplayKeyboard` (it needs an ignore-window for our own synthetic key
+    and loses event ordering).
+
+    Residuals the implementation owns:
+    - **A `GrabModeSync` grab freezes keyboard processing until `XAllowEvents`.**
+      If compme hangs, panics, or exits between the KeyPress and the resolve,
+      the user's keyboard stops responding *in every application*. Treat this
+      with the same severity as the macOS accept-tap teardown invariant: resolve
+      on every path (including panic and Drop), keep a watchdog, and arm the
+      grab only while a suggestion is visible.
+    - `XGrabKey` returns `BadAccess` when another client (window manager, IME)
+      already grabs that key+modifier. Detect at arm time and degrade to
+      `UxMode::Hotkey` / `FocusScopedInhibit` instead of failing the session.
+    - Xvfb runs without a window manager, and with no WM nothing assigns the
+      input focus (it is `PointerRoot`), so the spike sets it explicitly. Re-run
+      the same spike on GNOME-Xorg, KDE-Xorg, and XFCE before declaring 2.3
+      done on real desktops: a WM there may already hold Tab.
+    - Wayland is unaffected — no global grabs exist there; that remains Phase 3.
 2.4 **Insert**: `EditableText.InsertText/DeleteText` (report
     `NativeRangeSet`); XTEST synthetic fallback where EditableText absent.
 2.5 **Overlay**: override-redirect X11 window (x11rb), ARGB visual for

@@ -498,8 +498,21 @@ GTK app silently skips accessibility registration, so the session comes up
 perfectly and the probe finds an empty desktop.
 
 `--self-test` covers the hermetic half (env sanitizing, `-displayfd` parsing,
-bounded readiness waits, unprovisioned-host reporting, and fixture/probe name
-agreement) and runs in the Linux CI job and the Full Local Gate on any host.
+bounded readiness waits, argument handling, unprovisioned-host reporting, and
+fixture/probe name agreement) and runs in the Linux CI job and the Full Local
+Gate on any host.
+
+Two other modes run inside the same session instead of the probe:
+
+```sh
+# Phase 2.3 accept-key experiment (builds linux-keytap-spike.c; needs x11 + xtst)
+tools/acceptance/run-linux-atspi-session.sh --keytap-spike
+
+# Anything else — this is how the Linux adapter's own tests run against a real
+# accessibility stack. DISPLAY, DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR,
+# COMPME_ATSPI_SESSION_DIR, and COMPME_ATSPI_FIXTURE_LOG are exported for it.
+tools/acceptance/run-linux-atspi-session.sh --run-in-session cargo test -p platform_linux
+```
 
 ## Model Development Notes
 

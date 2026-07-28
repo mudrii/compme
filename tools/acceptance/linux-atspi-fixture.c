@@ -43,6 +43,19 @@ static void on_map(GtkWidget *widget, gpointer user_data) {
   fflush(stdout);
 }
 
+/* Log every key the application actually receives. This is how the accept-key
+ * spike tells "the interceptor swallowed the key" from "the interceptor saw it
+ * and the app got it anyway" — the whole question for a Tab-to-accept tap.
+ * Returns FALSE so normal widget handling still runs. */
+static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
+  (void)widget;
+  (void)user_data;
+  const char *name = gdk_keyval_name(event->keyval);
+  printf("KEY %s\n", name != NULL ? name : "unknown");
+  fflush(stdout);
+  return FALSE;
+}
+
 int main(int argc, char **argv) {
   /* The AT-SPI application name is taken from the program name, so set it
    * before gtk_init registers with the accessibility bus. */
@@ -54,6 +67,9 @@ int main(int argc, char **argv) {
   gtk_window_set_default_size(GTK_WINDOW(window), 480, 240);
   g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
   g_signal_connect_after(window, "map", G_CALLBACK(on_map), NULL);
+  /* Not `_after`: the toplevel's default handler forwards the event to the focus
+   * widget, so connecting before it is what sees Tab and Escape too. */
+  g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), NULL);
 
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
   gtk_container_set_border_width(GTK_CONTAINER(box), 8);
