@@ -105,6 +105,13 @@ impl AtspiSession {
         Ok(Self { connection })
     }
 
+    /// The underlying bus connection. Exposed for the event workers
+    /// (`atspi_events`), which clone it so cancelling a subscription can close it —
+    /// the only way to interrupt a thread parked in the blocking message iterator.
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
     fn accessible(&self, id: &ElementId) -> Result<AccessibleProxyBlocking<'_>, PlatformError> {
         AccessibleProxyBlocking::builder(&self.connection)
             .destination(id.bus_name.clone())
@@ -462,11 +469,43 @@ impl AtspiSession {
 
     /// The application owning the focused field, for `front_app`.
     pub fn focused_app_name(&self) -> Option<String> {
-        let focused = self.focused_field().ok().flatten()?;
-        let node = self.accessible(&focused).ok()?;
+        self.application_name(&self.focused_field().ok().flatten()?)
+    }
+
+    /// The `app` and `pid` for a [`FieldHandle`] built from an event, as far as the
+    /// accessibility bus can answer.
+    ///
+    /// Best effort by construction, and cheap only relative to how rarely it runs:
+    /// AT-SPI models the application as another accessible (so its name is two more
+    /// round trips) and exposes no process id at all, so the pid comes from the bus's
+    /// own `GetConnectionUnixProcessID`. When the name cannot be read the owning bus
+    /// name stands in, because `FieldHandle::app` is logged and compared — an empty
+    /// string there reads as a bug in the adapter rather than a quiet toolkit.
+    pub(crate) fn element_owner(&self, id: &ElementId) -> (String, Option<u32>) {
+        (
+            self.application_name(id)
+                .unwrap_or_else(|| id.bus_name.clone()),
+            self.owner_pid(id),
+        )
+    }
+
+    /// The name of the application owning `id`.
+    fn application_name(&self, id: &ElementId) -> Option<String> {
+        let node = self.accessible(id).ok()?;
         let app = node.get_application().ok()?;
         let app_id = ElementId::new(app.name_as_str()?, app.path_as_str());
         self.accessible(&app_id).ok()?.name().ok()
+    }
+
+    /// The unix process id behind `id`'s bus name, asked of the accessibility bus
+    /// itself. `None` whenever the bus declines — a peer that has already exited is
+    /// the ordinary case, not an error worth propagating into a focus event.
+    fn owner_pid(&self, id: &ElementId) -> Option<u32> {
+        let bus_name = atspi::zbus::names::BusName::try_from(id.bus_name.as_str()).ok()?;
+        atspi::zbus::blocking::fdo::DBusProxy::new(&self.connection)
+            .ok()?
+            .get_connection_unix_process_id(bus_name)
+            .ok()
     }
 }
 

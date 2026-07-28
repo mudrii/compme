@@ -1,12 +1,15 @@
-//! Linux platform adapter — SCAFFOLD (ROADMAP Tier 1.1), except for the host
-//! surfaces that need no desktop session.
+//! Linux platform adapter — the AT-SPI2 field and event surfaces are real
+//! (ROADMAP Phase 2.1/2.2/2.4); the X11 accept tap and overlay are still
+//! scaffold (Tier 1.1), as are the session-dependent shell services.
 //!
 //! Implements the [`platform::PlatformAdapter`] contract so the cross-platform
-//! structure exists and CI can gate it. The AT-SPI2/X11 surfaces — focus, caret,
-//! accept tap, read, insert, overlay — are **not yet built**: each is a
-//! fail-closed stub returning [`PlatformError::UnsupportedField`] or a safe empty
-//! value, so wiring this adapter in is inert, never a crash, and each method's
-//! doc names the Linux API its real implementation will use.
+//! structure exists and CI can gate it. The AT-SPI2 read, insert, and focus/caret
+//! event surfaces are real on Linux with an accessibility session (see
+//! `atspi_live` and `atspi_events`). The remaining X11 surfaces — the accept tap
+//! and the overlay — are **not yet built**: each is a fail-closed stub returning
+//! [`PlatformError::UnsupportedField`] or a safe empty value, so wiring this
+//! adapter in is inert, never a crash, and each method's doc names the Linux API
+//! its real implementation will use.
 //!
 //! Real today, because they need neither a display nor an accessibility bus and
 //! so are verifiable on a headless Linux host: `environment` (distro + kernel),
@@ -24,6 +27,11 @@ use platform::{
 use std::path::{Path, PathBuf};
 
 pub mod atspi_caps;
+pub mod atspi_event_map;
+/// Live AT-SPI2 focus/caret event delivery. Linux-only for the same reason as
+/// `atspi_live`; its pure half lives in `atspi_event_map`, which builds everywhere.
+#[cfg(target_os = "linux")]
+pub mod atspi_events;
 pub mod atspi_ids;
 /// Live AT-SPI2 read path. Linux-only: it needs the accessibility bus, and the
 /// `atspi` dependency is target-gated, so the module cannot exist elsewhere.
@@ -47,11 +55,13 @@ const MEMINFO_PATH: &str = "/proc/meminfo";
 /// XDG autostart entry filename. One entry per application, so it is fixed.
 const AUTOSTART_ENTRY: &str = "compme.desktop";
 
-/// Linux implementation of [`PlatformAdapter`] — scaffold (see module docs).
-/// Implementation map for the real adapter (built on a Linux host):
-/// - focus / caret events → AT-SPI2 (`atspi`, accessibility over D-Bus)
+/// Linux implementation of [`PlatformAdapter`] — partly real, partly scaffold (see
+/// module docs). Implementation map:
+/// - focus / caret events → AT-SPI2 `object:state-changed:focused` /
+///   `object:text-caret-moved` signals over D-Bus (built: `atspi_events`)
 /// - capabilities / read_context / caret_rect → AT-SPI2 Text/EditableText interfaces
-/// - subscribe_accept → AT-SPI2 device/key listeners (X11), or a compositor path on Wayland
+/// - subscribe_accept → X11 `XGrabKey` with `GrabModeSync` + `XAllowEvents`
+///   (ROADMAP Phase 2.3's resolved design), or a compositor path on Wayland
 /// - insert / insert_replacing → AT-SPI2 EditableText, else XTEST / `wtype` synthetic keys
 ///   (Wayland restricts synthetic injection — IBus IME commit is the fallback)
 /// - overlay → an override-redirect X11 window, or a layer-shell surface on Wayland
@@ -74,9 +84,10 @@ impl LinuxAdapter {
     /// the live read path ask for it explicitly with `with_accessibility` (a
     /// plain code span, not an intra-doc link: that method is Linux-only, so the
     /// link would be unresolvable when this crate is documented on macOS, where
-    /// the workspace `cargo doc` runs with `-D warnings`). The app wiring keeps
-    /// using `new()` until the focus/caret event path (Phase 2.1's second half)
-    /// makes the live adapter useful at runtime.
+    /// the workspace `cargo doc` runs with `-D warnings`). The app wiring still uses
+    /// `new()`: the read, insert, and event paths are live, but the accept tap
+    /// (Phase 2.3) and the overlay (2.5) are not, so nothing yet drives the adapter
+    /// end to end.
     pub fn new() -> Self {
         Self::default()
     }
@@ -125,12 +136,34 @@ impl PlatformAdapter for LinuxAdapter {
         }
     }
 
+    /// AT-SPI2 `object:state-changed:focused` signals, delivered by
+    /// [`atspi_events::subscribe_focus`]. Each subscription gets its own bus
+    /// connection and worker threads, so dropping the `Subscription` closes exactly
+    /// that connection and stops exactly that delivery.
+    #[cfg(target_os = "linux")]
+    fn subscribe_focus(&self, cb: FocusCallback) -> Result<Subscription, PlatformError> {
+        // Gate on the adapter's own session so a host without accessibility fails
+        // closed here rather than paying the bus-activation timeout per subscribe.
+        self.session("subscribe_focus")?;
+        atspi_events::subscribe_focus(cb)
+    }
+
     /// Real impl: AT-SPI2 focus-changed event subscription (D-Bus).
+    #[cfg(not(target_os = "linux"))]
     fn subscribe_focus(&self, _cb: FocusCallback) -> Result<Subscription, PlatformError> {
         Err(Self::unsupported("subscribe_focus"))
     }
 
+    /// AT-SPI2 `object:text-caret-moved` signals plus the `caret_rect` geometry
+    /// probe, coalesced. See [`atspi_events::subscribe_caret`].
+    #[cfg(target_os = "linux")]
+    fn subscribe_caret(&self, cb: CaretCallback) -> Result<Subscription, PlatformError> {
+        self.session("subscribe_caret")?;
+        atspi_events::subscribe_caret(cb)
+    }
+
     /// Real impl: AT-SPI2 text-caret-moved / bounds-changed events.
+    #[cfg(not(target_os = "linux"))]
     fn subscribe_caret(&self, _cb: CaretCallback) -> Result<Subscription, PlatformError> {
         Err(Self::unsupported("subscribe_caret"))
     }

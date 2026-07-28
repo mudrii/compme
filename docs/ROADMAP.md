@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-27 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈1961 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-28 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈1964 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -158,9 +158,10 @@ hardware, sessions, and permissions unavailable on macOS.
   `WH_KEYBOARD_LL` accept tap +
   `SendInput`/ValuePattern insert + layered overlay, plus real ShellHost services
   (DPAPI/CredWrite key store, tray, confirm UI, launch-at-login, native event pump).
-- The actual **Linux** adapter behind `#[cfg(target_os = "linux")]`: AT-SPI2
-  read/insert/events + XTEST/`wtype` synthetic keys (IBus IME fallback on Wayland)
-  + override-redirect/layer-shell overlay. (AT-SPI device key-listeners are
+- The rest of the **Linux** adapter behind `#[cfg(target_os = "linux")]`: AT-SPI2
+  read, insert, and focus/caret events are done (see below); still owed are
+  XTEST/`wtype` synthetic keys (IBus IME fallback on Wayland) and an
+  override-redirect/layer-shell overlay. (AT-SPI device key-listeners are
   deprecated → prefer XTEST/XGrabKey or libei for the accept tap.) Real ShellHost
   services still need libsecret, tray/portal integration, confirm UI, and a
   native event pump.
@@ -276,14 +277,61 @@ the decisions testable everywhere and the I/O in one place:
   most — every rejection path (stale expected text, range past the end, inverted
   range, non-atomic strategy) refusing *and leaving the field byte-identical*.
 
-**Still pending for Phase 2:** `subscribe_focus`/`subscribe_caret` (the event
-half of 2.1 — the adapter cannot yet *notice* a focus change, only answer
-questions about a field it is handed), the accept tap against the resolved 2.3
-design, the overlay (2.5), and the session-dependent ShellHost services (2.6).
-Until the event half and the overlay land, the Linux adapter is a complete
-read/write *seam* with no runtime that drives it, which is why
-`capabilities` still reports `accept_intercept: None` and
-`overlay_at_caret: None`.
+**Phase 2.1 event half ✅ DONE (2026-07-28) — live-verified:**
+`subscribe_focus`/`subscribe_caret` are real, so the adapter now *notices* focus
+and caret changes instead of only answering questions about a field it is handed.
+- `atspi_event_map` is the pure half, tested on every host: `FieldHandle` minting
+  whose `generation` advances exactly when the `(bus name, object path)` pair
+  changes (a revisited element gets a *fresh* generation — the accessible may have
+  been rebuilt at the same path), and newest-wins coalescing.
+- `atspi_events` owns the D-Bus side. **Registration is two steps and both are
+  required:** `org.a11y.atspi.Registry.RegisterEvent` decides which events
+  applications emit *at all*, the bus match rule decides which are routed to us,
+  and missing either yields a subscription that silently never fires. Focus
+  registers the narrow `object:state-changed:focused` detail so no other state
+  transition reaches the bus; caret registers `object:text-caret-moved`.
+- **Two threads per subscription, over its own bus connection.** A reader parked in
+  the blocking message iterator only decodes and forwards; a dispatcher owns every
+  blocking call (`app`/`pid` lookups, caret geometry, the subscriber callback) and
+  contains its panics. That is the macOS worker/`CallbackDispatcher` split ported
+  rather than reinvented, for the same reason: a slow or panicking subscriber must
+  not stall or kill the bus reader.
+- **Drop really stops delivery**, which was the part most likely to be silently
+  wrong. There is no interruptible receive in the blocking zbus API and a
+  `MessageIterator` borrowed by a parked thread cannot be dropped from another one,
+  so cancellation *closes the subscription's own connection* — the socket shuts down
+  both ways, the pending read fails, the stream terminates, both threads unwind and
+  are joined. That is why each subscription opens its own connection instead of
+  sharing the read path's. An `active` gate closes first, so nothing can be
+  delivered after `Subscription::drop` returns, and the join is bounded (2s, then
+  detach) because unsubscribing runs on the engine's run loop. The live test proves
+  the join by asserting the callback `Arc`'s strong count is back to 1.
+- **Caret events are coalesced** to one geometry round trip per 25ms (the macOS
+  `CARET_COALESCE_INTERVAL_MS`), always delivering the *newest* queued event: a
+  burst loses intermediate positions but never the caret's resting place, which is
+  the property a naive throttle gets wrong and which the live test pins.
+- **GTK emits `state-changed:focused` twice per focus move** (measured on GTK3 /
+  at-spi2 2.60 against the harness fixture), so consecutive duplicate focus events
+  are suppressed — otherwise every Linux focus change would cost the host two
+  capability probes and two field reads. Same trade-off as the macOS
+  `current_identity_key`: an element rebuilt at the same object path reads as a
+  duplicate, and the host learns about it from the next caret event instead.
+- The focus handle is directly usable: `element_id` is an `ElementId::encode()`
+  string, so `capabilities`/`read_context` work on it with no translation, and `app`
+  plus `pid` are filled in from the application accessible's name and the bus's own
+  `GetConnectionUnixProcessID` (AT-SPI exposes no pid).
+- **2 more live tests (13 total, all passing** on the Linux host, three consecutive
+  harness runs**)**, driving real focus changes through AT-SPI's own
+  `Component.GrabFocus` rather than synthetic X input: a focus change delivers a
+  readable handle with app/pid and a fresh generation, a caret move delivers
+  on-screen geometry, and each subscription stops dead when dropped.
+
+**Still pending for Phase 2:** the accept tap against the resolved 2.3 design, the
+overlay (2.5), and the session-dependent ShellHost services (2.6). Until the accept
+tap and the overlay land, the Linux adapter is a complete read/write/event *seam*
+with no runtime that drives it end to end, which is why `capabilities` still
+reports `accept_intercept: None` and `overlay_at_caret: None`, and why the app
+wiring still constructs `LinuxAdapter::new()` rather than `with_accessibility()`.
 
 **Phase 2.3 accept-key strategy ✅ RESOLVED (2026-07-27) — decision, measured:**
 Linux accept-key interception will use **`KeyInterceptMode::XGrabKey`** with a

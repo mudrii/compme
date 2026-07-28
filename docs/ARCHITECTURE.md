@@ -653,9 +653,29 @@ fetch nor compile it. `LinuxAdapter::new()` stays inert and
 D-Bus-activatable and a constructor-time lookup would wait out the 25-second
 method timeout on a host without accessibility.
 
-AT-SPI2 *event* paths (focus/caret subscription), the accept tap, native
-insertion, overlays, key stores, dialogs, trays, file-manager reveal, packaging,
-and GPU backends remain roadmap work.
+The Linux **AT-SPI2 event path** (ROADMAP Phase 2.1, event half) adds two more
+layers: `atspi_event_map` is the pure half — `FieldHandle` minting, whose
+`generation` advances exactly when the `(bus name, object path)` pair changes, and
+newest-wins coalescing — so both rules are tested on every host; `atspi_events`
+owns the D-Bus side. Each subscription registers its event with
+`org.a11y.atspi.Registry` (which decides what applications emit at all) *and* a bus
+match rule (which decides what is routed to us), then runs two threads over its
+**own** accessibility-bus connection: a reader parked in the blocking message
+iterator that only decodes and forwards, and a dispatcher that owns every blocking
+call — the `app`/`pid` lookups, the caret geometry, and the subscriber callback.
+That is the macOS worker/`CallbackDispatcher` split ported over, for the same
+reason: a slow or panicking subscriber must not stall or kill the bus reader.
+Cancellation closes the subscription's own connection, which is what wakes a reader
+parked in a receive the blocking zbus API gives no way to interrupt — hence one
+connection per subscription rather than sharing the read path's. Caret events are
+throttled to one geometry round trip per 25ms (matching the macOS coalescer) while
+always delivering the newest queued event, so a burst loses intermediate positions
+but never the caret's resting place. Consecutive duplicate focus events are
+suppressed, because GTK emits `state-changed:focused` twice per focus move and each
+one would otherwise cost the host a capability probe plus a field read.
+
+The accept tap, overlays, key stores, dialogs, trays, file-manager reveal,
+packaging, and GPU backends remain roadmap work on Linux.
 
 ## macOS Runtime Model
 

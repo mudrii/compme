@@ -351,9 +351,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgtk-3-dev libatspi2.0-dev libx11-dev xvfb dbus-x11 at-spi2-core
 
-      # The live AT-SPI2 read path (Phase 2.1/2.2) against a real GTK app in
-      # Xvfb. `--test-threads=1` is required, not tidiness: these tests share one
-      # fixture entry, and they mutate its text and selection.
+      # The live AT-SPI2 read, insert, and event paths (Phase 2.1/2.2/2.4) against
+      # a real GTK app in Xvfb. `--test-threads=1` is required, not tidiness: these
+      # tests share one fixture, and they mutate its text, selection, caret, and
+      # which of its two fields holds the focus.
       - name: Live AT-SPI adapter tests
         run: |
           tools/acceptance/run-linux-atspi-session.sh --run-in-session \

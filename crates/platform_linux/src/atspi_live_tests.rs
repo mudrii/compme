@@ -17,13 +17,24 @@
 use super::*;
 use crate::atspi_ids::ElementId;
 use crate::atspi_live::AtspiSession;
+use atspi::proxy::accessible::AccessibleProxyBlocking;
+use atspi::proxy::component::ComponentProxyBlocking;
 use atspi::proxy::editable_text::EditableTextProxyBlocking;
 use platform::{InsertStrategy, OffsetEncoding, PlatformAdapter, SecurityState};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 /// The fixture's single-line entry, by accessible name.
 const FIXTURE_ENTRY: &str = "compme-fixture-entry";
+/// The fixture's multi-line text view, by accessible name. The event tests move
+/// focus onto it and back, which is the only way to make a focus change happen
+/// without synthesizing input.
+const FIXTURE_TEXTVIEW: &str = "compme-fixture-textview";
 /// What linux-atspi-fixture.c seeds the entry with.
 const FIXTURE_TEXT: &str = "teh quick brown";
+/// Ceiling on waiting for an event that a correct implementation delivers in
+/// milliseconds. Generous because it is only paid when something is broken.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn session() -> AtspiSession {
     AtspiSession::open().expect("the harness must provide an accessibility bus")
@@ -55,10 +66,9 @@ fn handle(id: &ElementId) -> FieldHandle {
     }
 }
 
-fn editable(session: &AtspiSession, id: &ElementId) -> EditableTextProxyBlocking<'static> {
-    // Test-side write access, so the read path can be checked against text this
-    // test chose. The adapter's own insert path is Phase 2.4.
-    let _ = session;
+/// A test-owned connection to the accessibility bus, independent of the adapter's.
+/// Every proxy helper below builds on this one so the bring-up lives in one place.
+fn a11y_bus() -> zbus::blocking::Connection {
     let connection = zbus::blocking::Connection::session().expect("session bus");
     let address: String = connection
         .call_method(
@@ -72,12 +82,19 @@ fn editable(session: &AtspiSession, id: &ElementId) -> EditableTextProxyBlocking
         .body()
         .deserialize()
         .expect("address");
-    let a11y = zbus::blocking::connection::Builder::address(
+    zbus::blocking::connection::Builder::address(
         address.parse::<zbus::Address>().expect("parse address"),
     )
     .expect("builder")
     .build()
-    .expect("a11y bus");
+    .expect("a11y bus")
+}
+
+fn editable(session: &AtspiSession, id: &ElementId) -> EditableTextProxyBlocking<'static> {
+    // Test-side write access, so the read path can be checked against text this
+    // test chose. The adapter's own insert path is Phase 2.4.
+    let _ = session;
+    let a11y = a11y_bus();
     EditableTextProxyBlocking::builder(&a11y)
         .destination(id.bus_name.clone())
         .expect("destination")
@@ -386,25 +403,7 @@ fn live_insert_replacing_left_stays_fail_closed() {
 
 /// A Text proxy for the fixture entry, for tests that need to drive selection.
 fn zbus_text(id: &ElementId) -> atspi::proxy::text::TextProxyBlocking<'static> {
-    let connection = zbus::blocking::Connection::session().expect("session bus");
-    let address: String = connection
-        .call_method(
-            Some("org.a11y.Bus"),
-            "/org/a11y/bus",
-            Some("org.a11y.Bus"),
-            "GetAddress",
-            &(),
-        )
-        .expect("GetAddress")
-        .body()
-        .deserialize()
-        .expect("address");
-    let a11y = zbus::blocking::connection::Builder::address(
-        address.parse::<zbus::Address>().expect("parse address"),
-    )
-    .expect("builder")
-    .build()
-    .expect("a11y bus");
+    let a11y = a11y_bus();
     atspi::proxy::text::TextProxyBlocking::builder(&a11y)
         .destination(id.bus_name.clone())
         .expect("destination")
@@ -412,4 +411,199 @@ fn zbus_text(id: &ElementId) -> atspi::proxy::text::TextProxyBlocking<'static> {
         .expect("path")
         .build()
         .expect("Text proxy")
+}
+
+/// The fixture's other field, found by walking the focused entry's parent.
+///
+/// The event tests need a *second* focusable field: AT-SPI only emits
+/// `state-changed:focused` on a focus *change*, and the fixture starts with the entry
+/// already focused, so there is nothing to observe until focus moves elsewhere.
+fn fixture_sibling(entry: &ElementId, name: &str) -> ElementId {
+    let a11y = a11y_bus();
+    let accessible = |id: &ElementId| {
+        AccessibleProxyBlocking::builder(&a11y)
+            .destination(id.bus_name.clone())
+            .expect("destination")
+            .path(id.path.clone())
+            .expect("path")
+            .build()
+            .expect("Accessible proxy")
+    };
+    let parent = accessible(entry).parent().expect("the entry has a parent");
+    let parent = ElementId::new(
+        parent.name_as_str().expect("parent bus name"),
+        parent.path_as_str(),
+    );
+    accessible(&parent)
+        .get_children()
+        .expect("parent children")
+        .into_iter()
+        .find_map(|child| {
+            let id = ElementId::new(child.name_as_str()?, child.path_as_str());
+            (accessible(&id).name().ok()? == name).then_some(id)
+        })
+        .unwrap_or_else(|| panic!("the fixture must expose a sibling named {name}"))
+}
+
+/// Move the keyboard focus onto `id` through AT-SPI's own `Component.GrabFocus`.
+///
+/// Deliberately not synthetic X input: XTEST would drag in a second mechanism (and a
+/// link dependency) to test the event path, while `GrabFocus` is a real toolkit focus
+/// change — GTK runs the same code path a user's Tab key would.
+fn grab_focus(id: &ElementId) {
+    let a11y = a11y_bus();
+    let grabbed = ComponentProxyBlocking::builder(&a11y)
+        .destination(id.bus_name.clone())
+        .expect("destination")
+        .path(id.path.clone())
+        .expect("path")
+        .build()
+        .expect("Component proxy")
+        .grab_focus()
+        .expect("GrabFocus");
+    assert!(grabbed, "the toolkit refused to focus {}", id.encode());
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_focus_events_deliver_a_readable_field_and_stop_when_dropped() {
+    let session = session();
+    let entry = fixture_entry(&session);
+    let textview = fixture_sibling(&entry, FIXTURE_TEXTVIEW);
+    let adapter = LinuxAdapter::with_accessibility();
+
+    let (tx, rx) = mpsc::channel();
+    let cb: FocusCallback = Arc::new(move |field| {
+        let _ = tx.send(field);
+    });
+    let subscription = adapter
+        .subscribe_focus(Arc::clone(&cb))
+        .expect("subscribe_focus");
+
+    // Focus the text view, then the entry again: two real focus changes, ending on
+    // the fixture's documented baseline so the rest of the suite is unaffected.
+    grab_focus(&textview);
+    let moved = rx.recv_timeout(EVENT_TIMEOUT).expect("focus event");
+    assert_eq!(moved.element_id, textview.encode());
+    assert_eq!(
+        moved.app, "compme-fixture",
+        "the handle must name the owning application"
+    );
+    assert!(
+        moved.pid.is_some_and(|pid| pid > 0),
+        "the bus knows the owner's pid: {:?}",
+        moved.pid
+    );
+
+    // Exactly one delivery per focus change. GTK emits the underlying
+    // `state-changed:focused` signal twice, and letting the duplicate through would
+    // make the host re-probe capabilities and re-read the field for no news — this
+    // pins the suppression, and would fail loudly if the toolkit stopped doubling.
+    assert!(
+        rx.recv_timeout(Duration::from_millis(500)).is_err(),
+        "a consecutive duplicate focus event must be suppressed"
+    );
+
+    grab_focus(&entry);
+    let back = rx.recv_timeout(EVENT_TIMEOUT).expect("second focus event");
+    assert_eq!(back.element_id, entry.encode());
+    assert_ne!(
+        back.generation, moved.generation,
+        "a different element must not reuse a live handle's generation"
+    );
+    // The point of the whole event half: the handle it delivers is directly usable by
+    // the read path, with no id translation in between.
+    let context = adapter.read_context(&back).expect("read_context");
+    assert_eq!(
+        format!("{}{}", context.left, context.right),
+        FIXTURE_TEXT,
+        "the focus handle must address the entry the read path reads"
+    );
+    assert!(adapter.capabilities(&back).expect("capabilities").writable);
+
+    // Dropping must stop delivery *and* retire the worker threads. The Arc count is
+    // the proof of the second half: the dispatcher thread holds the only other clone
+    // of the callback, so it can only fall back to 1 once that thread has exited.
+    drop(subscription);
+    assert_eq!(
+        Arc::strong_count(&cb),
+        1,
+        "the worker threads must be joined before the Subscription drop returns"
+    );
+    while rx.try_recv().is_ok() {} // events already in flight when we cancelled
+    grab_focus(&textview);
+    grab_focus(&entry);
+    assert!(
+        rx.recv_timeout(Duration::from_millis(500)).is_err(),
+        "a dropped subscription must not deliver another focus event"
+    );
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_caret_events_deliver_on_screen_geometry_and_stop_when_dropped() {
+    let session = session();
+    let entry = fixture_entry(&session);
+    let adapter = LinuxAdapter::with_accessibility();
+    let text = zbus_text(&entry);
+
+    let (tx, rx) = mpsc::channel();
+    let cb: CaretCallback = Arc::new(move |field, rect| {
+        let _ = tx.send((field, rect));
+    });
+    let subscription = adapter
+        .subscribe_caret(Arc::clone(&cb))
+        .expect("subscribe_caret");
+
+    text.set_caret_offset(0).expect("caret to the start");
+    let (field, rect) = rx.recv_timeout(EVENT_TIMEOUT).expect("caret event");
+    assert_eq!(field.element_id, entry.encode());
+    let rect = rect.expect("a mapped entry has character geometry");
+    assert!(rect.w > 0.0 && rect.h > 0.0, "degenerate rect: {rect:?}");
+    // Same bound as the caret_rect test: the fixture lives inside a 1280x1024 Xvfb
+    // screen, so an off-screen rect means these are not global screen coordinates.
+    assert!(
+        rect.x >= 0.0 && rect.y >= 0.0 && rect.x < 1280.0 && rect.y < 1024.0,
+        "caret rect off-screen: {rect:?}"
+    );
+
+    // Coalescing must not swallow the *final* position of a burst: whatever else it
+    // drops, the last event it delivers has to be the caret's resting place. That is
+    // the property a naive throttle gets wrong — it drops the trailing event and
+    // leaves the overlay one keystroke behind wherever the user stopped typing.
+    for offset in 1..=FIXTURE_TEXT.chars().count() {
+        text.set_caret_offset(i32::try_from(offset).unwrap())
+            .expect("caret move");
+    }
+    let resting = adapter.caret_rect(&field).expect("caret_rect");
+    let mut last = None;
+    let deadline = Instant::now() + EVENT_TIMEOUT;
+    // Drain until the bus goes quiet for far longer than the coalescing interval.
+    while Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok((_, rect)) => last = Some(rect),
+            Err(_) => break,
+        }
+    }
+    assert_eq!(
+        last.expect("the caret burst must deliver at least one event"),
+        resting,
+        "the last coalesced event must report the caret's resting position"
+    );
+
+    drop(subscription);
+    assert_eq!(
+        Arc::strong_count(&cb),
+        1,
+        "the worker threads must be joined before the Subscription drop returns"
+    );
+    while rx.try_recv().is_ok() {}
+    text.set_caret_offset(0).expect("caret to the start");
+    assert!(
+        rx.recv_timeout(Duration::from_millis(500)).is_err(),
+        "a dropped subscription must not deliver another caret event"
+    );
+    // Restore the fixture's documented baseline (caret at the end, no selection).
+    text.set_caret_offset(i32::try_from(FIXTURE_TEXT.chars().count()).unwrap())
+        .expect("caret back to the end");
 }

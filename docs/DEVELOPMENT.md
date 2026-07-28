@@ -199,7 +199,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1961 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1964 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -277,7 +277,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1961 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1964 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 `tools/dev/check.sh` parses the fence above and runs it as one command.
 The full gate splits tests into a parallel run over the 23 portable crates and
@@ -511,7 +511,11 @@ tools/acceptance/run-linux-atspi-session.sh --keytap-spike
 # Anything else — this is how the Linux adapter's own tests run against a real
 # accessibility stack. DISPLAY, DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR,
 # COMPME_ATSPI_SESSION_DIR, and COMPME_ATSPI_FIXTURE_LOG are exported for it.
-tools/acceptance/run-linux-atspi-session.sh --run-in-session cargo test -p platform_linux
+# `--ignored` is required (the live tests are #[ignore]d so a plain `cargo test`
+# says so out loud instead of failing off-session), and `--test-threads=1` is too:
+# they share one fixture and mutate its text, selection, caret, and focus.
+tools/acceptance/run-linux-atspi-session.sh --run-in-session \
+  cargo test -p platform_linux -- --ignored --test-threads=1
 ```
 
 ## Model Development Notes
