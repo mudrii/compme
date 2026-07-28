@@ -1,7 +1,7 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
 **Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1–6 pending (implementation actionable on hosted runners; native/live acceptance target-system-gated)
-**Prereqs:** clean `main` (builds, clippy clean, ≈1961 tests green, re-verified 2026-07-21).
+**Prereqs:** clean `main` (builds, clippy clean, ≈1977 tests green, re-verified 2026-07-21).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
 status ledger; this doc is the execution guide.
 
@@ -228,7 +228,15 @@ X11 on it.
     flush; the context-crate contract already wants scalars).
 2.2 **Caret geometry**: `Text.GetCharacterExtents` at caret offset,
     `coords_global_screen=true` (CoordType::Screen).
-2.3 **Accept tap (X11)** — ✅ **SPIKE RESOLVED 2026-07-27.** Decision:
+2.3 **Accept tap (X11)** — ✅ **IMPLEMENTED 2026-07-28** (`platform_linux::x11_keys`
+    pure + `x11_tap` live; 16 unit tests on every host, 6 live tests in the
+    harness). See ROADMAP §1.1 "Phase 2.3 accept tap" for what shipped, including
+    the two places this plan turned out to be wrong: `BadAccess` degrades to
+    `KeyInterceptMode::None` rather than `HotkeyOnly` (that variant promises an
+    always-on hotkey this adapter does not register yet), and the capability is
+    reported by the adapter rather than the pure AT-SPI mapping, because tap
+    availability is a session fact and not a per-field one. ✅ **SPIKE RESOLVED
+    2026-07-27.** Decision:
     **`KeyInterceptMode::XGrabKey`**, using a *passive* grab with the keyboard
     in `GrabModeSync` and each keystroke resolved by `XAllowEvents`:
     `AsyncKeyboard` consumes it (the accept path), `ReplayKeyboard` delivers it

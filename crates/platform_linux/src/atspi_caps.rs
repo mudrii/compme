@@ -43,11 +43,20 @@ const ROLE_PASSWORD: &str = "password text";
 /// Map observed facts onto the portable capability contract.
 ///
 /// `accept_intercept` and `overlay_at_caret` report **what this adapter can
-/// actually do today**, not what X11 permits: the accept tap (Phase 2.3, resolved
-/// to `XGrabKey` + `XAllowEvents`) and the override-redirect overlay (Phase 2.5)
-/// are not built yet, so claiming them here would have the engine arm mechanisms
-/// that immediately fail. They flip as those phases land. The read/write bits, by
-/// contrast, describe the field itself and are true now.
+/// actually do today**, not what X11 permits, so a capability is never claimed
+/// before the mechanism exists:
+///
+/// - `overlay_at_caret` stays `None`: the override-redirect overlay (Phase 2.5)
+///   is not built.
+/// - `accept_intercept` stays `None` **here** even though the X11 tap (Phase 2.3)
+///   now exists, because whether it exists is a *session* fact — is there an X
+///   server, and is Tab free of other clients' grabs? — that these per-field
+///   AT-SPI facts cannot answer. `LinuxAdapter::capabilities` overwrites it with
+///   the probed value (`KeyInterceptMode::XGrabKey` once the tap is genuinely
+///   installable). This `None` is therefore the fail-closed floor: an adapter
+///   that never probed reports no interception.
+///
+/// The read/write bits, by contrast, describe the field itself and are true now.
 pub fn capabilities_from(facts: &FieldFacts) -> Capabilities {
     let secure = facts.role == ROLE_PASSWORD;
     Capabilities {
@@ -241,10 +250,20 @@ mod tests {
 
     #[test]
     fn unbuilt_mechanisms_are_reported_as_absent() {
-        // The tap (Phase 2.3, design resolved) and the overlay (Phase 2.5) are
-        // not implemented. Reporting them would have the engine arm mechanisms
-        // that fail on first use, so they must stay None until those land — and
-        // this test is what makes flipping them a deliberate act.
+        // Deliberately still `None` for BOTH, but for two different reasons now
+        // that Phase 2.3 has landed:
+        //
+        // - `overlay_at_caret`: the override-redirect overlay (Phase 2.5) does not
+        //   exist. Reporting it would have the engine place ghosts through a
+        //   mechanism that fails on first use.
+        // - `accept_intercept`: the X11 tap DOES exist, but whether it can be
+        //   installed is a session fact (an X server, and Tab not already grabbed
+        //   by a window manager or IME) that this pure per-field mapping cannot
+        //   observe. `LinuxAdapter::capabilities` overwrites this value with the
+        //   probe result, so `None` here is the fail-closed floor for an adapter
+        //   that never probed — see `LinuxAdapter::accept_intercept`.
+        //
+        // This test is what makes changing either one a deliberate act.
         let caps = capabilities_from(&editable_entry());
         assert_eq!(caps.accept_intercept, KeyInterceptMode::None);
         assert_eq!(caps.overlay_at_caret, OverlayPlacement::None);

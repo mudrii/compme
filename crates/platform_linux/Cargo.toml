@@ -35,6 +35,13 @@ atspi = { version = "0.30", features = ["zbus"] }
 # own zbus rather than pulling in a second copy. The version must stay
 # semver-compatible with atspi's `5.5` for that unification to happen.
 zbus = { version = "5.5", default-features = false, features = ["blocking-api"] }
+# X11 for the accept tap (ROADMAP Phase 2.3): a passive XGrabKey in GrabModeSync
+# resolved per keystroke with XAllowEvents. Pure Rust, no C library at link time —
+# the same rule as the AT-SPI D-Bus choice: linking libX11 would make the compme
+# binary refuse to *start* on a host without it, where this project requires
+# fail-closed degradation. Its whole dependency set is x11rb-protocol + rustix +
+# gethostname.
+x11rb = "0.14"
 
 # The live AT-SPI tests drive the fixture directly (seeding text, setting a
 # selection) so the read path can be checked against text the test chose. That is
@@ -42,3 +49,8 @@ zbus = { version = "5.5", default-features = false, features = ["blocking-api"] 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 atspi = { version = "0.30", features = ["zbus"] }
 zbus = { version = "5.5", default-features = false, features = ["blocking-api"] }
+# XTEST synthesizes the keystrokes the live accept-tap tests assert on. The X
+# server cannot tell a XTEST key from a hardware one, so it exercises passive
+# grabs exactly as a real keypress does. Test-only: the adapter itself never
+# synthesizes keys, so the shipped binary does not carry the extension.
+x11rb = { version = "0.14", features = ["xtest"] }
