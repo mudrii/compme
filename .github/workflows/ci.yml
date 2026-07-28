@@ -350,13 +350,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgtk-3-dev libatspi2.0-dev libx11-dev xvfb dbus-x11 at-spi2-core \
-            fonts-dejavu-core
+            fonts-dejavu-core zenity
 
-      # The live AT-SPI2 read, insert, and event paths (Phase 2.1/2.2/2.4) against
-      # a real GTK app in Xvfb. `--test-threads=1` is required, not tidiness: these
-      # tests share one fixture, and they mutate its text, selection, caret, and
-      # which of its two fields holds the focus.
+      # Every live Linux surface against a real GTK app in Xvfb: the AT-SPI2 read,
+      # insert, and event paths (2.1/2.2/2.4), the X11 accept tap (2.3), the
+      # override-redirect overlay (2.5), and the session shell services (2.6).
+      # `--test-threads=1` is required, not tidiness: these tests share one fixture
+      # and mutate its text, selection, caret, focused field, and key grabs.
+      #
+      # COMPME_KEYRING_EXPECT declares which kind of session this is instead of
+      # letting the keyring test guess: a hosted runner has no Secret Service, so
+      # `absent` is the truth here and the test asserts the fail-closed path
+      # (an error, never a fabricated or on-disk key). It fails loudly if unset
+      # rather than skipping, which is why it is declared rather than omitted.
       - name: Live AT-SPI adapter tests
+        env:
+          COMPME_KEYRING_EXPECT: absent
         run: |
           tools/acceptance/run-linux-atspi-session.sh --run-in-session \
             cargo test --locked -p platform_linux -- --ignored --test-threads=1

@@ -1047,7 +1047,10 @@ mod x11_accept_tap {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use x11rb::connection::Connection;
-    use x11rb::protocol::xproto::{ConnectionExt as _, Window, KEY_PRESS_EVENT, KEY_RELEASE_EVENT};
+    // `ConnectionExt` is not re-imported here: the parent module already brings it
+    // in, and `use super::*` carries it into this one (a merge artifact from the
+    // overlay and accept-tap work landing in the same file).
+    use x11rb::protocol::xproto::{Window, KEY_PRESS_EVENT, KEY_RELEASE_EVENT};
     use x11rb::protocol::xtest::ConnectionExt as _;
     use x11rb::rust_connection::RustConnection;
 

@@ -514,9 +514,18 @@ tools/acceptance/run-linux-atspi-session.sh --keytap-spike
 # `--ignored` is required (the live tests are #[ignore]d so a plain `cargo test`
 # says so out loud instead of failing off-session), and `--test-threads=1` is too:
 # they share one fixture and mutate its text, selection, caret, and focus.
-tools/acceptance/run-linux-atspi-session.sh --run-in-session \
+COMPME_KEYRING_EXPECT=absent tools/acceptance/run-linux-atspi-session.sh --run-in-session \
   cargo test -p platform_linux -- --ignored --test-threads=1
 ```
+
+`COMPME_KEYRING_EXPECT` (`absent` | `present` | `locked`) declares what kind of
+session the run provides, because the keyring test asserts a *different* contract
+in each and refuses to guess — it fails loudly when unset rather than skipping.
+`absent` is the truth for a headless host or a hosted CI runner, and it exercises
+the path that matters most: no Secret Service means an error, never a fabricated
+key and never an on-disk plaintext fallback. The `zenity` confirm test likewise
+needs `zenity` on `PATH`; without it that one test fails rather than passing
+quietly.
 
 The Phase 2.5 overlay tests in that suite need a **font**, which a headless box
 may not have. The presenter scans `$XDG_DATA_HOME/fonts`, `$HOME/.fonts`, each
