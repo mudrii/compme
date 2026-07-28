@@ -199,7 +199,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1964 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~2017 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -277,7 +277,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1964 tests. The `tools/spike` workspace is separate from the
+The root suite is ~2017 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 `tools/dev/check.sh` parses the fence above and runs it as one command.
 The full gate splits tests into a parallel run over the 23 portable crates and

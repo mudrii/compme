@@ -42,19 +42,26 @@ const ROLE_PASSWORD: &str = "password text";
 
 /// Map observed facts onto the portable capability contract.
 ///
-/// `accept_intercept` reports **what this adapter can actually do today**, not
-/// what X11 permits: the accept tap (Phase 2.3, resolved to `XGrabKey` +
-/// `XAllowEvents`) is not built yet, so claiming it here would have the engine arm
-/// a mechanism that immediately fails. It flips as that phase lands. The
-/// read/write bits, by contrast, describe the field itself and are true now.
+/// `accept_intercept` and `overlay_at_caret` report **what this adapter can
+/// actually do**, never what X11 merely permits — a capability claimed before its
+/// mechanism exists becomes a suggestion the engine cannot deliver:
 ///
-/// `overlay_at_caret` reports `OverrideRedirect` since Phase 2.5: the presenter
-/// (`x11_overlay`) really does place a click-through override-redirect window at
-/// the caret. Like `coords_global_screen` below, that is an **X11** statement —
-/// under Wayland this adapter's screen geometry is wrong anyway, and the overlay
-/// there is `LayerShell` in Phase 3. A session with no X server is not silently
-/// mis-served: `show_ghost` fails closed with the `DISPLAY` it tried, and the
-/// contract requires the host to reconcile a failed show.
+/// - `overlay_at_caret` is `OverrideRedirect` since Phase 2.5: the presenter
+///   (`x11_overlay`) really does place a click-through override-redirect window at
+///   the caret. Like `coords_global_screen` below, that is an **X11** statement —
+///   under Wayland this adapter's screen geometry is wrong anyway, and the overlay
+///   there is `LayerShell` in Phase 3. A session with no X server is not silently
+///   mis-served: `show_ghost` fails closed with the `DISPLAY` it tried, and the
+///   contract requires the host to reconcile a failed show.
+/// - `accept_intercept` stays `None` **here** even though the X11 tap (Phase 2.3)
+///   exists, because whether it is installable is a *session* fact — is there an X
+///   server, and is the accept key free of other clients' grabs? — that these
+///   per-field AT-SPI facts cannot answer. `LinuxAdapter::capabilities` overwrites
+///   it with the probed value (`KeyInterceptMode::XGrabKey` once the tap really is
+///   installable). This `None` is the fail-closed floor: an adapter that never
+///   probed reports no interception.
+///
+/// The read/write bits, by contrast, describe the field itself and are true now.
 pub fn capabilities_from(facts: &FieldFacts) -> Capabilities {
     let secure = facts.role == ROLE_PASSWORD;
     Capabilities {
@@ -248,10 +255,12 @@ mod tests {
 
     #[test]
     fn unbuilt_mechanisms_are_reported_as_absent() {
-        // The tap (Phase 2.3, design resolved) is not implemented. Reporting it
-        // would have the engine arm a mechanism that fails on first use, so it
-        // stays None until that lands — and this test is what makes flipping it a
-        // deliberate act.
+        // `accept_intercept` is deliberately still `None` in the *pure* mapping
+        // even though Phase 2.3's tap exists: installability is a session fact (an
+        // X server, and the accept key not already grabbed) that per-field AT-SPI
+        // facts cannot answer, so `LinuxAdapter::capabilities` fills it in after a
+        // real trial grab. This `None` is the fail-closed floor, and this test is
+        // what makes changing it a deliberate act.
         let caps = capabilities_from(&editable_entry());
         assert_eq!(caps.accept_intercept, KeyInterceptMode::None);
     }

@@ -40,13 +40,16 @@ atspi = { version = "0.30", features = ["zbus"] }
 # own zbus rather than pulling in a second copy. The version must stay
 # semver-compatible with atspi's `5.5` for that unification to happen.
 zbus = { version = "5.5", default-features = false, features = ["blocking-api"] }
-
-# X11 override-redirect overlay (ROADMAP Phase 2.5). `default-features = false`
-# is load-bearing: x11rb's `allow-unsafe-code` feature is what pulls in libxcb,
-# and a C library in the link line would make the compme binary refuse to
-# *start* on a host without it — the same reason libatspi was rejected above.
-# Only `shape` is enabled, for the empty input region (click-through) and the
-# bounding region that gives transparency with no compositor.
+# X11 for the accept tap (ROADMAP Phase 2.3 — a passive XGrabKey in GrabModeSync
+# resolved per keystroke with XAllowEvents) and the override-redirect overlay
+# (Phase 2.5). One entry for both; `default-features = false` is load-bearing:
+# x11rb's `allow-unsafe-code` feature is what pulls in libxcb, and a C library in
+# the link line would make the compme binary refuse to *start* on a host without
+# it — the same rule that ruled out libatspi above, and the reason this is not
+# a plain `x11rb = "0.14"`. Only `shape` is enabled, for the overlay's empty input
+# region (click-through) and the bounding region that gives transparency with no
+# compositor; the tap needs core X11 only. Its whole dependency set is then
+# x11rb-protocol + rustix + gethostname.
 x11rb = { version = "0.14", default-features = false, features = ["shape"] }
 # Glyph rasterization, pure Rust. The plan's §2.5 offered "pango or
 # tiny-skia+fontdue — smallest dep wins": the overlay needs exactly a filled
@@ -61,3 +64,11 @@ fontdue = "0.9"
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 atspi = { version = "0.30", features = ["zbus"] }
 zbus = { version = "5.5", default-features = false, features = ["blocking-api"] }
+# XTEST synthesizes the keystrokes the live accept-tap tests assert on. The X
+# server cannot tell a XTEST key from a hardware one, so it exercises passive
+# grabs exactly as a real keypress does. Test-only: the adapter itself never
+# synthesizes keys, so the shipped binary does not carry the extension.
+# default-features = false here too, or Cargo's feature unification would build
+# the library under test with `allow-unsafe-code` and the tests would stop
+# exercising the configuration that actually ships.
+x11rb = { version = "0.14", default-features = false, features = ["xtest", "shape"] }

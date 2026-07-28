@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-28 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈1964 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-28 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2017 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -382,12 +382,22 @@ and caret changes instead of only answering questions about a field it is handed
   readable handle with app/pid and a fresh generation, a caret move delivers
   on-screen geometry, and each subscription stops dead when dropped.
 
-**Still pending for Phase 2:** the accept tap against the resolved 2.3 design, the
-overlay (2.5), and the session-dependent ShellHost services (2.6). Until the accept
-tap and the overlay land, the Linux adapter is a complete read/write/event *seam*
-with no runtime that drives it end to end, which is why `capabilities` still
-reports `accept_intercept: None` and `overlay_at_caret: None`, and why the app
-wiring still constructs `LinuxAdapter::new()` rather than `with_accessibility()`.
+**Still pending for Phase 2 (2026-07-28, after the four parallel workstreams
+below landed):** the adapter surface is now complete except the **tray**
+(StatusNotifierItem), **always-on shortcut registration**, and a **native event
+pump** — plus Wayland placement, which is Phase 3 by design. What remains between
+this and a usable Linux product is *host wiring*, not adapter capability: `app`
+still constructs the inert `LinuxAdapter::new()` rather than
+`with_accessibility()`, so nothing drives the seam end to end yet. Deliberately
+fail-closed and staying that way until each can be *proven*:
+`open_permission_settings` (Linux has no TCC-style pane, and the switches that
+exist are per-desktop with no portable URL) and `insert_replacing`'s
+left-of-caret form (AT-SPI can only express it as delete-then-insert).
+
+Live-session residuals no headless run can close: caret/ghost placement
+calibration on GNOME-Xorg, KDE-Xorg, and XFCE; `BadAccess` degradation against a
+window manager that already holds the accept key (Xvfb has none to contend with);
+`kdialog`'s default-button behavior; and any Wayland session.
 
 **Phase 2.5 overlay ✅ DONE (2026-07-28) — live-verified:**
 The ghost and correction overlay is a real **override-redirect X11 window**, so
@@ -462,16 +472,72 @@ and a Linux editable field resolves to `UxMode::Inline` instead of `Popup`.
   character's box there). Each needs a live look on GNOME-Xorg/KDE-Xorg/XFCE, the
   same calibration the macOS ghost placement went through.
 
-**Still pending for Phase 2:** `subscribe_focus`/`subscribe_caret` (the event
-half of 2.1 — the adapter cannot yet *notice* a focus change, only answer
-questions about a field it is handed), the accept tap against the resolved 2.3
-design, and the session-dependent ShellHost services (2.6). Until the event half
-lands, the Linux adapter is a complete read/write/present *seam* with no runtime
-that drives it, which is why `capabilities` still reports
-`accept_intercept: None`.
+
+**Phase 2.3 accept tap ✅ DONE (2026-07-28) — live-verified:**
+The resolved design below is now implemented in `platform_linux`, split so the
+interesting logic is testable on every host:
+- `x11_keys` (pure, compiled and tested on the macOS and Windows lanes too) — the
+  persisted-chord translation (plan gap **G5**: macOS virtual keycode + Carbon
+  modifier mask → X11 keysym + modmask), the `GetKeyboardMapping` keysym→keycode
+  lookup, the consume-vs-pass-through decision, the arm/disarm state machine, and
+  the watchdog's deadline arithmetic. **16 unit tests.**
+- `x11_tap` (Linux-only) — the connection, the passive grabs, and three threads:
+  X events, callback dispatch, and the watchdog.
+- **The grab exists exactly while an accept action is armed**, which is the
+  contract's "swallow keys only while a suggestion is visible" rule expressed as
+  one pure function rather than a condition repeated per call site.
+- **Modifiers are matched exactly.** The grab is `AnyModifier` (one grab per key
+  instead of one per lock-state permutation), so `Ctrl+Tab` and the `Option+Tab`
+  per-app bypass reach the tap and are *replayed* untouched. Latched `Lock`/NumLock
+  bits are deliberately not significant, or leaving NumLock on would stop Tab from
+  being intercepted.
+- **The keyboard-freeze hazard is covered on every path** (see the module docs for
+  the enumeration): the event thread resolves before doing anything else and never
+  runs engine code (the callback is dispatched on its own thread inside
+  `catch_unwind`); a watchdog thread thaws with `ReplayKeyboard` past a 100 ms
+  budget, caps how long the grab may stay armed at 30 s, and owns the engine's
+  scheduled-hide failsafe; `Drop` thaws and ungrabs **before** joining any thread;
+  and a closed connection makes the X server release the grab, which covers
+  process death. Residual: an event thread wedged *inside* an X request would
+  queue the watchdog's own request behind it — only closing the connection escapes
+  that.
+- **`BadAccess` degrades, it does not fail.** `with_accessibility()` trial-grabs
+  the accept keys, and a key already held by a window manager or IME leaves the
+  tap uninstalled. The reported capability is then `KeyInterceptMode::None`, not
+  `HotkeyOnly` as the plan says: `HotkeyOnly` demotes the UX to an always-on
+  hotkey, and this adapter registers no global shortcuts yet, so claiming it would
+  promise a path Linux cannot deliver. It becomes the right answer once shortcut
+  registration lands.
+- **`accept_intercept` now reports `XGrabKey`** — from `LinuxAdapter::capabilities`,
+  not from the pure `atspi_caps` mapping, because tap availability is a *session*
+  fact (an X server, and Tab free) that per-field AT-SPI facts cannot observe. The
+  mapping's `None` stays the fail-closed floor for an adapter that never probed.
+- **`x11rb`, not Xlib** — pure Rust, no C library at link time, for the same reason
+  AT-SPI goes over D-Bus: linking would make the binary refuse to *start* on a
+  host without the `.so`. It expresses passive grabs and `XAllowEvents` directly,
+  so nothing was given up. Linux-target-gated (+3 packages: `x11rb`,
+  `x11rb-protocol`, `gethostname`); the `xtest` feature is dev-only, for the tests
+  that synthesize keys.
+- **6 more live tests (17 total, all passing on the Linux host, three consecutive
+  clean runs)** mirroring the spike's four observations against the GTK fixture:
+  unarmed baseline delivery, consume keeping Tab from the app while the engine gets
+  `Accept(Word)`, `ReplayKeyboard` pass-through *while grabbed* (a correction offer
+  binds only the grammar key), disarmed delivery, post-teardown delivery, teardown
+  *while armed* leaving nothing grabbed (proven twice — the app receives the key,
+  and a fresh grab of the same key succeeds), `Ctrl+Tab` replayed, Esc/Down
+  reported as `Dismiss`/`Cycle` and kept from the app, the watchdog dropping the
+  grab after a missed hide, and the `XGrabKey` capability itself.
+- Trap found live: the pass-through legs deliver *real* Tabs, which move GTK's
+  focus to the fixture's text view — where Tab inserts a tab character instead of
+  cycling back. The tap tests restore the entry through `Component.GrabFocus`, so
+  they cannot perturb the AT-SPI tests in any test order.
+- **Still target-gated:** re-run on GNOME-Xorg, KDE-Xorg and XFCE, where a real
+  window manager may already hold Tab. Xvfb has no WM, so the degradation path is
+  unit-tested and the probe is proven, but "a WM already grabs Tab" has not been
+  observed on real hardware.
 
 **Phase 2.3 accept-key strategy ✅ RESOLVED (2026-07-27) — decision, measured:**
-Linux accept-key interception will use **`KeyInterceptMode::XGrabKey`** with a
+Linux accept-key interception uses **`KeyInterceptMode::XGrabKey`** with a
 passive grab in keyboard `GrabModeSync`, resolving each keystroke through
 `XAllowEvents`: `AsyncKeyboard` to consume (accept), `ReplayKeyboard` to deliver
 it to the focused app untouched (Tab means Tab). That reproduces the macOS
@@ -487,9 +553,10 @@ CGEventTap semantics with no synthetic re-send.
 - Carried into the implementation as risks, not open questions: a `GrabModeSync`
   grab freezes the keyboard *system-wide* until `XAllowEvents`, so the resolve
   must happen on every path including panic and Drop; `BadAccess` (a WM or IME
-  already holding the key) must degrade to `UxMode::Hotkey` rather than fail; and
-  the spike must be re-run on GNOME-Xorg/KDE-Xorg/XFCE, since Xvfb has no window
-  manager competing for Tab.
+  already holding the key) must degrade rather than fail; and the spike must be
+  re-run on GNOME-Xorg/KDE-Xorg/XFCE, since Xvfb has no window manager competing
+  for Tab. All three are addressed by the implementation above, except the
+  real-desktop re-run, which needs that hardware.
 
 **Phase 0 pre-work ✅ DONE (2026-07-08, same-day as planned):**
 - **`InsertStrategy::NativeRangeSet`** shipped — variant + doc contract on the

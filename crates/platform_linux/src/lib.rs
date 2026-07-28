@@ -55,9 +55,6 @@ pub mod confirm;
 pub mod keyring;
 /// The memory-store key's load-or-create contract (host-independent).
 pub mod memory_key;
-/// File-manager reveal: `org.freedesktop.FileManager1` with an `xdg-open`
-/// fallback, over pure path arithmetic.
-pub mod reveal;
 /// Font discovery for the overlay. Compiled everywhere: the ranking, the
 /// search-path rules, and the directory scan are pure enough to test on the
 /// macOS and Windows lanes.
@@ -66,9 +63,21 @@ pub mod overlay_font;
 /// where overlay bugs actually live, and headless pixel assertions cannot see
 /// them.
 pub mod overlay_geometry;
+/// File-manager reveal: `org.freedesktop.FileManager1` with an `xdg-open`
+/// fallback, over pure path arithmetic.
+pub mod reveal;
+/// Pure accept-key translation and arm/disarm logic for the X11 accept tap. On
+/// every host, deliberately: the keycode/modifier translation and the
+/// consume-vs-pass-through decision are where the interesting bugs live, so they
+/// are unit-tested on the macOS and Windows lanes too.
+pub mod x11_keys;
 /// Live override-redirect X11 overlay. Linux-only: `x11rb` is target-gated.
 #[cfg(target_os = "linux")]
 pub mod x11_overlay;
+/// The live X11 accept tap. Linux-only: it needs an X server, and the `x11rb`
+/// dependency is target-gated.
+#[cfg(target_os = "linux")]
+pub mod x11_tap;
 
 /// Live AT-SPI2 integration tests. In a sibling file (a `#[path]` module) rather
 /// than inline, matching how `run_loop` and `platform_macos` keep their tests —
@@ -103,7 +112,20 @@ pub struct LinuxAdapter {
     /// AT-SPI-backed method fail-closed exactly as the pre-2.1 scaffold was.
     #[cfg(target_os = "linux")]
     session: Option<atspi_live::AtspiSession>,
+    /// Whether the X11 accept tap probed *installable* on this session (Phase
+    /// 2.3). `false` for `new()` and for any host with no X server or with the
+    /// accept keys already grabbed by a window manager or IME, which keeps both
+    /// `subscribe_accept` and the reported `accept_intercept` fail-closed.
+    #[cfg(target_os = "linux")]
+    accept_tap_installable: bool,
 }
+
+/// Subscription ids are only identity for the host's bookkeeping, so a plain
+/// process-wide counter is enough (the macOS adapter keeps one per adapter
+/// instance because it also indexes an internal registry; this adapter's
+/// teardown is RAII through the returned handle).
+#[cfg(target_os = "linux")]
+static NEXT_SUBSCRIPTION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl LinuxAdapter {
     /// An inert adapter: no accessibility bus, so every field operation still
@@ -131,6 +153,26 @@ impl LinuxAdapter {
     pub fn with_accessibility() -> Self {
         Self {
             session: atspi_live::AtspiSession::open().ok(),
+            // Probed here for the same reason the bus is: it is an explicit
+            // opt-in, not something a constructor unit tests call should do. The
+            // probe trial-grabs the accept keys, so a `true` here means the tap
+            // is genuinely installable on this session, not merely permitted by
+            // X11 in theory.
+            accept_tap_installable: x11_tap::probe_accept_intercept()
+                == platform::KeyInterceptMode::XGrabKey,
+        }
+    }
+
+    /// The accept-key mechanism this adapter can actually deliver — the value
+    /// `capabilities()` reports. `XGrabKey` only once the tap probed installable;
+    /// otherwise `None`, because reporting a mechanism the adapter cannot perform
+    /// makes the engine arm something that fails on the first keystroke.
+    #[cfg(target_os = "linux")]
+    fn accept_intercept(&self) -> platform::KeyInterceptMode {
+        if self.accept_tap_installable {
+            platform::KeyInterceptMode::XGrabKey
+        } else {
+            platform::KeyInterceptMode::None
         }
     }
 
@@ -200,7 +242,39 @@ impl PlatformAdapter for LinuxAdapter {
         Err(Self::unsupported("subscribe_caret"))
     }
 
-    /// Real impl: AT-SPI2 device/key listener (X11); a compositor shortcut on Wayland.
+    /// The X11 accept tap (Phase 2.3): a **passive** `XGrabKey` on the accept keys
+    /// with the keyboard in `GrabModeSync`, resolving each keystroke with
+    /// `XAllowEvents` — `AsyncKeyboard` consumes it, `ReplayKeyboard` hands it to
+    /// the focused application untouched. The grab is armed only while the engine
+    /// reports a visible suggestion through the returned handle, which is the
+    /// contract's "swallow keys only while a suggestion is visible" rule.
+    ///
+    /// Fail-closed without a probed tap (including every `new()` adapter): a
+    /// `GrabModeSync` grab freezes the keyboard system-wide until it is resolved,
+    /// so this is not a mechanism to install speculatively.
+    #[cfg(target_os = "linux")]
+    fn subscribe_accept(&self, cb: AcceptCallback) -> Result<AcceptSubscription, PlatformError> {
+        if !self.accept_tap_installable {
+            return Err(Self::unsupported("subscribe_accept"));
+        }
+        let tap = x11_tap::X11AcceptTap::install(cb)?;
+        let for_visible = std::sync::Arc::clone(&tap);
+        let for_hide = std::sync::Arc::clone(&tap);
+        let for_action = std::sync::Arc::clone(&tap);
+        let id = NEXT_SUBSCRIPTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(AcceptSubscription::new(
+            // Teardown is the tap's `Drop`: it thaws the keyboard and releases
+            // every grab before joining its threads. Dropping the returned
+            // handle drops these closures, which hold the only references.
+            Subscription::new(id),
+            move |visible| for_visible.set_suggestion_visible(visible),
+            move |delay| for_hide.hide_suggestion_after(delay),
+            move |action| for_action.set_accept_action(action),
+        ))
+    }
+
+    /// Real impl: the X11 `XGrabKey` tap above; a compositor/IME path on Wayland.
+    #[cfg(not(target_os = "linux"))]
     fn subscribe_accept(&self, _cb: AcceptCallback) -> Result<AcceptSubscription, PlatformError> {
         Err(Self::unsupported("subscribe_accept"))
     }
@@ -219,7 +293,8 @@ impl PlatformAdapter for LinuxAdapter {
     }
 
     /// AT-SPI2 interface/state/role probe, mapped by
-    /// [`atspi_caps::capabilities_from`].
+    /// [`atspi_caps::capabilities_from`], plus the one capability AT-SPI cannot
+    /// answer: whether this session's accept tap exists.
     #[cfg(target_os = "linux")]
     fn capabilities(&self, field: &FieldHandle) -> Result<Capabilities, PlatformError> {
         let session = self.session("capabilities")?;
@@ -228,7 +303,13 @@ impl PlatformAdapter for LinuxAdapter {
                 reason: format!("platform_linux: malformed element id: {}", field.element_id),
             }
         })?;
-        session.capabilities(&id)
+        let mut capabilities = session.capabilities(&id)?;
+        // `accept_intercept` is a *session* fact (is there an X server, and is
+        // Tab free?), not a property of the field, so the pure AT-SPI mapping
+        // cannot know it and reports the fail-closed `None`. It is filled in here,
+        // where the probe result lives.
+        capabilities.accept_intercept = self.accept_intercept();
+        Ok(capabilities)
     }
 
     /// Real impl: AT-SPI2 Text/EditableText interface probe + role/state checks.

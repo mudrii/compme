@@ -725,8 +725,33 @@ AT-SPI2 *event* paths (focus/caret subscription), the accept tap, native
 insertion, Wayland overlays (`LayerShell`), key stores, dialogs, trays,
 file-manager reveal, packaging, and GPU backends remain roadmap work.
 
-The accept tap, the tray, per-OS packaging, and GPU backends remain roadmap
-work on Linux; Wayland overlay placement (`LayerShell`) is Phase 3.
+The Linux **X11 accept tap** is implemented (ROADMAP Phase 2.3) as a *passive*
+`XGrabKey` on the accept keys with the keyboard in `GrabModeSync`, resolving each
+keystroke with `XAllowEvents`: `AsyncKeyboard` consumes it (the accept path),
+`ReplayKeyboard` hands it to the focused application as if no grab existed (Tab
+means Tab). That reproduces the macOS `CGEventTap` semantics with no synthetic
+re-send. The grab is armed only while the engine reports a visible suggestion, and
+it is split the same way as the read path: `x11_keys` is pure — the macOS
+keycode/modifier chord translation (plan gap G5), the exact-modifier decision, the
+arm/disarm state machine, and the watchdog's deadline arithmetic, all unit-tested
+on every host — while `x11_tap` owns the connection, the grabs, and three threads
+(X events, callback dispatch, watchdog).
+
+A `GrabModeSync` grab freezes keyboard processing **system-wide** until
+`XAllowEvents`, so that resolve is guaranteed on every path: the event thread
+resolves before doing anything else and never runs engine code (the callback is
+dispatched on its own thread, inside `catch_unwind`), a watchdog thread thaws with
+`ReplayKeyboard` past a 100 ms budget and also caps how long the grab may stay
+armed, `Drop` thaws and ungrabs *before* joining any thread, and a closed X
+connection makes the server release the grab, which covers process death.
+`BadAccess` — a window manager or IME already holding the key — is detected by a
+trial grab at probe time and degrades to `KeyInterceptMode::None` rather than
+failing the session. `x11rb` is used rather than Xlib for the same reason AT-SPI
+goes over D-Bus: a C library at link time would make the binary refuse to *start*
+without it.
+
+AT-SPI2 *event* paths (focus/caret subscription), overlays, key stores, dialogs,
+trays, file-manager reveal, packaging, and GPU backends remain roadmap work.
 
 ## macOS Runtime Model
 
