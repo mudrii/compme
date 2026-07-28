@@ -217,17 +217,24 @@ mod tests {
             Some("/nix/store/a/share:relative/share:/usr/share"),
             Some("/home/u"),
         );
-        let shown: Vec<String> = dirs.iter().map(|d| d.display().to_string()).collect();
+        // Compared as `PathBuf`s built the same way the function builds them, not
+        // as rendered strings: `Path::join` renders with `\` on the Windows lane,
+        // which this crate is also tested on, so a display-string comparison would
+        // fail there for a reason that has nothing to do with the logic.
+        let expected: Vec<PathBuf> = [
+            "/home/u/.share",
+            "/home/u",
+            "/nix/store/a/share",
+            "/usr/share",
+            "/usr/local/share",
+            "/run/current-system/sw/share/X11",
+        ]
+        .iter()
+        .zip(["fonts", ".fonts", "fonts", "fonts", "fonts", "fonts"])
+        .map(|(base, leaf)| Path::new(base).join(leaf))
+        .collect();
         assert_eq!(
-            shown,
-            vec![
-                "/home/u/.share/fonts",
-                "/home/u/.fonts",
-                "/nix/store/a/share/fonts",
-                "/usr/share/fonts",
-                "/usr/local/share/fonts",
-                "/run/current-system/sw/share/X11/fonts",
-            ],
+            dirs, expected,
             "a relative XDG_DATA_DIRS entry must be dropped, and /usr/share \
              must not appear twice"
         );
