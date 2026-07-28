@@ -44,7 +44,7 @@ The root `Cargo.toml` is a Rust workspace with 26 members
 - `crates/compat` — per-app compatibility tiers
 - `crates/model_catalog`, `crates/model_fetch`, `crates/model_client` — model catalog, downloads, llama.cpp client
 - `crates/platform_macos` — the macOS adapter (AX, overlay, tray, settings window)
-- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1; Windows additionally has owner-only DACL hardening, a console control handler, and native URL opening, while Linux implements the desktop-free host surfaces (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, and `xdg-open` URL opening that reports immediate launcher failures and reaps longer-running children)
+- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1; Windows additionally has owner-only DACL hardening, a console control handler, and native URL opening, while Linux implements the desktop-free host surfaces (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, and `xdg-open` URL opening that reports immediate launcher failures and reaps longer-running children), the AT-SPI2 read/write path, and the override-redirect X11 ghost/correction overlay
 - `crates/app` — the `compme` binary
 
 `tools/spike` is excluded from the root workspace and must be checked
@@ -199,7 +199,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~1961 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~1977 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -277,7 +277,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~1961 tests. The `tools/spike` workspace is separate from the
+The root suite is ~1977 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 `tools/dev/check.sh` parses the fence above and runs it as one command.
 The full gate splits tests into a parallel run over the 23 portable crates and
@@ -512,6 +512,21 @@ tools/acceptance/run-linux-atspi-session.sh --keytap-spike
 # accessibility stack. DISPLAY, DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR,
 # COMPME_ATSPI_SESSION_DIR, and COMPME_ATSPI_FIXTURE_LOG are exported for it.
 tools/acceptance/run-linux-atspi-session.sh --run-in-session cargo test -p platform_linux
+```
+
+The Phase 2.5 overlay tests in that suite need a **font**, which a headless box
+may not have. The presenter scans `$XDG_DATA_HOME/fonts`, `$HOME/.fonts`, each
+`$XDG_DATA_DIRS` entry + `/fonts`, `/usr/share/fonts`,
+`/usr/local/share/fonts`, and `/run/current-system/sw/share/X11/fonts`, and
+reports a fail-closed error naming all of them when none holds a usable
+`.ttf`/`.otf`. `COMPME_FONT=/path/to/Font.ttf` overrides the scan. On the NixOS
+gate host, exporting the font package's `share` into `XDG_DATA_DIRS` exercises
+discovery itself:
+
+```sh
+XDG_DATA_DIRS="$(nix-build --no-out-link '<nixpkgs>' -A dejavu_fonts)/share:$XDG_DATA_DIRS" \
+  tools/acceptance/run-linux-atspi-session.sh --run-in-session \
+  cargo test -p platform_linux -- --ignored --test-threads=1
 ```
 
 ## Model Development Notes

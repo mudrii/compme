@@ -384,6 +384,405 @@ fn live_insert_replacing_left_stays_fail_closed() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2.5: the override-redirect X11 overlay.
+//
+// The properties asserted here are the ones that are *observable* through the X11
+// protocol from a second connection, which is stronger evidence than the
+// presenter reporting on itself: the window exists, is override-redirect, is
+// mapped, sits at the caret, holds no input focus, has an empty input region
+// (click-through), is reused by `update_ghost`, and disappears on `hide()`. Plus
+// the one real proof that text rendered: the root framebuffer changes where the
+// glyphs go.
+//
+// What these cannot prove headlessly: that the glyphs are *legible*, correctly
+// coloured, correctly anti-aliased, or vertically aligned with the field's own
+// text. Those need a live LOOK on a real desktop (see docs/ROADMAP.md §1.1).
+// ---------------------------------------------------------------------------
+
+use crate::overlay_geometry;
+use platform::OverlayPresenter;
+use x11rb::connection::Connection as _;
+use x11rb::protocol::shape::{self, ConnectionExt as _};
+use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat, MapState};
+
+/// A second X11 connection, so every assertion below reads the server's own view
+/// of the overlay rather than the presenter's bookkeeping.
+fn x11() -> (x11rb::rust_connection::RustConnection, u32, (u16, u16)) {
+    let (conn, screen_num) = x11rb::connect(None).expect("the harness must provide a display");
+    let screen = &conn.setup().roots[screen_num];
+    let facts = (
+        screen.root,
+        (screen.width_in_pixels, screen.height_in_pixels),
+    );
+    (conn, facts.0, facts.1)
+}
+
+/// The fixture's caret rect, which is where the ghost must appear.
+fn fixture_caret_rect() -> ScreenRect {
+    let session = session();
+    let id = fixture_entry(&session);
+    LinuxAdapter::with_accessibility()
+        .caret_rect(&handle(&id))
+        .expect("caret_rect")
+        .expect("a mapped entry has character geometry")
+}
+
+/// Pixels of the root window over `rect` — what is actually on screen there.
+fn root_pixels(
+    conn: &x11rb::rust_connection::RustConnection,
+    root: u32,
+    x: i16,
+    y: i16,
+    w: u16,
+    h: u16,
+) -> Vec<u8> {
+    conn.get_image(ImageFormat::Z_PIXMAP, root, x, y, w, h, !0)
+        .expect("get_image")
+        .reply()
+        .expect("get_image reply")
+        .data
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_ghost_overlay_is_an_override_redirect_clickthrough_window_at_the_caret() {
+    let caret = fixture_caret_rect();
+    let (conn, _root, screen) = x11();
+    let focus_before = conn
+        .get_input_focus()
+        .expect("get_input_focus")
+        .reply()
+        .expect("focus reply")
+        .focus;
+
+    let mut overlay = LinuxOverlayPresenter::new();
+    overlay
+        .show_ghost(caret, "quick brown fox")
+        .expect("show_ghost must succeed in a real X session");
+    let window = overlay
+        .text_window_id()
+        .expect("a successful show_ghost must have created a window");
+
+    let attrs = conn
+        .get_window_attributes(window)
+        .expect("get_window_attributes")
+        .reply()
+        .expect("attributes reply");
+    assert!(
+        attrs.override_redirect,
+        "the overlay must be unmanaged: a managed window gets decorations, is \
+         reparented, and can be handed the focus"
+    );
+    assert_eq!(
+        attrs.map_state,
+        MapState::VIEWABLE,
+        "a shown ghost must be mapped and viewable"
+    );
+
+    let geometry = conn
+        .get_geometry(window)
+        .expect("get_geometry")
+        .reply()
+        .expect("geometry reply");
+    assert_eq!(
+        f64::from(geometry.x),
+        caret.x,
+        "the ghost starts at the caret's left edge"
+    );
+    // No Y-flip: X11 root coordinates and AT-SPI screen coordinates share a
+    // top-left origin. A ported Cocoa flip would land this near
+    // `screen_height - caret.y`, which this assertion is what catches.
+    let expected_h = overlay_geometry::ghost_box_height(caret);
+    assert_eq!(f64::from(geometry.height), expected_h);
+    assert_eq!(
+        f64::from(geometry.y),
+        caret.y - 2.0,
+        "the box hugs the caret line, lifted by its 2px pad"
+    );
+    assert!(geometry.width > 0, "a ghost with text needs a width");
+    assert!(
+        i32::from(geometry.x) + i32::from(geometry.width) <= i32::from(screen.0)
+            && i32::from(geometry.y) + i32::from(geometry.height) <= i32::from(screen.1),
+        "the overlay must be clamped inside the root window: {geometry:?} vs {screen:?}"
+    );
+
+    // Click-through. Not cosmetic: without an empty input region the ghost would
+    // swallow the user's clicks on their own text field.
+    let input_shape = conn
+        .shape_get_rectangles(window, shape::SK::INPUT)
+        .expect("shape_get_rectangles")
+        .reply()
+        .expect("input shape reply");
+    assert!(
+        input_shape.rectangles.is_empty(),
+        "the input region must be empty, got {:?}",
+        input_shape.rectangles
+    );
+
+    // Never takes focus. Override-redirect plus never calling SetInputFocus, so
+    // the fixture keeps the keyboard.
+    let focus_after = conn
+        .get_input_focus()
+        .expect("get_input_focus")
+        .reply()
+        .expect("focus reply")
+        .focus;
+    assert_ne!(focus_after, window, "the overlay must never hold the focus");
+    assert_eq!(
+        focus_after, focus_before,
+        "showing a ghost must not move the input focus at all"
+    );
+
+    overlay.hide().expect("hide");
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_ghost_overlay_update_reuses_the_window_and_hide_is_idempotent() {
+    let caret = fixture_caret_rect();
+    let (conn, _root, _screen) = x11();
+    let mut overlay = LinuxOverlayPresenter::new();
+
+    overlay.show_ghost(caret, "one").expect("show_ghost");
+    let window = overlay.text_window_id().expect("window");
+    let first_width = conn
+        .get_geometry(window)
+        .expect("get_geometry")
+        .reply()
+        .expect("reply")
+        .width;
+
+    // A ghost is re-rendered on every keystroke. Creating a window per update
+    // would leak X resources for the whole session, so this pins reuse.
+    overlay
+        .update_ghost("one two three four")
+        .expect("update_ghost");
+    assert_eq!(
+        overlay.text_window_id(),
+        Some(window),
+        "update_ghost must re-render the same window, not create a new one"
+    );
+    let second_width = conn
+        .get_geometry(window)
+        .expect("get_geometry")
+        .reply()
+        .expect("reply")
+        .width;
+    assert!(
+        second_width > first_width,
+        "the window must resize to the longer text: {first_width} -> {second_width}"
+    );
+
+    // hide() withdraws it and is safe to repeat — the host calls it to reconcile.
+    overlay.hide().expect("hide");
+    assert_eq!(
+        conn.get_window_attributes(window)
+            .expect("attrs")
+            .reply()
+            .expect("reply")
+            .map_state,
+        MapState::UNMAPPED,
+        "hide must unmap the window"
+    );
+    overlay.hide().expect("hide is idempotent");
+    overlay.hide().expect("and again");
+
+    // update_ghost after hide has no ghost to update, and must say so rather than
+    // silently re-showing something the engine believes is gone.
+    assert!(matches!(
+        overlay.update_ghost("nope"),
+        Err(PlatformError::CannotComplete { .. })
+    ));
+
+    // Re-showing maps the same window again.
+    overlay.show_ghost(caret, "again").expect("re-show");
+    assert_eq!(overlay.text_window_id(), Some(window));
+    assert_eq!(
+        conn.get_window_attributes(window)
+            .expect("attrs")
+            .reply()
+            .expect("reply")
+            .map_state,
+        MapState::VIEWABLE
+    );
+    overlay.hide().expect("hide");
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_ghost_overlay_actually_draws_pixels_where_the_text_goes() {
+    // The only headless proof that anything *rendered*: compare the root
+    // framebuffer over a fixed region before and after the show. A window that
+    // maps but draws nothing — no font, an empty bounding shape, a byte order that
+    // wrote into the alpha byte — leaves the screen untouched and fails here.
+    let caret = fixture_caret_rect();
+    let (conn, root, screen) = x11();
+    let mut overlay = LinuxOverlayPresenter::new();
+
+    // Anchor over bare root, clear of the fixture's 480x240 window. Two reasons:
+    // the baseline is a static colour that nobody has to repaint, and the `before`
+    // grab can therefore be taken FIRST — the earlier version of this test grabbed
+    // `before` after `hide()` and compared against a region GTK had not yet
+    // redrawn, so a correctly drawn ghost still read as "no change".
+    let anchor = ScreenRect {
+        x: f64::from(screen.0) - 400.0,
+        y: f64::from(screen.1) - 200.0,
+        ..caret
+    };
+    // A generous fixed region around the anchor, so the compared pixels do not
+    // depend on the window box the renderer happens to choose.
+    let (region_x, region_y, region_w, region_h) =
+        (anchor.x as i16 - 4, anchor.y as i16 - 8, 240_u16, 40_u16);
+    let before = root_pixels(&conn, root, region_x, region_y, region_w, region_h);
+
+    overlay
+        .show_ghost(anchor, "Hlxy quick")
+        .expect("show_ghost");
+    let window = overlay.text_window_id().expect("window");
+    let after = root_pixels(&conn, root, region_x, region_y, region_w, region_h);
+
+    assert_eq!(after.len(), before.len(), "same region, same buffer size");
+    let changed = after
+        .iter()
+        .zip(before.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    // Ten glyphs at a 15px size cover well over ten pixels, so a handful of
+    // changed bytes would mean something other than text was drawn.
+    assert!(
+        changed >= 30,
+        "the ghost drew (almost) nothing: only {changed} of {} bytes over \
+         {region_w}x{region_h} at {region_x},{region_y} changed (font: check \
+         COMPME_FONT / XDG_DATA_DIRS)",
+        after.len()
+    );
+
+    // ...and the change must be *inside* the window the presenter reported, not
+    // somewhere else on screen.
+    let geometry = conn
+        .get_geometry(window)
+        .expect("get_geometry")
+        .reply()
+        .expect("reply");
+    assert!(
+        i32::from(geometry.x) >= i32::from(region_x)
+            && i32::from(geometry.y) >= i32::from(region_y)
+            && i32::from(geometry.x) + i32::from(geometry.width)
+                <= i32::from(region_x) + i32::from(region_w)
+            && i32::from(geometry.y) + i32::from(geometry.height)
+                <= i32::from(region_y) + i32::from(region_h),
+        "the changed pixels must be attributable to the overlay window: \
+         {geometry:?} is not inside {region_x},{region_y} {region_w}x{region_h}"
+    );
+
+    overlay.hide().expect("hide");
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_correction_overlay_underlines_the_word_and_banners_the_suggestion() {
+    // The grammar-fix affordance: a thin underline under the word plus a banner
+    // above it carrying the suggestion (docs/superpowers/specs/
+    // 2026-07-01-grammar-fix-design.md §G4).
+    let caret = fixture_caret_rect();
+    let word = ScreenRect {
+        x: caret.x,
+        y: caret.y + 200.0,
+        w: 40.0,
+        h: caret.h,
+    };
+    let (conn, _root, _screen) = x11();
+    let mut overlay = LinuxOverlayPresenter::new();
+    overlay
+        .show_correction(word, "the")
+        .expect("show_correction must succeed in a real X session");
+
+    let banner = overlay.text_window_id().expect("banner window");
+    let underline = overlay.underline_window_id().expect("underline window");
+    assert_ne!(
+        banner, underline,
+        "the banner and the underline are separate windows, so the transparent \
+         gap between them does not have to be composited"
+    );
+
+    let banner_geometry = conn
+        .get_geometry(banner)
+        .expect("banner geometry")
+        .reply()
+        .expect("reply");
+    let underline_geometry = conn
+        .get_geometry(underline)
+        .expect("underline geometry")
+        .reply()
+        .expect("reply");
+
+    assert_eq!(
+        f64::from(underline_geometry.y),
+        word.y + word.h,
+        "the underline sits flush under the word box"
+    );
+    assert_eq!(underline_geometry.height, overlay_geometry::UNDERLINE_H);
+    assert_eq!(f64::from(underline_geometry.width), word.w);
+    assert!(
+        f64::from(banner_geometry.y) + f64::from(banner_geometry.height) <= word.y,
+        "the banner must sit entirely above the word it describes: {banner_geometry:?} vs {word:?}"
+    );
+    assert!(
+        f64::from(banner_geometry.width) >= word.w,
+        "the banner must be at least as wide as the word"
+    );
+
+    for (label, window) in [("banner", banner), ("underline", underline)] {
+        let attrs = conn
+            .get_window_attributes(window)
+            .expect("attrs")
+            .reply()
+            .expect("reply");
+        assert!(attrs.override_redirect, "{label} must be override-redirect");
+        assert_eq!(
+            attrs.map_state,
+            MapState::VIEWABLE,
+            "{label} must be mapped"
+        );
+        assert!(
+            conn.shape_get_rectangles(window, shape::SK::INPUT)
+                .expect("shape")
+                .reply()
+                .expect("reply")
+                .rectangles
+                .is_empty(),
+            "{label} must be click-through"
+        );
+    }
+
+    // Showing a ghost afterwards must withdraw the underline: a stale underline
+    // under a word the engine is no longer correcting is a lie about state.
+    overlay.show_ghost(caret, "ghost").expect("show_ghost");
+    assert_eq!(
+        conn.get_window_attributes(underline)
+            .expect("attrs")
+            .reply()
+            .expect("reply")
+            .map_state,
+        MapState::UNMAPPED,
+        "show_ghost must withdraw the correction underline"
+    );
+
+    overlay.hide().expect("hide");
+    for (label, window) in [("banner", banner), ("underline", underline)] {
+        assert_eq!(
+            conn.get_window_attributes(window)
+                .expect("attrs")
+                .reply()
+                .expect("reply")
+                .map_state,
+            MapState::UNMAPPED,
+            "hide must withdraw the {label}"
+        );
+    }
+}
+
 /// A Text proxy for the fixture entry, for tests that need to drive selection.
 fn zbus_text(id: &ElementId) -> atspi::proxy::text::TextProxyBlocking<'static> {
     let connection = zbus::blocking::Connection::session().expect("session bus");
