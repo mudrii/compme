@@ -21,3 +21,24 @@ license.workspace = true
 [dependencies]
 platform = { path = "../platform" }
 shell_flags = { path = "../shell_flags" }
+
+# AT-SPI2 over D-Bus (ROADMAP Phase 2.1). Linux-only by target table: macOS and
+# Windows builds neither fetch nor compile it, so the shipped macOS artifact is
+# unaffected. `zbus` is enabled to re-export the exact zbus this atspi links, so
+# the blocking connection cannot end up on a second, incompatible version.
+[target.'cfg(target_os = "linux")'.dependencies]
+atspi = { version = "0.30", features = ["zbus"] }
+# atspi depends on zbus with default-features = false, which drops
+# `blocking-api` — and with it both `zbus::blocking` and the `...ProxyBlocking`
+# types the proxy macro would generate. Cargo features are additive across the
+# graph, so naming zbus here with just that feature turns it back on for atspi's
+# own zbus rather than pulling in a second copy. The version must stay
+# semver-compatible with atspi's `5.5` for that unification to happen.
+zbus = { version = "5.5", default-features = false, features = ["blocking-api"] }
+
+# The live AT-SPI tests drive the fixture directly (seeding text, setting a
+# selection) so the read path can be checked against text the test chose. That is
+# test-side write access; the adapter's own insert path is Phase 2.4.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+atspi = { version = "0.30", features = ["zbus"] }
+zbus = { version = "5.5", default-features = false, features = ["blocking-api"] }

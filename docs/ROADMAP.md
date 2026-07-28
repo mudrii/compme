@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-27 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈1950 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-27 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈1961 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -218,6 +218,50 @@ the adapter rather than after it. No desktop, display, or root required.
   failure). **Remaining 2.7 work:** installing the GTK/at-spi2 dev packages on
   the ubuntu runner and running the *full* harness there, which lands with the
   first real AT-SPI adapter code — an inert full run gates nothing today.
+
+**Phase 2.1/2.2 AT-SPI2 read path ✅ DONE (2026-07-27) — live-verified:**
+`platform_linux` now reads real fields over the accessibility bus. Layering keeps
+the decisions testable everywhere and the I/O in one place:
+- `atspi_ids` — the D-Bus (bus name, object path) pair encoded into
+  `FieldHandle::element_id`, with a decoder that fails closed on anything it did
+  not encode (a "repaired" id would address a *different* accessible).
+- `atspi_caps` — pure AT-SPI-facts → `Capabilities` mapping: interfaces, states,
+  role, toolkit. `password text` is the only secure signal AT-SPI offers, matched
+  exactly, and it forces `UxMode::Blocked`. `NativeRangeSet` is reported only
+  when the value is genuinely atomically replaceable.
+- `atspi_live` — blocking zbus proxies: focused-field walk (depth-bounded),
+  `capabilities`, `read_context`, `caret_rect`, `front_app`.
+- **Offsets are `UnicodeScalars`** — the first adapter to report them. AT-SPI
+  counts characters where AppKit/Chromium count UTF-16 units, so a
+  live test seeds astral-plane text (`a😀b`: 3 scalars, 4 UTF-16 units) —
+  an ASCII-only suite passes with a UTF-16 assumption still in place.
+- **7 live tests, all passing** in the harness against the GTK fixture: focused
+  field, text/caret round-trip, scalar offsets, selection as a scalar range plus
+  its exact text, capabilities, on-screen caret geometry, `front_app`, and
+  malformed/stale ids failing closed without panicking. They now also run in the
+  Linux CI job, which closes **the rest of Phase 2.7**.
+- **`atspi` is Linux-target-gated** (+75 packages there, `cargo audit` clean at
+  292 crates); macOS and Windows builds neither fetch nor compile it, so the
+  shipped macOS artifact is untouched. libatspi FFI was rejected: linking it
+  would make the binary refuse to *start* without the `.so`, a hard failure where
+  this project requires fail-closed degradation.
+- **`new()` stays inert; `with_accessibility()` opts in.** `org.a11y.Bus` is
+  D-Bus-activatable, so opening it in a constructor makes a host with a session
+  bus but no accessibility service wait out the 25-second method timeout — in a
+  constructor unit tests call dozens of times. The app wiring keeps `new()` until
+  the focus/caret event path makes the live adapter useful at runtime.
+- Two Xvfb-specific traps, both now handled in the fixture: with no window
+  manager nothing assigns X input focus, and GTK only reports `STATE_FOCUSED` on
+  a widget whose toplevel holds it — so a focused-field walk legitimately finds
+  nothing (a name-based probe still works, which is why it only appears once
+  something looks for focus). And `GtkEntry` selects its whole value on
+  focus-in, which would hand every reader a selection it never asked for.
+
+**Still pending for Phase 2:** `subscribe_focus`/`subscribe_caret` (the event
+half of 2.1 — the adapter cannot yet *notice* a focus change, only answer
+questions about a field it is handed), the accept tap against the resolved 2.3
+design, `insert`/`insert_replacing` (2.4), the overlay (2.5), and the
+session-dependent ShellHost services (2.6).
 
 **Phase 2.3 accept-key strategy ✅ RESOLVED (2026-07-27) — decision, measured:**
 Linux accept-key interception will use **`KeyInterceptMode::XGrabKey`** with a

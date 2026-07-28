@@ -633,8 +633,24 @@ longer-running child without blocking. All parsing and path rules are pure
 functions over file contents and env values, because this crate is also
 compiled and tested on macOS hosts where `/proc` does not exist.
 
-AT-SPI2 event paths, native insertion, overlays, key stores, dialogs, trays,
-file-manager reveal, packaging, and GPU backends remain roadmap work.
+The Linux **AT-SPI2 read path** is implemented (ROADMAP Phase 2.1/2.2) in three
+layers: `atspi_ids` encodes the D-Bus (bus name, object path) pair into
+`FieldHandle::element_id` and fails closed on anything it did not encode;
+`atspi_caps` is a pure AT-SPI-facts → `Capabilities` mapping (interfaces, states,
+role, toolkit, with `password text` as the only secure signal AT-SPI offers);
+and `atspi_live` performs the I/O over blocking zbus proxies — depth-bounded
+focused-field walk, `capabilities`, `read_context`, `caret_rect`, `front_app`.
+It reports `OffsetEncoding::UnicodeScalars`, the first adapter to do so, because
+AT-SPI counts characters where AppKit and Chromium count UTF-16 code units. The
+`atspi` dependency is Linux-target-gated, so macOS and Windows builds neither
+fetch nor compile it. `LinuxAdapter::new()` stays inert and
+`with_accessibility()` opts into the bus, because `org.a11y.Bus` is
+D-Bus-activatable and a constructor-time lookup would wait out the 25-second
+method timeout on a host without accessibility.
+
+AT-SPI2 *event* paths (focus/caret subscription), the accept tap, native
+insertion, overlays, key stores, dialogs, trays, file-manager reveal, packaging,
+and GPU backends remain roadmap work.
 
 ## macOS Runtime Model
 

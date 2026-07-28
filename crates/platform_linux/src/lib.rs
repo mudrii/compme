@@ -23,6 +23,20 @@ use platform::{
 };
 use std::path::{Path, PathBuf};
 
+pub mod atspi_caps;
+pub mod atspi_ids;
+/// Live AT-SPI2 read path. Linux-only: it needs the accessibility bus, and the
+/// `atspi` dependency is target-gated, so the module cannot exist elsewhere.
+#[cfg(target_os = "linux")]
+pub mod atspi_live;
+
+/// Live AT-SPI2 integration tests. In a sibling file (a `#[path]` module) rather
+/// than inline, matching how `run_loop` and `platform_macos` keep their tests —
+/// see the repo brief's "Where tests live".
+#[cfg(all(test, target_os = "linux"))]
+#[path = "atspi_live_tests.rs"]
+mod atspi_live_tests;
+
 /// `os-release(5)`: the distro identity file present on every distro compme
 /// targets.
 const OS_RELEASE_PATH: &str = "/etc/os-release";
@@ -42,11 +56,48 @@ const AUTOSTART_ENTRY: &str = "compme.desktop";
 ///   (Wayland restricts synthetic injection — IBus IME commit is the fallback)
 /// - overlay → an override-redirect X11 window, or a layer-shell surface on Wayland
 #[derive(Debug, Default)]
-pub struct LinuxAdapter;
+pub struct LinuxAdapter {
+    /// The accessibility-bus session, when one was opened. `None` keeps every
+    /// AT-SPI-backed method fail-closed exactly as the pre-2.1 scaffold was.
+    #[cfg(target_os = "linux")]
+    session: Option<atspi_live::AtspiSession>,
+}
 
 impl LinuxAdapter {
+    /// An inert adapter: no accessibility bus, so every field operation still
+    /// fails closed.
+    ///
+    /// Opening the bus is deliberately *not* done here. `org.a11y.Bus` is
+    /// D-Bus-activatable, so a host with a session bus but no accessibility
+    /// service makes the lookup wait out the default 25-second method timeout —
+    /// in a constructor that unit tests call dozens of times. Callers that want
+    /// the live read path ask for it explicitly with `with_accessibility` (a
+    /// plain code span, not an intra-doc link: that method is Linux-only, so the
+    /// link would be unresolvable when this crate is documented on macOS, where
+    /// the workspace `cargo doc` runs with `-D warnings`). The app wiring keeps
+    /// using `new()` until the focus/caret event path (Phase 2.1's second half)
+    /// makes the live adapter useful at runtime.
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Try to open the accessibility bus, returning an adapter that uses it when
+    /// available and an inert one when not. Never fails: a host without
+    /// accessibility is a supported configuration, not an error.
+    #[cfg(target_os = "linux")]
+    pub fn with_accessibility() -> Self {
+        Self {
+            session: atspi_live::AtspiSession::open().ok(),
+        }
+    }
+
+    /// The open accessibility session, or the fail-closed error every
+    /// AT-SPI-backed method returns without one.
+    #[cfg(target_os = "linux")]
+    fn session(&self, method: &str) -> Result<&atspi_live::AtspiSession, PlatformError> {
+        self.session
+            .as_ref()
+            .ok_or_else(|| Self::unsupported(method))
     }
 
     /// The error every not-yet-implemented method returns. Fail-closed: the host
@@ -89,22 +140,58 @@ impl PlatformAdapter for LinuxAdapter {
         Err(Self::unsupported("subscribe_accept"))
     }
 
+    /// The application owning the focused accessible. `None` without a session,
+    /// which is also the honest answer when nothing is focused.
+    #[cfg(target_os = "linux")]
+    fn front_app(&self) -> Option<AppId> {
+        self.session.as_ref()?.focused_app_name()
+    }
+
     /// Real impl: AT-SPI2 active-window application name.
+    #[cfg(not(target_os = "linux"))]
     fn front_app(&self) -> Option<AppId> {
         None
     }
 
+    /// AT-SPI2 interface/state/role probe, mapped by
+    /// [`atspi_caps::capabilities_from`].
+    #[cfg(target_os = "linux")]
+    fn capabilities(&self, field: &FieldHandle) -> Result<Capabilities, PlatformError> {
+        let session = self.session("capabilities")?;
+        let id = atspi_ids::ElementId::decode(&field.element_id).ok_or_else(|| {
+            PlatformError::UnsupportedField {
+                reason: format!("platform_linux: malformed element id: {}", field.element_id),
+            }
+        })?;
+        session.capabilities(&id)
+    }
+
     /// Real impl: AT-SPI2 Text/EditableText interface probe + role/state checks.
+    #[cfg(not(target_os = "linux"))]
     fn capabilities(&self, _field: &FieldHandle) -> Result<Capabilities, PlatformError> {
         Err(Self::unsupported("capabilities"))
     }
 
+    /// AT-SPI2 `Text` around the caret, in Unicode scalars.
+    #[cfg(target_os = "linux")]
+    fn read_context(&self, field: &FieldHandle) -> Result<TextContext, PlatformError> {
+        self.session("read_context")?.read_context(field)
+    }
+
     /// Real impl: AT-SPI2 Text interface range around the caret.
+    #[cfg(not(target_os = "linux"))]
     fn read_context(&self, _field: &FieldHandle) -> Result<TextContext, PlatformError> {
         Err(Self::unsupported("read_context"))
     }
 
+    /// AT-SPI2 per-character screen extents at the caret.
+    #[cfg(target_os = "linux")]
+    fn caret_rect(&self, field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+        self.session("caret_rect")?.caret_rect(field)
+    }
+
     /// Real impl: AT-SPI2 character-extents bounding rectangle of the caret.
+    #[cfg(not(target_os = "linux"))]
     fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
         Err(Self::unsupported("caret_rect"))
     }

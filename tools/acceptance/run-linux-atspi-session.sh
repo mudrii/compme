@@ -243,7 +243,9 @@ esac
 
 [ "$(uname -s)" = Linux ] || unprovisioned "this harness targets Linux (host is $(uname -s))"
 require_tools gcc pkg-config Xvfb dbus-daemon dbus-send
-require_pkgconfig gtk+-3.0 atspi-2
+# x11 is needed by the fixture itself: with no window manager under Xvfb it has
+# to call XSetInputFocus, or nothing in the accessibility tree is ever focused.
+require_pkgconfig gtk+-3.0 atspi-2 x11
 [ -z "$build_keytap_spike" ] || require_pkgconfig x11 xtst
 
 ATSPI_PREFIX="$(pkg-config --variable=prefix atspi-2)"
@@ -277,7 +279,7 @@ trap cleanup EXIT
 
 # Compiler flags must word-split, so read them into arrays rather than leaving an
 # unquoted command substitution for shellcheck to (rightly) flag.
-read -r -a gtk_flags <<<"$(pkg-config --cflags --libs gtk+-3.0)"
+read -r -a gtk_flags <<<"$(pkg-config --cflags --libs gtk+-3.0 x11)"
 # atspi-2 does not pull gobject/glib into its Libs, and this probe calls
 # g_object_ref/g_free directly, so link them explicitly.
 read -r -a atspi_flags <<<"$(pkg-config --cflags --libs atspi-2 gobject-2.0 glib-2.0)"

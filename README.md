@@ -27,7 +27,7 @@ promoted into the workspace.
 |---|---|---|
 | macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.5` | Current `main` contains post-release build, release-tooling, cask, and documentation changes; its deterministic gates are green, while 22 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
 | Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | Adapter/overlay operations and most ShellHost services remain fail-closed; owner-only DACL hardening, console shutdown handling, and URL opening are real, but there is no usable Windows product or package yet. |
-| Linux | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | `LinuxAdapter`'s AT-SPI2/X11 surfaces, the overlay, and the key-store/dialog ShellHost services remain fail-closed; the desktop-free host probes are real (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, `xdg-open`). No usable Linux product or package yet. |
+| Linux | **Foundation + AT-SPI2 read path** — native CI compiles and tests the portable workspace, and runs the live AT-SPI adapter tests against a GTK app under Xvfb | Reading real fields works (focused-field walk, text/caret in Unicode scalars, selection, capabilities, caret geometry). Still fail-closed: focus/caret *events*, the accept tap, insertion, the overlay, and the key-store/dialog ShellHost services. The desktop-free host probes are real (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, `xdg-open`). No usable Linux product or package yet. |
 
 The detailed Windows, Linux/X11, Wayland, GPU, packaging, and per-OS acceptance
 sequence is tracked in [the cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md).
@@ -354,7 +354,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 Use the full local gate before treating the workspace as development-ready. The
 canonical command list is single-sourced in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#full-local-gate); the root suite is
-roughly 1,950 tests.
+roughly 1,961 tests.
 
 A2 validation is local/manual-only and is deliberately excluded from CI, tag
 releases, and the release-policy checker: the automated workflows never execute

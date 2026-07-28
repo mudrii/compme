@@ -336,9 +336,25 @@ jobs:
         run: cargo build --locked -p app
 
       # Hermetic half of the AT-SPI2 harness (env sanitizing, display parsing,
-      # readiness waits, unprovisioned-host handling). The full Xvfb + a11y-bus
-      # run needs GTK/at-spi2 dev packages on the runner and lands with the first
-      # real AT-SPI adapter code (ROADMAP Phase 2.1); this keeps the harness from
-      # rotting until then.
+      # readiness waits, argument handling, unprovisioned-host reporting). Runs on
+      # any host, so it also guards the harness on the macOS-only Full Local Gate.
       - name: Linux AT-SPI harness self-test
         run: tools/acceptance/run-linux-atspi-session.sh --self-test
+
+      # ROADMAP Phase 2.7: the accessibility session the live adapter tests need.
+      # None of these are on the runner image, and the harness reports exit 3
+      # (unprovisioned) without them rather than failing, so a missing package
+      # would silently skip the tests — install them explicitly.
+      - name: Install AT-SPI session dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libatspi2.0-dev libx11-dev xvfb dbus-x11
+
+      # The live AT-SPI2 read path (Phase 2.1/2.2) against a real GTK app in
+      # Xvfb. `--test-threads=1` is required, not tidiness: these tests share one
+      # fixture entry, and they mutate its text and selection.
+      - name: Live AT-SPI adapter tests
+        run: |
+          tools/acceptance/run-linux-atspi-session.sh --run-in-session \
+            cargo test --locked -p platform_linux -- --ignored --test-threads=1

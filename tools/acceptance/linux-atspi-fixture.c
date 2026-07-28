@@ -14,6 +14,8 @@
  * Prints "FIXTURE_READY" once the window is mapped so the harness can wait for
  * an event instead of sleeping and hoping.
  */
+#include <X11/Xlib.h>
+#include <gdk/gdkx.h>
 #include <gtk/gtk.h>
 #include <stdio.h>
 
@@ -34,10 +36,34 @@ static void name_accessible(GtkWidget *widget, const char *name) {
   }
 }
 
+/* Take the X input focus for this window.
+ *
+ * Xvfb runs without a window manager, and with no WM nothing ever assigns the
+ * input focus — it stays PointerRoot. GTK only reports ATSPI STATE_FOCUSED on a
+ * widget whose toplevel holds the input focus, so without this the whole
+ * accessibility tree contains no focused object and any focused-field walk
+ * legitimately finds nothing. (A name-based probe still works, which is why this
+ * only shows up once something looks for focus.) */
+static void take_input_focus(GtkWidget *widget) {
+  GdkWindow *window = gtk_widget_get_window(widget);
+  if (window == NULL || !GDK_IS_X11_WINDOW(window)) {
+    return;
+  }
+  Display *display = GDK_WINDOW_XDISPLAY(window);
+  XSetInputFocus(display, GDK_WINDOW_XID(window), RevertToParent, CurrentTime);
+  XSync(display, False);
+}
+
 static void on_map(GtkWidget *widget, gpointer user_data) {
-  (void)widget;
-  (void)user_data;
-  /* stdout is a pipe under the harness, so it is block-buffered: flush or the
+  take_input_focus(widget);
+  /* Caret at the end, nothing selected — the state a user typing into a field is
+   * actually in. This has to be paired with gtk-entry-select-on-focus=FALSE in
+   * main(): clearing the selection here alone loses the race, because GTK's
+   * focus-in handler (which selects the whole value) runs after "map". */
+  gtk_editable_set_position(GTK_EDITABLE(user_data), -1);
+  /* Printed last, so a reader that waits for this line can rely on the whole
+   * documented starting state: mapped, focused, caret at the end, no selection.
+   * stdout is a pipe under the harness, so it is block-buffered: flush or the
    * reader blocks forever waiting for a line that is sitting in libc. */
   printf("FIXTURE_READY\n");
   fflush(stdout);
@@ -62,11 +88,17 @@ int main(int argc, char **argv) {
   g_set_prgname(FIXTURE_PRGNAME);
   gtk_init(&argc, &argv);
 
+  /* GtkEntry selects its whole value on focus-in by default. Correct GTK
+   * behavior, but it would hand every reader a 15-character selection it never
+   * asked for, and a fixture whose baseline has a selection cannot show whether
+   * an adapter reports selections correctly. Turn the behavior off at the source
+   * rather than trying to undo it afterwards. */
+  g_object_set(gtk_settings_get_default(), "gtk-entry-select-on-focus", FALSE, NULL);
+
   GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_title(GTK_WINDOW(window), "compme AT-SPI fixture");
   gtk_window_set_default_size(GTK_WINDOW(window), 480, 240);
   g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-  g_signal_connect_after(window, "map", G_CALLBACK(on_map), NULL);
   /* Not `_after`: the toplevel's default handler forwards the event to the focus
    * widget, so connecting before it is what sees Tab and Escape too. */
   g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), NULL);
@@ -85,6 +117,10 @@ int main(int argc, char **argv) {
   gtk_text_buffer_set_text(buffer, VIEW_TEXT, -1);
   name_accessible(view, VIEW_A11Y_NAME);
   gtk_box_pack_start(GTK_BOX(box), view, TRUE, TRUE, 0);
+
+  /* Connected here, not next to the other window signals, because the handler
+   * needs the entry to place the caret in it. */
+  g_signal_connect_after(window, "map", G_CALLBACK(on_map), entry);
 
   gtk_widget_show_all(window);
   /* Focus the entry so its caret offset is meaningful to the probe. */
