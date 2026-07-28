@@ -6,6 +6,7 @@ canonical_release_workflow="$repo_root/.github/workflows/release.yml"
 release_workflow="${1:-$canonical_release_workflow}"
 ci_workflow="$repo_root/.github/workflows/ci.yml"
 audit_workflow="$repo_root/.github/workflows/audit.yml"
+docs_workflow="$repo_root/.github/workflows/docs.yml"
 gate_script="$repo_root/tools/release/run-model-gates.sh"
 feature_script="$repo_root/tools/release/check-model-client-features.sh"
 privacy_script="$repo_root/tools/release/check-privacy-policy.sh"
@@ -178,7 +179,7 @@ trigger = workflow["on"] || workflow[true]
 abort("missing release gate: CI keeps push/pull_request/dispatch triggers") unless trigger.keys.sort == ["pull_request", "push", "workflow_dispatch"]
 push_trigger = trigger.fetch("push")
 abort("missing release gate: CI push trigger is limited to main and spike branches") unless push_trigger.fetch("branches") == ["main", "spike/**"]
-abort("missing release gate: CI push trigger skips only docs-only paths") unless push_trigger.fetch("paths-ignore") == ["docs/**", "*.md", "LICENSE"]
+abort("missing release gate: CI push trigger skips only unpinned prose") unless push_trigger.fetch("paths-ignore") == ["docs/superpowers/**", "docs/RELEASE-NOTES-*.md", "docs/TROUBLESHOOTING.md", "Qfd.md", "LICENSE"]
 jobs = workflow.fetch("jobs")
 checkout = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
@@ -206,7 +207,7 @@ abort("missing release gate: CI actionlint runs the checksum-db pinned linter") 
   actionlint_step && actionlint_step.fetch("run") == "go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color"
 audit_step = jobs.fetch("linux").fetch("steps").find { |step| step["name"] == "Rust dependency audit" }
 abort("missing release gate: CI dependency audit installs and runs pinned cargo-audit") unless
-  audit_step && audit_step.fetch("run") == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit\n"
+  audit_step && audit_step.fetch("run") == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n"
 icon_step = jobs.fetch("check").fetch("steps").find { |step| step["name"] == "Bundle icon generator self-test" }
 abort("missing release gate: CI runs the bundle icon generator self-test") unless
   icon_step && icon_step.fetch("run") == "tools/bundle/make-icon.sh --self-test"
@@ -241,7 +242,7 @@ expected_actions = [
 abort("missing release gate: dependency audit exact action provenance") unless actions == expected_actions
 audit_step = steps.find { |step| step["name"] == "Audit locked dependencies" }
 abort("missing release gate: dependency audit installs and runs pinned cargo-audit") unless
-  audit_step && audit_step.fetch("run") == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit\n"
+  audit_step && audit_step.fetch("run") == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n"
 governance = jobs.fetch("governance")
 abort("missing release gate: governance check uses Linux") unless governance.fetch("runs-on") == "ubuntu-latest"
 abort("missing release gate: governance check exact timeout") unless governance.fetch("timeout-minutes") == 10
@@ -257,6 +258,55 @@ gov_step = governance.fetch("steps").find { |step| step["name"] == "Check GitHub
 abort("missing release gate: governance check runs the live read-only checker") unless
   gov_step && gov_step.fetch("run").include?('tools/release/check-github-governance.sh --repo "$GITHUB_REPOSITORY"') &&
   !gov_step.fetch("run").include?("|| true")
+RUBY
+}
+
+# docs.yml is the cheap lane for pushes that ci.yml's paths-ignore lets through.
+# It was the only workflow with no policy pin, which started to matter once the
+# two path lists became load-bearing: ci.yml skips a push only when every changed
+# file is prose no checker pins, and docs.yml has to pick up exactly that set. If
+# the lists drift apart, either a pinned doc reaches no gate at all or the cheap
+# lane silently shadows the full one. So pin the mirror, not just the steps.
+check_docs_integrity_controls() {
+  ruby -ryaml - "$1" "$2" <<'RUBY'
+workflow = YAML.load_file(ARGV.fetch(0))
+ci = YAML.load_file(ARGV.fetch(1))
+triggers = workflow["on"] || workflow[true]
+ci_triggers = ci["on"] || ci[true]
+abort("missing release gate: docs lane keeps push/dispatch triggers") unless
+  triggers.keys.sort == ["push", "workflow_dispatch"]
+push_trigger = triggers.fetch("push")
+abort("missing release gate: docs lane push trigger matches CI branch scope") unless
+  push_trigger.fetch("branches") == ci_triggers.fetch("push").fetch("branches")
+expected_paths = ci_triggers.fetch("push").fetch("paths-ignore") + [".github/workflows/docs.yml"]
+abort("missing release gate: docs lane paths exactly mirror the CI paths-ignore set") unless
+  push_trigger.fetch("paths") == expected_paths
+abort("missing release gate: docs lane has read-only contents permission") unless
+  workflow.fetch("permissions") == {"contents" => "read"}
+abort("missing release gate: docs lane has exact concurrency policy") unless
+  workflow.fetch("concurrency") == {"group" => "docs-${{ github.ref }}", "cancel-in-progress" => true}
+jobs = workflow.fetch("jobs")
+abort("missing release gate: docs lane has exactly one docs job") unless jobs.keys == ["docs"]
+job = jobs.fetch("docs")
+abort("missing release gate: docs lane uses Linux") unless job.fetch("runs-on") == "ubuntu-latest"
+abort("missing release gate: docs lane exact timeout") unless job.fetch("timeout-minutes") == 10
+steps = job.fetch("steps")
+actions = steps.each_with_object([]) do |step, found|
+  found << [step.fetch("uses"), step.fetch("with", {})] if step.key?("uses")
+end
+abort("missing release gate: docs lane exact action provenance") unless actions == [
+  ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", {"persist-credentials" => false}],
+]
+{
+  "Version docs check" => "tools/release/check-version-docs.sh",
+  "Script syntax" => "bash -n",
+  "Shellcheck (errors only)" => "shellcheck --severity=error",
+  "Homebrew cask syntax" => "ruby -c Casks/compme.rb",
+}.each do |name, fragment|
+  step = steps.find { |candidate| candidate["name"] == name }
+  abort("missing release gate: docs lane retains #{name}") unless
+    step && step.fetch("run").include?(fragment)
+end
 RUBY
 }
 
@@ -387,7 +437,7 @@ abort("missing release gate: signing job has exact shell-step topology") unless
 abort("missing release gate: release validation inherits read-only workflow permissions") if jobs.fetch("validate").key?("permissions")
 audit_step = jobs.fetch("validate").fetch("steps").find { |step| step["name"] == "Rust dependency audit" }
 abort("missing release gate: release dependency audit installs and runs pinned cargo-audit") unless
-  audit_step && audit_step.fetch("run") == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit\n"
+  audit_step && audit_step.fetch("run") == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n"
 icon_step = jobs.fetch("validate").fetch("steps").find { |step| step["name"] == "Bundle icon generator self-test" }
 abort("missing release gate: release validation runs the bundle icon generator self-test") unless
   icon_step && icon_step.fetch("run") == "tools/bundle/make-icon.sh --self-test"
@@ -2223,6 +2273,60 @@ YAML
     return 1
   fi
 
+  check_docs_integrity_controls "$docs_workflow" "$ci_workflow"
+  docs_integrity_fixture="$tmp_dir/docs-integrity.yml"
+
+  # The mirror invariant is the whole point of this check: ci.yml skips a push
+  # only when every changed doc is unpinned prose, and docs.yml must pick up
+  # exactly that set. Drift either way silently reopens the hole where a
+  # docs-only reword of a pinned line lands on main with CI green.
+  cp "$docs_workflow" "$docs_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch(true).fetch("push").fetch("paths") << "docs/**"
+    File.write(path, YAML.dump(workflow))
+  ' "$docs_integrity_fixture"
+  if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
+    echo "release gate self-test failed: docs lane covering more than ci.yml skips was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$docs_workflow" "$docs_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch(true).fetch("push").fetch("paths").delete("docs/TROUBLESHOOTING.md")
+    File.write(path, YAML.dump(workflow))
+  ' "$docs_integrity_fixture"
+  if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
+    echo "release gate self-test failed: docs lane leaving a ci.yml-skipped path ungated was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$docs_workflow" "$docs_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("docs").fetch("steps").reject! { |s| s["name"] == "Version docs check" }
+    File.write(path, YAML.dump(workflow))
+  ' "$docs_integrity_fixture"
+  if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
+    echo "release gate self-test failed: docs lane without the version-docs check was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$docs_workflow" "$docs_integrity_fixture"
+  ruby -0pi -e 'sub(%q(actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0), %q(actions/checkout@v7))' "$docs_integrity_fixture"
+  if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
+    echo "release gate self-test failed: mutable docs-lane checkout action was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   check_release_integrity_controls "$canonical_release_workflow"
   integrity_fixture="$tmp_dir/release-integrity.yml"
 
@@ -2808,6 +2912,7 @@ check_no_automated_a2_validation "$ci_workflow" "CI"
 check_no_automated_a2_validation "$release_workflow" "release"
 check_ci_integrity_controls "$ci_workflow"
 check_audit_integrity_controls "$audit_workflow"
+check_docs_integrity_controls "$docs_workflow" "$ci_workflow"
 check_release_integrity_controls "$release_workflow"
 check_all_self_test_env_contracts
 check_manual_a2_summary "$readme_doc" "README"
@@ -3058,7 +3163,7 @@ ruby -ryaml -e '
   abort("missing release gate: CI pinned dependency audit") unless step?(
     jobs.fetch("linux").fetch("steps"),
     "Rust dependency audit",
-    "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit\n"
+    "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n"
   )
 
   # CI windows/linux jobs gate the whole portable workspace (everything but
@@ -3175,7 +3280,7 @@ ruby -ryaml -e '
     "release quality gate" => ["Model-quality gate", "bash tools/release/check-quality.sh"],
     "release version docs check" => ["Version docs check", "tools/release/check-version-docs.sh"],
     "release workflow invokes model gate script" => ["Model-backed release gates", "bash tools/release/run-model-gates.sh"],
-    "release pinned dependency audit" => ["Rust dependency audit", "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit\n"],
+    "release pinned dependency audit" => ["Rust dependency audit", "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n"],
   }.merge(shared_gate_steps.transform_keys { |key| "release #{key}" }).each do |label, (name, run)|
     abort("missing release gate: #{label}") unless step?(validate_steps, name, run)
   end

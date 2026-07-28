@@ -79,10 +79,12 @@ jobs:
           # default paths.
           cache-directories: ~/.cargo/advisory-db
 
+      # Same policy as ci.yml's Linux lane: deny unsound and yanked, keep
+      # `unmaintained` reporting-only. See the comment in ci.yml.
       - name: Rust dependency audit
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit
+          cargo audit --deny unsound --deny yanked
 
       - name: Root format
         run: cargo fmt --all -- --check

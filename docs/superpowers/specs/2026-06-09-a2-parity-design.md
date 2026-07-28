@@ -104,8 +104,11 @@ release gate list lives in `docs/ACCEPTANCE.md` and `docs/RELEASING.md`; it
 includes model-backed release gates, bundle/release helper self-tests,
 agent-brief alignment, and privacy-policy checks. A2 validation is a separate
 local/manual pre-release activity: CI, tag releases, and the release-policy
-checker deliberately exclude both `run-a2-compat-gates.sh` and
-`check-a2-matrix-ledger.sh` from execution and generic syntax validation.
+checker deliberately never *execute* `run-a2-compat-gates.sh` or
+`check-a2-matrix-ledger.sh`, and `check-model-gates.sh` rejects any workflow
+step that would. Static validation is not excluded — the generic `bash -n`
+traversal and the error-severity shellcheck sweep both parse them, as
+[`RELEASING.md`](../../RELEASING.md) records.
 
 ## Parity notes — evidence boundaries
 Candidate/suggestion **cycling** is an intentional compme superset: Cotypist's

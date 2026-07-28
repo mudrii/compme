@@ -658,3 +658,82 @@ Spike workspace (43 passed / 1 ignored, matching the documented 44), `cargo audi
 2. **Raise `run_loop.rs` production coverage from ~52%** by unit-testing the eight extracted phases with fakes; they are reachable now and each has a ≤8-argument signature.
 3. When the settings/tray typed-command seam lands, re-measure coverage — the watcher block is a large share of the uncovered half.
 4. Optional: add a coverage job to CI. Deliberately not done — it needs `llvm-tools-preview` on the macOS lane and there is no threshold anyone has agreed to; the documented local command is enough for now.
+
+## 17. 2026-07-29 CI/CD + documentation-gating audit
+
+Scope: the four workflows, the 25 gate scripts, and the doc surfaces they pin.
+Four findings, each reproduced before it was fixed; one earlier candidate was
+refuted on inspection and left alone.
+
+### F23. Docs-only pushes bypassed ~180 doc pins — REOPENED F9, now FIXED
+
+§13 closed F9 as RESOLVED because `docs.yml` gates docs-only pushes. That
+closure was partial. `docs.yml` runs `check-version-docs.sh`, `bash -n`,
+shellcheck and `ruby -c` — it runs neither `check-model-gates.sh` (179
+`require_line`/`reject_line` assertions, ~86 of them against README.md and six
+`docs/*.md` files) nor `check-agent-briefs.sh` (AGENTS.md). `ci.yml`'s
+`paths-ignore` was `["docs/**", "*.md", "LICENSE"]`, so those checkers did not
+run on a docs-only push at all.
+
+**Reproduced.** Rewording `README.md:359` `A2 validation is local/manual-only`
+→ `... is local and manual only` — a one-word docs-only change — passes every
+step in `docs.yml` (all three exit 0) while `check-model-gates.sh` fails with
+`missing release gate: README marks A2 local/manual-only`. On this repo's
+direct-to-`main` workflow that lands green and only surfaces at the next code
+push or the release validate job.
+
+**Fix.** `paths-ignore` now lists only prose no checker pins
+(`docs/superpowers/**`, `docs/RELEASE-NOTES-*.md`, `docs/TROUBLESHOOTING.md`,
+`Qfd.md`, `LICENSE`); `docs.yml`'s `paths` is the exact mirror plus the
+workflow itself. Of 39 tracked doc surfaces, 12 move onto the full lane
+(README, SECURITY, AGENTS + its three symlinks, and the six pinned
+`docs/*.md`), 25 stay cheap, and 2 `tools/spike/*.md` were already on the full
+lane because `*.md` never matched below the root. Verified by enumerating every
+tracked `*.md` against the old and new lists.
+
+### F24. `docs.yml` had no policy pin — FIXED
+
+It was the only workflow `check-model-gates.sh` did not read (`release.yml`,
+`ci.yml`, `audit.yml` are all shape-pinned). That mattered once the two path
+lists became load-bearing: drift either way silently reopens F23.
+`check_docs_integrity_controls` now pins the triggers, permissions,
+concurrency, job topology, timeout, checkout SHA and all four steps, and
+asserts `docs.yml paths == ci.yml paths-ignore + [".github/workflows/docs.yml"]`.
+Mutation-tested: re-adding `docs/**` to the docs lane, dropping `Qfd.md` from
+`paths-ignore`, and deleting the version-docs step each fail the live checker
+with a distinct message.
+
+### F25. `cargo audit` could not fail on unmaintained/unsound/yanked — FIXED
+
+`cargo audit` exits 0 on warning-class advisories. Confirmed live:
+RUSTSEC-2026-0192 (`ttf-parser`, reached via `fontdue` in the Linux overlay) is
+reported on the current tree and the command still exits 0 — in all three
+places that run it (CI Linux lane, weekly `audit.yml`, release `validate`).
+`--deny unsound --deny yanked` added to all three plus the local gate fence;
+verified still exit 0 today. `unmaintained` stays reporting-only because
+RUSTSEC-2026-0192 has no fixed version published, and is now documented in
+DEVELOPMENT.md with a re-check trigger instead of being invisible.
+
+### F26. Stale claims in workflow comments and the A2 design spec — FIXED
+
+`ci.yml`'s trigger comment still said the Version docs check is skipped on
+docs pushes; `docs.yml` has run it since 2026-07-26.
+`2026-06-09-a2-parity-design.md` said the A2 scripts are excluded from
+"execution and generic syntax validation" — only *execution* is excluded, and
+`RELEASING.md` already said so correctly. Both corrected.
+
+### Refuted, not a finding
+
+`run-a2-compat-gates.sh` and `check-a2-matrix-ledger.sh` appear in no workflow
+and no local gate fence, which reads as two orphaned scripts (one 653 lines).
+They are deliberately local/manual-only, and the exclusion is itself enforced:
+`check-model-gates.sh` rejects any workflow step that executes them
+(`reject_line "$0" ...`, line ~2819) and pins the `--self-test` lines into
+README/DEVELOPMENT so they cannot be dropped. Both self-tests pass. Left alone.
+
+### Also checked, nothing found
+
+All repo-relative Markdown links resolve (39 doc surfaces). `actionlint` clean
+across all four workflows. All 25 scripts with a `--self-test` have it running
+somewhere, the two A2 ones by the documented local route. `cargo audit` on the
+current tree: 300 dependencies, 0 vulnerabilities, 1 warning (F25).

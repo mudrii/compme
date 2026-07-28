@@ -1,8 +1,11 @@
 name: Docs
 
-# ci.yml's paths-ignore skips docs-only pushes entirely, so this lane keeps the
-# docs-only surface (version docs, script syntax, cask syntax) gated on exactly
-# those pushes.
+# ci.yml's paths-ignore skips pushes that touch only unpinned prose, so this
+# lane keeps the cheap surface (version docs, script syntax, cask syntax) gated
+# on exactly those pushes. The `paths` list below must stay the mirror image of
+# ci.yml's `paths-ignore`: a doc that no checker pins belongs here, and a doc
+# that check-model-gates.sh / check-version-docs.sh / check-agent-briefs.sh
+# pins belongs on the full lane instead.
 on:
   push:
     # Same branch scope as ci.yml: PR branches already get these checks through
@@ -10,8 +13,10 @@ on:
     # branches) would spend a runner for no extra coverage.
     branches: [main, "spike/**"]
     paths:
-      - "docs/**"
-      - "*.md"
+      - "docs/superpowers/**"
+      - "docs/RELEASE-NOTES-*.md"
+      - "docs/TROUBLESHOOTING.md"
+      - "Qfd.md"
       - "LICENSE"
       - ".github/workflows/docs.yml"
   workflow_dispatch:

@@ -230,7 +230,7 @@ cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1
 cargo build --locked --workspace --all-targets
 cargo build --locked -p platform_macos --examples
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
-cargo audit
+cargo audit --deny unsound --deny yanked
 
 find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 | xargs -0 bash -n
 find tools -type f -name '*.sh' -print0 | xargs -0 shellcheck --severity=error
@@ -306,20 +306,33 @@ functional load/complete/shutdown coverage only, since the latency budget is
 meaningless on a virtualized runner and stays a pre-tag gate on a real Mac.
 Branch CI also enforces version-doc reconciliation:
 `tools/release/check-version-docs.sh` fails the check job when a documented
-version lags the root `Cargo.toml`. Docs-only pushes skip `ci.yml` entirely
-(`paths-ignore`), so a separate [`docs.yml`](../.github/workflows/docs.yml)
+version lags the root `Cargo.toml`. Pushes limited to prose that no checker
+pins — `docs/superpowers/**`, `docs/RELEASE-NOTES-*.md`,
+`docs/TROUBLESHOOTING.md`, `Qfd.md`, `LICENSE` — skip `ci.yml`
+(`paths-ignore`), and a separate [`docs.yml`](../.github/workflows/docs.yml)
 lane picks them up with the version-docs check, script syntax, shellcheck, and
 cask syntax — same `main` / `spike/**` branch scope as `ci.yml`, since pull
-requests already run the full check job. Tag release
+requests already run the full check job. Every doc that
+`check-model-gates.sh`, `check-version-docs.sh`, or `check-agent-briefs.sh`
+pins takes the full lane instead: docs.yml runs none of those three, so a
+docs-only reword of a pinned line would otherwise land on main with CI green. Tag release
 validation is equally broad: it runs the same portable-workspace gates and
 app-binary build on `windows-latest` and `ubuntu-latest`, and the signing job
 attests build provenance for the packaged zip, verified by the publication and
 cask jobs before use. CI and tag validation also install
-`cargo-audit` 0.22.2 with `--locked` and run `cargo audit` under read-only
+`cargo-audit` 0.22.2 with `--locked` and run
+`cargo audit --deny unsound --deny yanked` under read-only
 workflow permissions; a separate workflow (read-only apart from opening a
 tracking issue on failure) repeats that pinned audit
 every Monday at 06:17 UTC alongside a live read-only governance re-check, and
-supports manual dispatch. Every workflow job has
+supports manual dispatch. Plain `cargo audit` exits 0 on
+unmaintained/unsound/yanked advisories — they are warnings, not
+vulnerabilities — so the `--deny unsound --deny yanked` flags are what make
+those two classes fail closed. `unmaintained` stays reporting-only on purpose:
+**RUSTSEC-2026-0192** (`ttf-parser`, reached through `fontdue` in the Linux
+overlay's glyph rasteriser) is live today with no fixed version published, so
+denying it would wedge every lane on a third-party release schedule. Re-check
+that advisory when `fontdue` next moves. Every workflow job has
 an explicit timeout. Those are hosted-runner gates rather than
 platform-specific macOS commands.
 Dependabot opens grouped PRs — weekly for the two Cargo ecosystems, monthly

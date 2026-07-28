@@ -38,10 +38,14 @@ jobs:
           # default paths; cache it alongside the cargo-installed binary.
           cache-directories: ~/.cargo/advisory-db
 
+      # Same policy as ci.yml's Linux lane: deny the warning classes that have
+      # a remedy (unsound, yanked), leave `unmaintained` reporting-only because
+      # RUSTSEC-2026-0192 has no fixed version to move to. See the comment in
+      # ci.yml for the full rationale.
       - name: Audit locked dependencies
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit
+          cargo audit --deny unsound --deny yanked
 
       # Scheduled-run failures otherwise rely on GitHub's default email, which
       # is easy to miss; a failing weekly audit silently defeats its purpose.

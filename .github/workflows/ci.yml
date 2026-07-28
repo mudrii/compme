@@ -3,13 +3,21 @@ name: CI
 on:
   push:
     branches: [main, "spike/**"]
-    # Docs-only pushes change nothing compiled; skip the expensive lanes.
-    # This also skips the check job's Version docs check, so a doc-surface
-    # break only surfaces at the next code push or the release validate job —
-    # the accepted price of skipping the macOS lanes for docs.
+    # Only prose that NO checker pins may skip the compiled lanes.
+    #
+    # check-model-gates.sh asserts ~180 exact lines across README.md and six
+    # docs/*.md files, and check-version-docs.sh gates eight version anchors
+    # over the same set plus SECURITY.md; check-agent-briefs.sh pins AGENTS.md.
+    # docs.yml runs none of those three, so while `docs/**` and `*.md` were
+    # ignored here a docs-only reword of a pinned line landed on main with CI
+    # green and only surfaced at the next code push or the release validate
+    # job. Everything still listed below is unpinned prose, so it keeps the
+    # cheap docs.yml lane; anything pinned now pays the full lane.
     paths-ignore:
-      - "docs/**"
-      - "*.md"
+      - "docs/superpowers/**"
+      - "docs/RELEASE-NOTES-*.md"
+      - "docs/TROUBLESHOOTING.md"
+      - "Qfd.md"
       - "LICENSE"
   pull_request:
   workflow_dispatch:
@@ -324,10 +332,17 @@ jobs:
 
       # Platform-independent (reads Cargo.lock only); lives in the Linux job
       # so the premium macOS lane never pays the cargo-audit compile.
+      # `cargo audit` alone exits 0 on unmaintained/unsound/yanked advisories —
+      # they are warnings, not vulnerabilities — so those classes were reported
+      # and then silently passed. Deny the two that always have a remedy
+      # (unsound code, yanked releases). `unmaintained` stays a warning on
+      # purpose: RUSTSEC-2026-0192 (ttf-parser, via fontdue, Linux overlay
+      # only) is live today with no fixed version to move to, and denying it
+      # would wedge CI on a third-party release schedule.
       - name: Rust dependency audit
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit
+          cargo audit --deny unsound --deny yanked
 
       - name: Test portable workspace
         run: cargo test --locked --workspace --exclude platform_macos
