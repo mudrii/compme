@@ -18,6 +18,14 @@
 //! are factored into pure functions over file contents and env values, because
 //! this crate is also compiled and tested on the macOS development hosts, where
 //! `/proc` and `/etc/os-release` do not exist.
+//!
+//! Real too, but session-dependent (ROADMAP Phase 2.6): the memory-key store
+//! (`keyring` + [`memory_key`]), the modal confirm ([`confirm`]), and
+//! file-manager reveal ([`reveal`]). Each talks to a desktop service that a
+//! headless host does not have, so each fails closed there — that is the half a
+//! headless host can prove, and it is proven rather than assumed. Their
+//! decision-making (D-Bus lookup classification, dialog argv and exit codes, path
+//! → URI) is again pure and tested on every host.
 
 use platform::{
     AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback, Environment,
@@ -37,6 +45,19 @@ pub mod atspi_ids;
 /// `atspi` dependency is target-gated, so the module cannot exist elsewhere.
 #[cfg(target_os = "linux")]
 pub mod atspi_live;
+/// `zenity`/`kdialog` modal confirmation: argv construction and exit-code
+/// interpretation are pure, so they are tested on every host.
+pub mod confirm;
+/// Secret Service (`org.freedesktop.secrets`) key transport — the Linux
+/// counterpart of `platform_macos::keychain`. Linux-only: it needs the session
+/// bus, and `zbus` is target-gated, so the module cannot exist elsewhere.
+#[cfg(target_os = "linux")]
+pub mod keyring;
+/// The memory-store key's load-or-create contract (host-independent).
+pub mod memory_key;
+/// File-manager reveal: `org.freedesktop.FileManager1` with an `xdg-open`
+/// fallback, over pure path arithmetic.
+pub mod reveal;
 
 /// Live AT-SPI2 integration tests. In a sibling file (a `#[path]` module) rather
 /// than inline, matching how `run_loop` and `platform_macos` keep their tests —
@@ -442,12 +463,24 @@ fn apply_autostart(dir: &Path, enabled: bool, exec: &Path) -> std::io::Result<()
     })
 }
 
-/// Linux implementation of `platform::shell::ShellHost`. Real: the
-/// `/proc/meminfo` memory probe, the XDG autostart entry, and the `xdg-open`
-/// URL launcher. Still fail-closed scaffolds: libsecret key storage,
-/// zenity/kdialog confirmation dialogs, file-manager reveal, and desktop-portal
-/// permission hooks — each needs a session bus or a display to do anything, so
-/// none can be proven on a headless host yet.
+/// Linux implementation of `platform::shell::ShellHost`.
+///
+/// Real, and needing no desktop session: the `/proc/meminfo` memory probe, the
+/// XDG autostart entry, and the `xdg-open` URL launcher.
+///
+/// Real, and session-dependent (ROADMAP Phase 2.6) — each is built here and each
+/// fails closed when its service is absent, which is the only half a headless host
+/// can prove:
+/// - `load_or_create_memory_key` — Secret Service over D-Bus
+///   (`keyring`, contract in [`memory_key`]). No key store, or a locked
+///   keyring, is an error; there is no plaintext fallback.
+/// - `confirm` — `zenity`, then `kdialog` ([`confirm`]). `Ok(true)` only on an
+///   explicit confirm click; neither helper present is an error.
+/// - `reveal_file` — `org.freedesktop.FileManager1.ShowItems`, else `xdg-open` on
+///   the containing directory ([`reveal`]).
+///
+/// Still fail-closed by design: `open_permission_settings` (Linux has no TCC-style
+/// pane to open) and the tray, which needs a StatusNotifierItem host.
 #[derive(Debug, Default)]
 pub struct LinuxShellHost;
 
@@ -482,6 +515,24 @@ fn spawn_and_reap_with(
     Ok(None)
 }
 
+/// Hand `target` (a URL or a directory) to the desktop's default handler.
+///
+/// Fails closed on an immediate launcher failure, matching the macOS (NSWorkspace
+/// bool) and Windows (ShellExecuteW code) launch checks; a child that outlives the
+/// poll window is best-effort by construction. Shared with
+/// [`reveal`]'s fallback so both report a failing launcher the same way.
+pub(crate) fn xdg_open(target: &str) -> Result<(), PlatformError> {
+    match spawn_and_reap_with(std::process::Command::new("xdg-open").arg(target), |_| {}) {
+        Ok(Some(status)) if !status.success() => Err(PlatformError::CannotComplete {
+            reason: format!("xdg-open {target}: exited with {status}"),
+        }),
+        Ok(_) => Ok(()),
+        Err(e) => Err(PlatformError::CannotComplete {
+            reason: format!("xdg-open {target}: {e}"),
+        }),
+    }
+}
+
 fn poll_for_immediate_exit_with(
     mut try_wait: impl FnMut() -> std::io::Result<Option<std::process::ExitStatus>>,
     mut sleep: impl FnMut(std::time::Duration),
@@ -513,26 +564,41 @@ impl platform::shell::ShellHost for LinuxShellHost {
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
-        // Fail closed on an immediate launcher failure, matching the macOS
-        // (NSWorkspace bool) and Windows (ShellExecuteW code) launch checks; a
-        // child that outlives the poll window is best-effort by construction.
-        match spawn_and_reap_with(std::process::Command::new("xdg-open").arg(url), |_| {}) {
-            Ok(Some(status)) if !status.success() => Err(PlatformError::CannotComplete {
-                reason: format!("xdg-open {url}: exited with {status}"),
-            }),
-            Ok(_) => Ok(()),
-            Err(e) => Err(PlatformError::CannotComplete {
-                reason: format!("xdg-open {url}: {e}"),
-            }),
-        }
+        xdg_open(url)
     }
 
+    /// **Deliberately fail-closed.** Linux has no equivalent of the macOS TCC
+    /// pane this method exists for: AT-SPI needs no per-application grant, and
+    /// what does gate it — `org.gnome.desktop.interface toolkit-accessibility`,
+    /// `GTK_MODULES`, `NO_AT_BRIDGE`, or a Wayland compositor's own policy — is
+    /// per-desktop, with no portable settings URL and no portal to ask. Opening
+    /// `gnome-control-center` would be a lie on KDE, XFCE, and Sway alike, so the
+    /// honest answer is that there is nothing to open; the caller shows its own
+    /// guidance instead.
     fn open_permission_settings(&self) -> Result<(), PlatformError> {
-        Err(LinuxAdapter::unsupported("open_permission_settings"))
+        Err(PlatformError::UnsupportedField {
+            reason: "platform_linux::open_permission_settings: Linux has no per-application \
+                     accessibility permission pane to open (no TCC equivalent)"
+                .to_string(),
+        })
     }
 
+    /// `org.freedesktop.FileManager1.ShowItems`, falling back to `xdg-open` on the
+    /// containing directory. See [`reveal`] for why there is no portable
+    /// "select this file" call.
+    #[cfg(target_os = "linux")]
+    fn reveal_file(&self, path: &std::path::Path) -> Result<(), PlatformError> {
+        reveal::reveal(path)
+    }
+
+    /// Off Linux this adapter has no file manager to talk to; the pure path
+    /// arithmetic in [`reveal`] is still compiled and tested here.
+    #[cfg(not(target_os = "linux"))]
     fn reveal_file(&self, _path: &std::path::Path) -> Result<(), PlatformError> {
-        Err(LinuxAdapter::unsupported("reveal_file"))
+        Err(PlatformError::UnsupportedField {
+            reason: "platform_linux::reveal_file requires Linux (FileManager1 over D-Bus)"
+                .to_string(),
+        })
     }
 
     /// XDG autostart: write or remove `<config>/autostart/compme.desktop`
@@ -555,12 +621,39 @@ impl platform::shell::ShellHost for LinuxShellHost {
         })
     }
 
-    fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
-        Err(LinuxAdapter::unsupported("confirm"))
+    /// Blocking modal confirm via `zenity`, then `kdialog`. `Ok(true)` only on an
+    /// explicit confirm click; Return declines. See [`confirm`].
+    #[cfg(target_os = "linux")]
+    fn confirm(&self, prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
+        confirm::confirm_with(prompt, confirm::spawn_and_wait)
     }
 
+    /// Off Linux this adapter must not spawn a Linux dialog helper. The argv and
+    /// exit-code rules are still compiled and tested here.
+    #[cfg(not(target_os = "linux"))]
+    fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
+        Err(PlatformError::UnsupportedField {
+            reason: "platform_linux::confirm requires Linux (zenity/kdialog)".to_string(),
+        })
+    }
+
+    /// 32 bytes from the Secret Service, created on first use. Fails closed with
+    /// no key store, and never fabricates or writes a plaintext key — see
+    /// [`memory_key`] and `keyring`.
+    #[cfg(target_os = "linux")]
     fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
-        Err(LinuxAdapter::unsupported("load_or_create_memory_key"))
+        memory_key::MemoryKeyStore::secret_service().load_or_create_memory_key()
+    }
+
+    /// Off Linux there is no `org.freedesktop.secrets` to talk to. The
+    /// load-or-create contract in [`memory_key`] is compiled and tested here.
+    #[cfg(not(target_os = "linux"))]
+    fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
+        Err(PlatformError::UnsupportedField {
+            reason: "platform_linux::load_or_create_memory_key requires Linux (Secret Service \
+                     over D-Bus)"
+                .to_string(),
+        })
     }
 }
 
@@ -909,30 +1002,75 @@ mod tests {
     #[test]
     fn shell_host_is_fail_closed() {
         use platform::shell::ShellHost;
-        use shell_flags::ConfirmPrompt;
 
         let h = LinuxShellHost::new();
         assert!(!h.secure_input_enabled());
         assert!(!h.screen_capture_permission());
+        // open_permission_settings stays fail-closed on every host, deliberately:
+        // Linux has no per-application accessibility pane to open (see the method
+        // docs). The reason must say so, because "unsupported" with no explanation
+        // reads like an unfinished stub.
+        let Err(PlatformError::UnsupportedField { reason }) = h.open_permission_settings() else {
+            panic!("open_permission_settings must fail closed");
+        };
         assert!(
-            h.load_or_create_memory_key().is_err(),
-            "no key store yet -- must fail closed"
+            reason.contains("platform_linux::open_permission_settings")
+                && reason.contains("no TCC equivalent"),
+            "reason should name the method and why it is unsupported: {reason:?}"
         );
-        assert!(h
-            .confirm(&ConfirmPrompt {
-                title: "t",
-                message: "m",
-                confirm_label: "c"
-            })
-            .is_err());
-        // set_launch_at_login is real now (XDG autostart) and is covered by the
+        // set_launch_at_login is real (XDG autostart) and is covered by the
         // `apply_autostart` round-trip below, which writes into a temp directory
         // instead of the developer's real `~/.config`.
-        assert!(h.reveal_file(std::path::Path::new("x")).is_err());
-        assert!(h.open_permission_settings().is_err());
+        //
+        // load_or_create_memory_key / confirm / reveal_file are real now (Phase
+        // 2.6) and are NOT called here: on Linux they would talk to the session
+        // bus, spawn a blocking dialog on the developer's desktop, or open a file
+        // manager. Their host-independent decision logic is unit-tested in
+        // `memory_key`, `confirm`, and `reveal`; their live behavior — including
+        // the fail-closed paths on a bare host — is in the `#[ignore]`d session
+        // tests (`keyring_live_tests.rs`, `confirm_live_tests.rs`). Off
+        // Linux they must still refuse, which is what the next test pins.
         let start = std::time::Instant::now();
         h.pump_events(std::time::Duration::from_millis(5));
         assert!(start.elapsed() >= std::time::Duration::from_millis(5));
+    }
+
+    /// The three session-dependent services must never *pretend* to work on a
+    /// host that is not Linux: the macOS and Windows lanes build this crate, and a
+    /// `LinuxShellHost` wired in there has no Secret Service, no zenity, and no
+    /// FileManager1. (On Linux these same calls are live, so they are exercised by
+    /// the session tests instead — see `shell_host_is_fail_closed`.)
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn session_services_refuse_to_run_off_linux() {
+        use platform::shell::ShellHost;
+        use shell_flags::ConfirmPrompt;
+
+        let h = LinuxShellHost::new();
+        for (method, result) in [
+            (
+                "load_or_create_memory_key",
+                h.load_or_create_memory_key().map(|_| ()),
+            ),
+            (
+                "confirm",
+                h.confirm(&ConfirmPrompt {
+                    title: "t",
+                    message: "m",
+                    confirm_label: "c",
+                })
+                .map(|_| ()),
+            ),
+            ("reveal_file", h.reveal_file(std::path::Path::new("/tmp/x"))),
+        ] {
+            let Err(PlatformError::UnsupportedField { reason }) = result else {
+                panic!("{method} must fail closed off Linux, got {result:?}");
+            };
+            assert!(
+                reason.contains(method) && reason.contains("Linux"),
+                "{method} reason should name the method and the requirement: {reason:?}"
+            );
+        }
     }
 
     #[test]

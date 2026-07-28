@@ -614,8 +614,9 @@ Major responsibilities:
 These crates compile the portable workspace on their native CI runners, but
 they are not usable product adapters yet. Their `PlatformAdapter` text,
 focus/caret/accept, insertion, and overlay methods fail closed with
-`UnsupportedField` (overlay `hide` remains idempotent). Most `ShellHost`
-services also fail closed.
+`UnsupportedField` (overlay `hide` remains idempotent). Windows' `ShellHost`
+services mostly fail closed; Linux's are largely implemented (see below), and
+fail closed when the desktop service they need is absent.
 
 The current Windows foundation has real owner-only DACL hardening, a console
 control handler for orderly shutdown, and native `ShellExecuteW` URL opening.
@@ -674,8 +675,26 @@ but never the caret's resting place. Consecutive duplicate focus events are
 suppressed, because GTK emits `state-changed:focused` twice per focus move and each
 one would otherwise cost the host a capability probe plus a field read.
 
-The accept tap, overlays, key stores, dialogs, trays, file-manager reveal,
-packaging, and GPU backends remain roadmap work on Linux.
+The Linux **session ShellHost services** are implemented too (ROADMAP Phase 2.6),
+each fail-closed when its desktop service is absent. `memory_key` holds the
+host-independent load-or-create contract (wrong-length secret refused rather than
+overwritten, an unpersisted key never returned, transport buffer zeroized) and
+`keyring` the Secret Service (`org.freedesktop.secrets`) D-Bus transport — chosen
+over libsecret so a host without the library cannot stop the binary from starting;
+a locked keyring is reported rather than prompted through, and blocks the create
+path so a hidden item plus a fresh key cannot leave the memory store
+undecryptable. `confirm` runs `zenity --question --default-cancel`, then
+`kdialog --warningyesno`, treating only exit 0 as an explicit confirm and no helper
+at all as an error; every field is passed as a glued `--option=value` argv element,
+so there is no shell and no argument injection. `reveal` calls
+`org.freedesktop.FileManager1.ShowItems` with a percent-encoded `file://` URI —
+the only portable call that *selects* an item — and falls back to `xdg-open` on
+the containing directory. `open_permission_settings` stays fail-closed on purpose:
+Linux has no TCC-style pane, and the accessibility switches that exist are
+per-desktop with no portable URL.
+
+The accept tap, overlays, trays, per-OS packaging, and GPU backends remain
+roadmap work on Linux.
 
 ## macOS Runtime Model
 
