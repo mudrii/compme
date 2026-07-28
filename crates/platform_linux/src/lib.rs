@@ -3,13 +3,13 @@
 //! scaffold (Tier 1.1), as are the session-dependent shell services.
 //!
 //! Implements the [`platform::PlatformAdapter`] contract so the cross-platform
-//! structure exists and CI can gate it. The AT-SPI2 read, insert, and focus/caret
-//! event surfaces are real on Linux with an accessibility session (see
-//! `atspi_live` and `atspi_events`). The remaining X11 surfaces — the accept tap
-//! and the overlay — are **not yet built**: each is a fail-closed stub returning
-//! [`PlatformError::UnsupportedField`] or a safe empty value, so wiring this
-//! adapter in is inert, never a crash, and each method's doc names the Linux API
-//! its real implementation will use.
+//! structure exists and CI can gate it. Real on Linux with an accessibility
+//! session: the AT-SPI2 read, insert, and focus/caret event surfaces (see
+//! `atspi_live` and `atspi_events`) and the ghost/correction overlay (an
+//! override-redirect X11 window — see `x11_overlay`). The accept tap is the one
+//! remaining surface **not yet built**: it is a fail-closed stub returning
+//! [`PlatformError::UnsupportedField`], so wiring this adapter in is inert, never
+//! a crash, and its doc names the Linux API its real implementation will use.
 //!
 //! Real today, because they need neither a display nor an accessibility bus and
 //! so are verifiable on a headless Linux host: `environment` (distro + kernel),
@@ -58,6 +58,17 @@ pub mod memory_key;
 /// File-manager reveal: `org.freedesktop.FileManager1` with an `xdg-open`
 /// fallback, over pure path arithmetic.
 pub mod reveal;
+/// Font discovery for the overlay. Compiled everywhere: the ranking, the
+/// search-path rules, and the directory scan are pure enough to test on the
+/// macOS and Windows lanes.
+pub mod overlay_font;
+/// Overlay placement geometry. Compiled everywhere for the same reason — this is
+/// where overlay bugs actually live, and headless pixel assertions cannot see
+/// them.
+pub mod overlay_geometry;
+/// Live override-redirect X11 overlay. Linux-only: `x11rb` is target-gated.
+#[cfg(target_os = "linux")]
+pub mod x11_overlay;
 
 /// Live AT-SPI2 integration tests. In a sibling file (a `#[path]` module) rather
 /// than inline, matching how `run_loop` and `platform_macos` keep their tests —
@@ -657,22 +668,81 @@ impl platform::shell::ShellHost for LinuxShellHost {
     }
 }
 
-/// Linux ghost overlay scaffold. Future real impl: wlr-layer-shell on Wayland
-/// or an override-redirect X11 window.
+/// Linux ghost/correction overlay: an override-redirect X11 window
+/// (ROADMAP Phase 2.5, `OverlayPlacement::OverrideRedirect`).
+///
+/// The X11 connection is opened **lazily**, on the first show, not in `new()`.
+/// Two reasons: `new()` is infallible in the app's wiring, and the contract
+/// already requires the host to reconcile a failed `show_ghost` (hide + retract
+/// the shown stat) — so reporting "no display" at the first show is exactly the
+/// shape callers handle, while a failing constructor would not be.
+///
+/// Wayland is Phase 3 (`OverlayPlacement::LayerShell`): this presenter needs an
+/// X server, and reports a diagnosable error without one.
 #[derive(Debug, Default)]
-pub struct LinuxOverlayPresenter;
+pub struct LinuxOverlayPresenter {
+    #[cfg(target_os = "linux")]
+    overlay: Option<x11_overlay::X11Overlay>,
+}
 
 impl LinuxOverlayPresenter {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// The live overlay, opening the X11 connection on first use.
+    #[cfg(target_os = "linux")]
+    fn overlay(&mut self) -> Result<&mut x11_overlay::X11Overlay, PlatformError> {
+        if self.overlay.is_none() {
+            self.overlay = Some(x11_overlay::X11Overlay::open()?);
+        }
+        // `is_none` was just resolved, so this cannot fail; expressed as an
+        // `ok_or_else` rather than `unwrap` to keep the method panic-free.
+        self.overlay
+            .as_mut()
+            .ok_or_else(|| PlatformError::CannotComplete {
+                reason: "platform_linux x11 overlay: connection vanished".into(),
+            })
+    }
+
+    /// The text window's X11 id once one exists — the seam the live tests use to
+    /// interrogate the real window (override-redirect, map state, geometry, input
+    /// shape, focus) from a second connection, and to prove `update_ghost` reuses
+    /// it instead of creating one per keystroke.
+    #[cfg(target_os = "linux")]
+    pub fn text_window_id(&self) -> Option<u32> {
+        self.overlay.as_ref().and_then(|o| o.text_window_id())
+    }
+
+    /// The correction underline window's X11 id, once a correction has shown.
+    #[cfg(target_os = "linux")]
+    pub fn underline_window_id(&self) -> Option<u32> {
+        self.overlay.as_ref().and_then(|o| o.underline_window_id())
     }
 }
 
 impl platform::OverlayPresenter for LinuxOverlayPresenter {
+    #[cfg(target_os = "linux")]
+    fn show_ghost(&mut self, anchor: ScreenRect, text: &str) -> Result<(), PlatformError> {
+        self.overlay()?.show_ghost(anchor, text)
+    }
+
+    /// Real impl: an override-redirect X11 window (see `x11_overlay`). Fail-closed
+    /// off Linux, where there is no X server to talk to — this crate is compiled
+    /// on the macOS and Windows lanes.
+    #[cfg(not(target_os = "linux"))]
     fn show_ghost(&mut self, _anchor: ScreenRect, _text: &str) -> Result<(), PlatformError> {
         Err(LinuxAdapter::unsupported("show_ghost"))
     }
 
+    #[cfg(target_os = "linux")]
+    fn show_correction(&mut self, rect: ScreenRect, suggestion: &str) -> Result<(), PlatformError> {
+        self.overlay()?.show_correction(rect, suggestion)
+    }
+
+    /// Real impl: an underline bar plus a suggestion banner, both override-redirect
+    /// X11 windows (see `x11_overlay`).
+    #[cfg(not(target_os = "linux"))]
     fn show_correction(
         &mut self,
         _rect: ScreenRect,
@@ -681,11 +751,32 @@ impl platform::OverlayPresenter for LinuxOverlayPresenter {
         Err(LinuxAdapter::unsupported("show_correction"))
     }
 
+    #[cfg(target_os = "linux")]
+    fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError> {
+        // Deliberately does NOT open a connection: `update_ghost` requires a
+        // ghost already showing, so a presenter that never showed one must fail
+        // rather than connect and then discover it has no anchor.
+        match self.overlay.as_mut() {
+            Some(overlay) => overlay.update_ghost(text),
+            None => Err(PlatformError::CannotComplete {
+                reason: "platform_linux x11 overlay: cannot update a hidden ghost".into(),
+            }),
+        }
+    }
+
+    /// Real impl: re-render the existing window's text (see `x11_overlay`).
+    #[cfg(not(target_os = "linux"))]
     fn update_ghost(&mut self, _text: &str) -> Result<(), PlatformError> {
         Err(LinuxAdapter::unsupported("update_ghost"))
     }
 
+    /// Idempotent on every host: with no connection there is nothing showing, and
+    /// unmapping an already-unmapped window is a no-op.
     fn hide(&mut self) -> Result<(), PlatformError> {
+        #[cfg(target_os = "linux")]
+        if let Some(overlay) = self.overlay.as_mut() {
+            return overlay.hide();
+        }
         Ok(())
     }
 }
@@ -1272,6 +1363,15 @@ mod tests {
         );
     }
 
+    /// UPDATED for Phase 2.5 (the overlay is real on Linux now). This test used
+    /// to pin `UnsupportedField` from all three show methods on every host.
+    /// Deliberately narrowed rather than deleted: off Linux there is no X server
+    /// and the methods stay fail-closed exactly as before, which is what the
+    /// macOS and Windows lanes still assert here. The Linux half moved to
+    /// `atspi_live_tests.rs`, where a real X session exists to succeed against —
+    /// and `overlay_without_a_display_fails_closed_on_linux` below keeps the
+    /// no-display path pinned.
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn overlay_is_fail_closed_and_hide_is_idempotent() {
         use platform::OverlayPresenter;
@@ -1307,5 +1407,55 @@ mod tests {
         assert!(o.update_ghost("g").is_err());
         o.hide().expect("hide is contractually idempotent-success");
         o.hide().expect("second hide too");
+    }
+
+    /// The Linux no-display path: a headless box, a cron job, a container. It must
+    /// report a diagnosable error naming the layer and the `DISPLAY` it tried,
+    /// never panic — and `hide()` must still be the idempotent success the trait
+    /// promises, because the host calls it to reconcile a failed show.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn overlay_without_a_display_fails_closed_on_linux() {
+        use platform::OverlayPresenter;
+
+        let mut o = LinuxOverlayPresenter::new();
+        let anchor = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 2.0,
+            h: 16.0,
+        };
+        // update_ghost never opens a connection, so it fails the same way with or
+        // without a display: there is no ghost to update.
+        let Err(PlatformError::CannotComplete { reason }) = o.update_ghost("g") else {
+            panic!("update_ghost without a shown ghost must fail closed");
+        };
+        assert!(
+            reason.contains("platform_linux x11 overlay") && reason.contains("hidden ghost"),
+            "reason should name the layer and the cause: {reason:?}"
+        );
+        o.hide().expect("hide is contractually idempotent-success");
+        o.hide().expect("second hide too");
+
+        // The show paths need a real X server; only assert their shape when there
+        // demonstrably is none. A developer running this on a desktop legitimately
+        // has one, and the live suite covers the success path there.
+        if std::env::var_os("DISPLAY").is_some() {
+            return;
+        }
+        for (label, result) in [
+            ("show_ghost", o.show_ghost(anchor, "g")),
+            ("show_correction", o.show_correction(anchor, "c")),
+        ] {
+            let Err(PlatformError::CannotComplete { reason }) = result else {
+                panic!("{label} without a display must fail closed");
+            };
+            assert!(
+                reason.starts_with("platform_linux x11 overlay connect:")
+                    && reason.contains("DISPLAY=<unset>"),
+                "{label} reason should name the layer and the DISPLAY tried: {reason:?}"
+            );
+        }
+        o.hide().expect("hide after a failed show is still Ok");
     }
 }

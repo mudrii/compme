@@ -42,12 +42,19 @@ const ROLE_PASSWORD: &str = "password text";
 
 /// Map observed facts onto the portable capability contract.
 ///
-/// `accept_intercept` and `overlay_at_caret` report **what this adapter can
-/// actually do today**, not what X11 permits: the accept tap (Phase 2.3, resolved
-/// to `XGrabKey` + `XAllowEvents`) and the override-redirect overlay (Phase 2.5)
-/// are not built yet, so claiming them here would have the engine arm mechanisms
-/// that immediately fail. They flip as those phases land. The read/write bits, by
-/// contrast, describe the field itself and are true now.
+/// `accept_intercept` reports **what this adapter can actually do today**, not
+/// what X11 permits: the accept tap (Phase 2.3, resolved to `XGrabKey` +
+/// `XAllowEvents`) is not built yet, so claiming it here would have the engine arm
+/// a mechanism that immediately fails. It flips as that phase lands. The
+/// read/write bits, by contrast, describe the field itself and are true now.
+///
+/// `overlay_at_caret` reports `OverrideRedirect` since Phase 2.5: the presenter
+/// (`x11_overlay`) really does place a click-through override-redirect window at
+/// the caret. Like `coords_global_screen` below, that is an **X11** statement —
+/// under Wayland this adapter's screen geometry is wrong anyway, and the overlay
+/// there is `LayerShell` in Phase 3. A session with no X server is not silently
+/// mis-served: `show_ghost` fails closed with the `DISPLAY` it tried, and the
+/// contract requires the host to reconcile a failed show.
 pub fn capabilities_from(facts: &FieldFacts) -> Capabilities {
     let secure = facts.role == ROLE_PASSWORD;
     Capabilities {
@@ -70,7 +77,7 @@ pub fn capabilities_from(facts: &FieldFacts) -> Capabilities {
         multiline: facts.multiline,
         insert_strategy: insert_strategy_from(facts),
         accept_intercept: KeyInterceptMode::None,
-        overlay_at_caret: OverlayPlacement::None,
+        overlay_at_caret: OverlayPlacement::OverrideRedirect,
         // Both Text::GetCharacterExtents and Component::GetExtents are queried
         // with ATSPI_COORD_TYPE_SCREEN, so geometry is already global.
         coords_global_screen: true,
@@ -241,12 +248,32 @@ mod tests {
 
     #[test]
     fn unbuilt_mechanisms_are_reported_as_absent() {
-        // The tap (Phase 2.3, design resolved) and the overlay (Phase 2.5) are
-        // not implemented. Reporting them would have the engine arm mechanisms
-        // that fail on first use, so they must stay None until those land — and
-        // this test is what makes flipping them a deliberate act.
+        // The tap (Phase 2.3, design resolved) is not implemented. Reporting it
+        // would have the engine arm a mechanism that fails on first use, so it
+        // stays None until that lands — and this test is what makes flipping it a
+        // deliberate act.
         let caps = capabilities_from(&editable_entry());
         assert_eq!(caps.accept_intercept, KeyInterceptMode::None);
-        assert_eq!(caps.overlay_at_caret, OverlayPlacement::None);
+    }
+
+    #[test]
+    fn the_override_redirect_overlay_is_reported_now_that_it_exists() {
+        // DELIBERATE FLIP (Phase 2.5): this assertion was
+        // `overlay_at_caret == OverlayPlacement::None` inside the test above,
+        // because no overlay existed. `x11_overlay::X11Overlay` now places a
+        // click-through override-redirect window at the caret, proven live in the
+        // Xvfb session suite (`live_ghost_overlay_*`), so reporting `None` would
+        // now understate the adapter and hold every Linux field at `Popup`.
+        //
+        // The X11 scope is the same statement `coords_global_screen` already
+        // makes; Wayland is Phase 3 (`LayerShell`), and a session with no X
+        // server gets a fail-closed `show_ghost` naming the `DISPLAY` it tried
+        // rather than a silent no-op.
+        let caps = capabilities_from(&editable_entry());
+        assert_eq!(caps.overlay_at_caret, OverlayPlacement::OverrideRedirect);
+        // This is the whole point of the flip: a readable caret plus a real
+        // caret-anchored placement is what `ux_mode` turns into inline ghost text.
+        assert!(caps.readable_caret);
+        assert_eq!(platform::ux_mode(&caps), platform::UxMode::Inline);
     }
 }

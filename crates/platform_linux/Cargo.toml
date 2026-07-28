@@ -13,8 +13,8 @@ license.workspace = true
 # dependencies go under a target table so non-Linux hosts never pull them:
 #
 #   [target.'cfg(target_os = "linux")'.dependencies]
-#   atspi = "..."        # AT-SPI2 accessibility over D-Bus (read/insert, focus/caret events)
-#   x11rb = "..."        # XTEST synthetic keys + X11 overlay window (X11 sessions)
+#   atspi = "..."        # AT-SPI2 accessibility over D-Bus (read/insert, focus/caret events)  -- shipped
+#   x11rb = "..."        # X11 override-redirect overlay window; XTEST synthetic keys          -- overlay shipped
 #   # Wayland: shell out to `wtype`, or use libei, for synthetic input where
 #   # XTEST is unavailable; IBus bindings for the IME commit path.
 
@@ -40,6 +40,20 @@ atspi = { version = "0.30", features = ["zbus"] }
 # own zbus rather than pulling in a second copy. The version must stay
 # semver-compatible with atspi's `5.5` for that unification to happen.
 zbus = { version = "5.5", default-features = false, features = ["blocking-api"] }
+
+# X11 override-redirect overlay (ROADMAP Phase 2.5). `default-features = false`
+# is load-bearing: x11rb's `allow-unsafe-code` feature is what pulls in libxcb,
+# and a C library in the link line would make the compme binary refuse to
+# *start* on a host without it — the same reason libatspi was rejected above.
+# Only `shape` is enabled, for the empty input region (click-through) and the
+# bounding region that gives transparency with no compositor.
+x11rb = { version = "0.14", default-features = false, features = ["shape"] }
+# Glyph rasterization, pure Rust. The plan's §2.5 offered "pango or
+# tiny-skia+fontdue — smallest dep wins": the overlay needs exactly a filled
+# rectangle and a coverage blit, both a few lines over a Vec<u32>, so tiny-skia
+# would be five more crates for a canvas we would not use, and pango means C
+# libraries. fontdue brings ttf-parser + hashbrown and nothing else.
+fontdue = "0.9"
 
 # The live AT-SPI tests drive the fixture directly (seeding text, setting a
 # selection) so the read path can be checked against text the test chose. That is

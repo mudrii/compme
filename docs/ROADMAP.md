@@ -389,6 +389,87 @@ with no runtime that drives it end to end, which is why `capabilities` still
 reports `accept_intercept: None` and `overlay_at_caret: None`, and why the app
 wiring still constructs `LinuxAdapter::new()` rather than `with_accessibility()`.
 
+**Phase 2.5 overlay ✅ DONE (2026-07-28) — live-verified:**
+The ghost and correction overlay is a real **override-redirect X11 window**, so
+`atspi_caps` now reports `overlay_at_caret: OverlayPlacement::OverrideRedirect`
+and a Linux editable field resolves to `UxMode::Inline` instead of `Popup`.
+- **Three modules, split by testability.** `overlay_geometry` is pure placement —
+  ghost box at the caret, correction underline and banner around a word rect, the
+  on-screen clamp, and the pixel-coverage runs that shape the window — unit-tested
+  on the macOS and Windows lanes, which is where placement bugs are actually
+  catchable. `overlay_font` is pure font discovery and ranking. `x11_overlay` owns
+  the X11 I/O.
+- **No Y-flip, deliberately.** AT-SPI `ATSPI_COORD_TYPE_SCREEN` extents and X11
+  root coordinates share a top-left origin, unlike Cocoa's Y-up window space, so
+  the macOS `primary_height - y` flip has no analogue. Conversely the *clamp into
+  the root window* is correct here and is **not** ported from macOS, where a
+  display below the primary has legitimately negative `y`: X11 lays every monitor
+  out inside one root window.
+- **The caret heuristic had to be recalibrated, not copied.** macOS rejects a
+  caret rect wider than 4pt because AX reports a caret sliver; AT-SPI's
+  `GetCharacterExtents` reports the character *cell* (the harness measured
+  `17,16,5,17`), so the macOS cap would have classified every real Linux caret as
+  element bounds and pinned the ghost to a default 18px box. Aspect ratio (wider
+  than 3× its height, or taller than any text line) is the signal that survives
+  both, and it still catches the live Chrome element-bounds failure.
+- **Never focus, always click-through.** Override-redirect (unmanaged, never
+  handed the focus), no `SetInputFocus`, no key/button event mask, and an **empty
+  SHAPE input region** so clicks reach the application underneath. A server with
+  no SHAPE extension fails closed rather than shipping an overlay that swallows
+  the user's clicks.
+- **Degrades without a compositor.** A depth-32 TrueColor visual is used when
+  offered (a compositing desktop blends the ghost); the SHAPE *bounding* region is
+  always set to the pixels the renderer touched, so fully transparent areas are
+  not part of the window either way. That is also why it renders correctly under
+  Xvfb, which offers no 32-bit visual and has no compositor.
+- **`x11rb` + `fontdue`, both Linux-target-gated, +8 crates.** `x11rb`'s
+  `allow-unsafe-code` feature is off on purpose — it is what pulls in libxcb, and
+  a C library in the link line would make the binary refuse to *start* without it,
+  the same reason libatspi was rejected. `fontdue` alone rather than the plan's
+  `tiny-skia + fontdue`: the overlay needs a filled rectangle and a coverage blit,
+  both a few lines over a `Vec<u32>`, so a canvas library would be five more
+  crates for nothing. Font discovery scans `XDG_DATA_*` and the FHS/NixOS paths,
+  **following symlinks** (font trees are symlink farms — the first version found
+  nothing at all on the NixOS host), and a fontless host is a diagnosable
+  fail-closed error naming every directory tried, with `COMPME_FONT` as the
+  override.
+- **One new `cargo audit` warning, accepted knowingly:** `fontdue` pulls
+  `ttf-parser` 0.21, which RUSTSEC-2026-0192 flags as *unmaintained* (an
+  informational warning, not a vulnerability — `cargo audit` still exits 0 at 300
+  crate dependencies). It is not avoidable by swapping rasterizer: `ab_glyph` uses
+  `owned_ttf_parser`, i.e. the same parser, and `swash` is far larger. The exposure
+  is also narrow — the only fonts parsed are ones already installed on the host or
+  named by the operator in `COMPME_FONT`, never attacker-supplied input.
+- **A real fail-OPEN bug, found by the live tests.** X11 reports errors for
+  reply-less requests asynchronously, so the first version returned `Ok(())` from
+  `show_ghost` while the server had rejected `CreateWindow` — precisely what the
+  `OverlayPresenter` contract forbids ("the engine assumes an emitted ghost is on
+  screen"). Every void request is now `check()`ed.
+- **4 more live tests (15 total, all passing on the Linux host)**, asserting what
+  the X11 protocol can actually show from a *second* connection: the window is
+  override-redirect, mapped, at the caret with no Y-flip, holds no input focus and
+  does not move it, has an empty input region, is *reused* by `update_ghost`
+  rather than leaked per keystroke, disappears on `hide()` (idempotently), and —
+  the only headless proof anything rendered — changes the root framebuffer where
+  the glyphs go. The correction pair is checked the same way: underline flush under
+  the word, banner entirely above it, and `show_ghost` withdrawing a stale
+  underline.
+- **Not headlessly verifiable, so not claimed:** that the glyphs are legible,
+  correctly coloured, correctly anti-aliased, or vertically aligned with the
+  field's own text; that a real compositor blends the ARGB visual as intended; and
+  the one-glyph question of whether a caret at end-of-text should anchor at
+  `x + w` rather than `x` (the AT-SPI read path falls back to the *last*
+  character's box there). Each needs a live look on GNOME-Xorg/KDE-Xorg/XFCE, the
+  same calibration the macOS ghost placement went through.
+
+**Still pending for Phase 2:** `subscribe_focus`/`subscribe_caret` (the event
+half of 2.1 — the adapter cannot yet *notice* a focus change, only answer
+questions about a field it is handed), the accept tap against the resolved 2.3
+design, and the session-dependent ShellHost services (2.6). Until the event half
+lands, the Linux adapter is a complete read/write/present *seam* with no runtime
+that drives it, which is why `capabilities` still reports
+`accept_intercept: None`.
+
 **Phase 2.3 accept-key strategy ✅ RESOLVED (2026-07-27) — decision, measured:**
 Linux accept-key interception will use **`KeyInterceptMode::XGrabKey`** with a
 passive grab in keyboard `GrabModeSync`, resolving each keystroke through

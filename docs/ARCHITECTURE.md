@@ -612,11 +612,12 @@ Major responsibilities:
 ### `platform_windows` and `platform_linux`
 
 These crates compile the portable workspace on their native CI runners, but
-they are not usable product adapters yet. Their `PlatformAdapter` text,
-focus/caret/accept, insertion, and overlay methods fail closed with
-`UnsupportedField` (overlay `hide` remains idempotent). Windows' `ShellHost`
-services mostly fail closed; Linux's are largely implemented (see below), and
-fail closed when the desktop service they need is absent.
+they are not usable product adapters yet. `platform_windows`'s
+`PlatformAdapter` text, focus/caret/accept, insertion, and overlay methods fail
+closed with `UnsupportedField` (overlay `hide` remains idempotent), and so does
+`platform_linux`'s accept tap. Windows' `ShellHost` services mostly fail closed;
+Linux's are largely implemented (see below), and fail closed when the desktop
+service they need is absent.
 
 The current Windows foundation has real owner-only DACL hardening, a console
 control handler for orderly shutdown, and native `ShellExecuteW` URL opening.
@@ -693,8 +694,39 @@ the containing directory. `open_permission_settings` stays fail-closed on purpos
 Linux has no TCC-style pane, and the accessibility switches that exist are
 per-desktop with no portable URL.
 
-The accept tap, overlays, trays, per-OS packaging, and GPU backends remain
-roadmap work on Linux.
+The Linux **ghost/correction overlay** is implemented (ROADMAP Phase 2.5) as an
+override-redirect X11 window, so `atspi_caps` reports
+`OverlayPlacement::OverrideRedirect` and Linux editable fields resolve to
+`UxMode::Inline`. Three modules, split so the interesting decisions are testable
+off Linux: `overlay_geometry` is pure placement (ghost box at the caret,
+correction underline and banner around a word rect, on-screen clamp, and the
+pixel-coverage runs that shape the window), `overlay_font` is pure font discovery
+and ranking, and `x11_overlay` performs the X11 I/O over `x11rb`. There is **no
+Y-flip**: AT-SPI screen extents and X11 root coordinates share a top-left origin,
+unlike Cocoa. Clamping into the root window *is* correct here and is not ported
+from macOS, where a display below the primary has legitimately negative `y`.
+
+The overlay never takes focus (override-redirect, no `SetInputFocus`, no key or
+button event mask) and is click-through via an **empty SHAPE input region** — a
+server without the SHAPE extension fails closed rather than shipping an overlay
+that swallows the user's clicks. It prefers a depth-32 TrueColor visual so a
+compositor can blend it, and sets the SHAPE *bounding* region to the pixels the
+renderer touched so transparency also works with no compositor. Glyphs are
+rasterized with `fontdue` into a premultiplied ARGB buffer uploaded as the
+window's background pixmap, which is what keeps the content correct across expose
+events with no event loop. Both `x11rb` and `fontdue` are Linux-target-gated, and
+`x11rb`'s `allow-unsafe-code` feature is deliberately off: it is what would pull
+in libxcb, and a C library in the link line would make the binary refuse to
+*start* on a host without it. Every void X11 request is `check()`ed, because X11
+reports errors for reply-less requests asynchronously and an unchecked
+`CreateWindow` made `show_ghost` return `Ok` with nothing on screen.
+
+AT-SPI2 *event* paths (focus/caret subscription), the accept tap, native
+insertion, Wayland overlays (`LayerShell`), key stores, dialogs, trays,
+file-manager reveal, packaging, and GPU backends remain roadmap work.
+
+The accept tap, the tray, per-OS packaging, and GPU backends remain roadmap
+work on Linux; Wayland overlay placement (`LayerShell`) is Phase 3.
 
 ## macOS Runtime Model
 
