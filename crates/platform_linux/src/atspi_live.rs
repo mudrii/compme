@@ -25,12 +25,13 @@ use crate::atspi_caps::{capabilities_from, FieldFacts};
 use crate::atspi_ids::ElementId;
 use atspi::proxy::accessible::AccessibleProxyBlocking;
 use atspi::proxy::application::ApplicationProxyBlocking;
+use atspi::proxy::editable_text::EditableTextProxyBlocking;
 use atspi::proxy::text::TextProxyBlocking;
 use atspi::zbus::blocking::Connection;
 use atspi::{CoordType, Interface, State};
 use platform::{
-    Capabilities, ContextSource, FieldHandle, OffsetEncoding, PlatformError, ScreenRect,
-    TextContext, TextRange,
+    Capabilities, ContextSource, FieldHandle, InsertStrategy, Inserted, OffsetEncoding,
+    PlatformError, ScreenRect, TextContext, TextRange,
 };
 
 /// The accessibility registry's root object — the "desktop" whose children are
@@ -320,6 +321,143 @@ impl AtspiSession {
     /// field a walk landed on; `None` when the object is gone or refuses it.
     pub fn element_name(&self, id: &ElementId) -> Option<String> {
         self.accessible(id).ok()?.name().ok()
+    }
+
+    /// Insert `text` at the caret through `EditableText.InsertText`.
+    ///
+    /// `length` is in scalars, matching AT-SPI's own unit; the returned `chars`
+    /// counts the same way so caret math on the host side stays consistent.
+    pub fn insert(&self, field: &FieldHandle, text: &str) -> Result<Inserted, PlatformError> {
+        let id = self.element(field)?;
+        let caret = self.caret_offset(&id)?;
+        let editable = self.editable_text(&id)?;
+        let scalars = text.chars().count();
+        let inserted = editable
+            .insert_text(caret, text, i32::try_from(scalars).unwrap_or(i32::MAX))
+            .map_err(|err| cannot_complete("insert_text", err))?;
+        if !inserted {
+            return Err(cannot_complete(
+                "insert_text",
+                "the toolkit refused the insert",
+            ));
+        }
+        Ok(Inserted {
+            bytes: text.len(),
+            chars: scalars,
+            strategy: InsertStrategy::NativeRangeSet,
+        })
+    }
+
+    /// Replace exactly `range` with `text`, but only while the field still holds
+    /// `expected_text` there.
+    ///
+    /// **Why a whole-value swap and not DeleteText+InsertText.** The contract for
+    /// an atomic strategy is all-or-nothing. `DeleteText` followed by `InsertText`
+    /// is two D-Bus round trips: a failure between them leaves the user's field
+    /// truncated, which is worse than refusing the replacement. `SetTextContents`
+    /// is one call, so the field either changes completely or not at all — the
+    /// same reasoning that makes macOS use an `AXValue` set.
+    ///
+    /// The expected-text guard is re-checked immediately before the swap, so a
+    /// keystroke that landed between the suggestion and the accept invalidates the
+    /// replacement instead of overwriting what the user just typed.
+    pub fn insert_replacing_range(
+        &self,
+        field: &FieldHandle,
+        expected_text: &str,
+        text: &str,
+        range: platform::CorrectionRange,
+        strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        if !strategy.supports_atomic_range_replace() {
+            return Err(unsupported(format!(
+                "platform_linux: {strategy:?} cannot range-replace atomically"
+            )));
+        }
+        if range.start > range.end {
+            return Err(unsupported(format!(
+                "platform_linux: inverted range {}..{}",
+                range.start, range.end
+            )));
+        }
+        let id = self.element(field)?;
+        let scalars = self.field_scalars(&id)?;
+        if range.end > scalars.len() {
+            return Err(unsupported(format!(
+                "platform_linux: range {}..{} past the field length {}",
+                range.start,
+                range.end,
+                scalars.len()
+            )));
+        }
+        let current: String = scalars[range.start..range.end].iter().collect();
+        if current != expected_text {
+            return Err(unsupported(format!(
+                "platform_linux: field changed under the replacement (found {current:?})"
+            )));
+        }
+        let mut updated: String = scalars[..range.start].iter().collect();
+        updated.push_str(text);
+        updated.extend(scalars[range.end..].iter());
+
+        let editable = self.editable_text(&id)?;
+        if !editable
+            .set_text_contents(&updated)
+            .map_err(|err| cannot_complete("set_text_contents", err))?
+        {
+            return Err(cannot_complete(
+                "set_text_contents",
+                "the toolkit refused the replacement",
+            ));
+        }
+        // Verified readback: a toolkit that accepts the call and stores something
+        // else would otherwise leave the engine believing text it never wrote.
+        let after: String = self.field_scalars(&id)?.iter().collect();
+        if after != updated {
+            return Err(cannot_complete(
+                "set_text_contents",
+                "readback does not match the written value",
+            ));
+        }
+        Ok(Inserted {
+            bytes: text.len(),
+            chars: text.chars().count(),
+            strategy: InsertStrategy::NativeRangeSet,
+        })
+    }
+
+    /// The field's text as scalars, bounded like `read_context`.
+    fn field_scalars(&self, id: &ElementId) -> Result<Vec<char>, PlatformError> {
+        let value = self
+            .text(id)?
+            .get_text(0, -1)
+            .map_err(|err| cannot_complete("get_text", err))?;
+        Ok(value.chars().take(MAX_FIELD_SCALARS).collect())
+    }
+
+    fn caret_offset(&self, id: &ElementId) -> Result<i32, PlatformError> {
+        self.text(id)?
+            .caret_offset()
+            .map_err(|err| cannot_complete("caret_offset", err))
+    }
+
+    fn editable_text(
+        &self,
+        id: &ElementId,
+    ) -> Result<EditableTextProxyBlocking<'_>, PlatformError> {
+        EditableTextProxyBlocking::builder(&self.connection)
+            .destination(id.bus_name.clone())
+            .map_err(|err| cannot_complete("editable destination", err))?
+            .path(id.path.clone())
+            .map_err(|err| cannot_complete("editable path", err))?
+            .build()
+            .map_err(|err| cannot_complete("editable proxy", err))
+    }
+
+    /// Decode a handle's element id, failing closed on anything malformed.
+    fn element(&self, field: &FieldHandle) -> Result<ElementId, PlatformError> {
+        ElementId::decode(&field.element_id)
+            .ok_or_else(|| unsupported(format!("malformed element id: {}", field.element_id)))
     }
 
     /// The application owning the focused field, for `front_app`.

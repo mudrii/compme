@@ -246,6 +246,144 @@ fn live_malformed_and_stale_ids_fail_closed_without_panicking() {
     assert!(adapter.caret_rect(&gone).is_err());
 }
 
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_insert_puts_text_at_the_caret() {
+    let session = session();
+    let id = fixture_entry(&session);
+    let adapter = LinuxAdapter::with_accessibility();
+    let entry = editable(&session, &id);
+    entry.set_text_contents("abc").expect("seed");
+    zbus_text(&id).set_caret_offset(3).expect("caret to end");
+
+    let inserted = adapter
+        .insert(&handle(&id), "XY", InsertStrategy::NativeRangeSet)
+        .expect("insert");
+    assert_eq!(inserted.chars, 2);
+    assert_eq!(inserted.bytes, 2);
+    assert_eq!(inserted.strategy, InsertStrategy::NativeRangeSet);
+
+    let context = adapter.read_context(&handle(&id)).expect("read back");
+    assert_eq!(format!("{}{}", context.left, context.right), "abcXY");
+
+    entry.set_text_contents(FIXTURE_TEXT).expect("restore");
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_range_replace_swaps_exactly_the_range() {
+    // The grammar-fix shape: correct "teh" to "the" without touching the rest.
+    let session = session();
+    let id = fixture_entry(&session);
+    let adapter = LinuxAdapter::with_accessibility();
+    let entry = editable(&session, &id);
+    entry.set_text_contents(FIXTURE_TEXT).expect("seed");
+
+    let inserted = adapter
+        .insert_replacing_range(
+            &handle(&id),
+            "teh",
+            "the",
+            platform::CorrectionRange { start: 0, end: 3 },
+            InsertStrategy::NativeRangeSet,
+        )
+        .expect("range replace");
+    assert_eq!(inserted.chars, 3);
+
+    let context = adapter.read_context(&handle(&id)).expect("read back");
+    assert_eq!(
+        format!("{}{}", context.left, context.right),
+        "the quick brown"
+    );
+
+    entry.set_text_contents(FIXTURE_TEXT).expect("restore");
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_range_replace_refuses_a_stale_or_impossible_range_and_leaves_the_field_alone() {
+    // The safety property that matters most: if the field moved under the
+    // suggestion, the replacement must be refused rather than overwrite whatever
+    // the user typed in the meantime. Each rejection is checked to leave the field
+    // byte-identical, because a partial write is worse than no write.
+    let session = session();
+    let id = fixture_entry(&session);
+    let adapter = LinuxAdapter::with_accessibility();
+    let entry = editable(&session, &id);
+    entry.set_text_contents(FIXTURE_TEXT).expect("seed");
+    let range = platform::CorrectionRange { start: 0, end: 3 };
+
+    for (label, expected, replace_range) in [
+        ("expected text no longer present", "zzz", range),
+        (
+            "range past the end",
+            "teh",
+            platform::CorrectionRange { start: 0, end: 999 },
+        ),
+        (
+            "inverted range",
+            "teh",
+            platform::CorrectionRange { start: 5, end: 2 },
+        ),
+    ] {
+        let result = adapter.insert_replacing_range(
+            &handle(&id),
+            expected,
+            "REPLACED",
+            replace_range,
+            InsertStrategy::NativeRangeSet,
+        );
+        assert!(
+            matches!(result, Err(PlatformError::UnsupportedField { .. })),
+            "{label} must fail closed, got {result:?}"
+        );
+        let context = adapter.read_context(&handle(&id)).expect("read back");
+        assert_eq!(
+            format!("{}{}", context.left, context.right),
+            FIXTURE_TEXT,
+            "{label} must leave the field untouched"
+        );
+    }
+
+    // A non-atomic strategy is refused before anything is read or written.
+    for strategy in [
+        InsertStrategy::SyntheticKeys,
+        InsertStrategy::Clipboard,
+        InsertStrategy::ImeCommit,
+        InsertStrategy::None,
+    ] {
+        assert!(
+            adapter
+                .insert_replacing_range(&handle(&id), "teh", "the", range, strategy)
+                .is_err(),
+            "{strategy:?} must not range-replace"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_insert_replacing_left_stays_fail_closed() {
+    // Deliberate: `replace_left` would need DeleteText + InsertText, two round
+    // trips, so a failure between them truncates the user's field. The engine has
+    // an atomic route (insert_replacing_range) and must use it.
+    let session = session();
+    let id = fixture_entry(&session);
+    let adapter = LinuxAdapter::with_accessibility();
+    let before = adapter.read_context(&handle(&id)).expect("read");
+
+    let result = adapter.insert_replacing(&handle(&id), "the", 3, InsertStrategy::NativeRangeSet);
+    assert!(matches!(
+        result,
+        Err(PlatformError::UnsupportedField { .. })
+    ));
+    let after = adapter.read_context(&handle(&id)).expect("read");
+    assert_eq!(
+        format!("{}{}", before.left, before.right),
+        format!("{}{}", after.left, after.right)
+    );
+}
+
 /// A Text proxy for the fixture entry, for tests that need to drive selection.
 fn zbus_text(id: &ElementId) -> atspi::proxy::text::TextProxyBlocking<'static> {
     let connection = zbus::blocking::Connection::session().expect("session bus");

@@ -196,7 +196,24 @@ impl PlatformAdapter for LinuxAdapter {
         Err(Self::unsupported("caret_rect"))
     }
 
+    /// AT-SPI2 `EditableText.InsertText` at the caret. Only the atomic strategy is
+    /// honored: the synthetic-key fallback (XTEST) is not built, and accepting a
+    /// non-atomic request here would type into a field the engine believes it set.
+    #[cfg(target_os = "linux")]
+    fn insert(
+        &self,
+        field: &FieldHandle,
+        text: &str,
+        strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        if !strategy.supports_atomic_range_replace() {
+            return Err(Self::unsupported("insert (non-atomic strategy)"));
+        }
+        self.session("insert")?.insert(field, text)
+    }
+
     /// Real impl: AT-SPI2 EditableText insert, else XTEST / `wtype` synthetic typing.
+    #[cfg(not(target_os = "linux"))]
     fn insert(
         &self,
         _field: &FieldHandle,
@@ -206,7 +223,14 @@ impl PlatformAdapter for LinuxAdapter {
         Err(Self::unsupported("insert"))
     }
 
-    /// Real impl: AT-SPI2 range-replace, else backspace×N + XTEST/`wtype` typing.
+    /// Left-of-caret replacement stays **fail-closed on Linux**, deliberately.
+    ///
+    /// `replace_left` counts scalars to delete before the caret, which AT-SPI can
+    /// only express as DeleteText followed by InsertText — two round trips, so a
+    /// failure between them leaves the user's field truncated. The atomic path is
+    /// `insert_replacing_range`, which carries an explicit range and expected text
+    /// and swaps the whole value in one call; the engine already routes
+    /// replacements through it for atomic strategies.
     fn insert_replacing(
         &self,
         _field: &FieldHandle,
@@ -214,7 +238,24 @@ impl PlatformAdapter for LinuxAdapter {
         _replace_left: usize,
         _strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError> {
-        Err(Self::unsupported("insert_replacing"))
+        Err(Self::unsupported(
+            "insert_replacing (use insert_replacing_range: AT-SPI cannot delete-then-insert atomically)",
+        ))
+    }
+
+    /// Exact range replacement, guarded by `expected_text` and verified by
+    /// readback. See `atspi_live::AtspiSession::insert_replacing_range`.
+    #[cfg(target_os = "linux")]
+    fn insert_replacing_range(
+        &self,
+        field: &FieldHandle,
+        expected_text: &str,
+        text: &str,
+        range: platform::CorrectionRange,
+        strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        self.session("insert_replacing_range")?
+            .insert_replacing_range(field, expected_text, text, range, strategy)
     }
 }
 

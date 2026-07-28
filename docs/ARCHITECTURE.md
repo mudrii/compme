@@ -639,7 +639,12 @@ layers: `atspi_ids` encodes the D-Bus (bus name, object path) pair into
 `atspi_caps` is a pure AT-SPI-facts → `Capabilities` mapping (interfaces, states,
 role, toolkit, with `password text` as the only secure signal AT-SPI offers);
 and `atspi_live` performs the I/O over blocking zbus proxies — depth-bounded
-focused-field walk, `capabilities`, `read_context`, `caret_rect`, `front_app`.
+focused-field walk, `capabilities`, `read_context`, `caret_rect`, `front_app`,
+`insert`, and `insert_replacing_range`. Range replacement swaps the whole value
+in one `SetTextContents` call (guarded by expected text, verified by readback)
+because `DeleteText` + `InsertText` is two round trips and therefore not
+all-or-nothing; left-of-caret `insert_replacing` stays fail-closed for the same
+reason.
 It reports `OffsetEncoding::UnicodeScalars`, the first adapter to do so, because
 AT-SPI counts characters where AppKit and Chromium count UTF-16 code units. The
 `atspi` dependency is Linux-target-gated, so macOS and Windows builds neither

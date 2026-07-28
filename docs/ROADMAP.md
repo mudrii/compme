@@ -257,11 +257,33 @@ the decisions testable everywhere and the I/O in one place:
   something looks for focus). And `GtkEntry` selects its whole value on
   focus-in, which would hand every reader a selection it never asked for.
 
+**Phase 2.4 insert path ✅ DONE (2026-07-27) — live-verified:**
+- `insert` writes at the caret through `EditableText.InsertText`, honoring only
+  the atomic strategy (the XTEST synthetic fallback is not built, and accepting a
+  non-atomic request would type into a field the engine believes it set).
+- `insert_replacing_range` swaps the **whole value in one `SetTextContents`
+  call** rather than `DeleteText` + `InsertText`. Two round trips are not
+  all-or-nothing: a failure between them leaves the user's field truncated, which
+  is worse than refusing. The `expected_text` guard is re-checked immediately
+  before the swap, and the result is verified by readback — a toolkit that accepts
+  the call and stores something else would otherwise leave the engine believing
+  text it never wrote.
+- `insert_replacing` (left-of-caret `replace_left`) stays **deliberately
+  fail-closed**: AT-SPI can only express it as delete-then-insert. The engine
+  already routes atomic replacements through `insert_replacing_range`.
+- 4 more live tests (11 total, all passing on the Linux host and in CI): insert at
+  the caret, exact-range replace of `teh`→`the`, and — the property that matters
+  most — every rejection path (stale expected text, range past the end, inverted
+  range, non-atomic strategy) refusing *and leaving the field byte-identical*.
+
 **Still pending for Phase 2:** `subscribe_focus`/`subscribe_caret` (the event
 half of 2.1 — the adapter cannot yet *notice* a focus change, only answer
 questions about a field it is handed), the accept tap against the resolved 2.3
-design, `insert`/`insert_replacing` (2.4), the overlay (2.5), and the
-session-dependent ShellHost services (2.6).
+design, the overlay (2.5), and the session-dependent ShellHost services (2.6).
+Until the event half and the overlay land, the Linux adapter is a complete
+read/write *seam* with no runtime that drives it, which is why
+`capabilities` still reports `accept_intercept: None` and
+`overlay_at_caret: None`.
 
 **Phase 2.3 accept-key strategy ✅ RESOLVED (2026-07-27) — decision, measured:**
 Linux accept-key interception will use **`KeyInterceptMode::XGrabKey`** with a
