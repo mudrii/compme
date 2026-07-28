@@ -21,6 +21,11 @@ license.workspace = true
 [dependencies]
 platform = { path = "../platform" }
 shell_flags = { path = "../shell_flags" }
+# Scrubs the memory-store key's transport buffer (crates/platform_linux/src/
+# memory_key.rs), matching what `memory` and `platform_macos` do with the same
+# bytes. Pure Rust and already in the workspace graph, so this is not a new
+# dependency for the shipped macOS artifact.
+zeroize.workspace = true
 
 # AT-SPI2 over D-Bus (ROADMAP Phase 2.1). Linux-only by target table: macOS and
 # Windows builds neither fetch nor compile it, so the shipped macOS artifact is

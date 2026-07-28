@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-27 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈1961 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-27 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈1982 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -161,9 +161,10 @@ hardware, sessions, and permissions unavailable on macOS.
 - The actual **Linux** adapter behind `#[cfg(target_os = "linux")]`: AT-SPI2
   read/insert/events + XTEST/`wtype` synthetic keys (IBus IME fallback on Wayland)
   + override-redirect/layer-shell overlay. (AT-SPI device key-listeners are
-  deprecated → prefer XTEST/XGrabKey or libei for the accept tap.) Real ShellHost
-  services still need libsecret, tray/portal integration, confirm UI, and a
-  native event pump.
+  deprecated → prefer XTEST/XGrabKey or libei for the accept tap.) Of the real
+  ShellHost services, the key store, confirm dialog, and file-manager reveal are
+  now built (see the Phase 2.6 entry below); tray (StatusNotifierItem) and a
+  native event pump remain.
 
 **Linux host surfaces ✅ DONE (2026-07-27) — the desktop-free half of Phase 2.6:**
 A headless Linux host (NixOS 26.05, 16 cores / 62 GB / Quadro RTX 4000) joined
@@ -186,10 +187,65 @@ they are also tested on the macOS lanes where `/proc` does not exist:
   temp-file rename (no torn entry at login), with an unconditionally quoted
   `Exec=` and `%%`-escaped field codes; disabling when absent succeeds, and every
   other IO error is reported so the toggle restores its visible state.
-- Still fail-closed, and deliberately so until they can be *proven* on a real
-  session: libsecret key store, zenity/kdialog confirm, file-manager reveal, and
-  the portal permission hook. A headless box cannot exercise their success path,
-  and a stub that looks implemented is worse than one that says so.
+- The session-dependent services (key store, confirm, reveal) were fail-closed
+  stubs at that point; they are now built — see the next entry.
+
+**Linux session ShellHost services ✅ DONE (2026-07-28) — Phase 2.6's
+session-dependent half:** the memory-key store, the modal confirm, and
+file-manager reveal are implemented in `platform_linux`, each fail-closed when its
+desktop service is absent. Every decision that can be wrong without a session —
+D-Bus lookup classification, dialog `argv`, exit-code interpretation, path→URI —
+is a pure function unit-tested on all three host lanes; the rest was exercised
+live on the headless NixOS box.
+- `load_or_create_memory_key()` — 32 bytes from the **Secret Service**
+  (`org.freedesktop.secrets`) over D-Bus with `zbus`, **not** libsecret: linking
+  the C library would make the binary refuse to *start* where it is missing, the
+  same reason the AT-SPI path speaks D-Bus. Created on first use with
+  `/dev/urandom`; `plain` transport session (the bus is a per-user socket, so DH
+  would add a crypto dep and protect nothing new); the item carries
+  `service=com.compme.memory` / `account=aes-256-gcm-key`, matching the macOS
+  Keychain entry. The fail-closed contract mirrors `platform_macos::keychain`: a
+  wrong-length secret is refused rather than overwritten, a key that failed to
+  persist is never returned, and the transport buffer is zeroized. A **locked**
+  keyring is reported, never worked around: unlock is attempted, prompts are not
+  driven (awaiting a `Completed` signal in a synchronous startup path is how an app
+  hangs with no window), and a locked *collection* also blocks the create path,
+  because a hidden item plus a fresh key means an undecryptable memory store.
+  **Verified live:** against gnome-keyring 50.0 on a private session bus —
+  create → persist → identical read-back, with `SearchItems` showing exactly one
+  item; against a locked collection — read and load both refuse with a "locked"
+  reason; and on a session bus with no keyring daemon — an error, never a
+  fabricated or on-disk key.
+- `confirm()` — `zenity --question`, falling back to `kdialog --warningyesno`, with
+  neither present reported as an error (never a silent confirm on a destructive
+  action). `--default-cancel` keeps the confirming button off the default, and
+  `--no-markup` stops a message with `<` or `&` being parsed as Pango markup.
+  Title/message/label are `argv` elements in glued `--option=value` form (kdialog's
+  positional text sits after `--`), so shell metacharacters are inert and a value
+  beginning with `--` cannot become an option. Only exit 0 is a confirm.
+  **Verified live** with zenity 4.2.2 under Xvfb: the production `argv` is accepted
+  and the dialog displays (a `--timeout=1` run exits 5, not 255); driven with
+  xdotool, **Return → exit 1 and Escape → exit 1 (both decline)** while an explicit
+  activation of the confirm button gives exit 0. A fake helper binary pins the
+  `argv` and the 0/1/255 mapping on every host.
+- `reveal_file()` — `org.freedesktop.FileManager1.ShowItems` (the only portable
+  call that *selects* an item; `xdg-open` on a file would launch a handler for it),
+  falling back to `xdg-open` on the containing directory through the same launcher
+  as `open_url`. **Verified live** against a fake FileManager1 served on the
+  harness's private bus: the wire payload is `ShowItems(["file:///tmp/compme%20…"],
+  "")` — the check that catches a signature or method-name mistake that a real
+  desktop would silently downgrade to the fallback.
+- `open_permission_settings()` stays **deliberately fail-closed**: Linux has no TCC
+  equivalent, AT-SPI needs no per-application grant, and what does gate it
+  (`toolkit-accessibility`, `GTK_MODULES`, `NO_AT_BRIDGE`, compositor policy) is
+  per-desktop with no portable settings URL. The error says so instead of opening
+  `gnome-control-center` and lying on KDE, XFCE, and Sway.
+- **Not proven, and stated as such:** no real desktop file manager (only the fake),
+  no kdialog anywhere — its `--warningyesno` default-button behavior follows
+  KMessageBox's warning styling and is *unverified*, which is why it is the
+  fallback and why only exit 0 confirms; and `reveal_file` on a host that has
+  `xdg-open` but no desktop returns `Ok(())`, since only failures inside the
+  launcher's ~50 ms poll window are visible (identical to `open_url`).
 
 **Linux AT-SPI2 session harness ✅ DONE (2026-07-27) — Phase 2.7's fixture half:**
 `tools/acceptance/run-linux-atspi-session.sh` stands up a throwaway
