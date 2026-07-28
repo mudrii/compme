@@ -179,11 +179,17 @@ fn live_capabilities_describe_an_editable_single_line_entry() {
     assert_eq!(caps.security_state, SecurityState::Normal);
     assert_eq!(caps.insert_strategy, InsertStrategy::NativeRangeSet);
     assert!(caps.coords_global_screen);
-    // GTK reports its toolkit name; the exact string is the toolkit's business,
-    // but it must not be empty or the Toolkit hint carries nothing.
+    // GTK must not be misfolded into one of the named toolkits — that is the part
+    // the contract cares about, since Toolkit drives compatibility quirks.
+    //
+    // The name itself is *not* asserted non-empty: at-spi2 2.60 on NixOS reports
+    // one, while the 2.5x stack on Ubuntu reports an empty ToolkitName for the
+    // same GTK3 app. `Toolkit` is documented as a hint, never a correctness gate,
+    // so an empty name is a legitimate "unknown toolkit" rather than evidence of
+    // an adapter bug — and pinning it would make this suite fail per-distribution.
     assert!(
-        matches!(&caps.toolkit, platform::Toolkit::Unknown(name) if !name.is_empty()),
-        "unexpected toolkit: {:?}",
+        matches!(&caps.toolkit, platform::Toolkit::Unknown(_)),
+        "GTK must map to Unknown, got {:?}",
         caps.toolkit
     );
 }

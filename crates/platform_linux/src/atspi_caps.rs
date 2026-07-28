@@ -231,6 +231,10 @@ mod tests {
         assert_eq!(toolkit_from("WebKitGTK"), Toolkit::WebKit);
         // Preserved verbatim rather than guessed at.
         assert_eq!(toolkit_from("GTK"), Toolkit::Unknown("GTK".to_string()));
+        // An absent ToolkitName is a real observation, not a defect: at-spi2 2.60
+        // reports one for a GTK3 app while the 2.5x stack on Ubuntu reports "".
+        // It must stay an honest empty Unknown rather than being invented.
+        assert_eq!(toolkit_from(""), Toolkit::Unknown(String::new()));
         assert_eq!(toolkit_from("Qt"), Toolkit::Unknown("Qt".to_string()));
         assert_eq!(toolkit_from("  GTK  "), Toolkit::Unknown("GTK".to_string()));
     }
