@@ -193,4 +193,18 @@ fn keyring_behaves_as_the_runner_declared() {
         Arc::new(crate::memory_key::random_key),
     );
     assert!(refuses_short.load_or_create_memory_key().is_err());
+
+    // Clean up after ourselves. Until this ran, the test left a real
+    // `com.compme.memory` item in whatever keyring the session pointed at, and
+    // the only thing standing between that and a developer's login keyring was a
+    // sentence in this file's doc comment asking for a throwaway `HOME`. Deleting
+    // also proves the item was ours to delete.
+    let deleted = crate::keyring::delete_memory_keys_on(&connection)
+        .expect("the item this test created must be deletable");
+    assert_eq!(deleted, 1, "exactly the one item this test created");
+    assert_eq!(
+        read_memory_key_on(&connection).expect("read after delete must still succeed"),
+        None,
+        "the keyring must be empty again once the test has cleaned up"
+    );
 }

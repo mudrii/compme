@@ -70,6 +70,10 @@ use x11rb::CURRENT_TIME;
 /// keyboard is released well inside a keystroke's perceptible latency, long
 /// enough to be free at idle.
 const WATCHDOG_TICK: Duration = Duration::from_millis(25);
+/// How long teardown waits for the three workers before detaching them. Long
+/// enough for a watchdog tick plus a wake round trip, short enough that a wedged
+/// X server cannot hang the run loop.
+const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The atom name for the self-wake message that ends the event thread's blocking
 /// `wait_for_event`. Namespaced so it cannot collide with another client's atom.
@@ -154,6 +158,15 @@ pub struct X11AcceptTap {
     /// Dropped by teardown so the dispatcher's `recv` ends.
     dispatch_tx: Option<mpsc::Sender<TapControl>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
+    /// Disconnects once every worker has exited: each holds a sender clone and
+    /// nothing ever sends, so `Disconnected` means "all three are gone". Lets
+    /// teardown bound its wait instead of joining a thread that may never wake.
+    ///
+    /// `Mutex` only for `Sync`: `mpsc::Receiver` is `Send` but not `Sync`, and
+    /// this type is handed out as `Arc<X11AcceptTap>`, which needs both. Same
+    /// reason `threads` above is wrapped; there is no contention, since only
+    /// `Drop` ever touches it.
+    stopped: Mutex<mpsc::Receiver<()>>,
 }
 
 impl std::fmt::Debug for X11AcceptTap {
@@ -386,13 +399,22 @@ impl X11AcceptTap {
         });
 
         let (dispatch_tx, dispatch_rx) = mpsc::channel::<TapControl>();
+        // Every worker takes a clone; the original drops at the end of this
+        // function, so the receiver disconnects exactly when the last worker
+        // exits. See the `stopped` field.
+        let (stopped_tx, stopped) = mpsc::channel::<()>();
         // Join order at teardown is this order. The event thread owns the other
         // sender clone, so it must be joined before the dispatcher can see its
         // channel close.
         let threads = vec![
-            spawn_event_thread(Arc::clone(&conn), Arc::clone(&state), dispatch_tx.clone())?,
-            spawn_dispatcher(callback, dispatch_rx)?,
-            spawn_watchdog(Arc::clone(&conn), Arc::clone(&state))?,
+            spawn_event_thread(
+                Arc::clone(&conn),
+                Arc::clone(&state),
+                dispatch_tx.clone(),
+                stopped_tx.clone(),
+            )?,
+            spawn_dispatcher(callback, dispatch_rx, stopped_tx.clone())?,
+            spawn_watchdog(Arc::clone(&conn), Arc::clone(&state), stopped_tx)?,
         ];
 
         Ok(Arc::new(Self {
@@ -402,6 +424,7 @@ impl X11AcceptTap {
             wake_atom,
             dispatch_tx: Some(dispatch_tx),
             threads: Mutex::new(threads),
+            stopped: Mutex::new(stopped),
         }))
     }
 
@@ -476,10 +499,25 @@ impl Drop for X11AcceptTap {
         // its blocking wait_for_event.
         self.dispatch_tx = None;
         wake_event_thread(&self.conn, self.wake_window, self.wake_atom);
+        // Bounded wait, then detach — the same posture as the events subsystem.
+        // An unbounded join here parks the run loop forever if a worker misses
+        // its wake (a lost `SendEvent`, an X server that stopped answering), and
+        // this runs on the thread that drives the whole product. The keyboard is
+        // already thawed and every key ungrabbed above, so a detached worker
+        // holds nothing a user or the host can observe.
+        let all_exited = matches!(
+            self.stopped
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv_timeout(STOP_TIMEOUT),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
         let threads =
             std::mem::take(&mut *self.threads.lock().unwrap_or_else(PoisonError::into_inner));
-        for thread in threads {
-            let _ = thread.join();
+        if all_exited {
+            for thread in threads {
+                let _ = thread.join();
+            }
         }
         if let Ok(cookie) = self.conn.destroy_window(self.wake_window) {
             cookie.ignore_error();
@@ -538,10 +576,12 @@ fn wake_event_thread(conn: &RustConnection, window: Window, atom: u32) {
 fn spawn_dispatcher(
     callback: AcceptCallback,
     rx: mpsc::Receiver<TapControl>,
+    stopped: mpsc::Sender<()>,
 ) -> Result<JoinHandle<()>, PlatformError> {
     std::thread::Builder::new()
         .name("compme-keytap-dispatch".into())
         .spawn(move || {
+            let _stopped = stopped;
             while let Ok(control) = rx.recv() {
                 // The engine's callback is foreign code on the far side of the
                 // FFI-shaped boundary: an unwind here must not poison the tap or
@@ -560,10 +600,12 @@ fn spawn_event_thread(
     conn: Arc<RustConnection>,
     state: Arc<TapState>,
     dispatch: mpsc::Sender<TapControl>,
+    stopped: mpsc::Sender<()>,
 ) -> Result<JoinHandle<()>, PlatformError> {
     std::thread::Builder::new()
         .name("compme-keytap".into())
         .spawn(move || {
+            let _stopped = stopped;
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_event_loop(&conn, &state, &dispatch);
             }));
@@ -642,10 +684,12 @@ fn resolve_key_press(
 fn spawn_watchdog(
     conn: Arc<RustConnection>,
     state: Arc<TapState>,
+    stopped: mpsc::Sender<()>,
 ) -> Result<JoinHandle<()>, PlatformError> {
     std::thread::Builder::new()
         .name("compme-keytap-watchdog".into())
         .spawn(move || {
+            let _stopped = stopped;
             while !state.stopping.load(Ordering::Acquire) {
                 std::thread::sleep(WATCHDOG_TICK);
                 match watchdog_action(

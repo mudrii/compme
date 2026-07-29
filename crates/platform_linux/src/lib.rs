@@ -1,15 +1,21 @@
-//! Linux platform adapter — the AT-SPI2 field and event surfaces are real
-//! (ROADMAP Phase 2.1/2.2/2.4); the X11 accept tap and overlay are still
-//! scaffold (Tier 1.1), as are the session-dependent shell services.
+//! Linux platform adapter — every field, event, accept and overlay surface is
+//! real (ROADMAP Phase 2.1–2.5), as are the session-dependent shell services.
 //!
-//! Implements the [`platform::PlatformAdapter`] contract so the cross-platform
-//! structure exists and CI can gate it. Real on Linux with an accessibility
-//! session: the AT-SPI2 read, insert, and focus/caret event surfaces (see
-//! `atspi_live` and `atspi_events`) and the ghost/correction overlay (an
-//! override-redirect X11 window — see `x11_overlay`). The accept tap is the one
-//! remaining surface **not yet built**: it is a fail-closed stub returning
-//! [`PlatformError::UnsupportedField`], so wiring this adapter in is inert, never
-//! a crash, and its doc names the Linux API its real implementation will use.
+//! Implements the [`platform::PlatformAdapter`] contract. Real on Linux with an
+//! accessibility session: the AT-SPI2 read, insert, and focus/caret event
+//! surfaces (see `atspi_live` and `atspi_events`), the X11 accept tap (a passive
+//! `XGrabKey` in `GrabModeSync` resolved with `XAllowEvents` — see `x11_tap`),
+//! and the ghost/correction overlay (an override-redirect X11 window — see
+//! `x11_overlay`).
+//!
+//! Two surfaces stay fail-closed **by design**, not as scaffold:
+//! `open_permission_settings` (Linux has no TCC-style pane, and the switches that
+//! exist are per-desktop with no portable URL) and `insert_replacing`'s
+//! left-of-caret form (AT-SPI can express it only as delete-then-insert, which is
+//! not atomic, so a failure between the two would truncate the user's field).
+//! Not yet built: the tray (StatusNotifierItem) and always-on shortcut
+//! registration. A tray failure is non-fatal in the run loop, so the product
+//! runs without one.
 //!
 //! Real today, because they need neither a display nor an accessibility bus and
 //! so are verifiable on a headless Linux host: `environment` (distro + kernel),
@@ -138,10 +144,9 @@ impl LinuxAdapter {
     /// the live read path ask for it explicitly with `with_accessibility` (a
     /// plain code span, not an intra-doc link: that method is Linux-only, so the
     /// link would be unresolvable when this crate is documented on macOS, where
-    /// the workspace `cargo doc` runs with `-D warnings`). The app wiring still uses
-    /// `new()`: the read, insert, and event paths are live, but the accept tap
-    /// (Phase 2.3) and the overlay (2.5) are not, so nothing yet drives the adapter
-    /// end to end.
+    /// the workspace `cargo doc` runs with `-D warnings`). The app wiring calls
+    /// `with_accessibility()` — see `app::shell::stub::make_adapter`, which
+    /// explains why the product must not get the inert constructor.
     pub fn new() -> Self {
         Self::default()
     }
@@ -477,6 +482,52 @@ fn meminfo_total_bytes(meminfo: &str) -> Option<u64> {
     }
 }
 
+/// The last `/`-separated component of a POSIX path, or `None` when empty.
+///
+/// String surgery, not [`std::path::Path`]: this crate is compiled and tested on
+/// all three hosts, and `Path`'s separator set follows the *build* host, so
+/// `Path::file_name` would split on `\` when this same code is compiled on the
+/// Windows lane. `/proc` paths are POSIX regardless of who compiled the reader.
+fn posix_basename(path: &str) -> Option<&str> {
+    let name = path.rsplit('/').next()?;
+    (!name.is_empty()).then_some(name)
+}
+
+/// The app identity for a pid, from the three `/proc/<pid>` sources.
+///
+/// This is what per-app policy keys on — excluded apps, per-app steering,
+/// per-app memory — so every one of those features is inert while it returns
+/// `None`, which is what the `ShellHost` default did. macOS uses a bundle id;
+/// the closest stable Linux analogue available without a desktop-file lookup is
+/// the executable name.
+///
+/// Preference order is by fidelity, not convenience:
+/// 1. `exe` — the resolved binary path, never truncated. The kernel appends
+///    `" (deleted)"` when the binary was replaced under a running process
+///    (every in-place upgrade), so that suffix is stripped rather than becoming
+///    part of an app's identity.
+/// 2. `cmdline` — NUL-separated `argv`; `argv[0]` may be a path or a bare name.
+///    Used when `exe` is unreadable, which is the normal case for a process
+///    owned by another user.
+/// 3. `comm` — **truncated to 15 bytes** by the kernel, so it is the last
+///    resort: it silently aliases `gnome-terminal-` and `gnome-terminal-x`.
+fn app_id_from_proc(
+    exe: Option<&str>,
+    cmdline: Option<&str>,
+    comm: Option<&str>,
+) -> Option<String> {
+    let from_exe = exe
+        .map(|exe| exe.strip_suffix(" (deleted)").unwrap_or(exe))
+        .and_then(posix_basename);
+    let from_cmdline = cmdline
+        .and_then(|cmdline| cmdline.split('\0').find(|arg| !arg.is_empty()))
+        .and_then(posix_basename);
+    let from_comm = comm
+        .map(str::trim)
+        .and_then(|comm| (!comm.is_empty()).then_some(comm));
+    from_exe.or(from_cmdline).or(from_comm).map(str::to_string)
+}
+
 /// The XDG autostart directory: `$XDG_CONFIG_HOME/autostart`, else
 /// `$HOME/.config/autostart`. Empty values are treated as unset, matching
 /// `app`'s config-path resolution; a relative `XDG_CONFIG_HOME` is ignored too,
@@ -655,6 +706,33 @@ impl platform::shell::ShellHost for LinuxShellHost {
             .unwrap_or(0)
     }
 
+    /// Executable name for `pid`, the Linux stand-in for a macOS bundle id.
+    ///
+    /// The `ShellHost` default is `None`, and while that was in force every
+    /// per-app feature was silently inert: excluded apps, per-app steering, and
+    /// per-app memory all key on this string, so a user's app policy simply did
+    /// nothing. `None` still means "unidentifiable" — a pid that exited, or one
+    /// whose `/proc` entry this user may not read — and the caller's fail-closed
+    /// handling of that is unchanged.
+    fn bundle_id_for_pid(&self, pid: i32) -> Option<String> {
+        if pid <= 0 {
+            return None;
+        }
+        let proc = format!("/proc/{pid}");
+        app_id_from_proc(
+            std::fs::read_link(format!("{proc}/exe"))
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+                .as_deref(),
+            std::fs::read_to_string(format!("{proc}/cmdline"))
+                .ok()
+                .as_deref(),
+            std::fs::read_to_string(format!("{proc}/comm"))
+                .ok()
+                .as_deref(),
+        )
+    }
+
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
         xdg_open(url)
     }
@@ -717,7 +795,14 @@ impl platform::shell::ShellHost for LinuxShellHost {
     /// explicit confirm click; Return declines. See [`confirm`].
     #[cfg(target_os = "linux")]
     fn confirm(&self, prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
-        confirm::confirm_with(prompt, confirm::spawn_and_wait)
+        confirm::confirm_with(
+            prompt,
+            confirm::session_display_problem(
+                std::env::var("DISPLAY").ok().as_deref(),
+                std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+            ),
+            confirm::spawn_and_wait,
+        )
     }
 
     /// Off Linux this adapter must not spawn a Linux dialog helper. The argv and
@@ -1538,5 +1623,75 @@ mod tests {
             );
         }
         o.hide().expect("hide after a failed show is still Ok");
+    }
+
+    #[test]
+    fn posix_basename_splits_on_slash_only() {
+        assert_eq!(posix_basename("/usr/bin/gedit"), Some("gedit"));
+        assert_eq!(posix_basename("gedit"), Some("gedit"));
+        assert_eq!(posix_basename("/"), None);
+        assert_eq!(posix_basename(""), None);
+        // The whole reason this is not `Path::file_name`: on the Windows lane
+        // `Path` would split this into "app", turning one Linux app's identity
+        // into another's. A backslash is a legal character in a POSIX filename.
+        assert_eq!(
+            posix_basename(r"/opt/weird\dir\app"),
+            Some(r"weird\dir\app")
+        );
+    }
+
+    #[test]
+    fn app_id_prefers_exe_then_cmdline_then_comm() {
+        assert_eq!(
+            app_id_from_proc(
+                Some("/usr/bin/gedit"),
+                Some("gedit\0--new-window\0"),
+                Some("gedit\n")
+            ),
+            Some("gedit".into())
+        );
+        // exe unreadable (another user's process) falls back to argv[0].
+        assert_eq!(
+            app_id_from_proc(
+                None,
+                Some("/usr/lib/firefox/firefox\0-P\0"),
+                Some("firefox\n")
+            ),
+            Some("firefox".into())
+        );
+        // Both unreadable: comm, which the kernel truncates to 15 bytes.
+        assert_eq!(
+            app_id_from_proc(None, None, Some("gnome-terminal-\n")),
+            Some("gnome-terminal-".into())
+        );
+        assert_eq!(app_id_from_proc(None, None, None), None);
+    }
+
+    #[test]
+    fn a_replaced_binary_keeps_its_identity() {
+        // The kernel appends " (deleted)" to /proc/<pid>/exe after an in-place
+        // upgrade — i.e. after every package update, for every already-running
+        // app. Left in, one `apt upgrade` would silently rename every running
+        // app and drop the user's per-app policy on the floor.
+        assert_eq!(
+            app_id_from_proc(Some("/usr/bin/code (deleted)"), None, None),
+            Some("code".into())
+        );
+    }
+
+    #[test]
+    fn an_empty_or_argv0_only_cmdline_does_not_produce_an_empty_id() {
+        // Kernel threads have an empty cmdline; a trailing NUL must not yield "".
+        assert_eq!(app_id_from_proc(None, Some(""), None), None);
+        assert_eq!(app_id_from_proc(None, Some("\0\0"), None), None);
+        assert_eq!(
+            app_id_from_proc(None, Some("/usr/bin/x\0"), None),
+            Some("x".into())
+        );
+        // An exe path that is only slashes is not an identity either.
+        assert_eq!(
+            app_id_from_proc(Some("/"), None, Some("real")),
+            Some("real".into())
+        );
     }
 }

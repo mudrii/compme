@@ -38,9 +38,27 @@ pub fn make_shell() -> Arc<dyn ShellHost> {
 // the stub (Windows/Linux); macOS test builds compile this module for its
 // inert pieces (tray, URL handler, settings window) and inject their own
 // recording fakes for adapter/overlay/shell.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(windows)]
 pub fn make_adapter(_acceptance_pid: Option<i32>) -> Result<PlatformAdapterImpl, PlatformError> {
     Ok(PlatformAdapterImpl::new())
+}
+
+/// `with_accessibility()`, not `new()`.
+///
+/// `LinuxAdapter::new()` is deliberately inert — it opens no accessibility bus,
+/// so every field read, insert, and subscription fails closed. That is the right
+/// default for a constructor unit tests call dozens of times (`org.a11y.Bus` is
+/// D-Bus-activatable, and a host without the service waits out a 25-second
+/// method timeout), but it is the wrong thing for the product: with `new()` here,
+/// every live Linux surface that Phase 2 built and gate-tested was unreachable
+/// from the binary. Opening the bus once at startup is exactly where that
+/// one-time cost belongs.
+///
+/// A host with no accessibility session still degrades rather than fails: the
+/// constructor reports no session and the adapter keeps its fail-closed answers.
+#[cfg(target_os = "linux")]
+pub fn make_adapter(_acceptance_pid: Option<i32>) -> Result<PlatformAdapterImpl, PlatformError> {
+    Ok(platform_linux::LinuxAdapter::with_accessibility())
 }
 
 #[cfg(any(windows, target_os = "linux"))]

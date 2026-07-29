@@ -1,7 +1,7 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
 **Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1–6 pending (implementation actionable on hosted runners; native/live acceptance target-system-gated)
-**Prereqs:** clean `main` (builds, clippy clean, ≈2017 tests green, re-verified 2026-07-21).
+**Prereqs:** clean `main` (builds, clippy clean, ≈2023 tests green, re-verified 2026-07-21).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
 status ledger; this doc is the execution guide.
 

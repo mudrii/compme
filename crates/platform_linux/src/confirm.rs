@@ -15,8 +15,8 @@
 //! There is no toolkit-neutral system dialog on Linux, and linking GTK would make
 //! the binary refuse to *start* where GTK is absent — the same reason the AT-SPI
 //! path speaks D-Bus instead of libatspi (see `crate::atspi_live`). A helper
-//! process is spawned, so a host with neither helper degrades to a reported
-//! failure rather than a broken executable.
+//! process is spawned, so a host without it degrades to a reported failure
+//! rather than a broken executable.
 //!
 //! The invariants this module exists to hold:
 //! - **`Ok(true)` means an explicit confirm click, nothing else.** Only the
@@ -27,7 +27,10 @@
 //! - **No shell, ever.** The title/message/label are `argv` elements, so shell
 //!   metacharacters are inert; each is passed in `--option=value` form so a value
 //!   beginning with `--` cannot be read as another option.
-//! - **Neither helper present is an error**, never a silent confirm.
+//! - **No helper, and no display at all, are errors** — never a silent confirm,
+//!   and never a silent decline either. zenity exits 1 for both "user cancelled"
+//!   and "could not open the display", so the display is pre-flighted before any
+//!   spawn (see `session_display_problem`).
 //!
 //! `ExitStatus` cannot be constructed portably, so the seam these functions take
 //! yields `Option<i32>` (`ExitStatus::code()`): the argv construction, the
@@ -117,7 +120,34 @@ impl ConfirmHelper {
     }
 }
 
+/// `Some(reason)` when the session cannot show any GUI dialog at all.
+///
+/// **This exists because zenity's exit code cannot express it.** Measured on
+/// zenity 4.2.2: with no `DISPLAY`, and with a `DISPLAY` pointing at a dead
+/// server, zenity exits **1** — the same code as the user clicking Cancel. Left
+/// to the exit code alone, a headless session turns "delete everything?" into a
+/// silent `Ok(false)`: the user clicks Delete, nothing happens, nothing is
+/// logged. stderr cannot break the tie either — a *genuine* Cancel under Xvfb
+/// emitted 134 bytes of libEGL warnings, so "wrote to stderr" is not a failure
+/// signal.
+///
+/// Checking the environment first is the part that *is* decidable, so it is
+/// pure and tested on every host. A `DISPLAY` that is set but broken still
+/// reads as a decline; that residual is documented rather than guessed at,
+/// because distinguishing it means matching localized GTK warning text.
+pub fn session_display_problem(display: Option<&str>, wayland: Option<&str>) -> Option<String> {
+    let present = |value: Option<&str>| value.is_some_and(|value| !value.is_empty());
+    if present(display) || present(wayland) {
+        return None;
+    }
+    Some("neither DISPLAY nor WAYLAND_DISPLAY is set, so no dialog could be shown".to_string())
+}
+
 /// Walk the helper chain with `run`, returning the first real answer.
+///
+/// `display_problem` short-circuits the whole chain: when the session has no
+/// display there is nothing to spawn, and reporting that is the only way it does
+/// not masquerade as a decline (see [`session_display_problem`]).
 ///
 /// A helper that cannot be spawned (not installed) or that fails to collect an
 /// answer is skipped and the next one tried; when none answers, the error names
@@ -125,8 +155,12 @@ impl ConfirmHelper {
 /// package is missing. Only an explicit confirm returns `Ok(true)`.
 pub fn confirm_with(
     prompt: &ConfirmPrompt<'_>,
+    display_problem: Option<String>,
     mut run: impl FnMut(&str, &[String]) -> std::io::Result<Option<i32>>,
 ) -> Result<bool, PlatformError> {
+    if let Some(reason) = display_problem {
+        return Err(PlatformError::CannotComplete { reason });
+    }
     let mut failures = Vec::new();
     for helper in HELPER_CHAIN {
         let args = helper.args(prompt);
@@ -141,7 +175,7 @@ pub fn confirm_with(
     }
     Err(PlatformError::CannotComplete {
         reason: format!(
-            "no usable confirmation dialog (install zenity or kdialog): {}",
+            "no usable confirmation dialog (install zenity): {}",
             failures.join("; ")
         ),
     })
@@ -290,7 +324,7 @@ mod tests {
         // `Ok(true)` and never a silent `Ok(false)` that looks like the user
         // declining something they were never shown.
         let mut tried = Vec::new();
-        let error = confirm_with(&prompt("t", "m", "c"), |program, _| {
+        let error = confirm_with(&prompt("t", "m", "c"), None, |program, _| {
             tried.push(program.to_string());
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -313,7 +347,7 @@ mod tests {
     fn a_declining_helper_short_circuits_the_chain() {
         // A real answer must not be second-guessed by another dialog.
         let mut tried = Vec::new();
-        let confirmed = confirm_with(&prompt("t", "m", "c"), |program, _| {
+        let confirmed = confirm_with(&prompt("t", "m", "c"), None, |program, _| {
             tried.push(program.to_string());
             Ok(Some(1))
         })
@@ -324,8 +358,8 @@ mod tests {
     }
 
     #[test]
-    fn no_helper_at_all_fails_closed_and_names_both() {
-        let result = confirm_with(&prompt("t", "m", "c"), |program, _| {
+    fn no_helper_at_all_fails_closed_and_names_what_to_install() {
+        let result = confirm_with(&prompt("t", "m", "c"), None, |program, _| {
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("{program} missing"),
@@ -335,14 +369,56 @@ mod tests {
         let Err(PlatformError::CannotComplete { reason }) = result else {
             panic!("a host with no dialog helper must fail closed, got {result:?}");
         };
+        assert!(reason.contains("zenity"), "{reason}");
+        // kdialog cannot implement this contract (module docs), so telling an
+        // operator to install it is advice that cannot work.
         assert!(
-            reason.contains("zenity") && reason.contains("kdialog"),
-            "{reason}"
+            !reason.contains("kdialog"),
+            "the remediation must not name a helper that cannot decline by default: {reason}"
         );
         assert!(
             reason.contains("install"),
             "the error should say what to install: {reason}"
         );
+    }
+
+    #[test]
+    fn a_session_with_no_display_is_reported_and_never_read_as_a_decline() {
+        // The bug this guards: zenity exits 1 both for "user clicked Cancel" and
+        // for "could not open the display" (measured, 4.2.2). Without the
+        // pre-flight, a headless run of the delete-everything prompt returns
+        // Ok(false) — indistinguishable from the user declining, and silent.
+        assert_eq!(session_display_problem(Some(":0"), None), None);
+        assert_eq!(session_display_problem(None, Some("wayland-0")), None);
+        assert_eq!(session_display_problem(Some(""), Some("wayland-1")), None);
+
+        let reason = session_display_problem(None, None).expect("no display must be a problem");
+        assert!(reason.contains("DISPLAY"), "{reason}");
+        // Empty is not set: an exported-but-empty DISPLAY reaches no server.
+        assert!(session_display_problem(Some(""), Some("")).is_some());
+        assert!(session_display_problem(Some(""), None).is_some());
+    }
+
+    #[test]
+    fn a_display_problem_short_circuits_before_any_helper_is_spawned() {
+        let mut spawned = Vec::new();
+        let result = confirm_with(
+            &prompt("t", "m", "c"),
+            Some("no display here".to_string()),
+            |program, _| {
+                spawned.push(program.to_string());
+                Ok(Some(0)) // would confirm — must never be reached
+            },
+        );
+
+        assert!(
+            spawned.is_empty(),
+            "nothing may be spawned without a display: {spawned:?}"
+        );
+        let Err(PlatformError::CannotComplete { reason }) = result else {
+            panic!("expected a reported failure, got {result:?}");
+        };
+        assert_eq!(reason, "no display here");
     }
 
     #[test]
@@ -352,7 +428,7 @@ mod tests {
         // reported error — never `Ok(true)`, and never `Ok(false)` either, because
         // "the dialog failed" is not "the user declined".
         let mut tried = Vec::new();
-        let result = confirm_with(&prompt("t", "m", "c"), |program, _| {
+        let result = confirm_with(&prompt("t", "m", "c"), None, |program, _| {
             tried.push(program.to_string());
             Ok(Some(255))
         });
@@ -401,7 +477,7 @@ mod tests {
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
 
             let p = prompt("Delete memory?", "Erase 12 entries -- forever?", "Erase");
-            let result = confirm_with(&p, |program, args| {
+            let result = confirm_with(&p, None, |program, args| {
                 if program != "zenity" {
                     // The 255 case falls through to kdialog; this host has none.
                     return Err(std::io::Error::new(

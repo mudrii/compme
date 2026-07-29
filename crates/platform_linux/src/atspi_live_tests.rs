@@ -1348,7 +1348,19 @@ mod x11_accept_tap {
         let (conn, root) = xtest();
         let (_adapter, subscription, _recorded) = install_tap();
         subscription.set_suggestion_visible(true).expect("arm");
+        // Teardown must also be BOUNDED. It used to join all three workers with
+        // no timeout, so a worker that missed its wake — a dropped `SendEvent`,
+        // an X server that stopped answering — hung the run loop forever, on the
+        // very thread that drives the product. Drop now waits `STOP_TIMEOUT` and
+        // then detaches, so this must return promptly even though nothing here
+        // is wedged.
+        let started = std::time::Instant::now();
         drop(subscription);
+        let teardown = started.elapsed();
+        assert!(
+            teardown < std::time::Duration::from_secs(5),
+            "teardown must be bounded, took {teardown:?}"
+        );
 
         let expected = key_count("Tab") + 1;
         tap_key(&conn, root, KEYSYM_TAB);

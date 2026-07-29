@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-28 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2017 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-29 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2023 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -405,17 +405,40 @@ libX11, or libsecret — the property every "D-Bus/pure-Rust, not the C library"
 decision below was made to preserve. Per-phase live-test counts in the entries
 that follow were each measured on their own branch and do not sum to 26.
 
-**Still pending for Phase 2 (2026-07-28, after the four parallel workstreams
-below landed):** the adapter surface is now complete except the **tray**
-(StatusNotifierItem), **always-on shortcut registration**, and a **native event
-pump** — plus Wayland placement, which is Phase 3 by design. What remains between
-this and a usable Linux product is *host wiring*, not adapter capability: `app`
-still constructs the inert `LinuxAdapter::new()` rather than
-`with_accessibility()`, so nothing drives the seam end to end yet. Deliberately
-fail-closed and staying that way until each can be *proven*:
+**Host wiring ✅ DONE (2026-07-29) — the product now drives the Linux adapter:**
+`app::shell::stub::make_adapter` calls `LinuxAdapter::with_accessibility()`
+instead of the inert `new()`. Until this landed, every live surface Phase 2 built
+and gate-tested was unreachable from the binary: the product started and did
+nothing. A tray failure is already non-fatal in the run loop, so with the adapter
+wired the core product works on Linux today — focus/caret events, completion,
+ghost overlay, and the accept key — with no tray UI.
+- **`bundle_id_for_pid` implemented** (`/proc/<pid>/exe` → `cmdline` → `comm`,
+  by fidelity). It had been taking the `ShellHost` default of `None`, which
+  silently made *every* per-app feature inert — excluded apps, per-app steering,
+  per-app memory. The `" (deleted)"` suffix the kernel appends after an in-place
+  upgrade is stripped, or one `apt upgrade` would rename every running app and
+  drop the user's policy.
+- **Teardown of the accept tap is now bounded** (2 s, then detach), matching the
+  events subsystem. The previous unbounded `join()` hung the run loop if a worker
+  missed its wake.
+- **`confirm` pre-flights the display.** zenity exits 1 both for "user cancelled"
+  and "could not open the display" (measured, 4.2.2), so a headless session
+  turned an irreversible-delete prompt into a silent `Ok(false)`.
+
+**Still pending for Phase 2 (2026-07-29):** the **tray** (StatusNotifierItem +
+`com.canonical.dbusmenu`) and **always-on shortcut registration** — plus Wayland
+placement, which is Phase 3 by design. `pump_events` stays a sleep until there is
+a native UI to service; with no toolkit in the process there is no main loop to
+pump. Deliberately fail-closed and staying that way until each can be *proven*:
 `open_permission_settings` (Linux has no TCC-style pane, and the switches that
 exist are per-desktop with no portable URL) and `insert_replacing`'s
 left-of-caret form (AT-SPI can only express it as delete-then-insert).
+
+**Settings on Linux is config-file-only by decision (2026-07-29).** The
+`SettingsWindow` stub is a no-op and stays one: matching the nine macOS AppKit
+panes needs a GTK/Qt toolkit in-process, which is the dependency every Phase 2
+design decision avoided (a C library in the link line makes the binary refuse to
+*start* where it is absent). Revisit when a Linux user names the panes they need.
 
 Live-session residuals no headless run can close: caret/ghost placement
 calibration on GNOME-Xorg, KDE-Xorg, and XFCE; `BadAccess` degradation against a

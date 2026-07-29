@@ -227,6 +227,30 @@ fn search_items(
         .map_err(|err| failed("SearchItems reply", err))
 }
 
+/// Delete every stored memory-key item, returning how many were removed.
+///
+/// Test-only, and deliberately so: nothing in the product deletes the key,
+/// because doing that silently orphans the encrypted store. It exists to let the
+/// live keyring test clean up after itself instead of leaving an item behind in
+/// whatever login keyring the run happened to touch — the failure mode its own
+/// doc comment tries to prevent by demanding a throwaway `HOME`.
+///
+/// Any returned prompt path is ignored: an item this test created in an unlocked
+/// collection deletes without one, and prompting is not something a headless run
+/// could answer anyway.
+#[cfg(test)]
+pub fn delete_memory_keys_on(connection: &Connection) -> Result<usize, PlatformError> {
+    let (unlocked, locked) = search_items(connection)?;
+    let mut deleted = 0;
+    for item in unlocked.into_iter().chain(locked) {
+        connection
+            .call_method(Some(SECRETS_NAME), &item, Some(ITEM_IFACE), "Delete", &())
+            .map_err(|err| failed("Item.Delete", err))?;
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
 /// `Item.GetSecret(session)` → the raw value. The length check lives in
 /// [`crate::memory_key`], which also scrubs this buffer.
 fn item_secret(
