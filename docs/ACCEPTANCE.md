@@ -529,8 +529,8 @@ These are macOS-only supplemental LOOK checklists. They are driven by launching
 the product binary with debug logging and exercising the AppKit UI by hand (the
 AppKit glue is render-only, so LOOK + log evidence is the contract — the pure
 halves are unit-tested). They are not the runner-pinned remaining manual gate
-list; the runner-emitted manual gates are tracked under **Pending Manual
-Gates** below. Launch once and watch the log:
+list; the runner-emitted manual gates are tracked under
+[Manual/Live Gate Ledger](#manuallive-gate-ledger-added-2026-06-10) below. Launch once and watch the log:
 
 ```sh
 cd ~/src/compme
