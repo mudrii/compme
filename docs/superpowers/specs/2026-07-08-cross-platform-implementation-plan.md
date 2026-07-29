@@ -27,7 +27,7 @@ is the header above plus `docs/ROADMAP.md`; do not read the G1–G6 baseline gap
 below as still-open work after their corresponding Phase 0 item is marked shipped.
 The inventory counts below are frozen at `b367f0f`; re-verified 2026-07-21, `PlatformAdapter` has 14 methods and `ShellHost` has 8 required + 10 defaulted.
 
-- `platform::PlatformAdapter` (15 methods), `ShellHost` (8 required + 9
+- `platform::PlatformAdapter` (14 methods), `ShellHost` (8 required + 10
   defaulted), `OverlayPresenter`, `TrayHandle` — contract complete and
   portable-shaped. Enums already carry the non-mac variants:
   `KeyInterceptMode::{LowLevelHook, XGrabKey, FocusScopedInhibit, ImeOwnsKey}`,

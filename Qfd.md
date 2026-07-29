@@ -737,3 +737,45 @@ All repo-relative Markdown links resolve (39 doc surfaces). `actionlint` clean
 across all four workflows. All 25 scripts with a `--self-test` have it running
 somewhere, the two A2 ones by the documented local route. `cargo audit` on the
 current tree: 300 dependencies, 0 vulnerabilities, 1 warning (F25).
+
+## 18. 2026-07-29 release-readiness pass
+
+Re-verified the §12/§14 open list before treating it as the release checklist.
+**Two entries were stale** — both closed in the tree, still listed as OPEN.
+
+| Finding | Recorded | Actual | Evidence |
+|---|---|---|---|
+| F1 stable-tag glob in `finalize-cask.sh` | OPEN, "the only unfiltered instance", "also untested" | **CLOSED** | `finalize-cask.sh:137` applies the strict semver re-filter (`^v(0\|[1-9][0-9]*)[.]…$`) inside the candidate loop, the same compensating control §12 credited only to `check-bundle-metadata.sh`. The untested half is closed too: the self-test now builds `v1.2.4-rc.1` and `v1.2.4junk` stray tags plus a prerelease-only fixture repo (lines ~596-613). |
+| F2 uncommitted stack + unrelated `keybindings.md` | OPEN, unchanged | **CLOSED** | Working tree clean; `keybindings.md` untracked by design (`.git/info/exclude`), removed from history in `07a1f03`. |
+
+Still open and unchanged: **F3** (22 runner-pinned live macOS gates — owner-only,
+and the single blocker for a release), F5/F6 (interface depth), F7, F11/F13.
+
+**F7 fixed here.** `2026-07-08-cross-platform-implementation-plan.md:30` claimed
+`PlatformAdapter` has 15 methods and `ShellHost` 8 + 9 defaulted; the file's own
+header three lines above already recorded the corrected 14 and 8 + 10. Verified
+against the trait: 14.
+
+**F4 is not a defect and needs no fix.** `RELEASING.md:63` describes the *current*
+branch protection (no required reviews, preserving direct-to-`main`);
+`ROADMAP.md:1315` proposes required reviews as hardening that
+`ROADMAP.md:716` explicitly says "needs owner authorization". The two docs
+describe present state and a proposed change, not a contradiction. It is a
+decision awaiting the owner, and is reclassified as such.
+
+### CI/CD gap found and closed in the same pass
+
+The release workflow's Linux job ran clippy/test/build but **not** the live
+AT-SPI suite, so a tag validated *less* of Linux than an ordinary push to `main`
+did. Harmless while the adapter sat behind an inert constructor; not harmless now
+that it is wired into the product. `release.yml`'s Linux job gained the harness
+self-test, the apt dependency install, and the live suite, matching `ci.yml`.
+
+The live-suite step was also **unpinned in both workflows** — deleting it left
+every gate green while the entire live Linux surface stopped running.
+`check-model-gates.sh` now pins, in `ci.yml` *and* `release.yml`, the presence of
+the harness self-test, the live-suite invocation, and its
+`COMPME_KEYRING_EXPECT: absent` declaration (load-bearing: unset makes the
+keyring test guess instead of failing closed). Mutation-tested four ways —
+dropping the step or the env from either workflow fails the live checker with a
+distinct message, and two hermetic fixtures cover the same for the self-test.

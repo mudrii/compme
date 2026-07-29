@@ -211,6 +211,20 @@ abort("missing release gate: CI dependency audit installs and runs pinned cargo-
 icon_step = jobs.fetch("check").fetch("steps").find { |step| step["name"] == "Bundle icon generator self-test" }
 abort("missing release gate: CI runs the bundle icon generator self-test") unless
   icon_step && icon_step.fetch("run") == "tools/bundle/make-icon.sh --self-test"
+# The live Linux surfaces (AT-SPI read/insert/events, X11 accept tap, overlay,
+# session shell services) shipped with 26 tests that only run inside the harness.
+# Nothing pinned the step that runs them, so deleting it left every gate green
+# while the entire live Linux surface went unexercised.
+ci_linux_steps = jobs.fetch("linux").fetch("steps")
+ci_live_atspi = ci_linux_steps.find { |step| step["name"] == "Live AT-SPI adapter tests" }
+abort("missing release gate: CI Linux job runs the live AT-SPI suite") unless
+  ci_live_atspi &&
+  ci_live_atspi.fetch("run").include?("tools/acceptance/run-linux-atspi-session.sh --run-in-session") &&
+  ci_live_atspi.fetch("run").include?("--ignored --test-threads=1")
+abort("missing release gate: CI Linux live suite declares the keyring session kind") unless
+  ci_live_atspi.fetch("env", {})["COMPME_KEYRING_EXPECT"].to_s == "absent"
+abort("missing release gate: CI Linux job runs the AT-SPI harness self-test") unless
+  ci_linux_steps.any? { |step| step["name"] == "Linux AT-SPI harness self-test" }
 RUBY
 }
 
@@ -453,6 +467,24 @@ portable_steps = {
     abort("missing release gate: #{job_name} portable parity #{name}") unless matches.length == 1
   end
 end
+# The live Linux surfaces must be gated on a tag, not only on a push to main.
+# They were branch-CI-only until 2026-07-29, so a tag validated less of Linux
+# than an ordinary push did — and that matters now the adapter is wired into the
+# product rather than sitting behind an inert constructor. Pinned in both
+# workflows below, because an unpinned step is one someone can delete silently.
+release_linux_steps = jobs.fetch("linux").fetch("steps")
+live_atspi_step = release_linux_steps.find { |step| step["name"] == "Live AT-SPI adapter tests" }
+abort("missing release gate: release Linux job runs the live AT-SPI suite") unless
+  live_atspi_step &&
+  live_atspi_step.fetch("run").include?("tools/acceptance/run-linux-atspi-session.sh --run-in-session") &&
+  live_atspi_step.fetch("run").include?("--ignored --test-threads=1")
+# Declaring the session kind is load-bearing: the keyring test fails loudly when
+# it is unset rather than guessing, so dropping it would turn a fail-closed
+# assertion into a skipped one.
+abort("missing release gate: release Linux live suite declares the keyring session kind") unless
+  live_atspi_step.fetch("env", {})["COMPME_KEYRING_EXPECT"].to_s == "absent"
+abort("missing release gate: release Linux job runs the AT-SPI harness self-test") unless
+  release_linux_steps.any? { |step| step["name"] == "Linux AT-SPI harness self-test" }
 serialized_workflow = workflow.to_s
 abort("stale release gate: stable-only workflow contains prerelease branching") if
   serialized_workflow.include?("contains(github.ref_name") || serialized_workflow.match?(/\bprerelease\b/i)
@@ -2179,6 +2211,37 @@ YAML
   # or weakening one security property; the checker must reject every variant.
   check_ci_integrity_controls "$ci_workflow"
   ci_integrity_fixture="$tmp_dir/ci-integrity.yml"
+
+  # Deleting the live-suite step must fail. It was unpinned until 2026-07-29, so
+  # the entire live Linux surface could stop running with every gate still green.
+  cp "$ci_workflow" "$ci_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("linux").fetch("steps").reject! { |s| s["name"] == "Live AT-SPI adapter tests" }
+    File.write(path, YAML.dump(workflow))
+  ' "$ci_integrity_fixture"
+  if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: CI without the live AT-SPI suite was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  # Dropping the declared session kind turns the keyring test's fail-closed
+  # assertion into a guess, so it must fail too.
+  cp "$ci_workflow" "$ci_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    step = workflow.fetch("jobs").fetch("linux").fetch("steps").find { |s| s["name"] == "Live AT-SPI adapter tests" }
+    step.delete("env")
+    File.write(path, YAML.dump(workflow))
+  ' "$ci_integrity_fixture"
+  if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: CI live suite without COMPME_KEYRING_EXPECT was accepted" >&2
+    cleanup
+    return 1
+  fi
 
   cp "$ci_workflow" "$ci_integrity_fixture"
   ruby -0pi -e 'sub(/cargo-audit --version 0\.22\.2 --locked/, "cargo-audit --version 0.22.1 --locked")' "$ci_integrity_fixture"
