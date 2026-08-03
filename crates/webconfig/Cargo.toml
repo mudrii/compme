@@ -6,4 +6,4 @@ license.workspace = true
 
 [dependencies]
 # Exact pin: signature verification is consensus-critical — bump deliberately.
-ed25519-dalek = "=2.2.0"
+ed25519-dalek = "=3.0.0"
