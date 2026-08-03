@@ -20,7 +20,7 @@ shell_flags = { path = "../shell_flags" }
 # Phase 0.2/0.3 host services and native ShellExecuteW URL launching are real
 # already. The full UIA adapter extends this target-specific feature set.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "=0.61.3", features = [
+windows = { version = "=0.62.2", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
