@@ -54,7 +54,7 @@ jobs:
   validate:
     name: Validate release gates (macOS)
     needs: [preflight]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -319,7 +319,7 @@ jobs:
     needs: [validate, windows, linux]
     permissions:
       contents: read
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -389,7 +389,7 @@ jobs:
       # For actions/attest-build-provenance on the packaged zip.
       id-token: write
       attestations: write
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -571,7 +571,7 @@ jobs:
     environment: release
     permissions:
       contents: write
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -678,7 +678,7 @@ jobs:
     environment: release
     permissions:
       contents: write
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -733,7 +733,7 @@ jobs:
     needs: finalize_cask
     permissions:
       contents: read
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       # The zip/sha256 names come from the build_release pkg step

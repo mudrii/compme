@@ -1408,7 +1408,7 @@ def validate_action_inputs!(job_name, step)
   uses = step.fetch("uses")
   allowed = case uses.split("@", 2).first
             when "actions/checkout" then %w[fetch-depth persist-credentials]
-            when "actions/upload-artifact" then %w[name path if-no-files-found]
+            when "actions/upload-artifact" then %w[name path if-no-files-found retention-days]
             when "actions/download-artifact" then %w[name path]
             when "dtolnay/rust-toolchain" then %w[toolchain components]
             when "Swatinem/rust-cache" then []

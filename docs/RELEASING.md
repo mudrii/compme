@@ -2,7 +2,7 @@
 
 Compme ships as a Developer-ID signed and notarized macOS `.app` bundle published
 to GitHub Releases and installed through a Homebrew cask. GitHub Actions runs the
-root macOS checks and release build on Apple Silicon `macos-14` runners. Branch
+root macOS checks and release build on Apple Silicon `macos-15` runners. Branch
 CI also tests the portable workspace and app binary on Windows and Linux; tag
 validation runs the same portable workspace and app-binary gates on those
 platforms.
