@@ -146,14 +146,29 @@ pub fn download_url_bounded(
 ) -> Result<std::path::PathBuf, FetchError> {
     // Timeouts are mandatory (review-c118 CRITICAL): without a read timeout
     // a stalled server hangs the download — and the worker thread's
-    // shutdown — forever. timeout_read is PER READ CALL (socket-level), not
-    // whole-body: each 64KB chunk gets a fresh 30s window, so multi-GB
-    // downloads on slow links are fine; only a true stall trips it.
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout_read(std::time::Duration::from_secs(30))
-        .build();
+    // shutdown — forever. timeout_recv_body is PER SOCKET READ, not
+    // whole-body: each read gets a fresh 30s window, so multi-GB downloads on
+    // slow links are fine; only a true stall trips it. timeout_send_request
+    // is what bounds the wait for response HEADERS: its deadline carries into
+    // the receive-headers phase without capping the body, whereas
+    // timeout_recv_response would ALSO cap total body time to 30s and break
+    // every large download.
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_connect(Some(std::time::Duration::from_secs(10)))
+            .timeout_send_request(Some(std::time::Duration::from_secs(30)))
+            .timeout_recv_body(Some(std::time::Duration::from_secs(30)))
+            .build(),
+    );
     download_with_agent(&agent, url, dest, expected_sha256, max_bytes, progress)
+}
+
+/// A response header as UTF-8, or `None` when absent or non-textual.
+fn header<'a, T>(response: &'a ureq::http::Response<T>, name: &str) -> Option<&'a str> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
 }
 
 /// Agent-injectable core — tests drive it with millisecond timeouts.
@@ -179,7 +194,7 @@ fn download_with_agent(
 
     let mut request = agent.get(url);
     if let Some(range) = resume_range_header(existing) {
-        request = request.set("Range", &range);
+        request = request.header("Range", &range);
     }
     let response = match request.call() {
         Ok(response) => response,
@@ -192,24 +207,20 @@ fn download_with_agent(
         // read-only parent, transient EIO), surface Io rather than recurse —
         // a surviving part re-sends a Range and 416s back into this arm,
         // overflowing the stack instead of failing.
-        Err(ureq::Error::Status(416, _)) if existing > 0 => {
+        Err(ureq::Error::StatusCode(416)) if existing > 0 => {
             std::fs::remove_file(&part).map_err(|e| FetchError::Io(e.to_string()))?;
             return download_with_agent(agent, url, dest, expected_sha256, max_bytes, progress);
         }
-        Err(ureq::Error::Status(code, _)) => return Err(FetchError::Http(code)),
+        Err(ureq::Error::StatusCode(code)) => return Err(FetchError::Http(code)),
         Err(other) => return Err(FetchError::Network(other.to_string())),
     };
 
-    let status = response.status();
+    let status = response.status().as_u16();
     // Trust a 206 only when its Content-Range start matches OUR offset —
     // a lying/buggy server stitched at the wrong offset would corrupt the
     // file silently (review-c118 CRITICAL). Anything else → safe restart.
     let resumed_range = (existing > 0 && status == 206)
-        .then(|| {
-            response
-                .header("Content-Range")
-                .and_then(ContentRange::parse)
-        })
+        .then(|| header(&response, "Content-Range").and_then(ContentRange::parse))
         .flatten()
         .filter(|range| range.start == existing);
     if let Some(range) = resumed_range {
@@ -239,9 +250,7 @@ fn download_with_agent(
             "received 206 Partial Content without a requested resume range".into(),
         ));
     }
-    let body_len = response
-        .header("Content-Length")
-        .and_then(|h| h.parse::<u64>().ok());
+    let body_len = header(&response, "Content-Length").and_then(|h| h.parse::<u64>().ok());
     if let (Some(range), Some(body_len)) = (resumed_range, body_len) {
         if body_len != range.body_len() {
             return Err(FetchError::InvalidRange(format!(
@@ -312,7 +321,7 @@ fn download_with_agent(
         file.set_len(0).map_err(|e| FetchError::Io(e.to_string()))?;
     }
 
-    let mut reader = response.into_reader();
+    let mut reader = response.into_body().into_reader();
     let mut written = if resumed { existing } else { 0 };
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -699,13 +708,19 @@ mod tests {
                 let mut req = [0u8; 2048];
                 let n = stream.read(&mut req).unwrap_or(0);
                 let req = String::from_utf8_lossy(&req[..n]);
-                let requested = req
-                    .lines()
-                    .find_map(|l| l.strip_prefix("Range: bytes="))
+                // Header names arrive lowercased (ureq 3 goes through
+                // `http::HeaderName`, which normalizes them), so match
+                // case-insensitively rather than on the literal `Range:`.
+                let range = req.lines().find_map(|l| {
+                    let (name, value) = l.split_once(':')?;
+                    name.eq_ignore_ascii_case("range").then(|| value.trim())
+                });
+                let requested = range
+                    .and_then(|r| r.strip_prefix("bytes="))
                     .and_then(|r| r.split('-').next())
                     .and_then(|s| s.parse::<usize>().ok())
                     .filter(|&s| s < body.len());
-                let ranged = req.lines().any(|l| l.starts_with("Range:"));
+                let ranged = range.is_some();
                 if matches!(mode, RangeMode::Unsatisfiable) && ranged {
                     let _ = write!(
                         stream,
@@ -792,6 +807,10 @@ mod tests {
 
     fn temp_dest(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("cm-fetch-{tag}-{}.bin", std::process::id()))
+    }
+
+    fn test_agent(config: ureq::config::ConfigBuilder<ureq::typestate::AgentScope>) -> ureq::Agent {
+        ureq::Agent::new_with_config(config.build())
     }
 
     #[test]
@@ -1072,9 +1091,10 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_secs(10));
             }
         });
-        let agent = ureq::AgentBuilder::new()
-            .timeout_read(std::time::Duration::from_millis(300))
-            .build();
+        let agent = test_agent(
+            ureq::Agent::config_builder()
+                .timeout_recv_body(Some(std::time::Duration::from_millis(300))),
+        );
         let dest = temp_dest("stall");
         let err = download_with_agent(
             &agent,
@@ -1087,6 +1107,102 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, FetchError::Network(_)));
         let _ = std::fs::remove_file(dest.with_extension("part"));
+    }
+
+    #[test]
+    fn slow_but_alive_body_outlives_every_configured_timeout() {
+        // The other half of the stall contract: the timeouts must bound a
+        // STALL without bounding a slow multi-GB download. Only
+        // `timeout_recv_body` may guard the body, and only because ureq
+        // recomputes its deadline on every socket read; `timeout_recv_response`
+        // would cap TOTAL body time (its deadline carries into the body phase)
+        // and `timeout_global`/`timeout_per_call` would too. This server
+        // trickles 20 bytes 50ms apart — 1s total, twice the 500ms windows
+        // configured here — so a whole-body deadline anywhere in the agent
+        // config fails this test.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut req = [0u8; 1024];
+                let _ = stream.read(&mut req);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.flush();
+                for _ in 0..20 {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let _ = stream.write_all(b"x");
+                    let _ = stream.flush();
+                }
+            }
+        });
+        // Same timeout SHAPE as the production agent in `download_url_bounded`,
+        // scaled to milliseconds.
+        let agent = test_agent(
+            ureq::Agent::config_builder()
+                .timeout_connect(Some(std::time::Duration::from_millis(500)))
+                .timeout_send_request(Some(std::time::Duration::from_millis(500)))
+                .timeout_recv_body(Some(std::time::Duration::from_millis(500))),
+        );
+        let dest = temp_dest("slow-body");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(dest.with_extension("part"));
+        let path = download_with_agent(
+            &agent,
+            &format!("http://{addr}/model.bin"),
+            &dest,
+            None,
+            None,
+            |_, _| {},
+        )
+        .expect("a slow but progressing body must not time out");
+        assert_eq!(std::fs::read(&path).unwrap(), b"x".repeat(20));
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn header_stall_times_out_instead_of_hanging_forever() {
+        // A server that accepts the connection and reads the request but never
+        // replies: ureq 3 applies no timeout to the header wait unless one is
+        // configured, and `timeout_recv_response` cannot be used (it would cap
+        // total body time). `timeout_send_request` is what bounds this wait.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut req = [0u8; 1024];
+                let _ = stream.read(&mut req);
+                // Request read, response never written.
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        });
+        let agent = test_agent(
+            ureq::Agent::config_builder()
+                .timeout_send_request(Some(std::time::Duration::from_millis(300))),
+        );
+        let dest = temp_dest("header-stall");
+        let start = std::time::Instant::now();
+        let err = download_with_agent(
+            &agent,
+            &format!("http://{addr}/model.bin"),
+            &dest,
+            None,
+            None,
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, FetchError::Network(_)), "got: {err}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "the header wait must abort on the timeout, not hang: {:?}",
+            start.elapsed()
+        );
+        // Nothing was received, so no part file was ever opened.
+        assert!(!dest.with_extension("part").exists());
     }
 
     #[test]
@@ -1121,9 +1237,10 @@ mod tests {
         let part = dest.with_extension("part");
         let _ = std::fs::remove_file(&dest);
         let _ = std::fs::remove_file(&part);
-        let agent = ureq::AgentBuilder::new()
-            .timeout_read(std::time::Duration::from_secs(5))
-            .build();
+        let agent = test_agent(
+            ureq::Agent::config_builder()
+                .timeout_recv_body(Some(std::time::Duration::from_secs(5))),
+        );
         let err = download_with_agent(
             &agent,
             &format!("http://{addr}/model.bin"),
@@ -1163,9 +1280,10 @@ mod tests {
         // surface it as a typed Network error rather than blocking. The
         // production agent in `download_url` carries a 10s timeout_connect; a
         // millisecond one here proves the abort without a long test.
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(std::time::Duration::from_millis(200))
-            .build();
+        let agent = test_agent(
+            ureq::Agent::config_builder()
+                .timeout_connect(Some(std::time::Duration::from_millis(200))),
+        );
         let dest = temp_dest("connect-stall");
         let start = std::time::Instant::now();
         let err = download_with_agent(

@@ -266,7 +266,9 @@ impl MemoryStore {
         // absorbed it; the cipher itself zeroizes its key schedule on drop
         // (aes-gcm `zeroize` feature).
         let mut key_bytes = key.0;
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+        // `(&array).into()` borrows the bytes as the key type in place — no
+        // extra copy to scrub beyond `key_bytes` itself.
+        let cipher = Aes256Gcm::new(<&Key<Aes256Gcm>>::from(&key_bytes));
         key_bytes.zeroize();
         Ok(Self { conn, cipher, mode })
     }
@@ -429,7 +431,7 @@ impl MemoryStore {
         // Fail closed: if the RNG is unavailable, error rather than store a record
         // with a weak/missing nonce.
         getrandom::fill(&mut nonce_bytes).map_err(|_| MemoryError::Crypto)?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = <&Nonce<_>>::from(&nonce_bytes);
         let ciphertext = self
             .cipher
             .encrypt(
@@ -452,7 +454,9 @@ impl MemoryStore {
             return None;
         }
         let (nonce_bytes, ciphertext) = blob.split_at(NONCE_LEN);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        // Length-checked above, so the conversion cannot fail; treat a
+        // mismatch as undecryptable rather than panicking.
+        let nonce = <&Nonce<_>>::try_from(nonce_bytes).ok()?;
         let plaintext = self
             .cipher
             .decrypt(

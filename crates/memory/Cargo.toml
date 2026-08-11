@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 redaction = { path = "../redaction" }
-rusqlite = { version = "=0.32.1", features = ["bundled"] }
-aes-gcm = { version = "=0.10.3", features = ["zeroize"] }
+rusqlite = { version = "=0.40.1", features = ["bundled"] }
+aes-gcm = { version = "=0.11.0", features = ["zeroize"] }
 getrandom.workspace = true
 zeroize.workspace = true
 
