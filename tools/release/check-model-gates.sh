@@ -212,7 +212,7 @@ icon_step = jobs.fetch("check").fetch("steps").find { |step| step["name"] == "Bu
 abort("missing release gate: CI runs the bundle icon generator self-test") unless
   icon_step && icon_step.fetch("run") == "tools/bundle/make-icon.sh --self-test"
 # The live Linux surfaces (AT-SPI read/insert/events, X11 accept tap, overlay,
-# session shell services) shipped with 26 tests that only run inside the harness.
+# session shell services) ship live tests (31 currently) that only run inside the harness.
 # Nothing pinned the step that runs them, so deleting it left every gate green
 # while the entire live Linux surface went unexercised.
 ci_linux_steps = jobs.fetch("linux").fetch("steps")

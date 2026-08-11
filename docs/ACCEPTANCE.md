@@ -119,6 +119,7 @@ By default the runner builds the `platform_macos` examples, builds the
 - `accept-tap-option-tab`
 - `accept-tap-cycle`
 - `accept-tap-delayed-hide`
+- `popup-fallback` (optional — runs only when `--popup-pid` is supplied)
 - `popup-fallback-fixture`
 - `overlay-presenter`
 - `overlay-correction-presenter`

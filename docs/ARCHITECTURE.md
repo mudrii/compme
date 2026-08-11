@@ -611,13 +611,14 @@ Major responsibilities:
 
 ### `platform_windows` and `platform_linux`
 
-These crates compile the portable workspace on their native CI runners, but
-they are not usable product adapters yet. `platform_windows`'s
+These crates compile the portable workspace on their native CI runners.
+`platform_windows` is not a usable product adapter yet: its
 `PlatformAdapter` text, focus/caret/accept, insertion, and overlay methods fail
-closed with `UnsupportedField` (overlay `hide` remains idempotent), and so does
-`platform_linux`'s accept tap. Windows' `ShellHost` services mostly fail closed;
-Linux's are largely implemented (see below), and fail closed when the desktop
-service they need is absent.
+closed with `UnsupportedField` (overlay `hide` remains idempotent), and its
+`ShellHost` services mostly fail closed. `platform_linux` is wired into the
+product: text, focus/caret events, insertion, the X11 accept tap, and the X11
+overlay are implemented (see below), and its `ShellHost` services fail closed
+only when the desktop service they need is absent.
 
 The current Windows foundation has real owner-only DACL hardening, a console
 control handler for orderly shutdown, and native `ShellExecuteW` URL opening.
@@ -726,9 +727,9 @@ in libxcb, and a C library in the link line would make the binary refuse to
 reports errors for reply-less requests asynchronously and an unchecked
 `CreateWindow` made `show_ghost` return `Ok` with nothing on screen.
 
-AT-SPI2 *event* paths (focus/caret subscription), the accept tap, native
-insertion, Wayland overlays (`LayerShell`), key stores, dialogs, trays,
-file-manager reveal, packaging, and GPU backends remain roadmap work.
+Wayland overlays (`LayerShell`), trays, always-on shortcut registration,
+packaging, and GPU backends remain roadmap work; event paths, the accept tap,
+native insertion, key stores, dialogs, and file-manager reveal are built.
 
 The Linux **X11 accept tap** is implemented (ROADMAP Phase 2.3) as a *passive*
 `XGrabKey` on the accept keys with the keyboard in `GrabModeSync`, resolving each
@@ -755,8 +756,8 @@ failing the session. `x11rb` is used rather than Xlib for the same reason AT-SPI
 goes over D-Bus: a C library at link time would make the binary refuse to *start*
 without it.
 
-AT-SPI2 *event* paths (focus/caret subscription), overlays, key stores, dialogs,
-trays, file-manager reveal, packaging, and GPU backends remain roadmap work.
+Wayland overlays, trays, always-on shortcut registration, packaging, and GPU
+backends remain roadmap work.
 
 ## macOS Runtime Model
 

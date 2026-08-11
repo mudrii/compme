@@ -280,12 +280,12 @@ cargo build --locked --bins
 The root suite is ~2026 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 `tools/dev/check.sh` parses the fence above and runs it as one command.
-The full gate splits tests into a parallel run over the 23 portable crates and
+The full gate splits tests into a parallel run over the 24 portable crates and
 a serial run over `platform_macos` and `app` only: the `platform_macos` example
 regression tests are part of the acceptance surface and several macOS
 pasteboard checks share process-wide OS state, and `app` tests share
 shortcut/pasteboard globals, so the serial command keeps `--test-threads=1`
-while the other 23 crates no longer pay the serial cost.
+while the other 24 crates no longer pay the serial cost.
 The `shellcheck` line needs a local shellcheck install (CI gates on it
 regardless); skip it when unavailable. For the cargo half of the gate, an
 opt-in pre-push hook runs `cargo fmt --check`, clippy, and the workspace tests

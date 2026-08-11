@@ -403,15 +403,22 @@ in a row** in the harness and again in CI on Ubuntu, and the Phase 2.3 keytap
 spike verdict still holding. The `app` binary links none of libxcb, libatspi,
 libX11, or libsecret — the property every "D-Bus/pure-Rust, not the C library"
 decision below was made to preserve. Per-phase live-test counts in the entries
-that follow were each measured on their own branch and do not sum to 26.
+that follow were each measured on their own branch and do not sum to 26. The
+suite has since grown: the current tree carries **31 live tests** (25 AT-SPI +
+2 each for confirm, keyring, reveal).
 
 **Host wiring ✅ DONE (2026-07-29) — the product now drives the Linux adapter:**
 `app::shell::stub::make_adapter` calls `LinuxAdapter::with_accessibility()`
 instead of the inert `new()`. Until this landed, every live surface Phase 2 built
 and gate-tested was unreachable from the binary: the product started and did
 nothing. A tray failure is already non-fatal in the run loop, so with the adapter
-wired the core product works on Linux today — focus/caret events, completion,
-ghost overlay, and the accept key — with no tray UI.
+wired the adapter surfaces are live on Linux today — focus/caret events, field
+read per keystroke, caret-tracking ghost overlay, and the accept tap — with no
+tray UI. **Known open diagnostic (2026-07-29):** in the live end-to-end session
+the engine received every text change but no suggestion was ever presented
+(`shown=0`); compat tier, mid-word gate, overlay laziness, and the tick loop
+were each ruled out. Next probe is between `on_text_changed` and the inference
+worker. 0.2.0 work; does not block the macOS release.
 - **`bundle_id_for_pid` implemented** (`/proc/<pid>/exe` → `cmdline` → `comm`,
   by fidelity). It had been taking the `ShellHost` default of `None`, which
   silently made *every* per-app feature inert — excluded apps, per-app steering,
@@ -427,7 +434,12 @@ ghost overlay, and the accept key — with no tray UI.
 
 **Still pending for Phase 2 (2026-07-29):** the **tray** (StatusNotifierItem +
 `com.canonical.dbusmenu`) and **always-on shortcut registration** — plus Wayland
-placement, which is Phase 3 by design. `pump_events` stays a sleep until there is
+placement, which is Phase 3 by design. Also pending: **accept-key rebinds are
+ignored on Linux** — the G5 chord translation (`AcceptBindings::from_mac_chords`)
+is pure and tested, but `X11AcceptTap::install` always arms
+`AcceptBindings::defaults()` and the shell stub's
+`set_accept_keymap_from_config_with_mods` is a no-op, so a user's persisted
+chord silently stays Tab/Right-arrow. `pump_events` stays a sleep until there is
 a native UI to service; with no toolkit in the process there is no main loop to
 pump. Deliberately fail-closed and staying that way until each can be *proven*:
 `open_permission_settings` (Linux has no TCC-style pane, and the switches that

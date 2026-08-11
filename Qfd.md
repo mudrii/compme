@@ -779,3 +779,28 @@ the harness self-test, the live-suite invocation, and its
 keyring test guess instead of failing closed). Mutation-tested four ways —
 dropping the step or the env from either workflow fails the live checker with a
 distinct message, and two hermetic fixtures cover the same for the self-test.
+
+## 19. 2026-08-11 dependency catch-up — the §15/§18 deferrals were adopted
+
+The "deliberately **not** done" list in §15's F15 detail (six cargo majors:
+`getrandom` 0.4, `aes-gcm` 0.11, `rusqlite` 0.40, `sha2` 0.11, `ureq` 3,
+`ed25519-dalek` 3.0) and the artifact majors (`upload-artifact` v7,
+`download-artifact` v8) landed on `main` as `bdb8f67` and `c636631`, with the
+follow-up repin `5f4e22f` (rust-cache to the released v2.9.2 commit instead of
+Dependabot's proposed master-HEAD pin, attest-build-provenance v4.2.2).
+
+The §18 concern that "nothing in branch CI exercises artifact round-trips"
+remains true; before adoption every download/upload input in `release.yml` was
+checked against the v5–v8 breaking-change list (path layout moved only for
+`artifact-ids` downloads — all three steps download by `name:`; digest
+mismatches now fail instead of warn, which is the right posture for signed
+bytes; names must stay extension-less on v8, and the exact-map pin on both
+artifact names already enforces that). First live proof is still the next tag.
+
+The load-bearing migration decision is recorded at
+`crates/model_fetch/src/lib.rs::production_agent`: ureq 2's per-read
+`timeout_read` maps to `timeout_recv_body` + `timeout_send_request`, NOT
+`timeout_recv_response` (whose deadline carries into the body phase and would
+cap every multi-GB model download at 30 s). Both halves are pinned by stall
+tests, and the production agent's config shape — including the `None` knobs —
+is pinned by `production_agent_pins_the_load_bearing_timeout_shape`.
