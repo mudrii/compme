@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-29 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2025 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-29 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2026 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a

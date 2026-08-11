@@ -144,23 +144,42 @@ pub fn download_url_bounded(
     max_bytes: Option<u64>,
     progress: impl Fn(u64, Option<u64>),
 ) -> Result<std::path::PathBuf, FetchError> {
-    // Timeouts are mandatory (review-c118 CRITICAL): without a read timeout
-    // a stalled server hangs the download — and the worker thread's
-    // shutdown — forever. timeout_recv_body is PER SOCKET READ, not
-    // whole-body: each read gets a fresh 30s window, so multi-GB downloads on
-    // slow links are fine; only a true stall trips it. timeout_send_request
-    // is what bounds the wait for response HEADERS: its deadline carries into
-    // the receive-headers phase without capping the body, whereas
-    // timeout_recv_response would ALSO cap total body time to 30s and break
-    // every large download.
-    let agent = ureq::Agent::new_with_config(
+    download_with_agent(
+        &production_agent(),
+        url,
+        dest,
+        expected_sha256,
+        max_bytes,
+        progress,
+    )
+}
+
+/// The agent every production download uses. Extracted so a test can pin the
+/// config shape — the timeout knobs are behavior-critical and easy to get
+/// wrong when touched.
+///
+/// Timeouts are mandatory (review-c118 CRITICAL): without a read timeout
+/// a stalled server hangs the download — and the worker thread's
+/// shutdown — forever. timeout_recv_body is PER SOCKET READ, not
+/// whole-body: each read gets a fresh 30s window, so multi-GB downloads on
+/// slow links are fine; only a true stall trips it. timeout_send_request
+/// is what bounds the wait for response HEADERS: its deadline carries into
+/// the receive-headers phase without capping the body, whereas
+/// timeout_recv_response would ALSO cap total body time to 30s and break
+/// every large download.
+///
+/// Deliberate ureq-3 default kept: standard proxy env vars
+/// (HTTPS_PROXY/ALL_PROXY/NO_PROXY, ureq 2 ignored them) are honored, so
+/// corporate-proxy users can download models at all. https URLs tunnel via
+/// CONNECT, so TLS stays end-to-end through the proxy.
+fn production_agent() -> ureq::Agent {
+    ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .timeout_connect(Some(std::time::Duration::from_secs(10)))
             .timeout_send_request(Some(std::time::Duration::from_secs(30)))
             .timeout_recv_body(Some(std::time::Duration::from_secs(30)))
             .build(),
-    );
-    download_with_agent(&agent, url, dest, expected_sha256, max_bytes, progress)
+    )
 }
 
 /// A response header as UTF-8, or `None` when absent or non-textual.
@@ -1105,7 +1124,15 @@ mod tests {
             |_, _| {},
         )
         .unwrap_err();
-        assert!(matches!(err, FetchError::Network(_)));
+        // Pin WHICH timeout fired: a connection reset would also be
+        // Network(_), but only the recv-body knob proves the stall guard.
+        let FetchError::Network(msg) = &err else {
+            panic!("expected Network, got: {err}");
+        };
+        assert!(
+            msg.contains("timeout: receive body"),
+            "expected the recv-body timeout, got: {msg}"
+        );
         let _ = std::fs::remove_file(dest.with_extension("part"));
     }
 
@@ -1195,7 +1222,15 @@ mod tests {
             |_, _| {},
         )
         .unwrap_err();
-        assert!(matches!(err, FetchError::Network(_)), "got: {err}");
+        // Pin WHICH timeout fired — only send_request proves the header-wait
+        // guard; any other transport error under 5s would fake a pass.
+        let FetchError::Network(msg) = &err else {
+            panic!("expected Network, got: {err}");
+        };
+        assert!(
+            msg.contains("timeout: send request"),
+            "expected the send-request timeout, got: {msg}"
+        );
         assert!(
             start.elapsed() < std::time::Duration::from_secs(5),
             "the header wait must abort on the timeout, not hang: {:?}",
@@ -1203,6 +1238,41 @@ mod tests {
         );
         // Nothing was received, so no part file was ever opened.
         assert!(!dest.with_extension("part").exists());
+    }
+
+    #[test]
+    fn production_agent_pins_the_load_bearing_timeout_shape() {
+        // The two tests above prove which knob has which semantics, but they
+        // build their own agents; this is the only assertion tying the
+        // PRODUCTION config to that proven shape. The `None`s matter most:
+        // recv_response, global, or per_call would each cap TOTAL body time
+        // and abort every multi-GB model download partway.
+        let agent = production_agent();
+        let timeouts = agent.config().timeouts();
+        assert_eq!(
+            timeouts.connect,
+            Some(std::time::Duration::from_secs(10)),
+            "connect stall must abort"
+        );
+        assert_eq!(
+            timeouts.send_request,
+            Some(std::time::Duration::from_secs(30)),
+            "header wait must be bounded"
+        );
+        assert_eq!(
+            timeouts.recv_body,
+            Some(std::time::Duration::from_secs(30)),
+            "body stall must abort per read"
+        );
+        assert_eq!(
+            timeouts.recv_response, None,
+            "recv_response would cap total body time"
+        );
+        assert_eq!(timeouts.global, None, "global would cap total body time");
+        assert_eq!(
+            timeouts.per_call, None,
+            "per_call would cap total body time"
+        );
     }
 
     #[test]

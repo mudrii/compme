@@ -1235,7 +1235,7 @@ mod tests {
         // does not decompress to a curve point — VerifyingKey::from_bytes rejects
         // it, so from_hex fails closed despite lexically well-formed hex of the
         // right length. (NB: the all-zero point IS accepted by ed25519-dalek
-        // 2.x's from_bytes — a small-order point only verify_strict rejects — so
+        // 3.x's from_bytes — a small-order point only verify_strict rejects — so
         // this pins the from_bytes decompression failure, not a small-order one.)
         let well_formed_but_not_a_point = format!("{}ff", "00".repeat(31));
         assert_eq!(well_formed_but_not_a_point.len(), 64);
@@ -1268,7 +1268,7 @@ mod tests {
         // would sail through them. This test FAILS if that downgrade happens.
         //
         // It uses a sourced, behavior-distinguishing CCTV test vector (the same
-        // corpus ed25519-dalek 2.x uses in tests/validation_criteria.rs):
+        // corpus ed25519-dalek 3.x uses in tests/validation_criteria.rs):
         //   C2SP/CCTV ed25519vectors @ commit 5ea85644bd03..., vector #3
         //   flags: low_order_A, low_order_component_A, low_order_component_R
         //   key  = 00..00 (the all-zero / low-order point A)
@@ -1277,7 +1277,7 @@ mod tests {
         // ed25519-dalek's own criteria allow `low_order_A` for verify() but NOT
         // for verify_strict() (VERIFY_ALLOWED_EDGECASES vs
         // VERIFY_STRICT_ALLOWED_EDGECASES). Empirically against the pinned
-        // ed25519-dalek 2.2.0: verify() ACCEPTS this triple, verify_strict()
+        // ed25519-dalek 3.0.0: verify() ACCEPTS this triple, verify_strict()
         // REJECTS it. So plain `verify` would return Ok(_) here while
         // `verify_strict` returns Err → InvalidSignature.
         //
