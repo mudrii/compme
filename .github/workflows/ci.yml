@@ -68,7 +68,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # The model-backed smoke gate below runs `cd tools/spike && cargo
           # test` via run-model-gates.sh; spike is excluded from the root
@@ -240,7 +240,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # tools/spike is excluded from the root workspace, so the default
           # ". -> target" mapping never caches tools/spike/target — including
@@ -279,7 +279,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # The whole workspace minus `platform_macos` (Apple frameworks). This
       # gates portability leaks in shared crates and proves the app binary
@@ -317,7 +317,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # cargo-audit clones the RustSec advisory DB outside rust-cache's
           # default paths; cache it alongside the cargo-installed binary.

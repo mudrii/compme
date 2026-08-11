@@ -183,7 +183,7 @@ abort("missing release gate: CI push trigger skips only unpinned prose") unless 
 jobs = workflow.fetch("jobs")
 checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
-cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
+cache = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
 expected_actions = {
   "actionlint" => [[checkout, {"persist-credentials" => false}]],
   "check" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"workspaces" => ".\ntools/spike\n", "cache-directories" => "tools/spike/models"}]],
@@ -251,7 +251,7 @@ end
 expected_actions = [
   ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", {"persist-credentials" => false}],
   ["dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30", {}],
-  ["Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32", {"cache-directories" => "~/.cargo/advisory-db"}],
+  ["Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6", {"cache-directories" => "~/.cargo/advisory-db"}],
 ]
 abort("missing release gate: dependency audit exact action provenance") unless actions == expected_actions
 audit_step = steps.find { |step| step["name"] == "Audit locked dependencies" }
@@ -400,10 +400,10 @@ workflow = YAML.load_file(ARGV.fetch(0))
 jobs = workflow.fetch("jobs")
 checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
-cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
+cache = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
 upload = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 download = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
-attest = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
+attest = "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8"
 expected_action_topology = {
   "preflight" => [[checkout, {"fetch-depth" => 0}]],
   "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"}]],
@@ -1398,7 +1398,7 @@ def approved_action_ref?(uses)
   [
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
-    "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
+    "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
   ].include?(uses)
@@ -1447,7 +1447,7 @@ end
 expected_actions = {
   "validate" => ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"],
   "windows" => ["dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"],
-  "linux" => ["Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"],
+  "linux" => ["Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"],
   "prebuild" => [],
   "release" => ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"],
 }
@@ -1722,7 +1722,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
   prebuild:
     steps: []
   release:
@@ -3090,10 +3090,10 @@ ruby -ryaml -e '
     [
       "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
       "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
-      "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
+      "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
       "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-      "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373",
+      "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
     ].include?(uses)
   end
   def validate_action_inputs!(job_name, step)
@@ -3155,7 +3155,7 @@ ruby -ryaml -e '
   ci_action_sequence = [
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
-    "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
+    "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
   ]
   require_exact_actions!(ci_workflow, {
     "actionlint" => ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"],
@@ -3308,10 +3308,10 @@ ruby -ryaml -e '
   validate_actions!(workflow, "release")
   checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
   toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
-  cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
+  cache = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
   upload = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
   download = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
-  attest = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
+  attest = "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8"
   require_exact_actions!(workflow, {
     "preflight" => [checkout],
     "validate" => [checkout, toolchain, cache],
