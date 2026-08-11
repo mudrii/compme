@@ -1,0 +1,9 @@
+[env]
+# llama.cpp's vendored cpp-httplib links OpenSSL when CMake can find one
+# (LLAMA_OPENSSL defaults ON). The product never uses llama.cpp's HTTP stack
+# (LLAMA_CURL is OFF and downloads go through model_fetch), and on runners
+# where CMake half-finds a system OpenSSL the build breaks ('openssl/err.h'
+# not found, first seen on the macos-15 image) — or worse, fully finds a
+# Homebrew one and silently adds a libssl.dylib dependency to the shipped
+# binary. Disable the probe so every host builds the same ssl-free way.
+CMAKE_DISABLE_FIND_PACKAGE_OpenSSL = "TRUE"
