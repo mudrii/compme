@@ -181,7 +181,7 @@ push_trigger = trigger.fetch("push")
 abort("missing release gate: CI push trigger is limited to main and spike branches") unless push_trigger.fetch("branches") == ["main", "spike/**"]
 abort("missing release gate: CI push trigger skips only unpinned prose") unless push_trigger.fetch("paths-ignore") == ["docs/superpowers/**", "docs/RELEASE-NOTES-*.md", "docs/TROUBLESHOOTING.md", "Qfd.md", "LICENSE"]
 jobs = workflow.fetch("jobs")
-checkout = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
 cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
 expected_actions = {
@@ -249,7 +249,7 @@ actions = steps.each_with_object([]) do |step, found|
   found << [step.fetch("uses"), step.fetch("with", {})] if step.key?("uses")
 end
 expected_actions = [
-  ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", {"persist-credentials" => false}],
+  ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", {"persist-credentials" => false}],
   ["dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30", {}],
   ["Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32", {"cache-directories" => "~/.cargo/advisory-db"}],
 ]
@@ -266,7 +266,7 @@ gov_actions = governance.fetch("steps").each_with_object([]) do |step, found|
   found << [step.fetch("uses"), step.fetch("with", {})] if step.key?("uses")
 end
 abort("missing release gate: governance check exact action provenance") unless gov_actions == [
-  ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", {"persist-credentials" => false}],
+  ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", {"persist-credentials" => false}],
 ]
 gov_step = governance.fetch("steps").find { |step| step["name"] == "Check GitHub governance (live, read-only)" }
 abort("missing release gate: governance check runs the live read-only checker") unless
@@ -309,7 +309,7 @@ actions = steps.each_with_object([]) do |step, found|
   found << [step.fetch("uses"), step.fetch("with", {})] if step.key?("uses")
 end
 abort("missing release gate: docs lane exact action provenance") unless actions == [
-  ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", {"persist-credentials" => false}],
+  ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", {"persist-credentials" => false}],
 ]
 {
   "Version docs check" => "tools/release/check-version-docs.sh",
@@ -398,11 +398,11 @@ end
 
 workflow = YAML.load_file(ARGV.fetch(0))
 jobs = workflow.fetch("jobs")
-checkout = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
 cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
-upload = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-download = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+upload = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+download = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 attest = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
 expected_action_topology = {
   "preflight" => [[checkout, {"fetch-depth" => 0}]],
@@ -1396,11 +1396,11 @@ release = jobs.fetch("release")
 abort("missing release gate: release job uses protected release environment") unless release.fetch("environment") == "release"
 def approved_action_ref?(uses)
   [
-    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
     "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
-    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-    "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
   ].include?(uses)
 end
 
@@ -1445,11 +1445,11 @@ jobs.each do |job_name, job|
   end
 end
 expected_actions = {
-  "validate" => ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"],
+  "validate" => ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"],
   "windows" => ["dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"],
   "linux" => ["Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"],
   "prebuild" => [],
-  "release" => ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"],
+  "release" => ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"],
 }
 expected_actions.each do |job_name, expected|
   actual = Array(jobs.fetch(job_name)["steps"]).map { |step| step["uses"] }.compact
@@ -1714,7 +1714,7 @@ permissions:
 jobs:
   validate:
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
   windows:
     runs-on: windows-latest
     steps:
@@ -1731,7 +1731,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 YAML
@@ -1786,7 +1786,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 YAML
@@ -1825,7 +1825,7 @@ YAML
 
   artifact_override_release="$tmp_dir/artifact-override-release.yml"
   cp "$good_hardened_release" "$artifact_override_release"
-  ruby -0pi -e 'sub(/(  validate:\n    steps:\n)/, "\\1      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093\\n        with:\n          name: compme-prebuilt-binary\\n          path: target/release\\n          run-id: 1234\\n")' "$artifact_override_release"
+  ruby -0pi -e 'sub(/(  validate:\n    steps:\n)/, "\\1      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c\\n        with:\n          name: compme-prebuilt-binary\\n          path: target/release\\n          run-id: 1234\\n")' "$artifact_override_release"
   if check_release_hardening_fixture "$artifact_override_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: cross-run artifact provenance override was accepted" >&2
     cleanup
@@ -1869,7 +1869,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 YAML
   if check_release_hardening_fixture "$shallow_release" >/dev/null 2>&1; then
     echo "release gate self-test failed: shallow release checkout was accepted" >&2
@@ -1896,7 +1896,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 YAML
@@ -1919,7 +1919,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 YAML
@@ -2045,7 +2045,7 @@ jobs:
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     environment: release
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
       - name: Download release artifacts
@@ -2150,7 +2150,7 @@ jobs:
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     environment: release
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
       - name: Download release artifacts
@@ -2329,7 +2329,7 @@ YAML
   fi
 
   cp "$audit_workflow" "$audit_integrity_fixture"
-  ruby -0pi -e 'sub(%q(actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0), %q(actions/checkout@v7))' "$audit_integrity_fixture"
+  ruby -0pi -e 'sub(%q(actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1), %q(actions/checkout@v7))' "$audit_integrity_fixture"
   if check_audit_integrity_controls "$audit_integrity_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: mutable scheduled-audit checkout action was accepted" >&2
     cleanup
@@ -2383,7 +2383,7 @@ YAML
   fi
 
   cp "$docs_workflow" "$docs_integrity_fixture"
-  ruby -0pi -e 'sub(%q(actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0), %q(actions/checkout@v7))' "$docs_integrity_fixture"
+  ruby -0pi -e 'sub(%q(actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1), %q(actions/checkout@v7))' "$docs_integrity_fixture"
   if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
     echo "release gate self-test failed: mutable docs-lane checkout action was accepted" >&2
     cleanup
@@ -2788,7 +2788,7 @@ YAML
   ruby -ryaml -e '
     path = ARGV.fetch(0)
     workflow = YAML.load_file(path)
-    workflow.fetch("jobs")["extra_approved_action_job"] = {"runs-on" => "ubuntu-latest", "steps" => [{"uses" => "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"}]}
+    workflow.fetch("jobs")["extra_approved_action_job"] = {"runs-on" => "ubuntu-latest", "steps" => [{"uses" => "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"}]}
     File.write(path, YAML.dump(workflow))
   ' "$integrity_fixture"
   if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
@@ -3088,11 +3088,11 @@ ruby -ryaml -e '
   abort("missing release gate: CI workflow defaults to read-only contents permission") unless ci_workflow.fetch("permissions").fetch("contents") == "read"
   def approved_action_ref?(uses)
     [
-      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
       "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
       "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
-      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-      "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
       "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373",
     ].include?(uses)
   end
@@ -3153,12 +3153,12 @@ ruby -ryaml -e '
   end
   validate_actions!(ci_workflow, "CI")
   ci_action_sequence = [
-    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
     "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32",
   ]
   require_exact_actions!(ci_workflow, {
-    "actionlint" => ["actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"],
+    "actionlint" => ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"],
     "check" => ci_action_sequence,
     "spike" => ci_action_sequence,
     "windows" => ci_action_sequence,
@@ -3306,11 +3306,11 @@ ruby -ryaml -e '
   serialized_release_workflow = workflow.to_s
   abort("stale release gate: stable-only workflow contains prerelease branching") if serialized_release_workflow.include?("contains(github.ref_name") || serialized_release_workflow.match?(/\bprerelease\b/i)
   validate_actions!(workflow, "release")
-  checkout = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+  checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
   toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
   cache = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
-  upload = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-  download = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+  upload = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+  download = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
   attest = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
   require_exact_actions!(workflow, {
     "preflight" => [checkout],
