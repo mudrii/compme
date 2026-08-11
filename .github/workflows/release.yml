@@ -67,7 +67,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
         with:
           # This job builds both the root workspace and tools/spike; spike is
           # excluded from the root workspace, so it needs its own cache entry
@@ -234,7 +234,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
 
       # fmt runs once on the macOS lane (platform-independent); portable parity here is clippy/test/build.
       - name: Clippy portable workspace (deny warnings)
@@ -262,7 +262,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
 
       # fmt runs once on the macOS lane (platform-independent); portable parity here is clippy/test/build.
       - name: Clippy portable workspace (deny warnings)
@@ -548,7 +548,7 @@ jobs:
       # jobs and users verify the zip against a workflow-identity attestation
       # instead (gh attestation verify).
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.pkg.outputs.zip }}
 
