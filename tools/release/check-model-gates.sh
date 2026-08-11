@@ -186,8 +186,8 @@ toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
 cache = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
 expected_actions = {
   "actionlint" => [[checkout, {"persist-credentials" => false}]],
-  "check" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"workspaces" => ".\ntools/spike\n", "cache-directories" => "tools/spike/models"}]],
-  "spike" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"workspaces" => "tools/spike"}]],
+  "check" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "macos-15", "workspaces" => ".\ntools/spike\n", "cache-directories" => "tools/spike/models"}]],
+  "spike" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "macos-15", "workspaces" => "tools/spike"}]],
   "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {}]],
   "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"cache-directories" => "~/.cargo/advisory-db"}]],
 }
@@ -406,7 +406,7 @@ download = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 attest = "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8"
 expected_action_topology = {
   "preflight" => [[checkout, {"fetch-depth" => 0}]],
-  "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"}]],
+  "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "macos-15", "workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"}]],
   "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {}]],
   "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {}]],
   "prebuild" => [[checkout, {"fetch-depth" => 0}], [toolchain, {}], [upload, {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "retention-days" => 3, "path" => "target/release/compme"}]],
@@ -3110,11 +3110,11 @@ ruby -ryaml -e '
                when "Swatinem/rust-cache"
                  [
                    {},
-                   {"workspaces" => "tools/spike"},
+                   {"key" => "macos-15", "workspaces" => "tools/spike"},
                    {"cache-directories" => "~/.cargo/advisory-db"},
                    {"cache-directories" => "tools/spike/models"},
-                   {"workspaces" => ".\ntools/spike\n", "cache-directories" => "tools/spike/models"},
-                   {"workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"},
+                   {"key" => "macos-15", "workspaces" => ".\ntools/spike\n", "cache-directories" => "tools/spike/models"},
+                   {"key" => "macos-15", "workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"},
                  ]
                when "actions/upload-artifact"
                  [

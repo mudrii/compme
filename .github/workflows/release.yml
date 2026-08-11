@@ -69,6 +69,9 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          # Keyed to the runner image — a target/ configured on one macOS
+          # image poisons the next (see ci.yml's check job). Bump with runs-on.
+          key: macos-15
           # This job builds both the root workspace and tools/spike; spike is
           # excluded from the root workspace, so it needs its own cache entry
           # or the native llama.cpp build recompiles cold every release.

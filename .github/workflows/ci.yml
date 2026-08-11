@@ -70,6 +70,12 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          # Keyed to the runner image: a target/ configured on one macOS image
+          # poisons the next (CMake re-configures internally with cached-only
+          # variables when the compiler moves, dropping the crate's defines —
+          # first seen as a phantom OpenSSL probe on the macos-14 -> 15 bump).
+          # Bump this alongside runs-on.
+          key: macos-15
           # The model-backed smoke gate below runs `cd tools/spike && cargo
           # test` via run-model-gates.sh; spike is excluded from the root
           # workspace, so it needs its own cache entry or the native
@@ -242,6 +248,8 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          # Keyed to the runner image — see the check job's cache step.
+          key: macos-15
           # tools/spike is excluded from the root workspace, so the default
           # ". -> target" mapping never caches tools/spike/target — including
           # the native llama.cpp build, which otherwise recompiles cold on
