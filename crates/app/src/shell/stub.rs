@@ -112,6 +112,22 @@ pub fn keycode_label_with_mods(code: i64, mask: u32) -> String {
 #[allow(dead_code)]
 pub fn set_tab_hotkey_suppressed(_suppressed: bool) {}
 
+/// G5 chord translation: persisted macOS chords land in `platform_linux`'s
+/// process-wide store, which `X11AcceptTap::install` reads. The run loop
+/// applies startup key bindings before `subscribe_accept`, so a config rebind
+/// is honored at relaunch (Settings on Linux is config-file-only, so there is
+/// no live rebind path to miss).
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn set_accept_keymap_from_config_with_mods(
+    word: Option<(i64, u32)>,
+    full: Option<(i64, u32)>,
+    grammar_accept: Option<(i64, u32)>,
+) -> Result<(), KeymapError> {
+    platform_linux::x11_keys::set_accept_chords_with_mods(word, full, grammar_accept)
+}
+
+#[cfg(not(target_os = "linux"))]
 #[allow(dead_code)]
 pub fn set_accept_keymap_from_config_with_mods(
     _word: Option<(i64, u32)>,
@@ -121,6 +137,13 @@ pub fn set_accept_keymap_from_config_with_mods(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn effective_accept_keys_with_mods_and_grammar() -> EffectiveAcceptKeys {
+    platform_linux::x11_keys::effective_accept_chords_with_mods()
+}
+
+#[cfg(not(target_os = "linux"))]
 #[allow(dead_code)]
 pub fn effective_accept_keys_with_mods_and_grammar() -> EffectiveAcceptKeys {
     ((48, 0), (50, 0), None)

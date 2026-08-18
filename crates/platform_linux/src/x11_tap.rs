@@ -196,7 +196,7 @@ pub fn probe_accept_intercept() -> KeyInterceptMode {
 }
 
 fn trial_grab() -> Result<(), PlatformError> {
-    let (conn, root, keys) = open_and_resolve(&AcceptBindings::defaults())?;
+    let (conn, root, keys) = open_and_resolve(&crate::x11_keys::configured_bindings())?;
     // The trial grab is what catches a window manager already holding Tab. It
     // exists for microseconds; a keystroke inside that window would activate a
     // grab nobody resolves, so the ungrab is unconditional and the connection is
@@ -379,7 +379,11 @@ impl X11AcceptTap {
     /// dispatcher and watchdog threads. The grab itself is **not** taken here —
     /// it is taken when a suggestion becomes visible.
     pub fn install(callback: AcceptCallback) -> Result<Arc<Self>, PlatformError> {
-        let bindings = AcceptBindings::defaults();
+        // The chords the run loop's startup key-binding pass configured (G5:
+        // persisted macOS chords translated to X11), or the defaults. Read at
+        // install time: rebinds apply at relaunch, which is the honest scope
+        // while Settings on Linux is config-file-only.
+        let bindings = crate::x11_keys::configured_bindings();
         let (conn, root, keys) = open_and_resolve(&bindings)?;
         let conn = Arc::new(conn);
         let (wake_window, wake_atom) = create_wake_channel(&conn)?;

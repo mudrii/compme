@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-29 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2026 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-07-29 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2027 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -434,12 +434,16 @@ worker. 0.2.0 work; does not block the macOS release.
 
 **Still pending for Phase 2 (2026-07-29):** the **tray** (StatusNotifierItem +
 `com.canonical.dbusmenu`) and **always-on shortcut registration** — plus Wayland
-placement, which is Phase 3 by design. Also pending: **accept-key rebinds are
-ignored on Linux** — the G5 chord translation (`AcceptBindings::from_mac_chords`)
-is pure and tested, but `X11AcceptTap::install` always arms
-`AcceptBindings::defaults()` and the shell stub's
-`set_accept_keymap_from_config_with_mods` is a no-op, so a user's persisted
-chord silently stays Tab/Right-arrow. `pump_events` stays a sleep until there is
+placement, which is Phase 3 by design. **Accept-key rebinds wired (2026-08-18):**
+the G5 chord translation now feeds the tap — the shell stub's
+`set_accept_keymap_from_config_with_mods` stores the persisted chords in
+`platform_linux::x11_keys` (validated fail-soft: untranslatable keycode or
+chord collision errors without touching the live set) and
+`X11AcceptTap::install` arms the configured set. Rebinds apply at relaunch
+(the run loop sets bindings before `subscribe_accept`; Settings on Linux is
+config-file-only, so there is no live-rebind path). A physically rebound
+chord has not yet been exercised in a live session — the Xvfb suite arms
+the defaults. `pump_events` stays a sleep until there is
 a native UI to service; with no toolkit in the process there is no main loop to
 pump. Deliberately fail-closed and staying that way until each can be *proven*:
 `open_permission_settings` (Linux has no TCC-style pane, and the switches that

@@ -351,9 +351,146 @@ pub fn watchdog_action(
     WatchdogAction::Nothing
 }
 
+/// The process-wide configured accept chords, in the persisted macOS form.
+/// Mirrors `platform_macos`'s `ACCEPT_KEYMAP` shape: the run loop's startup
+/// key-binding pass writes it (before `subscribe_accept` installs the tap),
+/// `X11AcceptTap::install` reads it. `None` = defaults.
+#[allow(clippy::type_complexity)]
+static CONFIGURED_MAC_CHORDS: std::sync::RwLock<
+    Option<((i64, u32), (i64, u32), Option<(i64, u32)>)>,
+> = std::sync::RwLock::new(None);
+
+/// Set the accept chords from persisted `(macOS keycode, modifier mask)` pairs,
+/// defaulting any `None` role. Validates before swapping (the macOS fail-soft
+/// contract): a keycode this adapter cannot translate, or two roles landing on
+/// the same X11 chord, errors WITHOUT touching the live bindings.
+pub fn set_accept_chords_with_mods(
+    word: Option<(i64, u32)>,
+    full: Option<(i64, u32)>,
+    grammar_accept: Option<(i64, u32)>,
+) -> Result<(), shell_flags::KeymapError> {
+    let word = word.unwrap_or((48, 0));
+    let full = full.unwrap_or((50, 0));
+    for (keycode, _) in [Some(word), Some(full), grammar_accept]
+        .into_iter()
+        .flatten()
+    {
+        if keysym_for_mac_keycode(keycode).is_none() {
+            return Err(shell_flags::KeymapError::InvalidKeycode(keycode));
+        }
+    }
+    let chords = mac_chords_for(word, full, grammar_accept);
+    let mut seen: Vec<(u32, u16)> = Vec::with_capacity(chords.len());
+    for &(keycode, mask, _) in &chords {
+        // Dismiss/Cycle keep their defaults; a rebind that lands on them (or on
+        // the other rebindable role) collides just as it would on macOS.
+        let Some(keysym) = keysym_for_mac_keycode(keycode) else {
+            continue; // an untranslatable DEFAULT chord is skipped, not fatal
+        };
+        let chord = (keysym, x11_modifiers_for_mac_mask(mask));
+        if seen.contains(&chord) {
+            return Err(shell_flags::KeymapError::Collision(keycode));
+        }
+        seen.push(chord);
+    }
+    *CONFIGURED_MAC_CHORDS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((word, full, grammar_accept));
+    Ok(())
+}
+
+/// The chords the tap should grab: the configured set, or the defaults when
+/// nothing was configured.
+pub fn configured_bindings() -> AcceptBindings {
+    match *CONFIGURED_MAC_CHORDS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        Some((word, full, grammar)) => {
+            AcceptBindings::from_mac_chords(&mac_chords_for(word, full, grammar))
+        }
+        None => AcceptBindings::defaults(),
+    }
+}
+
+/// The effective `(word, full, grammar)` chords in macOS form, for the
+/// shell's display/readback surface.
+pub fn effective_accept_chords_with_mods() -> shell_flags::EffectiveAcceptKeys {
+    CONFIGURED_MAC_CHORDS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or(((48, 0), (50, 0), None))
+}
+
+/// The full chord list for one configured set: the two rebindable accept roles,
+/// the fixed Dismiss/Cycle defaults, and the optional grammar accept.
+fn mac_chords_for(
+    word: (i64, u32),
+    full: (i64, u32),
+    grammar_accept: Option<(i64, u32)>,
+) -> Vec<(i64, u32, AcceptRole)> {
+    let mut chords = vec![
+        (word.0, word.1, AcceptRole::Word),
+        (full.0, full.1, AcceptRole::Full),
+        (53, 0, AcceptRole::Dismiss),
+        (125, 0, AcceptRole::Cycle),
+    ];
+    if let Some((keycode, mask)) = grammar_accept {
+        chords.push((keycode, mask, AcceptRole::GrammarAccept));
+    }
+    chords
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One test drives every mutation of the process-global chord store, so the
+    /// parallel test lane never races on it (only this test writes it).
+    #[test]
+    fn configured_chords_validate_before_swapping_and_feed_the_tap() {
+        // Unset -> defaults, both for the tap and for display.
+        assert_eq!(configured_bindings(), AcceptBindings::defaults());
+        assert_eq!(
+            effective_accept_chords_with_mods(),
+            ((48, 0), (50, 0), None)
+        );
+
+        // A keycode with no keysym translation errors and leaves defaults live.
+        assert_eq!(
+            set_accept_chords_with_mods(Some((999, 0)), None, None),
+            Err(shell_flags::KeymapError::InvalidKeycode(999))
+        );
+        assert_eq!(configured_bindings(), AcceptBindings::defaults());
+
+        // Rebinding word onto the Dismiss default (Escape, keycode 53) collides.
+        assert_eq!(
+            set_accept_chords_with_mods(Some((53, 0)), None, None),
+            Err(shell_flags::KeymapError::Collision(53))
+        );
+        assert_eq!(configured_bindings(), AcceptBindings::defaults());
+
+        // A valid rebind (shift+Tab word, grammar on Return) swaps the live set:
+        // the tap's bindings resolve the new chords and the display readback
+        // reports what was configured.
+        set_accept_chords_with_mods(Some((48, MAC_SHIFT)), None, Some((36, 0)))
+            .expect("valid rebind");
+        let bindings = configured_bindings();
+        let tab = keysym_for_mac_keycode(48).unwrap();
+        assert_eq!(bindings.role_for(tab, X11_SHIFT), Some(AcceptRole::Word));
+        assert_eq!(bindings.role_for(tab, 0), None, "bare Tab is unbound now");
+        let ret = keysym_for_mac_keycode(36).unwrap();
+        assert_eq!(bindings.role_for(ret, 0), Some(AcceptRole::GrammarAccept));
+        assert_eq!(
+            effective_accept_chords_with_mods(),
+            ((48, MAC_SHIFT), (50, 0), Some((36, 0)))
+        );
+
+        // Reset so no other (future) test observes this test's configuration.
+        *CONFIGURED_MAC_CHORDS
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
 
     #[test]
     fn default_chords_translate_to_the_four_x11_keysyms() {
