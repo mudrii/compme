@@ -536,6 +536,7 @@ validate_steps = jobs.fetch("validate").fetch("steps")
 required_validate_steps = {
   "Shellcheck (errors only)" => "find tools -type f -name '*.sh' -print0 \\\n  | xargs -0 shellcheck --severity=error\n",
   "Rustdoc (deny warnings)" => 'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace',
+  "Doc tests (macOS crates)" => "cargo test --locked --doc -p platform_macos -p app",
   "Release model gate policy self-test" => "bash tools/release/check-model-gates.sh --self-test",
   "Gate runner self-test" => "tools/dev/check.sh --self-test",
 }
@@ -2821,7 +2822,7 @@ YAML
   integrity_fixture="$tmp_dir/release-integrity.yml"
 
   for mutation in \
-    validate-shellcheck validate-rustdoc policy-self-test runner-self-test \
+    validate-shellcheck validate-rustdoc validate-doc-tests policy-self-test runner-self-test \
     portable-all-targets credential-scrubs prebuild-fail-open \
     publish-runner finalize-runner signer-workflow post-attestation \
     finalize-attestation-order post-attestation-order \
@@ -2837,6 +2838,7 @@ YAML
       case mutation
       when "validate-shellcheck" then remove_step.call("validate", "Shellcheck (errors only)")
       when "validate-rustdoc" then remove_step.call("validate", "Rustdoc (deny warnings)")
+      when "validate-doc-tests" then remove_step.call("validate", "Doc tests (macOS crates)")
       when "policy-self-test" then remove_step.call("validate", "Release model gate policy self-test")
       when "runner-self-test" then remove_step.call("validate", "Gate runner self-test")
       when "portable-all-targets"

@@ -396,7 +396,9 @@ impl PlatformAdapter for LinuxAdapter {
         let session = self.session("popup_anchor")?;
         self.validate_field(field)?;
         let anchor = session.popup_anchor(field)?;
-        if anchor.is_some() {
+        // Fires once per show attempt while typing in an empty field, so the
+        // diagnostic is opt-in like the other per-event logs in this crate.
+        if anchor.is_some() && atspi_events::debug_enabled() {
             eprintln!("compme: Linux caret geometry unavailable; using component popup anchor");
         }
         Ok(anchor)

@@ -603,9 +603,10 @@ Status meanings:
 - **Status:** Code complete; portable app clippy passes, macOS serial lane
   remains pending.
 - **Changed:** removed both file-wide lint allowances. The only remaining
-  `unused_imports` allowances sit directly on the two intentionally broad
-  platform-facade re-exports; masked dead-code warnings were resolved rather
-  than globally suppressed.
+  `unused_imports` allowances sit directly on the three intentionally broad
+  platform-facade re-exports (both `shell/mod.rs` facade re-exports plus the
+  `shell_flags` re-export in `shell/stub.rs`); masked dead-code warnings were
+  resolved rather than globally suppressed.
 - **Files:** `crates/app/src/shell/mod.rs`,
   `crates/app/src/shell/macos.rs`, `crates/app/src/shell/stub.rs`.
 - **Red evidence:** after removing the blanket allowance, strict app clippy
@@ -1024,3 +1025,89 @@ Status meanings:
 - **Green evidence:** quality self-test and policy mutation passed. The live
   corpus command was not claimed from this workflow review; it remains a hosted
   model-lane obligation.
+
+## Follow-up round — 2026-08-26, dual-model validated
+
+An independent full validation of the remediation batch (three parallel
+review passes plus a gate reproduction on this host) confirmed all 69 items
+and surfaced a short residual list. Every residual was fixed in this round,
+then confirmed by **two independent validators — one running Claude Opus 5,
+one a Claude Fable 5 fork with full audit context — both returning GO**,
+with one round of validator-demanded corrections in between (recorded
+below; the process worked: each validator caught something real).
+
+### Fixes in this round
+
+- **A61 cap edge (was: mutate-then-error at exactly 200,000 scalars).**
+  `insert_replacing_range` now refuses via `checked_rebuilt_len` before the
+  write when the rebuilt value would exceed the cap; doc updated; boundary
+  test `rebuilt_field_at_cap_is_allowed_and_one_scalar_over_is_refused`
+  (Linux-cfg'd module — not in the macOS count).
+- **A42 rebuild-failure (was: stale armed grabs after a failed
+  `MappingNotify` plan rebuild).** `regrab`'s build-failure arm now ungrabs,
+  disarms, clears both timestamps, and **publishes an empty plan** so
+  neither the current nor any later `set_action` arm can grab or match
+  stale keycodes — fail open, with software accept unaffected. The empty
+  publish is unconditional (covers the disarmed-at-failure state too). The
+  Opus validator rejected the first version (stale plan re-grabbed on the
+  next arm; wrong justifying comment) and the final shape was verified
+  consumer-by-consumer by both validators. The restore-failure arm also now
+  clears `hide_deadline_ms`.
+- **Tag parity (was: A35's doc-test step existed only in branch CI).**
+  Release validate gained the byte-identical `Doc tests (macOS crates)`
+  step, pinned in `required_validate_steps` with a `validate-doc-tests`
+  mutation fixture. actionlint clean.
+- **Vendored license compliance.** Upstream `LICENSE-MIT` ("Copyright (c)
+  Dial AI", verified verbatim against the upstream repository) and the
+  standard `LICENSE-APACHE` now ship in `vendor/llama-cpp-2/`. This closes
+  the redistribution-compliance half of the A72 concern; the cargo-deny
+  policy decision itself stays deferred per 2FIX Appendix B.
+- **model_fetch error masking.** `remove_terminal_part` is best-effort: a
+  failed unlink can no longer replace the typed `HashMismatch`/
+  `SizeExceeded` with an opaque `Io` (all five call sites). Regression
+  `cleanup_unlink_failure_preserves_the_typed_terminal_error` exercises the
+  real unlink-failure path via a read-only parent dir, restoring
+  permissions before any assertion (validator-hardened ordering).
+- **Diagnostics/hygiene.** `popup_anchor`'s per-show fallback log is now
+  `COMPME_DEBUG`-gated like the crate's other per-event logs; the stale
+  AnyModifier comment in the live suite now describes non-interception;
+  `make-icon.sh --self-test` prints why it stops when `swift` is missing
+  (still exit 1); the A26 record above was corrected to three scoped
+  allowances.
+- **Coverage.** Two run_loop regressions via verbatim extracted helpers
+  (`record_dismissal`, `establish_caret_field_then_read` — token-level
+  verbatim confirmed by both validators):
+  `dismiss_records_a_dismissed_outcome_only_while_a_ghost_is_visible`,
+  `caret_event_with_failing_context_read_still_establishes_the_current_field`.
+  One platform_macos pure-gate extension:
+  `axset_prewrite_snapshot_treats_selection_length_movement_as_a_change`.
+  Honest limit, unchanged: that `insert_for_field` invokes the snapshot
+  gate remains pinned by code only (no seam reaches it without a
+  production change).
+- **Pre-existing lane blocker (found by the Opus validator).**
+  `AcceptBindings::iter` was dead code on every non-Linux build of
+  `platform_linux` and failed `-D warnings` clippy for the macOS/Windows
+  lanes (introduced in the main remediation commit). Now
+  `#[cfg(target_os = "linux")]`; darwin cross-clippy went 101 → 0.
+
+### Count restamp
+
+The five checker-pinned anchors moved 2,060 → **2,064**: +2 app, +1
+model_fetch (`cfg(unix)`), +1 platform_macos. The first stamp said 2,065 —
+**the Fable fork validator caught the off-by-one** (the new atspi_live test
+is Linux-cfg'd and never exists on the macOS lane), and the Opus validator
+independently derived the same +4 and found a sixth, non-pinned stale line
+(cross-platform spec:4), also restamped. The 2,060 base is itself
+delta-derived; the next macOS CI checker run is the final arbiter and all
+five lines move together if it disagrees.
+
+### Validation evidence (this host, staged rustc 1.97.0)
+
+platform_linux 107/0 + 34 ignored (live count unchanged, checker OK) ·
+model_fetch 51/0 · app 558/0 + 2 ignored · engine/engine_core untouched ·
+`fmt --all` clean · clippy `-D warnings` clean on the three touched crates
+**and** `platform_linux`/`platform_macos` for `aarch64-apple-darwin` ·
+`check-model-gates.sh --self-test` PASS (new mutation bites) ·
+`check-linux-live-test-count.sh` PASS (34) · actionlint clean. macOS
+execution evidence (serial lane, doc-test step, live gates) remains a
+real-Mac obligation, unchanged.

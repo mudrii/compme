@@ -2396,6 +2396,28 @@ fn stat_outcome(event: engine::StatEvent) -> stats::Outcome {
     }
 }
 
+/// Record an Esc dismissal in usage stats only while a ghost is actually
+/// visible. A bare Esc with nothing showing is not a user verdict on a
+/// suggestion, so counting it would skew the dismissed/acceptance stats.
+fn record_dismissal(usage: &mut stats::Stats, wall_ms: u64, suggestion_visible: bool) {
+    if suggestion_visible {
+        usage.record(wall_ms, stats::Outcome::Dismissed);
+    }
+}
+
+/// Establish a caret event's field as current, then attempt the context read.
+/// The field is recorded BEFORE the read, so even an unreadable caret event
+/// (transient AX failure) retargets shortcuts at the field the host reported
+/// instead of leaving them aimed at stale prior focus.
+fn establish_caret_field_then_read(
+    current_field: &mut Option<FieldHandle>,
+    field: &FieldHandle,
+    read_context: impl FnOnce() -> Result<TextContext, PlatformError>,
+) -> Result<TextContext, PlatformError> {
+    *current_field = Some(field.clone());
+    read_context()
+}
+
 /// Resolve a focused field's pid to a stable bundle id for per-app preferences.
 /// Pure over the resolver so the wiring is testable without AppKit; the runtime
 /// passes `bundle_id_for_pid`. Returns `None` (fail-open) when there is no pid or
@@ -4851,8 +4873,9 @@ pub fn run() -> Result<(), String> {
                     // current field. Keeping the prior field here would make
                     // shortcuts target stale focus after a transient AX read
                     // failure.
-                    focus.current_field = Some(field.clone());
-                    match adapter.read_context(&field) {
+                    match establish_caret_field_then_read(&mut focus.current_field, &field, || {
+                        adapter.read_context(&field)
+                    }) {
                         // One selection-changed notification covers both typing and a
                         // bare cursor move. Typing schedules a completion; a cursor
                         // move only invalidates a showing ghost (no re-request).
@@ -5113,9 +5136,11 @@ pub fn run() -> Result<(), String> {
                 }
                 HostEvent::Dismiss => {
                     eprintln!("compme: dismiss (Esc)");
-                    if engine.has_visible_suggestion() {
-                        usage_stats.usage.record(wall_ms, stats::Outcome::Dismissed);
-                    }
+                    record_dismissal(
+                        &mut usage_stats.usage,
+                        wall_ms,
+                        engine.has_visible_suggestion(),
+                    );
                     offer_all(
                         &mut suggestion.latest,
                         log_err("on_dismiss_suppress", engine.on_dismiss_suppress()),

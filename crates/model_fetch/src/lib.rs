@@ -191,12 +191,15 @@ fn header<'a, T>(response: &'a ureq::http::Response<T>, name: &str) -> Option<&'
         .and_then(|value| value.to_str().ok())
 }
 
-fn remove_terminal_part(part: &std::path::Path) -> Result<(), FetchError> {
-    match std::fs::remove_file(part) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(FetchError::Io(err.to_string())),
-    }
+/// Best-effort removal of a terminally-failed `.part`.
+///
+/// Every caller is about to return a typed terminal error (`HashMismatch`,
+/// `SizeExceeded`); a failed unlink must not replace that signal with an
+/// opaque `Io` — the caller's diagnosis is the valuable half. On unlink
+/// failure the part simply stays, and the next attempt re-verifies and
+/// re-cleans it.
+fn remove_terminal_part(part: &std::path::Path) {
+    let _ = std::fs::remove_file(part);
 }
 
 fn open_part(part: &std::path::Path, resumed: bool) -> Result<std::fs::File, FetchError> {
@@ -285,7 +288,7 @@ fn download_with_agent(
     let existing = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     if let Some(max_bytes) = max_bytes {
         if existing > max_bytes {
-            remove_terminal_part(&part)?;
+            remove_terminal_part(&part);
             return Err(FetchError::SizeExceeded {
                 max_bytes,
                 observed: existing,
@@ -297,7 +300,7 @@ fn download_with_agent(
             let mut file = open_part(&part, true)?;
             if let Some(error) = verify_part_handle(&mut file, expected)? {
                 drop(file);
-                remove_terminal_part(&part)?;
+                remove_terminal_part(&part);
                 return Err(error);
             }
             ensure_part_path_is_regular(&part)?;
@@ -384,7 +387,7 @@ fn download_with_agent(
     });
     if let (Some(max_bytes), Some(observed)) = (max_bytes, total) {
         if observed > max_bytes {
-            remove_terminal_part(&part)?;
+            remove_terminal_part(&part);
             return Err(FetchError::SizeExceeded {
                 max_bytes,
                 observed,
@@ -409,7 +412,7 @@ fn download_with_agent(
                 if let Some(max_bytes) = max_bytes {
                     if next_written > max_bytes {
                         drop(file);
-                        remove_terminal_part(&part)?;
+                        remove_terminal_part(&part);
                         return Err(FetchError::SizeExceeded {
                             max_bytes,
                             observed: next_written,
@@ -453,7 +456,7 @@ fn download_with_agent(
     if let Some(expected) = expected_sha256 {
         if let Some(error) = verify_part_handle(&mut file, expected)? {
             drop(file);
-            remove_terminal_part(&part)?;
+            remove_terminal_part(&part);
             return Err(error);
         }
     }
@@ -2107,6 +2110,41 @@ mod tests {
             !part.exists(),
             "terminal restart mismatch must reclaim the part"
         );
+    }
+
+    /// A failed cleanup unlink must not replace the typed terminal error: the
+    /// mismatch diagnosis is the valuable half, and the part simply stays for
+    /// the next attempt to re-verify and re-clean.
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_unlink_failure_preserves_the_typed_terminal_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let url = serve(b"0123456789", RangeMode::Ignore);
+        let dir = std::env::temp_dir().join(format!("cm-fetch-rodir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("model.bin");
+        let part = dest.with_extension("part");
+        std::fs::write(&part, b"STALE GARBAGE").unwrap();
+        // A read-only parent lets the existing part be opened and rewritten but
+        // makes the terminal unlink fail — the exact masking scenario.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = download_url(
+            &url,
+            &dest,
+            Some(&sha256_hex(b"a different body")),
+            |_, _| {},
+        );
+        // Restore permissions before any assertion so no failure path —
+        // including an unexpected Ok — can strand the dir read-only.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, FetchError::HashMismatch { .. }),
+            "unlink failure must not mask the mismatch; got {err}"
+        );
+        assert!(part.exists(), "the part stays when the unlink fails");
+        assert!(!dest.exists(), "dest never appears on a terminal mismatch");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

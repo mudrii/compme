@@ -107,6 +107,12 @@ jobs:
       - name: Root tests (serial)
         run: cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1
 
+      # --all-targets skips doctests, so this is the only tag-time doc-test
+      # coverage for the mac-only crates — mirrored from branch CI's check job
+      # so a tag never validates less than a push.
+      - name: Doc tests (macOS crates)
+        run: cargo test --locked --doc -p platform_macos -p app
+
       - name: Rustdoc (deny warnings)
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 

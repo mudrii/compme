@@ -612,14 +612,44 @@ fn set_action(
     }
 }
 
-/// Rebuild and transactionally publish the tap's sole plan. If the tap is
-/// armed, the old exact grabs are restored on any new-plan failure.
+/// Rebuild and transactionally publish the tap's sole plan. While armed, a
+/// grab failure of the new plan restores the old exact grabs; a plan-build
+/// failure (no valid chords under the new layout) releases them, disarms, and
+/// publishes an empty plan — fail open — so neither the current arm nor any
+/// later one can grab or match stale keycodes.
 fn regrab(
     conn: &RustConnection,
     state: &TapState,
     bindings: AcceptBindings,
 ) -> Result<(), PlatformError> {
-    let new_plan = build_grab_plan(conn, &bindings)?;
+    let new_plan = match build_grab_plan(conn, &bindings) {
+        Ok(plan) => plan,
+        Err(err) => {
+            // No valid plan exists for the new layout/bindings. Leaving the
+            // old exact grabs armed would consume whatever keys now occupy
+            // the stale keycodes — key-eating, the wrong failure polarity —
+            // so release them, disarm, and publish an *empty* plan: the next
+            // arm then grabs nothing and matches nothing (software accept
+            // still works) until a later rebuild succeeds. Keeping the stale
+            // plan instead would re-grab the stale keycodes on the very next
+            // `set_action` arm.
+            let mut grabbed = state.grabbed.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut current = state.plan.lock().unwrap_or_else(PoisonError::into_inner);
+            if *grabbed {
+                ungrab_plan(conn, state.root, &current);
+                *grabbed = false;
+                *state.action.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                state.armed_since_ms.store(UNSET_MS, Ordering::Release);
+                state.hide_deadline_ms.store(UNSET_MS, Ordering::Release);
+            }
+            *current = GrabPlan {
+                bindings,
+                keys: Vec::new(),
+                grabs: Vec::new(),
+            };
+            return Err(err);
+        }
+    };
     let mut grabbed = state.grabbed.lock().unwrap_or_else(PoisonError::into_inner);
     let mut current = state.plan.lock().unwrap_or_else(PoisonError::into_inner);
     if !*grabbed {
@@ -638,6 +668,7 @@ fn regrab(
                 *grabbed = false;
                 *state.action.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 state.armed_since_ms.store(UNSET_MS, Ordering::Release);
+                state.hide_deadline_ms.store(UNSET_MS, Ordering::Release);
             }
             Err(err)
         }

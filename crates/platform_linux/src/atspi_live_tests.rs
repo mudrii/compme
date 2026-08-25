@@ -1511,10 +1511,10 @@ mod x11_accept_tap {
     #[test]
     #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
     fn live_accept_tap_replays_a_modified_chord_to_the_application() {
-        // Ctrl+Tab (switch browser tab) reaches us because the grab is
-        // AnyModifier, and must be replayed untouched: the decision matches
-        // modifiers exactly. Eating this would break every app's Ctrl+Tab whenever
-        // a suggestion happened to be showing.
+        // Ctrl+Tab (switch browser tab) is not in the exact-modifier grab plan,
+        // so the server never routes it to the tap: it must reach the app
+        // untouched even while a suggestion is showing. (Replay of a *grabbed*
+        // chord is covered by the consumes-only-while-visible test's leg C.)
         let (conn, root) = xtest();
         let (_adapter, subscription, recorded) = install_tap();
         subscription.set_suggestion_visible(true).expect("arm");

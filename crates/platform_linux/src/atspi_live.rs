@@ -64,6 +64,24 @@ fn checked_field_scalar_count(count: i32) -> Result<usize, PlatformError> {
     Ok(count)
 }
 
+/// Validate the scalar length a whole-field swap would write: `field_len`
+/// scalars with `replaced` of them exchanged for `inserted`.
+///
+/// Writing an over-cap rebuilt value would mutate the field and then fail the
+/// capped readback — reporting the accept as failed after it already landed —
+/// so the swap is refused up front instead.
+fn checked_rebuilt_len(
+    field_len: usize,
+    replaced: usize,
+    inserted: usize,
+) -> Result<usize, PlatformError> {
+    let rebuilt = field_len - replaced + inserted;
+    if rebuilt > MAX_FIELD_SCALARS {
+        return Err(field_over_cap_error());
+    }
+    Ok(rebuilt)
+}
+
 fn field_over_cap_error() -> PlatformError {
     unsupported(format!(
         "field exceeds {MAX_FIELD_SCALARS} scalars; refusing lossy read/replace"
@@ -407,7 +425,10 @@ impl AtspiSession {
     /// same reasoning that makes macOS use an `AXValue` set.
     /// Before taking that whole-field snapshot, the adapter checks AT-SPI's
     /// character count and refuses fields above `MAX_FIELD_SCALARS`. It never
-    /// reconstructs a value from a capped prefix.
+    /// reconstructs a value from a capped prefix, and it refuses a rebuilt
+    /// value that would itself exceed the cap — otherwise a replacement longer
+    /// than its range could mutate an at-cap field and then fail the capped
+    /// readback, reporting an accept as failed after it landed.
     ///
     /// The expected-text guard is re-checked immediately before the swap, so a
     /// keystroke that landed between the suggestion and the accept invalidates the
@@ -447,6 +468,7 @@ impl AtspiSession {
                 "platform_linux: field changed under the replacement (found {current:?})"
             )));
         }
+        checked_rebuilt_len(scalars.len(), range.end - range.start, text.chars().count())?;
         let mut updated: String = scalars[..range.start].iter().collect();
         updated.push_str(text);
         updated.extend(scalars[range.end..].iter());
@@ -605,6 +627,26 @@ mod tests {
         ));
         assert!(matches!(
             checked_field_scalar_count(MAX_FIELD_SCALARS as i32 + 1),
+            Err(PlatformError::UnsupportedField { reason })
+                if reason == "field exceeds 200000 scalars; refusing lossy read/replace"
+        ));
+    }
+
+    /// A replacement longer than the range it replaces must not push an at-cap
+    /// field over the limit: the write would land and then the capped readback
+    /// would report failure — the mutate-then-error shape A61 exists to forbid.
+    #[test]
+    fn rebuilt_field_at_cap_is_allowed_and_one_scalar_over_is_refused() {
+        assert_eq!(
+            checked_rebuilt_len(MAX_FIELD_SCALARS, 3, 3).expect("same-length swap at cap"),
+            MAX_FIELD_SCALARS
+        );
+        assert_eq!(
+            checked_rebuilt_len(MAX_FIELD_SCALARS, 3, 2).expect("shrinking swap at cap"),
+            MAX_FIELD_SCALARS - 1
+        );
+        assert!(matches!(
+            checked_rebuilt_len(MAX_FIELD_SCALARS, 3, 4),
             Err(PlatformError::UnsupportedField { reason })
                 if reason == "field exceeds 200000 scalars; refusing lossy read/replace"
         ));

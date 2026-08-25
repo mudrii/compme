@@ -1487,6 +1487,36 @@ fn session_usage_snapshot_uses_the_stats_wall_clock_window() {
 }
 
 #[test]
+fn dismiss_records_a_dismissed_outcome_only_while_a_ghost_is_visible() {
+    // The HostEvent::Dismiss arm feeds record_dismissal with
+    // engine.has_visible_suggestion(). A bare Esc with nothing showing (the
+    // audit gap) is not a verdict on any suggestion, so it must leave the
+    // stats untouched — counting it would skew the dismissed totals.
+    let wall_ms = 1_800_000_000_000;
+    let mut usage = stats::Stats::new();
+
+    record_dismissal(&mut usage, wall_ms, false);
+    assert_eq!(
+        usage.counts(wall_ms).dismissed,
+        0,
+        "Esc with no visible ghost must not record a Dismissed outcome"
+    );
+    assert_eq!(usage.session_totals().counts.dismissed, 0);
+
+    // Esc while a ghost IS visible is the real dismissal: exactly one
+    // Dismissed outcome, and no other outcome kind rides along.
+    record_dismissal(&mut usage, wall_ms, true);
+    let counts = usage.counts(wall_ms);
+    assert_eq!(counts.dismissed, 1);
+    assert_eq!(
+        (counts.shown, counts.accepted, counts.superseded),
+        (0, 0, 0),
+        "a dismissal must record nothing but the Dismissed outcome"
+    );
+    assert_eq!(usage.session_totals().counts.dismissed, 1);
+}
+
+#[test]
 fn stats_pane_lines_render_one_sparkline_row_per_metric() {
     // Statistics pane T2: three fixed rows (shown/accepted/words), each
     // label-padded with a per-day sparkline and the span total.
@@ -5546,6 +5576,39 @@ fn grammar_check_shortcut_surfaces_read_context_error_without_capability_or_arm(
     ));
     assert_eq!(caps_count.get(), 0);
     assert_eq!(arm_count.get(), 0);
+}
+
+#[test]
+fn caret_event_with_failing_context_read_still_establishes_the_current_field() {
+    // The HostEvent::Caret arm routes through establish_caret_field_then_read:
+    // the host's reported field becomes current BEFORE the context read is
+    // attempted. Keeping the prior field on a read failure (the audit gap)
+    // would leave shortcuts — e.g. the grammar check, which resolves against
+    // focus.current_field — targeting stale focus after a transient AX error.
+    let stale = field_with_app("com.apple.Notes");
+    let reported = field_with_app("com.apple.TextEdit");
+    let mut current_field = Some(stale);
+
+    let result = establish_caret_field_then_read(&mut current_field, &reported, || {
+        Err(PlatformError::Timeout)
+    });
+
+    assert_eq!(result.err(), Some(PlatformError::Timeout));
+    assert_eq!(
+        current_field.as_ref(),
+        Some(&reported),
+        "an unreadable caret event must still retarget the current field"
+    );
+
+    // The readable path establishes the field the same way and hands the
+    // context through untouched.
+    let next = field_with_app("com.google.Chrome");
+    let result = establish_caret_field_then_read(&mut current_field, &next, || {
+        Ok(text_context(&next, "hello"))
+    });
+
+    assert_eq!(result.map(|ctx| ctx.left), Ok("hello".to_string()));
+    assert_eq!(current_field.as_ref(), Some(&next));
 }
 
 #[test]

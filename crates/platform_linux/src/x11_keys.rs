@@ -196,6 +196,10 @@ impl AcceptBindings {
         self.bindings.is_empty()
     }
 
+    // The only consumer is the X11 tap, which exists solely on the Linux
+    // lane; without the gate this method is dead code under `-D warnings`
+    // on the macOS/Windows host-portable builds of this crate.
+    #[cfg(target_os = "linux")]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &AcceptBinding> {
         self.bindings.iter()
     }

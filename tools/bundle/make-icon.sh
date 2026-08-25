@@ -260,7 +260,10 @@ SH
       return 1
     fi
   }
-  real_swift="$(command -v swift)"
+  if ! real_swift="$(command -v swift)"; then
+    echo "make-icon self-test: swift not found on PATH; the Swift-helper cases need a macOS host (hermetic stat/generation cases already passed)" >&2
+    return 1
+  fi
   assert_swift_rejects missing
   assert_swift_rejects extra "$tmp_test/unexpected.png" extra
   if [[ -e "$tmp_test/unexpected.png" ]]; then

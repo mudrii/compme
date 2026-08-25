@@ -1248,6 +1248,11 @@ re-planned.
 - **A72 → deferred policy decision** — adding cargo-deny and choosing a
   license/source allowlist is a new supply-chain policy, not remediation of
   a demonstrated defect. Re-open only with an owner-approved policy.
+  *2026-08-26:* the redistribution-compliance half is closed independently —
+  upstream `LICENSE-MIT`/`LICENSE-APACHE` texts now ship in
+  `vendor/llama-cpp-2/` (the vendored copy previously carried neither,
+  which both licenses require of redistributed copies). The cargo-deny
+  decision itself remains with the owner.
 - **A75 → deferred optional tooling** — no repeated re-pin failure was
   demonstrated; a repo-rewriting helper is speculative automation under
   YAGNI. The current documented manual ritual remains authoritative.

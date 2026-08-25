@@ -161,7 +161,7 @@ pub fn subscribe_caret(
     Ok(into_subscription(workers))
 }
 
-fn debug_enabled() -> bool {
+pub(crate) fn debug_enabled() -> bool {
     debug_flag_on(std::env::var_os("COMPME_DEBUG").as_deref())
 }
 

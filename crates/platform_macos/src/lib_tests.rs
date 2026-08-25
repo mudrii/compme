@@ -2698,6 +2698,48 @@ fn axset_prewrite_snapshot_rejects_value_or_selection_movement() {
 }
 
 #[test]
+fn axset_prewrite_snapshot_treats_selection_length_movement_as_a_change() {
+    // insert_for_field's A64 gate: it re-reads value + selected range
+    // immediately before its AXValue set and refuses through
+    // ensure_ax_insert_snapshot_unchanged when either snapshot moved. The
+    // test above pins value edits and caret (location) moves; this pins the
+    // remaining input class — a selection whose LENGTH changed between the
+    // two reads (the user dragged a selection open, or the app collapsed
+    // one) while value and location held still — and the exact
+    // CannotComplete refusal insert_for_field surfaces so the accept path
+    // retries cleanly instead of clobbering the new selection.
+    let collapsed = CFRange {
+        location: 3,
+        length: 0,
+    };
+    let widened = CFRange {
+        location: 3,
+        length: 2,
+    };
+
+    assert_eq!(
+        ensure_ax_insert_snapshot_unchanged("abc def", collapsed, "abc def", widened),
+        Err(PlatformError::CannotComplete {
+            reason: "field value or selection changed before AX write".into(),
+        }),
+        "a selection that grew between the reads must refuse the write"
+    );
+    assert!(
+        matches!(
+            ensure_ax_insert_snapshot_unchanged("abc def", widened, "abc def", collapsed),
+            Err(PlatformError::CannotComplete { .. })
+        ),
+        "a selection that collapsed between the reads is the same movement"
+    );
+    // An unchanged nonzero-length selection is NOT movement: refusing it
+    // would turn every replace-selection insert into a spurious retry.
+    assert_eq!(
+        ensure_ax_insert_snapshot_unchanged("abc def", widened, "abc def", widened),
+        Ok(())
+    );
+}
+
+#[test]
 fn silently_ignored_axset_replacement_refuses_non_atomic_fallback() {
     let touched = Arc::new(Mutex::new(Vec::new()));
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
