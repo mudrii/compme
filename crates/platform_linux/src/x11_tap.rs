@@ -563,6 +563,16 @@ fn thaw(conn: &RustConnection) {
     let _ = conn.flush();
 }
 
+/// Clear all arm/watchdog state while the caller holds `grabbed`. Keeping this
+/// transition in one place prevents an error path from releasing the X grab but
+/// leaving an armed action or deadline behind.
+fn clear_armed_state(state: &TapState, grabbed: &mut bool) {
+    *grabbed = false;
+    *state.action.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    state.armed_since_ms.store(UNSET_MS, Ordering::Release);
+    state.hide_deadline_ms.store(UNSET_MS, Ordering::Release);
+}
+
 /// Apply the armed action and bring the grab into line with it. The two are one
 /// operation on purpose: "the grab exists exactly while an action is armed" is
 /// the contract's key-eating guard.
@@ -593,7 +603,7 @@ fn set_action(
             Err(err) => {
                 // Degrade, do not half-arm: the action goes back to None so the
                 // invariant holds and nothing believes keys are being watched.
-                *state.action.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                clear_armed_state(state, &mut grabbed);
                 Err(err)
             }
         },
@@ -603,9 +613,7 @@ fn set_action(
                 state.root,
                 &state.plan.lock().unwrap_or_else(PoisonError::into_inner),
             );
-            *grabbed = false;
-            state.armed_since_ms.store(UNSET_MS, Ordering::Release);
-            state.hide_deadline_ms.store(UNSET_MS, Ordering::Release);
+            clear_armed_state(state, &mut grabbed);
             Ok(())
         }
         GrabTransition::Unchanged => Ok(()),
@@ -637,11 +645,8 @@ fn regrab(
             let mut current = state.plan.lock().unwrap_or_else(PoisonError::into_inner);
             if *grabbed {
                 ungrab_plan(conn, state.root, &current);
-                *grabbed = false;
-                *state.action.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                state.armed_since_ms.store(UNSET_MS, Ordering::Release);
-                state.hide_deadline_ms.store(UNSET_MS, Ordering::Release);
             }
+            clear_armed_state(state, &mut grabbed);
             *current = GrabPlan {
                 bindings,
                 keys: Vec::new(),
@@ -665,10 +670,7 @@ fn regrab(
         }
         Err(err) => {
             if grab_plan(conn, state.root, &current).is_err() {
-                *grabbed = false;
-                *state.action.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                state.armed_since_ms.store(UNSET_MS, Ordering::Release);
-                state.hide_deadline_ms.store(UNSET_MS, Ordering::Release);
+                clear_armed_state(state, &mut grabbed);
             }
             Err(err)
         }

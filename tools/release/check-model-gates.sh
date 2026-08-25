@@ -262,7 +262,7 @@ abort("missing release gate: CI runs model quality after the model smoke gate") 
     portable_test && portable_test.fetch("run") == "cargo test --locked --workspace --exclude platform_macos --all-targets"
 end
 # The live Linux surfaces (AT-SPI read/insert/events, X11 accept tap, overlay,
-# session shell services) ship 34 live tests (31 AT-SPI/X11 adapter tests + 1
+# session shell services) ship 35 live tests (32 AT-SPI/X11 adapter tests + 1
 # each for confirm, keyring, and reveal) that only run inside the harness.
 # Nothing pinned the step that runs them, so deleting it left every gate green
 # while the entire live Linux surface went unexercised.

@@ -40,22 +40,23 @@ Status meanings:
 - The finding inventory is exact: `2FIX.md` and this ledger each contain 69
   unique active IDs, with no missing or duplicate ID. All 69 plan items are
   checked.
-- The final TDD/BDD gap pass closed five missing negative-path scenarios
+- The final TDD/BDD gap pass closed six missing negative-path scenarios
   without adding findings: comment-only/no-op Linux workflow commands, a
   comment-only/no-op docs privacy step, credential lookup failure, failed X11
-  live-rebind rollback, and release-helper argument validation. The workflow
+  live-rebind rollback, X11 plan-construction failure while armed, and
+  release-helper argument validation. The workflow
   policy mutation first failed red when the comment-only command was accepted,
   then passed after the checker required the exact executable command.
-- The checker-pinned macOS workspace count is restamped from 2,027 to 2,060:
-  +16 portable-crate, +12 app, +3 host-portable `platform_linux`, and +2
+- The checker-pinned macOS workspace count is restamped from 2,027 to 2,064:
+  +17 portable-crate, +14 app, +3 host-portable `platform_linux`, and +3
   `platform_macos` tests. Linux-only additions are excluded from that total.
 - Portable workspace clippy, tests, build, and strict rustdoc passed. The app
-  lane enumerated 558 unit tests: 556 passed and two subprocess helpers remained
+  lane enumerated 560 unit tests: 558 passed and two subprocess helpers remained
   intentionally ignored. Its isolated startup integration test passed from an
   RPATH-linked target that preserves its intentional clean environment. The
   macOS adapter passed cross-compilation check and clippy for
   `aarch64-apple-darwin`.
-- Linux passed 106 package tests plus all 34 ignored live tests under the live
+- Linux passed 107 package tests plus all 35 ignored live tests under the live
   harness. The C2 probe observed two overlay shows with one superseded request,
   confirming that stale completion rather than a duplicate field identity was
   the reproduced cause.
@@ -132,8 +133,10 @@ Status meanings:
 - **Changed:** `read_context` and `insert_replacing_range` now share a checked
   whole-field read. It queries AT-SPI `CharacterCount` before `GetText`, maps
   query failure, negative count, and values above 200,000 to a fail-closed
-  error, and rechecks the fetched scalar length to close a growth race. No
-  capped prefix can reach a whole-field replacement.
+  error, rechecks the fetched scalar length to close a growth race, and checks
+  the rebuilt scalar length before writing. At-cap same-size and shrinking
+  replacements remain valid; growth above the cap fails before mutation. No
+  capped prefix or over-cap rebuilt value can reach a whole-field replacement.
 - **Files:** `crates/platform_linux/src/atspi_live.rs`,
   `crates/platform_linux/src/atspi_live_tests.rs`.
 - **Red evidence:** the headless boundary regression initially failed to
@@ -143,7 +146,8 @@ Status meanings:
   all passed. The combined package run passed 100 tests with 27 ignored.
 - **Live proof:** the GTK fixture seeded 200,001 scalars; both read and range
   replacement refused it, and the post-operation character count remained
-  200,001.
+  200,001. A boundary regression separately covers same-size, shrink, and
+  one-scalar-over rebuilt values at exactly 200,000 scalars.
 - **Count impact:** +1 portable test and +1 ignored Linux live test; the live
   count changes from 26 to 27 and must be pinned by A1.
 
@@ -705,7 +709,7 @@ Status meanings:
 ### A1 — executable Linux live-test count pin
 
 - **Status:** Code complete; branch/tag CI execution remains pending.
-- **Changed:** ROADMAP records the emitted current total, 34 live tests: 31
+- **Changed:** ROADMAP records the emitted current total, 35 live tests: 32
   AT-SPI/X11 plus one each for confirm, keyring, and reveal. A dedicated Linux
   checker obtains the ignored tests from Cargo rather than source attributes,
   validates that decomposition, and has a host-portable fixture self-test. Both
@@ -719,8 +723,8 @@ Status meanings:
   because it did not verify the documented Linux live count. The follow-up
   mutation then proved that comment-only live commands were still accepted
   before the command checks became exact.
-- **Green evidence:** normal Linux mode reported `34 (31 AT-SPI/X11 adapter
-  tests + 1 each for confirm, keyring, reveal)`; all 34 passed in the live
+- **Green evidence:** normal Linux mode reported `35 (32 AT-SPI/X11 adapter
+  tests + 1 each for confirm, keyring, reveal)`; all 35 passed in the live
   harness, and its self-test plus the model-policy self-test passed. The next
   remote CI run is still required before calling the workflow execution
   verified.
@@ -824,19 +828,25 @@ Status meanings:
   `crates/platform_linux/src/lib.rs`,
   `crates/platform_linux/src/atspi_live_tests.rs`.
 - **Green evidence:** pure geometry tests passed and the ignored GTK empty-entry
-  regression obtained a real anchor; the current full 34-test live lane stayed
+  regression obtained a real anchor; the current full 35-test live lane stayed
   green.
 
 ### A42 — keyboard-map-aware X11 grab plan
 
 - **Status:** Verified in the Linux live harness.
 - **Changed:** keyboard/modifier `MappingNotify` rebuilds the single X11
-  `GrabPlan` and transactionally swaps exact grabs, restoring the old plan on
-  failure. Pointer-only mapping notifications are ignored.
+  `GrabPlan` and transactionally swaps exact grabs. A new-plan grab failure
+  restores the old plan. A construction failure under a changed layout releases
+  stale grabs, disarms through one shared state transition, clears watchdog
+  state, and publishes an empty fail-open plan until a valid rebuild. Pointer-
+  only mapping notifications are ignored.
 - **Files:** `crates/platform_linux/src/x11_tap.rs`,
   `crates/platform_linux/src/atspi_live_tests.rs`.
 - **Live proof:** changing the keyboard map while armed rebuilt the plan and the
-  rebound key still accepted in the Xvfb lane.
+  rebound key still accepted in the Xvfb lane. Removing every accept keysym
+  forced construction failure and proved the stale keycode was released, later
+  arming did not retry it, the old hide deadline was cleared, and restoring a
+  valid map recovered normally.
 
 ### A43 — configured chords precede the Linux installability probe
 
@@ -879,8 +889,9 @@ Status meanings:
 - **Status:** Verified in the Linux live harness.
 - **Changed:** the Linux `AcceptSubscription` rearm closure reads configured
   bindings and invokes the same transactional plan swap used for mapping
-  changes. The new plan is published only after its grabs succeed; failure
-  restores the previous plan or disarms if restoration itself fails.
+  changes. The new plan is published only after its grabs succeed; an install
+  failure restores the previous plan or disarms if restoration itself fails,
+  while a construction failure uses A42's empty-plan fail-open state.
 - **Files:** `crates/platform_linux/src/lib.rs`,
   `crates/platform_linux/src/x11_tap.rs`,
   `crates/platform_linux/src/atspi_live_tests.rs`.
@@ -899,8 +910,8 @@ Status meanings:
 - **Files:** `crates/platform_linux/src/x11_tap.rs`.
 - **Green evidence:** deterministic failures injected at the dispatcher and
   watchdog spawns on a healthy X session proved every already-started worker was
-  gone before install returned. Platform Linux passed 106 portable tests with
-  34 ignored; all 34 ignored tests passed in the live harness, strict clippy and
+  gone before install returned. Platform Linux passed 107 portable tests with
+  35 ignored; all 35 ignored tests passed in the live harness, strict clippy and
   rustdoc passed.
 
 ### A14 — tag-validation parity controls
@@ -1026,15 +1037,12 @@ Status meanings:
   corpus command was not claimed from this workflow review; it remains a hosted
   model-lane obligation.
 
-## Follow-up round — 2026-08-26, dual-model validated
+## Follow-up correction and revalidation — 2026-08-26
 
-An independent full validation of the remediation batch (three parallel
-review passes plus a gate reproduction on this host) confirmed all 69 items
-and surfaced a short residual list. Every residual was fixed in this round,
-then confirmed by **two independent validators — one running Claude Opus 5,
-one a Claude Fable 5 fork with full audit context — both returning GO**,
-with one round of validator-demanded corrections in between (recorded
-below; the process worked: each validator caught something real).
+A full review of the remediation batch and a gate reproduction on this host
+confirmed the 69-ID ledger shape and surfaced the residuals below. The changes,
+regressions, exact counts, and remaining host-only obligations are recorded here
+without treating reviewer identity or a prose verdict as implementation proof.
 
 ### Fixes in this round
 
@@ -1045,21 +1053,20 @@ below; the process worked: each validator caught something real).
   (Linux-cfg'd module — not in the macOS count).
 - **A42 rebuild-failure (was: stale armed grabs after a failed
   `MappingNotify` plan rebuild).** `regrab`'s build-failure arm now ungrabs,
-  disarms, clears both timestamps, and **publishes an empty plan** so
+  disarms through one shared transition, clears both timestamps, and
+  **publishes an empty plan** so
   neither the current nor any later `set_action` arm can grab or match
   stale keycodes — fail open, with software accept unaffected. The empty
-  publish is unconditional (covers the disarmed-at-failure state too). The
-  Opus validator rejected the first version (stale plan re-grabbed on the
-  next arm; wrong justifying comment) and the final shape was verified
-  consumer-by-consumer by both validators. The restore-failure arm also now
-  clears `hide_deadline_ms`.
+  publish is unconditional (covers the disarmed-at-failure state too). A live
+  regression removes all accept keysyms, proves release/disarm/no stale rearm,
+  waits past the former hide deadline, restores the map, and proves recovery.
+  The restore-failure arm also clears `hide_deadline_ms` through the helper.
 - **Tag parity (was: A35's doc-test step existed only in branch CI).**
   Release validate gained the byte-identical `Doc tests (macOS crates)`
   step, pinned in `required_validate_steps` with a `validate-doc-tests`
   mutation fixture. actionlint clean.
-- **Vendored license compliance.** Upstream `LICENSE-MIT` ("Copyright (c)
-  Dial AI", verified verbatim against the upstream repository) and the
-  standard `LICENSE-APACHE` now ship in `vendor/llama-cpp-2/`. This closes
+- **Vendored license compliance.** Canonical MIT and Apache-2.0 license texts
+  now ship in `vendor/llama-cpp-2/`. This closes
   the redistribution-compliance half of the A72 concern; the cargo-deny
   policy decision itself stays deferred per 2FIX Appendix B.
 - **model_fetch error masking.** `remove_terminal_part` is best-effort: a
@@ -1075,8 +1082,8 @@ below; the process worked: each validator caught something real).
   (still exit 1); the A26 record above was corrected to three scoped
   allowances.
 - **Coverage.** Two run_loop regressions via verbatim extracted helpers
-  (`record_dismissal`, `establish_caret_field_then_read` — token-level
-  verbatim confirmed by both validators):
+  (`record_dismissal`, `establish_caret_field_then_read`, with a normalized
+  token-sequence comparison against the extracted source):
   `dismiss_records_a_dismissed_outcome_only_while_a_ghost_is_visible`,
   `caret_event_with_failing_context_read_still_establishes_the_current_field`.
   One platform_macos pure-gate extension:
@@ -1084,7 +1091,7 @@ below; the process worked: each validator caught something real).
   Honest limit, unchanged: that `insert_for_field` invokes the snapshot
   gate remains pinned by code only (no seam reaches it without a
   production change).
-- **Pre-existing lane blocker (found by the Opus validator).**
+- **Pre-existing lane blocker (found during review).**
   `AcceptBindings::iter` was dead code on every non-Linux build of
   `platform_linux` and failed `-D warnings` clippy for the macOS/Windows
   lanes (introduced in the main remediation commit). Now
@@ -1093,17 +1100,16 @@ below; the process worked: each validator caught something real).
 ### Count restamp
 
 The five checker-pinned anchors moved 2,060 → **2,064**: +2 app, +1
-model_fetch (`cfg(unix)`), +1 platform_macos. The first stamp said 2,065 —
-**the Fable fork validator caught the off-by-one** (the new atspi_live test
-is Linux-cfg'd and never exists on the macOS lane), and the Opus validator
-independently derived the same +4 and found a sixth, non-pinned stale line
-(cross-platform spec:4), also restamped. The 2,060 base is itself
+model_fetch (`cfg(unix)`), +1 platform_macos. The first stamp said 2,065;
+review caught the off-by-one because the new atspi_live test is Linux-cfg'd and
+never exists on the macOS lane, and also found a sixth non-pinned stale line
+(cross-platform spec:4), now restamped. The 2,060 base is itself
 delta-derived; the next macOS CI checker run is the final arbiter and all
 five lines move together if it disagrees.
 
 ### Validation evidence (this host, staged rustc 1.97.0)
 
-platform_linux 107/0 + 34 ignored (live count unchanged, checker OK) ·
+platform_linux 107/0 + 35 ignored (all 35 passed live, checker OK) ·
 model_fetch 51/0 · app 558/0 + 2 ignored · engine/engine_core untouched ·
 `fmt --all` clean · clippy `-D warnings` clean on the three touched crates
 **and** `platform_linux`/`platform_macos` for `aarch64-apple-darwin` ·

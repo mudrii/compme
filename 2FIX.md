@@ -231,16 +231,21 @@ commit.
      interface already exposes the authoritative size and fetching an
      unbounded huge value defeats the guard.
   2. Route **both** `insert_replacing_range` and `read_context` through
-     the checked path. The engine already handles `UnsupportedField`
-     gracefully (fail-closed contract), so an over-cap field simply gets
-     no suggestions/replacements rather than corruption.
+     the checked path. Before writing, validate the rebuilt scalar length with
+     a checked helper so an at-cap field may stay the same size or shrink, but
+     growth above the cap is rejected before mutation. The engine already
+     handles `UnsupportedField` gracefully (fail-closed contract), so an
+     over-cap field simply gets no suggestions/replacements rather than
+     corruption.
   3. Update the module doc at `:361-370` so the stated swap-safety
      invariant matches the code again.
   4. If per-field UX for huge documents matters later, a windowed
      `read_context` is a **separate, follow-up** decision — do not build
      it now (YAGNI).
-- **Tests:** factor the cap decision into a pure helper (count → verdict)
-  and unit-test it headlessly (portable test — counts into anchors); add
+- **Tests:** factor the cap decisions into pure helpers (reported count and
+  rebuilt length → verdict) and unit-test them headlessly, including same-size,
+  shrink, and one-scalar-over rebuilt values at the cap (portable tests — count
+  into anchors); add
   an `#[ignore]`d live-suite case in `atspi_live_tests.rs` that builds a
   cap-crossing field and asserts `insert_replacing_range` refuses without
   mutating (Linux-cfg'd — does not touch the anchors, **does** touch A1's
@@ -609,14 +614,20 @@ Depends on WP2 (A61's guard shapes A8's routing) and WP6.
   KeyPress/KeyRelease (`:628-650`); after `setxkbmap`, grabs sit on old
   keycodes and `keysym_for_keycode` (`:140-146`) misattributes presses.
 - **Change:** for keyboard/modifier `Event::MappingNotify`, build a new
-  `GrabPlan` from the configured bindings and transactionally swap it:
-  ungrab old, try new, restore old on any failure, then publish the new
-  plan. Ignore pointer-only mappings. This same operation is the only
+  `GrabPlan` from the configured bindings and transactionally swap it. Once a
+  new plan exists, ungrab old, try new, and restore old if installing the new
+  grabs fails. If plan construction itself fails because the changed layout
+  carries no accept keys, the old keycodes are unsafe: release them, disarm,
+  clear watchdog state, and publish an empty fail-open plan until a later valid
+  rebuild. Ignore pointer-only mappings. This same operation is the only
   re-grab implementation used by A63.
-- **Tests:** live-harness cases: `setxkbmap` mid-grab, then assert the
-  rebound key still accepts; and force a conflicting live rebind, then assert
-  it errors and the previously armed plan still accepts (need a real X
-  connection — `#[ignore]`d).
+- **Tests:** live-harness cases: change the keyboard map mid-grab, then assert
+  the rebound key still accepts; force a conflicting live rebind, then assert
+  it errors and the previously armed plan still accepts; and remove every
+  accept keysym so plan construction fails, then prove the stale grab is
+  released, a later arm does not retry stale keycodes, the old hide deadline is
+  cleared, and a valid restored map recovers (need a real X connection —
+  `#[ignore]`d).
 
 ### [x] A63 — live-rebind path updates config but never re-grabs (P3)
 
@@ -630,8 +641,9 @@ Depends on WP2 (A61's guard shapes A8's routing) and WP6.
   macOS-only, `settings_window.rs:2211-2246`), no tripwire.
 - **Change:** wire Linux `AcceptSubscription::with_rearm` to A42's single
   transactional plan swap: re-read `configured_bindings()`, build the new
-  plan, ungrab old, install new, restore old on failure, publish only on
-  success. The producer is currently macOS-only, so this is latent
+  plan, ungrab old, install new, and restore old if installation fails. A
+  construction failure uses A42's empty-plan fail-open state instead. The
+  producer is currently macOS-only, so this is latent
   infrastructure; keep it because it is a thin call into machinery A42
   already requires, not a second subsystem.
 - **Tests:** live-harness: rebind while armed; new chord accepts, old one
@@ -1249,7 +1261,7 @@ re-planned.
   license/source allowlist is a new supply-chain policy, not remediation of
   a demonstrated defect. Re-open only with an owner-approved policy.
   *2026-08-26:* the redistribution-compliance half is closed independently —
-  upstream `LICENSE-MIT`/`LICENSE-APACHE` texts now ship in
+  canonical MIT and Apache-2.0 license texts now ship in
   `vendor/llama-cpp-2/` (the vendored copy previously carried neither,
   which both licenses require of redistributed copies). The cargo-deny
   decision itself remains with the owner.
@@ -1287,21 +1299,19 @@ anchors reconciled; agent-brief symlinks intact.
 ## Appendix D — validation evidence summary (2026-08-25 through 2026-08-26, this host)
 
 Current focused revalidation uses staged rustup 1.97.0. The app unit lane lists
-**558** tests: **556 passed** and two subprocess helpers are intentionally
+**560** tests: **558 passed** and two subprocess helpers are intentionally
 ignored. Model-client unit tests pass **55/55**; the new real pinned-GGUF CPU
 cancellation case observes llama.cpp polling the abort callback and returns
 typed shutdown within 250 ms.
-The macOS workspace-count restamp is **2,060**, derived from the checker-pinned
-HEAD baseline of 2,027 plus 33 target-visible additions: 16 portable-crate, 12
-app, three host-portable `platform_linux`, and two `platform_macos` tests. The
+The macOS workspace-count restamp is **2,064**, derived from the checker-pinned
+HEAD baseline of 2,027 plus 37 target-visible additions: 17 portable-crate, 14
+app, three host-portable `platform_linux`, and three `platform_macos` tests. The
 Linux-only additions are deliberately excluded from that macOS count.
-The prior aggregate portable gate, Linux **106**-test lane, and complete **32/32**
-ignored live AT-SPI/X11 suite remain green evidence for the unchanged surfaces;
-the A68 failure-injection and failed-rebind rollback cases also passed in the
-live harness, bringing the current ignored suite to **34**.
-The app's isolated `config_startup` executable test needs a Nix-linked runtime;
-the ad-hoc shell run failed only because its `env_clear()` child could not locate
-`libstdc++.so.6`, while the app's 556 executable unit tests passed.
+The current Linux package lane passes **107** tests with 35 ignored. All
+**35/35** ignored live AT-SPI/X11/session-service cases pass in the provisioned
+Xvfb harness, including the A42 plan-construction failure regression. The app's
+isolated `config_startup` executable test also passes from the required
+RPATH-linked target while preserving its intentional clean environment.
 
 Formatting, strict app/model clippy/check, macOS adapter cross-check/clippy, the
 root real-model suite with its hosted-runner latency opt-out, the exact A32 CPU

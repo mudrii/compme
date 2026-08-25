@@ -432,7 +432,7 @@ spike verdict still holding. The `app` binary links none of libxcb, libatspi,
 libX11, or libsecret — the property every "D-Bus/pure-Rust, not the C library"
 decision below was made to preserve. Per-phase live-test counts in the entries
 that follow were each measured on their own branch and do not sum to 26. The
-suite has since grown: the current tree carries **34 live tests** (31 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
+suite has since grown: the current tree carries **35 live tests** (32 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
 
 **Host wiring ✅ DONE (2026-07-29) — the product now drives the Linux adapter:**
 `app::shell::stub::make_adapter` calls `LinuxAdapter::with_accessibility()`
@@ -577,11 +577,13 @@ interesting logic is testable on every host:
 - **The grab exists exactly while an accept action is armed**, which is the
   contract's "swallow keys only while a suggestion is visible" rule expressed as
   one pure function rather than a condition repeated per call site.
-- **Semantic modifiers are matched exactly after ignoring lock-state bits.** The
-  grab is `AnyModifier` (one grab per key instead of one per lock-state
-  permutation), so `Ctrl+Tab` and the `Option+Tab` per-app bypass reach the tap
-  and are *replayed* untouched. Latched `Lock`/NumLock bits are deliberately not
-  significant, or leaving NumLock on would stop Tab from being intercepted.
+- **Semantic modifiers are matched exactly, including lock-state variants.** The
+  plan expands each configured chord across CapsLock and the server's discovered
+  NumLock modifier, then deduplicates exact grabs. Modified chords such as
+  `Ctrl+Tab` and the `Option+Tab` per-app bypass do not match a passive grab and
+  reach the application directly. Keyboard/modifier mapping changes rebuild the
+  plan; if no valid plan can be built, the tap releases old grabs, disarms, and
+  publishes an empty fail-open plan until a later valid rebuild.
 - **The keyboard-freeze hazard is covered on every path** (see the module docs for
   the enumeration): the event thread resolves before doing anything else and never
   runs engine code (the callback is dispatched on its own thread inside
@@ -1358,8 +1360,8 @@ per-app configurable.
    chords precede the installability probe; and one transactional
    exact-modifier `GrabPlan` owns initial grab, keyboard-map refresh, and live
    rearm. Partial-spawn teardown and the watchdog/arming cleanups are in place.
-   The portable lane passed 106 tests and the complete ignored Linux lane passed
-   34/34 (31 AT-SPI/X11 plus confirm, keyring, and reveal), including rollback
+   The portable lane passed 107 tests and the complete ignored Linux lane passed
+   35/35 (32 AT-SPI/X11 plus confirm, keyring, and reveal), including rollback
    to the previously armed plan after a conflicting live rebind.
 7. **Windows Phase 1 (1.1–1.7)** — the Linux C.2 trigger closed on 2026-08-25;
    proceed with UIA read/caret, keyboard hook, insertion, layered overlay,

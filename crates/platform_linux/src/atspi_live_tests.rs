@@ -1182,6 +1182,7 @@ mod x11_accept_tap {
     use x11rb::rust_connection::RustConnection;
 
     const KEYSYM_TAB: u32 = 0xff09;
+    const KEYSYM_GRAVE: u32 = 0x0060;
     const KEYSYM_ESCAPE: u32 = 0xff1b;
     const KEYSYM_DOWN: u32 = 0xff54;
     const KEYSYM_CONTROL_L: u32 = 0xffe3;
@@ -1243,6 +1244,54 @@ mod x11_accept_tap {
             .expect("mapping reply");
         keycode_for_keysym(min, mapping.keysyms_per_keycode, &mapping.keysyms, keysym)
             .unwrap_or_else(|| panic!("this layout has no keycode for keysym {keysym:#x}"))
+    }
+
+    /// Restores a whole-server keyboard-map mutation even when a live assertion
+    /// panics. Leaving Xvfb's map altered would make every later test misleading.
+    struct KeyboardMappingGuard<'a> {
+        conn: &'a RustConnection,
+        min: u8,
+        count: u8,
+        keysyms_per_keycode: u8,
+        keysyms: Vec<u32>,
+        restored: bool,
+    }
+
+    impl KeyboardMappingGuard<'_> {
+        fn restore(&mut self) {
+            if self.restored {
+                return;
+            }
+            self.conn
+                .change_keyboard_mapping(
+                    self.count,
+                    self.min,
+                    self.keysyms_per_keycode,
+                    &self.keysyms,
+                )
+                .expect("restore mapping")
+                .check()
+                .expect("restore mapping reply");
+            self.conn.flush().expect("flush restored mapping");
+            self.restored = true;
+        }
+    }
+
+    impl Drop for KeyboardMappingGuard<'_> {
+        fn drop(&mut self) {
+            if self.restored {
+                return;
+            }
+            if let Ok(cookie) = self.conn.change_keyboard_mapping(
+                self.count,
+                self.min,
+                self.keysyms_per_keycode,
+                &self.keysyms,
+            ) {
+                cookie.ignore_error();
+                let _ = self.conn.flush();
+            }
+        }
     }
 
     fn tap_key(conn: &RustConnection, root: Window, keysym: u32) {
@@ -1705,6 +1754,109 @@ mod x11_accept_tap {
             .check()
             .expect("restore mapping reply");
         conn.flush().expect("flush restored mapping");
+        restore_entry_focus();
+    }
+
+    #[test]
+    #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+    fn live_accept_tap_plan_build_failure_drops_the_stale_armed_plan() {
+        crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
+        let (owner, root) = xtest();
+        let setup = owner.setup();
+        let min = setup.min_keycode;
+        let count = setup.max_keycode - min + 1;
+        let original = owner
+            .get_keyboard_mapping(min, count)
+            .expect("mapping request")
+            .reply()
+            .expect("mapping reply");
+        let old_tab = keycode_for_keysym(
+            min,
+            original.keysyms_per_keycode,
+            &original.keysyms,
+            KEYSYM_TAB,
+        )
+        .expect("Tab keycode");
+        let mut changed = original.keysyms.clone();
+        for keysym in &mut changed {
+            if [KEYSYM_TAB, KEYSYM_GRAVE, KEYSYM_ESCAPE, KEYSYM_DOWN].contains(keysym) {
+                *keysym = 0;
+            }
+        }
+        let mut mapping = KeyboardMappingGuard {
+            conn: &owner,
+            min,
+            count,
+            keysyms_per_keycode: original.keysyms_per_keycode,
+            keysyms: original.keysyms,
+            restored: false,
+        };
+
+        let (_adapter, subscription, recorded) = install_tap();
+        subscription.set_suggestion_visible(true).expect("arm");
+        subscription
+            .hide_suggestion_after(Duration::from_millis(300))
+            .expect("schedule hide before the failed rebuild");
+        owner
+            .change_keyboard_mapping(count, min, mapping.keysyms_per_keycode, &changed)
+            .expect("remove accept keysyms")
+            .check()
+            .expect("remove accept keysyms reply");
+        owner.flush().expect("flush changed mapping");
+
+        // Acquiring this grab is also the synchronization point proving that
+        // the tap consumed MappingNotify and released its old plan. Do not race
+        // the event thread with a fixed sleep.
+        let deadline = Instant::now() + KEY_WAIT;
+        loop {
+            let result = owner
+                .grab_key(
+                    false,
+                    root,
+                    x11rb::protocol::xproto::ModMask::from(0u16),
+                    old_tab,
+                    x11rb::protocol::xproto::GrabMode::ASYNC,
+                    x11rb::protocol::xproto::GrabMode::ASYNC,
+                )
+                .expect("old Tab grab request")
+                .check();
+            if result.is_ok() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the failed rebuild must release the stale armed Tab grab: {result:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            subscription.rearm_accept_tap().is_err(),
+            "a layout carrying none of the accept keys must reject the rebuilt plan"
+        );
+        subscription
+            .set_accept_action(Some(AcceptAction::Word))
+            .expect("arming an empty plan must not retry stale keycodes");
+
+        std::thread::sleep(Duration::from_millis(400));
+        owner
+            .ungrab_key(old_tab, root, x11rb::protocol::xproto::ModMask::from(0u16))
+            .expect("release owned old Tab")
+            .check()
+            .expect("release owned old Tab reply");
+        mapping.restore();
+        subscription
+            .rearm_accept_tap()
+            .expect("a later valid map must rebuild and arm normally");
+
+        tap_key(&owner, root, KEYSYM_TAB);
+        assert_eq!(
+            delivered(&recorded, 1),
+            vec![TapControl::Accept(AcceptAction::Word)],
+            "the build failure must clear the old hide deadline and allow valid recovery"
+        );
+
+        drop(subscription);
+        crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
         restore_entry_focus();
     }
 
