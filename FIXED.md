@@ -40,13 +40,19 @@ Status meanings:
 - The finding inventory is exact: `2FIX.md` and this ledger each contain 69
   unique active IDs, with no missing or duplicate ID. All 69 plan items are
   checked.
+- The final TDD/BDD gap pass closed five missing negative-path scenarios
+  without adding findings: comment-only/no-op Linux workflow commands, a
+  comment-only/no-op docs privacy step, credential lookup failure, failed X11
+  live-rebind rollback, and release-helper argument validation. The workflow
+  policy mutation first failed red when the comment-only command was accepted,
+  then passed after the checker required the exact executable command.
 - The checker-pinned macOS workspace count is restamped from 2,027 to 2,060:
   +16 portable-crate, +12 app, +3 host-portable `platform_linux`, and +2
   `platform_macos` tests. Linux-only additions are excluded from that total.
 - Portable workspace clippy, tests, build, and strict rustdoc passed. The app
   lane enumerated 558 unit tests: 556 passed and two subprocess helpers remained
-  intentionally ignored. Its isolated startup integration test requires the
-  Nix-linked runtime environment. The
+  intentionally ignored. Its isolated startup integration test passed from an
+  RPATH-linked target that preserves its intentional clean environment. The
   macOS adapter passed cross-compilation check and clippy for
   `aarch64-apple-darwin`.
 - Linux passed 106 package tests plus all 34 ignored live tests under the live
@@ -61,7 +67,8 @@ Status meanings:
   obligation. The Darwin Metal cancellation command is checker-pinned and
   self-tested, but still needs execution on a real Mac. Workflow-policy mutation
   tests, actionlint, privacy and brief checks, release helper self-tests, shell
-  syntax, and ShellCheck at error severity passed.
+  syntax, ShellCheck at error severity, and the pinned `cargo-audit` 0.22.2
+  check passed; only the documented allowed RUSTSEC-2026-0192 warning remains.
 - The literal `tools/dev/check.sh` cannot complete on this Linux host: its
   workspace clippy/build/doc commands compile Apple frameworks, the bundle/icon
   checks require the macOS Swift toolchain, and the standalone spike is macOS
@@ -816,7 +823,8 @@ Status meanings:
   `crates/platform_linux/src/lib.rs`,
   `crates/platform_linux/src/atspi_live_tests.rs`.
 - **Green evidence:** pure geometry tests passed and the ignored GTK empty-entry
-  regression obtained a real anchor; the full 32-test live lane stayed green.
+  regression obtained a real anchor; the current full 34-test live lane stayed
+  green.
 
 ### A42 — keyboard-map-aware X11 grab plan
 
@@ -839,8 +847,9 @@ Status meanings:
   `crates/app/src/run_loop_tests.rs`, `crates/app/src/shell/stub.rs`.
 - **Red evidence:** the new factory-order regression observed default chords at
   adapter construction instead of the persisted Return/Tab configuration.
-- **Green evidence:** the regression passed; the then-current 550-test app lane
-  and the config-startup integration passed in the Nix runtime environment.
+- **Green evidence:** the regression passed; the current app lane passed 556
+  tests with two intentional ignores, and the config-startup integration passed
+  from the isolated RPATH-linked target.
 
 ### A58 — X11 tap accuracy cleanups
 
