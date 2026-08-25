@@ -82,8 +82,8 @@ pub enum FetchError {
     Io(String),
     /// Server returned 206 Partial Content without a validated resume range.
     InvalidRange(String),
-    /// Downloaded bytes hash differently than the catalog expects. The part
-    /// file is KEPT for inspection; dest is never created.
+    /// Downloaded bytes hash differently than the catalog expects. The
+    /// terminal part is removed so a retry starts clean; dest is never created.
     HashMismatch { expected: String, actual: String },
     /// A declared, streamed, or already-partial body exceeded the caller's
     /// catalog-derived byte ceiling.
@@ -175,6 +175,7 @@ pub fn download_url_bounded(
 fn production_agent() -> ureq::Agent {
     ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
+            .https_only(true)
             .timeout_connect(Some(std::time::Duration::from_secs(10)))
             .timeout_send_request(Some(std::time::Duration::from_secs(30)))
             .timeout_recv_body(Some(std::time::Duration::from_secs(30)))
@@ -190,6 +191,87 @@ fn header<'a, T>(response: &'a ureq::http::Response<T>, name: &str) -> Option<&'
         .and_then(|value| value.to_str().ok())
 }
 
+fn remove_terminal_part(part: &std::path::Path) -> Result<(), FetchError> {
+    match std::fs::remove_file(part) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(FetchError::Io(err.to_string())),
+    }
+}
+
+fn open_part(part: &std::path::Path, resumed: bool) -> Result<std::fs::File, FetchError> {
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .create(true)
+        .append(resumed)
+        .read(true)
+        .write(true)
+        // Truncate only after the opened handle is verified as a regular file.
+        // Otherwise a Windows reparse point could reach its target before the
+        // final-type check below.
+        .truncate(false);
+    // Owner-only like memory's db pre-create: weights aren't secret, but new
+    // files in the app dir follow one permission convention.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Win32 FILE_FLAG_OPEN_REPARSE_POINT: open the final reparse point
+        // itself rather than following it to a victim file.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options
+        .open(part)
+        .map_err(|e| FetchError::Io(e.to_string()))?;
+    if !file
+        .metadata()
+        .map_err(|e| FetchError::Io(e.to_string()))?
+        .file_type()
+        .is_file()
+    {
+        return Err(FetchError::Io(format!(
+            "refusing non-file download part {}",
+            part.display()
+        )));
+    }
+    if !resumed {
+        file.set_len(0).map_err(|e| FetchError::Io(e.to_string()))?;
+    }
+    Ok(file)
+}
+
+fn verify_part_handle(
+    file: &mut std::fs::File,
+    expected: &str,
+) -> Result<Option<FetchError>, FetchError> {
+    use std::io::{Seek as _, SeekFrom};
+
+    file.sync_all().map_err(|e| FetchError::Io(e.to_string()))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| FetchError::Io(e.to_string()))?;
+    let actual = read_sha256_hex(std::io::BufReader::new(&mut *file))
+        .map_err(|e| FetchError::Io(e.to_string()))?;
+    let expected = expected.to_ascii_lowercase();
+    Ok((actual != expected).then_some(FetchError::HashMismatch { expected, actual }))
+}
+
+fn ensure_part_path_is_regular(part: &std::path::Path) -> Result<(), FetchError> {
+    let metadata = std::fs::symlink_metadata(part).map_err(|e| FetchError::Io(e.to_string()))?;
+    if metadata.file_type().is_file() {
+        Ok(())
+    } else {
+        Err(FetchError::Io(format!(
+            "refusing replaced download part {}",
+            part.display()
+        )))
+    }
+}
+
 /// Agent-injectable core — tests drive it with millisecond timeouts.
 fn download_with_agent(
     agent: &ureq::Agent,
@@ -203,11 +285,25 @@ fn download_with_agent(
     let existing = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     if let Some(max_bytes) = max_bytes {
         if existing > max_bytes {
-            std::fs::remove_file(&part).map_err(|e| FetchError::Io(e.to_string()))?;
+            remove_terminal_part(&part)?;
             return Err(FetchError::SizeExceeded {
                 max_bytes,
                 observed: existing,
             });
+        }
+    }
+    if let (Some(max_bytes), Some(expected)) = (max_bytes, expected_sha256) {
+        if max_bytes == existing && std::fs::symlink_metadata(&part).is_ok() {
+            let mut file = open_part(&part, true)?;
+            if let Some(error) = verify_part_handle(&mut file, expected)? {
+                drop(file);
+                remove_terminal_part(&part)?;
+                return Err(error);
+            }
+            ensure_part_path_is_regular(&part)?;
+            drop(file);
+            std::fs::rename(&part, dest).map_err(|e| FetchError::Io(e.to_string()))?;
+            return Ok(dest.to_path_buf());
         }
     }
 
@@ -288,6 +384,7 @@ fn download_with_agent(
     });
     if let (Some(max_bytes), Some(observed)) = (max_bytes, total) {
         if observed > max_bytes {
+            remove_terminal_part(&part)?;
             return Err(FetchError::SizeExceeded {
                 max_bytes,
                 observed,
@@ -298,47 +395,7 @@ fn download_with_agent(
 
     // 206 → append to the part; anything else → truncate (fresh or the
     // server-ignored-Range restart).
-    let mut options = std::fs::OpenOptions::new();
-    options
-        .create(true)
-        .append(resumed)
-        .write(true)
-        // Truncate only after the opened handle is verified as a regular file.
-        // Otherwise a Windows reparse point could reach its target before the
-        // final-type check below.
-        .truncate(false);
-    // Owner-only like memory's db pre-create: weights aren't secret, but new
-    // files in the app dir follow one permission convention.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        // Win32 FILE_FLAG_OPEN_REPARSE_POINT: open the final reparse point
-        // itself rather than following it to a victim file.
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let mut file = options
-        .open(&part)
-        .map_err(|e| FetchError::Io(e.to_string()))?;
-    if !file
-        .metadata()
-        .map_err(|e| FetchError::Io(e.to_string()))?
-        .file_type()
-        .is_file()
-    {
-        return Err(FetchError::Io(format!(
-            "refusing non-file download part {}",
-            part.display()
-        )));
-    }
-    if !resumed {
-        file.set_len(0).map_err(|e| FetchError::Io(e.to_string()))?;
-    }
+    let mut file = open_part(&part, resumed)?;
 
     let mut reader = response.into_body().into_reader();
     let mut written = if resumed { existing } else { 0 };
@@ -351,6 +408,8 @@ fn download_with_agent(
                 let next_written = written.saturating_add(n as u64);
                 if let Some(max_bytes) = max_bytes {
                     if next_written > max_bytes {
+                        drop(file);
+                        remove_terminal_part(&part)?;
                         return Err(FetchError::SizeExceeded {
                             max_bytes,
                             observed: next_written,
@@ -379,7 +438,6 @@ fn download_with_agent(
     // write and the rename can't leave `dest` pointing at unpersisted data.
     // On failure the part file is kept as the resume base.
     file.sync_all().map_err(|e| FetchError::Io(e.to_string()))?;
-    drop(file);
     if let Some(expected) = resumed_expected_written {
         if written != expected {
             return Err(FetchError::InvalidRange(format!(
@@ -389,20 +447,18 @@ fn download_with_agent(
             )));
         }
     }
-    // Verify BEFORE the rename: dest must never exist with wrong bytes. A
-    // mismatch keeps the part for inspection (resume would re-download from
-    // its end and mismatch again — the caller decides whether to delete).
+    // Verify BEFORE the rename through the same no-follow handle used to
+    // write. A terminal mismatch removes the part so the next attempt starts
+    // from a clean offset instead of repeating the same corrupt resume.
     if let Some(expected) = expected_sha256 {
-        let file = std::fs::File::open(&part).map_err(|e| FetchError::Io(e.to_string()))?;
-        let actual = read_sha256_hex(std::io::BufReader::new(file))
-            .map_err(|e| FetchError::Io(e.to_string()))?;
-        if actual != expected.to_ascii_lowercase() {
-            return Err(FetchError::HashMismatch {
-                expected: expected.to_ascii_lowercase(),
-                actual,
-            });
+        if let Some(error) = verify_part_handle(&mut file, expected)? {
+            drop(file);
+            remove_terminal_part(&part)?;
+            return Err(error);
         }
     }
+    ensure_part_path_is_regular(&part)?;
+    drop(file);
     std::fs::rename(&part, dest).map_err(|e| FetchError::Io(e.to_string()))?;
     Ok(dest.to_path_buf())
 }
@@ -456,6 +512,10 @@ pub struct ModelDownloader {
 
 impl ModelDownloader {
     pub fn spawn() -> std::io::Result<Self> {
+        Self::spawn_with_agent(production_agent())
+    }
+
+    fn spawn_with_agent(agent: ureq::Agent) -> std::io::Result<Self> {
         let (tx, rx) = std::sync::mpsc::sync_channel::<DownloadRequest>(1);
         let handle = std::thread::Builder::new()
             .name("compme-model-fetch".into())
@@ -464,7 +524,8 @@ impl ModelDownloader {
                     *req.status.state.lock().unwrap_or_else(|e| e.into_inner()) =
                         DownloadState::Running;
                     let status = std::sync::Arc::clone(&req.status);
-                    let result = download_url_bounded(
+                    let result = download_with_agent(
+                        &agent,
                         &req.url,
                         &req.dest,
                         req.expected_sha256.as_deref(),
@@ -576,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn close_framed_body_cannot_stream_past_the_download_ceiling() {
+    fn streamed_size_terminal_deletes_the_part() {
         let body = b"eightbit";
         let url = serve(body, RangeMode::NoContentLength);
         let dest = temp_dest("stream-over-limit");
@@ -592,8 +653,7 @@ mod tests {
             }
         ));
         assert!(!dest.exists());
-        assert_eq!(std::fs::metadata(&part).unwrap().len(), 0);
-        let _ = std::fs::remove_file(part);
+        assert!(!part.exists(), "terminal size failures must be retryable");
     }
 
     #[test]
@@ -620,7 +680,31 @@ mod tests {
     }
 
     #[test]
-    fn resumed_content_range_total_above_the_download_ceiling_is_rejected() {
+    fn exact_cap_complete_part_is_verified_without_a_network_retry() {
+        let body = b"exactly8";
+        let dest = temp_dest("exact-cap-complete");
+        let part = dest.with_extension("part");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        std::fs::write(&part, body).unwrap();
+
+        let got = download_url_bounded(
+            "http://127.0.0.1:1/must-not-connect",
+            &dest,
+            Some(&sha256_hex(body)),
+            Some(body.len() as u64),
+            |_, _| {},
+        )
+        .unwrap();
+
+        assert_eq!(got, dest);
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert!(!part.exists());
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn declared_resumed_size_terminal_deletes_the_part() {
         let body = b"eightbit";
         let url = serve(body, RangeMode::Honor);
         let dest = temp_dest("resume-over-limit");
@@ -636,9 +720,8 @@ mod tests {
                 observed: 8
             }
         ));
-        assert_eq!(std::fs::read(&part).unwrap(), &body[..4]);
+        assert!(!part.exists(), "terminal size failures must be retryable");
         assert!(!dest.exists());
-        let _ = std::fs::remove_file(part);
     }
 
     #[test]
@@ -647,7 +730,7 @@ mod tests {
         // that a dead download lands in Failed with the status in the text.
         let url = serve_404();
         let dest = temp_dest("wfail");
-        let worker = ModelDownloader::spawn().unwrap();
+        let worker = test_downloader();
         let status = std::sync::Arc::new(DownloadStatus::default());
         assert!(worker.request(DownloadRequest {
             url,
@@ -832,6 +915,51 @@ mod tests {
         ureq::Agent::new_with_config(config.build())
     }
 
+    // Loopback protocol fixtures are deliberately plaintext. Drive the same
+    // download core with a test agent so production can reject every HTTP
+    // request and redirect without weakening these protocol tests.
+    fn download_url(
+        url: &str,
+        dest: &std::path::Path,
+        expected_sha256: Option<&str>,
+        progress: impl Fn(u64, Option<u64>),
+    ) -> Result<std::path::PathBuf, FetchError> {
+        download_with_agent(
+            &test_agent(ureq::Agent::config_builder()),
+            url,
+            dest,
+            expected_sha256,
+            None,
+            progress,
+        )
+    }
+
+    fn download_url_bounded(
+        url: &str,
+        dest: &std::path::Path,
+        expected_sha256: Option<&str>,
+        max_bytes: Option<u64>,
+        progress: impl Fn(u64, Option<u64>),
+    ) -> Result<std::path::PathBuf, FetchError> {
+        download_with_agent(
+            &test_agent(ureq::Agent::config_builder()),
+            url,
+            dest,
+            expected_sha256,
+            max_bytes,
+            progress,
+        )
+    }
+
+    fn test_downloader() -> ModelDownloader {
+        ModelDownloader::spawn_with_agent(test_agent(ureq::Agent::config_builder())).unwrap()
+    }
+
+    #[test]
+    fn production_agent_rejects_plaintext_requests_and_redirects() {
+        assert!(production_agent().config().https_only());
+    }
+
     #[test]
     fn content_range_parser_rejects_an_end_that_cannot_precede_total() {
         assert!(ContentRange::parse("bytes 0-9/9").is_none());
@@ -864,6 +992,40 @@ mod tests {
         assert!(matches!(result, Err(FetchError::Io(_))), "got: {result:?}");
         assert!(!dest_exists, "a symlink-backed part must not be promoted");
         assert_eq!(victim_after, b"do-not-touch", "victim must be untouched");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_swap_after_open_is_neither_hashed_nor_promoted_by_path() {
+        use std::os::unix::fs::symlink;
+
+        let body = b"verified body";
+        let url = serve(body, RangeMode::Ignore);
+        let dest = temp_dest("part-symlink-swap");
+        let part = dest.with_extension("part");
+        let victim = temp_dest("part-symlink-swap-victim");
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&victim);
+        std::fs::write(&victim, b"do-not-promote").unwrap();
+        let swapped = std::cell::Cell::new(false);
+
+        let result = download_url(&url, &dest, Some(&sha256_hex(body)), |_, _| {
+            if !swapped.replace(true) {
+                std::fs::remove_file(&part).unwrap();
+                symlink(&victim, &part).unwrap();
+            }
+        });
+
+        let victim_after = std::fs::read(&victim).unwrap();
+        let dest_exists = dest.exists();
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&victim);
+
+        assert!(matches!(result, Err(FetchError::Io(_))), "got: {result:?}");
+        assert!(!dest_exists, "a swapped pathname must not be promoted");
+        assert_eq!(victim_after, b"do-not-promote");
     }
 
     #[cfg(windows)]
@@ -1013,7 +1175,7 @@ mod tests {
         let url = serve(b"worker model bytes", RangeMode::Honor);
         let dest = temp_dest("worker");
         let _ = std::fs::remove_file(&dest);
-        let worker = ModelDownloader::spawn().unwrap();
+        let worker = test_downloader();
         let status = std::sync::Arc::new(DownloadStatus::default());
         assert!(worker.request(DownloadRequest {
             url,
@@ -1060,7 +1222,7 @@ mod tests {
         let part = dest.with_extension("part");
         let _ = std::fs::remove_file(&dest);
         let _ = std::fs::remove_file(&part);
-        let worker = ModelDownloader::spawn().unwrap();
+        let worker = test_downloader();
         let status = std::sync::Arc::new(DownloadStatus::default());
         assert!(worker.request(DownloadRequest {
             url,
@@ -1087,8 +1249,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!dest.exists(), "dest never appears on mismatch");
-        assert!(part.exists(), "part kept for inspection");
-        let _ = std::fs::remove_file(&part);
+        assert!(!part.exists(), "terminal mismatch must reclaim the part");
     }
 
     #[test]
@@ -1378,7 +1539,7 @@ mod tests {
     }
 
     #[test]
-    fn sha_mismatch_errors_and_keeps_the_part_file_for_inspection() {
+    fn sha_mismatch_deletes_the_terminal_part_so_retry_can_start_fresh() {
         let url = serve(b"corrupted bytes", RangeMode::Honor);
         let dest = temp_dest("badsha");
         let _ = std::fs::remove_file(&dest);
@@ -1387,11 +1548,15 @@ mod tests {
         let err = download_url(&url, &dest, Some(&expected), |_, _| {}).unwrap_err();
         assert!(matches!(err, FetchError::HashMismatch { .. }));
         assert!(
-            dest.with_extension("part").exists(),
-            "part kept for inspection"
+            !dest.with_extension("part").exists(),
+            "a corrupt terminal part must not poison every retry"
         );
         assert!(!dest.exists(), "dest never appears on mismatch");
-        let _ = std::fs::remove_file(dest.with_extension("part"));
+
+        let retry_url = serve(b"expected bytes", RangeMode::Honor);
+        let got = download_url(&retry_url, &dest, Some(&expected), |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), b"expected bytes");
+        let _ = std::fs::remove_file(&dest);
     }
 
     #[test]
@@ -1461,13 +1626,14 @@ mod tests {
     }
 
     #[test]
-    fn resume_then_sha_verify_stitches_and_renames_or_keeps_part_on_mismatch() {
+    fn resume_then_sha_verify_stitches_and_reclaims_part_on_mismatch() {
         // The existing resume test (no hash) and the sha test (fresh download)
         // are disjoint. Joining them: a resumed download whose STITCHED whole
         // file must still pass verify-before-rename. A correct prefix on disk
         // → the appended tail completes the file, the hash matches, dest
         // appears. A WRONG prefix (right length, garbage bytes) → the stitched
-        // file hashes differently, so dest must NOT appear and the part stays.
+        // file hashes differently, so dest must NOT appear and the part is
+        // removed to make the next retry start cleanly.
         let body: &[u8] = b"0123456789";
         let full_hash = sha256_hex(body);
 
@@ -1489,7 +1655,7 @@ mod tests {
 
         // (b) WRONG prefix of the right length → the server appends from
         // offset 4, so the stitched file is b"WRON" + b"456789" which hashes
-        // differently from the real body → HashMismatch, no dest, part kept.
+        // differently from the real body → HashMismatch, no dest, part reclaimed.
         let url = serve(body, RangeMode::Honor);
         let dest = temp_dest("resume-sha-bad");
         let part = dest.with_extension("part");
@@ -1511,8 +1677,7 @@ mod tests {
             !dest.exists(),
             "dest never appears when the resume verify fails"
         );
-        assert!(part.exists(), "the part is kept for inspection on mismatch");
-        let _ = std::fs::remove_file(&part);
+        assert!(!part.exists(), "a terminal mismatch reclaims the part");
     }
 
     #[test]
@@ -1824,7 +1989,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_secs(10));
             }
         });
-        let worker = ModelDownloader::spawn().unwrap();
+        let worker = test_downloader();
         let statuses: Vec<_> = (0..3)
             .map(|_| std::sync::Arc::new(DownloadStatus::default()))
             .collect();
@@ -1897,7 +2062,7 @@ mod tests {
         // (the server ignores Range and replies 200 full body), and we pass
         // Some(hash): the from-zero body must be verified before it can become
         // dest. Correct hash → dest appears; wrong hash → mismatch, no dest,
-        // part kept.
+        // part reclaimed.
         let body: &[u8] = b"0123456789";
 
         // (a) restart + correct hash → verify passes → rename.
@@ -1916,7 +2081,7 @@ mod tests {
         let _ = std::fs::remove_file(&dest);
 
         // (b) restart + WRONG expected hash → verify fails AFTER the restart →
-        // dest never appears, part kept. Proves the verify gate is on the
+        // dest never appears, part reclaimed. Proves the verify gate is on the
         // restart path, not just the resume/fresh paths.
         let url = serve(body, RangeMode::Ignore);
         let dest = temp_dest("restart-sha-bad");
@@ -1939,10 +2104,9 @@ mod tests {
             "dest never appears when the restart verify fails"
         );
         assert!(
-            part.exists(),
-            "part kept for inspection on a failed restart verify"
+            !part.exists(),
+            "terminal restart mismatch must reclaim the part"
         );
-        let _ = std::fs::remove_file(&part);
     }
 
     #[test]
@@ -2044,7 +2208,7 @@ mod tests {
         let part = dest.with_extension("part");
         let _ = std::fs::remove_file(&dest);
         let _ = std::fs::remove_file(&part);
-        let worker = ModelDownloader::spawn().unwrap();
+        let worker = test_downloader();
         let status = std::sync::Arc::new(DownloadStatus::default());
         assert!(worker.request(DownloadRequest {
             url,
@@ -2096,7 +2260,7 @@ mod tests {
         let good_url = serve(b"post-failure bytes", RangeMode::Honor);
         let good_dest = temp_dest("second-after-fail");
         let _ = std::fs::remove_file(&good_dest);
-        let worker = ModelDownloader::spawn().unwrap();
+        let worker = test_downloader();
 
         let failed = std::sync::Arc::new(DownloadStatus::default());
         assert!(worker.request(DownloadRequest {
@@ -2197,7 +2361,7 @@ mod tests {
         });
         let dest = temp_dest("drop-inflight");
         let part = dest.with_extension("part");
-        let worker = ModelDownloader::spawn().unwrap();
+        let worker = test_downloader();
         let status = std::sync::Arc::new(DownloadStatus::default());
         assert!(worker.request(DownloadRequest {
             url: format!("http://{addr}/model.bin"),

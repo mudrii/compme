@@ -71,7 +71,7 @@ use crate::settings_runtime::{
     apply_midline_settings_edge, apply_trailing_space_settings_edge,
     startup_env_shadow_notice_lines, switch_edge,
 };
-use crate::status::{derive_status, AppStatus, BlockReason};
+use crate::status::{derive_status, AccessibilitySubscriptions, AppStatus, BlockReason};
 use crate::url_actions::{take_url_actions, UrlActionFlags};
 use crate::wiring::{FieldTracker, LatestRequest, Observation};
 
@@ -88,7 +88,76 @@ const MAX_DEEP_LINK_URL_CHARS: usize = 4096;
 const MAX_DEEP_LINK_QUEUE: usize = 8;
 const MAX_HOST_EVENT_QUEUE: usize = 1024;
 const MAX_HOST_EVENTS_PER_TICK: usize = 256;
-/// Re-poll secure input + Accessibility trust at most this often (wall-clock ms).
+const INFERENCE_SHUTDOWN_TIMEOUT_EXIT_CODE: i32 = 70;
+
+/// Terminate without Rust destructors, C `atexit`, or an abort signal/core dump.
+/// This is the final A32 fallback after stats and platform resources have been
+/// explicitly released: a native inference call that never returns cannot be
+/// safely detached because its worker owns the llama context and model.
+fn terminate_after_inference_shutdown_timeout() -> ! {
+    #[cfg(unix)]
+    // SAFETY: `_exit` has no memory-safety preconditions and never returns. The
+    // main-thread guard or its watchdog calls it after the cleanup grace path.
+    unsafe {
+        libc::_exit(INFERENCE_SHUTDOWN_TIMEOUT_EXIT_CODE)
+    }
+
+    #[cfg(windows)]
+    // SAFETY: the pseudo-handle returned for the current process is always valid
+    // for TerminateProcess. If the OS call unexpectedly fails, abort is the only
+    // remaining stdlib hard-stop that cannot enter C `atexit` handlers.
+    unsafe {
+        use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        let _ = TerminateProcess(
+            GetCurrentProcess(),
+            INFERENCE_SHUTDOWN_TIMEOUT_EXIT_CODE as u32,
+        );
+        std::process::abort()
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    std::process::abort()
+}
+
+/// Give ordinary Rust scope drops a final grace window, while guaranteeing that
+/// a detached native inference call cannot keep the process alive indefinitely.
+/// The watchdog is intentionally detached and unconditionally terminates: if
+/// normal main-thread return wins, the OS removes it with the process.
+fn arm_inference_shutdown_watchdog() {
+    if std::thread::Builder::new()
+        .name("compme-shutdown-watchdog".into())
+        .spawn(|| {
+            std::thread::sleep(Duration::from_millis(250));
+            terminate_after_inference_shutdown_timeout();
+        })
+        .is_err()
+    {
+        terminate_after_inference_shutdown_timeout();
+    }
+}
+
+struct InferenceTimeoutExitGuard {
+    armed: bool,
+}
+
+impl InferenceTimeoutExitGuard {
+    fn new() -> Self {
+        Self { armed: false }
+    }
+
+    fn arm(&mut self) {
+        self.armed = true;
+    }
+}
+
+impl Drop for InferenceTimeoutExitGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            terminate_after_inference_shutdown_timeout();
+        }
+    }
+}
+/// Re-poll secure input + Accessibility trust at most this often (monotonic ms).
 const SECURE_POLL_INTERVAL_MS: u64 = 480;
 /// Periodic lifetime-stats flush cadence (c102 follow-up): bounds crash loss
 /// to ≤5 minutes of events; the file is ~120 bytes so the write is free.
@@ -270,6 +339,7 @@ fn host_event_invalidates_pending_request(event: &HostEvent) -> bool {
     )
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HostEventRoute {
     Normal,
@@ -277,6 +347,7 @@ enum HostEventRoute {
     AcceptCorrection,
 }
 
+#[cfg(test)]
 fn host_event_route(event: &HostEvent) -> HostEventRoute {
     match event {
         HostEvent::Shortcut(ShortcutAction::GrammarCheck) => HostEventRoute::ManualGrammarDetection,
@@ -3321,6 +3392,7 @@ fn status_drops_pending_requests(status: AppStatus) -> bool {
         AppStatus::Disabled
             | AppStatus::Blocked(
                 BlockReason::Permission
+                    | BlockReason::AccessibilityUnavailable
                     | BlockReason::RelaunchRequired
                     | BlockReason::SecureInput
                     | BlockReason::ModelUnavailable,
@@ -3328,22 +3400,33 @@ fn status_drops_pending_requests(status: AppStatus) -> bool {
     )
 }
 
+fn effective_model_available(configured_available: bool, worker_failed: bool) -> bool {
+    configured_available && !worker_failed
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum SubscriptionErrorAction {
     NoopUntilPermission,
+    Unavailable(String),
     Fatal(String),
 }
 
 fn subscription_error_action(trusted: bool, err: &PlatformError) -> SubscriptionErrorAction {
     match err {
         PlatformError::PermissionMissing { .. } => SubscriptionErrorAction::NoopUntilPermission,
+        PlatformError::AccessibilityUnavailable { reason } => {
+            SubscriptionErrorAction::Unavailable(reason.clone())
+        }
         _ if !trusted => SubscriptionErrorAction::NoopUntilPermission,
         _ => SubscriptionErrorAction::Fatal(format!("{err:?}")),
     }
 }
 
-fn runtime_trusted(accessibility_trusted: bool, subscriptions_require_relaunch: bool) -> bool {
-    accessibility_trusted && !subscriptions_require_relaunch
+fn runtime_trusted(
+    accessibility_trusted: bool,
+    accessibility_subscriptions: AccessibilitySubscriptions,
+) -> bool {
+    accessibility_trusted && accessibility_subscriptions == AccessibilitySubscriptions::Ready
 }
 
 fn apply_startup_key_bindings(config: &Config) {
@@ -3389,20 +3472,28 @@ fn apply_startup_key_bindings(config: &Config) {
     }
 }
 
-fn subscribe_accept_after_startup_key_bindings(
-    config: &Config,
+fn subscribe_accept_with_preconfigured_bindings(
     trusted: bool,
     subscribe: impl FnOnce() -> Result<AcceptSubscription, PlatformError>,
-) -> Result<(AcceptSubscription, bool), String> {
-    apply_startup_key_bindings(config);
+) -> Result<(AcceptSubscription, AccessibilitySubscriptions), String> {
     match subscribe() {
-        Ok(sub) => Ok((sub, false)),
+        Ok(sub) => Ok((sub, AccessibilitySubscriptions::Ready)),
         Err(err) => match subscription_error_action(trusted, &err) {
             SubscriptionErrorAction::NoopUntilPermission => {
                 eprintln!(
                     "compme: accept subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
                 );
-                Ok((noop_accept_subscription(), true))
+                Ok((
+                    noop_accept_subscription(),
+                    AccessibilitySubscriptions::RelaunchRequired,
+                ))
+            }
+            SubscriptionErrorAction::Unavailable(reason) => {
+                eprintln!("compme: accept subscription unavailable: {reason}");
+                Ok((
+                    noop_accept_subscription(),
+                    AccessibilitySubscriptions::Unavailable,
+                ))
             }
             SubscriptionErrorAction::Fatal(message) => Err(format!("subscribe accept: {message}")),
         },
@@ -3520,7 +3611,7 @@ struct RunContext<A: PlatformAdapter, O: OverlayPresenter> {
     host_events: Arc<Mutex<VecDeque<HostEvent>>>,
     focus_sub: Subscription,
     caret_sub: Subscription,
-    subscriptions_require_relaunch: bool,
+    accessibility_subscriptions: AccessibilitySubscriptions,
     model_available: bool,
     deep_links: Arc<Mutex<Vec<String>>>,
     url_handler: Option<crate::shell::UrlHandlerGuard>,
@@ -3565,6 +3656,7 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
     // Mutable: General-tab switches update globals live (autocorrect today;
     // enabled/trailing-space later) — field writes between heartbeats only.
     let mut config = (factories.load_config)()?;
+    apply_startup_key_bindings(&config);
     (factories.install_signal_handlers)();
     let shell = (factories.make_shell)();
 
@@ -3624,18 +3716,28 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
     let host_events: Arc<Mutex<VecDeque<HostEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
 
     let focus_events = Arc::clone(&host_events);
-    let (focus_sub, focus_subscription_requires_relaunch) = match adapter.subscribe_focus(Arc::new(
+    let (focus_sub, focus_subscription_state) = match adapter.subscribe_focus(Arc::new(
         move |field| {
             let _ = push_host_event(&focus_events, HostEvent::Focus(field));
         },
     )) {
-        Ok(sub) => (sub, false),
+        Ok(sub) => (sub, AccessibilitySubscriptions::Ready),
         Err(err) => match subscription_error_action(trusted, &err) {
             SubscriptionErrorAction::NoopUntilPermission => {
                 eprintln!(
                     "compme: focus subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
                 );
-                (Subscription::new(0), true)
+                (
+                    Subscription::new(0),
+                    AccessibilitySubscriptions::RelaunchRequired,
+                )
+            }
+            SubscriptionErrorAction::Unavailable(reason) => {
+                eprintln!("compme: focus subscription unavailable: {reason}");
+                (
+                    Subscription::new(0),
+                    AccessibilitySubscriptions::Unavailable,
+                )
             }
             SubscriptionErrorAction::Fatal(message) => {
                 return Err(format!("subscribe focus: {message}"));
@@ -3644,18 +3746,28 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
     };
 
     let caret_events = Arc::clone(&host_events);
-    let (caret_sub, caret_subscription_requires_relaunch) = match adapter.subscribe_caret(Arc::new(
+    let (caret_sub, caret_subscription_state) = match adapter.subscribe_caret(Arc::new(
         move |field, rect| {
             let _ = push_host_event(&caret_events, HostEvent::Caret(field, rect));
         },
     )) {
-        Ok(sub) => (sub, false),
+        Ok(sub) => (sub, AccessibilitySubscriptions::Ready),
         Err(err) => match subscription_error_action(trusted, &err) {
             SubscriptionErrorAction::NoopUntilPermission => {
                 eprintln!(
                     "compme: caret subscription unavailable until Accessibility is granted — grant it, then relaunch: {err:?}"
                 );
-                (Subscription::new(0), true)
+                (
+                    Subscription::new(0),
+                    AccessibilitySubscriptions::RelaunchRequired,
+                )
+            }
+            SubscriptionErrorAction::Unavailable(reason) => {
+                eprintln!("compme: caret subscription unavailable: {reason}");
+                (
+                    Subscription::new(0),
+                    AccessibilitySubscriptions::Unavailable,
+                )
             }
             SubscriptionErrorAction::Fatal(message) => {
                 return Err(format!("subscribe caret: {message}"));
@@ -3664,8 +3776,8 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
     };
 
     let accept_events = Arc::clone(&host_events);
-    let (accept_sub, accept_subscription_requires_relaunch) =
-        subscribe_accept_after_startup_key_bindings(&config, trusted, || {
+    let (accept_sub, accept_subscription_state) =
+        subscribe_accept_with_preconfigured_bindings(trusted, || {
             adapter.subscribe_accept(Arc::new(move |control| {
                 let event = match control {
                     TapControl::Accept(action) => HostEvent::Accept(action),
@@ -3678,9 +3790,9 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
                 }
             }))
         })?;
-    let subscriptions_require_relaunch = focus_subscription_requires_relaunch
-        || caret_subscription_requires_relaunch
-        || accept_subscription_requires_relaunch;
+    let accessibility_subscriptions = focus_subscription_state
+        .max(caret_subscription_state)
+        .max(accept_subscription_state);
     engine.set_accept_subscription(accept_sub);
 
     // Auto-adopt an already-downloaded model when the configured path is
@@ -3723,7 +3835,8 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
     // ghosts won't appear (missing permission, missing model file).
     for row in crate::setup_state::setup_rows(crate::setup_state::SetupChecks {
         ax_trusted: trusted,
-        ax_relaunch_required: subscriptions_require_relaunch,
+        ax_relaunch_required: accessibility_subscriptions
+            == AccessibilitySubscriptions::RelaunchRequired,
         screen_context_enabled: config.screen_context,
         screen_recording: shell.screen_capture_permission(),
         model_ready: model_available,
@@ -3892,7 +4005,7 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
         host_events,
         focus_sub,
         caret_sub,
-        subscriptions_require_relaunch,
+        accessibility_subscriptions,
         model_available,
         deep_links,
         url_handler: _url_handler,
@@ -4541,6 +4654,9 @@ fn tray_app_disable_phase<A: PlatformAdapter, O: OverlayPresenter>(
 }
 
 pub fn run() -> Result<(), String> {
+    // Declared before startup so, when armed, this drops only after the complete
+    // RunContext and all later loop locals have had their ordinary cleanup.
+    let mut inference_timeout_exit = InferenceTimeoutExitGuard::new();
     let Some(ctx) = startup(&real_factories())? else {
         return Ok(());
     };
@@ -4556,7 +4672,7 @@ pub fn run() -> Result<(), String> {
         host_events,
         focus_sub,
         caret_sub,
-        subscriptions_require_relaunch,
+        accessibility_subscriptions,
         model_available,
         deep_links,
         url_handler: _url_handler,
@@ -4731,13 +4847,17 @@ pub fn run() -> Result<(), String> {
                 HostEvent::Caret(field, _rect) => {
                     let (field, app_key) =
                         canonicalize_field_app(field, |pid| shell.bundle_id_for_pid(pid));
+                    // Even an unreadable caret event establishes the host's
+                    // current field. Keeping the prior field here would make
+                    // shortcuts target stale focus after a transient AX read
+                    // failure.
+                    focus.current_field = Some(field.clone());
                     match adapter.read_context(&field) {
                         // One selection-changed notification covers both typing and a
                         // bare cursor move. Typing schedules a completion; a cursor
                         // move only invalidates a showing ghost (no re-request).
                         Ok(ctx) => {
                             session_ui.read_err_squelch.reset();
-                            focus.current_field = Some(field.clone());
                             if config.diag_coords {
                                 if let Ok(rect) = adapter.caret_rect(&field) {
                                     eprintln!(
@@ -4766,6 +4886,12 @@ pub fn run() -> Result<(), String> {
                                 Observation::Typed(change) => {
                                     let observe_domain =
                                         domain_observation_enabled(&prefs, &config.personalization);
+                                    // Deliberately pay one AX URL read for each
+                                    // monitored browser edit so a same-field
+                                    // navigation cannot reuse the wrong domain.
+                                    // Add a per-field invalidated cache only if
+                                    // profiling shows this correctness-first
+                                    // round trip is material.
                                     let domain = enqueue_monitored_change_for_current_domain(
                                         &mut monitored.pending_monitored,
                                         &mut focus.last_domain,
@@ -4939,14 +5065,6 @@ pub fn run() -> Result<(), String> {
                     }
                 }
                 HostEvent::Accept(action) => {
-                    debug_assert_eq!(
-                        host_event_route(&HostEvent::Accept(action)),
-                        if matches!(action, AcceptAction::Correction) {
-                            HostEventRoute::AcceptCorrection
-                        } else {
-                            HostEventRoute::Normal
-                        }
-                    );
                     eprintln!("compme: accept {action:?}");
                     // Preview the engine's accept payload once and reuse it for
                     // both the Word self-insert and the Full context record, so
@@ -4995,7 +5113,9 @@ pub fn run() -> Result<(), String> {
                 }
                 HostEvent::Dismiss => {
                     eprintln!("compme: dismiss (Esc)");
-                    usage_stats.usage.record(wall_ms, stats::Outcome::Dismissed);
+                    if engine.has_visible_suggestion() {
+                        usage_stats.usage.record(wall_ms, stats::Outcome::Dismissed);
+                    }
                     offer_all(
                         &mut suggestion.latest,
                         log_err("on_dismiss_suppress", engine.on_dismiss_suppress()),
@@ -5008,144 +5128,140 @@ pub fn run() -> Result<(), String> {
                         log_err("on_cycle", engine.on_cycle()),
                     );
                 }
-                HostEvent::Shortcut(action) => match action {
-                    ShortcutAction::ForceActivate => {
-                        // Settled semantics: re-show the CURRENT pending suggestion
-                        // without kicking a fresh inference. `on_force_show`
-                        // re-emits the held candidate verbatim (no rotation, no
-                        // RequestCompletion); a no-op when nothing is held.
-                        eprintln!("compme: shortcut force-activate (re-show pending)");
-                        offer_all(
-                            &mut suggestion.latest,
-                            log_err("on_force_show", engine.on_force_show()),
-                        );
-                    }
-                    ShortcutAction::ToggleApp => {
-                        // Flip per-app Enabled for the focused app, mirroring the
-                        // tray/settings per-app toggle. The focused app key comes
-                        // from the same resolver the app-disable path uses.
-                        match focus
-                            .current_field
-                            .as_ref()
-                            .and_then(|f| effective_app_key(f, |pid| shell.bundle_id_for_pid(pid)))
-                        {
-                            Some(app) => {
-                                // Invert the per-app `enabled` baseline (override if
-                                // present, else `default_enabled`) — NOT
-                                // `should_suggest`, which folds in snooze / app-snooze
-                                // / `excluded_apps` that outrank `enabled`. See
-                                // `app_enabled_baseline` for why inverting the gated
-                                // value would never converge.
-                                let current = app_enabled_baseline(&prefs, &app);
-                                prefs.set_app_policy_field(
-                                    &app,
-                                    prefs::AppPolicyField::Enabled,
-                                    !current,
-                                );
-                                eprintln!(
-                                    "compme: shortcut toggle-app {app} enabled {current} -> {}",
-                                    !current
-                                );
-                                if let Some(path) = config::config_file_path() {
-                                    persist_web_override_prefs(&path, &prefs);
+                HostEvent::Shortcut(action) => {
+                    match action {
+                        ShortcutAction::ForceActivate => {
+                            // Settled semantics: re-show the CURRENT pending suggestion
+                            // without kicking a fresh inference. `on_force_show`
+                            // re-emits the held candidate verbatim (no rotation, no
+                            // RequestCompletion); a no-op when nothing is held.
+                            eprintln!("compme: shortcut force-activate (re-show pending)");
+                            offer_all(
+                                &mut suggestion.latest,
+                                log_err("on_force_show", engine.on_force_show()),
+                            );
+                        }
+                        ShortcutAction::ToggleApp => {
+                            // Flip per-app Enabled for the focused app, mirroring the
+                            // tray/settings per-app toggle. The focused app key comes
+                            // from the same resolver the app-disable path uses.
+                            match focus.current_field.as_ref().and_then(|f| {
+                                effective_app_key(f, |pid| shell.bundle_id_for_pid(pid))
+                            }) {
+                                Some(app) => {
+                                    // Invert the per-app `enabled` baseline (override if
+                                    // present, else `default_enabled`) — NOT
+                                    // `should_suggest`, which folds in snooze / app-snooze
+                                    // / `excluded_apps` that outrank `enabled`. See
+                                    // `app_enabled_baseline` for why inverting the gated
+                                    // value would never converge.
+                                    let current = app_enabled_baseline(&prefs, &app);
+                                    prefs.set_app_policy_field(
+                                        &app,
+                                        prefs::AppPolicyField::Enabled,
+                                        !current,
+                                    );
+                                    eprintln!(
+                                        "compme: shortcut toggle-app {app} enabled {current} -> {}",
+                                        !current
+                                    );
+                                    if let Some(path) = config::config_file_path() {
+                                        persist_web_override_prefs(&path, &prefs);
+                                    }
+                                    // Disabling must retract any suggestion already on
+                                    // screen (and disarm its accept key); the gate is only
+                                    // re-checked at submission, so a visible ghost would
+                                    // otherwise still insert. Mirrors the snooze /
+                                    // tray-disable paths below.
+                                    if toggle_app_dismisses(current) {
+                                        suggestion.latest.clear();
+                                        let _ = log_err("on_dismiss", engine.on_dismiss());
+                                    }
                                 }
-                                // Disabling must retract any suggestion already on
-                                // screen (and disarm its accept key); the gate is only
-                                // re-checked at submission, so a visible ghost would
-                                // otherwise still insert. Mirrors the snooze /
-                                // tray-disable paths below.
-                                if toggle_app_dismisses(current) {
-                                    suggestion.latest.clear();
-                                    let _ = log_err("on_dismiss", engine.on_dismiss());
-                                }
+                                // No resolvable focused app (no field / unknown bundle):
+                                // nothing to toggle.
+                                None => eprintln!("compme: shortcut toggle-app: no focused app"),
                             }
-                            // No resolvable focused app (no field / unknown bundle):
-                            // nothing to toggle.
-                            None => eprintln!("compme: shortcut toggle-app: no focused app"),
                         }
-                    }
-                    ShortcutAction::ToggleGlobal => {
-                        // Invert the runtime global-enabled flag, mirroring the
-                        // SIGUSR1 / tray enable-disable below, including the
-                        // monitored-state reset on the policy transition.
-                        let now = flags.enabled.load(Ordering::Relaxed);
-                        flags.enabled.store(!now, Ordering::Relaxed);
-                        clear_monitored_state_for_policy_transition(
-                            &mut monitored.pending_monitored,
-                            &mut monitored.monitored_buffers,
-                        );
-                        // Disabling must retract any visible suggestion (and disarm
-                        // its accept key); the enabled gate is only re-checked at
-                        // submission. Mirrors the snooze / tray global-disable paths.
-                        if now {
-                            suggestion.latest.clear();
-                            let _ = log_err("on_dismiss", engine.on_dismiss());
+                        ShortcutAction::ToggleGlobal => {
+                            // Invert the runtime global-enabled flag, mirroring the
+                            // SIGUSR1 / tray enable-disable below, including the
+                            // monitored-state reset on the policy transition.
+                            let now = flags.enabled.load(Ordering::Relaxed);
+                            flags.enabled.store(!now, Ordering::Relaxed);
+                            clear_monitored_state_for_policy_transition(
+                                &mut monitored.pending_monitored,
+                                &mut monitored.monitored_buffers,
+                            );
+                            // Disabling must retract any visible suggestion (and disarm
+                            // its accept key); the enabled gate is only re-checked at
+                            // submission. Mirrors the snooze / tray global-disable paths.
+                            if now {
+                                suggestion.latest.clear();
+                                let _ = log_err("on_dismiss", engine.on_dismiss());
+                            }
+                            eprintln!("compme: shortcut toggle-global enabled {now} -> {}", !now);
                         }
-                        eprintln!("compme: shortcut toggle-global enabled {now} -> {}", !now);
-                    }
-                    ShortcutAction::GrammarCheck => {
-                        debug_assert_eq!(
-                            host_event_route(&HostEvent::Shortcut(ShortcutAction::GrammarCheck)),
-                            HostEventRoute::ManualGrammarDetection
-                        );
-                        let Some(field) = focus.current_field.clone() else {
-                            eprintln!("compme: shortcut grammar-check: no focused field");
-                            continue;
-                        };
-                        let outcome = handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
-                            current_field: Some(field),
-                            config: &config,
-                            prefs: &prefs,
-                            enabled: flags.enabled.load(Ordering::Relaxed),
-                            now_ms,
-                            last_domain: &mut focus.last_domain,
-                            resolve_app_key: |field| {
-                                effective_app_key(&field, |pid| shell.bundle_id_for_pid(pid))
-                            },
-                            focused_page_url: |field| {
-                                adapter.focused_page_url(&field).ok().flatten()
-                            },
-                            read_context: |field| adapter.read_context(&field),
-                            capabilities: |field| adapter.capabilities(&field),
-                            arm_manual_grammar_request: |field| {
-                                engine.arm_manual_grammar_request(&field)
-                            },
-                        });
-                        apply_grammar_shortcut_pending_effect(
-                            &mut suggestion.latest,
-                            &mut manual_grammar_request,
-                            &outcome,
-                        );
-                        match outcome {
-                            GrammarCheckShortcutOutcome::NoField => {
+                        ShortcutAction::GrammarCheck => {
+                            let Some(field) = focus.current_field.clone() else {
                                 eprintln!("compme: shortcut grammar-check: no focused field");
-                            }
-                            GrammarCheckShortcutOutcome::BlockedBeforeRead => {
-                                eprintln!(
-                                    "compme: shortcut grammar-check blocked before text read"
-                                );
-                            }
-                            GrammarCheckShortcutOutcome::ReadContextError(err) => {
-                                eprintln!("compme: grammar-check read_context error: {err:?}");
-                            }
-                            GrammarCheckShortcutOutcome::CapabilitiesError(err) => {
-                                eprintln!("compme: grammar-check capabilities error: {err:?}");
-                            }
-                            GrammarCheckShortcutOutcome::BlockedAfterRead => {
-                                eprintln!("compme: shortcut grammar-check blocked");
-                            }
-                            GrammarCheckShortcutOutcome::NotArmed => {
-                                eprintln!("compme: shortcut grammar-check not armed");
-                            }
-                            GrammarCheckShortcutOutcome::Armed(request) => {
-                                debug_assert!(matches!(
-                                    manual_grammar_request.as_ref(),
-                                    Some(armed) if armed.generation == request.generation
-                                ));
+                                continue;
+                            };
+                            let outcome = handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
+                                current_field: Some(field),
+                                config: &config,
+                                prefs: &prefs,
+                                enabled: flags.enabled.load(Ordering::Relaxed),
+                                now_ms,
+                                last_domain: &mut focus.last_domain,
+                                resolve_app_key: |field| {
+                                    effective_app_key(&field, |pid| shell.bundle_id_for_pid(pid))
+                                },
+                                focused_page_url: |field| {
+                                    adapter.focused_page_url(&field).ok().flatten()
+                                },
+                                read_context: |field| adapter.read_context(&field),
+                                capabilities: |field| adapter.capabilities(&field),
+                                arm_manual_grammar_request: |field| {
+                                    engine.arm_manual_grammar_request(&field)
+                                },
+                            });
+                            apply_grammar_shortcut_pending_effect(
+                                &mut suggestion.latest,
+                                &mut manual_grammar_request,
+                                &outcome,
+                            );
+                            match outcome {
+                                GrammarCheckShortcutOutcome::NoField => {
+                                    eprintln!("compme: shortcut grammar-check: no focused field");
+                                }
+                                GrammarCheckShortcutOutcome::BlockedBeforeRead => {
+                                    eprintln!(
+                                        "compme: shortcut grammar-check blocked before text read"
+                                    );
+                                }
+                                GrammarCheckShortcutOutcome::ReadContextError(err) => {
+                                    eprintln!("compme: grammar-check read_context error: {err:?}");
+                                }
+                                GrammarCheckShortcutOutcome::CapabilitiesError(err) => {
+                                    eprintln!("compme: grammar-check capabilities error: {err:?}");
+                                }
+                                GrammarCheckShortcutOutcome::BlockedAfterRead => {
+                                    eprintln!("compme: shortcut grammar-check blocked");
+                                }
+                                GrammarCheckShortcutOutcome::NotArmed => {
+                                    eprintln!("compme: shortcut grammar-check not armed");
+                                }
+                                GrammarCheckShortcutOutcome::Armed(request) => {
+                                    debug_assert!(matches!(
+                                        manual_grammar_request.as_ref(),
+                                        Some(armed) if armed.generation == request.generation
+                                    ));
+                                }
                             }
                         }
                     }
-                },
+                }
             }
         }
 
@@ -5230,7 +5346,7 @@ pub fn run() -> Result<(), String> {
         }
 
         // 4. Derive status (permission/secure/ready/enabled) and update the tray.
-        // Re-poll secure input and trust on a wall-clock throttle so granting
+        // Re-poll secure input and trust on a monotonic-time throttle so granting
         // permission or a password field appearing is reflected without a restart.
         if policy
             .last_secure_poll_ms
@@ -5336,7 +5452,7 @@ pub fn run() -> Result<(), String> {
                 .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(
                 &config,
                 model_available,
-                subscriptions_require_relaunch,
+                accessibility_subscriptions == AccessibilitySubscriptions::RelaunchRequired,
                 shell.accessibility_trusted(),
                 shell.screen_capture_permission(),
                 download.model_download_status.as_deref(),
@@ -5523,7 +5639,7 @@ pub fn run() -> Result<(), String> {
                 .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(
                 &config,
                 model_available,
-                subscriptions_require_relaunch,
+                accessibility_subscriptions == AccessibilitySubscriptions::RelaunchRequired,
                 shell.accessibility_trusted(),
                 shell.screen_capture_permission(),
                 download.model_download_status.as_deref(),
@@ -5673,7 +5789,7 @@ pub fn run() -> Result<(), String> {
                 .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(
                 &config,
                 model_available,
-                subscriptions_require_relaunch,
+                accessibility_subscriptions == AccessibilitySubscriptions::RelaunchRequired,
                 shell.accessibility_trusted(),
                 shell.screen_capture_permission(),
                 download.model_download_status.as_deref(),
@@ -5737,7 +5853,7 @@ pub fn run() -> Result<(), String> {
             &mut engine,
             now_ms,
         );
-        let effective_trusted = runtime_trusted(trusted, subscriptions_require_relaunch);
+        let effective_trusted = runtime_trusted(trusted, accessibility_subscriptions);
         let enabled = flags.enabled.load(Ordering::Relaxed);
         flush_monitored_changes_after_secure_recheck(
             &mut monitored.pending_monitored,
@@ -5758,9 +5874,9 @@ pub fn run() -> Result<(), String> {
         );
         let status = derive_status(
             trusted,
-            subscriptions_require_relaunch,
+            accessibility_subscriptions,
             policy.secure,
-            model_available,
+            effective_model_available(model_available, inference.has_failed()),
             inference.is_ready(),
             enabled,
         );
@@ -6081,9 +6197,16 @@ pub fn run() -> Result<(), String> {
     drop(tray); // remove the status item before AppKit teardown
     drop(caret_sub);
     drop(focus_sub);
-    inference.shutdown();
     drop(engine); // drops overlay + accept subscription + the engine's adapter handle
     drop(adapter); // last Arc ref → AX worker thread stops
+    let inference_shutdown = inference.shutdown();
+    if inference_shutdown.timed_out() {
+        // Do not log here: stderr locking is itself unbounded. Return through
+        // normal Rust scope cleanup (including memory-key zeroization), with a
+        // detached hard-exit watchdog in case cleanup or C `atexit` blocks.
+        inference_timeout_exit.arm();
+        arm_inference_shutdown_watchdog();
+    }
     Ok(())
 }
 

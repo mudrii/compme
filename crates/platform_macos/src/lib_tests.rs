@@ -282,7 +282,6 @@ struct TestAdapterConfig {
     process_exists: Arc<ProcessExistsProvider>,
     synthetic_key_poster: Arc<SyntheticKeyPoster>,
     pasteboard_poster: Arc<PasteboardPoster>,
-    backspace_poster: Arc<BackspacePoster>,
     accept_tap_installs: Arc<Mutex<Vec<FakeAcceptTapInstall>>>,
     /// Flat install/drop event log for ORDER assertions (the rearm
     /// drop-before-install pin): "install:<Kind>" per installer call,
@@ -306,7 +305,6 @@ impl TestAdapterConfig {
             process_exists: Arc::new(|_| true),
             synthetic_key_poster: Arc::new(|_, _| Ok(())),
             pasteboard_poster: Arc::new(|_, _| Ok(())),
-            backspace_poster: Arc::new(|_, _| Ok(())),
             accept_tap_installs: Arc::new(Mutex::new(Vec::new())),
             accept_tap_events: Arc::new(Mutex::new(Vec::new())),
             ax_range_target: Arc::new(RawAxRangeTarget),
@@ -385,7 +383,6 @@ fn test_adapter_with_hooks(config: TestAdapterConfig) -> MacosPlatformAdapter {
         process_exists,
         synthetic_key_poster,
         pasteboard_poster,
-        backspace_poster,
         accept_tap_installs,
         accept_tap_events,
         ax_range_target,
@@ -439,7 +436,6 @@ fn test_adapter_with_hooks(config: TestAdapterConfig) -> MacosPlatformAdapter {
             process_exists,
             synthetic_key_poster,
             pasteboard_poster,
-            backspace_poster,
             observer_installer,
             accept_tap_installer,
             ax_range_target,
@@ -496,7 +492,6 @@ fn test_adapter_with_dynamic_frontmost_and_install_hook(
             process_exists: Arc::new(|_| true),
             synthetic_key_poster: Arc::new(|_, _| Ok(())),
             pasteboard_poster: Arc::new(|_, _| Ok(())),
-            backspace_poster: Arc::new(|_, _| Ok(())),
             observer_installer,
             accept_tap_installer,
             ax_range_target: Arc::new(RawAxRangeTarget),
@@ -2235,19 +2230,12 @@ fn finish_axset_insert_silent_fallback_refuses_synthetic_post_when_secure_input_
 #[test]
 fn insert_replacing_with_zero_replace_left_is_pure_append_like_insert() {
     // Contract: insert_replacing(.., replace_left=0, ..) == insert (pure
-    // append, NO deletion). Pins that the backspace poster is never invoked
-    // on the zero path, so a regression that always deleted would fail.
+    // append) on the global text channel.
     let posted = Arc::new(Mutex::new(Vec::new()));
-    let backspaced = Arc::new(Mutex::new(Vec::new()));
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
     let p = Arc::clone(&posted);
     config.synthetic_key_poster = Arc::new(move |_, text| {
         p.lock().unwrap().push(text.to_string());
-        Ok(())
-    });
-    let b = Arc::clone(&backspaced);
-    config.backspace_poster = Arc::new(move |_, _| {
-        b.lock().unwrap().push("bs");
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
@@ -2267,10 +2255,6 @@ fn insert_replacing_with_zero_replace_left_is_pure_append_like_insert() {
         })
     );
     assert_eq!(*posted.lock().unwrap(), vec!["hi".to_string()]);
-    assert!(
-        backspaced.lock().unwrap().is_empty(),
-        "replace_left==0 must delete nothing"
-    );
 }
 
 #[test]
@@ -2681,17 +2665,45 @@ fn axset_readback_classifies_only_an_unchanged_value_as_silent_failure() {
 }
 
 #[test]
+fn axset_prewrite_snapshot_rejects_value_or_selection_movement() {
+    let original_range = CFRange {
+        location: 3,
+        length: 0,
+    };
+    assert_eq!(
+        ensure_ax_insert_snapshot_unchanged("abc", original_range, "abc", original_range),
+        Ok(())
+    );
+
+    for (current_value, current_range) in [
+        ("abcd", original_range),
+        (
+            "abc",
+            CFRange {
+                location: 2,
+                length: 0,
+            },
+        ),
+    ] {
+        assert!(matches!(
+            ensure_ax_insert_snapshot_unchanged(
+                "abc",
+                original_range,
+                current_value,
+                current_range,
+            ),
+            Err(PlatformError::CannotComplete { .. })
+        ));
+    }
+}
+
+#[test]
 fn silently_ignored_axset_replacement_refuses_non_atomic_fallback() {
     let touched = Arc::new(Mutex::new(Vec::new()));
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
     let t1 = Arc::clone(&touched);
     config.synthetic_key_poster = Arc::new(move |_, _| {
         t1.lock().unwrap().push("text");
-        Ok(())
-    });
-    let t2 = Arc::clone(&touched);
-    config.backspace_poster = Arc::new(move |_, _| {
-        t2.lock().unwrap().push("backspace");
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
@@ -2707,17 +2719,12 @@ fn silently_ignored_axset_replacement_refuses_non_atomic_fallback() {
 }
 
 #[test]
-fn applied_axset_touches_no_synthetic_posters() {
+fn applied_axset_touches_no_synthetic_text_poster() {
     let touched = Arc::new(Mutex::new(Vec::new()));
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
     let t1 = Arc::clone(&touched);
     config.synthetic_key_poster = Arc::new(move |_, _| {
         t1.lock().unwrap().push("text");
-        Ok(())
-    });
-    let t2 = Arc::clone(&touched);
-    config.backspace_poster = Arc::new(move |_, _| {
-        t2.lock().unwrap().push("backspace");
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
@@ -2745,11 +2752,6 @@ fn silently_ignored_axset_fails_honestly_when_the_app_is_not_frontmost() {
     let t1 = Arc::clone(&touched);
     config.synthetic_key_poster = Arc::new(move |_, _| {
         t1.lock().unwrap().push("text");
-        Ok(())
-    });
-    let t2 = Arc::clone(&touched);
-    config.backspace_poster = Arc::new(move |_, _| {
-        t2.lock().unwrap().push("backspace");
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
@@ -2834,6 +2836,87 @@ fn carbon_slot_handler_cloned_out_survives_a_concurrent_disarm() {
 }
 
 #[test]
+fn accept_disarm_clears_action_before_dropping_the_hotkey_resource() {
+    struct DropProbe {
+        action: Arc<Mutex<Option<AcceptAction>>>,
+        saw_cleared: Arc<AtomicBool>,
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.saw_cleared
+                .store(self.action.lock().unwrap().is_none(), Ordering::SeqCst);
+        }
+    }
+
+    let action = Arc::new(Mutex::new(Some(AcceptAction::Full)));
+    let saw_cleared = Arc::new(AtomicBool::new(false));
+    let resource = AcceptTapResource::new(DropProbe {
+        action: Arc::clone(&action),
+        saw_cleared: Arc::clone(&saw_cleared),
+    });
+    let installer: Arc<AcceptTapInstallerFn> = Arc::new(|_, _| Ok(AcceptTapResource::new(())));
+    let (callback_tx, _callback_rx) = mpsc::channel();
+    let controller = AcceptTapController {
+        installer,
+        callback_tx,
+        callback: Arc::new(|_| {}),
+        active: Arc::new(AtomicBool::new(true)),
+        consumer_tap: Mutex::new(Some(resource)),
+        accept_action: action,
+        teardown_generation: AtomicU64::new(0),
+    };
+
+    controller.set_accept_action(None).unwrap();
+    assert!(
+        saw_cleared.load(Ordering::SeqCst),
+        "the stale Carbon registration must observe no insert action"
+    );
+}
+
+#[test]
+fn hide_suggestion_after_clears_action_before_dropping_the_hotkey_resource() {
+    struct DropProbe {
+        action: Arc<Mutex<Option<AcceptAction>>>,
+        saw_cleared: Arc<AtomicBool>,
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.saw_cleared
+                .store(self.action.lock().unwrap().is_none(), Ordering::SeqCst);
+        }
+    }
+
+    let action = Arc::new(Mutex::new(Some(AcceptAction::Full)));
+    let saw_cleared = Arc::new(AtomicBool::new(false));
+    let resource = AcceptTapResource::new(DropProbe {
+        action: Arc::clone(&action),
+        saw_cleared: Arc::clone(&saw_cleared),
+    });
+    let installer: Arc<AcceptTapInstallerFn> = Arc::new(|_, _| Ok(AcceptTapResource::new(())));
+    let (callback_tx, _callback_rx) = mpsc::channel();
+    let controller = Arc::new(AcceptTapController {
+        installer,
+        callback_tx,
+        callback: Arc::new(|_| {}),
+        active: Arc::new(AtomicBool::new(true)),
+        consumer_tap: Mutex::new(Some(resource)),
+        accept_action: action,
+        teardown_generation: AtomicU64::new(0),
+    });
+
+    // Zero delay executes the same generation-guarded teardown used by the
+    // delayed sleeper, synchronously enough for a deterministic drop probe.
+    AcceptTapController::hide_suggestion_after(controller, Duration::ZERO)
+        .expect("zero-delay teardown succeeds");
+    assert!(
+        saw_cleared.load(Ordering::SeqCst),
+        "the generation-guarded teardown must disarm insertion before unregistering the hotkey"
+    );
+}
+
+#[test]
 fn insert_replacing_synthetic_keys_refuses_non_atomic_replacement() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
@@ -2843,14 +2926,6 @@ fn insert_replacing_synthetic_keys_refuses_non_atomic_replacement() {
             .lock()
             .unwrap()
             .push(format!("text:{pid}:{text}"));
-        Ok(())
-    });
-    let log_in_backspaces = Arc::clone(&log);
-    config.backspace_poster = Arc::new(move |pid, count| {
-        log_in_backspaces
-            .lock()
-            .unwrap()
-            .push(format!("backspace:{pid}x{count}"));
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
@@ -2889,37 +2964,6 @@ fn insert_replacing_blocks_when_global_secure_input_is_enabled() {
 }
 
 #[test]
-fn insert_replacing_with_empty_text_is_noop_and_never_invokes_backspace_poster() {
-    let backspace_calls = Arc::new(Mutex::new(Vec::new()));
-    let calls_in_hook = Arc::clone(&backspace_calls);
-    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
-    config.backspace_poster = Arc::new(move |pid, count| {
-        calls_in_hook.lock().unwrap().push((pid, count));
-        Ok(())
-    });
-    let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
-
-    assert_eq!(
-        adapter.insert_replacing(&field, "", 5, InsertStrategy::SyntheticKeys),
-        Ok(Inserted {
-            bytes: 0,
-            chars: 0,
-            strategy: InsertStrategy::SyntheticKeys,
-        })
-    );
-    assert!(
-            backspace_calls.lock().unwrap().is_empty(),
-            "the empty-text early return precedes deletion: nothing is deleted when there is nothing to insert"
-        );
-}
-
-#[test]
 fn insert_replacing_clipboard_refuses_non_atomic_replacement() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
@@ -2929,14 +2973,6 @@ fn insert_replacing_clipboard_refuses_non_atomic_replacement() {
             .lock()
             .unwrap()
             .push(format!("paste:{pid}:{text}"));
-        Ok(())
-    });
-    let log_in_backspaces = Arc::clone(&log);
-    config.backspace_poster = Arc::new(move |pid, count| {
-        log_in_backspaces
-            .lock()
-            .unwrap()
-            .push(format!("backspace:{pid}x{count}"));
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
@@ -2954,88 +2990,6 @@ fn insert_replacing_clipboard_refuses_non_atomic_replacement() {
         })
     );
     assert!(log.lock().unwrap().is_empty());
-}
-
-#[test]
-fn insert_with_zero_replace_left_never_invokes_the_backspace_poster() {
-    let backspace_calls = Arc::new(Mutex::new(Vec::new()));
-    let calls_in_hook = Arc::clone(&backspace_calls);
-    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
-    config.backspace_poster = Arc::new(move |pid, count| {
-        calls_in_hook.lock().unwrap().push((pid, count));
-        Ok(())
-    });
-    let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
-
-    assert!(adapter
-        .insert(&field, "x", InsertStrategy::SyntheticKeys)
-        .is_ok());
-    assert!(adapter
-        .insert(&field, "x", InsertStrategy::Clipboard)
-        .is_ok());
-    assert!(
-        backspace_calls.lock().unwrap().is_empty(),
-        "plain inserts must stay byte-identical: no backspace synthesis"
-    );
-}
-
-#[test]
-fn insert_replacing_axset_never_invokes_the_backspace_poster() {
-    let backspace_calls = Arc::new(Mutex::new(Vec::new()));
-    let calls_in_hook = Arc::clone(&backspace_calls);
-    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
-    config.backspace_poster = Arc::new(move |pid, count| {
-        calls_in_hook.lock().unwrap().push((pid, count));
-        Ok(())
-    });
-    let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
-
-    // AxSet range-replaces in-process on the AX worker; the result here is
-    // irrelevant (no live AX element) — only the non-invocation matters.
-    let _ = adapter.insert_replacing(&field, "the", 3, InsertStrategy::AxSet);
-    assert!(
-        backspace_calls.lock().unwrap().is_empty(),
-        "AxSet deletes via range-replace, never via synthetic backspaces"
-    );
-}
-
-#[test]
-fn insert_replacing_posts_no_backspaces_when_frontmost_pid_moved() {
-    let backspace_calls = Arc::new(Mutex::new(Vec::new()));
-    let calls_in_hook = Arc::clone(&backspace_calls);
-    let mut config = TestAdapterConfig::new(Some(99), Arc::new(Mutex::new(Vec::new())), None);
-    config.backspace_poster = Arc::new(move |pid, count| {
-        calls_in_hook.lock().unwrap().push((pid, count));
-        Ok(())
-    });
-    let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
-
-    assert_eq!(
-        adapter.insert_replacing(&field, "the", 3, InsertStrategy::SyntheticKeys),
-        Err(PlatformError::StaleField)
-    );
-    assert!(
-        backspace_calls.lock().unwrap().is_empty(),
-        "backspaces must never reach an app the user already switched away from"
-    );
 }
 
 #[test]
@@ -3278,6 +3232,34 @@ fn clipboard_restore_coordinator_keeps_earliest_snapshot_for_back_to_back_insert
         .take_if_current_epoch_and_change_count(second_epoch, 12)
         .unwrap();
     assert_eq!(pending, external);
+}
+
+#[test]
+fn clipboard_restore_coordinator_restores_pending_snapshot_during_teardown() {
+    let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+    pasteboard.clearContents();
+    assert!(
+        pasteboard.setString_forType(&NSString::from_str("before quit"), pasteboard_string_type())
+    );
+    let snapshot = snapshot_pasteboard(&pasteboard).unwrap();
+
+    pasteboard.clearContents();
+    assert!(
+        pasteboard.setString_forType(&NSString::from_str("completion"), pasteboard_string_type())
+    );
+    let coordinator = ClipboardRestoreCoordinator::default();
+    coordinator.record_insert(snapshot, pasteboard.changeCount());
+
+    assert_eq!(
+        coordinator.restore_pending_if_unchanged(&pasteboard),
+        PasteboardRestoreOutcome::Restored
+    );
+    assert_eq!(
+        pasteboard
+            .stringForType(pasteboard_string_type())
+            .map(|value| value.to_string()),
+        Some("before quit".into())
+    );
 }
 
 #[test]
@@ -3879,32 +3861,12 @@ fn escape_while_armed_dismisses_and_suppresses() {
         accept_tap_decision(&AcceptKeymap::default(), AcceptTapKind::Consumer, esc, None),
         AcceptTapDecision::Keep
     );
-    // Observer (listen-only) tap never consumes Esc.
-    assert_eq!(
-        accept_tap_decision(
-            &AcceptKeymap::default(),
-            AcceptTapKind::Observer,
-            esc,
-            Some(AcceptAction::Full)
-        ),
-        AcceptTapDecision::Keep
-    );
 }
 
 #[test]
 fn accept_tap_decision_tab_drops_to_word_only_on_armed_consumer_tap() {
     let tab = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
 
-    // Observer (listen-only) tap never consumes.
-    assert_eq!(
-        accept_tap_decision(
-            &AcceptKeymap::default(),
-            AcceptTapKind::Observer,
-            tab,
-            Some(AcceptAction::Full)
-        ),
-        AcceptTapDecision::Keep
-    );
     // Consumer tap only consumes while armed.
     assert_eq!(
         accept_tap_decision(&AcceptKeymap::default(), AcceptTapKind::Consumer, tab, None),
@@ -3969,16 +3931,6 @@ fn tab_accepts_word_and_grave_accepts_full() {
         ),
         AcceptTapDecision::Keep
     );
-    // Grave on the observer (listen-only) tap is never consumed.
-    assert_eq!(
-        accept_tap_decision(
-            &AcceptKeymap::default(),
-            AcceptTapKind::Observer,
-            grave,
-            Some(AcceptAction::Full)
-        ),
-        AcceptTapDecision::Keep
-    );
 }
 
 #[test]
@@ -4000,16 +3952,6 @@ fn down_arrow_while_armed_cycles_candidates() {
             AcceptTapKind::Consumer,
             down,
             None
-        ),
-        AcceptTapDecision::Keep
-    );
-    // Observer tap never consumes.
-    assert_eq!(
-        accept_tap_decision(
-            &AcceptKeymap::default(),
-            AcceptTapKind::Observer,
-            down,
-            Some(AcceptAction::Full)
         ),
         AcceptTapDecision::Keep
     );
@@ -5099,7 +5041,7 @@ fn accept_tap_decision_reenables_a_user_input_disabled_tap() {
 }
 
 #[test]
-fn subscribe_accept_installs_observer_and_transient_consumer_tap() {
+fn subscribe_accept_installs_shortcut_and_transient_consumer_tap() {
     let accept_tap_installs = Arc::new(Mutex::new(Vec::new()));
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
     config.accept_tap_installs = Arc::clone(&accept_tap_installs);
@@ -5111,33 +5053,28 @@ fn subscribe_accept_installs_observer_and_transient_consumer_tap() {
             action_tx.send(action).expect("action send");
         }))
         .expect("subscribe accept");
-    // Per subscription, two process-lifetime resources install up front:
-    // the Observer tap and the always-on Shortcut registration (finding C).
-    wait_for_accept_tap_count(&accept_tap_installs, 2);
+    // The always-on Shortcut registration is the sole process-lifetime tap.
+    wait_for_accept_tap_count(&accept_tap_installs, 1);
     assert_eq!(
         accept_tap_installs.lock().unwrap()[0].kind,
-        AcceptTapKind::Observer
-    );
-    assert_eq!(
-        accept_tap_installs.lock().unwrap()[1].kind,
         AcceptTapKind::Shortcut
     );
 
     subscription
         .set_suggestion_visible(true)
         .expect("activate consumer");
-    wait_for_accept_tap_count(&accept_tap_installs, 3);
+    wait_for_accept_tap_count(&accept_tap_installs, 2);
     assert_eq!(
-        accept_tap_installs.lock().unwrap()[2].kind,
+        accept_tap_installs.lock().unwrap()[1].kind,
         AcceptTapKind::Consumer
     );
 
     subscription
         .set_suggestion_visible(true)
         .expect("activation is idempotent");
-    assert_eq!(accept_tap_installs.lock().unwrap().len(), 3);
+    assert_eq!(accept_tap_installs.lock().unwrap().len(), 2);
 
-    let consumer_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[2].handler);
+    let consumer_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[1].handler);
     // While armed: Tab accepts the next word, grave accepts the full completion.
     assert_eq!(
         consumer_handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
@@ -5171,9 +5108,9 @@ fn subscribe_accept_installs_observer_and_transient_consumer_tap() {
     subscription
         .set_suggestion_visible(true)
         .expect("reactivate consumer");
-    wait_for_accept_tap_count(&accept_tap_installs, 4);
+    wait_for_accept_tap_count(&accept_tap_installs, 3);
     assert_eq!(
-        accept_tap_installs.lock().unwrap()[3].kind,
+        accept_tap_installs.lock().unwrap()[2].kind,
         AcceptTapKind::Consumer
     );
 }
@@ -5196,13 +5133,13 @@ fn subscribe_accept_shortcut_resource_dispatches_configured_grammar_check() {
             action_tx.send(action).expect("action send");
         }))
         .expect("subscribe accept");
-    wait_for_accept_tap_count(&accept_tap_installs, 2);
+    wait_for_accept_tap_count(&accept_tap_installs, 1);
     assert_eq!(
-        accept_tap_installs.lock().unwrap()[1].kind,
+        accept_tap_installs.lock().unwrap()[0].kind,
         AcceptTapKind::Shortcut
     );
 
-    let shortcut_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[1].handler);
+    let shortcut_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[0].handler);
     assert_eq!(
         shortcut_handler(shortcut_tap_event(ShortcutAction::GrammarCheck)),
         AcceptTapDecision::Shortcut(ShortcutAction::GrammarCheck)
@@ -5228,8 +5165,8 @@ fn subscribe_accept_shortcut_handler_stops_after_subscription_drop() {
             action_tx.send(action).expect("action send");
         }))
         .expect("subscribe accept");
-    wait_for_accept_tap_count(&accept_tap_installs, 2);
-    let shortcut_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[1].handler);
+    wait_for_accept_tap_count(&accept_tap_installs, 1);
+    let shortcut_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[0].handler);
 
     drop(subscription);
 
@@ -5264,14 +5201,14 @@ fn rearm_while_armed_reinstalls_the_consumer_and_keeps_the_armed_value() {
     subscription
         .set_suggestion_visible(true)
         .expect("activate consumer");
-    // [Observer, Shortcut, Consumer] — the two process-lifetime resources
-    // install before the first consumer arm (finding C).
-    wait_for_accept_tap_count(&accept_tap_installs, 3);
+    // [Shortcut, Consumer] — the process-lifetime shortcut installs before
+    // the first consumer arm (finding C).
+    wait_for_accept_tap_count(&accept_tap_installs, 2);
 
     subscription.rearm_accept_tap().expect("rearm");
-    wait_for_accept_tap_count(&accept_tap_installs, 4);
+    wait_for_accept_tap_count(&accept_tap_installs, 3);
     assert_eq!(
-        accept_tap_installs.lock().unwrap()[3].kind,
+        accept_tap_installs.lock().unwrap()[2].kind,
         AcceptTapKind::Consumer
     );
     // DROP-BEFORE-INSTALL is load-bearing (Esc/Down exist in every
@@ -5281,7 +5218,7 @@ fn rearm_while_armed_reinstalls_the_consumer_and_keeps_the_armed_value() {
     // but flip this sequence (review-c132).
     //
     // Assert the rearm's own SUFFIX (drop→install), not the whole log
-    // from adapter birth: pinning the full [Observer, Consumer, …]
+    // from adapter birth: pinning the full [Shortcut, Consumer, …]
     // construction prefix is brittle — an unrelated change to the initial
     // install order would break this test without touching rearm. The
     // discriminating invariant is purely the trailing pair.
@@ -5292,7 +5229,7 @@ fn rearm_while_armed_reinstalls_the_consumer_and_keeps_the_armed_value() {
         "rearm must drop the old consumer tap strictly before installing the new one"
     );
     // The NEW handler still consumes with the armed value intact.
-    let handler = Arc::clone(&accept_tap_installs.lock().unwrap()[3].handler);
+    let handler = Arc::clone(&accept_tap_installs.lock().unwrap()[2].handler);
     assert_eq!(
         handler(accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0)),
         AcceptTapDecision::Drop(AcceptAction::Word)
@@ -5317,14 +5254,13 @@ fn rearm_while_unarmed_is_a_successful_noop() {
     let subscription = adapter
         .subscribe_accept(Arc::new(|_| {}))
         .expect("subscribe accept");
-    wait_for_accept_tap_count(&accept_tap_installs, 2); // observer + shortcut
+    wait_for_accept_tap_count(&accept_tap_installs, 1); // shortcut only
 
     subscription
         .rearm_accept_tap()
         .expect("unarmed rearm is Ok");
-    // Still just the process-lifetime installs (observer + shortcut) — no
-    // phantom consumer.
-    assert_eq!(accept_tap_installs.lock().unwrap().len(), 2);
+    // Still just the process-lifetime shortcut — no phantom consumer.
+    assert_eq!(accept_tap_installs.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -5342,7 +5278,7 @@ fn accept_subscription_delayed_hide_tears_down_consumer_tap() {
     subscription
         .set_suggestion_visible(true)
         .expect("activate consumer");
-    wait_for_accept_tap_count(&accept_tap_installs, 3);
+    wait_for_accept_tap_count(&accept_tap_installs, 2);
 
     let drops_before = count_drop_events(&accept_tap_events);
     subscription
@@ -5358,9 +5294,9 @@ fn accept_subscription_delayed_hide_tears_down_consumer_tap() {
         .set_suggestion_visible(true)
         .expect("reactivate after delayed hide");
 
-    wait_for_accept_tap_count(&accept_tap_installs, 4);
+    wait_for_accept_tap_count(&accept_tap_installs, 3);
     assert_eq!(
-        accept_tap_installs.lock().unwrap()[3].kind,
+        accept_tap_installs.lock().unwrap()[2].kind,
         AcceptTapKind::Consumer
     );
 }
@@ -5378,7 +5314,7 @@ fn accept_subscription_visible_update_cancels_delayed_hide() {
     subscription
         .set_suggestion_visible(true)
         .expect("activate consumer");
-    wait_for_accept_tap_count(&accept_tap_installs, 3);
+    wait_for_accept_tap_count(&accept_tap_installs, 2);
 
     subscription
         .hide_suggestion_after(Duration::from_millis(30))
@@ -5391,7 +5327,7 @@ fn accept_subscription_visible_update_cancels_delayed_hide() {
         .set_suggestion_visible(true)
         .expect("still active after canceled hide");
 
-    assert_eq!(accept_tap_installs.lock().unwrap().len(), 3);
+    assert_eq!(accept_tap_installs.lock().unwrap().len(), 2);
 }
 
 #[test]
@@ -6434,20 +6370,6 @@ fn accept_tap_decision_keeps_keyup_grave() {
 }
 
 #[test]
-fn observer_tap_keeps_tab() {
-    let event = accept_tap_event(CGEventType::KeyDown, KEYCODE_TAB, 0);
-    assert_eq!(
-        accept_tap_decision(
-            &AcceptKeymap::default(),
-            AcceptTapKind::Observer,
-            event,
-            Some(AcceptAction::Full)
-        ),
-        AcceptTapDecision::Keep
-    );
-}
-
-#[test]
 fn accept_tap_decision_ignores_self_generated_grave() {
     // Our own synthetic grave insertion must never re-enter as an accept.
     let event = accept_tap_event(CGEventType::KeyDown, KEYCODE_GRAVE, SYNTHETIC_EVENT_TAG);
@@ -7166,6 +7088,61 @@ fn macos_platform_adapter_dispatches_focus_and_caret_callbacks_from_observer_not
     assert_eq!(carets[0].1, None);
     assert_eq!(carets[1].0.element_id, "ax:ptr=ax:0x555");
     assert_ne!(carets[1].0.generation, carets[0].0.generation);
+}
+
+#[test]
+fn panicking_subscribers_do_not_poison_later_focus_or_caret_delivery() {
+    let focus_installs = Arc::new(Mutex::new(Vec::new()));
+    let focus_adapter = test_adapter(Some(42), Arc::clone(&focus_installs), None);
+    let focus_calls = Arc::new(AtomicUsize::new(0));
+    let focus_calls_in_cb = Arc::clone(&focus_calls);
+    let _focus = focus_adapter
+        .subscribe_focus(Arc::new(move |_| {
+            if focus_calls_in_cb.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("injected focus subscriber panic");
+            }
+        }))
+        .expect("focus subscription");
+    let focus_dispatch = focus_installs.lock().unwrap()[0].dispatch.clone();
+
+    let first_focus = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        focus_dispatch(observer_event(
+            ObserverNotification::FocusChanged,
+            pointer_identity("ax:focus-first"),
+        ));
+    }));
+    assert!(first_focus.is_err());
+    focus_dispatch(observer_event(
+        ObserverNotification::FocusChanged,
+        pointer_identity("ax:focus-second"),
+    ));
+    assert_eq!(focus_calls.load(Ordering::SeqCst), 2);
+
+    let caret_installs = Arc::new(Mutex::new(Vec::new()));
+    let caret_adapter = test_adapter(Some(42), Arc::clone(&caret_installs), None);
+    let caret_calls = Arc::new(AtomicUsize::new(0));
+    let caret_calls_in_cb = Arc::clone(&caret_calls);
+    let _caret = caret_adapter
+        .subscribe_caret(Arc::new(move |_, _| {
+            if caret_calls_in_cb.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("injected caret subscriber panic");
+            }
+        }))
+        .expect("caret subscription");
+    let caret_dispatch = caret_installs.lock().unwrap()[0].dispatch.clone();
+
+    let first_caret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        caret_dispatch(observer_event(
+            ObserverNotification::CaretChanged,
+            pointer_identity("ax:caret-first"),
+        ));
+    }));
+    assert!(first_caret.is_err());
+    caret_dispatch(observer_event(
+        ObserverNotification::CaretChanged,
+        pointer_identity("ax:caret-second"),
+    ));
+    assert_eq!(caret_calls.load(Ordering::SeqCst), 2);
 }
 
 #[test]

@@ -118,6 +118,10 @@ pub struct LinuxAdapter {
     /// AT-SPI-backed method fail-closed exactly as the pre-2.1 scaffold was.
     #[cfg(target_os = "linux")]
     session: Option<atspi_live::AtspiSession>,
+    /// One identity authority shared by both event subscriptions and every
+    /// AT-SPI-backed I/O method.
+    #[cfg(target_os = "linux")]
+    fields: std::sync::Arc<std::sync::Mutex<atspi_event_map::LinuxFieldRegistry>>,
     /// Whether the X11 accept tap probed *installable* on this session (Phase
     /// 2.3). `false` for `new()` and for any host with no X server or with the
     /// accept keys already grabbed by a window manager or IME, which keeps both
@@ -132,6 +136,11 @@ pub struct LinuxAdapter {
 /// teardown is RAII through the returned handle).
 #[cfg(target_os = "linux")]
 static NEXT_SUBSCRIPTION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(target_os = "linux")]
+fn next_subscription_id() -> u64 {
+    NEXT_SUBSCRIPTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 impl LinuxAdapter {
     /// An inert adapter: no accessibility bus, so every field operation still
@@ -158,6 +167,9 @@ impl LinuxAdapter {
     pub fn with_accessibility() -> Self {
         Self {
             session: atspi_live::AtspiSession::open().ok(),
+            fields: std::sync::Arc::new(std::sync::Mutex::new(
+                atspi_event_map::LinuxFieldRegistry::new(),
+            )),
             // Probed here for the same reason the bus is: it is an explicit
             // opt-in, not something a constructor unit tests call should do. The
             // probe trial-grabs the accept keys, so a `true` here means the tap
@@ -187,7 +199,41 @@ impl LinuxAdapter {
     fn session(&self, method: &str) -> Result<&atspi_live::AtspiSession, PlatformError> {
         self.session
             .as_ref()
-            .ok_or_else(|| Self::unsupported(method))
+            .ok_or_else(|| Self::accessibility_unavailable(method))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn accessibility_unavailable(method: &str) -> PlatformError {
+        PlatformError::AccessibilityUnavailable {
+            reason: format!(
+                "platform_linux::{method}: AT-SPI accessibility session unavailable (no bus)"
+            ),
+        }
+    }
+
+    /// Validate a field against the adapter's current focus identity before an
+    /// AT-SPI proxy is constructed or called.
+    #[cfg(target_os = "linux")]
+    fn validate_field(&self, field: &FieldHandle) -> Result<atspi_ids::ElementId, PlatformError> {
+        self.fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .validate(field)
+    }
+
+    /// Register a live-test fixture through the same focus path production
+    /// events use. Production callers cannot mint identities through this seam.
+    #[cfg(all(test, target_os = "linux"))]
+    fn register_test_field(&self, id: &atspi_ids::ElementId) -> FieldHandle {
+        self.fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .focus(id, || {
+                self.session
+                    .as_ref()
+                    .map(|session| session.element_owner(id))
+                    .unwrap_or_else(|| (id.bus_name.clone(), None))
+            })
     }
 
     /// The error every not-yet-implemented method returns. Fail-closed: the host
@@ -224,7 +270,7 @@ impl PlatformAdapter for LinuxAdapter {
         // Gate on the adapter's own session so a host without accessibility fails
         // closed here rather than paying the bus-activation timeout per subscribe.
         self.session("subscribe_focus")?;
-        atspi_events::subscribe_focus(cb)
+        atspi_events::subscribe_focus(std::sync::Arc::clone(&self.fields), cb)
     }
 
     /// Real impl: AT-SPI2 focus-changed event subscription (D-Bus).
@@ -238,7 +284,7 @@ impl PlatformAdapter for LinuxAdapter {
     #[cfg(target_os = "linux")]
     fn subscribe_caret(&self, cb: CaretCallback) -> Result<Subscription, PlatformError> {
         self.session("subscribe_caret")?;
-        atspi_events::subscribe_caret(cb)
+        atspi_events::subscribe_caret(std::sync::Arc::clone(&self.fields), cb)
     }
 
     /// Real impl: AT-SPI2 text-caret-moved / bounds-changed events.
@@ -266,7 +312,8 @@ impl PlatformAdapter for LinuxAdapter {
         let for_visible = std::sync::Arc::clone(&tap);
         let for_hide = std::sync::Arc::clone(&tap);
         let for_action = std::sync::Arc::clone(&tap);
-        let id = NEXT_SUBSCRIPTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let for_rearm = std::sync::Arc::clone(&tap);
+        let id = next_subscription_id();
         Ok(AcceptSubscription::new(
             // Teardown is the tap's `Drop`: it thaws the keyboard and releases
             // every grab before joining its threads. Dropping the returned
@@ -275,7 +322,8 @@ impl PlatformAdapter for LinuxAdapter {
             move |visible| for_visible.set_suggestion_visible(visible),
             move |delay| for_hide.hide_suggestion_after(delay),
             move |action| for_action.set_accept_action(action),
-        ))
+        )
+        .with_rearm(move || for_rearm.rearm()))
     }
 
     /// Real impl: the X11 `XGrabKey` tap above; a compositor/IME path on Wayland.
@@ -303,11 +351,7 @@ impl PlatformAdapter for LinuxAdapter {
     #[cfg(target_os = "linux")]
     fn capabilities(&self, field: &FieldHandle) -> Result<Capabilities, PlatformError> {
         let session = self.session("capabilities")?;
-        let id = atspi_ids::ElementId::decode(&field.element_id).ok_or_else(|| {
-            PlatformError::UnsupportedField {
-                reason: format!("platform_linux: malformed element id: {}", field.element_id),
-            }
-        })?;
+        let id = self.validate_field(field)?;
         let mut capabilities = session.capabilities(&id)?;
         // `accept_intercept` is a *session* fact (is there an X server, and is
         // Tab free?), not a property of the field, so the pure AT-SPI mapping
@@ -326,7 +370,9 @@ impl PlatformAdapter for LinuxAdapter {
     /// AT-SPI2 `Text` around the caret, in Unicode scalars.
     #[cfg(target_os = "linux")]
     fn read_context(&self, field: &FieldHandle) -> Result<TextContext, PlatformError> {
-        self.session("read_context")?.read_context(field)
+        let session = self.session("read_context")?;
+        self.validate_field(field)?;
+        session.read_context(field)
     }
 
     /// Real impl: AT-SPI2 Text interface range around the caret.
@@ -338,7 +384,22 @@ impl PlatformAdapter for LinuxAdapter {
     /// AT-SPI2 per-character screen extents at the caret.
     #[cfg(target_os = "linux")]
     fn caret_rect(&self, field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
-        self.session("caret_rect")?.caret_rect(field)
+        let session = self.session("caret_rect")?;
+        self.validate_field(field)?;
+        session.caret_rect(field)
+    }
+
+    /// AT-SPI Component screen bounds, used by the engine after character-level
+    /// caret geometry returns no usable rectangle (for example, an empty entry).
+    #[cfg(target_os = "linux")]
+    fn popup_anchor(&self, field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+        let session = self.session("popup_anchor")?;
+        self.validate_field(field)?;
+        let anchor = session.popup_anchor(field)?;
+        if anchor.is_some() {
+            eprintln!("compme: Linux caret geometry unavailable; using component popup anchor");
+        }
+        Ok(anchor)
     }
 
     /// Real impl: AT-SPI2 character-extents bounding rectangle of the caret.
@@ -360,7 +421,9 @@ impl PlatformAdapter for LinuxAdapter {
         if !strategy.supports_atomic_range_replace() {
             return Err(Self::unsupported("insert (non-atomic strategy)"));
         }
-        self.session("insert")?.insert(field, text)
+        let session = self.session("insert")?;
+        self.validate_field(field)?;
+        session.insert(field, text)
     }
 
     /// Real impl: AT-SPI2 EditableText insert, else XTEST / `wtype` synthetic typing.
@@ -405,8 +468,9 @@ impl PlatformAdapter for LinuxAdapter {
         range: platform::CorrectionRange,
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError> {
-        self.session("insert_replacing_range")?
-            .insert_replacing_range(field, expected_text, text, range, strategy)
+        let session = self.session("insert_replacing_range")?;
+        self.validate_field(field)?;
+        session.insert_replacing_range(field, expected_text, text, range, strategy)
     }
 }
 
@@ -664,14 +728,17 @@ fn spawn_and_reap_with(
 /// bool) and Windows (ShellExecuteW code) launch checks; a child that outlives the
 /// poll window is best-effort by construction. Shared with
 /// [`reveal`]'s fallback so both report a failing launcher the same way.
-pub(crate) fn xdg_open(target: &str) -> Result<(), PlatformError> {
+pub(crate) fn xdg_open(target: &std::ffi::OsStr) -> Result<(), PlatformError> {
+    // `Command::arg` preserves native path bytes. Lossy rendering is confined
+    // to diagnostics and never feeds back into the launched argument.
+    let display = target.to_string_lossy();
     match spawn_and_reap_with(std::process::Command::new("xdg-open").arg(target), |_| {}) {
         Ok(Some(status)) if !status.success() => Err(PlatformError::CannotComplete {
-            reason: format!("xdg-open {target}: exited with {status}"),
+            reason: format!("xdg-open {display}: exited with {status}"),
         }),
         Ok(_) => Ok(()),
         Err(e) => Err(PlatformError::CannotComplete {
-            reason: format!("xdg-open {target}: {e}"),
+            reason: format!("xdg-open {display}: {e}"),
         }),
     }
 }
@@ -734,7 +801,7 @@ impl platform::shell::ShellHost for LinuxShellHost {
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
-        xdg_open(url)
+        xdg_open(std::ffi::OsStr::new(url))
     }
 
     /// **Deliberately fail-closed.** Linux has no equivalent of the macOS TCC
@@ -1020,12 +1087,12 @@ mod tests {
         assert!(!adapter.environment().version.is_empty());
         // No frontmost app until the real impl lands.
         assert_eq!(adapter.front_app(), None);
-        // Subscribe/IO methods fail closed (UnsupportedField), never panic — the
+        // Session-backed methods fail closed as unavailable, never panic — the
         // host treats this as "no suggestion this turn" and leaves fields alone.
         let cb: FocusCallback = Arc::new(|_field| {});
         assert!(matches!(
             adapter.subscribe_focus(cb),
-            Err(PlatformError::UnsupportedField { .. })
+            Err(PlatformError::AccessibilityUnavailable { .. })
         ));
         // insert_replacing is the method whose missing/wrong impl caused the
         // historical `:smile😄` append-only bug, so pin that the scaffold returns
@@ -1052,12 +1119,16 @@ mod tests {
                 platform::CorrectionRange { start: 0, end: 1 },
                 InsertStrategy::AxSet,
             ),
-            Err(PlatformError::UnsupportedField { .. })
+            Err(PlatformError::AccessibilityUnavailable { .. })
         ));
-        // The two methods the scaffold inherits as trait defaults (fail-OPEN by
-        // design: "no anchor / no domain", which is safe) are pinned here so a
-        // future change to the trait defaults can't silently alter stub behavior.
-        assert!(matches!(adapter.popup_anchor(&field), Ok(None)));
+        // Popup geometry is now AT-SPI-backed and therefore fails closed on the
+        // inert constructor just like caret geometry.
+        assert!(matches!(
+            adapter.popup_anchor(&field),
+            Err(PlatformError::AccessibilityUnavailable { .. })
+        ));
+        // The remaining inherited fail-open default is safe: no page URL simply
+        // disables domain-specific policy for this field.
         assert!(matches!(adapter.focused_page_url(&field), Ok(None)));
     }
 
@@ -1078,7 +1149,7 @@ mod tests {
         let caret_cb: CaretCallback = Arc::new(|_field, _rect| {});
         assert!(matches!(
             adapter.subscribe_caret(caret_cb),
-            Err(PlatformError::UnsupportedField { .. })
+            Err(PlatformError::AccessibilityUnavailable { .. })
         ));
         let accept_cb: AcceptCallback = Arc::new(|_tap| {});
         assert!(matches!(
@@ -1087,15 +1158,15 @@ mod tests {
         ));
         assert!(matches!(
             adapter.capabilities(&field),
-            Err(PlatformError::UnsupportedField { .. })
+            Err(PlatformError::AccessibilityUnavailable { .. })
         ));
         assert!(matches!(
             adapter.read_context(&field),
-            Err(PlatformError::UnsupportedField { .. })
+            Err(PlatformError::AccessibilityUnavailable { .. })
         ));
         assert!(matches!(
             adapter.caret_rect(&field),
-            Err(PlatformError::UnsupportedField { .. })
+            Err(PlatformError::AccessibilityUnavailable { .. })
         ));
         assert!(matches!(
             adapter.insert(&field, "x", InsertStrategy::None),
@@ -1136,13 +1207,18 @@ mod tests {
                 | InsertStrategy::ImeCommit
                 | InsertStrategy::None => {}
             }
-            assert!(
-                matches!(
-                    adapter.insert(&field, "x", strategy),
-                    Err(PlatformError::UnsupportedField { .. })
-                ),
-                "insert {strategy:?}"
-            );
+            let insert = adapter.insert(&field, "x", strategy);
+            if strategy.supports_atomic_range_replace() {
+                assert!(
+                    matches!(insert, Err(PlatformError::AccessibilityUnavailable { .. })),
+                    "atomic insert without AT-SPI {strategy:?}"
+                );
+            } else {
+                assert!(
+                    matches!(insert, Err(PlatformError::UnsupportedField { .. })),
+                    "non-atomic insert {strategy:?}"
+                );
+            }
             assert!(
                 matches!(
                     adapter.insert_replacing(&field, "x", 1, strategy),
@@ -1159,7 +1235,7 @@ mod tests {
                         platform::CorrectionRange { start: 0, end: 1 },
                         strategy,
                     ),
-                    Err(PlatformError::UnsupportedField { .. })
+                    Err(PlatformError::AccessibilityUnavailable { .. })
                 ),
                 "insert_replacing_range {strategy:?}"
             );
@@ -1199,7 +1275,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_reason_names_the_failing_method() {
+    fn unavailable_and_unsupported_reasons_name_the_failing_method() {
         // Fail-closed isn't enough: when a stub rejects, its diagnostic must name
         // BOTH the crate and the exact method, so an operator reading a log can
         // tell *which* unimplemented call fired. Pin the real reason format
@@ -1215,8 +1291,9 @@ mod tests {
             generation: 0,
         };
 
-        let Err(PlatformError::UnsupportedField { reason }) = adapter.capabilities(&field) else {
-            panic!("capabilities should fail closed with UnsupportedField");
+        let Err(PlatformError::AccessibilityUnavailable { reason }) = adapter.capabilities(&field)
+        else {
+            panic!("capabilities should report the unavailable AT-SPI service");
         };
         assert!(
             reason.contains("platform_linux::"),
@@ -1227,18 +1304,20 @@ mod tests {
             "reason should name the failing method `capabilities`: {reason:?}"
         );
         assert!(
-            reason.contains("not yet implemented (Tier 1.1 scaffold)"),
-            "reason should explain the stub is a scaffold: {reason:?}"
+            reason.contains("AT-SPI accessibility session unavailable (no bus)"),
+            "reason should explain the unavailable service: {reason:?}"
         );
         assert_eq!(
-            reason, "platform_linux::capabilities not yet implemented (Tier 1.1 scaffold)",
+            reason,
+            "platform_linux::capabilities: AT-SPI accessibility session unavailable (no bus)",
             "full reason string format pinned"
         );
 
         let caret_cb: CaretCallback = Arc::new(|_field, _rect| {});
-        let Err(PlatformError::UnsupportedField { reason }) = adapter.subscribe_caret(caret_cb)
+        let Err(PlatformError::AccessibilityUnavailable { reason }) =
+            adapter.subscribe_caret(caret_cb)
         else {
-            panic!("subscribe_caret should fail closed with UnsupportedField");
+            panic!("subscribe_caret should report the unavailable AT-SPI service");
         };
         assert!(
             reason.contains("platform_linux::") && reason.contains("subscribe_caret"),

@@ -5,11 +5,10 @@
 //! construction and the macOS-only facades that do not have a portable
 //! contract yet.
 
-#![allow(unused_imports)]
-
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
+#[allow(unused_imports)] // This private facade intentionally re-exports its macOS surface.
 pub use macos::*;
 
 // macOS test builds also compile the stub as a named module so run-loop unit
@@ -19,4 +18,6 @@ pub use macos::*;
 #[cfg(any(test, not(target_os = "macos")))]
 pub mod stub;
 #[cfg(not(target_os = "macos"))]
+#[allow(unused_imports)]
+// Platform facade exports are consumed selectively by each host build.
 pub use stub::*;

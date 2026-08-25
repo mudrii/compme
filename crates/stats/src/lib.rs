@@ -299,8 +299,10 @@ impl Stats {
     }
 
     /// Drop entries that fell out of the trailing window ending at `now_ms`.
-    /// Entries are appended in time order, so expired ones are always at the
-    /// front — pop until the front is back inside the window.
+    /// The fast front-pop assumes appended timestamps are nondecreasing. A
+    /// backward wall-clock adjustment or an intentionally historical sample may
+    /// therefore remain allocated longer, but every query independently applies
+    /// both window bounds, so such a sample cannot affect a reported statistic.
     fn prune(&mut self, now_ms: u64) {
         let cutoff = now_ms.saturating_sub(WINDOW_MS);
         while self.entries.front().is_some_and(|e| e.at_ms < cutoff) {
@@ -411,7 +413,7 @@ impl Stats {
     /// regardless, so expired entries never affect counts/latency results.
     /// Test-only probe for the memory-bound invariant.
     #[cfg(test)]
-    pub fn retained_len(&self) -> usize {
+    fn retained_len(&self) -> usize {
         self.entries.len() + self.latencies.len()
     }
 

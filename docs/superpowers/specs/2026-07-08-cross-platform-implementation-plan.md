@@ -1,7 +1,7 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
-**Date:** 2026-07-08 · **Status:** Phase 0 ✅ shipped 2026-07-08; phases 1–6 pending (implementation actionable on hosted runners; native/live acceptance target-system-gated)
-**Prereqs:** clean `main` (builds, clippy clean, ≈2027 tests green, re-verified 2026-07-21).
+**Date:** 2026-07-08 · **Status:** Phase 0 and Linux Phase 2.1–2.7 core shipped; Windows Phase 1 and Phases 3–6 remain pending (native/live acceptance target-system-gated)
+**Prereqs:** clean `main` (builds, clippy clean, ≈2060 tests green, re-verified 2026-08-25).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
 status ledger; this doc is the execution guide.
 
@@ -9,7 +9,7 @@ Evidence base: full-codebase analysis 2026-07-08 (three-agent sweep: contract
 inventory, macOS-leakage audit, build/CI/packaging audit), every claim initially
 re-verified by grep against `b367f0f`. Status was reconciled again 2026-07-12
 through `76e9987`: Phase 0 remains shipped, macOS v0.1.4 is released, and the
-real Windows/Linux adapters plus Phases 3–6 remain pending.
+Windows adapter, Linux residual surfaces, and Phases 3–6 remain pending.
 
 **Release boundary:** v0.1.4 is tag `18b8dc0`. The runtime/release hardening,
 A2 local/manual-only automation policy, and single model-location-control fix
@@ -214,7 +214,7 @@ target-gated.
 Effort: 4-8 weeks single dev with Windows hardware. Exit: ROADMAP 1.1
 Windows flips ✅; acceptance matrix doc extended with Windows column.
 
-## Phase 2 — Linux adapter, X11-first (implementation actionable; live acceptance needs a Linux desktop/session)
+## Phase 2 — Linux adapter, X11-first (core shipped; residual work remains actionable)
 
 Activate `atspi` (D-Bus) + `x11rb` deps. Wayland is Phase 3 — do not block
 X11 on it.
@@ -229,7 +229,7 @@ X11 on it.
 2.2 **Caret geometry**: `Text.GetCharacterExtents` at caret offset,
     `coords_global_screen=true` (CoordType::Screen).
 2.3 **Accept tap (X11)** — ✅ **IMPLEMENTED 2026-07-28** (`platform_linux::x11_keys`
-    pure + `x11_tap` live; 16 unit tests on every host, 6 live tests in the
+    pure + `x11_tap` live; 17 unit tests on every host, 6 live tests in the
     harness). See ROADMAP §1.1 "Phase 2.3 accept tap" for what shipped, including
     the two places this plan turned out to be wrong: `BadAccess` degrades to
     `KeyInterceptMode::None` rather than `HotkeyOnly` (that variant promises an
@@ -349,7 +349,8 @@ in-app consumption (ROADMAP 1.2 note stands).
   tools/acceptance e2e to per-OS variants (osascript → PowerShell UIA
   script / dogtail+Xvfb).
 - ACCEPTANCE.md per-OS gates; ARCHITECTURE.md adapter chapters. Keep README's
-  current support table honest (macOS released; Windows/Linux scaffold-only),
+  current support table honest (macOS released; Linux wired/experimental;
+  Windows scaffold-only),
   then extend it with per-desktop UxMode expectations as real adapters land
   (GNOME-Wayland: Hotkey until Phase 3 lands, etc.).
 

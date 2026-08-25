@@ -16,6 +16,10 @@ usage() {
   echo "usage: notarize-app.sh path/to/Compme.app | --self-test" >&2
 }
 
+portable_file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
 notary_auth_args=()
 
 build_notary_auth_args() {
@@ -65,7 +69,7 @@ build_notary_auth_args() {
 }
 
 run_self_test() {
-  local fake_bin app log
+  local fake_bin mode_bin app log
   for name in \
     COMPME_NOTARYTOOL_KEYCHAIN_PROFILE COMPME_NOTARYTOOL_KEY_BASE64 \
     COMPME_NOTARYTOOL_KEY_PATH COMPME_NOTARYTOOL_KEY_ID \
@@ -80,12 +84,27 @@ run_self_test() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-notarize-self-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   fake_bin="$tmp/bin"
+  mode_bin="$tmp/mode-bin"
   app="$tmp/Compme.app"
   log="$tmp/commands.log"
-  mkdir -p "$fake_bin" "$app/Contents/MacOS"
+  mkdir -p "$fake_bin" "$mode_bin" "$app/Contents/MacOS"
   printf '<plist version="1.0"><dict></dict></plist>\n' >"$app/Contents/Info.plist"
   printf '#!/usr/bin/env bash\n' >"$app/Contents/MacOS/compme"
   chmod +x "$app/Contents/MacOS/compme"
+
+  cat >"$mode_bin/stat" <<'SH'
+#!/usr/bin/env bash
+case "${COMPME_STAT_STYLE:-}:$1" in
+  gnu:-c) echo 600 ;;
+  gnu:-f) echo 'GNU filesystem dump';;
+  bsd:-c) exit 1 ;;
+  bsd:-f) echo 600 ;;
+  *) exit 2 ;;
+esac
+SH
+  chmod +x "$mode_bin/stat"
+  [[ "$(PATH="$mode_bin:$PATH" COMPME_STAT_STYLE=gnu portable_file_mode "$app")" == "600" ]]
+  [[ "$(PATH="$mode_bin:$PATH" COMPME_STAT_STYLE=bsd portable_file_mode "$app")" == "600" ]]
 
   cat >"$fake_bin/ditto" <<'SH'
 #!/usr/bin/env bash
@@ -136,7 +155,7 @@ SH
     "$0" "$app" >"$tmp/stdout-api"
   grep -Fq "xcrun notarytool submit --wait --timeout 45m --key $key_file --key-id ABC123DEFG --issuer 00000000-0000-0000-0000-000000000000" "$log"
   grep -Fq "PRIVATE KEY" "$key_file"
-  key_mode="$(stat -f '%Lp' "$key_file" 2>/dev/null || stat -c '%a' "$key_file")"
+  key_mode="$(portable_file_mode "$key_file")"
   if [ "$key_mode" != "600" ]; then
     echo "self-test FAILED: decoded key file mode is $key_mode, expected 600" >&2
     return 1

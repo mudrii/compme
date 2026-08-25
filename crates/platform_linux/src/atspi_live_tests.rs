@@ -43,6 +43,9 @@ const FIXTURE_TEXTVIEW: &str = "compme-fixture-textview";
 /// What linux-atspi-fixture.c seeds the entry with.
 const FIXTURE_TEXT: &str = "teh quick brown";
 
+/// What linux-atspi-fixture.c seeds the multi-line text view with.
+const FIXTURE_VIEW_TEXT: &str = "Hello from the compme AT-SPI2 fixture.\nSecond line.";
+
 /// Ceiling on waiting for an event that a correct implementation delivers in
 /// milliseconds. Generous because it is only paid when something is broken.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -68,13 +71,8 @@ fn fixture_entry(session: &AtspiSession) -> ElementId {
     id
 }
 
-fn handle(id: &ElementId) -> FieldHandle {
-    FieldHandle {
-        app: "compme-fixture".to_string(),
-        pid: None,
-        element_id: id.encode(),
-        generation: 0,
-    }
+fn handle(adapter: &LinuxAdapter, id: &ElementId) -> FieldHandle {
+    adapter.register_test_field(id)
 }
 
 /// A test-owned connection to the accessibility bus, independent of the adapter's.
@@ -120,8 +118,9 @@ fn editable(session: &AtspiSession, id: &ElementId) -> EditableTextProxyBlocking
 fn live_focused_field_is_the_fixture_entry_and_reads_its_text() {
     let session = session();
     let id = fixture_entry(&session);
-    let context = LinuxAdapter::with_accessibility()
-        .read_context(&handle(&id))
+    let adapter = LinuxAdapter::with_accessibility();
+    let context = adapter
+        .read_context(&handle(&adapter, &id))
         .expect("read_context");
 
     assert_eq!(
@@ -158,7 +157,9 @@ fn live_offsets_count_scalars_not_utf16_units() {
     let entry = editable(&session, &id);
     entry.set_text_contents("a😀b").expect("seed astral text");
 
-    let context = adapter.read_context(&handle(&id)).expect("read_context");
+    let context = adapter
+        .read_context(&handle(&adapter, &id))
+        .expect("read_context");
     assert_eq!(format!("{}{}", context.left, context.right), "a😀b");
     let scalars = context.left.chars().count() + context.right.chars().count();
     assert_eq!(scalars, 3, "the field holds 3 scalars");
@@ -184,7 +185,9 @@ fn live_selection_is_reported_as_a_scalar_range_with_its_text() {
     // Select "quick" in "teh quick brown" (scalars 4..9).
     text.add_selection(4, 9).expect("add_selection");
 
-    let context = adapter.read_context(&handle(&id)).expect("read_context");
+    let context = adapter
+        .read_context(&handle(&adapter, &id))
+        .expect("read_context");
     let range = context.selection.expect("a selection was set");
     assert_eq!((range.start, range.end), (4, 9));
     assert_eq!(context.selected_text.as_deref(), Some("quick"));
@@ -197,8 +200,9 @@ fn live_selection_is_reported_as_a_scalar_range_with_its_text() {
 fn live_capabilities_describe_an_editable_single_line_entry() {
     let session = session();
     let id = fixture_entry(&session);
-    let caps = LinuxAdapter::with_accessibility()
-        .capabilities(&handle(&id))
+    let adapter = LinuxAdapter::with_accessibility();
+    let caps = adapter
+        .capabilities(&handle(&adapter, &id))
         .expect("capabilities");
 
     assert!(caps.readable_text && caps.readable_caret && caps.writable);
@@ -227,8 +231,9 @@ fn live_capabilities_describe_an_editable_single_line_entry() {
 fn live_caret_rect_is_real_screen_geometry() {
     let session = session();
     let id = fixture_entry(&session);
-    let rect = LinuxAdapter::with_accessibility()
-        .caret_rect(&handle(&id))
+    let adapter = LinuxAdapter::with_accessibility();
+    let rect = adapter
+        .caret_rect(&handle(&adapter, &id))
         .expect("caret_rect")
         .expect("a mapped entry has character geometry");
 
@@ -239,6 +244,39 @@ fn live_caret_rect_is_real_screen_geometry() {
         rect.x >= 0.0 && rect.y >= 0.0 && rect.x < 1280.0 && rect.y < 1024.0,
         "caret rect off-screen: {rect:?}"
     );
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_empty_entry_uses_component_bounds_as_popup_anchor() {
+    let session = session();
+    let id = fixture_entry(&session);
+    let adapter = LinuxAdapter::with_accessibility();
+    editable(&session, &id)
+        .set_text_contents("")
+        .expect("empty fixture entry");
+    let field = handle(&adapter, &id);
+
+    assert_eq!(adapter.caret_rect(&field).expect("caret_rect"), None);
+    let anchor = adapter
+        .popup_anchor(&field)
+        .expect("popup_anchor")
+        .expect("the mapped entry has component bounds");
+    assert!(
+        anchor.w > 0.0 && anchor.h > 0.0,
+        "degenerate anchor: {anchor:?}"
+    );
+    assert!(
+        anchor.x >= 0.0 && anchor.y >= 0.0 && anchor.x < 1280.0 && anchor.y < 1024.0,
+        "popup anchor off-screen: {anchor:?}"
+    );
+    let entry = editable(&session, &id);
+    entry
+        .set_text_contents(FIXTURE_TEXT)
+        .expect("restore fixture text");
+    zbus_text(&id)
+        .set_caret_offset(i32::try_from(FIXTURE_TEXT.chars().count()).unwrap())
+        .expect("restore fixture caret");
 }
 
 #[test]
@@ -255,23 +293,50 @@ fn live_front_app_names_the_fixture() {
 #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
 fn live_malformed_and_stale_ids_fail_closed_without_panicking() {
     let adapter = LinuxAdapter::with_accessibility();
-    let mut bad = handle(&ElementId::new(":1.0", "/"));
+    let mut bad = handle(&adapter, &ElementId::new(":1.0", "/"));
     bad.element_id = "not-an-element-id".to_string();
     assert!(matches!(
         adapter.read_context(&bad),
-        Err(PlatformError::UnsupportedField { .. })
+        Err(PlatformError::StaleField)
     ));
     assert!(matches!(
         adapter.capabilities(&bad),
-        Err(PlatformError::UnsupportedField { .. })
+        Err(PlatformError::StaleField)
     ));
 
     // A well-formed id for a bus name nobody owns: the D-Bus call must surface as
     // an error, never a panic or a fabricated empty context.
-    let gone = handle(&ElementId::new(":1.99999", "/org/a11y/atspi/accessible/1"));
+    let gone = handle(
+        &adapter,
+        &ElementId::new(":1.99999", "/org/a11y/atspi/accessible/1"),
+    );
     assert!(adapter.read_context(&gone).is_err());
     assert!(adapter.capabilities(&gone).is_err());
     assert!(adapter.caret_rect(&gone).is_err());
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_every_atspi_io_path_rejects_a_stale_generation_before_io() {
+    let session = session();
+    let entry = fixture_entry(&session);
+    let textview = fixture_sibling(&entry, FIXTURE_TEXTVIEW);
+    let adapter = LinuxAdapter::with_accessibility();
+    let stale = handle(&adapter, &entry);
+    let _current = handle(&adapter, &textview);
+    let range = platform::CorrectionRange { start: 0, end: 1 };
+
+    assert_eq!(adapter.capabilities(&stale), Err(PlatformError::StaleField));
+    assert_eq!(adapter.read_context(&stale), Err(PlatformError::StaleField));
+    assert_eq!(adapter.caret_rect(&stale), Err(PlatformError::StaleField));
+    assert_eq!(
+        adapter.insert(&stale, "x", InsertStrategy::NativeRangeSet),
+        Err(PlatformError::StaleField)
+    );
+    assert_eq!(
+        adapter.insert_replacing_range(&stale, "t", "x", range, InsertStrategy::NativeRangeSet,),
+        Err(PlatformError::StaleField)
+    );
 }
 
 #[test]
@@ -285,13 +350,15 @@ fn live_insert_puts_text_at_the_caret() {
     zbus_text(&id).set_caret_offset(3).expect("caret to end");
 
     let inserted = adapter
-        .insert(&handle(&id), "XY", InsertStrategy::NativeRangeSet)
+        .insert(&handle(&adapter, &id), "XY", InsertStrategy::NativeRangeSet)
         .expect("insert");
     assert_eq!(inserted.chars, 2);
     assert_eq!(inserted.bytes, 2);
     assert_eq!(inserted.strategy, InsertStrategy::NativeRangeSet);
 
-    let context = adapter.read_context(&handle(&id)).expect("read back");
+    let context = adapter
+        .read_context(&handle(&adapter, &id))
+        .expect("read back");
     assert_eq!(format!("{}{}", context.left, context.right), "abcXY");
 
     entry.set_text_contents(FIXTURE_TEXT).expect("restore");
@@ -309,7 +376,7 @@ fn live_range_replace_swaps_exactly_the_range() {
 
     let inserted = adapter
         .insert_replacing_range(
-            &handle(&id),
+            &handle(&adapter, &id),
             "teh",
             "the",
             platform::CorrectionRange { start: 0, end: 3 },
@@ -318,7 +385,9 @@ fn live_range_replace_swaps_exactly_the_range() {
         .expect("range replace");
     assert_eq!(inserted.chars, 3);
 
-    let context = adapter.read_context(&handle(&id)).expect("read back");
+    let context = adapter
+        .read_context(&handle(&adapter, &id))
+        .expect("read back");
     assert_eq!(
         format!("{}{}", context.left, context.right),
         "the quick brown"
@@ -355,7 +424,7 @@ fn live_range_replace_refuses_a_stale_or_impossible_range_and_leaves_the_field_a
         ),
     ] {
         let result = adapter.insert_replacing_range(
-            &handle(&id),
+            &handle(&adapter, &id),
             expected,
             "REPLACED",
             replace_range,
@@ -365,7 +434,9 @@ fn live_range_replace_refuses_a_stale_or_impossible_range_and_leaves_the_field_a
             matches!(result, Err(PlatformError::UnsupportedField { .. })),
             "{label} must fail closed, got {result:?}"
         );
-        let context = adapter.read_context(&handle(&id)).expect("read back");
+        let context = adapter
+            .read_context(&handle(&adapter, &id))
+            .expect("read back");
         assert_eq!(
             format!("{}{}", context.left, context.right),
             FIXTURE_TEXT,
@@ -382,11 +453,60 @@ fn live_range_replace_refuses_a_stale_or_impossible_range_and_leaves_the_field_a
     ] {
         assert!(
             adapter
-                .insert_replacing_range(&handle(&id), "teh", "the", range, strategy)
+                .insert_replacing_range(&handle(&adapter, &id), "teh", "the", range, strategy,)
                 .is_err(),
             "{strategy:?} must not range-replace"
         );
     }
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_over_cap_field_refuses_read_and_replace_without_mutation() {
+    // The old implementation took only the first 200,000 scalars, rebuilt that
+    // capped snapshot, and wrote it back. Replacing one scalar with one scalar
+    // therefore returned success while silently deleting the final character.
+    let session = session();
+    let entry = fixture_entry(&session);
+    let textview = fixture_sibling(&entry, FIXTURE_TEXTVIEW);
+    let adapter = LinuxAdapter::with_accessibility();
+    let editable = editable(&session, &textview);
+    let text = zbus_text(&textview);
+    let oversized = "x".repeat(200_001);
+    editable
+        .set_text_contents(&oversized)
+        .expect("seed cap-crossing text view");
+    let before_count = text.character_count().expect("count seeded text");
+
+    let read = adapter.read_context(&handle(&adapter, &textview));
+    let replace = adapter.insert_replacing_range(
+        &handle(&adapter, &textview),
+        "x",
+        "y",
+        platform::CorrectionRange { start: 0, end: 1 },
+        InsertStrategy::NativeRangeSet,
+    );
+    let after_count = text.character_count().expect("count after refusal");
+
+    // Restore before asserting, so a failed regression does not poison every
+    // later live test with a huge fixture value.
+    editable
+        .set_text_contents(FIXTURE_VIEW_TEXT)
+        .expect("restore text view");
+
+    assert!(
+        matches!(read, Err(PlatformError::UnsupportedField { .. })),
+        "an over-cap field must not produce a lossy context, got {read:?}"
+    );
+    assert!(
+        matches!(replace, Err(PlatformError::UnsupportedField { .. })),
+        "an over-cap field must not be replaced, got {replace:?}"
+    );
+    assert_eq!(before_count, 200_001, "fixture must cross the exact cap");
+    assert_eq!(
+        after_count, before_count,
+        "a refused replacement must not truncate the field"
+    );
 }
 
 #[test]
@@ -398,14 +518,19 @@ fn live_insert_replacing_left_stays_fail_closed() {
     let session = session();
     let id = fixture_entry(&session);
     let adapter = LinuxAdapter::with_accessibility();
-    let before = adapter.read_context(&handle(&id)).expect("read");
+    let before = adapter.read_context(&handle(&adapter, &id)).expect("read");
 
-    let result = adapter.insert_replacing(&handle(&id), "the", 3, InsertStrategy::NativeRangeSet);
+    let result = adapter.insert_replacing(
+        &handle(&adapter, &id),
+        "the",
+        3,
+        InsertStrategy::NativeRangeSet,
+    );
     assert!(matches!(
         result,
         Err(PlatformError::UnsupportedField { .. })
     ));
-    let after = adapter.read_context(&handle(&id)).expect("read");
+    let after = adapter.read_context(&handle(&adapter, &id)).expect("read");
     assert_eq!(
         format!("{}{}", before.left, before.right),
         format!("{}{}", after.left, after.right)
@@ -454,8 +579,9 @@ fn x11() -> (x11rb::rust_connection::RustConnection, u32, (u16, u16)) {
 fn fixture_caret_rect() -> ScreenRect {
     let session = session();
     let id = fixture_entry(&session);
-    LinuxAdapter::with_accessibility()
-        .caret_rect(&handle(&id))
+    let adapter = LinuxAdapter::with_accessibility();
+    adapter
+        .caret_rect(&handle(&adapter, &id))
         .expect("caret_rect")
         .expect("a mapped entry has character geometry")
 }
@@ -959,6 +1085,7 @@ fn live_caret_events_deliver_on_screen_geometry_and_stop_when_dropped() {
     let session = session();
     let entry = fixture_entry(&session);
     let adapter = LinuxAdapter::with_accessibility();
+    let focused = handle(&adapter, &entry);
     let text = zbus_text(&entry);
 
     let (tx, rx) = mpsc::channel();
@@ -971,7 +1098,7 @@ fn live_caret_events_deliver_on_screen_geometry_and_stop_when_dropped() {
 
     text.set_caret_offset(0).expect("caret to the start");
     let (field, rect) = rx.recv_timeout(EVENT_TIMEOUT).expect("caret event");
-    assert_eq!(field.element_id, entry.encode());
+    assert_eq!(field, focused, "caret must reuse the current focus handle");
     let rect = rect.expect("a mapped entry has character geometry");
     assert!(rect.w > 0.0 && rect.h > 0.0, "degenerate rect: {rect:?}");
     // Same bound as the caret_rect test: the fixture lives inside a 1280x1024 Xvfb
@@ -1058,6 +1185,7 @@ mod x11_accept_tap {
     const KEYSYM_ESCAPE: u32 = 0xff1b;
     const KEYSYM_DOWN: u32 = 0xff54;
     const KEYSYM_CONTROL_L: u32 = 0xffe3;
+    const KEYSYM_RETURN: u32 = 0xff0d;
     /// Generous, like the spike's: a miss costs the full wait, while a false "not
     /// received" would invert the verdict.
     const KEY_WAIT: Duration = Duration::from_millis(2000);
@@ -1408,6 +1536,180 @@ mod x11_accept_tap {
 
     #[test]
     #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+    fn live_accept_tap_ignores_an_unrelated_alt_tab_owner() {
+        let (owner, root) = xtest();
+        let tab = keycode(&owner, KEYSYM_TAB);
+        owner
+            .grab_key(
+                false,
+                root,
+                x11rb::protocol::xproto::ModMask::M1,
+                tab,
+                x11rb::protocol::xproto::GrabMode::ASYNC,
+                x11rb::protocol::xproto::GrabMode::ASYNC,
+            )
+            .expect("Alt+Tab grab request")
+            .check()
+            .expect("the isolated Xvfb has Alt+Tab free");
+
+        let (_adapter, subscription, recorded) = install_tap();
+        subscription
+            .set_suggestion_visible(true)
+            .expect("bare accept chords remain installable");
+        tap_key(&owner, root, KEYSYM_TAB);
+        assert_eq!(
+            delivered(&recorded, 1),
+            vec![TapControl::Accept(AcceptAction::Word)],
+            "another client's Alt+Tab must not block compme's bare Tab"
+        );
+        drop(subscription);
+        restore_entry_focus();
+    }
+
+    #[test]
+    #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+    fn live_accept_tap_rebinds_while_armed() {
+        crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
+        let (conn, root) = xtest();
+        let (_adapter, subscription, recorded) = install_tap();
+        subscription.set_suggestion_visible(true).expect("arm");
+
+        crate::x11_keys::set_accept_chords_with_mods(Some((36, 0)), None, None)
+            .expect("Return word rebind");
+        subscription
+            .rearm_accept_tap()
+            .expect("transactional live rebind");
+
+        tap_key(&conn, root, KEYSYM_RETURN);
+        assert_eq!(
+            delivered(&recorded, 1),
+            vec![TapControl::Accept(AcceptAction::Word)],
+            "the new Return chord must accept immediately"
+        );
+        let tabs = key_count("Tab") + 1;
+        tap_key(&conn, root, KEYSYM_TAB);
+        assert_eq!(
+            wait_for_key_count("Tab", tabs),
+            tabs,
+            "the old Tab chord must be released after rebind"
+        );
+        assert_eq!(delivered(&recorded, 2).len(), 1);
+
+        drop(subscription);
+        crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
+        restore_entry_focus();
+    }
+
+    #[test]
+    #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+    fn live_accept_tap_failed_rebind_restores_the_armed_plan() {
+        crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
+        let (owner, root) = xtest();
+        let return_key = keycode(&owner, KEYSYM_RETURN);
+        owner
+            .grab_key(
+                false,
+                root,
+                x11rb::protocol::xproto::ModMask::from(0u16),
+                return_key,
+                x11rb::protocol::xproto::GrabMode::ASYNC,
+                x11rb::protocol::xproto::GrabMode::ASYNC,
+            )
+            .expect("bare Return grab request")
+            .check()
+            .expect("the isolated Xvfb has bare Return free");
+
+        let (_adapter, subscription, recorded) = install_tap();
+        subscription.set_suggestion_visible(true).expect("arm");
+        crate::x11_keys::set_accept_chords_with_mods(Some((36, 0)), None, None)
+            .expect("Return word rebind");
+        assert!(
+            subscription.rearm_accept_tap().is_err(),
+            "another client's bare Return grab must reject the new plan"
+        );
+
+        tap_key(&owner, root, KEYSYM_TAB);
+        assert_eq!(
+            delivered(&recorded, 1),
+            vec![TapControl::Accept(AcceptAction::Word)],
+            "a failed rebind must restore the previously armed Tab plan"
+        );
+
+        drop(subscription);
+        crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
+        restore_entry_focus();
+    }
+
+    #[test]
+    #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+    fn live_accept_tap_rebuilds_its_plan_after_keyboard_mapping_notify() {
+        let (conn, root) = xtest();
+        let setup = conn.setup();
+        let min = setup.min_keycode;
+        let count = setup.max_keycode - min + 1;
+        let original = conn
+            .get_keyboard_mapping(min, count)
+            .expect("mapping request")
+            .reply()
+            .expect("mapping reply");
+        let per = usize::from(original.keysyms_per_keycode);
+        let old_tab = keycode_for_keysym(
+            min,
+            original.keysyms_per_keycode,
+            &original.keysyms,
+            KEYSYM_TAB,
+        )
+        .expect("Tab keycode");
+        let replacement = (min..=setup.max_keycode)
+            .find(|candidate| {
+                *candidate != old_tab && original.keysyms[usize::from(*candidate - min) * per] != 0
+            })
+            .expect("a second mapped keycode");
+        let first = old_tab.min(replacement);
+        let last = old_tab.max(replacement);
+        let start = usize::from(first - min) * per;
+        let end = (usize::from(last - min) + 1) * per;
+        let mut changed = original.keysyms[start..end].to_vec();
+        let old_index = usize::from(old_tab - first) * per;
+        let new_index = usize::from(replacement - first) * per;
+        changed.swap(old_index, new_index);
+
+        let (_adapter, subscription, recorded) = install_tap();
+        subscription.set_suggestion_visible(true).expect("arm");
+        conn.change_keyboard_mapping(
+            usize::from(last - first + 1) as u8,
+            first,
+            original.keysyms_per_keycode,
+            &changed,
+        )
+        .expect("change mapping")
+        .check()
+        .expect("change mapping reply");
+        conn.flush().expect("flush mapping change");
+
+        for press in [KEY_PRESS_EVENT, KEY_RELEASE_EVENT] {
+            conn.xtest_fake_input(press, replacement, 0, root, 0, 0, 0)
+                .expect("XTEST rebound Tab")
+                .ignore_error();
+        }
+        conn.flush().expect("flush rebound Tab");
+        assert_eq!(
+            delivered(&recorded, 1),
+            vec![TapControl::Accept(AcceptAction::Word)],
+            "MappingNotify must move the live grab to Tab's new keycode"
+        );
+
+        drop(subscription);
+        conn.change_keyboard_mapping(count, min, original.keysyms_per_keycode, &original.keysyms)
+            .expect("restore mapping")
+            .check()
+            .expect("restore mapping reply");
+        conn.flush().expect("flush restored mapping");
+        restore_entry_focus();
+    }
+
+    #[test]
+    #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
     fn live_accept_tap_reports_dismiss_and_cycle_with_their_controls() {
         let (conn, root) = xtest();
         let (_adapter, subscription, recorded) = install_tap();
@@ -1471,8 +1773,9 @@ mod x11_accept_tap {
         restore_entry_focus();
         let session = session();
         let id = fixture_entry(&session);
-        let caps = LinuxAdapter::with_accessibility()
-            .capabilities(&handle(&id))
+        let adapter = LinuxAdapter::with_accessibility();
+        let caps = adapter
+            .capabilities(&handle(&adapter, &id))
             .expect("capabilities");
         assert_eq!(caps.accept_intercept, platform::KeyInterceptMode::XGrabKey);
         // An adapter that never probed must stay fail-closed on both counts.

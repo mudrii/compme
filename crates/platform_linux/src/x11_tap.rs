@@ -22,17 +22,17 @@
 //! moment the grab activates until `XAllowEvents`. If compme stalls in between,
 //! the user's keyboard stops responding in every application. Coverage:
 //!
-//! 1. **Normal path.** The event thread resolves *before* it does anything else:
-//!    the decision is a pure function over local state, `allow_events` +
-//!    `flush` go out immediately, and only then is the control handed to the
-//!    dispatcher. Nothing between the event and the resolve can block.
+//! 1. **Normal path.** The event thread resolves *before* it dispatches any
+//!    callback: it takes a bounded snapshot of the current grab plan and
+//!    action, sends `allow_events` + `flush` immediately, and only then hands
+//!    control to the dispatcher.
 //! 2. **Engine/user code.** The `AcceptCallback` runs on a **separate dispatcher
 //!    thread**, fed by a channel (the macOS adapter's `callback_tx` shape). A
 //!    callback that blocks or panics therefore cannot delay a resolve.
 //! 3. **Panic.** Each callback invocation is wrapped in `catch_unwind`, and the
 //!    event thread's own body is too, so an unwind cannot skip the final thaw.
-//! 4. **Watchdog.** A third thread ticks every [`WATCHDOG_TICK`] using only
-//!    atomics, and past [`crate::x11_keys::FREEZE_BUDGET_MS`] it thaws with
+//! 4. **Watchdog.** A third thread reads its deadlines from atomics every
+//!    `WATCHDOG_TICK`, and past [`crate::x11_keys::FREEZE_BUDGET_MS`] it thaws with
 //!    `ReplayKeyboard` (fail *open* — the user's keystroke outranks the accept)
 //!    and drops the grab. It also enforces a hard cap on how long the grab may
 //!    stay armed and the engine's scheduled-hide failsafe.
@@ -52,6 +52,8 @@ use crate::x11_keys::{
     GrabTransition, KeyDecision, WatchdogAction, UNSET_MS,
 };
 use platform::{AcceptAction, AcceptCallback, KeyInterceptMode, PlatformError, TapControl};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -59,8 +61,8 @@ use std::time::Duration;
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
 use x11rb::protocol::xproto::{
-    Allow, ClientMessageEvent, ConnectionExt, CreateWindowAux, EventMask, GrabMode, ModMask,
-    Window, WindowClass,
+    Allow, ClientMessageEvent, ConnectionExt, CreateWindowAux, EventMask, GrabMode, Mapping,
+    ModMask, Window, WindowClass,
 };
 use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
@@ -85,23 +87,171 @@ fn cannot_complete(what: &str, err: impl std::fmt::Display) -> PlatformError {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_mask_expansion_covers_caps_and_discovered_numlock_without_duplicates() {
+        assert_eq!(
+            expanded_lock_masks(0, 1 << 5),
+            vec![0, 1 << 1, 1 << 5, (1 << 1) | (1 << 5)]
+        );
+        assert_eq!(
+            expanded_lock_masks(1 << 2, 0),
+            vec![1 << 2, (1 << 2) | (1 << 1)]
+        );
+        assert_eq!(expanded_lock_masks(1 << 1, 1 << 1), vec![1 << 1]);
+    }
+
+    #[test]
+    #[ignore = "needs an X session: run-linux-atspi-session.sh --run-in-session"]
+    fn partial_worker_spawn_failure_joins_every_started_worker() {
+        for fail_at in [2, 3] {
+            let live_workers = Arc::new(AtomicUsize::new(0));
+            let result = X11AcceptTap::install_with_spawner(
+                Arc::new(|_| {}),
+                WorkerSpawner::fail_at(fail_at, Arc::clone(&live_workers)),
+            );
+
+            assert!(result.is_err(), "worker spawn {fail_at} must fail");
+            assert_eq!(
+                live_workers.load(Ordering::SeqCst),
+                0,
+                "spawn failure {fail_at} returned with a worker still alive"
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct WorkerSpawner {
+    #[cfg(test)]
+    test_control: Option<SpawnTestControl>,
+}
+
+#[cfg(test)]
+struct SpawnTestControl {
+    next_spawn: usize,
+    fail_at: usize,
+    live_workers: Arc<AtomicUsize>,
+}
+
+#[cfg(test)]
+struct WorkerLifetime(Arc<AtomicUsize>);
+
+#[cfg(test)]
+impl WorkerLifetime {
+    fn new(live_workers: Arc<AtomicUsize>) -> Self {
+        live_workers.fetch_add(1, Ordering::SeqCst);
+        Self(live_workers)
+    }
+}
+
+#[cfg(test)]
+impl Drop for WorkerLifetime {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl WorkerSpawner {
+    #[cfg(test)]
+    fn fail_at(fail_at: usize, live_workers: Arc<AtomicUsize>) -> Self {
+        Self {
+            test_control: Some(SpawnTestControl {
+                next_spawn: 0,
+                fail_at,
+                live_workers,
+            }),
+        }
+    }
+
+    fn spawn<F>(
+        &mut self,
+        name: &str,
+        what: &str,
+        worker: F,
+    ) -> Result<JoinHandle<()>, PlatformError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        #[cfg(test)]
+        if let Some(control) = self.test_control.as_mut() {
+            control.next_spawn += 1;
+            if control.next_spawn == control.fail_at {
+                return Err(cannot_complete(
+                    what,
+                    std::io::Error::other("injected worker-spawn failure"),
+                ));
+            }
+        }
+
+        #[cfg(test)]
+        let lifetime = self
+            .test_control
+            .as_ref()
+            .map(|control| WorkerLifetime::new(Arc::clone(&control.live_workers)));
+
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                #[cfg(test)]
+                let _lifetime = lifetime;
+                worker();
+            })
+            .map_err(|err| cannot_complete(what, err))
+    }
+}
+
 /// One grabbed key: the keysym a binding names and the keycode this layout puts
 /// it on.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GrabbedKey {
     keysym: u32,
     keycode: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PlannedGrab {
+    keysym: u32,
+    keycode: u8,
+    modifiers: u16,
+}
+
+#[derive(Clone, Debug)]
+struct GrabPlan {
+    bindings: AcceptBindings,
+    keys: Vec<GrabbedKey>,
+    grabs: Vec<PlannedGrab>,
+}
+
+impl GrabPlan {
+    fn decision_for_keycode(
+        &self,
+        keycode: u8,
+        modifiers: u16,
+        action: Option<AcceptAction>,
+    ) -> KeyDecision {
+        self.keys
+            .iter()
+            .filter(|key| key.keycode == keycode)
+            .map(|key| key_decision(&self.bindings, key.keysym, modifiers, action))
+            .find(|decision| matches!(decision, KeyDecision::Consume(_)))
+            .unwrap_or(KeyDecision::PassThrough)
+    }
+}
+
 /// State shared by the event thread, the watchdog and the engine-side control
-/// calls. Everything the watchdog needs is an atomic, so it can never be blocked
-/// by a lock the event thread holds.
+/// calls. Deadline decisions use atomics; applying a disarm uses the same short
+/// state locks and X request path as an engine-side hide.
 struct TapState {
     /// Monotonic epoch for every `*_ms` field below.
     epoch: std::time::Instant,
-    bindings: AcceptBindings,
     root: Window,
-    keys: Vec<GrabbedKey>,
+    /// One synchronized snapshot of bindings, resolved keycodes, and exact
+    /// passive grabs. Mapping changes and live rebinds swap this transactionally.
+    plan: Mutex<GrabPlan>,
     /// The armed accept action. `None` means disarmed, and the grab's existence
     /// tracks it exactly (see [`arm_transition`]).
     action: Mutex<Option<AcceptAction>>,
@@ -122,7 +272,7 @@ struct TapState {
     /// False once the subscription is dropped: control calls become no-ops
     /// rather than errors, matching the macOS controller.
     active: AtomicBool,
-    /// Set by teardown; both worker threads exit at their next check.
+    /// Set by teardown; all worker threads exit at their next check.
     stopping: AtomicBool,
 }
 
@@ -135,13 +285,6 @@ impl TapState {
         // Poison recovery rather than an error: this is read on the resolve path,
         // where refusing to decide would leave the keyboard frozen.
         *self.action.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn keysym_for_keycode(&self, keycode: u8) -> Option<u32> {
-        self.keys
-            .iter()
-            .find(|key| key.keycode == keycode)
-            .map(|key| key.keysym)
     }
 }
 
@@ -172,7 +315,16 @@ pub struct X11AcceptTap {
 impl std::fmt::Debug for X11AcceptTap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("X11AcceptTap")
-            .field("keys", &self.state.keys.len())
+            .field(
+                "keys",
+                &self
+                    .state
+                    .plan
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .keys
+                    .len(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -196,21 +348,19 @@ pub fn probe_accept_intercept() -> KeyInterceptMode {
 }
 
 fn trial_grab() -> Result<(), PlatformError> {
-    let (conn, root, keys) = open_and_resolve(&crate::x11_keys::configured_bindings())?;
+    let (conn, root, plan) = open_and_build(&crate::x11_keys::configured_bindings())?;
     // The trial grab is what catches a window manager already holding Tab. It
     // exists for microseconds; a keystroke inside that window would activate a
     // grab nobody resolves, so the ungrab is unconditional and the connection is
     // closed immediately after, which thaws the keyboard even if it did.
-    let result = grab_keys(&conn, root, &keys);
-    ungrab_keys(&conn, root, &keys);
+    let result = grab_plan(&conn, root, &plan);
+    ungrab_plan(&conn, root, &plan);
     result
 }
 
-/// Connect to the X server and resolve every bound keysym to a keycode on the
-/// current layout.
-fn open_and_resolve(
+fn open_and_build(
     bindings: &AcceptBindings,
-) -> Result<(RustConnection, Window, Vec<GrabbedKey>), PlatformError> {
+) -> Result<(RustConnection, Window, GrabPlan), PlatformError> {
     if bindings.is_empty() {
         return Err(PlatformError::UnsupportedField {
             reason: "platform_linux x11 tap: no accept chord translates to an X11 keysym".into(),
@@ -223,6 +373,22 @@ fn open_and_resolve(
         .get(screen_num)
         .ok_or_else(|| cannot_complete("screen", "the display reported no such screen"))?
         .root;
+    let plan = build_grab_plan(&conn, bindings)?;
+    Ok((conn, root, plan))
+}
+
+/// Resolve configured chords, the current keyboard layout, and the server's
+/// actual NumLock modifier into one exact passive-grab plan.
+fn build_grab_plan(
+    conn: &RustConnection,
+    bindings: &AcceptBindings,
+) -> Result<GrabPlan, PlatformError> {
+    if bindings.is_empty() {
+        return Err(PlatformError::UnsupportedField {
+            reason: "platform_linux x11 tap: no accept chord translates to an X11 keysym".into(),
+        });
+    }
+    let setup = conn.setup();
     let min_keycode = setup.min_keycode;
     let count = setup
         .max_keycode
@@ -246,18 +412,81 @@ fn open_and_resolve(
             // intercepted — the application keeps receiving the key.
             continue;
         };
-        // Two keysyms can land on one keycode; grabbing a keycode twice is an
-        // Access error against ourselves, so keep the first.
-        if keys.iter().all(|key| key.keycode != keycode) {
-            keys.push(GrabbedKey { keysym, keycode });
-        }
+        keys.push(GrabbedKey { keysym, keycode });
     }
     if keys.is_empty() {
         return Err(PlatformError::UnsupportedField {
             reason: "platform_linux x11 tap: this layout carries none of the accept keys".into(),
         });
     }
-    Ok((conn, root, keys))
+    let modifiers = conn
+        .get_modifier_mapping()
+        .map_err(|err| cannot_complete("get_modifier_mapping", err))?
+        .reply()
+        .map_err(|err| cannot_complete("modifier mapping reply", err))?;
+    let per = usize::from(mapping.keysyms_per_keycode);
+    let modifier_width = usize::from(modifiers.keycodes_per_modifier());
+    let numlock_modifier = if modifier_width == 0 {
+        0
+    } else {
+        modifiers
+            .keycodes
+            .chunks(modifier_width)
+            .enumerate()
+            .find_map(|(index, modifier_keys)| {
+                modifier_keys
+                    .iter()
+                    .copied()
+                    .filter(|keycode| *keycode >= min_keycode)
+                    .any(|keycode| {
+                        let start = usize::from(keycode - min_keycode).saturating_mul(per);
+                        mapping
+                            .keysyms
+                            .get(start..start.saturating_add(per))
+                            .is_some_and(|keysyms| keysyms.contains(&0xff7f))
+                    })
+                    .then(|| 1u16 << index)
+            })
+            .unwrap_or(0)
+    };
+    let mut grabs = Vec::new();
+    for binding in bindings.iter() {
+        let Some(key) = keys.iter().find(|key| key.keysym == binding.keysym) else {
+            continue;
+        };
+        for modifiers in expanded_lock_masks(binding.modifiers, numlock_modifier) {
+            let grab = PlannedGrab {
+                keysym: binding.keysym,
+                keycode: key.keycode,
+                modifiers,
+            };
+            if grabs.iter().all(|existing: &PlannedGrab| {
+                (existing.keycode, existing.modifiers) != (grab.keycode, grab.modifiers)
+            }) {
+                grabs.push(grab);
+            }
+        }
+    }
+    Ok(GrabPlan {
+        bindings: bindings.clone(),
+        keys,
+        grabs,
+    })
+}
+
+fn expanded_lock_masks(base: u16, numlock_modifier: u16) -> Vec<u16> {
+    let mut masks = Vec::with_capacity(4);
+    for mask in [
+        base,
+        base | u16::from(ModMask::LOCK),
+        base | numlock_modifier,
+        base | u16::from(ModMask::LOCK) | numlock_modifier,
+    ] {
+        if !masks.contains(&mask) {
+            masks.push(mask);
+        }
+    }
+    masks
 }
 
 /// Install the passive grabs. `owner_events = false` keeps the event on our grab
@@ -265,30 +494,27 @@ fn open_and_resolve(
 /// `GrabMode::SYNC` on the keyboard is what makes the per-keystroke
 /// consume/pass-through decision possible at all.
 ///
-/// `ModMask::ANY` grabs the key under every modifier combination — one grab
-/// instead of one per lock-state permutation — and the *decision* filters on the
-/// event's actual modifiers, so `Ctrl+Tab` is replayed untouched.
+/// Each binding is grabbed only for its exact intent modifiers, expanded across
+/// CapsLock and the modifier slot this server maps to NumLock. This avoids
+/// colliding with unrelated desktop chords such as Alt+Tab while leaving lock
+/// state irrelevant to accept matching.
 ///
 /// Any failure ungrabs what was already taken, so a partial grab never survives.
-fn grab_keys(
-    conn: &RustConnection,
-    root: Window,
-    keys: &[GrabbedKey],
-) -> Result<(), PlatformError> {
-    for (index, key) in keys.iter().enumerate() {
+fn grab_plan(conn: &RustConnection, root: Window, plan: &GrabPlan) -> Result<(), PlatformError> {
+    for (index, grab) in plan.grabs.iter().enumerate() {
         let outcome = conn
             .grab_key(
                 false,
                 root,
-                ModMask::ANY,
-                key.keycode,
+                ModMask::from(grab.modifiers),
+                grab.keycode,
                 GrabMode::ASYNC,
                 GrabMode::SYNC,
             )
             .map_err(|err| cannot_complete("grab_key", err))
-            .and_then(|cookie| cookie.check().map_err(|err| grab_error(key.keysym, err)));
+            .and_then(|cookie| cookie.check().map_err(|err| grab_error(grab.keysym, err)));
         if let Err(err) = outcome {
-            ungrab_keys(conn, root, &keys[..index]);
+            ungrab_grabs(conn, root, &plan.grabs[..index]);
             return Err(err);
         }
     }
@@ -313,9 +539,13 @@ fn grab_error(keysym: u32, err: ReplyError) -> PlatformError {
 
 /// Release every grab, best effort: a per-key failure must not stop the rest,
 /// because leaving one key grabbed is exactly the harm this function prevents.
-fn ungrab_keys(conn: &RustConnection, root: Window, keys: &[GrabbedKey]) {
-    for key in keys {
-        if let Ok(cookie) = conn.ungrab_key(key.keycode, root, ModMask::ANY) {
+fn ungrab_plan(conn: &RustConnection, root: Window, plan: &GrabPlan) {
+    ungrab_grabs(conn, root, &plan.grabs);
+}
+
+fn ungrab_grabs(conn: &RustConnection, root: Window, grabs: &[PlannedGrab]) {
+    for grab in grabs {
+        if let Ok(cookie) = conn.ungrab_key(grab.keycode, root, ModMask::from(grab.modifiers)) {
             cookie.ignore_error();
         }
     }
@@ -348,7 +578,11 @@ fn set_action(
     }
     let mut grabbed = state.grabbed.lock().unwrap_or_else(PoisonError::into_inner);
     match arm_transition(action, *grabbed) {
-        GrabTransition::Grab => match grab_keys(conn, state.root, &state.keys) {
+        GrabTransition::Grab => match grab_plan(
+            conn,
+            state.root,
+            &state.plan.lock().unwrap_or_else(PoisonError::into_inner),
+        ) {
             Ok(()) => {
                 *grabbed = true;
                 state
@@ -364,7 +598,11 @@ fn set_action(
             }
         },
         GrabTransition::Ungrab => {
-            ungrab_keys(conn, state.root, &state.keys);
+            ungrab_plan(
+                conn,
+                state.root,
+                &state.plan.lock().unwrap_or_else(PoisonError::into_inner),
+            );
             *grabbed = false;
             state.armed_since_ms.store(UNSET_MS, Ordering::Release);
             state.hide_deadline_ms.store(UNSET_MS, Ordering::Release);
@@ -374,25 +612,111 @@ fn set_action(
     }
 }
 
+/// Rebuild and transactionally publish the tap's sole plan. If the tap is
+/// armed, the old exact grabs are restored on any new-plan failure.
+fn regrab(
+    conn: &RustConnection,
+    state: &TapState,
+    bindings: AcceptBindings,
+) -> Result<(), PlatformError> {
+    let new_plan = build_grab_plan(conn, &bindings)?;
+    let mut grabbed = state.grabbed.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut current = state.plan.lock().unwrap_or_else(PoisonError::into_inner);
+    if !*grabbed {
+        *current = new_plan;
+        return Ok(());
+    }
+
+    ungrab_plan(conn, state.root, &current);
+    match grab_plan(conn, state.root, &new_plan) {
+        Ok(()) => {
+            *current = new_plan;
+            Ok(())
+        }
+        Err(err) => {
+            if grab_plan(conn, state.root, &current).is_err() {
+                *grabbed = false;
+                *state.action.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                state.armed_since_ms.store(UNSET_MS, Ordering::Release);
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Owns workers created during `install` until all three spawns succeed. A
+/// later spawn error therefore makes earlier workers inert, wakes them, and
+/// gives them the existing bounded-join window. A worker still wedged after the
+/// bound is detached only after inactive/stop/thaw/ungrab/sender-drop/wake.
+struct SpawnGuard<'a> {
+    conn: &'a Arc<RustConnection>,
+    state: &'a Arc<TapState>,
+    wake_window: Window,
+    wake_atom: u32,
+    dispatch_tx: &'a mut Option<mpsc::Sender<TapControl>>,
+    stopped_tx: Option<mpsc::Sender<()>>,
+    stopped: &'a mpsc::Receiver<()>,
+    threads: Vec<JoinHandle<()>>,
+    armed: bool,
+}
+
+impl Drop for SpawnGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.state.active.store(false, Ordering::Release);
+        self.state.stopping.store(true, Ordering::Release);
+        thaw(self.conn);
+        ungrab_plan(
+            self.conn,
+            self.state.root,
+            &self
+                .state
+                .plan
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        self.dispatch_tx.take();
+        self.stopped_tx.take();
+        wake_event_thread(self.conn, self.wake_window, self.wake_atom);
+        let all_exited = matches!(
+            self.stopped.recv_timeout(STOP_TIMEOUT),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+        if all_exited {
+            for thread in self.threads.drain(..) {
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
 impl X11AcceptTap {
     /// Install the tap: connect, resolve keycodes, and start the event,
     /// dispatcher and watchdog threads. The grab itself is **not** taken here —
     /// it is taken when a suggestion becomes visible.
     pub fn install(callback: AcceptCallback) -> Result<Arc<Self>, PlatformError> {
+        Self::install_with_spawner(callback, WorkerSpawner::default())
+    }
+
+    fn install_with_spawner(
+        callback: AcceptCallback,
+        mut spawner: WorkerSpawner,
+    ) -> Result<Arc<Self>, PlatformError> {
         // The chords the run loop's startup key-binding pass configured (G5:
         // persisted macOS chords translated to X11), or the defaults. Read at
-        // install time: rebinds apply at relaunch, which is the honest scope
-        // while Settings on Linux is config-file-only.
+        // install time. The returned subscription also rebuilds this same plan
+        // transactionally for a later live rebind.
         let bindings = crate::x11_keys::configured_bindings();
-        let (conn, root, keys) = open_and_resolve(&bindings)?;
+        let (conn, root, plan) = open_and_build(&bindings)?;
         let conn = Arc::new(conn);
         let (wake_window, wake_atom) = create_wake_channel(&conn)?;
 
         let state = Arc::new(TapState {
             epoch: std::time::Instant::now(),
-            bindings,
             root,
-            keys,
+            plan: Mutex::new(plan),
             action: Mutex::new(None),
             grabbed: Mutex::new(false),
             frozen_since_ms: AtomicU64::new(UNSET_MS),
@@ -402,7 +726,8 @@ impl X11AcceptTap {
             stopping: AtomicBool::new(false),
         });
 
-        let (dispatch_tx, dispatch_rx) = mpsc::channel::<TapControl>();
+        let (dispatch_sender, dispatch_rx) = mpsc::channel::<TapControl>();
+        let mut dispatch_tx = Some(dispatch_sender);
         // Every worker takes a clone; the original drops at the end of this
         // function, so the receiver disconnects exactly when the last worker
         // exits. See the `stopped` field.
@@ -410,23 +735,47 @@ impl X11AcceptTap {
         // Join order at teardown is this order. The event thread owns the other
         // sender clone, so it must be joined before the dispatcher can see its
         // channel close.
-        let threads = vec![
-            spawn_event_thread(
+        let threads = {
+            let mut guard = SpawnGuard {
+                conn: &conn,
+                state: &state,
+                wake_window,
+                wake_atom,
+                dispatch_tx: &mut dispatch_tx,
+                stopped_tx: Some(stopped_tx),
+                stopped: &stopped,
+                threads: Vec::with_capacity(3),
+                armed: true,
+            };
+            guard.threads.push(spawn_event_thread(
+                &mut spawner,
                 Arc::clone(&conn),
                 Arc::clone(&state),
-                dispatch_tx.clone(),
-                stopped_tx.clone(),
-            )?,
-            spawn_dispatcher(callback, dispatch_rx, stopped_tx.clone())?,
-            spawn_watchdog(Arc::clone(&conn), Arc::clone(&state), stopped_tx)?,
-        ];
+                guard.dispatch_tx.as_ref().expect("sender").clone(),
+                guard.stopped_tx.as_ref().expect("stop sender").clone(),
+            )?);
+            guard.threads.push(spawn_dispatcher(
+                &mut spawner,
+                callback,
+                dispatch_rx,
+                guard.stopped_tx.as_ref().expect("stop sender").clone(),
+            )?);
+            guard.threads.push(spawn_watchdog(
+                &mut spawner,
+                Arc::clone(&conn),
+                Arc::clone(&state),
+                guard.stopped_tx.take().expect("stop sender"),
+            )?);
+            guard.armed = false;
+            std::mem::take(&mut guard.threads)
+        };
 
         Ok(Arc::new(Self {
             conn,
             state,
             wake_window,
             wake_atom,
-            dispatch_tx: Some(dispatch_tx),
+            dispatch_tx,
             threads: Mutex::new(threads),
             stopped: Mutex::new(stopped),
         }))
@@ -445,12 +794,6 @@ impl X11AcceptTap {
             .hide_deadline_ms
             .store(UNSET_MS, Ordering::Release);
         let action = if visible {
-            // Every "still visible" statement restarts the armed-time cap, so the
-            // 30-second failsafe measures silence from the engine rather than the
-            // age of the first arm.
-            self.state
-                .armed_since_ms
-                .store(self.state.now_ms(), Ordering::Release);
             Some(self.state.armed_action().unwrap_or(AcceptAction::Full))
         } else {
             None
@@ -463,6 +806,17 @@ impl X11AcceptTap {
             return Ok(());
         }
         set_action(&self.conn, &self.state, action)
+    }
+
+    pub fn rearm(&self) -> Result<(), PlatformError> {
+        if !self.state.active.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        regrab(
+            &self.conn,
+            &self.state,
+            crate::x11_keys::configured_bindings(),
+        )
     }
 
     /// Schedule the tap to treat the suggestion as hidden after `delay` — the
@@ -493,7 +847,15 @@ impl Drop for X11AcceptTap {
         // ORDER IS LOAD-BEARING: thaw and ungrab BEFORE joining anything, so a
         // slow thread exit can never leave the keyboard frozen or a key grabbed.
         thaw(&self.conn);
-        ungrab_keys(&self.conn, self.state.root, &self.state.keys);
+        ungrab_plan(
+            &self.conn,
+            self.state.root,
+            &self
+                .state
+                .plan
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
         *self
             .state
             .grabbed
@@ -578,51 +940,51 @@ fn wake_event_thread(conn: &RustConnection, window: Window, atom: u32) {
 }
 
 fn spawn_dispatcher(
+    spawner: &mut WorkerSpawner,
     callback: AcceptCallback,
     rx: mpsc::Receiver<TapControl>,
     stopped: mpsc::Sender<()>,
 ) -> Result<JoinHandle<()>, PlatformError> {
-    std::thread::Builder::new()
-        .name("compme-keytap-dispatch".into())
-        .spawn(move || {
-            let _stopped = stopped;
-            while let Ok(control) = rx.recv() {
-                // The engine's callback is foreign code on the far side of the
-                // FFI-shaped boundary: an unwind here must not poison the tap or
-                // abort the process, and it must never be able to reach the
-                // resolve path — which is why it runs on this thread and not the
-                // event thread.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    callback(control);
-                }));
-            }
-        })
-        .map_err(|err| cannot_complete("dispatcher thread", err))
+    spawner.spawn("compme-keytap-dispatch", "dispatcher thread", move || {
+        let _stopped = stopped;
+        while let Ok(control) = rx.recv() {
+            // The engine's callback is foreign code on the far side of the
+            // FFI-shaped boundary: an unwind here must not poison the tap or
+            // abort the process, and it must never be able to reach the
+            // resolve path — which is why it runs on this thread and not the
+            // event thread.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                callback(control);
+            }));
+        }
+    })
 }
 
 fn spawn_event_thread(
+    spawner: &mut WorkerSpawner,
     conn: Arc<RustConnection>,
     state: Arc<TapState>,
     dispatch: mpsc::Sender<TapControl>,
     stopped: mpsc::Sender<()>,
 ) -> Result<JoinHandle<()>, PlatformError> {
-    std::thread::Builder::new()
-        .name("compme-keytap".into())
-        .spawn(move || {
-            let _stopped = stopped;
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_event_loop(&conn, &state, &dispatch);
-            }));
-            // Whatever ended the loop — a normal stop, a connection error, or a
-            // panic — leave the keyboard usable and the grabs released.
-            thaw(&conn);
-            ungrab_keys(&conn, state.root, &state.keys);
-            state.frozen_since_ms.store(UNSET_MS, Ordering::Release);
-            if outcome.is_err() {
-                *state.grabbed.lock().unwrap_or_else(PoisonError::into_inner) = false;
-            }
-        })
-        .map_err(|err| cannot_complete("event thread", err))
+    spawner.spawn("compme-keytap", "event thread", move || {
+        let _stopped = stopped;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_event_loop(&conn, &state, &dispatch);
+        }));
+        // Whatever ended the loop — a normal stop, a connection error, or a
+        // panic — leave the keyboard usable and the grabs released.
+        thaw(&conn);
+        ungrab_plan(
+            &conn,
+            state.root,
+            &state.plan.lock().unwrap_or_else(PoisonError::into_inner),
+        );
+        state.frozen_since_ms.store(UNSET_MS, Ordering::Release);
+        if outcome.is_err() {
+            *state.grabbed.lock().unwrap_or_else(PoisonError::into_inner) = false;
+        }
+    })
 }
 
 fn run_event_loop(conn: &RustConnection, state: &TapState, dispatch: &mpsc::Sender<TapControl>) {
@@ -642,6 +1004,11 @@ fn run_event_loop(conn: &RustConnection, state: &TapState, dispatch: &mpsc::Send
                 }
                 let _ = conn.flush();
             }
+            Event::MappingNotify(mapping)
+                if mapping.request == Mapping::KEYBOARD || mapping.request == Mapping::MODIFIER =>
+            {
+                let _ = regrab(conn, state, crate::x11_keys::configured_bindings());
+            }
             // The teardown wake, or anything else: nothing to resolve.
             _ => {}
         }
@@ -651,7 +1018,7 @@ fn run_event_loop(conn: &RustConnection, state: &TapState, dispatch: &mpsc::Send
 /// Resolve exactly one grabbed keystroke.
 ///
 /// **The keyboard is frozen for every application while this runs.** Everything
-/// before `allow_events` is a pure decision over already-loaded state; the
+/// before `allow_events` is a bounded snapshot of already-loaded state; the
 /// callback is handed to another thread afterwards, never called from here.
 fn resolve_key_press(
     conn: &RustConnection,
@@ -663,11 +1030,9 @@ fn resolve_key_press(
     state
         .frozen_since_ms
         .store(state.now_ms(), Ordering::Release);
-    let decision = match state.keysym_for_keycode(keycode) {
-        Some(keysym) => key_decision(&state.bindings, keysym, modifiers, state.armed_action()),
-        // A key we did not grab cannot reach us, but if one does it belongs to
-        // the application.
-        None => KeyDecision::PassThrough,
+    let decision = {
+        let plan = state.plan.lock().unwrap_or_else(PoisonError::into_inner);
+        plan.decision_for_keycode(keycode, modifiers, state.armed_action())
     };
     let allow = match decision {
         KeyDecision::Consume(_) => Allow::ASYNC_KEYBOARD,
@@ -686,35 +1051,33 @@ fn resolve_key_press(
 }
 
 fn spawn_watchdog(
+    spawner: &mut WorkerSpawner,
     conn: Arc<RustConnection>,
     state: Arc<TapState>,
     stopped: mpsc::Sender<()>,
 ) -> Result<JoinHandle<()>, PlatformError> {
-    std::thread::Builder::new()
-        .name("compme-keytap-watchdog".into())
-        .spawn(move || {
-            let _stopped = stopped;
-            while !state.stopping.load(Ordering::Acquire) {
-                std::thread::sleep(WATCHDOG_TICK);
-                match watchdog_action(
-                    state.now_ms(),
-                    state.frozen_since_ms.load(Ordering::Acquire),
-                    state.armed_since_ms.load(Ordering::Acquire),
-                    state.hide_deadline_ms.load(Ordering::Acquire),
-                ) {
-                    WatchdogAction::Nothing => {}
-                    WatchdogAction::ThawAndDisarm => {
-                        // Lock-free first: whatever else is stuck, the user's
-                        // keyboard comes back within FREEZE_BUDGET_MS.
-                        thaw(&conn);
-                        state.frozen_since_ms.store(UNSET_MS, Ordering::Release);
-                        let _ = set_action(&conn, &state, None);
-                    }
-                    WatchdogAction::Disarm => {
-                        let _ = set_action(&conn, &state, None);
-                    }
+    spawner.spawn("compme-keytap-watchdog", "watchdog thread", move || {
+        let _stopped = stopped;
+        while !state.stopping.load(Ordering::Acquire) {
+            std::thread::sleep(WATCHDOG_TICK);
+            match watchdog_action(
+                state.now_ms(),
+                state.frozen_since_ms.load(Ordering::Acquire),
+                state.armed_since_ms.load(Ordering::Acquire),
+                state.hide_deadline_ms.load(Ordering::Acquire),
+            ) {
+                WatchdogAction::Nothing => {}
+                WatchdogAction::ThawAndDisarm => {
+                    // Without taking a tap-state lock first, thaw the
+                    // keyboard within FREEZE_BUDGET_MS.
+                    thaw(&conn);
+                    state.frozen_since_ms.store(UNSET_MS, Ordering::Release);
+                    let _ = set_action(&conn, &state, None);
+                }
+                WatchdogAction::Disarm => {
+                    let _ = set_action(&conn, &state, None);
                 }
             }
-        })
-        .map_err(|err| cannot_complete("watchdog thread", err))
+        }
+    })
 }

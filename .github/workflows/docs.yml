@@ -13,7 +13,7 @@ on:
     # branches) would spend a runner for no extra coverage.
     branches: [main, "spike/**"]
     paths:
-      - "docs/superpowers/**"
+      - "docs/superpowers/plans/**"
       - "docs/RELEASE-NOTES-*.md"
       - "docs/TROUBLESHOOTING.md"
       - "Qfd.md"
@@ -40,6 +40,9 @@ jobs:
 
       - name: Version docs check
         run: tools/release/check-version-docs.sh
+
+      - name: Privacy policy
+        run: tools/release/check-privacy-policy.sh
 
       - name: Script syntax
         run: |

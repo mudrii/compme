@@ -4,10 +4,12 @@
 //! thread (overlay/event drain) and off the dispatcher thread (platform events).
 //! This module owns a dedicated worker thread: it warms the model once at launch
 //! (priming Metal shaders), flips a `ready` flag, then loops
-//! `recv → complete → send outcome`. On shutdown it drops the request sender,
-//! joins the thread, and the thread frees the model in deterministic order.
+//! `recv → complete → send outcome`. Shutdown closes submissions, requests
+//! cooperative native cancellation, and joins after explicit ordered teardown;
+//! a 250 ms miss selects the run loop's hard-exit watchdog policy.
 
 use std::collections::{HashMap, VecDeque};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -15,7 +17,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use engine::{CompletionRequest, RequestKind};
-use model_client::LocalModel;
+use model_client::{LocalModel, LocalModelErrorKind, ModelCancellation};
 use personalization::PersonalizationProfile;
 use platform::{CorrectionRange, FieldHandle};
 
@@ -359,8 +361,8 @@ fn recv_latest(requests: &Receiver<CompletionRequest>) -> Option<CompletionReque
 // prompt config, the two channels, the ready flag); bundling them into a struct
 // would not improve clarity here.
 #[allow(clippy::too_many_arguments)]
-fn run(
-    model: Box<dyn LocalModel>,
+fn serve(
+    model: &dyn LocalModel,
     prompt_mode: PromptMode,
     profile: Arc<Mutex<PersonalizationProfile>>,
     candidates: usize,
@@ -368,16 +370,27 @@ fn run(
     requests: Receiver<CompletionRequest>,
     outcomes: Sender<CompletionOutcome>,
     ready: Arc<AtomicBool>,
+    stopping: &AtomicBool,
 ) {
-    eprintln!("compme: state=loading");
+    crate::write_stderr(format_args!("compme: state=loading"));
     if let Err(err) = model.warm_up() {
-        eprintln!("compme: warm-up failed: {err}");
+        if err.kind() != LocalModelErrorKind::ShutdownRequested {
+            crate::write_stderr(format_args!("compme: warm-up failed: {err}"));
+        }
+    }
+    if stopping.load(Ordering::SeqCst) {
+        return;
     }
     ready.store(true, Ordering::SeqCst);
-    eprintln!("compme: state=ready");
+    crate::write_stderr(format_args!("compme: state=ready"));
 
     while let Some((request, screen_text)) = request_with_screen_context(&requests, &worker_context)
     {
+        // Channel disconnect can still yield the request already being screened.
+        // Do not start any model call after shutdown has closed submissions.
+        if stopping.load(Ordering::SeqCst) {
+            break;
+        }
         if let RequestKind::GrammarFix {
             word,
             left_ctx,
@@ -400,7 +413,10 @@ fn run(
                         break;
                     }
                 }
-                Err(err) => eprintln!("compme: grammar inference error: {err}"),
+                Err(err) if err.kind() == LocalModelErrorKind::ShutdownRequested => break,
+                Err(err) => {
+                    crate::write_stderr(format_args!("compme: grammar inference error: {err}"))
+                }
             }
             continue;
         }
@@ -418,10 +434,10 @@ fn run(
         // bounded, already-redacted block ahead of the steering preamble.
         let block = worker_context.block_for_with_screen_text(&request, screen_text.as_deref());
         if worker_context.diag_context {
-            eprintln!(
+            crate::write_stderr(format_args!(
                 "compme: prompt_context={:?}",
                 context_diagnostic_line(&block)
-            );
+            ));
         }
         let full_preamble = if block.is_empty() {
             preamble
@@ -444,11 +460,42 @@ fn run(
                     break;
                 }
             }
-            Err(err) => eprintln!("compme: inference error: {err}"),
+            Err(err) if err.kind() == LocalModelErrorKind::ShutdownRequested => break,
+            Err(err) => crate::write_stderr(format_args!("compme: inference error: {err}")),
         }
     }
+}
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn run(
+    model: Box<dyn LocalModel>,
+    prompt_mode: PromptMode,
+    profile: Arc<Mutex<PersonalizationProfile>>,
+    candidates: usize,
+    worker_context: WorkerContext,
+    requests: Receiver<CompletionRequest>,
+    outcomes: Sender<CompletionOutcome>,
+    ready: Arc<AtomicBool>,
+) {
+    serve(
+        model.as_ref(),
+        prompt_mode,
+        profile,
+        candidates,
+        worker_context,
+        requests,
+        outcomes,
+        ready,
+        &AtomicBool::new(false),
+    );
     model.shutdown();
+}
+
+#[derive(Debug)]
+enum WorkerHealth {
+    Running,
+    Failed(String),
 }
 
 /// Owns the inference worker thread and the channels to it.
@@ -456,7 +503,11 @@ pub struct InferenceHandle {
     request_tx: Option<Sender<CompletionRequest>>,
     outcome_rx: Receiver<CompletionOutcome>,
     ready: Arc<AtomicBool>,
+    health: Arc<Mutex<WorkerHealth>>,
     handle: Option<JoinHandle<()>>,
+    stopping: Arc<AtomicBool>,
+    cancellation: Option<ModelCancellation>,
+    stopped_rx: Receiver<()>,
     /// Shared with the worker thread; the worker reads it per request and
     /// `set_profile` writes it, so personalization edits from the Settings
     /// Personalization pane apply live (no respawn).
@@ -480,25 +531,53 @@ impl InferenceHandle {
         let (outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
         let ready = Arc::new(AtomicBool::new(false));
         let ready_for_thread = Arc::clone(&ready);
+        let health = Arc::new(Mutex::new(WorkerHealth::Running));
+        let health_for_thread = Arc::clone(&health);
         // Wrap the by-value profile in shared state so live Settings edits reach
         // the running worker. spawn's signature is unchanged: callers still pass
         // a profile by value.
         let profile = Arc::new(Mutex::new(profile));
         let profile_for_thread = Arc::clone(&profile);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let stopping_for_thread = Arc::clone(&stopping);
+        let cancellation = model.shutdown_cancellation();
+        let (stopped_tx, stopped_rx) = channel::<()>();
 
         let handle = thread::Builder::new()
             .name("compme-inference".into())
             .spawn(move || {
-                run(
-                    model,
-                    prompt_mode,
-                    profile_for_thread,
-                    candidates.max(1),
-                    worker_context,
-                    request_rx,
-                    outcome_tx,
-                    ready_for_thread,
-                )
+                crate::write_stderr(format_args!("compme: inference worker started"));
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    serve(
+                        model.as_ref(),
+                        prompt_mode,
+                        profile_for_thread,
+                        candidates.max(1),
+                        worker_context,
+                        request_rx,
+                        outcome_tx,
+                        Arc::clone(&ready_for_thread),
+                        stopping_for_thread.as_ref(),
+                    )
+                }));
+                match result {
+                    Ok(()) => crate::write_stderr(format_args!("compme: inference worker exited")),
+                    Err(_) => {
+                        ready_for_thread.store(false, Ordering::SeqCst);
+                        let reason = "inference worker panicked".to_string();
+                        *health_for_thread
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner()) =
+                            WorkerHealth::Failed(reason.clone());
+                        crate::write_stderr(format_args!("compme: {reason}"));
+                    }
+                }
+                // Keep ownership outside catch_unwind so even a serve-loop panic
+                // still runs the backend's explicit context-before-model teardown.
+                model.shutdown();
+                // This acknowledgement is stronger than "generation stopped": it
+                // is sent only after explicit model teardown has returned.
+                let _ = stopped_tx.send(());
             })
             .map_err(|err| format!("spawn inference thread: {err}"))?;
 
@@ -506,7 +585,11 @@ impl InferenceHandle {
             request_tx: Some(request_tx),
             outcome_rx,
             ready,
+            health,
             handle: Some(handle),
+            stopping,
+            cancellation,
+            stopped_rx,
             profile,
         })
     }
@@ -517,11 +600,16 @@ impl InferenceHandle {
     /// model and restarts.
     pub fn unavailable() -> Self {
         let (_outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
+        let (_stopped_tx, stopped_rx) = channel::<()>();
         Self {
             request_tx: None,
             outcome_rx,
             ready: Arc::new(AtomicBool::new(false)),
+            health: Arc::new(Mutex::new(WorkerHealth::Running)),
             handle: None,
+            stopping: Arc::new(AtomicBool::new(true)),
+            cancellation: None,
+            stopped_rx,
             profile: Arc::new(Mutex::new(PersonalizationProfile::default())),
         }
     }
@@ -540,8 +628,22 @@ impl InferenceHandle {
         self.ready.load(Ordering::SeqCst)
     }
 
+    pub(crate) fn failure_reason(&self) -> Option<String> {
+        match &*self.health.lock().unwrap_or_else(|err| err.into_inner()) {
+            WorkerHealth::Running => None,
+            WorkerHealth::Failed(reason) => Some(reason.clone()),
+        }
+    }
+
+    pub(crate) fn has_failed(&self) -> bool {
+        self.failure_reason().is_some()
+    }
+
     /// Submit a request for inference. Returns false if the worker is gone.
     pub fn submit(&self, request: CompletionRequest) -> bool {
+        if self.has_failed() {
+            return false;
+        }
         match &self.request_tx {
             Some(tx) => tx.send(request).is_ok(),
             None => false,
@@ -553,17 +655,73 @@ impl InferenceHandle {
         self.outcome_rx.try_iter().collect()
     }
 
-    /// Drop the request sender and join the worker, freeing the model in order.
-    pub fn shutdown(mut self) {
+    /// Close submissions, request cooperative cancellation, and wait at most
+    /// 250 ms for explicit model teardown and worker exit.
+    pub(crate) fn shutdown(self) -> InferenceShutdown {
+        self.shutdown_with_timeout(Duration::from_millis(250))
+    }
+
+    fn shutdown_with_timeout(mut self, timeout: Duration) -> InferenceShutdown {
+        let deadline = Instant::now() + timeout;
+        self.stopping.store(true, Ordering::SeqCst);
         self.request_tx = None; // closes the channel → worker exits its loop
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+        if let Some(cancellation) = &self.cancellation {
+            cancellation.request();
         }
+
+        let Some(handle) = self.handle.take() else {
+            return InferenceShutdown::clean();
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if self.stopped_rx.recv_timeout(remaining).is_err() {
+            return InferenceShutdown::with_timed_out_worker(handle);
+        }
+        while !handle.is_finished() {
+            if Instant::now() >= deadline {
+                return InferenceShutdown::with_timed_out_worker(handle);
+            }
+            thread::yield_now();
+        }
+        let _ = handle.join();
+        InferenceShutdown::clean()
     }
 
     #[cfg(test)]
     fn recv_outcome(&self) -> Option<CompletionOutcome> {
         self.outcome_rx.recv().ok()
+    }
+}
+
+/// A clean shutdown owns no thread. A timeout retains the join handle so tests
+/// can release an injected blocked model and reap it; production must arm its
+/// cleanup-then-hard-exit policy instead of detaching and continuing unsafely.
+#[must_use = "a timed-out inference worker requires the hard-exit policy"]
+pub(crate) struct InferenceShutdown {
+    timed_out_worker: Option<JoinHandle<()>>,
+}
+
+impl InferenceShutdown {
+    fn clean() -> Self {
+        Self {
+            timed_out_worker: None,
+        }
+    }
+
+    fn with_timed_out_worker(handle: JoinHandle<()>) -> Self {
+        Self {
+            timed_out_worker: Some(handle),
+        }
+    }
+
+    pub(crate) fn timed_out(&self) -> bool {
+        self.timed_out_worker.is_some()
+    }
+
+    #[cfg(test)]
+    fn join_after_release(mut self) {
+        if let Some(handle) = self.timed_out_worker.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -573,6 +731,68 @@ mod tests {
     use crate::model_select::StubModel;
     use model_client::{LocalModelError, LocalModelResult};
     use platform::FieldHandle;
+    use std::sync::atomic::AtomicUsize;
+
+    struct CooperativeShutdownModel {
+        cancellation: ModelCancellation,
+        entered: Mutex<Option<Sender<()>>>,
+        calls: Arc<AtomicUsize>,
+        shutdown_called: Arc<AtomicBool>,
+    }
+
+    impl LocalModel for CooperativeShutdownModel {
+        fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                let _ = entered.send(());
+            }
+            while !self.cancellation.is_requested() {
+                thread::yield_now();
+            }
+            Err(LocalModelError::shutdown_requested())
+        }
+
+        fn shutdown_cancellation(&self) -> Option<ModelCancellation> {
+            Some(self.cancellation.clone())
+        }
+
+        fn shutdown(self: Box<Self>) {
+            self.shutdown_called.store(true, Ordering::SeqCst);
+        }
+    }
+
+    struct BlockingCompleteModel {
+        entered: Mutex<Option<Sender<()>>>,
+        release: Mutex<Receiver<()>>,
+    }
+
+    impl LocalModel for BlockingCompleteModel {
+        fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                let _ = entered.send(());
+            }
+            let _ = self.release.lock().unwrap().recv();
+            Ok(String::new())
+        }
+    }
+
+    struct BlockingShutdownModel {
+        entered: Mutex<Option<Sender<()>>>,
+        release: Mutex<Receiver<()>>,
+    }
+
+    impl LocalModel for BlockingShutdownModel {
+        fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+            Ok(String::new())
+        }
+
+        fn shutdown(self: Box<Self>) {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                let _ = entered.send(());
+            }
+            let _ = self.release.lock().unwrap().recv();
+        }
+    }
 
     /// Echoes the exact prompt string it receives, so a test can assert what the
     /// worker actually fed the model after prompt shaping.
@@ -754,7 +974,7 @@ mod tests {
         assert!(!seen[0].0.contains("previous private context"));
         assert!(!seen[0].0.contains("Never leak this steering text."));
 
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -779,7 +999,7 @@ mod tests {
         assert_eq!(outcome.correction.as_deref(), Some("The"));
         assert_eq!(outcome.correction_range, Some(range));
         assert!(outcome.candidates.is_empty());
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -807,7 +1027,7 @@ mod tests {
         assert_eq!(outcome.correction, None);
         assert_eq!(outcome.correction_range, Some(range));
         assert!(outcome.candidates.is_empty());
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -830,7 +1050,7 @@ mod tests {
             assert_eq!(outcome.correction, None, "{output:?} must be rejected");
             assert_eq!(outcome.correction_range, Some(range));
             assert!(outcome.candidates.is_empty());
-            inference.shutdown();
+            assert!(!inference.shutdown().timed_out());
         }
     }
 
@@ -870,7 +1090,7 @@ mod tests {
         assert_eq!(outcome.candidates[0], " world");
         assert_eq!(outcome.request.generation, 1);
 
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -890,7 +1110,7 @@ mod tests {
         // pinned in `model_client`, not coupled here.
         assert!(outcome.candidates[0].contains("Dear team"));
         assert_ne!(outcome.candidates[0], "Dear team");
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -920,7 +1140,7 @@ mod tests {
             outcome.candidates[0]
         );
         assert!(outcome.candidates[0].contains("now typing"));
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -979,7 +1199,7 @@ mod tests {
             "raw previous input secret leaked into context: {:?}",
             outcome.candidates[0]
         );
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1006,7 +1226,7 @@ mod tests {
             "clipboard context present: {:?}",
             outcome.candidates[0]
         );
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1039,7 +1259,7 @@ mod tests {
             "screen context present: {:?}",
             outcome.candidates[0]
         );
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1085,7 +1305,7 @@ mod tests {
             outcome.candidates[0]
         );
         assert!(outcome.candidates[0].contains("target field"));
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1126,7 +1346,7 @@ mod tests {
             outcome.candidates[0]
         );
         assert!(outcome.candidates[0].contains("target typing"));
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1167,7 +1387,7 @@ mod tests {
             outcome.candidates[0]
         );
         writer.join().unwrap();
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1213,7 +1433,7 @@ mod tests {
             outcome.candidates[0]
         );
         writer.join().unwrap();
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1344,7 +1564,7 @@ mod tests {
         );
         assert!(outcome.candidates[0].contains("typing"));
         writer.join().unwrap();
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1459,7 +1679,7 @@ mod tests {
         inference.submit(request("now", 1));
         let outcome = inference.recv_outcome().expect("outcome");
         assert_eq!(outcome.candidates[0], "now");
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1572,7 +1792,7 @@ mod tests {
         inference.submit(request("x", 1));
         let outcome = inference.recv_outcome().expect("outcome");
         assert_eq!(outcome.candidates, vec!["cand0", "cand1", "cand2"]);
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1605,7 +1825,7 @@ mod tests {
         let outcome = inference.recv_outcome().expect("outcome");
         assert_eq!(outcome.candidates, vec!["cand1"]);
         assert_eq!(*seen.lock().unwrap(), vec![1]);
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1621,7 +1841,7 @@ mod tests {
         inference.submit(request("Dear team", 1));
         let outcome = inference.recv_outcome().expect("outcome");
         assert_eq!(outcome.candidates[0], "Dear team");
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1649,7 +1869,7 @@ mod tests {
             outcome.candidates[0]
         );
         assert!(outcome.candidates[0].trim_end().ends_with("Ahoy"));
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1683,7 +1903,7 @@ mod tests {
             outcome.candidates[0]
         );
         assert!(!outcome.candidates[0].contains("pirate dialect."));
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1735,7 +1955,7 @@ mod tests {
             "worker read recovered the poisoned lock and steered with set_profile: {:?}",
             outcome.candidates[0]
         );
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1777,7 +1997,7 @@ mod tests {
             "the surviving (last) profile steers the prompt: {:?}",
             outcome.candidates[0]
         );
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1822,7 +2042,7 @@ mod tests {
         assert!(second.candidates[0].contains("Use short completions."));
         assert!(!second.candidates[0].contains("Use a plain-text tone."));
         assert!(second.candidates[0].contains("Notes draft"));
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1859,7 +2079,7 @@ mod tests {
         assert!(second.candidates[0].contains("Use short completions."));
         assert!(!second.candidates[0].contains("Prefer spreadsheet language."));
         assert!(second.candidates[0].contains("Local draft"));
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1903,7 +2123,7 @@ mod tests {
             outcome.candidates[0]
         );
         assert!(outcome.candidates[0].contains("Other draft"));
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1920,7 +2140,7 @@ mod tests {
         inference.submit(request("p", 1));
         let _ = inference.recv_outcome();
         assert!(inference.is_ready());
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1932,7 +2152,11 @@ mod tests {
             request_tx: Some(request_tx),
             outcome_rx,
             ready: Arc::new(AtomicBool::new(false)),
+            health: Arc::new(Mutex::new(WorkerHealth::Running)),
             handle: None,
+            stopping: Arc::new(AtomicBool::new(false)),
+            cancellation: None,
+            stopped_rx: channel::<()>().1,
             profile: Arc::new(Mutex::new(PersonalizationProfile::default())),
         };
 
@@ -1946,7 +2170,7 @@ mod tests {
         assert!(!inference.is_ready());
         assert!(!inference.submit(request("missing model", 1)));
         assert!(inference.drain_outcomes().is_empty());
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -1981,7 +2205,7 @@ mod tests {
             .expect("outcome despite warm-up failure");
         assert_eq!(outcome.candidates[0], "served");
         assert!(inference.is_ready());
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -2006,7 +2230,46 @@ mod tests {
             .recv_outcome()
             .expect("worker survives an error and serves later requests");
         assert_eq!(outcome.candidates[0], "good");
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
+    }
+
+    #[test]
+    fn panicking_worker_records_failed_health_and_rejects_later_submissions() {
+        struct PanickingModel {
+            panic_seen: Sender<()>,
+        }
+        impl LocalModel for PanickingModel {
+            fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
+                let _ = self.panic_seen.send(());
+                panic!("injected model panic");
+            }
+        }
+
+        let (panic_seen, panic_seen_rx) = channel();
+        let inference = InferenceHandle::spawn(
+            Box::new(PanickingModel { panic_seen }),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        assert!(inference.submit(request("panic", 1)));
+        panic_seen_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker reached the injected panic");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while inference.failure_reason().is_none() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        let reason = inference
+            .failure_reason()
+            .expect("panic must become terminal worker health");
+        assert!(reason.contains("panicked"), "{reason}");
+        assert!(!inference.is_ready());
+        assert!(!inference.submit(request("after panic", 2)));
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -2043,7 +2306,7 @@ mod tests {
             .expect("worker survives a grammar error and serves later requests");
         assert_eq!(outcome.candidates[0], "good");
         assert_eq!(outcome.correction, None);
-        inference.shutdown();
+        assert!(!inference.shutdown().timed_out());
     }
 
     #[test]
@@ -2132,7 +2395,107 @@ mod tests {
             WorkerContext::default(),
         )
         .unwrap();
-        inference.shutdown(); // must not hang
+        assert!(!inference.shutdown().timed_out()); // must not hang
+    }
+
+    #[test]
+    fn shutdown_cancels_generation_skips_queued_work_and_tears_down_within_bound() {
+        let cancellation = ModelCancellation::default();
+        let (entered_tx, entered_rx) = channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+        let inference = InferenceHandle::spawn(
+            Box::new(CooperativeShutdownModel {
+                cancellation,
+                entered: Mutex::new(Some(entered_tx)),
+                calls: Arc::clone(&calls),
+                shutdown_called: Arc::clone(&shutdown_called),
+            }),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+
+        assert!(inference.submit(request("first", 1)));
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first inference did not start");
+        assert!(inference.submit(request("must stay queued", 2)));
+
+        let started = Instant::now();
+        let outcome = inference.shutdown_with_timeout(Duration::from_millis(250));
+        assert!(!outcome.timed_out(), "cooperative shutdown timed out");
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "queued work ran after stop"
+        );
+        assert!(
+            shutdown_called.load(Ordering::SeqCst),
+            "stopped acknowledgement arrived before model.shutdown"
+        );
+    }
+
+    #[test]
+    fn stopped_acknowledgement_waits_for_model_shutdown_to_return() {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let inference = InferenceHandle::spawn(
+            Box::new(BlockingShutdownModel {
+                entered: Mutex::new(Some(entered_tx)),
+                release: Mutex::new(release_rx),
+            }),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+
+        let outcome = inference.shutdown_with_timeout(Duration::from_millis(20));
+        assert!(
+            outcome.timed_out(),
+            "shutdown returned before model teardown"
+        );
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("model shutdown did not begin");
+        release_tx.send(()).unwrap();
+        outcome.join_after_release();
+    }
+
+    #[test]
+    fn blocked_native_call_selects_forced_exit_policy_at_deadline() {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let inference = InferenceHandle::spawn(
+            Box::new(BlockingCompleteModel {
+                entered: Mutex::new(Some(entered_tx)),
+                release: Mutex::new(release_rx),
+            }),
+            PromptMode::Raw,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        assert!(inference.submit(request("stuck native call", 1)));
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocked call did not start");
+
+        let started = Instant::now();
+        let outcome = inference.shutdown_with_timeout(Duration::from_millis(20));
+        assert!(
+            outcome.timed_out(),
+            "blocked call must arm forced-exit policy"
+        );
+        assert!(started.elapsed() < Duration::from_millis(100));
+        release_tx.send(()).unwrap();
+        outcome.join_after_release();
     }
 
     #[test]

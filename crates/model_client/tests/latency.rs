@@ -1,5 +1,6 @@
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// True for an explicit truthy env value (trimmed, case-insensitive). Shared by
 /// every `COMPME_REQUIRE_*` gate below so they parse identically.
@@ -20,7 +21,7 @@ fn require_latency_budget() -> bool {
 
 use grammar::vet_correction;
 use model_client::{
-    grammar_fix_prompt, terse_continuation_prompt, LlamaModel, LocalModel,
+    grammar_fix_prompt, terse_continuation_prompt, LlamaModel, LocalModel, LocalModelErrorKind,
     GRAMMAR_GENERATION_TOKENS,
 };
 
@@ -190,6 +191,58 @@ fn warm_completion_under_500ms() {
     }
 
     // Exercise the real shutdown override (model dropped before backend).
+    Box::new(model).shutdown();
+}
+
+#[test]
+#[ignore = "requires the qwen2.5-0.5b GGUF model; release gates run CPU and a macOS model gate must also run Metal; run with --ignored"]
+fn long_generation_observes_shutdown_within_250ms() {
+    if !require_model_tests() {
+        return;
+    }
+    let path = model_path();
+    if !ensure_model_exists(&path) {
+        return;
+    }
+    let Some(model) = load_model_or_skip(&path) else {
+        return;
+    };
+    let model = Arc::new(model);
+    model.warm_up().expect("warm up");
+    let cancellation = model
+        .shutdown_cancellation()
+        .expect("llama model exposes shutdown cancellation");
+    let native_polls_before = cancellation.native_decode_poll_count();
+    let worker_model = Arc::clone(&model);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let result = worker_model.complete(
+            &terse_continuation_prompt("Write a detailed multi-paragraph account of"),
+            1024,
+        );
+        let _ = done_tx.send(result);
+    });
+
+    let enter_deadline = Instant::now() + Duration::from_secs(2);
+    while cancellation.native_decode_poll_count() == native_polls_before {
+        assert!(
+            Instant::now() < enter_deadline,
+            "real generation never entered decode"
+        );
+        std::thread::yield_now();
+    }
+    let started = Instant::now();
+    cancellation.request();
+    let error = done_rx
+        .recv_timeout(Duration::from_millis(250))
+        .expect("real generation ignored shutdown for more than 250 ms")
+        .expect_err("long generation finished instead of observing shutdown");
+    assert_eq!(error.kind(), LocalModelErrorKind::ShutdownRequested);
+    assert!(started.elapsed() < Duration::from_millis(250));
+    worker.join().unwrap();
+
+    let model =
+        Arc::try_unwrap(model).unwrap_or_else(|_| panic!("test owns the only model reference"));
     Box::new(model).shutdown();
 }
 

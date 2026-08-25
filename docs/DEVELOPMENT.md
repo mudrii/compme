@@ -33,9 +33,10 @@ The post-v0.1.4 runtime/release hardening, local/manual-only A2 policy, and
 single model-location control shipped in v0.1.5.
 
 The root `Cargo.toml` is a Rust workspace with 26 members
-([verified 2026-07-10] — keep in sync with `Cargo.toml`):
+([verified 2026-08-25] — keep in sync with `Cargo.toml`):
 
 - `crates/platform` — cross-platform adapter contract
+- `crates/shell_flags` — portable settings/tray/key-chord state vocabulary
 - `crates/context`, `crates/ranker`, `crates/engine_core`, `crates/engine` — suggestion pipeline
 - `crates/personalization`, `crates/redaction`, `crates/prefs`, `crates/memory` — steering, privacy, prefs, encrypted history
 - `crates/stats` — usage statistics + lifetime persistence
@@ -44,26 +45,35 @@ The root `Cargo.toml` is a Rust workspace with 26 members
 - `crates/compat` — per-app compatibility tiers
 - `crates/model_catalog`, `crates/model_fetch`, `crates/model_client` — model catalog, downloads, llama.cpp client
 - `crates/platform_macos` — the macOS adapter (AX, overlay, tray, settings window)
-- `crates/platform_windows`, `crates/platform_linux` — fail-closed adapter scaffolds for Tier 1.1; Windows additionally has owner-only DACL hardening, a console control handler, and native URL opening, while Linux implements the desktop-free host surfaces (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, and `xdg-open` URL opening that reports immediate launcher failures and reaps longer-running children), the AT-SPI2 read/write path, and the override-redirect X11 ghost/correction overlay
+- `crates/platform_windows` — fail-closed platform-I/O scaffold plus owner-only DACL hardening, a console control handler, and native URL opening
+- `crates/platform_linux` — wired AT-SPI2 read/write/event adapter, passive X11 accept tap and override-redirect overlay, plus the desktop-free and session ShellHost services described in the platform guide
 - `crates/app` — the `compme` binary
 
 `tools/spike` is excluded from the root workspace and must be checked
 separately.
 
-Every native/build.rs/FFI/crypto dependency carries an exact `=x.y.z` pin
+Every native/ABI-sensitive dependency carries an exact `=x.y.z` pin
 (llama-cpp-2, rusqlite, aes-gcm, ed25519-dalek, the objc2/security-framework
 stack, windows) so a routine `cargo update` cannot move ABI-sensitive code
 without a review-forcing manifest diff; foundational (libc, getrandom) and
 pure-Rust deps stay caret-ranged.
+The root crates.io patch points exact `llama-cpp-2` 0.1.146 at
+`vendor/llama-cpp-2`; its only intentional semantic delta is the A32 safe abort-
+flag lifetime extension. `tools/spike` remains on the unpatched exact package.
 
 ## Prerequisites
 
 Required for root workspace development:
 
-- Rust 1.97.0 (automatically selected by the repository's
+- Rust 1.97.0, the workspace MSRV and pinned supported toolchain (automatically
+  selected by the repository's
   `rust-toolchain.toml` — note that only rustup honors that file; a Homebrew
   or distro-packaged toolchain silently uses its own version, so CI's pinned
   build is the authority)
+- Ruby, used by the bundle metadata, workflow-policy, and Homebrew cask gates
+- Go, used by the Full Local Gate's pinned `go run ...actionlint@v1.7.12`
+  command; `go run` downloads and executes actionlint, so no separately
+  installed `actionlint` binary is required
 - macOS when building or testing `platform_macos`
 - Xcode Command Line Tools
 - CMake for the bundled llama.cpp build (`brew install cmake`; not included
@@ -199,7 +209,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~2027 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~2060 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -250,6 +260,7 @@ tools/acceptance/missing-model-startup.sh
 tools/acceptance/run-ui-assisted-session.sh --self-test
 tools/acceptance/run-a1b-live-gates.sh --self-test
 tools/acceptance/run-linux-atspi-session.sh --self-test
+tools/release/check-linux-live-test-count.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
 tools/release/check-agent-briefs.sh
@@ -264,6 +275,8 @@ go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
 tools/release/run-model-gates.sh --self-test
 tools/release/check-quality.sh --self-test
 tools/release/update-cask.sh --self-test
+tools/release/prepare-draft-release.sh --self-test
+tools/release/scrub-git-credentials.sh --self-test
 tools/release/finalize-cask.sh --self-test
 tools/release/notarize-app.sh --self-test
 tools/release/write-update-manifest.sh --self-test
@@ -277,7 +290,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~2027 tests. The `tools/spike` workspace is separate from the
+The root suite is ~2060 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 `tools/dev/check.sh` parses the fence above and runs it as one command.
 The full gate splits tests into a parallel run over the 24 portable crates and
@@ -293,6 +306,8 @@ on every push: `git config core.hooksPath tools/dev` installs
 `tools/dev/pre-push` (`COMPME_PREPUSH_SKIP_TESTS=1` skips the tests,
 `git push --no-verify` skips the hook). The full gate above remains the
 pre-commit standard.
+The live `check-model-gates.sh` invocation requires macOS because it enumerates
+macOS-cfg test targets; `check-model-gates.sh --self-test` is host-agnostic.
 Branch/PR CI also lints the workflow YAML itself (`actionlint`, with shellcheck
 over inline `run:` steps), shellchecks every `tools/**/*.sh` at error severity,
 and runs native Windows/Linux portability jobs covering
@@ -302,16 +317,18 @@ macOS lane; rustfmt output is platform-independent). Branch CI also
 exercises real model inference per push: a model-backed smoke gate runs
 `bash tools/release/run-model-gates.sh` with `COMPME_REQUIRE_LATENCY_BUDGET=0`
 against the pinned GGUF, cached from `tools/spike/models` via rust-cache —
-functional load/complete/shutdown coverage only, since the latency budget is
-meaningless on a virtualized runner and stays a pre-tag gate on a real Mac.
+functional load/complete/shutdown coverage plus in-flight shutdown cancellation.
+The Darwin command requests Metal, but hosted virtualization may fall back to
+CPU; the real-Mac pre-tag wrapper run is the Metal execution authority because
+the latency budget is also meaningless on a virtualized runner.
 Branch CI also enforces version-doc reconciliation:
 `tools/release/check-version-docs.sh` fails the check job when a documented
 version lags the root `Cargo.toml`. Pushes limited to prose that no checker
-pins — `docs/superpowers/**`, `docs/RELEASE-NOTES-*.md`,
+pins — `docs/superpowers/plans/**`, `docs/RELEASE-NOTES-*.md`,
 `docs/TROUBLESHOOTING.md`, `Qfd.md`, `LICENSE` — skip `ci.yml`
 (`paths-ignore`), and a separate [`docs.yml`](../.github/workflows/docs.yml)
-lane picks them up with the version-docs check, script syntax, shellcheck, and
-cask syntax — same `main` / `spike/**` branch scope as `ci.yml`, since pull
+lane picks them up with the version-docs and privacy-policy checks, script
+syntax, shellcheck, and cask syntax — same `main` / `spike/**` branch scope as `ci.yml`, since pull
 requests already run the full check job. Every doc that
 `check-model-gates.sh`, `check-version-docs.sh`, or `check-agent-briefs.sh`
 pins takes the full lane instead: docs.yml runs none of those three, so a
@@ -482,10 +499,10 @@ config path.
 session — Xvfb, a private D-Bus session bus, the AT-SPI bus launcher, and
 `at-spi2-registryd` — then compiles and runs a GTK3 fixture
 (`linux-atspi-fixture.c`) and an AT-SPI client probe (`linux-atspi-probe.c`)
-against it. It is the deterministic target for Phase 2.1-2.4 adapter work: a
-pass means this host can read field text, read the caret offset, read
-per-character screen extents, and perform an `EditableText` insert that reads
-back. No desktop environment, display, or root is needed.
+against it. It is the deterministic live gate for the wired Linux adapter: a
+pass proves field text/caret/geometry, mutation, focus/caret subscriptions, the
+X11 accept tap and overlay, and session ShellHost behavior against real desktop
+protocols. No desktop environment, display, or root is needed.
 
 ```sh
 # NixOS (no FHS, so run it inside a shell carrying the dev packages)
@@ -567,6 +584,9 @@ XDG_DATA_DIRS="$(nix-build --no-out-link '<nixpkgs>' -A dejavu_fonts)/share:$XDG
 - serializes `complete()` calls via a mutex held across the round-trip; the backend is a `'static` singleton
 - supports `warm_up()` so launch can trigger the first Metal decode before serving suggestions
 - supports ordered `shutdown()` so the model/backend are dropped before process teardown
+- supports terminal shutdown cancellation through a lifetime-owning vendored
+  `llama-cpp-2` abort-callback extension; the host requires acknowledged model
+  teardown and a finished worker within 250 ms
 - greedily samples up to the requested max token count
 - clamps the prompt to context capacity and caps generation to the remaining
   token budget before decode
@@ -574,8 +594,8 @@ XDG_DATA_DIRS="$(nix-build --no-out-link '<nixpkgs>' -A dejavu_fonts)/share:$XDG
 
 Known future production work:
 
-- cancellation and timeout policy
-- production multi-candidate ranking, quality thresholds, and model-client stop/cancellation policy beyond the current `engine_core`/`ranker` shaping
+- production multi-candidate ranking and quality thresholds beyond the current
+  `engine_core`/`ranker` shaping
 
 (Persistent model actor, serialized access, and prefix-cache reuse are now
 implemented — see design spec §15 G3.)

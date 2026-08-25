@@ -21,13 +21,12 @@ Native portability CI:
 
 - Branch/PR CI runs `cargo fmt --all -- --check`, then clippy and tests for the
   portable workspace (`--workspace --exclude platform_macos`), and finally
-  `cargo build --locked -p app` on both Windows and Linux. These jobs detect
-  shared-crate portability leaks and prove the app compiles through each
-  fail-closed platform facade; they do not claim a functional Windows/Linux
-  product adapter.
-- Tag validation runs the same workspace format, portable-workspace clippy/test,
-  and app-binary build on Windows and Linux before the macOS release prebuild
-  can start.
+  `cargo build --locked -p app` on both Windows and Linux. The Linux lane also
+  verifies the emitted ignored-test count and runs the live AT-SPI/X11 suite in
+  a private Xvfb session; Windows remains compile/fail-closed coverage.
+- Tag validation runs the same portable-workspace and app-binary gates on
+  Windows and Linux, including the Linux live-count and private-session suite,
+  before the macOS release prebuild can start.
 - CI and tag validation install `cargo-audit` 0.22.2 with `--locked` and run
   `cargo audit` under read-only workflow permissions. The isolated dependency
   audit repeats that pinned check every Monday at 06:17 UTC and supports manual
@@ -44,19 +43,23 @@ Model-backed local gates:
 
 ```sh
 COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1
+COMPME_MODEL_GPU_LAYERS=999 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency long_generation_observes_shutdown_within_250ms -- --ignored --exact --test-threads=1
 cd tools/spike
 COMPME_SPIKE_MODEL_PATH="$PWD/models/qwen2.5-0.5b-q4_k_m.gguf" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1
 ```
 
-These ignored suites need GGUF files. The root `model_client` gate is
-CPU-forced in release validation with `COMPME_MODEL_GPU_LAYERS=0`; the separate
-`tools/spike` model integration gate remains Metal/GPU-oriented. Without
+These ignored suites need GGUF files. The root `model_client` suite first runs
+CPU-forced with `COMPME_MODEL_GPU_LAYERS=0`; on Darwin the wrapper then reruns
+the A32 in-flight cancellation test with production Metal offload (`999`). The
+separate `tools/spike` model integration gate remains Metal/GPU-oriented. Without
 `COMPME_REQUIRE_MODEL_TESTS=1` they skip absent models for developer convenience;
 with it, a missing model is a failed acceptance gate. The root model-client gate
 also sets `COMPME_REQUIRE_MODEL_CONTEXT=1` so model load/context initialization
 failures cannot skip silently. The real-Mac pre-tag commands above set
 `COMPME_REQUIRE_LATENCY_BUDGET=1` for both ignored suites so warm-completion
 latency assertions cannot be skipped there.
+Hosted Darwin can fall back to CPU despite the `999` request; only the mandatory
+real-Mac pre-tag run is accepted as Metal cancellation evidence.
 
 The Release workflow must invoke `tools/release/run-model-gates.sh` before
 publishing a tag; hosted macOS validates model-backed correctness with

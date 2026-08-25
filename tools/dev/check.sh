@@ -175,7 +175,20 @@ run_self_test() {
 
   local bin_full="$tmp/bin-full"
   local bin_min="$tmp/bin-min"
-  mkdir -p "$bin_full" "$bin_min" "$tmp/fixture-tools"
+  local runtime_bin="$tmp/runtime-bin"
+  mkdir -p "$bin_full" "$bin_min" "$runtime_bin" "$tmp/fixture-tools"
+  # Keep fixture PATHs hermetic without assuming an FHS `/usr/bin:/bin`.
+  # These are the exact host utilities the runner, its shebangs, and the
+  # fixture pipelines execute; optional gate tools stay confined to bin_full.
+  local runtime_tool runtime_path
+  for runtime_tool in env bash awk find xargs grep sed diff cat mv dirname; do
+    runtime_path="$(command -v "$runtime_tool")"
+    if [[ -z "$runtime_path" ]]; then
+      echo "check.sh self-test failed: required host utility not found: $runtime_tool" >&2
+      return 1
+    fi
+    ln -s "$runtime_path" "$runtime_bin/$runtime_tool"
+  done
   cat >"$tmp/fake-cargo" <<'SH'
 #!/usr/bin/env bash
 printf 'cargo|%s|%s\n' "$*" "$PWD" >>"$COMPME_CHECK_FAKE_LOG"
@@ -231,7 +244,7 @@ MD
 
   # Full toolchain: every command runs in fence order, and the mid-block
   # relative `cd tools/spike` persists for the lines after it.
-  PATH="$bin_full:/usr/bin:/bin" COMPME_CHECK_FAKE_LOG="$tmp/full.log" \
+  PATH="$bin_full:$runtime_bin" COMPME_CHECK_FAKE_LOG="$tmp/full.log" \
     "$script" --file "$fixture" >"$tmp/full.out"
   cat >"$tmp/full.expected" <<EOF
 cargo|fmt --all -- --check|$repo_root
@@ -251,7 +264,7 @@ EOF
 
   # Fresh machine (no shellcheck, no cargo-audit): both commands skip with a
   # note and the gate still completes.
-  PATH="$bin_min:/usr/bin:/bin" COMPME_CHECK_FAKE_LOG="$tmp/min.log" \
+  PATH="$bin_min:$runtime_bin" COMPME_CHECK_FAKE_LOG="$tmp/min.log" \
     "$script" --file "$fixture" >"$tmp/min.out"
   cat >"$tmp/min.expected" <<EOF
 cargo|fmt --all -- --check|$repo_root
@@ -265,7 +278,7 @@ EOF
 
   # A failing command stops the gate: echoed before running, named on failure,
   # later commands never run, no completion summary.
-  if PATH="$bin_full:/usr/bin:/bin" COMPME_CHECK_FAKE_LOG="$tmp/fail.log" \
+  if PATH="$bin_full:$runtime_bin" COMPME_CHECK_FAKE_LOG="$tmp/fail.log" \
     COMPME_CHECK_FAKE_CARGO_FAIL=audit \
     "$script" --file "$fixture" >"$tmp/fail.out" 2>"$tmp/fail.err"; then
     echo "check.sh self-test failed: a failing gate command was accepted" >&2

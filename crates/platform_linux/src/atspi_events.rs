@@ -25,7 +25,7 @@
 //! bus), while the bus's match rule decides which of them are routed to us. Missing
 //! either one yields a subscription that silently never fires.
 
-use crate::atspi_event_map::{latest, FieldMinter};
+use crate::atspi_event_map::{latest, LinuxFieldRegistry};
 use crate::atspi_ids::ElementId;
 use crate::atspi_live::AtspiSession;
 use atspi::events::object::{StateChangedEvent, TextCaretMovedEvent};
@@ -34,9 +34,9 @@ use atspi::proxy::registry::RegistryProxyBlocking;
 use atspi::zbus::blocking::{Connection, MessageIterator};
 use atspi::zbus::Message;
 use atspi::{ObjectRefOwned, State};
-use platform::{CaretCallback, FieldHandle, FocusCallback, PlatformError, Subscription};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use platform::{CaretCallback, FocusCallback, PlatformError, Subscription};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -66,10 +66,6 @@ const CARET_MIN_INTERVAL: Duration = Duration::from_millis(25);
 /// parked indefinitely by an accessibility bus that has stopped answering.
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Subscription ids are only required to be distinct; the counter is process-wide
-/// because subscriptions are not owned by any one adapter instance.
-static NEXT_SUBSCRIPTION_ID: AtomicU64 = AtomicU64::new(1);
-
 fn cannot_complete(what: &str, err: impl std::fmt::Display) -> PlatformError {
     PlatformError::CannotComplete {
         reason: format!("platform_linux atspi events {what}: {err}"),
@@ -78,7 +74,10 @@ fn cannot_complete(what: &str, err: impl std::fmt::Display) -> PlatformError {
 
 /// Register for `object:state-changed:focused` and report each element that takes
 /// the focus.
-pub fn subscribe_focus(cb: FocusCallback) -> Result<Subscription, PlatformError> {
+pub fn subscribe_focus(
+    fields: Arc<Mutex<LinuxFieldRegistry>>,
+    cb: FocusCallback,
+) -> Result<Subscription, PlatformError> {
     let mut delivered = None;
     let workers = start(
         FOCUS_REGISTRY_EVENT,
@@ -88,8 +87,11 @@ pub fn subscribe_focus(cb: FocusCallback) -> Result<Subscription, PlatformError>
         // re-probe, so there is no time window to coalesce over — but consecutive
         // *duplicates* are dropped below, which is a different thing.
         None,
-        move |session, minter, element| {
-            let field = mint(session, minter, &element);
+        move |session, element| {
+            let field = fields
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .focus(&element, || session.element_owner(&element));
             // GTK emits `state-changed:focused` **twice** for one focus move
             // (measured on GTK3/at-spi2 2.60 with the harness fixture), and each
             // focus event costs the host a capability probe plus a field read. So
@@ -109,28 +111,69 @@ pub fn subscribe_focus(cb: FocusCallback) -> Result<Subscription, PlatformError>
 }
 
 /// Register for `object:text-caret-moved` and report the caret's screen geometry.
-pub fn subscribe_caret(cb: CaretCallback) -> Result<Subscription, PlatformError> {
+pub fn subscribe_caret(
+    fields: Arc<Mutex<LinuxFieldRegistry>>,
+    cb: CaretCallback,
+) -> Result<Subscription, PlatformError> {
     let workers = start(
         TextCaretMovedEvent::REGISTRY_EVENT_STRING,
         TextCaretMovedEvent::MATCH_RULE_STRING,
         decode_caret,
         Some(CARET_MIN_INTERVAL),
-        move |session, minter, element| {
-            let field = mint(session, minter, &element);
+        move |session, element| {
+            let field = fields
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .current_for(&element);
+            let Some(field) = field else {
+                if debug_enabled() {
+                    eprintln!(
+                        "compme: dropped foreign AT-SPI caret event for {}",
+                        element.encode()
+                    );
+                }
+                return;
+            };
             // Geometry is best effort by contract: `None` means "no usable rect",
             // which the host already handles by falling back to popup placement. A
             // toolkit that refuses extents must still produce a caret event.
             let rect = session.caret_rect(&field).unwrap_or(None);
+            // Focus and caret dispatchers are independent threads. If focus moved
+            // during the geometry round trip, suppress this now-stale callback so
+            // it cannot arrive after the new focus and cancel that field's debounce.
+            if fields
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .validate(&field)
+                .is_err()
+            {
+                if debug_enabled() {
+                    eprintln!(
+                        "compme: dropped AT-SPI caret callback superseded during geometry for {}",
+                        element.encode()
+                    );
+                }
+                return;
+            }
             cb(field, rect);
         },
     )?;
     Ok(into_subscription(workers))
 }
 
-/// The handle for an event's element, with the `app`/`pid` lookup behind the
-/// minter's change check so it costs nothing on repeat events.
-fn mint(session: &AtspiSession, minter: &mut FieldMinter, element: &ElementId) -> FieldHandle {
-    minter.handle(&element.encode(), || session.element_owner(element))
+fn debug_enabled() -> bool {
+    debug_flag_on(std::env::var_os("COMPME_DEBUG").as_deref())
+}
+
+fn debug_flag_on(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| {
+        let value = value.to_string_lossy();
+        !value.is_empty()
+            && !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+    })
 }
 
 /// `object:state-changed:focused` with `enabled` set — the element that just took
@@ -161,8 +204,9 @@ fn element_id(item: &ObjectRefOwned) -> Option<ElementId> {
 /// The reader/dispatcher pair behind one subscription, and everything needed to stop
 /// them.
 struct EventWorkers {
-    /// Closed before the connection is, so no callback can fire after
-    /// `Subscription::drop` returns even if a worker thread outlives the timeout.
+    /// Closed before the connection is, so nothing new passes the delivery gate
+    /// after stop. A callback already past the gate may complete after
+    /// `Subscription::drop` returns if a worker outlives the timeout.
     active: Arc<AtomicBool>,
     /// A clone of the subscription's own accessibility-bus connection. Closing it is
     /// what wakes the reader out of its blocking receive (see the module docs).
@@ -180,9 +224,9 @@ impl EventWorkers {
         let _ = self.connection.close();
         if self.stopped.recv_timeout(STOP_TIMEOUT).is_err() {
             // Detach rather than park the run loop on a bus that stopped answering.
-            // Delivery is already off (the gate above closed first) and the threads
-            // own nothing but their own connection clone and the callback, so the
-            // cost of a detached one is bounded and invisible to the host.
+            // Nothing new can pass the gate above. A callback already past it may
+            // finish; returning here keeps subscription drop bounded even though
+            // that worker cannot be joined safely within the timeout.
             return;
         }
         for thread in self.threads {
@@ -192,7 +236,7 @@ impl EventWorkers {
 }
 
 fn into_subscription(workers: EventWorkers) -> Subscription {
-    let id = NEXT_SUBSCRIPTION_ID.fetch_add(1, Ordering::Relaxed);
+    let id = crate::next_subscription_id();
     Subscription::with_cancel(id, move || workers.stop())
 }
 
@@ -209,7 +253,7 @@ fn start<F>(
     mut deliver: F,
 ) -> Result<EventWorkers, PlatformError>
 where
-    F: FnMut(&AtspiSession, &mut FieldMinter, ElementId) + Send + 'static,
+    F: FnMut(&AtspiSession, ElementId) + Send + 'static,
 {
     let session = AtspiSession::open()?;
     let connection = session.connection().clone();
@@ -231,7 +275,6 @@ where
     // never-started closure drops `event_tx`, and the dispatcher retires on its own.
     let active_for_dispatch = Arc::clone(&active);
     let dispatcher = spawn("compme-atspi-dispatch", move || {
-        let mut minter = FieldMinter::new();
         while let Ok(element) = event_rx.recv() {
             if !active_for_dispatch.load(Ordering::Acquire) {
                 break;
@@ -244,7 +287,7 @@ where
             // contract lets callbacks run on an adapter-internal thread, and
             // unwinding out of one would silently end delivery for every later event.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                deliver(&session, &mut minter, element);
+                deliver(&session, element);
             }));
             if let Some(interval) = coalesce {
                 thread::sleep(interval);
@@ -365,8 +408,20 @@ mod tests {
     fn subscription_ids_are_distinct_per_subscription() {
         // Two subscriptions must be separable by id; a shared id would make the
         // host's bookkeeping alias them.
-        let first = NEXT_SUBSCRIPTION_ID.fetch_add(1, Ordering::Relaxed);
-        let second = NEXT_SUBSCRIPTION_ID.fetch_add(1, Ordering::Relaxed);
+        let first = crate::next_subscription_id();
+        let second = crate::next_subscription_id();
         assert!(second > first);
+    }
+
+    #[test]
+    fn debug_logging_is_opt_in_and_understands_explicit_off_values() {
+        for value in ["", "0", "false", "off", "no"] {
+            assert!(
+                !debug_flag_on(Some(std::ffi::OsStr::new(value))),
+                "{value:?} must keep diagnostics off"
+            );
+        }
+        assert!(debug_flag_on(Some(std::ffi::OsStr::new("1"))));
+        assert!(!debug_flag_on(None));
     }
 }

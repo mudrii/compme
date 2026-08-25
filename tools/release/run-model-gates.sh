@@ -30,7 +30,7 @@ run_self_test() {
   for name in \
     GITHUB_ACTIONS GITHUB_REF_TYPE COMPME_ALLOW_MODEL_GATE_OVERRIDE \
     COMPME_MODEL_GATE_PATH COMPME_MODEL_GATE_URL COMPME_MODEL_GATE_SHA256 \
-    COMPME_REQUIRE_LATENCY_BUDGET; do
+    COMPME_REQUIRE_LATENCY_BUDGET COMPME_MODEL_GATE_UNAME; do
     if printenv "$name" >/dev/null 2>&1; then
       echo "run-model-gates self-test failed: inherited $name" >&2
       return 1
@@ -40,6 +40,7 @@ run_self_test() {
   trap 'rm -rf "$tmp"' EXIT
   unset GITHUB_ACTIONS GITHUB_REF_TYPE COMPME_ALLOW_MODEL_GATE_OVERRIDE
   unset COMPME_MODEL_GATE_PATH COMPME_MODEL_GATE_URL COMPME_MODEL_GATE_SHA256
+  unset COMPME_MODEL_GATE_UNAME
   unset COMPME_MODEL_GATE_CARGO_FAIL COMPME_MODEL_GATE_CURL_FAIL COMPME_MODEL_GATE_CURL_BODY
 
   fake_bin="$tmp/bin"
@@ -67,7 +68,11 @@ if [ -n "${COMPME_MODEL_GATE_CURL_FAIL:-}" ]; then
 fi
 printf '%s' "${COMPME_MODEL_GATE_CURL_BODY:-downloaded-model}" >"$out"
 SH
-  chmod +x "$fake_bin/cargo" "$fake_bin/curl"
+  cat >"$fake_bin/uname" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${COMPME_MODEL_GATE_UNAME:-Darwin}"
+SH
+  chmod +x "$fake_bin/cargo" "$fake_bin/curl" "$fake_bin/uname"
 
   model_path="$tmp/model-dir/model.gguf"
   printf 'cached-model' >"$model_path"
@@ -99,6 +104,24 @@ SH
     COMPME_MODEL_GATE_CURL_LOG="$tmp/curl.log" \
     "$0" >/dev/null
   grep -q 'env=1 ctx=1 latency=1 gpu=0 ctx_tokens=256 spike_model= args=test --locked -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
+  grep -q 'env=1 ctx=1 latency= gpu=999 ctx_tokens=256 spike_model= args=test --locked -p model_client --test latency long_generation_observes_shutdown_within_250ms -- --ignored --exact --test-threads=1' "$tmp/cargo.log"
+
+  : >"$tmp/cargo.log"
+  : >"$tmp/curl.log"
+  PATH="$fake_bin:$PATH" \
+    COMPME_MODEL_GATE_UNAME=Linux \
+    COMPME_MODEL_GATE_PATH="$model_path" \
+    COMPME_MODEL_GATE_URL="https://example.test/model.gguf" \
+    COMPME_MODEL_GATE_SHA256="$cached_sha" \
+    COMPME_MODEL_GATE_CARGO_LOG="$tmp/cargo.log" \
+    COMPME_MODEL_GATE_CURL_LOG="$tmp/curl.log" \
+    "$0" >/dev/null
+  grep -q 'env=1 ctx=1 latency=1 gpu=0 ctx_tokens=256 spike_model= args=test --locked -p model_client --test latency -- --ignored --test-threads=1' "$tmp/cargo.log"
+  if grep -q 'gpu=999 .*long_generation_observes_shutdown_within_250ms' "$tmp/cargo.log"; then
+    echo "run-model-gates self-test failed: non-Darwin run invoked Metal cancellation" >&2
+    return 1
+  fi
+  grep -q "tools/spike env=1 ctx= latency=1 gpu= ctx_tokens= spike_model=$model_path args=test --locked --test model_integration -- --ignored --test-threads=1" "$tmp/cargo.log"
 
   : >"$tmp/cargo.log"
   : >"$tmp/curl.log"
@@ -242,6 +265,11 @@ esac
 # evidence comes from the mandatory local run.
 require_latency_budget="${COMPME_REQUIRE_LATENCY_BUDGET:-1}"
 COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET="$require_latency_budget" cargo test --locked -p model_client --test latency -- --ignored --test-threads=1
+if [ "$(uname -s)" = "Darwin" ]; then
+  # A32's safe llama.cpp abort callback must be exercised on Metal as well as
+  # the CPU-forced suite above. 999 is the production default (all layers).
+  COMPME_MODEL_GPU_LAYERS=999 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency long_generation_observes_shutdown_within_250ms -- --ignored --exact --test-threads=1
+fi
 (
   cd "$repo_root/tools/spike"
   COMPME_SPIKE_MODEL_PATH="$spike_model" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET="$require_latency_budget" cargo test --locked --test model_integration -- --ignored --test-threads=1

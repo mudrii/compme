@@ -62,16 +62,18 @@ Each of these has broken a real run here.
   `QWEN.md` are symlinks to it. Adding `CURSOR.md`, `.cursorrules`,
   `.github/copilot-instructions.md`, `.cursor/rules/*`, etc. fails
   `check-agent-briefs.sh` — put shared guidance here instead.
-- **Fail-closed platforms.** `platform_windows`/`platform_linux` are honest
-  scaffolds returning `UnsupportedField`. Never make them look implemented.
+- **Platform truth.** `platform_windows` remains the honest fail-closed
+  platform-I/O scaffold. `platform_linux` is wired for AT-SPI2 and X11 but
+  retains explicit unsupported surfaces; document each boundary exactly.
 - **Evidence you cannot synthesize.** The 22 live macOS gates need a granted
   GUI session, Windows/Linux acceptance needs that hardware, and the release
   `post_verify` job needs a real tag. Never mark one passed from a headless
   run — record real results in `docs/ACCEPTANCE.md`.
 - **ABI-pinned deps.** `llama-cpp-2` is exact-pinned twice in
-  `crates/model_client` (one entry per target) and again in `tools/spike`. Bump
-  all three together, then run `tools/release/run-model-gates.sh`; it is
-  excluded from Dependabot for exactly this reason.
+  `crates/model_client` (one entry per target) and again in `tools/spike`; the
+  root patch vendors the same release with the safe abort-lifetime extension.
+  Bump all three pins and rebase that patch together, then run
+  `tools/release/run-model-gates.sh`. Dependabot excludes it for this reason.
 
 # Self-Learning
 

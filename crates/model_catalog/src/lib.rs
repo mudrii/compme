@@ -90,7 +90,7 @@ pub fn download_gate(entry: &ModelEntry, is_accepted: impl Fn(&str) -> bool) -> 
 /// `expected_sha256` that is `Some`.
 /// Test-only: the invariant is enforced by the catalog unit tests.
 #[cfg(test)]
-pub fn is_wellformed_sha256(hash: &str) -> bool {
+fn is_wellformed_sha256(hash: &str) -> bool {
     hash.len() == 64
         && hash
             .chars()
@@ -202,7 +202,8 @@ pub fn catalog() -> &'static [ModelEntry] {
 }
 
 /// Committed provenance for the built-in catalog hashes.
-pub fn catalog_provenance() -> &'static [ModelProvenance] {
+#[cfg(test)]
+fn catalog_provenance() -> &'static [ModelProvenance] {
     &[
         ModelProvenance {
             name: "qwen2.5-0.5b-q4_k_m",

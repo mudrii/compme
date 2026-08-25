@@ -1,7 +1,9 @@
 //! Deterministic suggestion state machine.
 
 use context::{left_context, right_context};
-use platform::{ux_mode, AcceptAction, Capabilities, CorrectionRange, FieldHandle, UxMode};
+use platform::{
+    ux_mode, AcceptAction, Capabilities, CorrectionRange, FieldHandle, InsertStrategy, UxMode,
+};
 use ranker::{
     cap_words, is_degenerate_repetition, next_word, repetition_penalty, strip_suffix_overlap,
     trim_to_stop_boundary, truncate_at_sentence_end,
@@ -164,11 +166,10 @@ pub enum Command {
     },
     /// Like `Insert`, but first delete `replace_left` characters immediately to
     /// the left of the caret — a *replacement* (e.g. emoji `:smile`→😄, typo fix,
-    /// US→UK spelling). Emitted only for a `Showing` whose `replace_left > 0`
-    /// (produced by `offer_replacement`). The host honors the deletion at the
-    /// insertion boundary. The machine only offers replacements when the field
-    /// has an atomic range-replace strategy; SyntheticKeys/Clipboard fields
-    /// deliberately fail closed.
+    /// US→UK spelling). Emitted for an `AxSet` `Showing` whose `replace_left > 0`
+    /// (produced by `offer_replacement`). `NativeRangeSet` fields instead emit
+    /// `ReplaceRange` with an exact scalar range and original-text guard.
+    /// SyntheticKeys/Clipboard fields deliberately fail closed.
     Replace {
         field: FieldHandle,
         text: String,
@@ -212,6 +213,25 @@ fn selection_replacement_command(showing: &Showing) -> Option<Command> {
         text: showing.candidates.get(showing.index)?.clone(),
         correction_range: showing.correction_range?,
     })
+}
+
+fn local_replacement_command(showing: &Showing, text: String) -> Command {
+    match (
+        showing.correction_range,
+        showing.correction_original.as_ref(),
+    ) {
+        (Some(correction_range), Some(expected_text)) => Command::ReplaceRange {
+            field: showing.field.clone(),
+            expected_text: expected_text.clone(),
+            text,
+            correction_range,
+        },
+        _ => Command::Replace {
+            field: showing.field.clone(),
+            text,
+            replace_left: showing.replace_left,
+        },
+    }
 }
 
 struct CorrectionOffer {
@@ -681,11 +701,7 @@ impl SuggestionMachine {
                     // spelling, replace_left > 0) → Replace that first deletes
                     // replace_left chars. Same shape the AcceptWord arm inlines.
                     out.push(if showing.replace_left > 0 {
-                        Command::Replace {
-                            field: showing.field,
-                            text,
-                            replace_left: showing.replace_left,
-                        }
+                        local_replacement_command(&showing, text)
                     } else {
                         Command::Insert {
                             field: showing.field,
@@ -712,11 +728,8 @@ impl SuggestionMachine {
                     // split (which would drop the deletion). Word-accept of a
                     // replacement therefore commits the whole token like Full.
                     if showing.replace_left > 0 {
-                        out.push(Command::Replace {
-                            field: showing.field,
-                            text: showing.candidates[showing.index].clone(),
-                            replace_left: showing.replace_left,
-                        });
+                        let text = showing.candidates[showing.index].clone();
+                        out.push(local_replacement_command(&showing, text));
                         out.push(Command::Hide);
                         self.advance_snapshot();
                         return out;
@@ -1009,6 +1022,12 @@ impl SuggestionMachine {
         (!raw.is_empty()).then(|| (showing.field.clone(), text, 0))
     }
 
+    /// Whether any ghost, correction, or selection replacement is currently
+    /// presented and can therefore be meaningfully dismissed by the user.
+    pub fn has_visible_suggestion(&self) -> bool {
+        self.showing.is_some()
+    }
+
     pub fn preview_accept_correction(&self) -> Option<(FieldHandle, String, CorrectionRange)> {
         let showing = self.showing.as_ref()?;
         if showing.presentation != Presentation::Correction {
@@ -1053,10 +1072,10 @@ impl SuggestionMachine {
     /// ghost — the replacement genuinely preempts the model. Emits `ShowGhost`
     /// (+ a `Shown` stat).
     ///
-    /// Only offered on an `AxSet` field: the accept must *delete* `replace_left`
-    /// chars, which only the AX range-replace path honors. SyntheticKeys/Clipboard
-    /// cannot do that atomically, so offering there would both leave the typed
-    /// token (`:smile😄`) and desync the host's diff baseline — so we don't.
+    /// Only offered on an atomic range-replace field. `AxSet` keeps the historical
+    /// left-delete command; `NativeRangeSet` captures the exact original scalar
+    /// slice and emits a guarded `ReplaceRange`. SyntheticKeys/Clipboard cannot
+    /// delete atomically, so offering there would leave the typed token in place.
     ///
     /// Test-only: production code calls [`Self::offer_replacement_multi`]
     /// directly. This single-candidate wrapper survives only for test call sites.
@@ -1090,6 +1109,7 @@ impl SuggestionMachine {
             || self.suppressed
             || candidates.is_empty()
             || replace_left == 0
+            || replace_left > self.caret
             || !self.caps.insert_strategy.supports_atomic_range_replace()
         {
             return out;
@@ -1110,6 +1130,24 @@ impl SuggestionMachine {
         if candidates.is_empty() {
             return out;
         }
+        let (correction_range, correction_original) =
+            if self.caps.insert_strategy == InsertStrategy::NativeRangeSet {
+                let value_len = self.value.chars().count();
+                if self.caret > value_len {
+                    return out;
+                }
+                let start = self.caret - replace_left;
+                let original = self.value.chars().skip(start).take(replace_left).collect();
+                (
+                    Some(CorrectionRange {
+                        start,
+                        end: self.caret,
+                    }),
+                    Some(original),
+                )
+            } else {
+                (None, None)
+            };
         if self.showing.is_some() {
             self.record_stat(StatEvent::Superseded);
         }
@@ -1122,8 +1160,8 @@ impl SuggestionMachine {
             caret: self.caret,
             replace_left,
             presentation: Presentation::Ghost,
-            correction_range: None,
-            correction_original: None,
+            correction_range,
+            correction_original,
         });
         self.pending_since = None;
         self.requested = None;
@@ -1845,6 +1883,7 @@ mod tests {
         let mut machine = machine();
         machine.on_event(text_changed("x", 1, 0));
         machine.on_event(Event::Tick { now_ms: 500 });
+        assert!(!machine.has_visible_suggestion());
 
         assert_eq!(
             machine.on_event(Event::CompletionReady {
@@ -1859,6 +1898,9 @@ mod tests {
                 text: "a b c d".into(),
             }]
         );
+        assert!(machine.has_visible_suggestion());
+        machine.on_event(Event::DismissDiscard);
+        assert!(!machine.has_visible_suggestion());
     }
 
     #[test]
@@ -3401,6 +3443,80 @@ mod tests {
     }
 
     #[test]
+    fn every_terminal_accept_commit_emits_mutation_immediately_followed_by_hide() {
+        let full_insert = {
+            let mut machine = showing_three_words();
+            machine.on_event(Event::AcceptFull)
+        };
+        let final_word_insert = {
+            let mut machine = showing_solo(false);
+            machine.on_event(Event::AcceptWord)
+        };
+        let full_replace = {
+            let mut machine = focused_machine();
+            machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+            machine.on_event(Event::AcceptFull)
+        };
+        let word_replace = {
+            let mut machine = focused_machine();
+            machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+            machine.on_event(Event::AcceptWord)
+        };
+        let selection_full_replace = {
+            let mut machine = focused_machine();
+            machine.offer_selection_replacement_multi(
+                &field("field-a"),
+                "happy".into(),
+                vec!["glad".into()],
+                CorrectionRange { start: 0, end: 5 },
+            );
+            machine.on_event(Event::AcceptFull)
+        };
+        let selection_word_replace = {
+            let mut machine = focused_machine();
+            machine.offer_selection_replacement_multi(
+                &field("field-a"),
+                "happy".into(),
+                vec!["glad".into()],
+                CorrectionRange { start: 0, end: 5 },
+            );
+            machine.on_event(Event::AcceptWord)
+        };
+        let correction_replace = {
+            let mut machine = machine();
+            machine.on_event(text_changed("teh", 3, 0));
+            show_correction(&mut machine, "the", CorrectionRange { start: 0, end: 3 });
+            machine.on_event(Event::AcceptCorrection)
+        };
+
+        for (path, commands) in [
+            ("full insert", full_insert),
+            ("final word insert", final_word_insert),
+            ("full token replacement", full_replace),
+            ("word token replacement", word_replace),
+            ("full selection replacement", selection_full_replace),
+            ("word selection replacement", selection_word_replace),
+            ("correction replacement", correction_replace),
+        ] {
+            let mutation = commands
+                .iter()
+                .position(|command| {
+                    matches!(
+                        command,
+                        Command::Insert { .. }
+                            | Command::Replace { .. }
+                            | Command::ReplaceRange { .. }
+                    )
+                })
+                .unwrap_or_else(|| panic!("{path} emitted no mutation: {commands:?}"));
+            assert!(
+                matches!(commands.get(mutation + 1), Some(Command::Hide)),
+                "{path} must put Hide directly after its mutation: {commands:?}"
+            );
+        }
+    }
+
+    #[test]
     fn accept_full_inserts_all_and_hides() {
         let mut machine = showing_three_words();
 
@@ -3664,6 +3780,10 @@ mod tests {
             field: field("field-a"),
             caps: inline_caps(),
         });
+        // Local-replacement tests need a real left-of-caret source slice. Set it
+        // directly so the shared fixture keeps Focus's snapshot/generation shape.
+        machine.value = "prefix".into();
+        machine.caret = 6;
         machine
     }
 
@@ -4037,7 +4157,7 @@ mod tests {
     }
 
     #[test]
-    fn offer_replacement_only_on_axset_fields() {
+    fn offer_replacement_requires_an_atomic_range_replace_field() {
         // A non-range-replace field (SyntheticKeys/Clipboard) can't honor the
         // deletion, so no replacement is offered there (avoids `:smile😄` + a
         // desynced host diff baseline).
@@ -4125,11 +4245,12 @@ mod tests {
             field: field("field-a"),
             caps,
         });
+        machine.on_event(text_changed(":smile", 6, 0));
         assert_eq!(
             machine.offer_replacement(&field("field-a"), "😄".into(), 5),
             vec![Command::ShowGhost {
                 field: field("field-a"),
-                snapshot: 1,
+                snapshot: 2,
                 text: "😄".into(),
             }]
         );
@@ -4137,10 +4258,83 @@ mod tests {
     }
 
     #[test]
-    fn offer_replacement_multi_only_on_axset_fields() {
+    fn native_range_replacement_accepts_with_exact_unicode_original_and_scalar_range() {
+        let mut caps = inline_caps();
+        caps.insert_strategy = InsertStrategy::NativeRangeSet;
+        let mut machine = SuggestionMachine::new(caps.clone(), 200, 4);
+        let f = field("field-a");
+        machine.on_event(Event::Focus {
+            field: f.clone(),
+            caps,
+        });
+        machine.on_event(text_changed("a😀teh", 5, 0));
+
+        assert_eq!(
+            machine.offer_replacement_multi(&f, vec!["the".into()], 4),
+            vec![Command::ShowGhost {
+                field: f.clone(),
+                snapshot: 2,
+                text: "the".into(),
+            }]
+        );
+        assert_eq!(
+            machine.on_event(Event::AcceptFull),
+            vec![
+                Command::ReplaceRange {
+                    field: f,
+                    expected_text: "😀teh".into(),
+                    text: "the".into(),
+                    correction_range: CorrectionRange { start: 1, end: 5 },
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn native_range_word_accept_uses_the_same_atomic_range_command() {
+        let mut caps = inline_caps();
+        caps.insert_strategy = InsertStrategy::NativeRangeSet;
+        let mut machine = SuggestionMachine::new(caps.clone(), 200, 4);
+        let f = field("field-a");
+        machine.on_event(Event::Focus {
+            field: f.clone(),
+            caps,
+        });
+        machine.on_event(text_changed("teh", 3, 0));
+        machine.offer_replacement_multi(&f, vec!["the".into()], 3);
+
+        assert_eq!(
+            machine.on_event(Event::AcceptWord),
+            vec![
+                Command::ReplaceRange {
+                    field: f,
+                    expected_text: "teh".into(),
+                    text: "the".into(),
+                    correction_range: CorrectionRange { start: 0, end: 3 },
+                },
+                Command::Hide,
+            ]
+        );
+    }
+
+    #[test]
+    fn local_replacement_rejects_a_delete_count_past_the_scalar_caret() {
+        let mut machine = focused_machine();
+        machine.value = "a😀".into();
+        machine.caret = 2;
+        assert_eq!(
+            machine.offer_replacement_multi(&field("field-a"), vec!["x".into()], 3),
+            vec![]
+        );
+        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
+    }
+
+    #[test]
+    fn offer_replacement_multi_requires_an_atomic_range_replace_field() {
         // A non-range-replace field (SyntheticKeys/Clipboard) can't honor the
         // deletion, so no multi replacement is offered there — same guard as the
-        // single path (`insert_strategy != AxSet`).
+        // single path (`supports_atomic_range_replace() == false`).
         let mut caps = inline_caps();
         caps.insert_strategy = InsertStrategy::SyntheticKeys;
         let mut machine = SuggestionMachine::new(caps.clone(), 200, 4);
@@ -4249,6 +4443,8 @@ mod tests {
     #[test]
     fn offer_replacement_supersedes_a_showing_completion() {
         let mut machine = showing_three_words(); // TextChanged focuses field-a
+        machine.value = "hello".into();
+        machine.caret = 5;
         let _ = machine.take_stat_events(); // drop the completion's Shown
         let events_before = machine.offer_replacement(&field("field-a"), "😄".into(), 5);
         assert!(!events_before.is_empty()); // it showed
@@ -4286,6 +4482,8 @@ mod tests {
             field: field("field-a"),
             caps: inline_caps(),
         });
+        machine.value = "token".into();
+        machine.caret = 5;
         let f = field("field-a");
         machine.offer_replacement(&f, "😄".into(), 5);
         assert_eq!(

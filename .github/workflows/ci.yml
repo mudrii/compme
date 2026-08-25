@@ -14,7 +14,7 @@ on:
     # job. Everything still listed below is unpinned prose, so it keeps the
     # cheap docs.yml lane; anything pinned now pays the full lane.
     paths-ignore:
-      - "docs/superpowers/**"
+      - "docs/superpowers/plans/**"
       - "docs/RELEASE-NOTES-*.md"
       - "docs/TROUBLESHOOTING.md"
       - "Qfd.md"
@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,7 +63,7 @@ jobs:
       # Toolchain version/components come from rust-toolchain.toml (single
       # source); the action falls back to the file when `toolchain` is omitted.
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
 
@@ -103,10 +103,13 @@ jobs:
 
       # A few platform_macos tests share the process-wide NSPasteboard and app
       # tests share shortcut/pasteboard globals, so only these two crates pay
-      # the serial cost to avoid cross-test state leaks; the other 23 crates
+      # the serial cost to avoid cross-test state leaks; the other 24 crates
       # run in parallel above.
       - name: Test (serial, macOS state)
         run: cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1
+
+      - name: Doc tests (macOS crates)
+        run: cargo test --locked --doc -p platform_macos -p app
 
       - name: Build
         run: cargo build --locked --workspace --all-targets
@@ -127,6 +130,10 @@ jobs:
         env:
           COMPME_REQUIRE_LATENCY_BUDGET: "0"
         run: bash tools/release/run-model-gates.sh
+
+      # Reuses the GGUF downloaded and cached by the smoke gate above.
+      - name: Model-quality gate
+        run: bash tools/release/check-quality.sh
 
       - name: Script syntax
         run: |
@@ -222,6 +229,12 @@ jobs:
       - name: Release cask updater self-test
         run: tools/release/update-cask.sh --self-test
 
+      - name: Draft release preparation self-test
+        run: tools/release/prepare-draft-release.sh --self-test
+
+      - name: Git credential scrub self-test
+        run: tools/release/scrub-git-credentials.sh --self-test
+
       - name: Release cask finalizer self-test
         run: tools/release/finalize-cask.sh --self-test
 
@@ -241,7 +254,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
 
@@ -282,12 +295,19 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
 
+      - name: Read runner image
+        id: img
+        shell: bash
+        run: echo "image=${ImageOS:-${RUNNER_OS:-unknown}}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ steps.img.outputs.image }}
 
       # The whole workspace minus `platform_macos` (Apple frameworks). This
       # gates portability leaks in shared crates and proves the app binary
@@ -297,7 +317,7 @@ jobs:
         run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
 
       - name: Test portable workspace
-        run: cargo test --locked --workspace --exclude platform_macos
+        run: cargo test --locked --workspace --exclude platform_macos --all-targets
 
       - name: Build app binary
         run: cargo build --locked -p app
@@ -320,13 +340,19 @@ jobs:
             | xargs -0 shellcheck --severity=error
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
+
+      - name: Read runner image
+        id: img
+        shell: bash
+        run: echo "image=${ImageOS:-${RUNNER_OS:-unknown}}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          key: ${{ steps.img.outputs.image }}
           # cargo-audit clones the RustSec advisory DB outside rust-cache's
           # default paths; cache it alongside the cargo-installed binary.
           cache-directories: ~/.cargo/advisory-db
@@ -337,6 +363,9 @@ jobs:
       # fmt runs once on the macOS lane (platform-independent); portable parity here is clippy/test/build.
       - name: Clippy portable workspace (deny warnings)
         run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
+
+      - name: Rustdoc portable workspace (deny warnings)
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --exclude platform_macos
 
       # Platform-independent (reads Cargo.lock only); lives in the Linux job
       # so the premium macOS lane never pays the cargo-audit compile.
@@ -353,10 +382,13 @@ jobs:
           cargo audit --deny unsound --deny yanked
 
       - name: Test portable workspace
-        run: cargo test --locked --workspace --exclude platform_macos
+        run: cargo test --locked --workspace --exclude platform_macos --all-targets
 
       - name: Build app binary
         run: cargo build --locked -p app
+
+      - name: Linux live-test count
+        run: tools/release/check-linux-live-test-count.sh
 
       # Hermetic half of the AT-SPI2 harness (env sanitizing, display parsing,
       # readiness waits, argument handling, unprovisioned-host reporting). Runs on

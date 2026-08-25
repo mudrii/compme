@@ -42,6 +42,7 @@ jobs:
           # it also updates origin/<branch> depends on checkout's refspec
           # config, and a stale remote-tracking ref would fail this gate open.
           git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          tools/release/scrub-git-credentials.sh
           default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
           if [ "$GITHUB_SHA" != "$default_sha" ]; then
             echo "release tag commit $GITHUB_SHA must equal current origin/$DEFAULT_BRANCH HEAD $default_sha" >&2
@@ -62,7 +63,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
 
@@ -82,6 +83,11 @@ jobs:
           # default paths.
           cache-directories: ~/.cargo/advisory-db
 
+      - name: Shellcheck (errors only)
+        run: |
+          find tools -type f -name '*.sh' -print0 \
+            | xargs -0 shellcheck --severity=error
+
       # Same policy as ci.yml's Linux lane: deny unsound and yanked, keep
       # `unmaintained` reporting-only. See the comment in ci.yml.
       - name: Rust dependency audit
@@ -100,6 +106,9 @@ jobs:
 
       - name: Root tests (serial)
         run: cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1
+
+      - name: Rustdoc (deny warnings)
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 
       # Correctness only on the hosted runner: virtualized macOS has no usable
       # Metal, so the 500ms warm-latency budget is enforced by the mandatory
@@ -195,6 +204,12 @@ jobs:
       - name: Release model gate policy
         run: bash tools/release/check-model-gates.sh
 
+      - name: Release model gate policy self-test
+        run: bash tools/release/check-model-gates.sh --self-test
+
+      - name: Gate runner self-test
+        run: tools/dev/check.sh --self-test
+
       - name: Release model gate self-test
         run: tools/release/run-model-gates.sh --self-test
 
@@ -203,6 +218,12 @@ jobs:
 
       - name: Release cask updater self-test
         run: tools/release/update-cask.sh --self-test
+
+      - name: Draft release preparation self-test
+        run: tools/release/prepare-draft-release.sh --self-test
+
+      - name: Git credential scrub self-test
+        run: tools/release/scrub-git-credentials.sh --self-test
 
       - name: Release cask finalizer self-test
         run: tools/release/finalize-cask.sh --self-test
@@ -232,19 +253,26 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
 
+      - name: Read runner image
+        id: img
+        shell: bash
+        run: echo "image=${ImageOS:-${RUNNER_OS:-unknown}}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ steps.img.outputs.image }}
 
       # fmt runs once on the macOS lane (platform-independent); portable parity here is clippy/test/build.
       - name: Clippy portable workspace (deny warnings)
         run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
 
       - name: Test portable workspace
-        run: cargo test --locked --workspace --exclude platform_macos
+        run: cargo test --locked --workspace --exclude platform_macos --all-targets
 
       - name: Build app binary
         run: cargo build --locked -p app
@@ -260,22 +288,32 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
 
+      - name: Read runner image
+        id: img
+        shell: bash
+        run: echo "image=${ImageOS:-${RUNNER_OS:-unknown}}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ steps.img.outputs.image }}
 
       # fmt runs once on the macOS lane (platform-independent); portable parity here is clippy/test/build.
       - name: Clippy portable workspace (deny warnings)
         run: cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
 
       - name: Test portable workspace
-        run: cargo test --locked --workspace --exclude platform_macos
+        run: cargo test --locked --workspace --exclude platform_macos --all-targets
 
       - name: Build app binary
         run: cargo build --locked -p app
+
+      - name: Linux live-test count
+        run: tools/release/check-linux-live-test-count.sh
 
       # Parity with ci.yml's Linux job. Until this landed a tag validated LESS
       # of Linux than a branch push did: the live AT-SPI surfaces were gated on
@@ -345,11 +383,11 @@ jobs:
       # Last authenticated git op in this job is the default-HEAD check above; drop
       # the checkout-persisted token before any third-party build code runs.
       - name: Scrub persisted git credentials
-        run: git config --local --unset-all http.https://github.com/.extraheader || true
+        run: tools/release/scrub-git-credentials.sh
 
       # Toolchain version comes from rust-toolchain.toml (single source of truth).
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - name: Check release tag matches bundle metadata
         run: COMPME_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" tools/bundle/check-bundle-metadata.sh
@@ -574,7 +612,7 @@ jobs:
     environment: release
     permissions:
       contents: write
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -606,7 +644,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          gh attestation verify "release-artifacts/compme-${VERSION}-macos.zip" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify "release-artifacts/compme-${VERSION}-macos.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow mudrii/compme/.github/workflows/release.yml
 
       - name: Verify release tag is still at default-branch HEAD before publication
         env:
@@ -630,6 +670,11 @@ jobs:
           SHA256="$(awk '{print $1}' "release-artifacts/$ZIP.sha256")"
           tools/release/write-update-manifest.sh \
             "$VERSION" "$ZIP" "$SHA256" > "release-artifacts/$MANIFEST"
+
+      - name: Prepare retryable draft state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/release/prepare-draft-release.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
 
       - name: Create draft GitHub release
         env:
@@ -656,6 +701,7 @@ jobs:
           git fetch --force origin \
             "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH" \
             "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          tools/release/scrub-git-credentials.sh
           default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
           tag_sha="$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")"
           if [ "$tag_sha" != "$GITHUB_SHA" ] || [ "$tag_sha" != "$default_sha" ]; then
@@ -681,7 +727,7 @@ jobs:
     environment: release
     permissions:
       contents: write
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -710,7 +756,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          gh attestation verify "release-artifacts/compme-${VERSION}-macos.zip" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify "release-artifacts/compme-${VERSION}-macos.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow mudrii/compme/.github/workflows/release.yml
 
       - name: Finalize Homebrew cask
         env:
@@ -722,7 +770,7 @@ jobs:
           VERSION="${TAG#v}"
           ZIP="compme-${VERSION}-macos.zip"
           artifact_path="$PWD/release-artifacts/$ZIP"
-          tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"
+          tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH" "$GITHUB_REPOSITORY"
 
   # Post-publish last mile: installs the published cask and assesses the exact
   # bytes a user gets, so the pipeline verifies itself end-to-end instead of
@@ -750,6 +798,16 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern "*.zip" --dir verify
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern "*.zip.sha256" --dir verify
           (cd verify && shasum -a 256 -c ./*.sha256)
+
+      - name: Verify published build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh attestation verify "verify/compme-${VERSION}-macos.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow mudrii/compme/.github/workflows/release.yml
 
       # The documented user install path (README "Install"): brew downloads the
       # release zip and checks it against the finalized cask's sha256.

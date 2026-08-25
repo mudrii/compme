@@ -442,6 +442,11 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.machine.preview_accept_insert(action)
     }
 
+    /// Whether the machine currently owns a user-visible suggestion.
+    pub fn has_visible_suggestion(&self) -> bool {
+        self.machine.has_visible_suggestion()
+    }
+
     pub fn preview_accept_correction(&self) -> Option<(FieldHandle, String, CorrectionRange)> {
         self.machine.preview_accept_correction()
     }
@@ -646,11 +651,11 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                         });
                     }
                     committed = true;
-                    // Cross-crate invariant: this flag is consumed by the *next*
-                    // `Hide` to delay the synthetic-keys tap teardown. Correct only
-                    // because `engine_core` always emits an `Insert`/`Replace`
-                    // immediately followed by its `Hide`; reordering them there
-                    // would silently misapply (or skip) the teardown delay here.
+                    // Cross-crate invariant: on every terminal accept this flag is
+                    // consumed by the *next* `Hide`; producer adjacency is pinned by
+                    // `engine_core::tests::every_terminal_accept_commit_emits_mutation_immediately_followed_by_hide`.
+                    // A partial word accept instead follows Insert with UpdateGhost
+                    // and intentionally keeps the tap armed.
                     delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
                 }
                 Command::Replace {
@@ -880,6 +885,7 @@ mod tests {
         replacing_inserts: Arc<Mutex<Vec<ReplacingInsert>>>,
         range_rect: Option<ScreenRect>,
         range_replacing_inserts: Arc<Mutex<Vec<RangeReplacingInsert>>>,
+        range_current_text: Option<String>,
     }
 
     impl FakeAdapter {
@@ -907,6 +913,7 @@ mod tests {
                     h: 12.0,
                 }),
                 range_replacing_inserts: Arc::new(Mutex::new(Vec::new())),
+                range_current_text: None,
             }
         }
     }
@@ -1025,6 +1032,13 @@ mod tests {
             if self.fail_insert {
                 return Err(PlatformError::StaleField);
             }
+            if self
+                .range_current_text
+                .as_deref()
+                .is_some_and(|current| current != expected_text)
+            {
+                return Err(PlatformError::StaleField);
+            }
             self.range_replacing_inserts.lock().unwrap().push((
                 field.clone(),
                 expected_text.into(),
@@ -1086,6 +1100,7 @@ mod tests {
         // `insert_replacing` carrying `replace_left` (not the plain insert path).
         let (mut engine, adapter, _overlay) = engine();
         engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("token", 5, 0)).unwrap();
         engine
             .on_replacement(&field(), vec!["😄".into()], 5)
             .unwrap();
@@ -1488,6 +1503,7 @@ mod tests {
         // passes a single candidate and never cycles.
         let (mut engine, adapter, _overlay) = engine();
         engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("big", 3, 0)).unwrap();
         engine
             .on_replacement(&field(), vec!["large".into(), "huge".into()], 3)
             .unwrap();
@@ -1588,6 +1604,7 @@ mod tests {
         ));
 
         engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("token", 5, 0)).unwrap();
         engine
             .on_replacement(&field(), vec!["😄".into()], 5)
             .unwrap();
@@ -1715,6 +1732,36 @@ mod tests {
             Ok(vec![]),
             "a follow-up accept with nothing pending must be a no-op, not wedged"
         );
+    }
+
+    #[test]
+    fn native_local_replacement_propagates_expected_text_mismatch() {
+        let mut adapter = FakeAdapter::new();
+        adapter.caps.insert_strategy = InsertStrategy::NativeRangeSet;
+        adapter.range_current_text = Some("changed under suggestion".into());
+        let replacing = Arc::clone(&adapter.replacing_inserts);
+        let range_replacing = Arc::clone(&adapter.range_replacing_inserts);
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay, 200, 4, 32);
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("a😀teh", 5, 1000)).unwrap();
+        engine
+            .on_replacement(&field(), vec!["the".into()], 4)
+            .unwrap();
+
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Err(AcceptError {
+                error: PlatformError::StaleField,
+                committed: false,
+            })
+        );
+        assert!(
+            replacing.lock().unwrap().is_empty(),
+            "NativeRangeSet must never use the left-delete adapter method"
+        );
+        assert!(range_replacing.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -2606,6 +2653,7 @@ mod tests {
         let (mut replacement, replacement_adapter, _) = engine();
         replacement.set_accept_subscription(failing_disarm());
         replacement.on_focus(field()).unwrap();
+        replacement.on_text_changed(typed("token", 5, 0)).unwrap();
         replacement
             .on_replacement(&field(), vec!["😄".into()], 5)
             .unwrap();
@@ -3756,10 +3804,8 @@ mod tests {
         // The Replace dispatch branch sets `delay_next_hide` from the focus
         // caps' insert strategy exactly like Insert (L432): it defers the
         // accept-tap teardown ONLY under SyntheticKeys, otherwise the trailing
-        // Hide disarms immediately. Replacement offers are gated to AxSet fields
-        // by the machine (`offer_replacement_multi` requires
-        // insert_strategy == AxSet), so the reachable replacement-accept path is
-        // the AxSet/immediate-disarm direction: assert the Hide disarms the tap
+        // Hide disarms immediately. This fixture exercises the AxSet branch of
+        // the machine's atomic-range-replace gate, so assert the Hide disarms the tap
         // (visible=false) rather than scheduling a delay. This is the Replace
         // counterpart to the Insert delay test and pins that Replace does NOT
         // spuriously defer teardown on the non-synthetic strategy.
@@ -3788,6 +3834,7 @@ mod tests {
         ));
 
         engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("token", 5, 0)).unwrap();
         // Drive to a state offering a replacement (replace_left > 0).
         engine
             .on_replacement(&field(), vec!["😄".into()], 5)

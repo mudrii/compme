@@ -25,6 +25,7 @@ use crate::atspi_caps::{capabilities_from, FieldFacts};
 use crate::atspi_ids::ElementId;
 use atspi::proxy::accessible::AccessibleProxyBlocking;
 use atspi::proxy::application::ApplicationProxyBlocking;
+use atspi::proxy::component::ComponentProxyBlocking;
 use atspi::proxy::editable_text::EditableTextProxyBlocking;
 use atspi::proxy::text::TextProxyBlocking;
 use atspi::zbus::blocking::Connection;
@@ -49,6 +50,26 @@ const MAX_DEPTH: usize = 16;
 /// through D-Bus on every keystroke.
 const MAX_FIELD_SCALARS: usize = 200_000;
 
+/// Validate AT-SPI's signed character count before any unbounded text transfer.
+///
+/// A negative count is a broken peer response. A count beyond the local safety
+/// cap cannot be represented by a whole-field snapshot without silently losing
+/// the suffix, so both cases fail closed.
+fn checked_field_scalar_count(count: i32) -> Result<usize, PlatformError> {
+    let count = usize::try_from(count)
+        .map_err(|_| unsupported(format!("invalid negative field scalar count: {count}")))?;
+    if count > MAX_FIELD_SCALARS {
+        return Err(field_over_cap_error());
+    }
+    Ok(count)
+}
+
+fn field_over_cap_error() -> PlatformError {
+    unsupported(format!(
+        "field exceeds {MAX_FIELD_SCALARS} scalars; refusing lossy read/replace"
+    ))
+}
+
 fn cannot_complete(what: &str, err: impl std::fmt::Display) -> PlatformError {
     PlatformError::CannotComplete {
         reason: format!("platform_linux atspi {what}: {err}"),
@@ -57,6 +78,15 @@ fn cannot_complete(what: &str, err: impl std::fmt::Display) -> PlatformError {
 
 fn unsupported(reason: String) -> PlatformError {
     PlatformError::UnsupportedField { reason }
+}
+
+fn screen_rect_from_extents((x, y, width, height): (i32, i32, i32, i32)) -> Option<ScreenRect> {
+    (width > 0 && height > 0).then_some(ScreenRect {
+        x: f64::from(x),
+        y: f64::from(y),
+        w: f64::from(width),
+        h: f64::from(height),
+    })
 }
 
 /// A connection to the accessibility bus. One per adapter; the owning thread
@@ -130,6 +160,16 @@ impl AtspiSession {
             .map_err(|err| cannot_complete("text path", err))?
             .build()
             .map_err(|err| cannot_complete("text proxy", err))
+    }
+
+    fn component(&self, id: &ElementId) -> Result<ComponentProxyBlocking<'_>, PlatformError> {
+        ComponentProxyBlocking::builder(&self.connection)
+            .destination(id.bus_name.clone())
+            .map_err(|err| cannot_complete("component destination", err))?
+            .path(id.path.clone())
+            .map_err(|err| cannot_complete("component path", err))?
+            .build()
+            .map_err(|err| cannot_complete("component proxy", err))
     }
 
     /// The focused editable field, if any: a depth-bounded walk from the registry
@@ -239,10 +279,7 @@ impl AtspiSession {
         let id = ElementId::decode(&field.element_id)
             .ok_or_else(|| unsupported(format!("malformed element id: {}", field.element_id)))?;
         let text = self.text(&id)?;
-        let value = text
-            .get_text(0, -1)
-            .map_err(|err| cannot_complete("get_text", err))?;
-        let scalars: Vec<char> = value.chars().take(MAX_FIELD_SCALARS).collect();
+        let scalars = self.field_scalars_from_text(&text)?;
         let caret = text
             .caret_offset()
             .map_err(|err| cannot_complete("caret_offset", err))?;
@@ -313,15 +350,19 @@ impl AtspiSession {
         let (x, y, width, height) = text
             .get_character_extents(offset, CoordType::Screen)
             .map_err(|err| cannot_complete("get_character_extents", err))?;
-        if width <= 0 || height <= 0 {
-            return Ok(None);
-        }
-        Ok(Some(ScreenRect {
-            x: f64::from(x),
-            y: f64::from(y),
-            w: f64::from(width),
-            h: f64::from(height),
-        }))
+        Ok(screen_rect_from_extents((x, y, width, height)))
+    }
+
+    /// Screen bounds of the focused component, used only when per-character
+    /// caret geometry is unavailable (notably an empty text field).
+    pub fn popup_anchor(&self, field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+        let id = ElementId::decode(&field.element_id)
+            .ok_or_else(|| unsupported(format!("malformed element id: {}", field.element_id)))?;
+        let extents = self
+            .component(&id)?
+            .get_extents(CoordType::Screen)
+            .map_err(|err| cannot_complete("component get_extents", err))?;
+        Ok(screen_rect_from_extents(extents))
     }
 
     /// An accessible's `Name` property. Used for diagnostics and to confirm which
@@ -364,6 +405,9 @@ impl AtspiSession {
     /// truncated, which is worse than refusing the replacement. `SetTextContents`
     /// is one call, so the field either changes completely or not at all — the
     /// same reasoning that makes macOS use an `AXValue` set.
+    /// Before taking that whole-field snapshot, the adapter checks AT-SPI's
+    /// character count and refuses fields above `MAX_FIELD_SCALARS`. It never
+    /// reconstructs a value from a capped prefix.
     ///
     /// The expected-text guard is re-checked immediately before the swap, so a
     /// keystroke that landed between the suggestion and the accept invalidates the
@@ -433,13 +477,31 @@ impl AtspiSession {
         })
     }
 
-    /// The field's text as scalars, bounded like `read_context`.
+    /// The field's complete text as scalars, after rejecting an over-cap field.
     fn field_scalars(&self, id: &ElementId) -> Result<Vec<char>, PlatformError> {
-        let value = self
-            .text(id)?
+        let text = self.text(id)?;
+        self.field_scalars_from_text(&text)
+    }
+
+    /// Query the authoritative size before asking another process to transfer
+    /// its whole value. The post-fetch check closes the race where the field
+    /// grows between `CharacterCount` and `GetText`.
+    fn field_scalars_from_text(
+        &self,
+        text: &TextProxyBlocking<'_>,
+    ) -> Result<Vec<char>, PlatformError> {
+        let announced_count = text
+            .character_count()
+            .map_err(|err| cannot_complete("character_count", err))?;
+        checked_field_scalar_count(announced_count)?;
+        let value = text
             .get_text(0, -1)
             .map_err(|err| cannot_complete("get_text", err))?;
-        Ok(value.chars().take(MAX_FIELD_SCALARS).collect())
+        let scalars: Vec<char> = value.chars().collect();
+        if scalars.len() > MAX_FIELD_SCALARS {
+            return Err(field_over_cap_error());
+        }
+        Ok(scalars)
     }
 
     fn caret_offset(&self, id: &ElementId) -> Result<i32, PlatformError> {
@@ -512,6 +574,41 @@ impl AtspiSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_rect_from_extents_accepts_component_bounds_and_rejects_degenerate_geometry() {
+        assert_eq!(
+            screen_rect_from_extents((10, 20, 300, 24)),
+            Some(ScreenRect {
+                x: 10.0,
+                y: 20.0,
+                w: 300.0,
+                h: 24.0,
+            })
+        );
+        assert_eq!(screen_rect_from_extents((10, 20, 0, 24)), None);
+        assert_eq!(screen_rect_from_extents((10, 20, 300, -1)), None);
+    }
+
+    #[test]
+    fn field_scalar_count_rejects_negative_and_over_cap_values() {
+        assert_eq!(checked_field_scalar_count(0).expect("empty field"), 0);
+        assert_eq!(
+            checked_field_scalar_count(MAX_FIELD_SCALARS as i32).expect("field at cap"),
+            MAX_FIELD_SCALARS
+        );
+
+        assert!(matches!(
+            checked_field_scalar_count(-1),
+            Err(PlatformError::UnsupportedField { reason })
+                if reason == "invalid negative field scalar count: -1"
+        ));
+        assert!(matches!(
+            checked_field_scalar_count(MAX_FIELD_SCALARS as i32 + 1),
+            Err(PlatformError::UnsupportedField { reason })
+                if reason == "field exceeds 200000 scalars; refusing lossy read/replace"
+        ));
+    }
 
     /// `open()` must report a diagnosable error rather than panic when no
     /// accessibility bus exists. That is the normal state on a build machine and

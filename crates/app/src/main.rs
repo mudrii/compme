@@ -26,6 +26,12 @@ mod status;
 mod url_actions;
 mod wiring;
 
+pub(crate) fn write_stderr(args: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+
+    let _ = writeln!(std::io::stderr().lock(), "{args}");
+}
+
 fn main() {
     if let Err(err) = run_loop::run() {
         eprintln!("compme: fatal: {err}");

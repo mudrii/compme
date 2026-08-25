@@ -5,45 +5,40 @@
 //! macOS development machines and the Windows CI lane included, where there is no
 //! accessibility bus to receive a signal from.
 //!
-//! - **Handle minting.** [`FieldHandle::generation`] must change when the element
-//!   behind a handle is replaced, so a write against an old handle fails instead of
-//!   landing in whatever now occupies that address. AT-SPI identifies an accessible
-//!   by its `(bus name, object path)` pair, and that pair *is* stable for the life
-//!   of the element, so the generation advances exactly when the pair changes.
+//! - **Field identity.** [`LinuxFieldRegistry`] is the single focus-owned source
+//!   of [`FieldHandle`] generations for event delivery and adapter I/O.
 //! - **Coalescing.** A caret event fires per keystroke and resolving its geometry
 //!   costs D-Bus round trips, so [`latest`] collapses a burst to its newest event —
 //!   the only one whose caret position is still true.
 
-use platform::FieldHandle;
+use crate::atspi_ids::ElementId;
+use platform::{FieldHandle, PlatformError};
 use std::sync::mpsc;
 
-/// Mints one [`FieldHandle`] per element, reusing it while the element is unchanged.
+/// The adapter-owned identity authority for Linux AT-SPI fields.
 ///
-/// `describe` supplies the `app`/`pid` pair, which costs D-Bus round trips on the
-/// live path; it is called **only** when the element actually changed, so a burst of
-/// caret events inside one field costs none of them.
+/// Focus events are the only events allowed to mint a handle. Caret events may
+/// reuse the current handle, but a bus-wide event for any other accessible is
+/// rejected. Every I/O path validates against the same current identity and
+/// generation before addressing the accessible.
 #[derive(Debug, Default)]
-pub struct FieldMinter {
+pub struct LinuxFieldRegistry {
     current: Option<FieldHandle>,
     minted: u64,
 }
 
-impl FieldMinter {
+impl LinuxFieldRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The handle for `element_id` (an `atspi_ids::ElementId::encode()` string).
-    ///
-    /// Returning to a previously focused element mints a *fresh* generation rather
-    /// than reviving the old handle: the accessible may have been destroyed and
-    /// recreated at the same object path in between, and reusing the old generation
-    /// would tell the host "same live field" about a field it can no longer trust.
-    pub fn handle(
+    /// Mint or reuse the current focused field.
+    pub fn focus(
         &mut self,
-        element_id: &str,
+        element: &ElementId,
         describe: impl FnOnce() -> (String, Option<u32>),
     ) -> FieldHandle {
+        let element_id = element.encode();
         if let Some(current) = self
             .current
             .as_ref()
@@ -56,11 +51,29 @@ impl FieldMinter {
         let handle = FieldHandle {
             app,
             pid,
-            element_id: element_id.to_string(),
+            element_id,
             generation: self.minted,
         };
         self.current = Some(handle.clone());
         handle
+    }
+
+    /// The current handle only when `element` is the focused accessible.
+    pub fn current_for(&self, element: &ElementId) -> Option<FieldHandle> {
+        let encoded = element.encode();
+        self.current
+            .as_ref()
+            .filter(|current| current.element_id == encoded)
+            .cloned()
+    }
+
+    /// Validate both native element identity and focus generation.
+    pub fn validate(&self, field: &FieldHandle) -> Result<ElementId, PlatformError> {
+        let current = self.current.as_ref().ok_or(PlatformError::StaleField)?;
+        if current.element_id != field.element_id || current.generation != field.generation {
+            return Err(PlatformError::StaleField);
+        }
+        ElementId::decode(&field.element_id).ok_or(PlatformError::StaleField)
     }
 }
 
@@ -87,48 +100,66 @@ mod tests {
     }
 
     #[test]
-    fn field_minter_reuses_a_handle_while_the_element_is_unchanged() {
-        let mut minter = FieldMinter::new();
-        let mut lookups = 0;
+    fn linux_field_registry_reuses_focus_identity_for_caret_events() {
+        let mut registry = LinuxFieldRegistry::new();
+        let element = ElementId::new(":1.42", "/entry");
+        let mut descriptions = 0;
 
-        let first = minter.handle(":1.42|/org/a11y/atspi/accessible/17", || {
-            lookups += 1;
-            ("gedit".to_string(), Some(991))
+        let focused = registry.focus(&element, || {
+            descriptions += 1;
+            ("fixture".to_string(), Some(4242))
         });
-        let again = minter.handle(":1.42|/org/a11y/atspi/accessible/17", || {
-            lookups += 1;
+        let duplicate_focus = registry.focus(&element, || {
+            descriptions += 1;
             ("must not be consulted".to_string(), None)
         });
 
-        assert_eq!(first, again, "the same element must yield the same handle");
-        assert_eq!(first.app, "gedit");
-        assert_eq!(first.pid, Some(991));
+        assert_eq!(registry.current_for(&element), Some(focused));
+        assert_eq!(duplicate_focus.generation, 1);
         assert_eq!(
-            lookups, 1,
-            "the app/pid lookup costs D-Bus round trips, so it must not repeat per event"
+            descriptions, 1,
+            "duplicate focus must not repeat metadata I/O"
         );
     }
 
     #[test]
-    fn field_minter_advances_the_generation_for_every_element_change() {
-        // The contract's stale-handle guarantee: a handle for a replaced element must
-        // not compare equal to the new one. Returning to an element already seen is
-        // the case that matters — reviving its old generation would claim the field
-        // is the same live element when the toolkit may have rebuilt it.
-        let mut minter = FieldMinter::new();
+    fn linux_field_registry_drops_foreign_caret_without_advancing_generation() {
+        let mut registry = LinuxFieldRegistry::new();
+        let entry = ElementId::new(":1.42", "/entry");
+        let foreign = ElementId::new(":1.99", "/foreign");
+        let next = ElementId::new(":1.42", "/next");
 
-        let entry = minter.handle(":1.42|/entry", describing("fixture"));
-        let view = minter.handle(":1.42|/view", describing("fixture"));
-        let entry_again = minter.handle(":1.42|/entry", describing("fixture"));
+        let focused = registry.focus(&entry, describing("fixture"));
+        assert_eq!(registry.current_for(&foreign), None);
+        let next = registry.focus(&next, describing("fixture"));
+
+        assert_eq!((focused.generation, next.generation), (1, 2));
+    }
+
+    #[test]
+    fn linux_field_registry_revisit_invalidates_the_first_handle() {
+        let mut registry = LinuxFieldRegistry::new();
+        let entry = ElementId::new(":1.42", "/entry");
+        let view = ElementId::new(":1.42", "/view");
+
+        let first_entry = registry.focus(&entry, describing("fixture"));
+        let view = registry.focus(&view, describing("fixture"));
+        let current_entry = registry.focus(&entry, describing("fixture"));
 
         assert_eq!(
-            (entry.generation, view.generation, entry_again.generation),
+            (
+                first_entry.generation,
+                view.generation,
+                current_entry.generation
+            ),
             (1, 2, 3)
         );
-        assert_ne!(
-            entry, entry_again,
-            "a revisited element must not reuse its old handle"
+        assert_eq!(
+            registry.validate(&first_entry),
+            Err(PlatformError::StaleField)
         );
+        assert_eq!(registry.validate(&view), Err(PlatformError::StaleField));
+        assert_eq!(registry.validate(&current_entry), Ok(entry));
     }
 
     #[test]

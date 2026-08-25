@@ -27,7 +27,7 @@ promoted into the workspace.
 |---|---|---|
 | macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.5` | Current `main` contains post-release build, release-tooling, cask, and documentation changes; its deterministic gates are green, while 22 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
 | Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | Adapter/overlay operations and most ShellHost services remain fail-closed; owner-only DACL hardening, console shutdown handling, and URL opening are real, but there is no usable Windows product or package yet. |
-| Linux | **Foundation + AT-SPI2 read/write/event seam + overlay** — native CI compiles and tests the portable workspace, and runs the live AT-SPI adapter tests against a GTK app under Xvfb | Reading real fields works (focused-field walk, text/caret in Unicode scalars, selection, capabilities, caret geometry), as does writing them (caret insert, and exact-range replace guarded by expected text and verified by readback) and *noticing* them (focus and caret subscriptions over AT-SPI signals, whose cancellation really stops delivery). The ghost/correction overlay is real: a click-through override-redirect X11 window (ARGB visual where the server offers one, SHAPE-based transparency where it does not), verified live in the same Xvfb session. The session shell services are real too and each fails closed when its desktop service is absent: Secret Service memory key, `zenity` confirm, FileManager1 reveal. The accept tap is real too: a passive X11 `XGrabKey` that consumes the accept key only while a suggestion shows. Still fail-closed: the tray, Wayland overlay placement, and the accessibility-permission pane (Linux has no TCC equivalent to open). The desktop-free host probes are real (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, `xdg-open`). The binary is wired to this adapter and runs, but an end-to-end suggestion has not been observed live yet (open diagnostic), and there is no Linux package. |
+| Linux | **Foundation + AT-SPI2 read/write/event seam + overlay** — native CI compiles and tests the portable workspace, and runs the live AT-SPI adapter tests against a GTK app under Xvfb | Reading real fields works (focused-field walk, text/caret in Unicode scalars, selection, capabilities, caret geometry), as does writing them (caret insert, and exact-range replace guarded by expected text and verified by readback) and *noticing* them (focus and caret subscriptions over AT-SPI signals; stop closes the active gate before bounded teardown). The ghost/correction overlay is real: a click-through override-redirect X11 window (ARGB visual where the server offers one, SHAPE-based transparency where it does not), verified live in the same Xvfb session. The session shell services are real too and each fails closed when its desktop service is absent: Secret Service memory key, `zenity` confirm, FileManager1 reveal. The accept tap is real too: a passive X11 `XGrabKey` that consumes the accept key only while a suggestion shows. Still fail-closed: the tray, Wayland overlay placement, and the accessibility-permission pane (Linux has no TCC equivalent to open). The desktop-free host probes are real (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, `xdg-open`). The binary is wired to this adapter; a 2026-08-25 private Xvfb/GTK session observed two end-to-end suggestions with deterministic completion, but Linux remains experimental and has no package. |
 
 The detailed Windows, Linux/X11, Wayland, GPU, packaging, and per-OS acceptance
 sequence is tracked in [the cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md).
@@ -147,6 +147,7 @@ unbundled `cargo run -p app` is still fine.
 │   ├── platform_macos/                # macOS Accessibility/AppKit/Carbon adapter
 │   ├── platform_windows/              # Windows adapter scaffold + real host services
 │   ├── platform_linux/                # Linux AT-SPI2 adapter + host/shell services
+│   ├── shell_flags/                   # Portable settings/tray/key-chord state vocabulary
 │   ├── context/                       # Pure caret/text-context helpers
 │   ├── engine_core/                   # Deterministic suggestion state machine
 │   ├── engine/                        # Runtime host: engine_core ↔ platform ↔ overlay
@@ -236,7 +237,8 @@ from `tools/spike/`.
   probes under `tools/spike`.
 - Local GGUF model files for model latency tests and spike inference probes.
 
-The checked-in local model paths used by current tests and probes are:
+The local model paths used by current tests and probes (gitignored, fetched to
+`tools/spike/models/`) are:
 
 ```text
 tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf
@@ -293,7 +295,7 @@ comma-separated bundle ids.
 | `COMPME_MEMORY_PATH` | Override path for the encrypted memory store (store stays off without a path). On Windows, an existing parent directory must already have the protected owner-only inheritable DACL; an insecure custom directory disables memory rather than being rewritten. |
 | `COMPME_MEMORY_KEY` | 64-hex AES key for memory (default: Keychain-managed). |
 | `COMPME_LAUNCH_AT_LOGIN` | `true`/`false` registers/unregisters the login item; absent leaves Login Items alone. |
-| `COMPME_MODEL_PATH` | Path to the GGUF model file to load (defaults to the checked-in spike model). |
+| `COMPME_MODEL_PATH` | Path to the GGUF model file to load (defaults to the gitignored spike-model path populated under `tools/spike/models/`). |
 | `COMPME_TRUSTED_KEY` | 64-hex Ed25519 public key for SIGNED `compme://` links (fail-closed when unset). |
 | `COMPME_LICENSE_ACCEPTED` | Comma-separated model names whose license terms were accepted (written by the app after the click-through prompt). |
 
@@ -355,7 +357,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 Use the full local gate before treating the workspace as development-ready. The
 canonical command list is single-sourced in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#full-local-gate); the root suite is
-roughly 2,027 tests.
+roughly 2,060 tests.
 
 A2 validation is local/manual-only and is deliberately excluded from CI, tag
 releases, and the release-policy checker: the automated workflows never execute

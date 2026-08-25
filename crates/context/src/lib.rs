@@ -95,7 +95,8 @@ pub fn word_at_split_caret(
     })
 }
 
-pub fn word_at_caret(value: &str, caret: usize) -> Option<WordAtCaret<'_>> {
+#[cfg(test)]
+fn word_at_caret(value: &str, caret: usize) -> Option<WordAtCaret<'_>> {
     let chars: Vec<(usize, char)> = value.char_indices().collect();
     if chars.is_empty() {
         return None;

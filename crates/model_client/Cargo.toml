@@ -1,6 +1,7 @@
 [package]
 name = "model_client"
 version.workspace = true
+rust-version.workspace = true
 edition = "2021"
 license.workspace = true
 
@@ -10,7 +11,8 @@ license.workspace = true
 encoding_rs = "0.8"
 # ABI-sensitive FFI bindings to llama.cpp — pinned exact because even patch
 # bumps can change the vendored C ABI/behavior. Backend features are target
-# scoped: Metal on macOS, dynamic runtime-loaded backends elsewhere.
+# scoped: Metal on macOS; off-mac builds are CPU-only with optional backends
+# disabled for the SDK/build-script reasons below.
 
 [target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["metal"] }

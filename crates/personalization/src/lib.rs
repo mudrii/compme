@@ -1,7 +1,7 @@
 //! Prompt-based personalization (design spec §6): custom instructions
 //! (global + per-app + per-domain), a 6-stop strength slider, and sender
 //! identity, templated into a steering preamble that is prepended to the
-//! completion prompt. Pure and dependency-free — no ML, no I/O.
+//! completion prompt. Pure, std + `webconfig` only — no ML, no I/O.
 //!
 //! Scope (§15 D2/D15, Project Scope): the strength slider has **6 stops with
 //! full reach for every user — no tier caps**. Cotypist's Free/Plus/Pro caps are

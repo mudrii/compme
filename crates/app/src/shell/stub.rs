@@ -84,6 +84,8 @@ pub fn install_url_event_handler(
     })
 }
 
+#[allow(unused_imports)]
+// The facade surface is intentionally broader than each host's call set.
 pub use shell_flags::{
     AppsPolicyEdit, AppsPolicyEditSlot, CurrentAcceptKeys, EffectiveAcceptKeys, KeyWithMods,
     KeymapError, PersonalizationEdit, RebindRequest, SettingsFlags, ShortcutBindings, APPS_ROWS,
@@ -113,10 +115,8 @@ pub fn keycode_label_with_mods(code: i64, mask: u32) -> String {
 pub fn set_tab_hotkey_suppressed(_suppressed: bool) {}
 
 /// G5 chord translation: persisted macOS chords land in `platform_linux`'s
-/// process-wide store, which `X11AcceptTap::install` reads. The run loop
-/// applies startup key bindings before `subscribe_accept`, so a config rebind
-/// is honored at relaunch (Settings on Linux is config-file-only, so there is
-/// no live rebind path to miss).
+/// process-wide store, which the Linux adapter reads both for its startup probe
+/// and for the accept subscription's transactional live-rearm hook.
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub fn set_accept_keymap_from_config_with_mods(

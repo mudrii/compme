@@ -15,7 +15,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use accessibility_sys::{
     kAXErrorSuccess, kAXFocusedUIElementChangedNotification, kAXSelectedTextChangedNotification,
@@ -42,6 +42,7 @@ const AX_WORKER_PUMP_INTERVAL: Duration = Duration::from_millis(5);
 const AX_WORKER_RUN_LOOP_SLICE: Duration = Duration::from_millis(1);
 
 const CARET_SAFETY_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const REBIND_FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Setting this attribute to true asks a Chromium/Electron application to build
 /// its accessibility tree on demand, which is what exposes the
@@ -70,7 +71,7 @@ pub(crate) enum CallbackMessage {
 pub(crate) enum Message {
     Run {
         job: Job,
-        reply: mpsc::Sender<Box<dyn Any + Send>>,
+        reply: mpsc::Sender<Result<Box<dyn Any + Send>, PlatformError>>,
     },
     InstallResource {
         id: u64,
@@ -201,6 +202,32 @@ struct RebindPoller {
     handle: Option<JoinHandle<()>>,
 }
 
+struct RebindFailureLog {
+    last_by_pid: HashMap<i32, Instant>,
+    interval: Duration,
+}
+
+impl RebindFailureLog {
+    fn new(interval: Duration) -> Self {
+        Self {
+            last_by_pid: HashMap::new(),
+            interval,
+        }
+    }
+
+    fn should_log(&mut self, pid: i32, now: Instant) -> bool {
+        self.last_by_pid.retain(|_, seen| {
+            now.checked_duration_since(*seen)
+                .is_none_or(|elapsed| elapsed < self.interval)
+        });
+        if self.last_by_pid.contains_key(&pid) {
+            return false;
+        }
+        self.last_by_pid.insert(pid, now);
+        true
+    }
+}
+
 impl std::fmt::Debug for AxWorker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AxWorker")
@@ -281,9 +308,11 @@ impl AxWorker {
                 reason: "AX worker is not running".into(),
             })?;
 
-        let value = reply_rx.recv().map_err(|_| PlatformError::CannotComplete {
-            reason: "AX worker dropped job result".into(),
-        })?;
+        let value = reply_rx
+            .recv()
+            .map_err(|_| PlatformError::CannotComplete {
+                reason: "AX worker dropped job result".into(),
+            })??;
 
         value
             .downcast::<R>()
@@ -603,24 +632,39 @@ fn start_observer_rebind_poller(
     let (stop_tx, stop_rx) = mpsc::channel();
     let handle = thread::Builder::new()
         .name("compme-app-rebind".into())
-        .spawn(move || loop {
-            match stop_rx.recv_timeout(interval) {
-                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    let desired_pid = frontmost_pid();
-                    let current_pid = current_binding_pid(&current);
-                    if desired_pid == current_pid {
-                        continue;
-                    }
+        .spawn(move || {
+            let mut failure_log = RebindFailureLog::new(REBIND_FAILURE_LOG_INTERVAL);
+            loop {
+                match stop_rx.recv_timeout(interval) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let desired_pid = frontmost_pid();
+                        let current_pid = current_binding_pid(&current);
+                        if desired_pid == current_pid {
+                            continue;
+                        }
 
-                    let next_binding =
-                        desired_pid.and_then(|pid| install_observer_binding(pid, &config).ok());
+                        let next_binding =
+                            desired_pid.and_then(|pid| {
+                                match install_observer_binding(pid, &config) {
+                                    Ok(binding) => Some(binding),
+                                    Err(err) => {
+                                        if failure_log.should_log(pid, Instant::now()) {
+                                            crate::write_stderr(format_args!(
+                                                "compme: observer rebind failed pid={pid}: {err}"
+                                            ));
+                                        }
+                                        None
+                                    }
+                                }
+                            });
 
-                    let Ok(mut current) = current.lock() else {
-                        break;
-                    };
-                    if current.as_ref().map(|binding| binding.pid) == current_pid {
-                        *current = next_binding;
+                        let Ok(mut current) = current.lock() else {
+                            break;
+                        };
+                        if current.as_ref().map(|binding| binding.pid) == current_pid {
+                            *current = next_binding;
+                        }
                     }
                 }
             }
@@ -732,11 +776,19 @@ fn run_ax_worker_loop<L, F>(
     if started_tx.send(Ok(thread_id)).is_err() {
         return;
     }
+    crate::write_stderr(format_args!("compme: AX worker started"));
 
     loop {
         match worker_loop.recv() {
             Ok(Message::Run { job, reply }) => {
-                let _ = reply.send(job());
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).map_err(|_| {
+                        crate::write_stderr(format_args!("compme: AX job panicked"));
+                        PlatformError::CannotComplete {
+                            reason: "AX job panicked".into(),
+                        }
+                    });
+                let _ = reply.send(result);
                 worker_loop.pump_run_loop();
             }
             Ok(Message::InstallResource { id, install, reply }) => {
@@ -787,6 +839,7 @@ fn run_ax_worker_loop<L, F>(
             Err(mpsc::RecvTimeoutError::Timeout) => worker_loop.pump_run_loop(),
         }
     }
+    crate::write_stderr(format_args!("compme: AX worker exited"));
 }
 
 impl Drop for AxWorker {
@@ -1455,6 +1508,37 @@ mod tests {
         let second = worker.run(|| thread::current().id()).expect("second");
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn ax_worker_contains_a_panicking_job_and_serves_the_next_job() {
+        let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
+
+        let err = worker
+            .run(|| -> usize { panic!("injected AX job panic") })
+            .expect_err("panicking job must return an error");
+        assert_eq!(
+            err,
+            PlatformError::CannotComplete {
+                reason: "AX job panicked".into()
+            }
+        );
+        assert_eq!(worker.run(|| 7usize).expect("next job succeeds"), 7);
+    }
+
+    #[test]
+    fn observer_rebind_failure_logging_is_rate_limited_per_pid_and_pruned() {
+        let interval = Duration::from_secs(30);
+        let start = Instant::now();
+        let mut failures = RebindFailureLog::new(interval);
+
+        assert!(failures.should_log(42, start));
+        assert!(!failures.should_log(42, start + Duration::from_secs(29)));
+        assert!(failures.should_log(99, start + Duration::from_secs(29)));
+        assert!(failures.should_log(42, start + interval));
+        assert_eq!(failures.last_by_pid.len(), 2);
+        assert!(failures.should_log(7, start + interval + interval));
+        assert_eq!(failures.last_by_pid.len(), 1);
     }
 
     #[test]

@@ -15,6 +15,8 @@
 # Requires: macOS, osascript, Accessibility granted to the terminal, an unlocked
 # session, and the TextEdit pid in COMPME_ACCEPTANCE_PID. Production accept
 # keys use Carbon hotkeys and do not require Input Monitoring.
+# Deliberately omit `-e`: the self-test must accumulate every failed assertion.
+# Live failures route through `fail()`, while usage errors explicitly exit 2.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

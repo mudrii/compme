@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-07-29 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2027 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-08-26 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2060 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -9,7 +9,7 @@
 > (`1a12b50`). See the delivery log below for the commit-by-commit history.
 >
 > <details>
-> <summary>Post-v0.1.5 delivery log (2026-07-21 → 2026-07-26)</summary>
+> <summary>Post-v0.1.5 delivery log (2026-07-21 → 2026-08-18)</summary>
 >
 > Committed 2026-07-21: Batch 1+2 CI/docs/cask-window/dependabot/pre-push
 > hardening; the active `protect-main` ruleset plus the governance checker's
@@ -37,10 +37,22 @@
 > partial rewrite made the whole grouped PR unresolvable); `docs.yml` branch
 > scope; `pub(crate)` for the AX-worker types; the inline test modules split
 > into `run_loop_tests.rs` / `lib_tests.rs`; and eight heartbeat phases
-> extracted from `run()`. Production sizes now: `run_loop.rs` **6,092** lines
+> extracted from `run()`. At that commit, production sizes were:
+> `run_loop.rs` **6,092** lines
 > with `run()` at **1,546** (was 16,036 / 2,039 including 10,080 lines of
 > inline tests), `platform_macos/lib.rs` **5,837** (was 13,353 including 7,522
 > lines of inline tests).
+>
+> Committed 2026-07-27 through 2026-07-29: the Linux AT-SPI2 read/write/event
+> path, X11 accept tap and overlay, session ShellHost services, product wiring,
+> bounded teardown, and live Xvfb suite in both branch and tag CI; the docs-only
+> policy bypass was closed and the docs workflow became shape-pinned.
+>
+> Committed 2026-08-11 through 2026-08-18: the reviewed Cargo and GitHub Action
+> major updates, ureq 3 timeout-shape tests, the macOS 15 runner/cache migration,
+> ssl-free llama.cpp build policy, rusqlite/zbus updates, and persisted Linux
+> accept-key rebind wiring. See `Qfd.md` §§15–19 for the audit evidence and
+> deferred-risk history behind these batches.
 >
 > </details>
 >
@@ -111,9 +123,27 @@ tested**. Everything below is what the plan still calls for.
 
 ---
 
+## Next release — v0.1.6 audit remediation
+
+The planned next patch release is **v0.1.6**, macOS-first. Its scope is the
+verified correctness fixes plus CI and documentation repairs accumulated after
+v0.1.5; Linux remains experimental and is not promoted to a supported product
+by this patch. Planning this milestone does not authorize a tag or publication.
+
+Ready-to-tag requires recorded closure of all 22 runner-pinned macOS
+manual/live gates (Qfd F3), a green Full Local Gate, and the pre-tag steps in
+the [RELEASING checklist](RELEASING.md). A release is complete only after the
+runbook's tag, publication, cask finalization, and `post_verify` steps finish.
+The Windows Phase 1 forcing function was closure of the Linux C.2 wired-ghost
+diagnostic. That trigger fired on 2026-08-25, and the follow-on Linux audit
+correctness cluster is now code-complete and live-verified, so Windows UIA
+Phase 1 is the next explicit adapter milestone; it remains pending, not shipped.
+
+---
+
 ## Tier 1 — Largest committed deliverables
 
-### 1.1 ◑ Cross-platform adapters (Windows + Linux) — foundation shipped, real impls pending
+### 1.1 ◑ Cross-platform adapters — Linux wired, Windows foundation pending
 
 **Plan:** `README.md:10` — *"macOS ships first; Windows and Linux are committed
 deliverables built behind a shared cross-platform `PlatformAdapter` contract."*
@@ -128,8 +158,9 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   (never panics, no partial state); each method is doc-commented with the Win32 API
   its real impl will use (UIA / `WH_KEYBOARD_LL` / `SendInput` / layered overlay).
   Unit-tested (environment, fail-closed `subscribe_focus` + `insert_replacing`).
-- **`crates/platform_linux`** (`5236a56`) — the same, for Linux (AT-SPI2 / XTEST /
-  `wtype` / IBus / X11-or-layer-shell overlay).
+- **`crates/platform_linux`** (`5236a56`) — initially shipped as the same
+  fail-closed foundation; its wired AT-SPI2/X11 implementation and live gates
+  are recorded below.
 - **Shell foundation + app cfg boundary** (`2c80e74`) — `platform::shell`
   defines the portable `ShellHost`/`TrayHandle` contract; the macOS-product-shaped
   settings/tray/keymap state vocabulary lives in the pure `shell_flags` crate
@@ -142,8 +173,8 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   and macOS-only shell surfaces through `crate::shell`.
 - **App target-gated platform deps** (`2c80e74`) — `app` no longer depends
   unconditionally on `platform_macos`; macOS, Windows, and Linux adapter crates are
-  selected behind Cargo target gates. Outside the shipped host services above,
-  non-macOS runtime remains fail-closed until the real adapters land.
+  selected behind Cargo target gates. Windows remains fail-closed for platform
+  I/O; Linux now selects the wired adapter described below.
 - **CI matrix** (`a7427c6`, widened by `2c80e74`) — `windows-latest` +
   `ubuntu-latest` jobs run fmt/clippy/test over the workspace excluding only
   Apple-only `platform_macos`, then build the `app` binary through its non-mac
@@ -158,14 +189,12 @@ hardware, sessions, and permissions unavailable on macOS.
   `WH_KEYBOARD_LL` accept tap +
   `SendInput`/ValuePattern insert + layered overlay, plus real ShellHost services
   (DPAPI/CredWrite key store, tray, confirm UI, launch-at-login, native event pump).
-- The rest of the **Linux** adapter behind `#[cfg(target_os = "linux")]`: AT-SPI2
-  read, insert, and focus/caret events are done (see below); still owed are
-  XTEST/`wtype` synthetic keys (IBus IME fallback on Wayland) and an
-  override-redirect/layer-shell overlay. (AT-SPI device key-listeners are
-  deprecated → prefer XTEST/XGrabKey or libei for the accept tap.) Of the real
-  ShellHost services, the key store, confirm dialog, and file-manager reveal are
-  now built (see the Phase 2.6 entry below); the tray (StatusNotifierItem) and a
-  native event pump remain.
+- The remaining **Linux** work is an XTEST/`wtype` synthetic-key fallback
+  (IBus/libei work remains a Wayland decision), `text_range_rect`, a
+  StatusNotifierItem tray, shortcut shell surfaces, and Wayland placement.
+  AT-SPI2 read/write/events, the passive X11 accept tap, the
+  override-redirect X11 overlay, and the audit correctness cluster are shipped
+  and live-gated.
 
 **Linux host surfaces ✅ DONE (2026-07-27) — the desktop-free half of Phase 2.6:**
 A headless Linux host (NixOS 26.05, 16 cores / 62 GB / Quadro RTX 4000) joined
@@ -283,9 +312,8 @@ the adapter rather than after it. No desktop, display, or root required.
   winner's display. Verified with three concurrent runs taking `:0`/`:1`/`:2`.
 - The hermetic `--self-test` runs in the Linux CI job and the Full Local Gate on
   any host; exit 3 (host not provisioned) is kept distinct from exit 1 (real
-  failure). **Remaining 2.7 work:** installing the GTK/at-spi2 dev packages on
-  the ubuntu runner and running the *full* harness there, which lands with the
-  first real AT-SPI adapter code — an inert full run gates nothing today.
+  failure). The Ubuntu branch and tag lanes now install the GTK/AT-SPI/X11
+  packages and run the full ignored suite in this session.
 
 **Phase 2.1/2.2 AT-SPI2 read path ✅ DONE (2026-07-27) — live-verified:**
 `platform_linux` now reads real fields over the accessibility bus. Layering keeps
@@ -365,16 +393,16 @@ and caret changes instead of only answering questions about a field it is handed
   contains its panics. That is the macOS worker/`CallbackDispatcher` split ported
   rather than reinvented, for the same reason: a slow or panicking subscriber must
   not stall or kill the bus reader.
-- **Drop really stops delivery**, which was the part most likely to be silently
-  wrong. There is no interruptible receive in the blocking zbus API and a
+- **Drop closes the active delivery gate first**, which was the part most likely
+  to be silently wrong. No new callback can pass that gate after stop, although
+  one already past it may finish after `Subscription::drop` returns. There is no
+  interruptible receive in the blocking zbus API and a
   `MessageIterator` borrowed by a parked thread cannot be dropped from another one,
   so cancellation *closes the subscription's own connection* — the socket shuts down
-  both ways, the pending read fails, the stream terminates, both threads unwind and
-  are joined. That is why each subscription opens its own connection instead of
-  sharing the read path's. An `active` gate closes first, so nothing can be
-  delivered after `Subscription::drop` returns, and the join is bounded (2s, then
-  detach) because unsubscribing runs on the engine's run loop. The live test proves
-  the join by asserting the callback `Arc`'s strong count is back to 1.
+  both ways and lets the threads unwind. That is why each subscription opens its
+  own connection instead of sharing the read path's. Drop waits up to 2 seconds,
+  then returns without joining if a worker has not acknowledged stop, because
+  unsubscribing runs on the engine's run loop.
 - **Caret events are coalesced** to one geometry round trip per 25ms (the macOS
   `CARET_COALESCE_INTERVAL_MS`), always delivering the *newest* queued event: a
   burst loses intermediate positions but never the caret's resting place, which is
@@ -404,8 +432,7 @@ spike verdict still holding. The `app` binary links none of libxcb, libatspi,
 libX11, or libsecret — the property every "D-Bus/pure-Rust, not the C library"
 decision below was made to preserve. Per-phase live-test counts in the entries
 that follow were each measured on their own branch and do not sum to 26. The
-suite has since grown: the current tree carries **31 live tests** (25 AT-SPI +
-2 each for confirm, keyring, reveal).
+suite has since grown: the current tree carries **34 live tests** (31 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
 
 **Host wiring ✅ DONE (2026-07-29) — the product now drives the Linux adapter:**
 `app::shell::stub::make_adapter` calls `LinuxAdapter::with_accessibility()`
@@ -414,11 +441,13 @@ and gate-tested was unreachable from the binary: the product started and did
 nothing. A tray failure is already non-fatal in the run loop, so with the adapter
 wired the adapter surfaces are live on Linux today — focus/caret events, field
 read per keystroke, caret-tracking ghost overlay, and the accept tap — with no
-tray UI. **Known open diagnostic (2026-07-29):** in the live end-to-end session
-the engine received every text change but no suggestion was ever presented
-(`shown=0`); compat tier, mid-word gate, overlay laziness, and the tick loop
-were each ruled out. Next probe is between `on_text_changed` and the inference
-worker. 0.2.0 work; does not block the macOS release.
+tray UI. The 2026-07-29 live session's `shown=0` diagnostic is **closed
+(2026-08-25)**: after one adapter-owned field registry and the foreign-caret
+filter landed, a private AT-SPI/Xvfb GTK run with deterministic completion and
+xdotool typing emitted two `request gen=` lines and ended at
+`usage shown=2 accepted=0 dismissed=0 superseded=1`. This proves the wired request
+and presentation path; it does not replace the remaining Linux product-surface
+and hardware acceptance work below.
 - **`bundle_id_for_pid` implemented** (`/proc/<pid>/exe` → `cmdline` → `comm`,
   by fidelity). It had been taking the `ShellHost` default of `None`, which
   silently made *every* per-app feature inert — excluded apps, per-app steering,
@@ -542,17 +571,17 @@ interesting logic is testable on every host:
   persisted-chord translation (plan gap **G5**: macOS virtual keycode + Carbon
   modifier mask → X11 keysym + modmask), the `GetKeyboardMapping` keysym→keycode
   lookup, the consume-vs-pass-through decision, the arm/disarm state machine, and
-  the watchdog's deadline arithmetic. **16 unit tests.**
+  the watchdog's deadline arithmetic. **17 unit tests.**
 - `x11_tap` (Linux-only) — the connection, the passive grabs, and three threads:
   X events, callback dispatch, and the watchdog.
 - **The grab exists exactly while an accept action is armed**, which is the
   contract's "swallow keys only while a suggestion is visible" rule expressed as
   one pure function rather than a condition repeated per call site.
-- **Modifiers are matched exactly.** The grab is `AnyModifier` (one grab per key
-  instead of one per lock-state permutation), so `Ctrl+Tab` and the `Option+Tab`
-  per-app bypass reach the tap and are *replayed* untouched. Latched `Lock`/NumLock
-  bits are deliberately not significant, or leaving NumLock on would stop Tab from
-  being intercepted.
+- **Semantic modifiers are matched exactly after ignoring lock-state bits.** The
+  grab is `AnyModifier` (one grab per key instead of one per lock-state
+  permutation), so `Ctrl+Tab` and the `Option+Tab` per-app bypass reach the tap
+  and are *replayed* untouched. Latched `Lock`/NumLock bits are deliberately not
+  significant, or leaving NumLock on would stop Tab from being intercepted.
 - **The keyboard-freeze hazard is covered on every path** (see the module docs for
   the enumeration): the event thread resolves before doing anything else and never
   runs engine code (the callback is dispatched on its own thread inside
@@ -854,6 +883,10 @@ runs. The retired screenshot matrix is not current release evidence.
   settings path. Memory storage mode remains governed by memory config; dedicated
   memory-mode and global delete-all Settings controls are deferred UI work, not
   part of the personalization profile or the current Personalization-pane scope.
+- **Encrypted-store schema posture:** the SQLite schema is immutable throughout
+  0.x. Before any first schema change, land `PRAGMA user_version` handling and a
+  transactional migration helper; do not alter table definitions first and
+  strand existing encrypted stores.
 - **Remaining:** visual LOOK only: pane layout, instructions field,
   sender/strength controls, and persistence closed (assisted Batches 1-2);
   Context opt-in verified live (Batch 6). Residual is a visible steering effect
@@ -971,10 +1004,18 @@ hide state — the same "relocated state, not a deeper interface" trap the
   crate; the redesign itself is still open);
 - a host-event context type so the caret/focus arm can be tested without the
   whole loop.
+- **Observer rebind ownership (A66):** accept up to 250 ms of same-pid caret
+  focus latency for now. The safety poll dispatches the observed focus but does
+  not command an observer rebind; a callback-to-rebind ownership path is
+  deferred unless live measurement shows user-visible impact.
+- **Operational logging seam (A31):** before Windows/Linux UI adapter work C.5,
+  choose the smallest shared facility — `log` with env-filtered stderr or a
+  house micro-logger. Do not add a logging dependency before that decision.
 
-Both are prerequisites worth doing **before** the first real Windows/Linux UI
-adapter, so native shells translate events instead of mirroring macOS-shaped
-synchronization details. Neither blocks the current macOS product.
+The two structural seams are prerequisites worth doing **before** the first
+real Windows/Linux UI adapter, so native shells translate events instead of
+mirroring macOS-shaped synchronization details. The accepted latency and
+logging-choice records likewise add no current macOS blocker.
 
 ---
 
@@ -1169,9 +1210,10 @@ a granted macOS GUI session).
 ### Cross-platform architecture (Linux · Windows · macOS)
 The portable core (G1-G2, plus policy/settings logic) is **written once** and
 shared by all three OSes. Only these four trait surfaces get a per-OS impl; the
-new range-bounds/range-replacement methods ship as fail-closed **trait defaults**
-(`crates/platform/src/lib.rs`, pinned by test) that every adapter inherits until
-it overrides them:
+range-bounds/range-replacement methods have fail-closed **trait defaults**
+(`crates/platform/src/lib.rs`, pinned by test). macOS overrides both; Linux
+overrides `insert_replacing_range` and inherits only `text_range_rect`; the
+Windows scaffold still inherits both:
 
 | Surface | macOS (reference) | Windows | Linux |
 |---|---|---|---|
@@ -1182,18 +1224,19 @@ it overrides them:
 
 Detection (LLM inference) has **no per-OS surface at all** — it runs through the
 same portable `model_client`/`inference` path on every OS. Sequencing: macOS
-lands G1-G5 first as the reference; Windows and Linux inherit the fail-closed
-trait defaults for the new rows, then get real implementations as follow-on
-platform work. Grammar-fix stays inert there until each row is built — never misbehaves.
+landed G1-G5 first as the reference. Linux has since landed fail-closed atomic
+range replacement but still owes range geometry and its grammar shortcut;
+Windows owes both range seams and its native shortcut. Grammar-fix stays inert
+where those prerequisites are absent — never misbehaves.
 This is the same parity model as Tier 1.1 foundation work, and it depends on the
 platform text-range read/replace impls that Windows/Linux owe regardless of this
 feature.
 
 **Effort/status:** Large milestone now code-complete for the macOS reference:
 portable core (G1-G2) and macOS reference surfaces (G3-G5) are implemented and
-headless-tested. Windows and Linux retain the inherited fail-closed trait
-defaults for the new range and correction surfaces until their real four-row
-trait impls are built. The
+headless-tested. Linux explicitly implements atomic range replacement and
+retains only the range-geometry default; Windows retains both range defaults.
+The
 remaining macOS risk narrowed 2026-07-07: underline/banner render, in-place
 accept, and stale-correction refusal live-proved with the real model (Batch 5
 assisted session); residual is the formal `grammar-fix-textedit-look` A1b gate
@@ -1309,17 +1352,21 @@ per-app configurable.
    matrix. Repeat the sync whenever manual gates close or adapter phases ship.
 5. **Settle non-atomic replacement scope** from that compatibility evidence; do
    not add backspace synthesis speculatively.
-6. **Windows Phase 1 (1.1–1.7)** — UIA read/caret, keyboard hook, insertion,
-   layered overlay, ShellHost services, and native acceptance on Windows hardware.
-7. **Linux Phase 2 (2.1–2.7), X11-first** — a native Linux build+gate host is
-   now in the loop, so this runs ahead of (or alongside) Windows Phase 1. The
-   desktop-free part of 2.6 and the 2.7 fixture harness both shipped 2026-07-27
-   (see 1.1), so 2.1–2.5 now have a deterministic Xvfb target, and the 2.3
-   accept-key strategy is resolved (`XGrabKey` + `XAllowEvents`). Remaining
-   order: AT-SPI2 read (2.1), caret geometry (2.2), insertion (2.4), the accept
-   tap against the resolved 2.3 design, and overlay (2.5). The host is headless
-   (tty session, no X server outside the harness), so live-session acceptance
-   still needs a graphical session installed on it or physical access.
+6. ✅ **Close the Linux audit correctness cluster (2026-08-25)** —
+   `NativeRangeSet` local replacements use guarded Unicode-scalar range
+   commands; empty fields fall back to focused-component geometry; persisted
+   chords precede the installability probe; and one transactional
+   exact-modifier `GrabPlan` owns initial grab, keyboard-map refresh, and live
+   rearm. Partial-spawn teardown and the watchdog/arming cleanups are in place.
+   The portable lane passed 106 tests and the complete ignored Linux lane passed
+   34/34 (31 AT-SPI/X11 plus confirm, keyring, and reveal), including rollback
+   to the previously armed plan after a conflicting live rebind.
+7. **Windows Phase 1 (1.1–1.7)** — the Linux C.2 trigger closed on 2026-08-25;
+   proceed with UIA read/caret, keyboard hook, insertion, layered overlay,
+   ShellHost services, and native acceptance on Windows hardware. Carry
+   owner-only ACL/DACL equivalents for
+   memory's 13 Unix-only permission/symlink-hardening sites; SQLite `NOFOLLOW`
+   is not ACL coverage.
 8. **Wayland Phase 3 decision spike** — compare IME and portal/global-shortcut
    paths on GNOME, KDE, and sway before committing to an implementation.
 9. **Off-mac runtime and distribution** — per-OS GPU baselines, Windows/Linux
@@ -1334,5 +1381,14 @@ per-app configurable.
    GitHub's Actions allowlist/SHA-pin policy with the repository checker.
    Record any deliberately accepted trust boundary if direct-to-`main` remains
    the chosen workflow.
-11. **Tier 1.2 optional updater** — replace the release-page handoff only with a
+11. ✅ **Bound inference shutdown (A32, 2026-08-25)** — a safe vendored
+   `llama-cpp-2` extension binds terminal cancellation to llama.cpp's CPU/Metal
+   abort callback; the outer worker closes submissions, acknowledges only after
+   ordered model teardown, and joins only when finished within 250 ms. A native
+   call that still never returns selects a last-drop `_exit`/TerminateProcess
+   guard plus watchdog, so the app never continues with detached model ownership;
+   watchdog-spawn failure exits immediately rather than risking continuation.
+   CPU GGUF and fault-injection evidence pass; the wired Metal cancellation gate
+   still requires execution on a real macOS host.
+12. **Tier 1.2 optional updater** — replace the release-page handoff only with a
    signature-verifying native updater design; this remains non-blocking.

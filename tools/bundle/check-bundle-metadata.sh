@@ -108,6 +108,23 @@ CASK
   prerelease_cask="$tmp/prerelease.rb"
   write_cask "$prerelease_cask" 1.2.3-rc.1
 
+  # A missing nested interpreter must be diagnosed as such, not as malformed
+  # user input. Keep this PATH hermetic so the host's Ruby cannot leak in.
+  no_ruby_bin="$tmp/no-ruby-bin"
+  mkdir -p "$no_ruby_bin"
+  for tool in env bash dirname; do
+    ln -s "$(command -v "$tool")" "$no_ruby_bin/$tool"
+  done
+  if PATH="$no_ruby_bin" "$0" "$good_plist" "$cargo" "$good_cask" \
+    >"$tmp/no-ruby.out" 2>"$tmp/no-ruby.err"; then
+    echo "self-test FAILED: metadata check without Ruby should fail" >&2
+    exit 1
+  fi
+  if ! grep -Fq "ruby not found (required for cask syntax check)" "$tmp/no-ruby.err"; then
+    echo "self-test FAILED: missing Ruby was misdiagnosed: $(cat "$tmp/no-ruby.err")" >&2
+    exit 1
+  fi
+
   # (a) version drift: cask version != Cargo.toml version -> non-zero + drift error.
   if out="$("$0" "$good_plist" "$cargo" "$drift_cask" 2>&1)"; then
     echo "self-test FAILED: drift cask should have failed" >&2
@@ -463,6 +480,10 @@ if command -v git >/dev/null 2>&1 && git -C "$cask_dir" rev-parse --git-dir >/de
 fi
 export COMPME_CASK_TAG_CANDIDATES="$cask_tag_candidates"
 
+if ! command -v ruby >/dev/null 2>&1; then
+  echo "ruby not found (required for cask syntax check)" >&2
+  exit 1
+fi
 if ! ruby -c "$cask_file" >/dev/null; then
   echo "Casks/compme.rb: invalid Ruby syntax" >&2
   exit 1

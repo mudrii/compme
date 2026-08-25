@@ -28,13 +28,20 @@ members = [
     "crates/engine",
     "crates/app",
 ]
-exclude = ["tools/spike"]
+exclude = ["tools/spike", "vendor/llama-cpp-2"]
 
 [workspace.package]
 version = "0.1.5"
+rust-version = "1.97"
 license = "Apache-2.0"
 
 [workspace.dependencies]
 getrandom = "0.4"
 libc = "0.2"
 zeroize = "1"
+
+[patch.crates-io]
+# A32: 0.1.146 does not yet expose llama.cpp's abort callback safely. Keep the
+# exact upstream source vendored with the minimal lifetime-owning extension in
+# `LlamaContextParams`/`LlamaContext`; remove this patch when upstream ships it.
+llama-cpp-2 = { path = "vendor/llama-cpp-2" }

@@ -21,10 +21,10 @@
 //! definitive answer would mean blocking the caller on a GUI process, which
 //! `open_url` already decided against.
 //!
-//! The path arithmetic (file URI, containing directory) is pure and POSIX-encoded
-//! on the string: this crate is also built and tested on Windows, where
-//! `Path::is_absolute("/home/u")` is false and `Path::parent` follows the *build*
-//! host's separators.
+//! The path arithmetic (file URI, containing directory) is pure and
+//! POSIX-encoded on raw bytes, with portable string wrappers for the non-Linux
+//! test lanes. It does not use `Path::is_absolute`/`Path::parent`, whose answers
+//! follow the *build* host's separators.
 
 // Only the D-Bus/launcher half needs the error type; the pure path arithmetic
 // below is infallible-or-`None`, so the import is Linux-only to keep the macOS
@@ -47,11 +47,17 @@ pub const FILE_MANAGER1_PATH: &str = "/org/freedesktop/FileManager1";
 /// separator. Bytes, not chars: a non-UTF-8 filename is still a valid Linux path,
 /// and its URI is the percent-encoding of its bytes.
 pub fn file_uri(path: &str) -> Option<String> {
-    if !path.starts_with('/') {
+    file_uri_bytes(path.as_bytes())
+}
+
+/// Byte-preserving half of [`file_uri`], used by the Linux path boundary where
+/// [`std::ffi::OsStr`] is not required to be UTF-8.
+fn file_uri_bytes(path: &[u8]) -> Option<String> {
+    if !path.starts_with(b"/") {
         return None;
     }
     let mut uri = String::from("file://");
-    for byte in path.bytes() {
+    for &byte in path {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
                 uri.push(byte as char);
@@ -67,12 +73,23 @@ pub fn file_uri(path: &str) -> Option<String> {
 /// reveal `/` inside of). Trailing slashes are trimmed first, so `/a/b/` reveals
 /// `/a`, matching how the shell reads it.
 pub fn containing_dir(path: &str) -> Option<&str> {
-    if !path.starts_with('/') {
+    std::str::from_utf8(containing_dir_bytes(path.as_bytes())?).ok()
+}
+
+/// Byte-preserving half of [`containing_dir`] for native Linux paths.
+fn containing_dir_bytes(path: &[u8]) -> Option<&[u8]> {
+    if !path.starts_with(b"/") {
         return None;
     }
-    let trimmed = path.trim_end_matches('/');
-    let (parent, _) = trimmed.rsplit_once('/')?;
-    Some(if parent.is_empty() { "/" } else { parent })
+    let end = path.iter().rposition(|&byte| byte != b'/')? + 1;
+    let trimmed = &path[..end];
+    let separator = trimmed.iter().rposition(|&byte| byte == b'/')?;
+    let parent = &trimmed[..separator];
+    Some(if parent.is_empty() {
+        &path[..1]
+    } else {
+        parent
+    })
 }
 
 /// Reveal `path`: `ShowItems` if a file manager answers, else `xdg-open` on the
@@ -80,19 +97,25 @@ pub fn containing_dir(path: &str) -> Option<&str> {
 /// happened" with no reason is the hardest version of this bug to diagnose.
 #[cfg(target_os = "linux")]
 pub fn reveal(path: &std::path::Path) -> Result<(), PlatformError> {
-    let path = path.to_string_lossy();
-    let uri = file_uri(&path).ok_or_else(|| PlatformError::CannotComplete {
-        reason: format!("reveal: {path} is not an absolute path"),
+    use std::os::unix::ffi::OsStrExt;
+
+    let path_bytes = path.as_os_str().as_bytes();
+    let uri = file_uri_bytes(path_bytes).ok_or_else(|| PlatformError::CannotComplete {
+        reason: format!("reveal: {} is not an absolute path", path.display()),
     })?;
     let show_items_error = match show_items(&uri) {
         Ok(()) => return Ok(()),
         Err(err) => err,
     };
-    let dir = containing_dir(&path).ok_or_else(|| PlatformError::CannotComplete {
-        reason: format!("reveal: {path} has no containing directory ({show_items_error})"),
+    let dir = containing_dir_bytes(path_bytes).ok_or_else(|| PlatformError::CannotComplete {
+        reason: format!(
+            "reveal: {} has no containing directory ({show_items_error})",
+            path.display()
+        ),
     })?;
+    let dir = std::ffi::OsStr::from_bytes(dir);
     crate::xdg_open(dir).map_err(|err| PlatformError::CannotComplete {
-        reason: format!("reveal {path}: {show_items_error}; {err}"),
+        reason: format!("reveal {}: {show_items_error}; {err}", path.display()),
     })
 }
 
@@ -174,5 +197,22 @@ mod tests {
         assert_eq!(containing_dir("/"), None);
         assert_eq!(containing_dir("models/q4.gguf"), None);
         assert_eq!(containing_dir(r"C:\Users\u"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_path_bytes_survive_uri_and_parent_routing() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = std::ffi::OsStr::from_bytes(b"/tmp/compme-\xFF/model-\xFE.gguf");
+        assert_eq!(
+            file_uri_bytes(path.as_bytes()),
+            Some("file:///tmp/compme-%FF/model-%FE.gguf".to_string())
+        );
+        assert_eq!(
+            containing_dir_bytes(path.as_bytes()),
+            Some(&b"/tmp/compme-\xFF"[..]),
+            "the xdg-open fallback must receive the original directory bytes"
+        );
     }
 }

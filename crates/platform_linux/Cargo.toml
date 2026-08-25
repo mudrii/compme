@@ -1,6 +1,7 @@
 [package]
 name = "platform_linux"
 version.workspace = true
+rust-version.workspace = true
 edition = "2021"
 license.workspace = true
 

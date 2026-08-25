@@ -300,13 +300,29 @@ pub enum OperatingSystem {
 /// callers must wait for a fresh focus event instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlatformError {
-    PermissionMissing { permission: String },
-    SecureInput { state: SecurityState },
-    CannotComplete { reason: String },
-    UnsupportedField { reason: String },
+    PermissionMissing {
+        permission: String,
+    },
+    /// The platform accessibility service is not present in this session.
+    /// Unlike `PermissionMissing`, prompting cannot repair this state in-place;
+    /// startup should remain alive with inert subscriptions.
+    AccessibilityUnavailable {
+        reason: String,
+    },
+    SecureInput {
+        state: SecurityState,
+    },
+    CannotComplete {
+        reason: String,
+    },
+    UnsupportedField {
+        reason: String,
+    },
     Timeout,
     StaleField,
-    AppExited { app: AppId },
+    AppExited {
+        app: AppId,
+    },
 }
 
 impl std::fmt::Display for PlatformError {
@@ -314,6 +330,9 @@ impl std::fmt::Display for PlatformError {
         match self {
             PlatformError::PermissionMissing { permission } => {
                 write!(f, "required permission missing: {permission}")
+            }
+            PlatformError::AccessibilityUnavailable { reason } => {
+                write!(f, "accessibility unavailable: {reason}")
             }
             PlatformError::SecureInput { state } => {
                 write!(f, "secure input active: {state:?}")
@@ -1220,6 +1239,13 @@ mod tests {
             }
             .to_string(),
             "required permission missing: accessibility"
+        );
+        assert_eq!(
+            PlatformError::AccessibilityUnavailable {
+                reason: "AT-SPI bus absent".to_string(),
+            }
+            .to_string(),
+            "accessibility unavailable: AT-SPI bus absent"
         );
         assert_eq!(
             PlatformError::SecureInput {

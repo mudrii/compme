@@ -12,6 +12,16 @@
 //! recorded. `AcceptedOnly` stores accepted completions; `AllMonitored` is the
 //! broader opt-in. Records are inspectable (`count`/`recent`) and deletable
 //! (`delete_all`, `delete_app`).
+//!
+//! **0.x schema policy:** the current SQLite schema is immutable. The first
+//! schema-changing release must introduce `PRAGMA user_version` and a
+//! transactional migration helper before changing the table definition; an
+//! existing encrypted store must never be treated as though it were newly
+//! created under a different schema.
+//!
+//! Filesystem permission and symlink hardening is Unix-only: all 13 associated
+//! implementation/regression `#[cfg(unix)]` sites have no Windows ACL analogue
+//! yet. Windows Phase 1 must add equivalent owner-only ACL enforcement.
 
 use std::path::Path;
 
@@ -366,7 +376,7 @@ impl MemoryStore {
         loop {
             let blobs =
                 stmt.query_map(params![app, page, offset], |row| row.get::<_, Vec<u8>>(0))?;
-            let mut fetched = 0usize;
+            let mut fetched = 0i64;
             for blob in blobs {
                 fetched += 1;
                 // Best-effort read: a row that fails to decrypt (wrong key, or
@@ -378,8 +388,10 @@ impl MemoryStore {
                     }
                 }
             }
+            // Compare with the effective SQL page size, not the caller's usize
+            // limit: on 64-bit targets an oversized limit clamps to i64::MAX.
             // A short page means no older rows remain for this app.
-            if fetched < limit {
+            if fetched < page {
                 return Ok(out);
             }
             offset += page;

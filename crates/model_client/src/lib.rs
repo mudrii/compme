@@ -1,10 +1,13 @@
 //! Local model seam. Real implementation is llama.cpp; provider abstraction is later work.
 
 use std::fmt;
+use std::io::Write;
 use std::num::NonZeroU32;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -30,6 +33,43 @@ fn model_gpu_layers_from_env(raw: Option<&str>) -> u32 {
 /// [`LocalModelError`].
 pub type LocalModelResult<T> = Result<T, LocalModelError>;
 
+/// Cloneable, terminal cancellation signal used only for process shutdown.
+///
+/// A host obtains this before moving a model onto its inference thread, then
+/// requests cancellation when shutdown begins. Backends check it between safe
+/// units of native work. Once requested it never resets: reusing a cancelled
+/// model would make an in-flight shutdown race with new inference.
+#[derive(Clone, Debug, Default)]
+pub struct ModelCancellation {
+    requested: Arc<AtomicBool>,
+    native_decode_polls: Arc<AtomicU64>,
+}
+
+impl ModelCancellation {
+    pub fn request(&self) {
+        self.requested.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+
+    /// Number of times llama.cpp has polled the abort callback during native
+    /// decode. A caller can snapshot this before dispatch and wait for it to
+    /// increase, proving the target operation entered native work.
+    pub fn native_decode_poll_count(&self) -> u64 {
+        self.native_decode_polls.load(Ordering::SeqCst)
+    }
+
+    fn abort_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.requested)
+    }
+
+    fn abort_poll_observer(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.native_decode_polls)
+    }
+}
+
 /// A failed model operation, tagged with the pipeline `stage` that failed
 /// ("tokenize prompt", "decode prompt", …) plus the backend's message. Stage
 /// strings are matched by tests and telemetry — treat them as stable API, not
@@ -37,16 +77,36 @@ pub type LocalModelResult<T> = Result<T, LocalModelError>;
 /// hold the user's typed text).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalModelError {
+    kind: LocalModelErrorKind,
     stage: &'static str,
     message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalModelErrorKind {
+    Backend,
+    ShutdownRequested,
 }
 
 impl LocalModelError {
     pub fn new(stage: &'static str, error: impl fmt::Display) -> Self {
         Self {
+            kind: LocalModelErrorKind::Backend,
             stage,
             message: error.to_string(),
         }
+    }
+
+    pub fn shutdown_requested() -> Self {
+        Self {
+            kind: LocalModelErrorKind::ShutdownRequested,
+            stage: "shutdown",
+            message: "requested".to_string(),
+        }
+    }
+
+    pub fn kind(&self) -> LocalModelErrorKind {
+        self.kind
     }
 
     pub fn stage(&self) -> &'static str {
@@ -69,8 +129,10 @@ impl std::error::Error for LocalModelError {}
 /// The inference seam. Implementors must be callable from any thread
 /// (`Send + Sync`) and must serialize their own backend access — callers may
 /// invoke `complete` concurrently. Calls are synchronous and blocking, so
-/// hosts run them off the UI/event thread. An `Err` must leave the backend
-/// reusable for the next call (no poisoned state).
+/// hosts run them off the UI/event thread. A backend `Err` must leave the model
+/// reusable for the next call (no poisoned state). The explicit exception is
+/// [`LocalModelErrorKind::ShutdownRequested`]: cancellation is terminal and
+/// deliberately never resets.
 pub trait LocalModel: Send + Sync {
     /// Generate a continuation of `prompt`, decoding at most `max_tokens`
     /// tokens. Blocks until done; returns only the continuation text, never a
@@ -97,6 +159,12 @@ pub trait LocalModel: Send + Sync {
     /// Default is a no-op; override in production backends.
     fn warm_up(&self) -> Result<(), LocalModelError> {
         Ok(())
+    }
+
+    /// Return the model's terminal shutdown-cancellation signal, if supported.
+    /// The default keeps simple/stub backends source-compatible.
+    fn shutdown_cancellation(&self) -> Option<ModelCancellation> {
+        None
     }
 
     /// Release model resources. Called on graceful shutdown.
@@ -148,6 +216,29 @@ enum Job {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ModelWorkerHealth {
+    Running,
+    Failed(String),
+}
+
+fn write_stderr(args: fmt::Arguments<'_>) {
+    let _ = writeln!(std::io::stderr().lock(), "{args}");
+}
+
+fn run_guarded_worker(health: Arc<Mutex<ModelWorkerHealth>>, worker: impl FnOnce()) {
+    write_stderr(format_args!("compme: llama decode worker started"));
+    match catch_unwind(AssertUnwindSafe(worker)) {
+        Ok(()) => write_stderr(format_args!("compme: llama decode worker exited")),
+        Err(_) => {
+            let reason = "llama decode worker panicked".to_string();
+            *health.lock().unwrap_or_else(|err| err.into_inner()) =
+                ModelWorkerHealth::Failed(reason.clone());
+            write_stderr(format_args!("compme: {reason}"));
+        }
+    }
+}
+
 /// The sampler for a candidate index: candidate 0 is greedy (the deterministic
 /// best continuation); later candidates use temperature + a per-candidate seed so
 /// they diverge (multi-candidate generation).
@@ -186,6 +277,8 @@ fn sampler_for_candidate(index: usize) -> LlamaSampler {
 pub struct LlamaModel {
     job_tx: Mutex<Option<Sender<Job>>>,
     handle: Option<JoinHandle<()>>,
+    health: Arc<Mutex<ModelWorkerHealth>>,
+    cancellation: ModelCancellation,
 }
 
 impl LlamaModel {
@@ -195,103 +288,115 @@ impl LlamaModel {
         // same thread for the model's whole lifetime.
         let (load_tx, load_rx) = channel::<Result<(), String>>();
         let (job_tx, job_rx) = channel::<Job>();
+        let health = Arc::new(Mutex::new(ModelWorkerHealth::Running));
+        let health_for_worker = Arc::clone(&health);
+        let cancellation = ModelCancellation::default();
+        let cancellation_for_worker = cancellation.clone();
 
         let handle = std::thread::Builder::new()
             .name("model-client-llama".into())
             .spawn(move || {
-                let backend = match shared_backend() {
-                    Ok(backend) => backend,
-                    Err(message) => {
-                        let _ = load_tx.send(Err(message));
-                        return;
-                    }
-                };
-                let model = match LlamaCppModel::load_from_file(
-                    backend,
-                    &path,
-                    &LlamaModelParams::default().with_n_gpu_layers(model_gpu_layers_from_env(
-                        std::env::var("COMPME_MODEL_GPU_LAYERS").ok().as_deref(),
-                    )),
-                ) {
-                    Ok(model) => model,
-                    Err(err) => {
-                        let _ = load_tx.send(Err(format!("load model: {err}")));
-                        return;
-                    }
-                };
-                let context_params = LlamaContextParams::default().with_n_ctx(Some(
-                    NonZeroU32::new(model_context_tokens_from_env(
-                        std::env::var("COMPME_MODEL_CONTEXT_TOKENS").ok().as_deref(),
-                    ))
-                    .expect("context tokens are non-zero"),
-                ));
-                let mut context = match model.new_context(backend, context_params) {
-                    Ok(context) => context,
-                    Err(err) => {
-                        let _ = load_tx.send(Err(format!("create llama context: {err}")));
-                        return;
-                    }
-                };
-
-                // Load succeeded — release the caller. From here the worker owns
-                // the context and serves jobs until the channel closes.
-                let _ = load_tx.send(Ok(()));
-
-                let mut prev_tokens: Vec<LlamaToken> = Vec::new();
-                while let Ok(job) = job_rx.recv() {
-                    match job {
-                        Job::Complete {
-                            prompt,
-                            max_tokens,
-                            reply,
-                        } => {
-                            let result = complete_on_worker(
-                                &model,
-                                &mut context,
-                                &mut prev_tokens,
-                                &prompt,
-                                max_tokens,
-                                &mut sampler_for_candidate(0),
-                            );
-                            let _ = reply.send(result);
+                run_guarded_worker(health_for_worker, move || {
+                    let backend = match shared_backend() {
+                        Ok(backend) => backend,
+                        Err(message) => {
+                            let _ = load_tx.send(Err(message));
+                            return;
                         }
-                        Job::CompleteN {
-                            prompt,
-                            max_tokens,
-                            n,
-                            reply,
-                        } => {
-                            let result = complete_candidates_on_worker(
-                                &model,
-                                &mut context,
-                                &mut prev_tokens,
-                                &prompt,
+                    };
+                    let model = match LlamaCppModel::load_from_file(
+                        backend,
+                        &path,
+                        &LlamaModelParams::default().with_n_gpu_layers(model_gpu_layers_from_env(
+                            std::env::var("COMPME_MODEL_GPU_LAYERS").ok().as_deref(),
+                        )),
+                    ) {
+                        Ok(model) => model,
+                        Err(err) => {
+                            let _ = load_tx.send(Err(format!("load model: {err}")));
+                            return;
+                        }
+                    };
+                    let context_params = LlamaContextParams::default()
+                        .with_n_ctx(Some(
+                            NonZeroU32::new(model_context_tokens_from_env(
+                                std::env::var("COMPME_MODEL_CONTEXT_TOKENS").ok().as_deref(),
+                            ))
+                            .expect("context tokens are non-zero"),
+                        ))
+                        .with_abort_flag(cancellation_for_worker.abort_flag())
+                        .with_abort_poll_observer(cancellation_for_worker.abort_poll_observer());
+                    let mut context = match model.new_context(backend, context_params) {
+                        Ok(context) => context,
+                        Err(err) => {
+                            let _ = load_tx.send(Err(format!("create llama context: {err}")));
+                            return;
+                        }
+                    };
+
+                    // Load succeeded — release the caller. From here the worker owns
+                    // the context and serves jobs until the channel closes.
+                    let _ = load_tx.send(Ok(()));
+
+                    let mut prev_tokens: Vec<LlamaToken> = Vec::new();
+                    while let Ok(job) = job_rx.recv() {
+                        match job {
+                            Job::Complete {
+                                prompt,
+                                max_tokens,
+                                reply,
+                            } => {
+                                let result = complete_on_worker(
+                                    &model,
+                                    &mut context,
+                                    &mut prev_tokens,
+                                    &prompt,
+                                    max_tokens,
+                                    &mut sampler_for_candidate(0),
+                                    &cancellation_for_worker,
+                                );
+                                let _ = reply.send(result);
+                            }
+                            Job::CompleteN {
+                                prompt,
                                 max_tokens,
                                 n,
-                            );
-                            let _ = reply.send(result);
-                        }
-                        Job::WarmUp { reply } => {
-                            let result = complete_on_worker(
-                                &model,
-                                &mut context,
-                                &mut prev_tokens,
-                                "warm up",
-                                1,
-                                &mut sampler_for_candidate(0),
-                            )
-                            .map(|_| ());
-                            let _ = reply.send(result);
+                                reply,
+                            } => {
+                                let result = complete_candidates_on_worker(
+                                    &model,
+                                    &mut context,
+                                    &mut prev_tokens,
+                                    &prompt,
+                                    max_tokens,
+                                    n,
+                                    &cancellation_for_worker,
+                                );
+                                let _ = reply.send(result);
+                            }
+                            Job::WarmUp { reply } => {
+                                let result = complete_on_worker(
+                                    &model,
+                                    &mut context,
+                                    &mut prev_tokens,
+                                    "warm up",
+                                    1,
+                                    &mut sampler_for_candidate(0),
+                                    &cancellation_for_worker,
+                                )
+                                .map(|_| ());
+                                let _ = reply.send(result);
+                            }
                         }
                     }
-                }
 
-                // Channel closed (shutdown): free the context, then the model,
-                // in that order — the ggml-Metal exit-abort guard (spec
-                // §"ggml-Metal aborts on exit unless freed in order"). The
-                // backend is `'static` and intentionally outlives them both.
-                drop(context);
-                drop(model);
+                    // Channel closed (shutdown): free the context, then the model,
+                    // in that order — the ggml-Metal exit-abort guard (spec
+                    // §"ggml-Metal aborts on exit unless freed in order"). The
+                    // backend is `'static` and intentionally outlives them both.
+                    drop(context);
+                    drop(model);
+                });
             })
             .map_err(|err| -> Box<dyn std::error::Error + Send + Sync> {
                 format!("spawn model worker: {err}").into()
@@ -301,6 +406,8 @@ impl LlamaModel {
             Ok(Ok(())) => Ok(Self {
                 job_tx: Mutex::new(Some(job_tx)),
                 handle: Some(handle),
+                health,
+                cancellation,
             }),
             Ok(Err(message)) => {
                 let _ = handle.join();
@@ -322,6 +429,12 @@ impl LlamaModel {
         stage: &'static str,
         make_job: impl FnOnce(Sender<T>) -> Job,
     ) -> Result<T, LocalModelError> {
+        check_shutdown(&self.cancellation)?;
+        if let ModelWorkerHealth::Failed(reason) =
+            &*self.health.lock().unwrap_or_else(|err| err.into_inner())
+        {
+            return Err(LocalModelError::new(stage, reason));
+        }
         let (reply_tx, reply_rx) = channel::<T>();
         let guard = self
             .job_tx
@@ -384,9 +497,11 @@ fn complete_candidates_on_worker(
     prompt: &str,
     max_tokens: usize,
     n: usize,
+    cancellation: &ModelCancellation,
 ) -> LocalModelResult<Vec<String>> {
     let mut candidates = Vec::with_capacity(n);
     for index in 0..n {
+        check_shutdown(cancellation)?;
         // Force a clean decode per candidate so they don't share generated KV.
         prev_tokens.clear();
         let text = complete_on_worker(
@@ -396,9 +511,11 @@ fn complete_candidates_on_worker(
             prompt,
             max_tokens,
             &mut sampler_for_candidate(index),
+            cancellation,
         )?;
         candidates.push(text);
     }
+    check_shutdown(cancellation)?;
     Ok(candidates)
 }
 
@@ -412,11 +529,14 @@ fn complete_on_worker(
     prompt: &str,
     max_tokens: usize,
     sampler: &mut LlamaSampler,
+    cancellation: &ModelCancellation,
 ) -> LocalModelResult<String> {
+    check_shutdown(cancellation)?;
     let mut tokens = model
         .str_to_token(prompt, AddBos::Always)
         .map_err(|err| LocalModelError::new("tokenize prompt", err))?;
     if tokens.is_empty() {
+        check_shutdown(cancellation)?;
         return Ok(String::new());
     }
 
@@ -427,6 +547,7 @@ fn complete_on_worker(
         // callers get a clean empty completion and the next request remains usable.
         let _ = context.clear_kv_cache_seq(Some(0), None, None);
         prev_tokens.clear();
+        check_shutdown(cancellation)?;
         return Ok(String::new());
     }
 
@@ -466,8 +587,12 @@ fn complete_on_worker(
     }
     if let Err(err) = context.decode(&mut batch) {
         reset_on_err(context, prev_tokens);
+        if cancellation.is_requested() {
+            return Err(LocalModelError::shutdown_requested());
+        }
         return Err(LocalModelError::new("decode prompt", err));
     }
+    check_shutdown(cancellation)?;
 
     let mut output = String::new();
     let mut decoder = encoding_rs::UTF_8.new_decoder();
@@ -482,6 +607,7 @@ fn complete_on_worker(
     let (first_generated_pos, last_generated_pos) =
         generation_range(tokens.len(), plan.generation_tokens);
     for position in first_generated_pos..last_generated_pos {
+        check_shutdown(cancellation)?;
         let token = sampler.sample(context, batch.n_tokens() - 1);
         if model.is_eog_token(token) {
             break;
@@ -504,11 +630,24 @@ fn complete_on_worker(
         }
         if let Err(err) = context.decode(&mut batch) {
             reset_on_err(context, prev_tokens);
+            if cancellation.is_requested() {
+                return Err(LocalModelError::shutdown_requested());
+            }
             return Err(LocalModelError::new("decode sampled token", err));
         }
+        check_shutdown(cancellation)?;
     }
 
+    check_shutdown(cancellation)?;
     Ok(output)
+}
+
+fn check_shutdown(cancellation: &ModelCancellation) -> LocalModelResult<()> {
+    if cancellation.is_requested() {
+        Err(LocalModelError::shutdown_requested())
+    } else {
+        Ok(())
+    }
 }
 
 impl LocalModel for LlamaModel {
@@ -548,8 +687,13 @@ impl LocalModel for LlamaModel {
         self.dispatch("warm up", |reply| Job::WarmUp { reply })?
     }
 
-    /// Close the job channel and join the worker, which frees the context, model,
-    /// and backend in order before the thread exits.
+    fn shutdown_cancellation(&self) -> Option<ModelCancellation> {
+        Some(self.cancellation.clone())
+    }
+
+    /// Close the job channel and join the worker, which frees the context and
+    /// model in order before the thread exits. The process-static backend is
+    /// intentionally never freed and outlives every worker.
     ///
     /// Spec §"ggml-Metal aborts on exit unless model/context freed via explicit
     /// `shutdown()` before teardown (guard double-free)".
@@ -564,6 +708,7 @@ impl LlamaModel {
     /// after an explicit `shutdown`) finds the channel already closed and the
     /// handle already taken, so it is a harmless no-op.
     fn close_worker(&mut self) {
+        self.cancellation.request();
         // Recover a poisoned lock instead of skipping: the sender MUST be
         // dropped before the unconditional join below, or a poisoned mutex
         // (panic inside a dispatch round-trip) turns shutdown into a permanent
@@ -794,6 +939,29 @@ mod tests {
     }
 
     #[test]
+    fn model_cancellation_clones_share_terminal_state() {
+        let cancellation = ModelCancellation::default();
+        let worker_view = cancellation.clone();
+
+        assert!(!cancellation.is_requested());
+        worker_view.request();
+        assert!(cancellation.is_requested());
+        // Requesting twice is deliberately idempotent; shutdown never resets.
+        cancellation.request();
+        assert!(worker_view.is_requested());
+    }
+
+    #[test]
+    fn shutdown_requested_error_is_typed_and_prompt_free() {
+        let error = LocalModelError::shutdown_requested();
+
+        assert_eq!(error.kind(), LocalModelErrorKind::ShutdownRequested);
+        assert_eq!(error.stage(), "shutdown");
+        assert_eq!(error.message(), "requested");
+        assert_eq!(error.to_string(), "shutdown failed: requested");
+    }
+
+    #[test]
     fn trait_object_is_usable() {
         let model: Box<dyn LocalModel> = Box::new(Fixed("ok"));
 
@@ -952,6 +1120,31 @@ mod tests {
     }
 
     #[test]
+    fn panicking_decode_worker_records_failed_health_and_rejects_later_jobs() {
+        let health = std::sync::Arc::new(Mutex::new(ModelWorkerHealth::Running));
+        run_guarded_worker(std::sync::Arc::clone(&health), || {
+            panic!("injected decode panic");
+        });
+        assert_eq!(
+            *health.lock().unwrap(),
+            ModelWorkerHealth::Failed("llama decode worker panicked".into())
+        );
+
+        let (job_tx, _job_rx) = channel();
+        let model = LlamaModel {
+            job_tx: Mutex::new(Some(job_tx)),
+            handle: None,
+            health,
+            cancellation: ModelCancellation::default(),
+        };
+        let err = model
+            .complete("must not enqueue", 1)
+            .expect_err("failed worker health must reject later jobs");
+        assert_eq!(err.stage(), "complete");
+        assert!(err.message().contains("worker panicked"), "{err}");
+    }
+
+    #[test]
     fn dispatch_error_carries_the_callers_stage() {
         // The stage is the caller's pipeline label, not hard-coded — warm_up and
         // complete_n use their own. Pin that the helper forwards it verbatim AND
@@ -1095,6 +1288,8 @@ mod tests {
         let mut model = LlamaModel {
             job_tx: Mutex::new(Some(tx)),
             handle: Some(handle),
+            health: Arc::new(Mutex::new(ModelWorkerHealth::Running)),
+            cancellation: ModelCancellation::default(),
         };
         let poisoner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = model.job_tx.lock().unwrap();

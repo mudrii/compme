@@ -166,9 +166,9 @@ impl AcceptBindings {
         Self::from_mac_chords(&DEFAULT_MAC_CHORDS)
     }
 
-    /// The keysyms to grab, each once. Two roles may share a keysym (`Tab` and
-    /// `shift+Tab`), and grabbing the same key twice is an `Access` error, so the
-    /// grab list is deduplicated while the decision list is not.
+    /// The keysyms whose keycodes must be resolved, each once. Two roles may
+    /// share a keysym (`Tab` and `shift+Tab`), while the decision list keeps both
+    /// exact modifier combinations.
     pub fn distinct_keysyms(&self) -> Vec<u32> {
         let mut keysyms: Vec<u32> = Vec::with_capacity(self.bindings.len());
         for binding in &self.bindings {
@@ -194,6 +194,10 @@ impl AcceptBindings {
 
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &AcceptBinding> {
+        self.bindings.iter()
     }
 }
 
@@ -331,8 +335,9 @@ pub enum WatchdogAction {
 }
 
 /// Deadline arithmetic for the watchdog thread. All times are milliseconds on
-/// one monotonic clock, `UNSET_MS` meaning "not set", so the caller can keep the
-/// state in atomics and the watchdog never waits on a lock the worker holds.
+/// one monotonic clock, `UNSET_MS` meaning "not set", so deciding whether a
+/// deadline fired reads only atomics. Applying a disarm may still take the tap's
+/// short state locks and issue X requests.
 pub fn watchdog_action(
     now_ms: u64,
     frozen_since_ms: u64,
@@ -384,9 +389,8 @@ pub fn set_accept_chords_with_mods(
     for &(keycode, mask, _) in &chords {
         // Dismiss/Cycle keep their defaults; a rebind that lands on them (or on
         // the other rebindable role) collides just as it would on macOS.
-        let Some(keysym) = keysym_for_mac_keycode(keycode) else {
-            continue; // an untranslatable DEFAULT chord is skipped, not fatal
-        };
+        let keysym = keysym_for_mac_keycode(keycode)
+            .expect("configured and default chords were validated above");
         let chord = (keysym, x11_modifiers_for_mac_mask(mask));
         if seen.contains(&chord) {
             return Err(shell_flags::KeymapError::Collision(keycode));
@@ -603,8 +607,8 @@ mod tests {
 
     #[test]
     fn distinct_keysyms_deduplicates_two_roles_sharing_one_key() {
-        // Grabbing the same keycode twice is an Access error, so the grab list
-        // must collapse Tab/shift+Tab into one entry while both stay decidable.
+        // Keycode resolution only needs Tab once, while both exact modifier
+        // combinations must remain decidable.
         let bindings = AcceptBindings::from_mac_chords(&[
             (48, 0, AcceptRole::Word),
             (48, 1 << 9, AcceptRole::Full),

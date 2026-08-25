@@ -4,6 +4,57 @@
 //! `use super::*` and every test name are unchanged.
 
 use super::*;
+
+#[test]
+#[ignore = "subprocess helper: deliberately terminates with A32's hard-exit code"]
+fn inference_timeout_exit_guard_subprocess_helper() {
+    let mut guard = InferenceTimeoutExitGuard::new();
+    guard.arm();
+}
+
+#[test]
+fn inference_timeout_exit_guard_uses_no_cleanup_termination() {
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "run_loop::tests::inference_timeout_exit_guard_subprocess_helper",
+        ])
+        .status()
+        .expect("launch hard-exit helper");
+
+    assert_eq!(
+        status.code(),
+        Some(INFERENCE_SHUTDOWN_TIMEOUT_EXIT_CODE),
+        "armed last-drop guard must bypass ordinary process exit"
+    );
+}
+
+#[test]
+#[ignore = "subprocess helper: watchdog deliberately terminates with A32's hard-exit code"]
+fn inference_timeout_watchdog_subprocess_helper() {
+    arm_inference_shutdown_watchdog();
+    std::thread::sleep(Duration::from_secs(2));
+    panic!("shutdown watchdog failed to terminate the helper");
+}
+
+#[test]
+fn inference_timeout_watchdog_bounds_stuck_cleanup() {
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "run_loop::tests::inference_timeout_watchdog_subprocess_helper",
+        ])
+        .status()
+        .expect("launch shutdown-watchdog helper");
+
+    assert_eq!(
+        status.code(),
+        Some(INFERENCE_SHUTDOWN_TIMEOUT_EXIT_CODE),
+        "watchdog must hard-exit when later cleanup remains stuck"
+    );
+}
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
@@ -1379,14 +1430,14 @@ fn accept_subscription_observes_startup_shortcuts_before_installing() {
     ]));
     let observed = RefCell::new(None);
 
-    let (sub, requires_relaunch) =
-        subscribe_accept_after_startup_key_bindings(&config, true, || {
-            *observed.borrow_mut() = Some(crate::shell::effective_shortcut_bindings());
-            Ok(noop_accept_subscription())
-        })
-        .expect("subscription setup succeeds");
+    apply_startup_key_bindings(&config);
+    let (sub, subscription_state) = subscribe_accept_with_preconfigured_bindings(true, || {
+        *observed.borrow_mut() = Some(crate::shell::effective_shortcut_bindings());
+        Ok(noop_accept_subscription())
+    })
+    .expect("subscription setup succeeds");
 
-    assert!(!requires_relaunch);
+    assert_eq!(subscription_state, AccessibilitySubscriptions::Ready);
     drop(sub);
     let observed = observed.into_inner().expect("subscribe closure ran");
     assert_eq!(observed.force_activate, Some((96, 256)));
@@ -6539,7 +6590,7 @@ fn monitored_flush_blocks_relaunch_required_effective_untrusted_runtime() {
         MonitoredFlushRuntime {
             monitored_memory_active: true,
             enabled: true,
-            trusted: runtime_trusted(true, true),
+            trusted: runtime_trusted(true, AccessibilitySubscriptions::RelaunchRequired),
             now_ms: 1_004,
         },
         || {
@@ -8559,11 +8610,29 @@ fn only_unavailable_statuses_drop_pending_requests() {
         BlockReason::Permission
     )));
     assert!(status_drops_pending_requests(AppStatus::Blocked(
+        BlockReason::AccessibilityUnavailable
+    )));
+    assert!(status_drops_pending_requests(AppStatus::Blocked(
         BlockReason::SecureInput
     )));
     assert!(status_drops_pending_requests(AppStatus::Blocked(
         BlockReason::ModelUnavailable
     )));
+}
+
+#[test]
+fn failed_inference_worker_surfaces_model_unavailable_instead_of_loading() {
+    assert_eq!(
+        derive_status(
+            true,
+            AccessibilitySubscriptions::Ready,
+            false,
+            effective_model_available(true, true),
+            false,
+            true,
+        ),
+        AppStatus::Blocked(BlockReason::ModelUnavailable)
+    );
 }
 
 #[test]
@@ -8590,6 +8659,7 @@ fn manual_grammar_request_drops_under_loading_unlike_pending_completions() {
     for status in [
         AppStatus::Disabled,
         AppStatus::Blocked(BlockReason::Permission),
+        AppStatus::Blocked(BlockReason::AccessibilityUnavailable),
         AppStatus::Blocked(BlockReason::RelaunchRequired),
         AppStatus::Blocked(BlockReason::SecureInput),
         AppStatus::Blocked(BlockReason::ModelUnavailable),
@@ -8640,11 +8710,44 @@ fn subscription_error_degrades_only_for_missing_accessibility_or_untrusted_start
 }
 
 #[test]
+fn unavailable_accessibility_service_degrades_without_masquerading_as_permission() {
+    assert_eq!(
+        subscription_error_action(
+            true,
+            &PlatformError::AccessibilityUnavailable {
+                reason: "AT-SPI accessibility session unavailable (no bus)".into(),
+            },
+        ),
+        SubscriptionErrorAction::Unavailable(
+            "AT-SPI accessibility session unavailable (no bus)".into(),
+        ),
+    );
+
+    match subscription_error_action(
+        true,
+        &PlatformError::UnsupportedField {
+            reason: "subscription contract bug".into(),
+        },
+    ) {
+        SubscriptionErrorAction::Fatal(message) => {
+            assert!(message.contains("UnsupportedField"), "{message}");
+        }
+        other => panic!("trusted unsupported subscription must stay fatal, got {other:?}"),
+    }
+}
+
+#[test]
 fn degraded_startup_subscriptions_keep_runtime_permission_blocked() {
-    assert!(runtime_trusted(true, false));
-    assert!(!runtime_trusted(false, false));
-    assert!(!runtime_trusted(true, true));
-    assert!(!runtime_trusted(false, true));
+    assert!(runtime_trusted(true, AccessibilitySubscriptions::Ready));
+    assert!(!runtime_trusted(false, AccessibilitySubscriptions::Ready));
+    assert!(!runtime_trusted(
+        true,
+        AccessibilitySubscriptions::RelaunchRequired
+    ));
+    assert!(!runtime_trusted(
+        false,
+        AccessibilitySubscriptions::Unavailable
+    ));
 }
 
 #[test]
@@ -9761,11 +9864,52 @@ fn startup_orders_lock_config_signals_permissions_before_platform() {
         "stub completion means a model is ready"
     );
     assert!(
-        !ctx.subscriptions_require_relaunch,
+        ctx.accessibility_subscriptions == AccessibilitySubscriptions::Ready,
         "all subscriptions installed against a trusted shell"
     );
     assert!(ctx.tray.is_none(), "stub tray is unsupported → headless");
     drop(ctx);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn startup_applies_accept_bindings_before_adapter_construction() {
+    crate::shell::set_accept_keymap_from_config_with_mods(None, None, None).unwrap();
+    let log = startup_log();
+    let dir = startup_test_dir("bindings-before-adapter");
+    let config = Config::from_lookup(lookup(&[
+        ("COMPME_STUB_COMPLETION", " test"),
+        ("COMPME_ACCEPT_WORD_KEY", "36"),
+        ("COMPME_ACCEPT_FULL_KEY", "48"),
+    ]));
+    let mut factories = recording_factories(
+        &log,
+        &dir,
+        RecordingShell {
+            trusted: true,
+            log: Arc::clone(&log),
+        },
+        Ok(FakeAdapter::allow_all(Arc::clone(&log))),
+        Ok(FakeOverlay),
+        Ok(config),
+    );
+    factories.make_adapter = {
+        let log = Arc::clone(&log);
+        Box::new(move |_acceptance_pid| {
+            log_push(&log, "adapter");
+            assert_eq!(
+                crate::shell::effective_accept_keys_with_mods_and_grammar(),
+                ((36, 0), (48, 0), None),
+                "the installability probe must see persisted bindings"
+            );
+            Ok(FakeAdapter::allow_all(Arc::clone(&log)))
+        })
+    };
+
+    let ctx = startup(&factories).expect("startup").expect("context");
+    drop(ctx);
+    crate::shell::set_accept_keymap_from_config_with_mods(None, None, None).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -9835,11 +9979,11 @@ fn startup_degraded_subscriptions_surface_requires_relaunch() {
         .expect("startup completes");
 
     assert!(
-        ctx.subscriptions_require_relaunch,
+        ctx.accessibility_subscriptions == AccessibilitySubscriptions::RelaunchRequired,
         "degraded focus/caret/accept subscriptions must surface as requires-relaunch"
     );
     assert!(
-        !runtime_trusted(true, ctx.subscriptions_require_relaunch),
+        !runtime_trusted(true, ctx.accessibility_subscriptions),
         "requires-relaunch keeps the run Blocked even after permission is granted"
     );
     // The permission prompt fired, all three subscriptions were attempted,
@@ -9860,6 +10004,68 @@ fn startup_degraded_subscriptions_surface_requires_relaunch() {
             "subscribe-accept",
             "tray",
         ]
+    );
+    drop(ctx);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn startup_survives_missing_linux_accessibility_service_without_permission_prompt() {
+    let log = startup_log();
+    let dir = startup_test_dir("accessibility-unavailable");
+    let factories = recording_factories(
+        &log,
+        &dir,
+        RecordingShell {
+            trusted: true,
+            log: Arc::clone(&log),
+        },
+        Ok(FakeAdapter::failing(
+            Arc::clone(&log),
+            PlatformError::AccessibilityUnavailable {
+                reason: "AT-SPI accessibility session unavailable (no bus)".to_string(),
+            },
+        )),
+        Ok(FakeOverlay),
+        Ok(startup_test_config()),
+    );
+
+    let ctx = startup(&factories)
+        .expect("an unavailable AT-SPI service is non-fatal")
+        .expect("startup remains alive with inert subscriptions");
+
+    assert_eq!(
+        ctx.accessibility_subscriptions,
+        AccessibilitySubscriptions::Unavailable
+    );
+    assert_eq!(
+        derive_status(
+            true,
+            ctx.accessibility_subscriptions,
+            false,
+            true,
+            true,
+            true,
+        ),
+        AppStatus::Blocked(BlockReason::AccessibilityUnavailable),
+        "service absence must not masquerade as a relaunchable permission transition",
+    );
+    assert_eq!(
+        log_steps(&log),
+        vec![
+            "instance-lock",
+            "config",
+            "signals",
+            "shell",
+            "permissions",
+            "adapter",
+            "overlay",
+            "subscribe-focus",
+            "subscribe-caret",
+            "subscribe-accept",
+            "tray",
+        ],
+        "service absence must not masquerade as missing permission or abort startup",
     );
     drop(ctx);
     let _ = std::fs::remove_dir_all(&dir);

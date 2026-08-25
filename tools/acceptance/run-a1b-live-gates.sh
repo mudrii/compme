@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Deliberately omit `-e`: `run_gate`/retry helpers count failures and continue so
+# the suite reports every gate. Preflight and usage errors explicitly exit 2.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

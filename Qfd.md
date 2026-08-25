@@ -135,9 +135,18 @@ This is the best architectural optimization because it deepens the future cross-
 
 #### D. Cross-platform compilation is not cross-platform completion
 
-The Windows and Linux crates correctly prove compilation and fail-closed behavior. They do not yet implement the core read/caret/subscription/insertion/overlay path. Windows supplies some real host services such as secure URL opening, console handling, and DACL hardening; Linux supplies URL launching/reaping. Neither is a functional inline-completion product.
+At the audited tree, the Windows and Linux crates correctly proved compilation
+and fail-closed behavior but did not yet implement the core
+read/caret/subscription/insertion/overlay path. Windows supplied some real host
+services such as secure URL opening, console handling, and DACL hardening;
+Linux supplied URL launching/reaping. Neither was then a functional
+inline-completion product.
 
-The roadmap's Phase 1 Windows UIA and Phase 2 Linux X11/AT-SPI work remain the largest committed implementation gap. The current architecture can support them, but the settings/event-bus debt above should be reduced before duplicating macOS orchestration.
+**2026-08-25 revalidation:** Windows remains the fail-closed scaffold. Linux
+now wires experimental AT-SPI2 read/write/events, passive X11 accept,
+overlay presentation, and session ShellHost services, while retaining explicit
+unsupported boundaries. Linux remains incomplete and unsupported as a product;
+its residual work is tracked in `docs/ROADMAP.md`.
 
 ## 5. Objective and roadmap alignment
 
@@ -532,7 +541,7 @@ So the "god files" are roughly 6k-line production modules with 8–10k-line test
 | macOS first | v0.1.5 signed/notarized/stapled and cask-backed; `main` adds hardening + the refactor program | Aligned |
 | Deterministic core behind `PlatformAdapter` | 14-method contract, 4 fail-closed defaults, pure core 98–100% covered | Aligned |
 | A2/A3 parity + grammar | Code complete; 22 live gates outstanding | Partially aligned pending live evidence (F3) |
-| Windows/Linux committed deliverables | Phase 0 + fail-closed facades + hosted CI parity; no real adapters | Largest implementation gap, unchanged |
+| Windows/Linux committed deliverables | Windows remains fail-closed with hosted CI parity; Linux is wired and live-gated for its shipped AT-SPI2/X11 surfaces | Windows Phase 1 remains the largest adapter gap; Linux residuals remain open |
 | Secure release pipeline | Strict tag guard, provenance, post-publish verification all in place | Aligned; `post_verify` still unproven operationally (F10) |
 | ROADMAP as source of truth | Governance wording, counts, and the refactor record are all current | Aligned, with one stale count in ARCHITECTURE (F14) |
 
@@ -683,13 +692,10 @@ direct-to-`main` workflow that lands green and only surfaces at the next code
 push or the release validate job.
 
 **Fix.** `paths-ignore` now lists only prose no checker pins
-(`docs/superpowers/**`, `docs/RELEASE-NOTES-*.md`, `docs/TROUBLESHOOTING.md`,
+(`docs/superpowers/plans/**`, `docs/RELEASE-NOTES-*.md`, `docs/TROUBLESHOOTING.md`,
 `Qfd.md`, `LICENSE`); `docs.yml`'s `paths` is the exact mirror plus the
-workflow itself. Of 39 tracked doc surfaces, 12 move onto the full lane
-(README, SECURITY, AGENTS + its three symlinks, and the six pinned
-`docs/*.md`), 25 stay cheap, and 2 `tools/spike/*.md` were already on the full
-lane because `*.md` never matched below the root. Verified by enumerating every
-tracked `*.md` against the old and new lists.
+workflow itself. Pinned `docs/superpowers/specs/**` files therefore take the
+full lane, while unpinned execution plans keep the cheap docs lane.
 
 ### F24. `docs.yml` had no policy pin — FIXED
 
@@ -697,11 +703,12 @@ It was the only workflow `check-model-gates.sh` did not read (`release.yml`,
 `ci.yml`, `audit.yml` are all shape-pinned). That mattered once the two path
 lists became load-bearing: drift either way silently reopens F23.
 `check_docs_integrity_controls` now pins the triggers, permissions,
-concurrency, job topology, timeout, checkout SHA and all four steps, and
+concurrency, job topology, timeout, checkout SHA and all five steps (including
+the privacy-policy check), and
 asserts `docs.yml paths == ci.yml paths-ignore + [".github/workflows/docs.yml"]`.
 Mutation-tested: re-adding `docs/**` to the docs lane, dropping `Qfd.md` from
-`paths-ignore`, and deleting the version-docs step each fail the live checker
-with a distinct message.
+`paths-ignore`, and deleting either policy step each fail the live checker with
+a distinct message.
 
 ### F25. `cargo audit` could not fail on unmaintained/unsound/yanked — FIXED
 
@@ -748,8 +755,10 @@ Re-verified the §12/§14 open list before treating it as the release checklist.
 | F1 stable-tag glob in `finalize-cask.sh` | OPEN, "the only unfiltered instance", "also untested" | **CLOSED** | `finalize-cask.sh:137` applies the strict semver re-filter (`^v(0\|[1-9][0-9]*)[.]…$`) inside the candidate loop, the same compensating control §12 credited only to `check-bundle-metadata.sh`. The untested half is closed too: the self-test now builds `v1.2.4-rc.1` and `v1.2.4junk` stray tags plus a prerelease-only fixture repo (lines ~596-613). |
 | F2 uncommitted stack + unrelated `keybindings.md` | OPEN, unchanged | **CLOSED** | Working tree clean; `keybindings.md` untracked by design (`.git/info/exclude`), removed from history in `07a1f03`. |
 
-Still open and unchanged: **F3** (22 runner-pinned live macOS gates — owner-only,
-and the single blocker for a release), F5/F6 (interface depth), F7, F11/F13.
+Still open: **F3** (22 runner-pinned live macOS gates — owner-only, and the
+single blocker for a release). **F5/F6 are resolved at the planned extraction
+depth**, with the typed settings/tray command redesign retained as optional
+future deepening; **F7 and F11/F13 are resolved** as recorded in §13.
 
 **F7 fixed here.** `2026-07-08-cross-platform-implementation-plan.md:30` claimed
 `PlatformAdapter` has 15 methods and `ShellHost` 8 + 9 defaulted; the file's own

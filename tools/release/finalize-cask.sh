@@ -2,14 +2,14 @@
 # Finalize the Homebrew cask on the default branch after a GitHub release
 # artifact has been published.
 #
-# Usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH
+# Usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH REPOSITORY
 #        finalize-cask.sh --self-test
 set -euo pipefail
 
 repo_root="${COMPME_FINALIZE_CASK_REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 
 usage() {
-  echo "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH | --self-test" >&2
+  echo "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH REPOSITORY | --self-test" >&2
 }
 
 freeze_release_helpers() {
@@ -32,6 +32,7 @@ verify_published_artifact() {
   artifact_path="$2"
   version="$3"
   checksum_dir="$4"
+  repository="$5"
   artifact_name="compme-${version}-macos.zip"
   checksum_name="${artifact_name}.sha256"
 
@@ -45,7 +46,7 @@ verify_published_artifact() {
   fi
 
   if ! release_ineligible="$(command gh release view "$tag" \
-    --repo mudrii/compme \
+    --repo "$repository" \
     --json isDraft,isPrerelease \
     --jq '.isDraft or .isPrerelease')"; then
     echo "failed to inspect published release state for $tag" >&2
@@ -61,7 +62,7 @@ verify_published_artifact() {
     return 1
   fi
   if ! command gh release download "$tag" \
-    --repo mudrii/compme \
+    --repo "$repository" \
     --pattern "$checksum_name" \
     --dir "$checksum_dir"; then
     echo "failed to download published checksum for $tag" >&2
@@ -147,6 +148,7 @@ finalize_cask() {
   artifact_path="$2"
   version="$3"
   default_branch="$4"
+  repository="$5"
 
   if [ "$tag" != "v$version" ]; then
     echo "tag/version mismatch: $tag != v$version" >&2
@@ -186,7 +188,7 @@ finalize_cask() {
   frozen_updater="$frozen_root/tools/release/update-cask.sh"
   "$frozen_validator" "$version"
   verify_published_artifact \
-    "$tag" "$artifact_path" "$version" "$frozen_root/published-checksum"
+    "$tag" "$artifact_path" "$version" "$frozen_root/published-checksum" "$repository"
 
   git checkout "$default_branch"
   git pull --ff-only --no-tags origin "$default_branch"
@@ -364,6 +366,10 @@ SH
   cat >"$fake_bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+case " $* " in
+  *" --repo ${COMPME_FINALIZE_CASK_TEST_EXPECTED_REPOSITORY:?} "*) ;;
+  *) exit 43 ;;
+esac
 if [ "${1:-}" = "release" ] && [ "${2:-}" = "view" ]; then
   printf '%s\n' "${COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE:-false}"
   exit 0
@@ -390,6 +396,7 @@ SH
   chmod +x "$fake_bin/gh" "$fake_bin/shasum"
   export PATH="$fake_bin:$PATH"
   export COMPME_FINALIZE_CASK_TEST_PUBLISHED_ARTIFACT="$artifact"
+  export COMPME_FINALIZE_CASK_TEST_EXPECTED_REPOSITORY="owner/repo"
 
   make_fixture_repo "$tmp/noop" noop
   noop_sha="$(git -C "$tmp/noop/work" rev-parse HEAD)"
@@ -399,7 +406,7 @@ SH
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/noop/work" \
     COMPME_FINALIZE_CASK_ARTIFACT_LOG="$tmp/artifacts.log" \
     GITHUB_SHA="$noop_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >"$tmp/noop.out"
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >"$tmp/noop.out"
   after_count="$(git -C "$tmp/noop/work" rev-list --count origin/main)"
   test "$before_count" = "$after_count"
   test "$(git -C "$tmp/noop/work" branch --show-current)" = "main"
@@ -422,7 +429,7 @@ SH
     git -C "$tmp/ref-refresh/work" update-ref -d refs/remotes/origin/main || return 1
   if ! COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ref-refresh/work" \
     GITHUB_SHA="$ref_refresh_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main \
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo \
     >"$tmp/ref-refresh.out" 2>"$tmp/ref-refresh.err"; then
     echo "finalize-cask self-test failed: ref-refresh finalizer failed" >&2
     sed 's/^/  captured: /' "$tmp/ref-refresh.err" >&2
@@ -458,7 +465,7 @@ SH
     trap - ERR
     set +e
     verify_published_artifact \
-      v9.8.7 "$tampered_artifact" 9.8.7 "$tampered_dir/published-checksum"
+      v9.8.7 "$tampered_artifact" 9.8.7 "$tampered_dir/published-checksum" owner/repo
   ) 2>"$tampered_dir/rejected.err"; then
     echo "finalize-cask self-test failed: artifact differing from published checksum was accepted" >&2
     return 1
@@ -475,7 +482,7 @@ SH
     trap - ERR
     set +e
     verify_published_artifact \
-      v9.8.7 "$artifact" 9.8.7 "$tmp/local-checksum-fail"
+      v9.8.7 "$artifact" 9.8.7 "$tmp/local-checksum-fail" owner/repo
   ) 2>"$tmp/local-checksum-fail.err"; then
     unset COMPME_FINALIZE_CASK_TEST_SHASUM_FAIL
     echo "finalize-cask self-test failed: local checksum failure was accepted" >&2
@@ -494,7 +501,7 @@ SH
     trap - ERR
     set +e
     verify_published_artifact \
-      v9.8.7 "$artifact" 9.8.7 "$tmp/checksum-download-fail"
+      v9.8.7 "$artifact" 9.8.7 "$tmp/checksum-download-fail" owner/repo
   ) 2>"$tmp/checksum-download-fail.err"; then
     unset COMPME_FINALIZE_CASK_TEST_GH_FAIL
     echo "finalize-cask self-test failed: published checksum download failure was accepted" >&2
@@ -513,7 +520,7 @@ SH
     trap - ERR
     set +e
     verify_published_artifact \
-      v9.8.7 "$artifact" 9.8.7 "$tmp/draft-release"
+      v9.8.7 "$artifact" 9.8.7 "$tmp/draft-release" owner/repo
   ) 2>"$tmp/draft-release.err"; then
     unset COMPME_FINALIZE_CASK_TEST_RELEASE_INELIGIBLE
     echo "finalize-cask self-test failed: draft release was accepted" >&2
@@ -534,7 +541,7 @@ SH
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/summary/work" \
     GITHUB_SHA="$summary_sha" \
     GITHUB_STEP_SUMMARY="$summary_file" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null
   grep -Fxq "## Homebrew cask" "$summary_file"
   grep -Fxq 'Finalized `Casks/compme.rb` for `v9.8.7` on `main`.' "$summary_file"
   grep -Fxq 'version: `9.8.7`' "$summary_file"
@@ -546,7 +553,7 @@ SH
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/modify/work" \
     COMPME_FINALIZE_CASK_ARTIFACT_LOG="$tmp/artifacts.log" \
     GITHUB_SHA="$modify_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null
   git -C "$tmp/modify/work" fetch origin main >/dev/null 2>&1
   git -C "$tmp/modify/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
   grep -Fxq "$artifact" "$tmp/artifacts.log"
@@ -559,7 +566,7 @@ SH
   lag_artifact_sha="$(shasum -a 256 "$artifact" | awk '{print $1}')"
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging/work" \
     GITHUB_SHA="$lag_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >"$tmp/lagging.out"
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >"$tmp/lagging.out"
   git -C "$tmp/lagging/work" fetch origin main >/dev/null 2>&1
   git -C "$tmp/lagging/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
   grep -q 'version "9.8.7"' "$tmp/lagging/work/Casks/compme.rb"
@@ -573,7 +580,7 @@ SH
   git -C "$tmp/lagging-fetch/work" tag -d v9.8.6 >/dev/null
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging-fetch/work" \
     GITHUB_SHA="$lagging_fetch_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >"$tmp/lagging-fetch.out"
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >"$tmp/lagging-fetch.out"
   git -C "$tmp/lagging-fetch/work" fetch origin main >/dev/null 2>&1
   git -C "$tmp/lagging-fetch/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
   grep -q 'version "9.8.7"' "$tmp/lagging-fetch/work/Casks/compme.rb"
@@ -587,7 +594,7 @@ SH
   git -C "$tmp/lagging-moved-past/work" push origin main >/dev/null 2>&1
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging-moved-past/work" \
     GITHUB_SHA="$lagging_moved_past_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/lagging-moved-past.err"; then
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null 2>"$tmp/lagging-moved-past.err"; then
     echo "finalize-cask self-test failed: moved-past cask version was accepted" >&2
     return 1
   fi
@@ -625,7 +632,7 @@ SH
   detach_release_checkout "$tmp/lagging-stray-tags/work" "$lag_stray_sha"
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging-stray-tags/work" \
     GITHUB_SHA="$lag_stray_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >"$tmp/lagging-stray-tags.out"
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >"$tmp/lagging-stray-tags.out"
   git -C "$tmp/lagging-stray-tags/work" fetch origin main >/dev/null 2>&1
   git -C "$tmp/lagging-stray-tags/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
   grep -q 'version "9.8.7"' "$tmp/lagging-stray-tags/work/Casks/compme.rb"
@@ -642,7 +649,7 @@ SH
   git -C "$tmp/lagging-stray-moved-past/work" push origin main >/dev/null 2>&1
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/lagging-stray-moved-past/work" \
     GITHUB_SHA="$lag_stray_moved_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/lagging-stray-moved-past.err"; then
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null 2>"$tmp/lagging-stray-moved-past.err"; then
     echo "finalize-cask self-test failed: stray-tag moved-past cask version was accepted" >&2
     return 1
   fi
@@ -675,7 +682,7 @@ SH
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/frozen-provenance/work" \
     COMPME_FINALIZE_CASK_HELPER_LOG="$tmp/frozen-helpers.log" \
     GITHUB_SHA="$frozen_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null
   grep -Fxq "tag-validator" "$tmp/frozen-helpers.log"
   grep -Fxq "tag-updater" "$tmp/frozen-helpers.log"
   if grep -Fq "default-" "$tmp/frozen-helpers.log"; then
@@ -703,7 +710,7 @@ SH
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/dirty-tag-checkout/work" \
     COMPME_FINALIZE_CASK_HELPER_LOG="$tmp/dirty-tag-helpers.log" \
     GITHUB_SHA="$dirty_tag_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null
   grep -Fxq "tag-validator" "$tmp/dirty-tag-helpers.log"
   grep -Fxq "tag-updater" "$tmp/dirty-tag-helpers.log"
   if grep -Fq "dirty-" "$tmp/dirty-tag-helpers.log"; then
@@ -727,7 +734,7 @@ SH
     detach_release_checkout "$tmp/$behavior/work" "$rejection_sha"
     if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/$behavior/work" \
       GITHUB_SHA="$rejection_sha" \
-      "$0" v9.8.7 "$artifact" 9.8.7 main \
+      "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo \
       >/dev/null 2>"$tmp/$behavior.err"; then
       echo "finalize-cask self-test failed: $behavior cask update was accepted" >&2
       return 1
@@ -740,7 +747,7 @@ SH
   before_count="$(git -C "$tmp/update-fail/work" rev-list --count origin/main)"
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/update-fail/work" \
     GITHUB_SHA="$update_fail_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/update-fail.err"; then
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null 2>"$tmp/update-fail.err"; then
     echo "finalize-cask self-test failed: update-cask failure was accepted" >&2
     return 1
   fi
@@ -757,7 +764,7 @@ SH
   chmod +x "$tmp/push-fail/remote.git/hooks/pre-receive"
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/push-fail/work" \
     GITHUB_SHA="$push_fail_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/push-fail.err"; then
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null 2>"$tmp/push-fail.err"; then
     echo "finalize-cask self-test failed: push failure was accepted" >&2
     return 1
   fi
@@ -767,7 +774,7 @@ SH
   rm "$tmp/push-fail/remote.git/hooks/pre-receive"
   COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/push-fail/work" \
     GITHUB_SHA="$push_fail_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >"$tmp/push-retry.out"
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >"$tmp/push-retry.out"
   git -C "$tmp/push-fail/work" fetch origin main >/dev/null 2>&1
   test "$(git -C "$tmp/push-fail/work" rev-parse origin/main)" = "$failed_push_commit"
   grep -q "already matches v9.8.7" "$tmp/push-retry.out"
@@ -780,7 +787,7 @@ SH
   git -C "$tmp/version-mismatch/work" push origin main >/dev/null 2>&1
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/version-mismatch/work" \
     GITHUB_SHA="$mismatch_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/mismatch.err"; then
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null 2>"$tmp/mismatch.err"; then
     echo "finalize-cask self-test failed: version mismatch was accepted" >&2
     return 1
   fi
@@ -791,7 +798,7 @@ SH
   before_count="$(git -C "$tmp/tag-version-mismatch/work" rev-list --count origin/main)"
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/tag-version-mismatch/work" \
     GITHUB_SHA="$tag_version_mismatch_sha" \
-    "$0" v9.8.8 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/tag-version-mismatch.err"; then
+    "$0" v9.8.8 "$artifact" 9.8.7 main owner/repo >/dev/null 2>"$tmp/tag-version-mismatch.err"; then
     echo "finalize-cask self-test failed: tag/version mismatch was accepted" >&2
     return 1
   fi
@@ -805,7 +812,7 @@ SH
   git -C "$tmp/invalid-version/work" push origin refs/tags/v01.2.3 >/dev/null 2>&1
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/invalid-version/work" \
     GITHUB_SHA="$invalid_version_sha" \
-    "$0" v01.2.3 "$artifact" 01.2.3 main >/dev/null 2>"$tmp/invalid-version.err"; then
+    "$0" v01.2.3 "$artifact" 01.2.3 main owner/repo >/dev/null 2>"$tmp/invalid-version.err"; then
     echo "finalize-cask self-test failed: invalid version was accepted" >&2
     return 1
   fi
@@ -816,7 +823,7 @@ SH
   wrong_sha="$(git -C "$tmp/tag-sha-mismatch/work" -c user.name=t -c user.email=t@example.test commit-tree "$(git -C "$tmp/tag-sha-mismatch/work" rev-parse HEAD^{tree})" -m wrong-sha)"
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/tag-sha-mismatch/work" \
     GITHUB_SHA="$wrong_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/tag-sha-mismatch.err"; then
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null 2>"$tmp/tag-sha-mismatch.err"; then
     echo "finalize-cask self-test failed: mismatched tag SHA was accepted" >&2
     return 1
   fi
@@ -830,7 +837,7 @@ SH
   git -C "$tmp/ancestor/work" push origin refs/tags/v9.8.7 >/dev/null 2>&1
   if COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/ancestor/work" \
     GITHUB_SHA="$bad_sha" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/ancestor.err"; then
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null 2>"$tmp/ancestor.err"; then
     echo "finalize-cask self-test failed: non-ancestor tag was accepted" >&2
     return 1
   fi
@@ -841,23 +848,23 @@ SH
   # missing-sha case fail for the wrong reason (and the bare grep below exit
   # silently) — the step went red on CI while passing locally.
   if env -u GITHUB_SHA COMPME_FINALIZE_CASK_REPO_ROOT="$tmp/missing-sha/work" \
-    "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/missing-sha.err"; then
+    "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null 2>"$tmp/missing-sha.err"; then
     echo "finalize-cask self-test failed: missing GITHUB_SHA was accepted" >&2
     return 1
   fi
   grep -q "GITHUB_SHA is required" "$tmp/missing-sha.err"
 
-  if "$0" v9.8.7 "$artifact" 9.8.7 >/dev/null 2>"$tmp/usage.err"; then
+  if "$0" v9.8.7 "$artifact" 9.8.7 main >/dev/null 2>"$tmp/usage.err"; then
     echo "finalize-cask self-test failed: wrong argument count was accepted" >&2
     return 1
   fi
-  grep -q "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH" "$tmp/usage.err"
+  grep -q "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH REPOSITORY" "$tmp/usage.err"
 
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
     echo "finalize-cask self-test failed: extra self-test argument was accepted" >&2
     return 1
   fi
-  grep -q "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH" "$tmp/self-test-argc.err"
+  grep -q "usage: finalize-cask.sh TAG ARTIFACT_PATH VERSION DEFAULT_BRANCH REPOSITORY" "$tmp/self-test-argc.err"
 
   echo "Self-test passed"
 }
@@ -871,7 +878,7 @@ if [ "${1:-}" = "--self-test" ]; then
   exit 0
 fi
 
-if [ "$#" -ne 4 ]; then
+if [ "$#" -ne 5 ]; then
   usage
   exit 2
 fi

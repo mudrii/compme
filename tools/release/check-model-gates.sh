@@ -15,6 +15,8 @@ make_app_script="$repo_root/tools/bundle/make-app.sh"
 make_icon_script="$repo_root/tools/bundle/make-icon.sh"
 bundle_smoke_script="$repo_root/tools/bundle/bundle-smoke.sh"
 finalize_cask_script="$repo_root/tools/release/finalize-cask.sh"
+prepare_draft_script="$repo_root/tools/release/prepare-draft-release.sh"
+scrub_git_script="$repo_root/tools/release/scrub-git-credentials.sh"
 update_cask_script="$repo_root/tools/release/update-cask.sh"
 notarize_script="$repo_root/tools/release/notarize-app.sh"
 update_manifest_script="$repo_root/tools/release/write-update-manifest.sh"
@@ -23,6 +25,7 @@ quality_script="$repo_root/tools/release/check-quality.sh"
 version_docs_script="$repo_root/tools/release/check-version-docs.sh"
 check_runner_script="$repo_root/tools/dev/check.sh"
 atspi_session_script="$repo_root/tools/acceptance/run-linux-atspi-session.sh"
+linux_live_count_script="$repo_root/tools/release/check-linux-live-test-count.sh"
 acceptance_doc="$repo_root/docs/ACCEPTANCE.md"
 manual_validation_doc="$repo_root/docs/MANUAL-VALIDATION.md"
 development_doc="$repo_root/docs/DEVELOPMENT.md"
@@ -59,6 +62,20 @@ reject_line() {
     echo "stale release gate: $label" >&2
     return 1
   fi
+}
+
+check_toolchain_pin_comments() {
+  workflow_path="$1"
+  expected_count="$2"
+  workflow_label="$3"
+  ruby - "$workflow_path" "$expected_count" "$workflow_label" <<'RUBY'
+path, expected_count, label = ARGV
+pin = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
+lines = File.readlines(path).select { |line| line.include?("uses: #{pin}") }
+abort("missing release gate: #{label} exact rust-toolchain pin count") unless lines.length == Integer(expected_count)
+abort("missing release gate: #{label} rust-toolchain pins retain the stable version comment") unless
+  lines.all? { |line| line.match?(/# stable[[:space:]]*$/) }
+RUBY
 }
 
 check_no_automated_a2_validation() {
@@ -179,7 +196,12 @@ trigger = workflow["on"] || workflow[true]
 abort("missing release gate: CI keeps push/pull_request/dispatch triggers") unless trigger.keys.sort == ["pull_request", "push", "workflow_dispatch"]
 push_trigger = trigger.fetch("push")
 abort("missing release gate: CI push trigger is limited to main and spike branches") unless push_trigger.fetch("branches") == ["main", "spike/**"]
-abort("missing release gate: CI push trigger skips only unpinned prose") unless push_trigger.fetch("paths-ignore") == ["docs/superpowers/**", "docs/RELEASE-NOTES-*.md", "docs/TROUBLESHOOTING.md", "Qfd.md", "LICENSE"]
+abort("missing release gate: CI push trigger skips only unpinned prose") unless push_trigger.fetch("paths-ignore") == ["docs/superpowers/plans/**", "docs/RELEASE-NOTES-*.md", "docs/TROUBLESHOOTING.md", "Qfd.md", "LICENSE"]
+abort("missing release gate: CI preserves main runs while cancelling superseded branch runs") unless
+  workflow.fetch("concurrency") == {
+    "group" => "ci-${{ github.ref }}",
+    "cancel-in-progress" => "${{ github.ref != 'refs/heads/main' }}",
+  }
 jobs = workflow.fetch("jobs")
 checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
@@ -188,8 +210,8 @@ expected_actions = {
   "actionlint" => [[checkout, {"persist-credentials" => false}]],
   "check" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "macos-15", "workspaces" => ".\ntools/spike\n", "cache-directories" => "tools/spike/models"}]],
   "spike" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "macos-15", "workspaces" => "tools/spike"}]],
-  "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {}]],
-  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"cache-directories" => "~/.cargo/advisory-db"}]],
+  "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "${{ steps.img.outputs.image }}"}]],
+  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "${{ steps.img.outputs.image }}", "cache-directories" => "~/.cargo/advisory-db"}]],
 }
 abort("missing release gate: exact CI job topology") unless jobs.keys.sort == expected_actions.keys.sort
 expected_actions.each do |job_name, expected|
@@ -198,10 +220,24 @@ expected_actions.each do |job_name, expected|
   end
   abort("missing release gate: CI #{job_name} exact action and input topology") unless actual == expected
 end
+%w[windows linux].each do |job_name|
+  steps = jobs.fetch(job_name).fetch("steps")
+  image_index = steps.index { |step| step["name"] == "Read runner image" }
+  cache_index = steps.index { |step| step["uses"] == cache }
+  abort("missing release gate: CI #{job_name} reads runner image before rust-cache") unless
+    image_index && cache_index && image_index < cache_index
+  image_step = steps.fetch(image_index)
+  abort("missing release gate: CI #{job_name} runner image output is safely defaulted") unless
+    image_step["id"] == "img" &&
+    image_step["shell"] == "bash" &&
+    image_step["run"] == 'echo "image=${ImageOS:-${RUNNER_OS:-unknown}}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"'
+end
 {"actionlint" => 10, "check" => 90, "spike" => 60, "windows" => 60, "linux" => 60}.each do |job_name, timeout|
   abort("missing release gate: CI #{job_name} exact timeout") unless jobs.fetch(job_name).fetch("timeout-minutes") == timeout
 end
-abort("missing release gate: CI check inherits read-only workflow permissions") if jobs.fetch("check").key?("permissions")
+jobs.each do |job_name, job|
+  abort("missing release gate: CI #{job_name} inherits read-only workflow permissions") if job.key?("permissions")
+end
 actionlint_step = jobs.fetch("actionlint").fetch("steps").find { |step| step["name"] == "Run actionlint" }
 abort("missing release gate: CI actionlint runs the checksum-db pinned linter") unless
   actionlint_step && actionlint_step.fetch("run") == "go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color"
@@ -211,20 +247,44 @@ abort("missing release gate: CI dependency audit installs and runs pinned cargo-
 icon_step = jobs.fetch("check").fetch("steps").find { |step| step["name"] == "Bundle icon generator self-test" }
 abort("missing release gate: CI runs the bundle icon generator self-test") unless
   icon_step && icon_step.fetch("run") == "tools/bundle/make-icon.sh --self-test"
+ci_check_steps = jobs.fetch("check").fetch("steps")
+doc_tests = ci_check_steps.find { |step| step["name"] == "Doc tests (macOS crates)" }
+abort("missing release gate: CI runs mac-only doc tests") unless
+  doc_tests && doc_tests.fetch("run") == "cargo test --locked --doc -p platform_macos -p app"
+model_smoke_index = ci_check_steps.index { |step| step["name"] == "Model-backed smoke gate" }
+quality_index = ci_check_steps.index { |step| step["name"] == "Model-quality gate" }
+abort("missing release gate: CI runs model quality after the model smoke gate") unless
+  model_smoke_index && quality_index && model_smoke_index < quality_index &&
+  ci_check_steps.fetch(quality_index).fetch("run") == "bash tools/release/check-quality.sh"
+%w[windows linux].each do |job_name|
+  portable_test = jobs.fetch(job_name).fetch("steps").find { |step| step["name"] == "Test portable workspace" }
+  abort("missing release gate: CI #{job_name} tests every portable target") unless
+    portable_test && portable_test.fetch("run") == "cargo test --locked --workspace --exclude platform_macos --all-targets"
+end
 # The live Linux surfaces (AT-SPI read/insert/events, X11 accept tap, overlay,
-# session shell services) ship live tests (31 currently) that only run inside the harness.
+# session shell services) ship 34 live tests (31 AT-SPI/X11 adapter tests + 1
+# each for confirm, keyring, and reveal) that only run inside the harness.
 # Nothing pinned the step that runs them, so deleting it left every gate green
 # while the entire live Linux surface went unexercised.
 ci_linux_steps = jobs.fetch("linux").fetch("steps")
 ci_live_atspi = ci_linux_steps.find { |step| step["name"] == "Live AT-SPI adapter tests" }
+live_atspi_run = "tools/acceptance/run-linux-atspi-session.sh --run-in-session \\\n  cargo test --locked -p platform_linux -- --ignored --test-threads=1\n"
 abort("missing release gate: CI Linux job runs the live AT-SPI suite") unless
   ci_live_atspi &&
-  ci_live_atspi.fetch("run").include?("tools/acceptance/run-linux-atspi-session.sh --run-in-session") &&
-  ci_live_atspi.fetch("run").include?("--ignored --test-threads=1")
+  ci_live_atspi.fetch("run") == live_atspi_run
 abort("missing release gate: CI Linux live suite declares the keyring session kind") unless
   ci_live_atspi.fetch("env", {})["COMPME_KEYRING_EXPECT"].to_s == "absent"
+harness_self_test = ci_linux_steps.find { |step| step["name"] == "Linux AT-SPI harness self-test" }
 abort("missing release gate: CI Linux job runs the AT-SPI harness self-test") unless
-  ci_linux_steps.any? { |step| step["name"] == "Linux AT-SPI harness self-test" }
+  harness_self_test &&
+  harness_self_test.fetch("run") == "tools/acceptance/run-linux-atspi-session.sh --self-test"
+live_count_step = ci_linux_steps.find { |step| step["name"] == "Linux live-test count" }
+abort("missing release gate: CI Linux job verifies the documented live-test count") unless
+  live_count_step && live_count_step.fetch("run") == "tools/release/check-linux-live-test-count.sh"
+ci_linux_rustdoc = ci_linux_steps.find { |step| step["name"] == "Rustdoc portable workspace (deny warnings)" }
+abort("missing release gate: CI Linux job runs strict portable rustdoc") unless
+  ci_linux_rustdoc &&
+  ci_linux_rustdoc.fetch("run") == 'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --exclude platform_macos'
 RUBY
 }
 
@@ -244,6 +304,8 @@ abort("missing release gate: dependency audit has isolated audit and governance 
 job = jobs.fetch("audit")
 abort("missing release gate: dependency audit uses Linux") unless job.fetch("runs-on") == "ubuntu-latest"
 abort("missing release gate: dependency audit exact timeout") unless job.fetch("timeout-minutes") == 20
+abort("missing release gate: dependency audit job has least-privilege permissions") unless
+  job.fetch("permissions") == {"contents" => "read", "issues" => "write"}
 steps = job.fetch("steps")
 actions = steps.each_with_object([]) do |step, found|
   found << [step.fetch("uses"), step.fetch("with", {})] if step.key?("uses")
@@ -304,6 +366,7 @@ abort("missing release gate: docs lane has exactly one docs job") unless jobs.ke
 job = jobs.fetch("docs")
 abort("missing release gate: docs lane uses Linux") unless job.fetch("runs-on") == "ubuntu-latest"
 abort("missing release gate: docs lane exact timeout") unless job.fetch("timeout-minutes") == 10
+abort("missing release gate: docs job inherits read-only workflow permissions") if job.key?("permissions")
 steps = job.fetch("steps")
 actions = steps.each_with_object([]) do |step, found|
   found << [step.fetch("uses"), step.fetch("with", {})] if step.key?("uses")
@@ -313,13 +376,15 @@ abort("missing release gate: docs lane exact action provenance") unless actions 
 ]
 {
   "Version docs check" => "tools/release/check-version-docs.sh",
+  "Privacy policy" => "tools/release/check-privacy-policy.sh",
   "Script syntax" => "bash -n",
   "Shellcheck (errors only)" => "shellcheck --severity=error",
   "Homebrew cask syntax" => "ruby -c Casks/compme.rb",
 }.each do |name, fragment|
   step = steps.find { |candidate| candidate["name"] == name }
-  abort("missing release gate: docs lane retains #{name}") unless
-    step && step.fetch("run").include?(fragment)
+  exact = ["Version docs check", "Privacy policy", "Homebrew cask syntax"].include?(name)
+  retained = step && (exact ? step.fetch("run") == fragment : step.fetch("run").include?(fragment))
+  abort("missing release gate: docs lane retains #{name}") unless retained
 end
 RUBY
 }
@@ -407,8 +472,8 @@ attest = "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504d
 expected_action_topology = {
   "preflight" => [[checkout, {"fetch-depth" => 0}]],
   "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "macos-15", "workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"}]],
-  "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {}]],
-  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {}]],
+  "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "${{ steps.img.outputs.image }}"}]],
+  "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "${{ steps.img.outputs.image }}"}]],
   "prebuild" => [[checkout, {"fetch-depth" => 0}], [toolchain, {}], [upload, {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "retention-days" => 3, "path" => "target/release/compme"}]],
   "build_release" => [[checkout, {"persist-credentials" => false}], [download, {"name" => "compme-prebuilt-binary", "path" => "target/release"}], [attest, {"subject-path" => "${{ steps.pkg.outputs.zip }}"}], [upload, {"name" => "compme-release-artifacts", "if-no-files-found" => "error", "retention-days" => 7, "path" => "${{ steps.pkg.outputs.zip }}\n${{ steps.pkg.outputs.zip }}.sha256\n"}]],
   "publish_release" => [[checkout, {"fetch-depth" => 0}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
@@ -421,6 +486,18 @@ expected_action_topology.each do |job_name, expected|
     actions << [step.fetch("uses"), step.fetch("with", {})] if step.is_a?(Hash) && step.key?("uses")
   end
   abort("missing release gate: #{job_name} exact action and input topology") unless actual == expected
+end
+%w[windows linux].each do |job_name|
+  steps = jobs.fetch(job_name).fetch("steps")
+  image_index = steps.index { |step| step["name"] == "Read runner image" }
+  cache_index = steps.index { |step| step["uses"] == cache }
+  abort("missing release gate: release #{job_name} reads runner image before rust-cache") unless
+    image_index && cache_index && image_index < cache_index
+  image_step = steps.fetch(image_index)
+  abort("missing release gate: release #{job_name} runner image output is safely defaulted") unless
+    image_step["id"] == "img" &&
+    image_step["shell"] == "bash" &&
+    image_step["run"] == 'echo "image=${ImageOS:-${RUNNER_OS:-unknown}}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"'
 end
 expected_timeouts = {
   "preflight" => 10, "validate" => 120, "windows" => 60, "linux" => 60,
@@ -455,9 +532,20 @@ abort("missing release gate: release dependency audit installs and runs pinned c
 icon_step = jobs.fetch("validate").fetch("steps").find { |step| step["name"] == "Bundle icon generator self-test" }
 abort("missing release gate: release validation runs the bundle icon generator self-test") unless
   icon_step && icon_step.fetch("run") == "tools/bundle/make-icon.sh --self-test"
+validate_steps = jobs.fetch("validate").fetch("steps")
+required_validate_steps = {
+  "Shellcheck (errors only)" => "find tools -type f -name '*.sh' -print0 \\\n  | xargs -0 shellcheck --severity=error\n",
+  "Rustdoc (deny warnings)" => 'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace',
+  "Release model gate policy self-test" => "bash tools/release/check-model-gates.sh --self-test",
+  "Gate runner self-test" => "tools/dev/check.sh --self-test",
+}
+required_validate_steps.each do |name, run|
+  step = validate_steps.find { |candidate| candidate["name"] == name }
+  abort("missing release gate: release validate retains #{name}") unless step && step.fetch("run") == run
+end
 portable_steps = {
   "Clippy portable workspace (deny warnings)" => "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings",
-  "Test portable workspace" => "cargo test --locked --workspace --exclude platform_macos",
+  "Test portable workspace" => "cargo test --locked --workspace --exclude platform_macos --all-targets",
   "Build app binary" => "cargo build --locked -p app",
 }
 %w[windows linux].each do |job_name|
@@ -474,17 +562,22 @@ end
 # workflows below, because an unpinned step is one someone can delete silently.
 release_linux_steps = jobs.fetch("linux").fetch("steps")
 live_atspi_step = release_linux_steps.find { |step| step["name"] == "Live AT-SPI adapter tests" }
+live_atspi_run = "tools/acceptance/run-linux-atspi-session.sh --run-in-session \\\n  cargo test --locked -p platform_linux -- --ignored --test-threads=1\n"
 abort("missing release gate: release Linux job runs the live AT-SPI suite") unless
   live_atspi_step &&
-  live_atspi_step.fetch("run").include?("tools/acceptance/run-linux-atspi-session.sh --run-in-session") &&
-  live_atspi_step.fetch("run").include?("--ignored --test-threads=1")
+  live_atspi_step.fetch("run") == live_atspi_run
 # Declaring the session kind is load-bearing: the keyring test fails loudly when
 # it is unset rather than guessing, so dropping it would turn a fail-closed
 # assertion into a skipped one.
 abort("missing release gate: release Linux live suite declares the keyring session kind") unless
   live_atspi_step.fetch("env", {})["COMPME_KEYRING_EXPECT"].to_s == "absent"
+release_harness_self_test = release_linux_steps.find { |step| step["name"] == "Linux AT-SPI harness self-test" }
 abort("missing release gate: release Linux job runs the AT-SPI harness self-test") unless
-  release_linux_steps.any? { |step| step["name"] == "Linux AT-SPI harness self-test" }
+  release_harness_self_test &&
+  release_harness_self_test.fetch("run") == "tools/acceptance/run-linux-atspi-session.sh --self-test"
+release_live_count = release_linux_steps.find { |step| step["name"] == "Linux live-test count" }
+abort("missing release gate: release Linux job verifies the documented live-test count") unless
+  release_live_count && release_live_count.fetch("run") == "tools/release/check-linux-live-test-count.sh"
 serialized_workflow = workflow.to_s
 abort("stale release gate: stable-only workflow contains prerelease branching") if
   serialized_workflow.include?("contains(github.ref_name") || serialized_workflow.match?(/\bprerelease\b/i)
@@ -505,6 +598,7 @@ require_exact_active_lines!(preflight, [
   'version="${GITHUB_REF_NAME#v}"',
   'tools/release/validate-version.sh "$version"',
   'git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"',
+  'tools/release/scrub-git-credentials.sh',
   'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
   'if [ "$GITHUB_SHA" != "$default_sha" ]; then',
   'echo "release tag commit $GITHUB_SHA must equal current origin/$DEFAULT_BRANCH HEAD $default_sha" >&2',
@@ -530,6 +624,9 @@ prebuild_index = prebuild_steps.index { |step| step["name"] == "Prebuild release
 prebuild_arch_index = prebuild_steps.index { |step| step["name"] == "Verify prebuilt binary is arm64 only" }
 prebuild_upload_index = prebuild_steps.index { |step| step["name"] == "Upload prebuilt release binary" }
 abort("missing release gate: prebuild verifies arm64 after build and before upload") unless prebuild_index && prebuild_arch_index && prebuild_upload_index && prebuild_index < prebuild_arch_index && prebuild_arch_index < prebuild_upload_index
+scrub = prebuild_steps.find { |step| step["name"] == "Scrub persisted git credentials" }
+abort("missing release gate: prebuild credential scrub fails closed") unless
+  scrub && scrub.fetch("run") == "tools/release/scrub-git-credentials.sh"
 prebuild_arch = prebuild_steps.fetch(prebuild_arch_index)
 [
   'archs="$(lipo -archs target/release/compme)"',
@@ -606,15 +703,23 @@ abort("missing release gate: publish job has exact create-only publication step 
   "Verify artifact build provenance",
   "Verify release tag is still at default-branch HEAD before publication",
   "Write publication-time update manifest",
+  "Prepare retryable draft state",
   "Create draft GitHub release",
   "Revalidate default-branch HEAD and undraft GitHub release",
 ]
 checksum_index = publish_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
 head_index = publish_steps.index { |step| step["name"] == "Verify release tag is still at default-branch HEAD before publication" }
 manifest_index = publish_steps.index { |step| step["name"] == "Write publication-time update manifest" }
+prepare_index = publish_steps.index { |step| step["name"] == "Prepare retryable draft state" }
 create_index = publish_steps.index { |step| step["name"] == "Create draft GitHub release" }
 undraft_index = publish_steps.index { |step| step["name"] == "Revalidate default-branch HEAD and undraft GitHub release" }
-abort("missing release gate: checksum and exact default HEAD precede publication-time manifest, draft, and undraft") unless checksum_index && head_index && manifest_index && create_index && undraft_index && checksum_index < head_index && head_index < manifest_index && manifest_index < create_index && create_index < undraft_index
+abort("missing release gate: checksum and exact default HEAD precede publication-time manifest, retry cleanup, draft, and undraft") unless checksum_index && head_index && manifest_index && prepare_index && create_index && undraft_index && checksum_index < head_index && head_index < manifest_index && manifest_index < prepare_index && prepare_index < create_index && create_index < undraft_index
+publish_attestation = publish_steps.find { |step| step["name"] == "Verify artifact build provenance" }
+[
+  'gh attestation verify "release-artifacts/compme-${VERSION}-macos.zip" \\',
+  '--repo "$GITHUB_REPOSITORY" \\',
+  '--signer-workflow mudrii/compme/.github/workflows/release.yml',
+].each { |line| require_run_fragment!(publish_attestation, line, "publication attestation #{line}") }
 publish_head = publish_steps.fetch(head_index)
 abort("missing release gate: pre-publication exact default-branch environment") unless publish_head.fetch("env") == {"DEFAULT_BRANCH" => "${{ github.event.repository.default_branch }}"}
 require_exact_active_lines!(publish_head, [
@@ -637,6 +742,11 @@ require_exact_active_lines!(manifest, [
   "tools/release/write-update-manifest.sh \\",
   %q("$VERSION" "$ZIP" "$SHA256" > "release-artifacts/$MANIFEST"),
 ], "publication-time update manifest")
+prepare = publish_steps.fetch(prepare_index)
+abort("missing release gate: retry cleanup uses GitHub token") unless
+  prepare.fetch("env") == {"GH_TOKEN" => "${{ github.token }}"}
+abort("missing release gate: retry cleanup delegates to the tested helper") unless
+  prepare.fetch("run") == 'tools/release/prepare-draft-release.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"'
 create = publish_steps.fetch(create_index)
 reject_command_shadowing!(create, %w[gh], "draft release creation")
 abort("missing release gate: draft creation uses GitHub token") unless create.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
@@ -664,6 +774,7 @@ require_exact_active_lines!(undraft, [
   'git fetch --force origin \\',
   '"refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH" \\',
   '"refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"',
+  'tools/release/scrub-git-credentials.sh',
   'default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"',
   'tag_sha="$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")"',
   'if [ "$tag_sha" != "$GITHUB_SHA" ] || [ "$tag_sha" != "$default_sha" ]; then',
@@ -680,17 +791,43 @@ finalize = jobs.fetch("finalize_cask")
 abort("missing release gate: cask finalization depends only on publication") unless Array(finalize.fetch("needs")) == ["publish_release"]
 abort("missing release gate: cask finalization uses protected release environment") unless finalize.fetch("environment") == "release"
 abort("missing release gate: cask finalization alone has contents write") unless finalize.fetch("permissions").fetch("contents") == "write"
+abort("missing release gate: cask finalization uses Linux for gh/git work") unless finalize.fetch("runs-on") == "ubuntu-latest"
+abort("missing release gate: publication uses Linux for gh/git work") unless jobs.fetch("publish_release").fetch("runs-on") == "ubuntu-latest"
 finalize_steps = finalize.fetch("steps")
 finalize_download = finalize_steps.index { |step| step["name"] == "Download release artifacts" }
 finalize_checksum = finalize_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
+finalize_attestation_index = finalize_steps.index { |step| step["name"] == "Verify artifact build provenance" }
 finalize_run = finalize_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
-abort("missing release gate: separate cask job downloads and verifies artifacts before finalization") unless finalize_download && finalize_checksum && finalize_run && finalize_download < finalize_checksum && finalize_checksum < finalize_run
+abort("missing release gate: separate cask job verifies checksum and provenance before finalization") unless
+  finalize_download && finalize_checksum && finalize_attestation_index && finalize_run &&
+  finalize_download < finalize_checksum && finalize_checksum < finalize_attestation_index && finalize_attestation_index < finalize_run
 abort("missing release gate: separate cask finalizer has exact branch/token environment") unless
   finalize_steps.fetch(finalize_run).fetch("env") == {
     "DEFAULT_BRANCH" => "${{ github.event.repository.default_branch }}",
     "GH_TOKEN" => "${{ github.token }}",
   }
-require_run_fragment!(finalize_steps.fetch(finalize_run), 'tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"', "separate cask finalizer invocation")
+finalize_attestation = finalize_steps.fetch(finalize_attestation_index)
+[
+  'gh attestation verify "release-artifacts/compme-${VERSION}-macos.zip" \\',
+  '--repo "$GITHUB_REPOSITORY" \\',
+  '--signer-workflow mudrii/compme/.github/workflows/release.yml',
+].each { |line| require_run_fragment!(finalize_attestation, line, "finalization attestation #{line}") }
+require_run_fragment!(finalize_steps.fetch(finalize_run), '"$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH" "$GITHUB_REPOSITORY"', "separate cask finalizer invocation")
+
+post_verify_steps = jobs.fetch("post_verify").fetch("steps")
+post_verify_attestation = post_verify_steps.find { |step| step["name"] == "Verify published build provenance" }
+abort("missing release gate: post-publish verifies the downloaded zip attestation") unless post_verify_attestation
+post_download_index = post_verify_steps.index { |step| step["name"] == "Download published assets and verify checksum" }
+post_attestation_index = post_verify_steps.index(post_verify_attestation)
+post_install_index = post_verify_steps.index { |step| step["name"] == "Install the published cask" }
+abort("missing release gate: post-publish verifies checksum and provenance before installing the cask") unless
+  post_download_index && post_attestation_index && post_install_index &&
+  post_download_index < post_attestation_index && post_attestation_index < post_install_index
+[
+  'gh attestation verify "verify/compme-${VERSION}-macos.zip" \\',
+  '--repo "$GITHUB_REPOSITORY" \\',
+  '--signer-workflow mudrii/compme/.github/workflows/release.yml',
+].each { |line| require_run_fragment!(post_verify_attestation, line, "post-publish attestation #{line}") }
 RUBY
 }
 
@@ -759,16 +896,19 @@ if freeze_lines.any? { |line| line.include?('cp "$repo_root/tools/release/$helpe
 end
 [
   'artifact_name="compme-${version}-macos.zip"',
+  'repository="$5"',
   'if [ "$(basename "$artifact_path")" != "$artifact_name" ]; then',
   'if ! release_ineligible="$(command gh release view "$tag" \\',
   '--json isDraft,isPrerelease \\',
   "--jq '.isDraft or .isPrerelease')\"; then",
   'if [ "$release_ineligible" != "false" ]; then',
-  '--repo mudrii/compme',
+  '--repo "$repository"',
   '--pattern "$checksum_name"',
   'local_sha="$(shasum -a 256 "$artifact_path"',
   'if [ "$local_sha" != "$published_sha" ]; then',
 ].each { |fragment| require_active_fragment!(published_lines, fragment) }
+abort("stale release gate: cask finalizer hardcodes repository for GitHub release inspection") if
+  published_lines.any? { |line| line.include?("--repo mudrii/compme") }
 abort("missing release gate: cask finalizer actively downloads published checksum") unless
   published_lines.include?('if ! command gh release download "$tag" \\')
 release_state_index = published_lines.index { |line| line == 'if ! release_ineligible="$(command gh release view "$tag" \\' }
@@ -852,6 +992,64 @@ check_manual_a2_summary() {
     echo "stale release gate: $summary_label uses an undefined A2 ledger variable" >&2
     return 1
   fi
+}
+
+check_manual_gate_id_sets() {
+  local runner_file="$1"
+  local acceptance_file="$2"
+  local manual_file="$3"
+  ruby - "$runner_file" "$acceptance_file" "$manual_file" <<'RUBY'
+runner_path, acceptance_path, manual_path = ARGV
+runner_lines = File.readlines(runner_path, chomp: true)
+
+runner_blocks = []
+runner_lines.each_index do |index|
+  next unless runner_lines.fetch(index).strip == "for gate in " + "\\"
+  ids = []
+  cursor = index + 1
+  while cursor < runner_lines.length
+    line = runner_lines.fetch(cursor).strip
+    terminal = line.end_with?("; do")
+    continued = line.end_with?("\\")
+    break unless terminal || continued
+    id = line.delete_suffix(terminal ? "; do" : "\\").strip
+    break unless id.match?(/\A[a-z0-9][a-z0-9-]*\z/)
+    ids << id
+    cursor += 1
+    break if terminal
+  end
+  tail = runner_lines[cursor, 4].to_a.join("\n")
+  runner_blocks << ids if tail.include?('default-dry-run-manual-$gate')
+end
+abort("missing release gate: runner has exactly one manual-gate self-test loop") unless runner_blocks.length == 1
+runner_ids = runner_blocks.fetch(0)
+abort("missing release gate: runner self-test pins exactly 22 manual gate IDs") unless
+  runner_ids.length == 22 && runner_ids.uniq.length == 22
+
+acceptance_lines = File.readlines(acceptance_path, chomp: true)
+header = acceptance_lines.index { |line| line == "Exact runner-emitted manual gate IDs:" }
+abort("missing release gate: acceptance docs retain exact manual gate ID ledger") unless header
+acceptance_ids = []
+acceptance_lines[(header + 1)..].to_a.each do |line|
+  if (match = line.match(/\A- `([a-z0-9][a-z0-9-]*)`\z/))
+    acceptance_ids << match[1]
+  elsif !acceptance_ids.empty? && line.empty?
+    break
+  end
+end
+abort("missing release gate: acceptance docs pin exactly 22 unique manual gate IDs") unless
+  acceptance_ids.length == 22 && acceptance_ids.uniq.length == 22
+
+unless runner_ids.sort == acceptance_ids.sort
+  missing = runner_ids - acceptance_ids
+  extra = acceptance_ids - runner_ids
+  abort("missing release gate: runner/acceptance manual gate sets differ (missing=#{missing.join(',')} extra=#{extra.join(',')})")
+end
+
+manual_tokens = File.read(manual_path).scan(/`([a-z0-9][a-z0-9-]*)`/).flatten.uniq
+missing_manual = runner_ids - manual_tokens
+abort("missing release gate: manual validation omits manual gate IDs #{missing_manual.join(',')}") unless missing_manual.empty?
+RUBY
 }
 
 require_test_symbol() {
@@ -964,7 +1162,7 @@ check_all_self_test_env_contracts() {
   check_self_test_env_file "$gate_script" \
     GITHUB_ACTIONS GITHUB_REF_TYPE COMPME_ALLOW_MODEL_GATE_OVERRIDE \
     COMPME_MODEL_GATE_PATH COMPME_MODEL_GATE_URL COMPME_MODEL_GATE_SHA256 \
-    COMPME_REQUIRE_LATENCY_BUDGET
+    COMPME_REQUIRE_LATENCY_BUDGET COMPME_MODEL_GATE_UNAME
   check_self_test_env_file "$notarize_script" \
     COMPME_NOTARYTOOL_KEYCHAIN_PROFILE COMPME_NOTARYTOOL_KEY_BASE64 \
     COMPME_NOTARYTOOL_KEY_PATH COMPME_NOTARYTOOL_KEY_ID \
@@ -997,6 +1195,63 @@ run_self_test() {
   cleanup() {
     rm -rf "$tmp_dir"
   }
+
+  check_toolchain_pin_comments "$ci_workflow" 4 "CI"
+  check_toolchain_pin_comments "$canonical_release_workflow" 4 "release"
+  check_toolchain_pin_comments "$audit_workflow" 1 "audit"
+  bad_toolchain_comments="$tmp_dir/bad-toolchain-comments.yml"
+  cp "$ci_workflow" "$bad_toolchain_comments"
+  ruby -0pi -e 'sub(/ # stable$/, "")' "$bad_toolchain_comments"
+  if check_toolchain_pin_comments "$bad_toolchain_comments" 4 "CI" >/dev/null 2>&1; then
+    echo "release gate self-test failed: rust-toolchain pin without its stable comment was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  "$linux_live_count_script" --self-test >/dev/null
+  "$prepare_draft_script" --self-test >/dev/null
+  "$scrub_git_script" --self-test >/dev/null
+
+  check_manual_gate_id_sets \
+    "$repo_root/tools/acceptance/run-a1b-live-gates.sh" \
+    "$acceptance_doc" \
+    "$manual_validation_doc"
+
+  bad_manual_gate_acceptance="$tmp_dir/bad-manual-gate-acceptance.md"
+  cp "$acceptance_doc" "$bad_manual_gate_acceptance"
+  ruby -0pi -e 'sub(/^- `full-autocorrect-prose-code-look`\n/, "")' "$bad_manual_gate_acceptance"
+  if check_manual_gate_id_sets \
+    "$repo_root/tools/acceptance/run-a1b-live-gates.sh" \
+    "$bad_manual_gate_acceptance" \
+    "$manual_validation_doc" >/dev/null 2>&1; then
+    echo "release gate self-test failed: incomplete acceptance manual-gate set was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_manual_gate_runner="$tmp_dir/bad-manual-gate-runner.sh"
+  cp "$repo_root/tools/acceptance/run-a1b-live-gates.sh" "$bad_manual_gate_runner"
+  ruby -0pi -e 'sub(/^    full-autocorrect-prose-code-look .*\n/, "")' "$bad_manual_gate_runner"
+  if check_manual_gate_id_sets \
+    "$bad_manual_gate_runner" \
+    "$acceptance_doc" \
+    "$manual_validation_doc" >/dev/null 2>&1; then
+    echo "release gate self-test failed: incomplete runner manual-gate set was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_manual_gate_validation="$tmp_dir/bad-manual-gate-validation.md"
+  cp "$manual_validation_doc" "$bad_manual_gate_validation"
+  ruby -0pi -e 'sub(/`full-autocorrect-prose-code-look`/, "`renamed-full-autocorrect-look`")' "$bad_manual_gate_validation"
+  if check_manual_gate_id_sets \
+    "$repo_root/tools/acceptance/run-a1b-live-gates.sh" \
+    "$acceptance_doc" \
+    "$bad_manual_gate_validation" >/dev/null 2>&1; then
+    echo "release gate self-test failed: incomplete manual-validation gate set was accepted" >&2
+    cleanup
+    return 1
+  fi
 
   check_all_self_test_env_contracts
   contract_index=0
@@ -2212,6 +2467,46 @@ YAML
   check_ci_integrity_controls "$ci_workflow"
   ci_integrity_fixture="$tmp_dir/ci-integrity.yml"
 
+  for mutation in concurrency doc-tests quality-gate all-targets; do
+    cp "$ci_workflow" "$ci_integrity_fixture"
+    ruby -ryaml -e '
+      path, mutation = ARGV
+      workflow = YAML.load_file(path)
+      jobs = workflow.fetch("jobs")
+      case mutation
+      when "concurrency"
+        workflow.fetch("concurrency")["cancel-in-progress"] = true
+      when "doc-tests"
+        jobs.fetch("check").fetch("steps").reject! { |step| step["name"] == "Doc tests (macOS crates)" }
+      when "quality-gate"
+        jobs.fetch("check").fetch("steps").reject! { |step| step["name"] == "Model-quality gate" }
+      when "all-targets"
+        step = jobs.fetch("windows").fetch("steps").find { |candidate| candidate["name"] == "Test portable workspace" }
+        step["run"] = step.fetch("run").sub(" --all-targets", "")
+      end
+      File.write(path, YAML.dump(workflow))
+    ' "$ci_integrity_fixture" "$mutation"
+    if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
+      echo "release gate self-test failed: CI $mutation mutation was accepted" >&2
+      cleanup
+      return 1
+    fi
+  done
+
+  cp "$ci_workflow" "$ci_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    cache = workflow.fetch("jobs").fetch("windows").fetch("steps").find { |step| step["uses"].to_s.include?("rust-cache") }
+    cache.delete("with")
+    File.write(path, YAML.dump(workflow))
+  ' "$ci_integrity_fixture"
+  if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: Windows rust-cache without runner-image key was accepted" >&2
+    cleanup
+    return 1
+  fi
+
   # Deleting the live-suite step must fail. It was unpinned until 2026-07-29, so
   # the entire live Linux surface could stop running with every gate still green.
   cp "$ci_workflow" "$ci_integrity_fixture"
@@ -2223,6 +2518,60 @@ YAML
   ' "$ci_integrity_fixture"
   if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: CI without the live AT-SPI suite was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$ci_workflow" "$ci_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    step = workflow.fetch("jobs").fetch("linux").fetch("steps").find { |s| s["name"] == "Live AT-SPI adapter tests" }
+    step["run"] = "# tools/acceptance/run-linux-atspi-session.sh --run-in-session\n# --ignored --test-threads=1\ntrue\n"
+    File.write(path, YAML.dump(workflow))
+  ' "$ci_integrity_fixture"
+  if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: comment-only CI live AT-SPI command was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$ci_workflow" "$ci_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    step = workflow.fetch("jobs").fetch("linux").fetch("steps").find { |s| s["name"] == "Linux AT-SPI harness self-test" }
+    step["run"] = "true"
+    File.write(path, YAML.dump(workflow))
+  ' "$ci_integrity_fixture"
+  if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: no-op CI AT-SPI harness self-test was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$ci_workflow" "$ci_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("linux").fetch("steps").reject! { |s| s["name"] == "Linux live-test count" }
+    File.write(path, YAML.dump(workflow))
+  ' "$ci_integrity_fixture"
+  if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: CI without the Linux live-test count was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$ci_workflow" "$ci_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("linux").fetch("steps").reject! { |s| s["name"] == "Rustdoc portable workspace (deny warnings)" }
+    File.write(path, YAML.dump(workflow))
+  ' "$ci_integrity_fixture"
+  if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: CI without strict Linux rustdoc was accepted" >&2
     cleanup
     return 1
   fi
@@ -2264,15 +2613,25 @@ YAML
     return 1
   fi
 
+  for permission_job in actionlint check spike windows linux; do
+    cp "$ci_workflow" "$ci_integrity_fixture"
+    ruby -ryaml -e '
+      path, job_name = ARGV
+      workflow = YAML.load_file(path)
+      workflow.fetch("jobs").fetch(job_name)["permissions"] = {"contents" => "read", "checks" => "write"}
+      File.write(path, YAML.dump(workflow))
+    ' "$ci_integrity_fixture" "$permission_job"
+    if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
+      echo "release gate self-test failed: unnecessary CI $permission_job job permission was accepted" >&2
+      cleanup
+      return 1
+    fi
+  done
+
   cp "$ci_workflow" "$ci_integrity_fixture"
-  ruby -ryaml -e '
-    path = ARGV.fetch(0)
-    workflow = YAML.load_file(path)
-    workflow.fetch("jobs").fetch("check")["permissions"] = {"contents" => "read", "checks" => "write"}
-    File.write(path, YAML.dump(workflow))
-  ' "$ci_integrity_fixture"
+  ruby -0pi -e 'sub(%q(actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1), %q(actions/checkout@v7))' "$ci_integrity_fixture"
   if check_ci_integrity_controls "$ci_integrity_fixture" >/dev/null 2>&1; then
-    echo "release gate self-test failed: unnecessary CI checks permission was accepted" >&2
+    echo "release gate self-test failed: mutable CI checkout action was accepted" >&2
     cleanup
     return 1
   fi
@@ -2329,6 +2688,19 @@ YAML
   fi
 
   cp "$audit_workflow" "$audit_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("audit").fetch("permissions")["contents"] = "write"
+    File.write(path, YAML.dump(workflow))
+  ' "$audit_integrity_fixture"
+  if check_audit_integrity_controls "$audit_integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: audit job with contents write permission was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$audit_workflow" "$audit_integrity_fixture"
   ruby -0pi -e 'sub(%q(actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1), %q(actions/checkout@v7))' "$audit_integrity_fixture"
   if check_audit_integrity_controls "$audit_integrity_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: mutable scheduled-audit checkout action was accepted" >&2
@@ -2338,6 +2710,21 @@ YAML
 
   check_docs_integrity_controls "$docs_workflow" "$ci_workflow"
   docs_integrity_fixture="$tmp_dir/docs-integrity.yml"
+  ci_docs_integrity_fixture="$tmp_dir/ci-docs-integrity.yml"
+
+  # The grammar spec is policy-pinned and must never share the cheap prose-only
+  # lane with plans. Mutating both workflow lists together preserves the mirror,
+  # so the CI-side allowlist assertion must independently reject this widening.
+  cp "$ci_workflow" "$ci_docs_integrity_fixture"
+  cp "$docs_workflow" "$docs_integrity_fixture"
+  ruby -0pi -e 'gsub(%q(docs/superpowers/plans/**), %q(docs/superpowers/**))' \
+    "$ci_docs_integrity_fixture" "$docs_integrity_fixture"
+  if check_ci_integrity_controls "$ci_docs_integrity_fixture" >/dev/null 2>&1 &&
+     check_docs_integrity_controls "$docs_integrity_fixture" "$ci_docs_integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: CI/docs lanes ignored the pinned superpowers specs" >&2
+    cleanup
+    return 1
+  fi
 
   # The mirror invariant is the whole point of this check: ci.yml skips a push
   # only when every changed doc is unpinned prose, and docs.yml must pick up
@@ -2383,6 +2770,46 @@ YAML
   fi
 
   cp "$docs_workflow" "$docs_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("docs").fetch("steps").reject! { |s| s["name"] == "Privacy policy" }
+    File.write(path, YAML.dump(workflow))
+  ' "$docs_integrity_fixture"
+  if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
+    echo "release gate self-test failed: docs lane without the privacy policy check was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$docs_workflow" "$docs_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    step = workflow.fetch("jobs").fetch("docs").fetch("steps").find { |s| s["name"] == "Privacy policy" }
+    step["run"] = "# tools/release/check-privacy-policy.sh\ntrue\n"
+    File.write(path, YAML.dump(workflow))
+  ' "$docs_integrity_fixture"
+  if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
+    echo "release gate self-test failed: comment-only docs privacy policy command was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$docs_workflow" "$docs_integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("docs")["permissions"] = {"contents" => "write"}
+    File.write(path, YAML.dump(workflow))
+  ' "$docs_integrity_fixture"
+  if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
+    echo "release gate self-test failed: docs job with contents write permission was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$docs_workflow" "$docs_integrity_fixture"
   ruby -0pi -e 'sub(%q(actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1), %q(actions/checkout@v7))' "$docs_integrity_fixture"
   if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
     echo "release gate self-test failed: mutable docs-lane checkout action was accepted" >&2
@@ -2392,6 +2819,148 @@ YAML
 
   check_release_integrity_controls "$canonical_release_workflow"
   integrity_fixture="$tmp_dir/release-integrity.yml"
+
+  for mutation in \
+    validate-shellcheck validate-rustdoc policy-self-test runner-self-test \
+    portable-all-targets credential-scrubs prebuild-fail-open \
+    publish-runner finalize-runner signer-workflow post-attestation \
+    finalize-attestation-order post-attestation-order \
+    draft-preparation finalizer-repository; do
+    cp "$canonical_release_workflow" "$integrity_fixture"
+    ruby -ryaml -e '
+      path, mutation = ARGV
+      workflow = YAML.load_file(path)
+      jobs = workflow.fetch("jobs")
+      remove_step = lambda do |job, name|
+        jobs.fetch(job).fetch("steps").reject! { |step| step["name"] == name }
+      end
+      case mutation
+      when "validate-shellcheck" then remove_step.call("validate", "Shellcheck (errors only)")
+      when "validate-rustdoc" then remove_step.call("validate", "Rustdoc (deny warnings)")
+      when "policy-self-test" then remove_step.call("validate", "Release model gate policy self-test")
+      when "runner-self-test" then remove_step.call("validate", "Gate runner self-test")
+      when "portable-all-targets"
+        step = jobs.fetch("linux").fetch("steps").find { |candidate| candidate["name"] == "Test portable workspace" }
+        step["run"] = step.fetch("run").sub(" --all-targets", "")
+      when "credential-scrubs"
+        jobs.values.each do |job|
+          Array(job["steps"]).each { |step| step["run"] = step["run"].to_s.gsub(/^.*scrub-git-credentials[.]sh.*$\n?/, "") if step.key?("run") }
+        end
+      when "prebuild-fail-open"
+        step = jobs.fetch("prebuild").fetch("steps").find { |candidate| candidate["name"] == "Scrub persisted git credentials" }
+        step["run"] = step.fetch("run") + " || true"
+      when "publish-runner" then jobs.fetch("publish_release")["runs-on"] = "macos-15"
+      when "finalize-runner" then jobs.fetch("finalize_cask")["runs-on"] = "macos-15"
+      when "signer-workflow"
+        jobs.values.each do |job|
+          Array(job["steps"]).each { |step| step["run"] = step["run"].to_s.gsub(/^\s*--signer-workflow.*$\n?/, "") if step.key?("run") }
+        end
+      when "post-attestation" then remove_step.call("post_verify", "Verify published build provenance")
+      when "finalize-attestation-order"
+        steps = jobs.fetch("finalize_cask").fetch("steps")
+        attestation = steps.delete_at(steps.index { |step| step["name"] == "Verify artifact build provenance" })
+        finalizer_index = steps.index { |step| step["name"] == "Finalize Homebrew cask" }
+        steps.insert(finalizer_index + 1, attestation)
+      when "post-attestation-order"
+        steps = jobs.fetch("post_verify").fetch("steps")
+        attestation = steps.delete_at(steps.index { |step| step["name"] == "Verify published build provenance" })
+        install_index = steps.index { |step| step["name"] == "Install the published cask" }
+        steps.insert(install_index + 1, attestation)
+      when "draft-preparation" then remove_step.call("publish_release", "Prepare retryable draft state")
+      when "finalizer-repository"
+        step = jobs.fetch("finalize_cask").fetch("steps").find { |candidate| candidate["name"] == "Finalize Homebrew cask" }
+        step["run"] = step.fetch("run").sub(" \"$GITHUB_REPOSITORY\"", "")
+      end
+      File.write(path, YAML.dump(workflow))
+    ' "$integrity_fixture" "$mutation"
+    if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+      echo "release gate self-test failed: release $mutation mutation was accepted" >&2
+      cleanup
+      return 1
+    fi
+  done
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    steps = workflow.fetch("jobs").fetch("linux").fetch("steps")
+    steps.reject! { |step| step["name"] == "Read runner image" }
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: release Linux cache without runner-image reader was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("linux").fetch("steps").reject! { |s| s["name"] == "Live AT-SPI adapter tests" }
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: release without the live AT-SPI suite was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    step = workflow.fetch("jobs").fetch("linux").fetch("steps").find { |s| s["name"] == "Live AT-SPI adapter tests" }
+    step["run"] = "# tools/acceptance/run-linux-atspi-session.sh --run-in-session\n# --ignored --test-threads=1\ntrue\n"
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: comment-only release live AT-SPI command was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    step = workflow.fetch("jobs").fetch("linux").fetch("steps").find { |s| s["name"] == "Linux AT-SPI harness self-test" }
+    step["run"] = "true"
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: no-op release AT-SPI harness self-test was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    step = workflow.fetch("jobs").fetch("linux").fetch("steps").find { |s| s["name"] == "Live AT-SPI adapter tests" }
+    step.delete("env")
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: release live suite without COMPME_KEYRING_EXPECT was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$canonical_release_workflow" "$integrity_fixture"
+  ruby -ryaml -e '
+    path = ARGV.fetch(0)
+    workflow = YAML.load_file(path)
+    workflow.fetch("jobs").fetch("linux").fetch("steps").reject! { |s| s["name"] == "Linux live-test count" }
+    File.write(path, YAML.dump(workflow))
+  ' "$integrity_fixture"
+  if check_release_integrity_controls "$integrity_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: release without the Linux live-test count was accepted" >&2
+    cleanup
+    return 1
+  fi
 
   cp "$canonical_release_workflow" "$integrity_fixture"
   ruby -ryaml -e '
@@ -2973,6 +3542,9 @@ fi
 
 check_no_automated_a2_validation "$ci_workflow" "CI"
 check_no_automated_a2_validation "$release_workflow" "release"
+check_toolchain_pin_comments "$ci_workflow" 4 "CI"
+check_toolchain_pin_comments "$release_workflow" 4 "release"
+check_toolchain_pin_comments "$audit_workflow" 1 "audit"
 check_ci_integrity_controls "$ci_workflow"
 check_audit_integrity_controls "$audit_workflow"
 check_docs_integrity_controls "$docs_workflow" "$ci_workflow"
@@ -2980,6 +3552,10 @@ check_release_integrity_controls "$release_workflow"
 check_all_self_test_env_contracts
 check_manual_a2_summary "$readme_doc" "README"
 check_manual_a2_summary "$development_doc" "DEVELOPMENT"
+check_manual_gate_id_sets \
+  "$repo_root/tools/acceptance/run-a1b-live-gates.sh" \
+  "$acceptance_doc" \
+  "$manual_validation_doc"
 reject_line "$0" '^[[:space:]]*a2_matrix_ledger_script=' "release policy checker binds the manual A2 ledger tool"
 reject_line "$0" '^[[:space:]]*bash -n "\$a2_matrix_ledger_script"' "release policy checker syntax-checks the manual A2 ledger tool"
 reject_line "$0" '^[[:space:]]*"\$a2_matrix_ledger_script"' "release policy checker executes the manual A2 ledger tool"
@@ -3078,6 +3654,8 @@ ruby -ryaml -e '
 
   release_workflow = YAML.load_file(ARGV.fetch(0))
   ci_workflow = YAML.load_file(ARGV.fetch(1))
+  audit_workflow = YAML.load_file(ARGV.fetch(2))
+  docs_workflow = YAML.load_file(ARGV.fetch(3))
 
   def rust_toolchain_step_valid?(step)
     step["uses"].to_s.start_with?("dtolnay/rust-toolchain@") &&
@@ -3110,6 +3688,8 @@ ruby -ryaml -e '
                when "Swatinem/rust-cache"
                  [
                    {},
+                   {"key" => "${{ steps.img.outputs.image }}"},
+                   {"key" => "${{ steps.img.outputs.image }}", "cache-directories" => "~/.cargo/advisory-db"},
                    {"key" => "macos-15", "workspaces" => "tools/spike"},
                    {"cache-directories" => "~/.cargo/advisory-db"},
                    {"cache-directories" => "tools/spike/models"},
@@ -3152,6 +3732,8 @@ ruby -ryaml -e '
     end
   end
   validate_actions!(ci_workflow, "CI")
+  validate_actions!(audit_workflow, "audit")
+  validate_actions!(docs_workflow, "docs")
   ci_action_sequence = [
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
@@ -3168,7 +3750,14 @@ ruby -ryaml -e '
   expected_ci_timeouts.each do |job_name, timeout|
     abort("missing release gate: CI #{job_name} exact timeout") unless jobs.fetch(job_name).fetch("timeout-minutes") == timeout
   end
-  abort("missing release gate: CI check inherits read-only workflow permissions") if jobs.fetch("check").key?("permissions")
+  abort("missing release gate: CI preserves main runs while cancelling superseded branch runs") unless
+    ci_workflow.fetch("concurrency") == {
+      "group" => "ci-${{ github.ref }}",
+      "cancel-in-progress" => "${{ github.ref != #{39.chr}refs/heads/main#{39.chr} }}",
+    }
+  jobs.each do |job_name, job|
+    abort("missing release gate: CI #{job_name} inherits read-only workflow permissions") if job.key?("permissions")
+  end
   jobs.each do |job_name, job|
     next unless %w[check spike windows linux].include?(job_name)
     abort("missing release gate: CI #{job_name} pins Rust toolchain") unless Array(job["steps"]).any? { |step| step.is_a?(Hash) && rust_toolchain_step_valid?(step) }
@@ -3196,8 +3785,12 @@ ruby -ryaml -e '
     "privacy policy self-test" => ["Privacy policy self-test", "tools/release/check-privacy-policy.sh --self-test"],
     "GitHub governance checker self-test" => ["GitHub governance checker self-test", "tools/release/check-github-governance.sh --self-test"],
     "model gate policy" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
+    "model gate policy self-test" => ["Release model gate policy self-test", "bash tools/release/check-model-gates.sh --self-test"],
+    "gate runner self-test" => ["Gate runner self-test", "tools/dev/check.sh --self-test"],
     "model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
     "cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],
+    "draft release preparation" => ["Draft release preparation self-test", "tools/release/prepare-draft-release.sh --self-test"],
+    "git credential scrub" => ["Git credential scrub self-test", "tools/release/scrub-git-credentials.sh --self-test"],
     "cask finalizer" => ["Release cask finalizer self-test", "tools/release/finalize-cask.sh --self-test"],
     "notarization helper" => ["Notarization helper self-test", "tools/release/notarize-app.sh --self-test"],
     "update manifest" => ["Update manifest self-test", "tools/release/write-update-manifest.sh --self-test"],
@@ -3210,17 +3803,23 @@ ruby -ryaml -e '
     "CI root clippy" => ["Clippy (deny warnings)", "cargo clippy --locked --workspace --all-targets -- -D warnings"],
     "CI root test parallel" => ["Test (parallel)", "cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets"],
     "CI root test serial" => ["Test (serial, macOS state)", "cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1"],
+    "CI mac-only doc tests" => ["Doc tests (macOS crates)", "cargo test --locked --doc -p platform_macos -p app"],
     "CI root build" => ["Build", "cargo build --locked --workspace --all-targets"],
     "CI platform_macos examples build" => ["Build macOS acceptance examples", "cargo build --locked -p platform_macos --examples"],
     "CI rustdoc" => ["Rustdoc (deny warnings)", "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --workspace"],
     "CI version docs check" => ["Version docs check", "tools/release/check-version-docs.sh"],
     "CI model smoke gate" => ["Model-backed smoke gate", "bash tools/release/run-model-gates.sh"],
+    "CI model quality gate" => ["Model-quality gate", "bash tools/release/check-quality.sh"],
   }.merge(shared_gate_steps.transform_keys { |key| "CI #{key}" }).each do |label, (name, run)|
     abort("missing release gate: #{label}") unless step?(ci_steps, name, run)
   end
   smoke_step = ci_steps.find { |step| step["name"] == "Model-backed smoke gate" }
   abort("missing release gate: CI model smoke gate skips only the latency budget") unless
     smoke_step && smoke_step.fetch("env", {})["COMPME_REQUIRE_LATENCY_BUDGET"].to_s == "0"
+  smoke_index = ci_steps.index(smoke_step)
+  quality_index = ci_steps.index { |step| step["name"] == "Model-quality gate" }
+  abort("missing release gate: CI quality gate follows and reuses the model smoke download") unless
+    smoke_index && quality_index && smoke_index < quality_index
   # The pinned dependency audit lives in the Linux job (platform-independent;
   # keeps the premium macOS lane off the cargo-audit compile).
   abort("missing release gate: CI pinned dependency audit") unless step?(
@@ -3235,14 +3834,16 @@ ruby -ryaml -e '
   windows = jobs.fetch("windows")
   abort("missing release gate: platform_windows runs on Windows") unless windows.fetch("runs-on") == "windows-latest"
   require_step!(jobs, "windows", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "platform_windows clippy job")
-  require_step!(jobs, "windows", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos", "platform_windows test job")
+  require_step!(jobs, "windows", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos --all-targets", "platform_windows test job")
   require_step!(jobs, "windows", "Build app binary", "cargo build --locked -p app", "platform_windows build job")
 
   linux = jobs.fetch("linux")
   abort("missing release gate: platform_linux runs on Linux") unless linux.fetch("runs-on") == "ubuntu-latest"
   require_step!(jobs, "linux", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "platform_linux clippy job")
-  require_step!(jobs, "linux", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos", "platform_linux test job")
+  require_step!(jobs, "linux", "Rustdoc portable workspace (deny warnings)", "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --workspace --exclude platform_macos", "platform_linux rustdoc job")
+  require_step!(jobs, "linux", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos --all-targets", "platform_linux test job")
   require_step!(jobs, "linux", "Build app binary", "cargo build --locked -p app", "platform_linux build job")
+  require_step!(jobs, "linux", "Linux live-test count", "tools/release/check-linux-live-test-count.sh", "platform_linux live-test count job")
   shellcheck_step = linux.fetch("steps").find { |step| step["name"] == "Shellcheck (errors only)" }
   abort("missing release gate: CI linux shellchecks tool scripts at error severity") unless
     shellcheck_step && shellcheck_step.fetch("run").include?("shellcheck --severity=error") &&
@@ -3266,7 +3867,7 @@ ruby -ryaml -e '
   preflight_tag = preflight_steps.find { |step| step["name"] == "Verify release tag is valid and at default-branch HEAD" }
   abort("missing release gate: preflight verifies release version and exact default-branch HEAD") unless preflight_tag
   preflight_run = preflight_tag.fetch("run")
-  ["version=\"${GITHUB_REF_NAME#v}\"", "tools/release/validate-version.sh \"$version\"", "git fetch --force origin \"refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH\"", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then"].each do |needle|
+  ["version=\"${GITHUB_REF_NAME#v}\"", "tools/release/validate-version.sh \"$version\"", "git fetch --force origin \"refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH\"", "tools/release/scrub-git-credentials.sh", "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"", "if [ \"$GITHUB_SHA\" != \"$default_sha\" ]; then"].each do |needle|
     abort("missing release gate: preflight #{needle}") unless preflight_run.include?(needle)
   end
   abort("missing release gate: preflight checks release tag metadata") unless step?(
@@ -3284,18 +3885,21 @@ ruby -ryaml -e '
   windows = release_jobs.fetch("windows")
   abort("missing release gate: release platform_windows runs on Windows") unless windows.fetch("runs-on") == "windows-latest"
   require_step!(release_jobs, "windows", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "release platform_windows clippy job")
-  require_step!(release_jobs, "windows", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos", "release platform_windows test job")
+  require_step!(release_jobs, "windows", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos --all-targets", "release platform_windows test job")
   require_step!(release_jobs, "windows", "Build app binary", "cargo build --locked -p app", "release platform_windows build job")
   linux = release_jobs.fetch("linux")
   abort("missing release gate: release platform_linux runs on Linux") unless linux.fetch("runs-on") == "ubuntu-latest"
   require_step!(release_jobs, "linux", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "release platform_linux clippy job")
-  require_step!(release_jobs, "linux", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos", "release platform_linux test job")
+  require_step!(release_jobs, "linux", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos --all-targets", "release platform_linux test job")
   require_step!(release_jobs, "linux", "Build app binary", "cargo build --locked -p app", "release platform_linux build job")
+  require_step!(release_jobs, "linux", "Linux live-test count", "tools/release/check-linux-live-test-count.sh", "release platform_linux live-test count job")
   prebuild = release_jobs.fetch("prebuild")
   build_release = release_jobs.fetch("build_release")
   publish_release = release_jobs.fetch("publish_release")
   finalize_cask = release_jobs.fetch("finalize_cask")
   post_verify = release_jobs.fetch("post_verify")
+  abort("missing release gate: publish_release uses Linux for gh/git work") unless publish_release.fetch("runs-on") == "ubuntu-latest"
+  abort("missing release gate: finalize_cask uses Linux for gh/git work") unless finalize_cask.fetch("runs-on") == "ubuntu-latest"
   quote = 39.chr
   tag_job_guard = "${{ github.ref_type == #{quote}tag#{quote} && startsWith(github.ref_name, #{quote}v#{quote}) }}"
   abort("missing release gate: prebuild is limited to v* tag refs") unless prebuild.fetch("if") == tag_job_guard
@@ -3338,6 +3942,7 @@ ruby -ryaml -e '
     "release root clippy" => ["Root clippy", "cargo clippy --locked --workspace --all-targets -- -D warnings"],
     "release root test parallel" => ["Root tests (parallel)", "cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets"],
     "release root test serial" => ["Root tests (serial)", "cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1"],
+    "release rustdoc" => ["Rustdoc (deny warnings)", "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --workspace"],
     "release root build" => ["Root build", "cargo build --locked --workspace --all-targets"],
     "release platform_macos examples build" => ["Build macOS acceptance examples", "cargo build --locked -p platform_macos --examples"],
     "release quality gate" => ["Model-quality gate", "bash tools/release/check-quality.sh"],
@@ -3349,6 +3954,9 @@ ruby -ryaml -e '
   end
   model_gate_step = validate_steps.find { |step| step["name"] == "Model-backed release gates" }
   abort("missing release gate: hosted-runner model gates skip only the latency budget") unless model_gate_step && model_gate_step.fetch("env", {})["COMPME_REQUIRE_LATENCY_BUDGET"].to_s == "0"
+  release_shellcheck = validate_steps.find { |step| step["name"] == "Shellcheck (errors only)" }
+  abort("missing release gate: release validate shellchecks all tool scripts") unless
+    release_shellcheck && release_shellcheck.fetch("run") == "find tools -type f -name #{39.chr}*.sh#{39.chr} -print0 \\\n  | xargs -0 shellcheck --severity=error\n"
   prebuild_needs = Array(prebuild.fetch("needs"))
   %w[validate windows linux].each do |job|
     abort("missing release gate: prebuild job depends on #{job}") unless prebuild_needs.include?(job)
@@ -3478,7 +4086,7 @@ ruby -ryaml -e '
   abort("missing release gate: verifies downloaded arm64 binary and registers cleanup before secrets") unless download_binary_index < chmod_index && chmod_index < download_arch_index && download_arch_index < register_keychain_index && register_keychain_index < import_index
   abort("missing release gate: imports Developer ID certificate before build") unless import_index < build_index
   scrub_run = prebuild_steps.fetch(scrub_index).fetch("run")
-  abort("missing release gate: scrub removes checkout extraheader") unless scrub_run.include?("git config --local --unset-all http.https://github.com/.extraheader")
+  abort("missing release gate: scrub delegates to absence-safe failure-loud helper") unless scrub_run == "tools/release/scrub-git-credentials.sh"
   abort("missing release gate: prebuild job runs a cold build (no rust-cache)") if prebuild_steps.any? { |step| step["uses"].to_s.include?("rust-cache") }
   prebuild_step = prebuild_steps.fetch(prebuild_index)
   abort("missing release gate: prebuild compiles the release app binary") unless prebuild_step.fetch("run") == "cargo build --locked --release -p app"
@@ -3613,9 +4221,10 @@ ruby -ryaml -e '
   checksum_index = publish_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
   publish_head_index = publish_steps.index { |step| step["name"] == "Verify release tag is still at default-branch HEAD before publication" }
   publish_manifest_index = publish_steps.index { |step| step["name"] == "Write publication-time update manifest" }
+  prepare_index = publish_steps.index { |step| step["name"] == "Prepare retryable draft state" }
   create_index = publish_steps.index { |step| step["name"] == "Create draft GitHub release" }
   undraft_index = publish_steps.index { |step| step["name"] == "Revalidate default-branch HEAD and undraft GitHub release" }
-  abort("missing release gate: publish job downloads, verifies, rechecks HEAD, writes manifest, creates draft, then undrafts") unless download_index && checksum_index && publish_head_index && publish_manifest_index && create_index && undraft_index && download_index < checksum_index && checksum_index < publish_head_index && publish_head_index < publish_manifest_index && publish_manifest_index < create_index && create_index < undraft_index
+  abort("missing release gate: publish job downloads, verifies, rechecks HEAD, writes manifest, cleans stale draft, creates draft, then undrafts") unless download_index && checksum_index && publish_head_index && publish_manifest_index && prepare_index && create_index && undraft_index && download_index < checksum_index && checksum_index < publish_head_index && publish_head_index < publish_manifest_index && publish_manifest_index < prepare_index && prepare_index < create_index && create_index < undraft_index
   download_step = publish_steps.fetch(download_index)
   download_with = download_step.fetch("with")
   abort("missing release gate: downloads artifacts with pinned download-artifact action") unless download_step.fetch("uses").match?(/\Aactions\/download-artifact@[0-9a-f]{40}\z/)
@@ -3631,6 +4240,10 @@ ruby -ryaml -e '
     abort("missing release gate: pre-publication exact default HEAD #{needle}") unless publish_head_run.any? { |line| line.include?(needle) && !line.match?(/\A(echo|printf)[[:space:]]/) }
   end
   create_step = publish_steps.fetch(create_index)
+  prepare_step = publish_steps.fetch(prepare_index)
+  abort("missing release gate: retry cleanup uses GitHub token") unless prepare_step.fetch("env") == {"GH_TOKEN" => "${{ github.token }}"}
+  abort("missing release gate: retry cleanup invokes tested helper") unless
+    prepare_step.fetch("run") == "tools/release/prepare-draft-release.sh \"$GITHUB_REF_NAME\" \"$GITHUB_REPOSITORY\""
   abort("missing release gate: draft creation uses GitHub token") unless create_step.fetch("env").fetch("GH_TOKEN") == "${{ github.token }}"
   create_lines = active_shell_lines(create_step.fetch("run"))
   [
@@ -3647,6 +4260,15 @@ ruby -ryaml -e '
   ].each do |needle|
     abort("missing release gate: exact fail-closed draft creation #{needle}") unless create_lines.include?(needle)
   end
+  publish_attestation = publish_steps.find { |step| step["name"] == "Verify artifact build provenance" }
+  publish_attestation_lines = active_shell_lines(publish_attestation.fetch("run"))
+  [
+    "gh attestation verify \"release-artifacts/compme-${VERSION}-macos.zip\" \\",
+    "--repo \"$GITHUB_REPOSITORY\" \\",
+    "--signer-workflow mudrii/compme/.github/workflows/release.yml",
+  ].each do |needle|
+    abort("missing release gate: publication attestation #{needle}") unless publish_attestation_lines.include?(needle)
+  end
   undraft_step = publish_steps.fetch(undraft_index)
   abort("missing release gate: late undraft recheck exact environment") unless undraft_step.fetch("env") == {
     "DEFAULT_BRANCH" => "${{ github.event.repository.default_branch }}",
@@ -3657,6 +4279,7 @@ ruby -ryaml -e '
     "git fetch --force origin \\",
     "\"refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH\" \\",
     "\"refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME\"",
+    "tools/release/scrub-git-credentials.sh",
     "default_sha=\"$(git rev-parse \"origin/$DEFAULT_BRANCH\")\"",
     "tag_sha=\"$(git rev-parse \"refs/tags/$GITHUB_REF_NAME^{commit}\")\"",
     "if [ \"$tag_sha\" != \"$GITHUB_SHA\" ] || [ \"$tag_sha\" != \"$default_sha\" ]; then",
@@ -3672,8 +4295,11 @@ ruby -ryaml -e '
   abort("missing release gate: finalize_cask checkout fetches full history") unless finalize_checkout&.fetch("with")&.fetch("fetch-depth") == 0
   finalize_download_index = finalize_steps.index { |step| step["name"] == "Download release artifacts" }
   finalize_checksum_index = finalize_steps.index { |step| step["name"] == "Verify downloaded artifact checksum" }
+  finalize_attestation_index = finalize_steps.index { |step| step["name"] == "Verify artifact build provenance" }
   cask_index = finalize_steps.index { |step| step["name"] == "Finalize Homebrew cask" }
-  abort("missing release gate: separate cask job downloads and verifies artifacts before finalization") unless finalize_download_index && finalize_checksum_index && cask_index && finalize_download_index < finalize_checksum_index && finalize_checksum_index < cask_index
+  abort("missing release gate: separate cask job verifies checksum and provenance before finalization") unless
+    finalize_download_index && finalize_checksum_index && finalize_attestation_index && cask_index &&
+    finalize_download_index < finalize_checksum_index && finalize_checksum_index < finalize_attestation_index && finalize_attestation_index < cask_index
   finalize_download_with = finalize_steps.fetch(finalize_download_index).fetch("with")
   abort("missing release gate: finalize_cask downloads named release artifact bundle") unless finalize_download_with == {"name" => "compme-release-artifacts", "path" => "release-artifacts"}
   finalize_checksum_lines = active_shell_lines(finalize_steps.fetch(finalize_checksum_index).fetch("run"))
@@ -3689,13 +4315,39 @@ ruby -ryaml -e '
   cask_lines = active_shell_lines(cask_run)
   abort("missing release gate: derives cask ZIP from release version") unless cask_lines.include?("ZIP=\"compme-${VERSION}-macos.zip\"")
   abort("missing release gate: finalizes cask from downloaded release artifact") unless cask_lines.include?("artifact_path=\"$PWD/release-artifacts/$ZIP\"")
-  require_active_finalizer_command!(cask_run, %q(tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH"))
+  require_active_finalizer_command!(cask_run, %q(tools/release/finalize-cask.sh "$TAG" "$artifact_path" "$VERSION" "$DEFAULT_BRANCH" "$GITHUB_REPOSITORY"))
+  finalize_attestation = finalize_steps.fetch(finalize_attestation_index)
+  finalize_attestation_lines = active_shell_lines(finalize_attestation.fetch("run"))
+  [
+    "gh attestation verify \"release-artifacts/compme-${VERSION}-macos.zip\" \\",
+    "--repo \"$GITHUB_REPOSITORY\" \\",
+    "--signer-workflow mudrii/compme/.github/workflows/release.yml",
+  ].each do |needle|
+    abort("missing release gate: cask attestation #{needle}") unless finalize_attestation_lines.include?(needle)
+  end
+  post_verify_steps = post_verify.fetch("steps")
+  post_attestation = post_verify_steps.find { |step| step["name"] == "Verify published build provenance" }
+  abort("missing release gate: post-publish verifies downloaded zip attestation") unless post_attestation
+  post_download_index = post_verify_steps.index { |step| step["name"] == "Download published assets and verify checksum" }
+  post_attestation_index = post_verify_steps.index(post_attestation)
+  post_install_index = post_verify_steps.index { |step| step["name"] == "Install the published cask" }
+  abort("missing release gate: post-publish verifies checksum and provenance before installing the cask") unless
+    post_download_index && post_attestation_index && post_install_index &&
+    post_download_index < post_attestation_index && post_attestation_index < post_install_index
+  post_attestation_lines = active_shell_lines(post_attestation.fetch("run"))
+  [
+    "gh attestation verify \"verify/compme-${VERSION}-macos.zip\" \\",
+    "--repo \"$GITHUB_REPOSITORY\" \\",
+    "--signer-workflow mudrii/compme/.github/workflows/release.yml",
+  ].each do |needle|
+    abort("missing release gate: post-publish attestation #{needle}") unless post_attestation_lines.include?(needle)
+  end
   abort("missing release gate: release tag metadata check") unless step?(
     build_steps,
     "Check release tag matches bundle metadata",
     "COMPME_EXPECTED_VERSION=\"${GITHUB_REF_NAME#v}\" tools/bundle/check-bundle-metadata.sh"
   )
-' "$release_workflow" "$ci_workflow"
+' "$release_workflow" "$ci_workflow" "$audit_workflow" "$docs_workflow"
 
 workspace_members_count="$(cargo metadata --format-version 1 --no-deps | ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("workspace_members").length')"
 workspace_test_count="$(cargo test --locked --workspace --all-targets -- --list | awk '/: test$/ { count++ } END { print count + 0 }')"
@@ -3708,10 +4360,13 @@ bash -n "$bundle_metadata_script"
 bash -n "$make_app_script"
 bash -n "$make_icon_script"
 bash -n "$finalize_cask_script"
+bash -n "$prepare_draft_script"
+bash -n "$scrub_git_script"
 bash -n "$update_cask_script"
 bash -n "$notarize_script"
 bash -n "$update_manifest_script"
 bash -n "$version_validator_script"
+bash -n "$linux_live_count_script"
 "$bundle_metadata_script" >/dev/null
 COMPME_EXPECTED_VERSION=9.9.9 "$bundle_metadata_script" --self-test >/dev/null
 COMPME_BUNDLE_REPO_ROOT=/tmp/compme-poisoned-root COMPME_BUNDLE_LSREGISTER=/tmp/poisoned-lsregister CARGO_TARGET_DIR=/tmp/compme-poisoned-target COMPME_BUNDLE_SKIP_BUILD=1 COMPME_CODESIGN_IDENTITY=poisoned COMPME_CODESIGN_ENTITLEMENTS=/tmp/poisoned.entitlements "$make_app_script" --self-test >/dev/null
@@ -3724,6 +4379,8 @@ if ! "$finalize_cask_script" --self-test >/dev/null; then
   echo "release gate failed: finalize-cask self-test" >&2
   exit 1
 fi
+"$prepare_draft_script" --self-test >/dev/null
+"$scrub_git_script" --self-test >/dev/null
 COMPME_CASK_PATH=/tmp/compme-poisoned-cask.rb COMPME_CASK_ARTIFACT=/tmp/compme-poisoned.zip "$update_cask_script" --self-test >/dev/null
 COMPME_NOTARYTOOL_KEYCHAIN_PROFILE=poisoned COMPME_NOTARYTOOL_KEY_BASE64=poisoned COMPME_NOTARYTOOL_KEY_PATH=/tmp/poisoned.p8 COMPME_NOTARYTOOL_KEY_ID=poisoned COMPME_NOTARYTOOL_ISSUER=poisoned COMPME_NOTARYTOOL_APPLE_ID=poisoned@example.invalid COMPME_NOTARYTOOL_PASSWORD=poisoned COMPME_NOTARYTOOL_TEAM_ID=poisoned COMPME_NOTARYTOOL_TEMP_KEY=/tmp/poisoned-temp.p8 COMPME_NOTARYTOOL_TIMEOUT=1 "$notarize_script" --self-test >/dev/null
 COMPME_UPDATE_PUBLISHED_AT=not-a-date "$update_manifest_script" --self-test >/dev/null
@@ -3809,6 +4466,10 @@ require_test_symbol "$repo_root/crates/app/src/run_loop_tests.rs" 'grammar_detec
 require_test_symbol "$repo_root/crates/app/src/run_loop_tests.rs" 'grammar_detection_rejects_non_empty_selection' "run_loop grammar selection test"
 require_test_symbol "$repo_root/crates/app/src/run_loop_tests.rs" 'config_parses_grammar_check_and_grammar_accept_keys' "run_loop grammar config test"
 require_test_symbol "$repo_root/crates/app/src/run_loop_tests.rs" 'grammar_accept_action_routes_to_accept_correction_not_full' "run_loop grammar accept routing test"
+require_test_symbol "$repo_root/crates/model_client/tests/latency.rs" 'long_generation_observes_shutdown_within_250ms' "A32 real native-cancellation test"
+require_test_symbol "$repo_root/crates/app/src/inference.rs" 'blocked_native_call_selects_forced_exit_policy_at_deadline' "A32 inference timeout test"
+require_test_symbol "$repo_root/crates/app/src/run_loop_tests.rs" 'inference_timeout_exit_guard_uses_no_cleanup_termination' "A32 final hard-exit guard test"
+require_test_symbol "$repo_root/crates/app/src/run_loop_tests.rs" 'inference_timeout_watchdog_bounds_stuck_cleanup' "A32 shutdown watchdog test"
 require_line "$make_app_script" 'COMPME_BUNDLE_LSREGISTER=' "bundle self-test launch services override"
 require_line "$make_app_script" 'grep -Fq "lsregister -f \$app" "\$log"' "bundle self-test asserts Launch Services registration"
 require_line "$make_app_script" 'COMPME_BUNDLE_LSREGISTER="\$fake_bin/lsregister_fail"' "bundle self-test asserts Launch Services registration failure"
@@ -3833,6 +4494,9 @@ require_line "$privacy_script" 'sentry' "privacy policy denied package assertion
 require_line "$privacy_script" 'segment\.io' "privacy policy denied host self-test"
 require_development_gate_line '^tools/release/check-privacy-policy\.sh[[:space:]]*$' "DEVELOPMENT privacy policy gate"
 require_development_gate_line '^tools/release/check-privacy-policy\.sh --self-test[[:space:]]*$' "DEVELOPMENT privacy policy self-test gate"
+require_development_gate_line '^tools/release/check-linux-live-test-count\.sh --self-test[[:space:]]*$' "DEVELOPMENT Linux live-test count self-test gate"
+require_development_gate_line '^tools/release/prepare-draft-release\.sh --self-test[[:space:]]*$' "DEVELOPMENT draft release preparation self-test gate"
+require_development_gate_line '^tools/release/scrub-git-credentials\.sh --self-test[[:space:]]*$' "DEVELOPMENT Git credential scrub self-test gate"
 require_line "$bundle_metadata_script" 'release tag version is empty' "bundle metadata empty release-tag version rejection"
 require_line "$bundle_metadata_script" 'ruby -c "\$cask_file"' "bundle metadata validates cask Ruby syntax"
 require_line "$bundle_metadata_script" 'Casks/compme\.rb: invalid Ruby syntax' "bundle metadata rejects invalid cask Ruby syntax"
@@ -3859,6 +4523,12 @@ require_line "$version_docs_script" 'latest published artifact' "version docs ch
 require_line "$version_docs_script" 'Release boundary' "version docs check covers ARCHITECTURE boundary"
 require_line "$version_docs_script" 'Validate the latest published' "version docs check covers MANUAL-VALIDATION boundary"
 require_line "$check_runner_script" '## Full Local Gate' "gate runner consumes the canonical DEVELOPMENT fence"
+require_line "$linux_live_count_script" '^cargo test --locked -p platform_linux -- --list --ignored >"\$list_file"[[:space:]]*$' "Linux live-test count uses Cargo emitted ignored-test list"
+require_line "$linux_live_count_script" '^check_count "\$list_file" "\$repo_root/docs/ROADMAP\.md"[[:space:]]*$' "Linux live-test count checks ROADMAP"
+require_line "$scrub_git_script" 'config --local --get-all "\$credential_key"' "Git credential scrub handles an absent header"
+require_line "$scrub_git_script" 'config --local --unset-all "\$credential_key"' "Git credential scrub removes every persisted header"
+reject_line "$scrub_git_script" 'unset-all.*\|\|[[:space:]]*true' "Git credential scrub masks unset failures"
+require_line "$scrub_git_script" 'unset failure was masked' "Git credential scrub self-test covers failure-loud behavior"
 reject_line "$repo_root/crates/model_client/tests/latency.rs" 'Metal GPU' "root model-client ignored tests stale GPU wording"
 require_line "$finalize_cask_script" 'git fetch --no-tags origin' "cask finalizer disables implicit tag fetches"
 require_line "$finalize_cask_script" '\+refs/heads/\$default_branch:\$remote_branch_ref' "cask finalizer refreshes the remote branch explicitly"
@@ -3871,8 +4541,13 @@ require_line "$finalize_cask_script" 'grep -Eq .\^v\(0\|\[1-9\]\[0-9\]\*\)' "cas
 require_line "$finalize_cask_script" 'previous_release_version "\$stray_tags_sha" v1\.2\.4.*= "1\.2\.3"' "cask finalizer self-test proves stray prerelease/malformed tags do not shadow the previous stable release"
 require_line "$gate_script" '^require_latency_budget="\$\{COMPME_REQUIRE_LATENCY_BUDGET:-1\}"[[:space:]]*$' "latency budget defaults on, CI opt-out only"
 require_line "$gate_script" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET="\$require_latency_budget" cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "serialized root ignored model tests"
+require_line "$gate_script" '^if \[ "\$\(uname -s\)" = "Darwin" \]; then[[:space:]]*$' "Metal shutdown-cancellation test is Darwin-scoped"
+require_line "$gate_script" '^  COMPME_MODEL_GPU_LAYERS=999 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency long_generation_observes_shutdown_within_250ms -- --ignored --exact --test-threads=1[[:space:]]*$' "serialized macOS Metal shutdown-cancellation test"
+require_line "$gate_script" 'COMPME_MODEL_GATE_UNAME=Linux' "model-gate self-test exercises non-Darwin scope"
+require_line "$gate_script" 'non-Darwin run invoked Metal cancellation' "model-gate self-test rejects Metal outside Darwin"
 require_line "$gate_script" '^  COMPME_SPIKE_MODEL_PATH="\$spike_model" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET="\$require_latency_budget" cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "serialized spike ignored model tests"
 require_line "$acceptance_doc" '^COMPME_MODEL_GPU_LAYERS=0 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked -p model_client --test latency -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized root ignored model tests"
+require_line "$acceptance_doc" '^COMPME_MODEL_GPU_LAYERS=999 COMPME_MODEL_CONTEXT_TOKENS=256 COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_MODEL_CONTEXT=1 cargo test --locked -p model_client --test latency long_generation_observes_shutdown_within_250ms -- --ignored --exact --test-threads=1[[:space:]]*$' "acceptance docs serialized Metal shutdown-cancellation test"
 require_line "$acceptance_doc" '^COMPME_SPIKE_MODEL_PATH="\$PWD/models/qwen2\.5-0\.5b-q4_k_m\.gguf" COMPME_REQUIRE_MODEL_TESTS=1 COMPME_REQUIRE_LATENCY_BUDGET=1 cargo test --locked --test model_integration -- --ignored --test-threads=1[[:space:]]*$' "acceptance docs serialized spike ignored model tests"
 require_line "$acceptance_doc" 'DEVELOPMENT\.md#full-local-gate' "acceptance docs link the canonical full local gate"
 require_line "$acceptance_doc" 'overlay-correction-presenter' "acceptance docs correction overlay gate"
@@ -3921,28 +4596,6 @@ reject_line "$readme_doc" '^bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh 
 reject_line "$development_doc" '^bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh' "DEVELOPMENT wildcard syntax-checks local/manual A2 scripts"
 reject_line "$acceptance_doc" '^bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh' "acceptance docs wildcard syntax-check local/manual A2 scripts"
 reject_line "$grammar_spec" 'bash -n tools/acceptance/\*\.sh tools/bundle/\*\.sh tools/release/\*\.sh' "grammar spec wildcard syntax-checks local/manual A2 scripts"
-for gate in \
-  apps-policy-toggle-look \
-  personalization-pane-look \
-  menu-bar-icon-look \
-  shortcuts-recorder-look \
-  always-on-hotkeys-physical-look \
-  setup-model-picker-look \
-  nine-tab-settings-walkthrough \
-  caret-marker-chromium-forks-calibration \
-  caret-marker-chrome-marker \
-  caret-marker-chromium-marker \
-  caret-marker-electron-marker \
-  encrypted-memory-all-monitored-live \
-  grammar-fix-textedit-look \
-  mirror-window-firefox-zen-look \
-  setup-needed-docs-arc-onboarding \
-  multi-candidate-cycle-physical-look \
-  input-monitoring-revoked-carbon-accept; do
-  require_line "$repo_root/tools/acceptance/run-a1b-live-gates.sh" "$gate" "A1b runner emits manual gate $gate"
-  require_line "$acceptance_doc" "^- \`$gate\`[[:space:]]*$" "acceptance docs list manual gate $gate"
-  require_line "$manual_validation_doc" "\`$gate\`" "manual validation docs list manual gate $gate"
-done
 require_readme_gate_line 'docs/DEVELOPMENT\.md#full-local-gate' "README gates section links the canonical full local gate"
 require_development_gate_line '^tools/bundle/check-bundle-metadata\.sh[[:space:]]*$' "DEVELOPMENT bundle metadata check"
 require_development_gate_line '^tools/bundle/check-bundle-metadata\.sh --self-test[[:space:]]*$' "DEVELOPMENT bundle metadata self-test"

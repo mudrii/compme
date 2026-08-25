@@ -124,20 +124,25 @@ pub fn font_search_dirs(
 
 /// The best-ranked font file under any of `dirs`, or `None` when none holds one.
 ///
-/// Ties are broken by path so the choice is stable across runs on one host
-/// (directory iteration order is not).
+/// Ties are broken first by search-directory order (user/XDG before system),
+/// then by path so the choice is stable within one directory regardless of its
+/// iteration order.
 pub fn find_font_file(dirs: &[PathBuf]) -> Option<PathBuf> {
-    let mut best: Option<(u32, PathBuf)> = None;
-    for dir in dirs {
-        collect_best(dir, 0, &mut best);
-        // An earlier directory outranks a later one only when it found an
-        // equally good face; keep scanning so a user font that is merely
-        // "usable" does not beat the system DejaVu.
+    let mut best: Option<(u32, usize, PathBuf)> = None;
+    for (dir_index, dir) in dirs.iter().enumerate() {
+        collect_best(dir, 0, dir_index, &mut best);
+        // Rank remains the first key, so a preferred system face can still beat
+        // an unknown user face. Directory order decides equal-rank faces only.
     }
-    best.map(|(_, path)| path)
+    best.map(|(_, _, path)| path)
 }
 
-fn collect_best(dir: &Path, depth: usize, best: &mut Option<(u32, PathBuf)>) {
+fn collect_best(
+    dir: &Path,
+    depth: usize,
+    dir_index: usize,
+    best: &mut Option<(u32, usize, PathBuf)>,
+) {
     if depth > MAX_DEPTH {
         return;
     }
@@ -153,7 +158,7 @@ fn collect_best(dir: &Path, depth: usize, best: &mut Option<(u32, PathBuf)>) {
         // entry is a link. A link cycle is bounded by MAX_DEPTH above, and a
         // broken link is an `Err` that is simply skipped.
         match std::fs::metadata(&path) {
-            Ok(meta) if meta.is_dir() => collect_best(&path, depth + 1, best),
+            Ok(meta) if meta.is_dir() => collect_best(&path, depth + 1, dir_index, best),
             Ok(meta) if meta.is_file() => {
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
@@ -163,12 +168,12 @@ fn collect_best(dir: &Path, depth: usize, best: &mut Option<(u32, PathBuf)>) {
                 };
                 let better = match best {
                     None => true,
-                    Some((best_rank, best_path)) => {
-                        rank < *best_rank || (rank == *best_rank && path < *best_path)
+                    Some((best_rank, best_dir_index, best_path)) => {
+                        (rank, dir_index, &path) < (*best_rank, *best_dir_index, best_path)
                     }
                 };
                 if better {
-                    *best = Some((rank, path));
+                    *best = Some((rank, dir_index, path));
                 }
             }
             _ => {}
@@ -328,6 +333,35 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn equal_rank_fonts_follow_search_directory_order_before_path() {
+        let root = std::env::temp_dir().join(format!(
+            "compme-linux-font-search-order-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Make the later/system directory lexicographically smaller. The old
+        // global path tie-break therefore picked it even though the documented
+        // search order puts the user directory first.
+        let user = root.join("z-user/fonts");
+        let system = root.join("a-system/fonts");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&system).unwrap();
+        std::fs::write(user.join("UnknownSans.ttf"), []).unwrap();
+        std::fs::write(system.join("UnknownSans.ttf"), []).unwrap();
+
+        assert_eq!(
+            find_font_file(&[user.clone(), system]),
+            Some(user.join("UnknownSans.ttf")),
+            "equal-rank fonts must honor XDG/user-before-system directory order"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// `#[cfg(unix)]`, not `#[cfg(target_os = "linux")]`: the macOS lane is unix

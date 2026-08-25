@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 use std::sync::Arc;
 
 use platform::shell::{ShellHost, TrayHandle};

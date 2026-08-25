@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈2027 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈2060 tests green).
 **Release boundary:** this status describes current `main`. The published
 v0.1.4 tag predates the post-release runtime/grammar hardening in `216fa0a` and
 the A2 automation-policy change in `618013d`; those changes require a later tag.
@@ -21,7 +21,10 @@ before editing (they drift).
   `COMPME_GRAMMAR_CHECK_KEY` and `COMPME_GRAMMAR_ACCEPT_KEY`.
 - G4 macOS scalar-range conversion, range bounds, fail-closed atomic range
   replacement, and a two-panel underline/banner correction presenter are
-  implemented with focused geometry tests. Live LOOK validation remains pending
+  implemented with focused geometry tests. Linux explicitly implements
+  `insert_replacing_range`; of its two grammar range seams, only
+  `text_range_rect` still inherits the fail-closed trait default. The Windows
+  scaffold still inherits both defaults. Live LOOK validation remains pending
   because it requires granted Accessibility permissions and an interactive macOS app.
 - G5 settings surface is implemented: the Shortcuts pane has a grammar-accept
   recorder row, live rebind persists `COMPME_GRAMMAR_ACCEPT_KEY`, the Apps pane

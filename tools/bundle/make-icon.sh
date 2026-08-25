@@ -17,6 +17,10 @@ usage() {
   echo "usage: tools/bundle/make-icon.sh | --self-test" >&2
 }
 
+portable_file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
 generate_icon() (
   set -euo pipefail
   out="$1"
@@ -74,10 +78,25 @@ run_self_test() {
   generated_icon="$output_dir/generated.icns"
   sips_count="$tmp_test/sips.count"
   icon_before="$tmp_test/AppIcon.icns.before"
-  mkdir -p "$fake_bin" "$work_tmp" "$output_dir"
+  mode_bin="$tmp_test/mode-bin"
+  mkdir -p "$fake_bin" "$mode_bin" "$work_tmp" "$output_dir"
   printf 'png fixture' >"$source_png"
   printf '0\n' >"$sips_count"
   cp "$here/AppIcon.icns" "$icon_before"
+
+  cat >"$mode_bin/stat" <<'SH'
+#!/usr/bin/env bash
+case "${COMPME_STAT_STYLE:-}:$1" in
+  gnu:-c) echo 640 ;;
+  gnu:-f) echo 'GNU filesystem dump';;
+  bsd:-c) exit 1 ;;
+  bsd:-f) echo 640 ;;
+  *) exit 2 ;;
+esac
+SH
+  chmod +x "$mode_bin/stat"
+  [[ "$(PATH="$mode_bin:$PATH" COMPME_STAT_STYLE=gnu portable_file_mode "$source_png")" == "640" ]]
+  [[ "$(PATH="$mode_bin:$PATH" COMPME_STAT_STYLE=bsd portable_file_mode "$source_png")" == "640" ]]
 
   cat >"$fake_bin/swift" <<'SH'
 #!/usr/bin/env bash
@@ -187,7 +206,7 @@ SH
     echo "make-icon self-test failed: generated-source icon was not installed" >&2
     return 1
   fi
-  if [[ "$(stat -f '%Lp' "$generated_icon")" != "644" ]]; then
+  if [[ "$(portable_file_mode "$generated_icon")" != "644" ]]; then
     echo "make-icon self-test failed: generated icon permissions are not 0644" >&2
     return 1
   fi

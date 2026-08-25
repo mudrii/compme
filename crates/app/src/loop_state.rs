@@ -30,8 +30,9 @@
 //! subscriptions, the engine, and the adapter handle, exactly as before; and
 //! `settings_window` still drops before `model_downloader`. The explicit
 //! ordered teardown at the end of `run()` (`drop(tray)`, `drop(caret_sub)`,
-//! `drop(focus_sub)`, `inference.shutdown()`, `drop(engine)`, `drop(adapter)`)
-//! is untouched.
+//! `drop(focus_sub)`, `drop(engine)`, `drop(adapter)`, then bounded
+//! `inference.shutdown()`) keeps platform resources out of the forced-exit
+//! fallback. A last-drop guard preserves normal cleanup on a timeout.
 //!
 //! No query/mutation helpers live here on purpose: every operation the loop
 //! performs on this state already goes through an existing free function
@@ -126,7 +127,7 @@ pub struct PolicyState {
     /// `flags.enabled` as of the previous heartbeat — the edge detector for
     /// tray/SIGUSR1 enable-disable (persist on change, dismiss on disable).
     pub prev_enabled: bool,
-    /// Live secure-input state, re-polled on a wall-clock throttle.
+    /// Live secure-input state, re-polled on a monotonic-time throttle.
     pub secure: bool,
     /// `secure` as of the previous heartbeat — drives SecureEdge transitions.
     pub prev_secure: bool,

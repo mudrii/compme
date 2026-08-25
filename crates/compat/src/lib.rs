@@ -140,13 +140,39 @@ const GO_SUBCOMMANDS: &[&str] = &[
     "work",
 ];
 
-/// Whether a bundle id is a terminal emulator whose suggestions should only
-/// activate for AI-agent natural-language prompts, not arbitrary shell input.
-pub fn is_terminal(bundle_id: &str) -> bool {
-    matches!(
-        normalize_bundle_id(bundle_id).as_str(),
-        "com.apple.terminal" | "com.googlecode.iterm2"
-    )
+/// Linux process identities emitted by `LinuxShellHost::bundle_id_for_pid`.
+/// That source normalizes `/proc/<pid>/exe` (then argv[0], then comm) to the
+/// executable basename; these are process names, not desktop-file labels.
+const LINUX_TERMINAL_PROCESS_IDS: &[&str] = &[
+    "alacritty",
+    "foot",
+    "footclient",
+    "ghostty",
+    "gnome-terminal",
+    "gnome-terminal-server",
+    "kgx",
+    "kitty",
+    "konsole",
+    "lxterminal",
+    "mate-terminal",
+    "ptyxis",
+    "rio",
+    "rxvt",
+    "terminator",
+    "tilix",
+    "urxvt",
+    "wezterm",
+    "wezterm-gui",
+    "xfce4-terminal",
+    "xterm",
+];
+
+/// Whether an app identity is a terminal emulator whose suggestions should
+/// activate only for AI-agent natural-language prompts, not shell input.
+pub fn is_terminal(app_id: &str) -> bool {
+    let id = normalize_bundle_id(app_id);
+    matches!(id.as_str(), "com.apple.terminal" | "com.googlecode.iterm2")
+        || LINUX_TERMINAL_PROCESS_IDS.contains(&id.as_str())
 }
 
 /// Heuristic for terminal AI-agent prompt activation (design spec §16): in a
@@ -485,7 +511,10 @@ fn is_users_executable_path(token: &str) -> bool {
 }
 
 fn is_go_command(tokens: &[&str]) -> bool {
-    if !tokens[0].eq_ignore_ascii_case("go") {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if !first.eq_ignore_ascii_case("go") {
         return false;
     }
     let Some(subcommand) = tokens.get(1).map(|token| token.to_lowercase()) else {
@@ -543,7 +572,7 @@ const UNKNOWN_APP_POLICY: AppPolicy = AppPolicy::new(CompatTier::Unknown, false,
 /// Resolve every exact app-level compatibility and prose-safety decision from a
 /// single normalized bundle-id match. Family fallbacks remain below the exact
 /// entries so a future app addition has one policy row to update.
-pub fn app_policy(bundle_id: &str) -> AppPolicy {
+fn app_policy(bundle_id: &str) -> AppPolicy {
     let id = normalize_bundle_id(bundle_id);
     match id.as_str() {
         // Known prose apps.
@@ -970,6 +999,31 @@ mod tests {
                 "{command:?} is executable shell input"
             );
         }
+    }
+
+    #[test]
+    fn terminal_handles_lines_ending_in_shell_operators_without_panicking() {
+        let term = "com.apple.Terminal";
+        for (line, expected_activation) in [
+            ("foo bar |", false),
+            ("explain this ||", true),
+            ("x ;", false),
+            ("a &&", false),
+            ("b <", false),
+            ("c 2>", false),
+            ("d 2>>", false),
+        ] {
+            assert_eq!(
+                terminal_prompt_activates(term, line),
+                expected_activation,
+                "unexpected activation result for {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_tokens_are_not_a_go_command() {
+        assert!(!is_go_command(&[]));
     }
 
     #[test]
@@ -1453,6 +1507,39 @@ mod tests {
             terminal_prompt_activates("com.mitchellh.ghostty", "git commit -m wip"),
             "the terminal prompt heuristic must not gate an unlisted terminal (Ghostty)"
         );
+    }
+
+    #[test]
+    fn linux_proc_terminal_executable_identities_use_terminal_prompt_policy() {
+        // LinuxShellHost::bundle_id_for_pid normalizes /proc/<pid>/exe (then
+        // argv[0], then comm) to the POSIX executable basename. These are the
+        // exact process identities emitted by that source, not desktop labels.
+        for terminal in [
+            "gnome-terminal-server",
+            "konsole",
+            "foot",
+            "footclient",
+            "alacritty",
+            "kitty",
+            "wezterm-gui",
+            "xterm",
+        ] {
+            assert!(is_terminal(terminal), "{terminal} must be recognized");
+            assert!(
+                !terminal_prompt_activates(terminal, "git commit -m wip"),
+                "{terminal} must suppress shell commands"
+            );
+            assert!(
+                terminal_prompt_activates(terminal, "please explain this failure"),
+                "{terminal} must allow natural-language prompts"
+            );
+        }
+    }
+
+    #[test]
+    fn linux_code_process_identity_does_not_imply_integrated_terminal_focus() {
+        assert!(!is_terminal("code"));
+        assert!(terminal_prompt_activates("code", "git commit -m wip"));
     }
 
     #[test]

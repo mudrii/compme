@@ -2,10 +2,10 @@
 
 Compme is split into a pure completion core, a platform contract, platform
 adapters, a local model seam, and a ring of small pure feature crates (text
-features, gating, personalization, privacy, catalog/download). The current
-implementation focuses on macOS because the hard integration points are
-Accessibility, Carbon hotkeys, AppKit overlays, Secure Input, and pasteboard
-behavior.
+features, gating, personalization, privacy, catalog/download). macOS remains
+the shipped product; Linux now has a wired AT-SPI2/X11 adapter with explicit
+unsupported surfaces, while Windows remains the fail-closed platform-I/O
+scaffold.
 
 Compme's committed product scope is an **open-source, multi-platform**
 re-implementation of Cotypist functionality except payment, licensing,
@@ -146,7 +146,8 @@ source stays free of product-shaped vocabulary.
 
 - `left_context`
 - `right_context`
-- `word_at_caret`
+- `word_at_split_caret` (the bounded production seam; `word_at_caret` is a
+  private test helper)
 - `tail_chars`
 - `build_context_block`
 
@@ -280,7 +281,7 @@ preamble. The macOS Personalization settings tab edits global instructions,
 sender identity, and the 6-stop strength slider, applies changes live through
 the inference profile, and persists them. Per-app/per-domain instruction editing
 remains a follow-up editor surface; runtime steering already supports those
-maps. Pure and dependency-free — no ML, no I/O. The 6 strength stops have full
+maps. Pure, with only std + `webconfig` — no ML, no I/O. The 6 strength stops have full
 reach for every user; Cotypist's Free/Plus/Pro caps are paywall artifacts
 deliberately not cloned.
 
@@ -423,8 +424,9 @@ below `REPETITION_PENALTY_FLOOR` shows it repeats nearby text, or when
   `with_n_gpu_layers(999)`; current non-macOS builds are CPU-only until the
   planned Vulkan/CUDA features and CI SDKs land. Overrides `warm_up` (a
   throwaway decode that triggers first-backend
-  setup up front) and `shutdown` (drops the model before the backend, in order,
-  to avoid the ggml exit-abort).
+  setup up front) and terminal cancellation through a safe, lifetime-owning
+  vendored abort-callback extension. `shutdown` drops context before model in
+  order to avoid the ggml exit-abort.
 - `terse_continuation_prompt`: the current development prompt shape.
 
 **[Updated 2026-06-08 — G3 closed]** `LlamaModel` now runs on a dedicated worker
@@ -487,7 +489,12 @@ personalization), marshals platform callbacks onto the main thread, and
 dispatches all three suggestion paths. AppKit implementation remains in
 `platform_macos`; `app` combines its portable facades with model
 selection/download, the inference worker, signal handling, and ordered
-shutdown.
+shutdown. Inference closes submissions, cancels native decode, and requires a
+post-model-shutdown acknowledgement plus a finished worker within 250 ms. A
+still-stuck native call selects a last-drop `_exit`/`TerminateProcess` guard and
+watchdog rather than allowing detached model ownership to continue. Ordinary
+Rust cleanup runs first when the watchdog can be spawned; spawn failure exits
+immediately.
 
 The host keeps `run_loop.rs` as the process coordinator while focused internal
 modules own reusable policy:
@@ -558,7 +565,8 @@ Major responsibilities:
 - apply parked accept-key rebinds in the PINNED order (set keymap → re-arm →
   persist only on success), reverting on failure
 - derive loading/ready/disabled/blocked status for tray gating
-- shut down inference before dropping engine/overlay/platform resources
+- drop tray, subscriptions, engine/overlay, and platform resources before the
+  bounded inference-shutdown phase
 - revoke in-flight screen-OCR publication during worker shutdown
 
 ### `platform_macos`

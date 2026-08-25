@@ -69,6 +69,12 @@ mod url_events;
 // MacosPlatformAdapter. No consumer outside this crate (workspace or the
 // acceptance examples) names these types, so they stay off the public API.
 pub(crate) use ax_worker::{AxWorker, CallbackDispatcher, ObserverNotification};
+
+pub(crate) fn write_stderr(args: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+
+    let _ = writeln!(std::io::stderr().lock(), "{args}");
+}
 pub use login_item::set_launch_at_login;
 pub use settings_window::{
     keycode_label, keycode_label_with_mods, policy_restore_needed, rebind_request_for,
@@ -155,7 +161,6 @@ type SecureInputProvider = dyn Fn() -> bool + Send + Sync + 'static;
 type ProcessExistsProvider = dyn Fn(i32) -> bool + Send + Sync + 'static;
 type SyntheticKeyPoster = dyn Fn(i32, &str) -> Result<(), PlatformError> + Send + Sync + 'static;
 type PasteboardPoster = dyn Fn(i32, &str) -> Result<(), PlatformError> + Send + Sync + 'static;
-type BackspacePoster = dyn Fn(i32, usize) -> Result<(), PlatformError> + Send + Sync + 'static;
 type AcceptTapHandler = dyn Fn(AcceptTapEvent) -> AcceptTapDecision + Send + Sync + 'static;
 type AcceptTapInstallerFn = dyn Fn(AcceptTapKind, Arc<AcceptTapHandler>) -> Result<AcceptTapResource, PlatformError>
     + Send
@@ -238,10 +243,21 @@ pub struct MacosPlatformAdapter {
     process_exists: Arc<ProcessExistsProvider>,
     synthetic_key_poster: Arc<SyntheticKeyPoster>,
     pasteboard_poster: Arc<PasteboardPoster>,
-    backspace_poster: Arc<BackspacePoster>,
+    clipboard_restore: Arc<ClipboardRestoreCoordinator>,
     observer_installer: AdapterObserverInstaller,
     accept_tap_installer: AdapterAcceptTapInstaller,
     ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
+}
+
+impl Drop for MacosPlatformAdapter {
+    fn drop(&mut self) {
+        if self.clipboard_restore.pending_epoch().is_some() {
+            let pasteboard = NSPasteboard::generalPasteboard();
+            let _ = self
+                .clipboard_restore
+                .restore_pending_if_unchanged(&pasteboard);
+        }
+    }
 }
 
 pub struct MacosOverlayPresenter {
@@ -306,7 +322,6 @@ enum SubscriptionEntry {
     },
     Accept {
         _callback: AcceptCallback,
-        _observer_tap: AcceptTapResource,
         /// Process-lifetime always-on shortcut registration (ids 5/6/7/8), held
         /// for the subscription's lifetime so toggles fire with no suggestion
         /// visible (finding C). Dropped on unsubscribe → hotkeys unregistered.
@@ -350,7 +365,6 @@ struct AdapterTestHooks {
     process_exists: Arc<ProcessExistsProvider>,
     synthetic_key_poster: Arc<SyntheticKeyPoster>,
     pasteboard_poster: Arc<PasteboardPoster>,
-    backspace_poster: Arc<BackspacePoster>,
     observer_installer: Arc<AdapterObserverInstallerFn>,
     accept_tap_installer: Arc<AcceptTapInstallerFn>,
     ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
@@ -428,6 +442,13 @@ impl AcceptTapController {
                 )?);
             }
             (false, true) => {
+                // Fail closed during teardown: `accept_action` was cleared
+                // synchronously above before this resource queues Carbon
+                // unregistration. A key pressed in that tiny interval may be
+                // swallowed by the still-registered hotkey, but the handler
+                // sees no action and can never insert a completion. Keep this
+                // ordering unless live evidence justifies a synchronous-close
+                // protocol for `AcceptTapResource`.
                 *consumer_tap = None;
             }
             _ => {}
@@ -537,6 +558,12 @@ impl AcceptTapController {
             return Ok(());
         }
 
+        // Match the direct disarm path's fail-closed ordering: clear the
+        // insertion action before dropping the resource that queues Carbon
+        // hotkey unregistration. A newer visibility generation may re-arm the
+        // action between these locks; the generation re-check below then keeps
+        // its consumer tap intact.
+        self.clear_accept_action_if_generation(generation)?;
         {
             let mut consumer_tap =
                 self.consumer_tap
@@ -548,7 +575,6 @@ impl AcceptTapController {
                 *consumer_tap = None;
             }
         }
-        self.clear_accept_action_if_generation(generation)?;
         Ok(())
     }
 }
@@ -567,7 +593,6 @@ enum AdapterAcceptTapInstaller {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AcceptTapKind {
-    Observer,
     Consumer,
     CorrectionConsumer,
     /// Process-lifetime always-on shortcut registration (ForceActivate /
@@ -1084,9 +1109,8 @@ impl MacosPlatformAdapter {
     /// `SyntheticKeys`/`Clipboard` cannot safely read-modify-write a range, so
     /// non-zero replacement requests using those strategies fail closed before
     /// posting any text.
-    /// `replace_left == 0` is byte-identical to the prior append-only behavior
-    /// (the backspace poster is never invoked). The empty-text early return
-    /// precedes deletion: nothing is deleted when there is nothing to insert.
+    /// `replace_left == 0` is byte-identical to the prior append-only behavior.
+    /// Empty text is a no-op before any platform write.
     fn insert_impl(
         &self,
         field: &FieldHandle,
@@ -1138,7 +1162,6 @@ impl MacosPlatformAdapter {
                 Self::refuse_non_atomic_replacement(replace_left, strategy)?;
                 let result = self
                     .recheck_secure_input()
-                    .and_then(|()| self.delete_left_via_backspaces(pid, replace_left))
                     .and_then(|()| (self.synthetic_key_poster)(pid, &text))
                     .map(|()| Inserted {
                         bytes: text.len(),
@@ -1152,7 +1175,6 @@ impl MacosPlatformAdapter {
                 Self::refuse_non_atomic_replacement(replace_left, strategy)?;
                 let result = self
                     .recheck_secure_input()
-                    .and_then(|()| self.delete_left_via_backspaces(pid, replace_left))
                     .and_then(|()| (self.pasteboard_poster)(pid, &text))
                     .map(|()| Inserted {
                         bytes: text.len(),
@@ -1169,6 +1191,7 @@ impl MacosPlatformAdapter {
 
     pub(crate) fn with_worker(worker: AxWorker) -> Result<Self, PlatformError> {
         let clipboard_restore = Arc::new(ClipboardRestoreCoordinator::default());
+        let clipboard_restore_for_poster = Arc::clone(&clipboard_restore);
         Ok(Self {
             worker,
             callback_dispatcher: CallbackDispatcher::new()?,
@@ -1181,9 +1204,9 @@ impl MacosPlatformAdapter {
             process_exists: Arc::new(process_exists),
             synthetic_key_poster: Arc::new(post_synthetic_text),
             pasteboard_poster: Arc::new(move |pid, text| {
-                post_clipboard_text(pid, text, Arc::clone(&clipboard_restore))
+                post_clipboard_text(pid, text, Arc::clone(&clipboard_restore_for_poster))
             }),
-            backspace_poster: Arc::new(post_synthetic_backspaces),
+            clipboard_restore,
             observer_installer: AdapterObserverInstaller::Worker,
             accept_tap_installer: AdapterAcceptTapInstaller::Worker,
             ax_range_target: Arc::new(RawAxRangeTarget),
@@ -1250,7 +1273,6 @@ impl MacosPlatformAdapter {
             process_exists,
             synthetic_key_poster,
             pasteboard_poster,
-            backspace_poster,
             observer_installer,
             accept_tap_installer,
             ax_range_target,
@@ -1268,7 +1290,7 @@ impl MacosPlatformAdapter {
             process_exists,
             synthetic_key_poster,
             pasteboard_poster,
-            backspace_poster,
+            clipboard_restore: Arc::new(ClipboardRestoreCoordinator::default()),
             observer_installer: AdapterObserverInstaller::Custom(observer_installer),
             accept_tap_installer: AdapterAcceptTapInstaller::Custom(accept_tap_installer),
             ax_range_target,
@@ -1360,20 +1382,6 @@ impl MacosPlatformAdapter {
                 })
             }
         }
-    }
-
-    /// Deletes `replace_left` characters left of the caret on the global insert
-    /// channels by synthesizing backspace presses. No-op (poster never invoked)
-    /// when `replace_left == 0`, keeping plain inserts byte-identical.
-    fn delete_left_via_backspaces(
-        &self,
-        pid: i32,
-        replace_left: usize,
-    ) -> Result<(), PlatformError> {
-        if replace_left == 0 {
-            return Ok(());
-        }
-        (self.backspace_poster)(pid, replace_left)
     }
 
     fn refuse_non_atomic_replacement(
@@ -1499,18 +1507,22 @@ impl PlatformAdapter for MacosPlatformAdapter {
             let identity_key = event.identity.stable_field_key().unwrap_or_else(|| {
                 format!("pid={}:{}", event.pid, event.identity.field_element_id())
             });
-            let Ok(mut current_identity_key) = current_identity_key_for_dispatch.lock() else {
-                return;
-            };
-            if current_identity_key.as_ref() == Some(&identity_key) {
-                return;
+            {
+                let Ok(mut current_identity_key) = current_identity_key_for_dispatch.lock() else {
+                    return;
+                };
+                if current_identity_key.as_ref() == Some(&identity_key) {
+                    return;
+                }
+                *current_identity_key = Some(identity_key);
             }
-            *current_identity_key = Some(identity_key);
 
-            let Ok(mut field_tracker) = field_tracker.lock() else {
-                return;
+            let field = {
+                let Ok(mut field_tracker) = field_tracker.lock() else {
+                    return;
+                };
+                field_tracker.field_for_event(event.pid, &event.identity)
             };
-            let field = field_tracker.field_for_event(event.pid, &event.identity);
             cb_for_dispatch(field);
         });
         let binding = start_dynamic_observer_binding(DynamicObserverBindingConfig {
@@ -1569,18 +1581,29 @@ impl PlatformAdapter for MacosPlatformAdapter {
                 return;
             }
 
-            let Ok(mut tracker) = tracker.lock() else {
-                return;
+            let field = {
+                let Ok(mut tracker) = tracker.lock() else {
+                    return;
+                };
+                tracker.field_for_event(event.pid, &event.identity)
             };
-            let field = tracker.field_for_event(event.pid, &event.identity);
             let rect = event.rect;
-            let Ok(mut coalescer) = coalescer.lock() else {
-                return;
+            let delivery = {
+                let Ok(mut coalescer) = coalescer.lock() else {
+                    return;
+                };
+                coalescer.observe((now_ms)(), field, rect)
             };
-            if let Some((field, rect)) = coalescer.observe((now_ms)(), field, rect) {
+            if let Some((field, rect)) = delivery {
                 cb_for_dispatch(field, rect);
             }
         });
+        // Accepted latency posture: same-process focus moves do not change the
+        // frontmost pid, so this focused-element observer is not rebound by the
+        // pid poller. The AX safety poll dispatches the new focused element
+        // within 250 ms. Closing that bound would require a new
+        // callback-to-rebind command/ownership path; add it only with a measured
+        // user-visible miss.
         let binding = start_dynamic_observer_binding(DynamicObserverBindingConfig {
             initial_pid: pid,
             frontmost_pid: Arc::clone(&self.frontmost_pid),
@@ -1618,10 +1641,6 @@ impl PlatformAdapter for MacosPlatformAdapter {
         let active = Arc::new(AtomicBool::new(true));
         let installer = self.accept_tap_installer();
         let callback_tx = self.callback_dispatcher.sender();
-        let observer_tap = installer(
-            AcceptTapKind::Observer,
-            accept_observer_tap_handler(Arc::clone(&active)),
-        )?;
         let accept_action = Arc::new(Mutex::new(None));
         // Always-on shortcuts (ids 5/6/7/8) install ONCE here, for the
         // subscription lifetime — NOT armed/dropped with each visible suggestion
@@ -1657,7 +1676,6 @@ impl PlatformAdapter for MacosPlatformAdapter {
                 id,
                 SubscriptionEntry::Accept {
                     _callback: cb,
-                    _observer_tap: observer_tap,
                     _shortcut_tap: shortcut_tap,
                     _controller: Arc::clone(&controller),
                 },
@@ -2248,54 +2266,17 @@ fn post_synthetic_text(pid: i32, text: &str) -> Result<(), PlatformError> {
     Ok(())
 }
 
-/// Synthesizes `count` Delete (backspace, keycode 0x33) key presses to `pid`.
-/// This is the only way the write-only `SyntheticKeys`/`Clipboard` insert
-/// channels can remove the typed token before a replacement insert — they
-/// cannot range-replace like `AxSet`.
-///
-/// `count` is a number of backspace PRESSES: the app deletes one grapheme
-/// cluster per press. Callers pass the typed token's char count, which equals
-/// the press count for the ASCII shortcodes/words replacements use today; a
-/// future ZWJ-sequence token would need a grapheme-aware count.
-///
-/// All 2N events are created BEFORE any is posted, so a creation failure
-/// leaves the field untouched (no partial deletion).
-fn post_synthetic_backspaces(pid: i32, count: usize) -> Result<(), PlatformError> {
-    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| {
-        PlatformError::CannotComplete {
-            reason: "failed to create CGEventSource for synthetic backspaces".into(),
-        }
-    })?;
-    let mut events = Vec::with_capacity(count * 2);
-    for _ in 0..count {
-        let key_down =
-            CGEvent::new_keyboard_event(source.clone(), KeyCode::DELETE, true).map_err(|_| {
-                PlatformError::CannotComplete {
-                    reason: "failed to create synthetic backspace key-down event".into(),
-                }
-            })?;
-        let key_up =
-            CGEvent::new_keyboard_event(source.clone(), KeyCode::DELETE, false).map_err(|_| {
-                PlatformError::CannotComplete {
-                    reason: "failed to create synthetic backspace key-up event".into(),
-                }
-            })?;
-        tag_synthetic_event(&key_down);
-        tag_synthetic_event(&key_up);
-        events.push(key_down);
-        events.push(key_up);
-    }
-    for event in events {
-        event.post_to_pid(pid);
-    }
-    Ok(())
-}
-
 fn post_clipboard_text(
     pid: i32,
     text: &str,
     coordinator: Arc<ClipboardRestoreCoordinator>,
 ) -> Result<(), PlatformError> {
+    // The change-count guard below protects a later user/application clipboard
+    // write, but it cannot tell whether a slow target has finished reading the
+    // completion. The one-second restore is therefore best effort; adapter
+    // teardown also attempts the guarded restore so a normal quit does not
+    // leave completion text behind. Reliable paste-completion detection would
+    // require a separate event-tap design.
     let pasteboard = NSPasteboard::generalPasteboard();
     let string_type = pasteboard_string_type();
     let previous_snapshot = coordinator.snapshot_for_insert(snapshot_pasteboard(&pasteboard)?);
@@ -2378,6 +2359,21 @@ struct ClipboardRestoreCoordinator {
 }
 
 impl ClipboardRestoreCoordinator {
+    fn pending_epoch(&self) -> Option<u64> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|pending| pending.epoch)
+    }
+
+    fn restore_pending_if_unchanged(&self, pasteboard: &NSPasteboard) -> PasteboardRestoreOutcome {
+        let Some(epoch) = self.pending_epoch() else {
+            return PasteboardRestoreOutcome::SkippedChanged;
+        };
+        restore_coordinated_pasteboard_if_unchanged(pasteboard, self, epoch)
+    }
+
     fn snapshot_for_insert(&self, captured: PasteboardSnapshot) -> PasteboardSnapshot {
         self.pending
             .lock()
@@ -2680,15 +2676,6 @@ fn should_ignore_event_for_tap(event_source_user_data: i64) -> bool {
 #[cfg_attr(not(test), allow(dead_code))]
 fn is_self_generated_event(event: &CGEvent) -> bool {
     should_ignore_event_for_tap(event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA))
-}
-
-fn accept_observer_tap_handler(active: Arc<AtomicBool>) -> Arc<AcceptTapHandler> {
-    Arc::new(move |event| {
-        if !active.load(Ordering::Acquire) {
-            return AcceptTapDecision::Keep;
-        }
-        accept_tap_decision(&accept_keymap(), AcceptTapKind::Observer, event, None)
-    })
 }
 
 fn accept_consumer_tap_handler(
@@ -3237,9 +3224,6 @@ fn install_worker_accept_tap_resource(
     handler: Arc<AcceptTapHandler>,
 ) -> Result<WorkerResource, PlatformError> {
     match kind {
-        // The observer tap is a CGEventTap installed elsewhere; the worker-side
-        // resource is a no-op placeholder so the subscription owns *something*.
-        AcceptTapKind::Observer => Ok(Box::new(()) as WorkerResource),
         // Always-on shortcuts (ids 5/6/7/8) install ONCE per subscription on their
         // own process-lifetime resource — independent of the per-suggestion
         // consumer arm — so a toggle fires before any suggestion appears.
@@ -4391,7 +4375,9 @@ fn range_readback_diverged(original: &str, new_value: &str, readback: &str) -> b
 unsafe fn set_caret_after_value_write(element: AXUIElementRef, new_caret: usize) {
     if let Err(err) = set_required_ax_selected_range(element, new_caret) {
         if caret_set_failure_is_worth_logging(&err) {
-            eprintln!("compme: caret set after AX value write failed (non-fatal): {err:?}");
+            write_stderr(format_args!(
+                "compme: caret set after AX value write failed (non-fatal): {err:?}"
+            ));
         }
     }
 }
@@ -4401,6 +4387,23 @@ unsafe fn set_caret_after_value_write(element: AXUIElementRef, new_caret: usize)
 /// range, so it stays silent; every other error is non-fatal but surfaced.
 fn caret_set_failure_is_worth_logging(err: &PlatformError) -> bool {
     !matches!(err, PlatformError::UnsupportedField { .. })
+}
+
+fn ensure_ax_insert_snapshot_unchanged(
+    original_value: &str,
+    original_range: CFRange,
+    current_value: &str,
+    current_range: CFRange,
+) -> Result<(), PlatformError> {
+    let same_range = original_range.location == current_range.location
+        && original_range.length == current_range.length;
+    if original_value == current_value && same_range {
+        Ok(())
+    } else {
+        Err(PlatformError::CannotComplete {
+            reason: "field value or selection changed before AX write".into(),
+        })
+    }
 }
 
 fn insert_for_field(
@@ -4430,11 +4433,25 @@ fn insert_for_field(
     }
 
     let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
-    let selected_range = unsafe { read_required_ax_range_attribute(element) }?;
+    let selected_range_snapshot = unsafe { read_required_ax_range_attribute(element) }?;
     // For a replacement, extend the splice range left to cover the typed token
     // (`replace_left` characters) so it is deleted before the new text is inserted.
-    let selected_range = extend_range_left(&value, selected_range, replace_left);
+    let selected_range = extend_range_left(&value, selected_range_snapshot, replace_left);
     let (new_value, new_caret) = splice_text_at_utf16_range(&value, selected_range, &text);
+
+    // AXValue replacement is a read-modify-write, not a native compare-and-swap.
+    // Re-read immediately before the mutation and refuse if either snapshot
+    // moved. This converts the common clobber window into a clean retry; an app
+    // can still change the field after this check and before the set, so the
+    // readback classifier below narrows but cannot close the final race.
+    let current_value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
+    let current_range = unsafe { read_required_ax_range_attribute(element) }?;
+    ensure_ax_insert_snapshot_unchanged(
+        &value,
+        selected_range_snapshot,
+        &current_value,
+        current_range,
+    )?;
 
     unsafe {
         set_required_ax_string_attribute(element, kAXValueAttribute, &new_value)?;
@@ -4620,12 +4637,12 @@ fn insert_range_for_field(
     // diagnosable while still reporting Applied. Lengths only: the field text
     // may be sensitive.
     if range_readback_diverged(&value, &new_value, &readback) {
-        eprintln!(
+        write_stderr(format_args!(
             "compme: range replacement readback diverged from expected value \
              (expected {} utf16 units, read back {})",
             new_value.encode_utf16().count(),
             readback.encode_utf16().count()
-        );
+        ));
     }
     Ok(axset_readback_outcome(
         &value,

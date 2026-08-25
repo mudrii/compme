@@ -30,6 +30,8 @@
 # Default logs go under tools/acceptance/logs/. For release evidence, set
 # COMPME_A2_LOG_DIR=tools/acceptance/evidence/a2/<run>, then commit the TSV and
 # every row log referenced by the ledger.
+# Deliberately omit `-e`: matrix/self-test paths count failures and keep running;
+# single-gate failures use `fail()`, while setup/usage errors explicitly exit 2.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
