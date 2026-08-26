@@ -57,18 +57,18 @@ become fix loops; do not mark a gate from a headless run.
 
 ### Lane S — sandbox UX gates
 
-- [ ] `lx1-ghost-at-caret` — Type a word in gedit; the ghost " world" renders
+- [x] `lx1-ghost-at-caret` — Type a word in gedit; the ghost " world" renders
       at the caret position in the DejaVu face, tracks the caret as you
       continue typing, and never detaches, flickers, or paints over the wrong
       window.
-- [ ] `lx2-tab-accepts` — With the ghost visible, Tab inserts the completion
+- [x] `lx2-tab-accepts` — With the ghost visible, Tab inserts the completion
       into the gedit buffer exactly once (readback matches, no doubled text),
       the ghost hides, and the log records the accept.
-- [ ] `lx3-tab-passes-through-without-ghost` — With no ghost visible, Tab
+- [x] `lx3-tab-passes-through-without-ghost` — With no ghost visible, Tab
       reaches gedit as a normal Tab (indent/insert) and is never swallowed.
       This is the key-eating polarity the tap's grab-exactly-while-armed
       contract exists to protect.
-- [ ] `lx4-dismiss-and-supersede` — Escape dismisses a visible ghost
+- [x] `lx4-dismiss-and-supersede` — Escape dismisses a visible ghost
       (`usage … dismissed` increments); continuing to type replaces a stale
       ghost with the new suggestion (superseded, not stacked).
 - [ ] `lx5-modified-chords-pass-through` — With the ghost visible, Ctrl+Tab
@@ -109,6 +109,10 @@ become fix loops; do not mark a gate from a headless run.
 
 | Gate | Result | Date | Evidence |
 |---|---|---|---|
+| lx1 | ✅ | 2026-08-26 | Ghost rendered at the gedit caret and tracked typing; 54 stub requests logged, stale generations superseded (gen skips) |
+| lx2 | ✅ | 2026-08-26 | Single insertion confirmed at the keyboard; `accept Word` in compme.log, ghost hid |
+| lx3 | ✅ | 2026-08-26 | Repeated Tab with no ghost always reached gedit; no spurious accept logged |
+| lx4 | ✅ | 2026-08-26 | Two `dismiss (Esc)` log lines; typing superseded rather than stacked |
 | _(fill per run)_ | | | |
 
 Wayland-native overlay/accept remain **Phase 3 by design** — nothing in this
