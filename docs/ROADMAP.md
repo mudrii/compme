@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-08-26 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2064 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-08-26 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2065 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -432,7 +432,7 @@ spike verdict still holding. The `app` binary links none of libxcb, libatspi,
 libX11, or libsecret — the property every "D-Bus/pure-Rust, not the C library"
 decision below was made to preserve. Per-phase live-test counts in the entries
 that follow were each measured on their own branch and do not sum to 26. The
-suite has since grown: the current tree carries **35 live tests** (32 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
+suite has since grown: the current tree carries **36 live tests** (33 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
 
 **Host wiring ✅ DONE (2026-07-29) — the product now drives the Linux adapter:**
 `app::shell::stub::make_adapter` calls `LinuxAdapter::with_accessibility()`
@@ -1360,9 +1360,10 @@ per-app configurable.
    chords precede the installability probe; and one transactional
    exact-modifier `GrabPlan` owns initial grab, keyboard-map refresh, and live
    rearm. Partial-spawn teardown and the watchdog/arming cleanups are in place.
-   The portable lane passed 107 tests and the complete ignored Linux lane passed
-   35/35 (32 AT-SPI/X11 plus confirm, keyring, and reveal), including rollback
-   to the previously armed plan after a conflicting live rebind.
+   The portable lane passed 112 tests and the complete ignored Linux lane passed
+   36/36 (33 AT-SPI/X11 plus confirm, keyring, and reveal), including rollback
+   to the previously armed plan after a conflicting live rebind and the
+   failed-arm cleanup that A58 left unasserted.
 7. **Windows Phase 1 (1.1–1.7)** — the Linux C.2 trigger closed on 2026-08-25;
    proceed with UIA read/caret, keyboard hook, insertion, layered overlay,
    ShellHost services, and native acceptance on Windows hardware. Carry

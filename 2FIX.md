@@ -1307,6 +1307,9 @@ The macOS workspace-count restamp is **2,064**, derived from the checker-pinned
 HEAD baseline of 2,027 plus 37 target-visible additions: 17 portable-crate, 14
 app, three host-portable `platform_linux`, and three `platform_macos` tests. The
 Linux-only additions are deliberately excluded from that macOS count.
+(Superseded 2026-08-26 by the findings-fix round in `FIXED.md`: one portable
+`memory` schema-snapshot test takes the macOS restamp to **2,065**, and the
+Linux package lane to **112** tests with 36 ignored, **36/36** live.)
 The current Linux package lane passes **107** tests with 35 ignored. All
 **35/35** ignored live AT-SPI/X11/session-service cases pass in the provisioned
 Xvfb harness, including the A42 plan-construction failure regression. The app's

@@ -1177,3 +1177,171 @@ fresh verification of all 69 items, at HEAD `a1cb743`.
 - **Unchanged external obligations:** macOS serial lane, the 2,064 anchor's
   authoritative check on the next macOS CI run, real-tag `post_verify`/A53
   evidence, the 22 live macOS gates, and the A72 cargo-deny owner decision.
+
+## Findings-fix round — 2026-08-26, closing the six residual seams
+
+Scope: the six findings recorded above under "Residual improvement seams"
+(F3/A61, F4/A47, F5/A44, F6/A39, F7/A58) plus the A22/A34 count-drift class
+(F8). Test-only and pin-only work with two verbatim extractions; no behavior
+changed. Every new test was mutation-verified — the mutant is named per item.
+
+### F3 (A61) — the `checked_rebuilt_len` call site is now pinned
+
+- **Changed:** `crates/platform_linux/src/atspi_live.rs` — the four pre-write
+  statements inside `insert_replacing_range` (past-length guard, expected-text
+  guard, rebuilt-length check, value rebuild) moved into a pure
+  `checked_replacement(scalars, expected_text, text, range) -> Result<String>`;
+  the caller is now one delegating line. The inverted-range guard stayed at the
+  call site deliberately: it must run before the D-Bus read that produces
+  `scalars`, so moving it would reorder I/O against a guard.
+- **Why this shape:** the extracted function *returns the value to be written*,
+  so the call cannot be deleted and still compile — the exact failure mode the
+  finding described (deleting the check kept every test green).
+- **Verbatim proof:** normalized token-sequence diff of the old statement block
+  against the new callee body: 157 tokens vs 157, identical, with the callee's
+  only addition being the trailing `Ok(updated)` and the call site's only
+  content being `let updated = checked_replacement(&scalars, expected_text,
+  text, range)?;`.
+- **Tests:** `atspi_live::tests::at_cap_field_refuses_a_growing_replacement_and_still_builds_a_same_size_one`
+  (200,000-scalar field: 1→2 refused, 1→1 and 1→0 allowed) and
+  `atspi_live::tests::replacement_refuses_a_range_past_the_field_and_text_that_changed_underneath`.
+- **Mutation:** deleting the `checked_rebuilt_len(...)` line from
+  `checked_replacement` fails the first test (previously: green).
+- **Count impact:** none on macOS — `atspi_live` is `#[cfg(target_os = "linux")]`.
+
+### F4 (A47) — both id consumers pinned to the one counter
+
+- **Changed:** `crates/platform_linux/src/lib.rs` gained two constructors over
+  the single `next_subscription_id()` — `new_subscription()` (the accept tap's
+  handle, used by `subscribe_accept`) and `new_cancelling_subscription(cancel)`
+  (used by `atspi_events::into_subscription`). Both call sites now mint through
+  them instead of assembling `Subscription::{new,with_cancel}` from a loose id.
+- **Tests:** headless
+  `atspi_events::tests::both_subscription_constructors_draw_from_the_same_counter`
+  interleaves the two constructors and demands a strictly increasing sequence —
+  a second counter in either restarts at 1 and fails it. The *real* call sites
+  are pinned live, without adding a test: `live_focus_events_deliver_a_readable_field_and_stop_when_dropped`
+  and the `install_tap()` helper (used by every accept-tap live test) now
+  bracket the real `subscribe_focus` / `subscribe_accept` call with two draws
+  from the shared counter and assert the returned id falls inside that window.
+- **Mutation:** giving `new_subscription` its own `AtomicU64` fails the headless
+  test.
+- **Count impact:** none (Linux-only modules; the live assertions add no test).
+
+### F5 (A44) — the bounded drop is now executed, not just documented
+
+- **Changed:** `crates/platform_linux/src/atspi_events.rs` — `EventWorkers::stop`
+  destructures itself and delegates to `stop_gated_workers(active, wake,
+  stopped, threads)`; the dispatcher thread body delegates to
+  `dispatch_gated_events(active, events, coalesce, deliver)`. The connection is
+  now the *only* part of the sequence that needs a bus, so both halves are
+  drivable headlessly.
+- **Verbatim proof:** token diffs, both 1:1 — stop 45 vs 45 tokens (differences
+  are only `self.field` → parameter and `connection.close()` → the injected
+  `wake()`); dispatch loop 98 vs 98 tokens (differences are only the two
+  parameter renames and `&session` moving into the caller's closure).
+- **Tests:** `atspi_events::tests::stopping_is_bounded_when_a_subscriber_blocks_and_nothing_is_delivered_after_it`
+  — a subscriber blocked past stop; asserts stop returns in < 5 s (and that it
+  really took the `STOP_TIMEOUT` path, not a clean acknowledgement) and that the
+  event queued behind the blocked callback is never delivered. Plus
+  `atspi_events::tests::stopping_joins_workers_that_acknowledge_within_the_bound`
+  for the join half.
+- **Mutation:** removing the per-event gate check from `dispatch_gated_events`
+  fails the post-stop-delivery assertion.
+- **Count impact:** none on macOS (`atspi_events` is Linux-cfg'd). Wall cost:
+  ~2.1 s in the Linux lane, which is the timeout being proven.
+
+### F6 (A39) — the 0.x schema has a DDL snapshot
+
+- **Changed:** `crates/memory/src/lib.rs` — new test
+  `tests::the_0x_schema_is_exactly_this_ddl_until_a_migration_lands` opens an
+  in-memory store, writes one row (so `sqlite_sequence` exists, as it does in
+  any installed store), snapshots `SELECT type, name, sql FROM sqlite_master
+  ORDER BY type, name` against a literal, and asserts `PRAGMA user_version` is
+  still 0. Its doc comment names the obligation: a failure means you are
+  changing the 0.x schema and owe `PRAGMA user_version` plus a transactional
+  migration before restamping the literal.
+- **Count impact:** **+1 on the macOS workspace count** (portable crate).
+
+### F7 (A58) — the failed-arm path asserts that no state survives
+
+- **Changed:** `crates/platform_linux/src/atspi_live_tests.rs` — new live test
+  `x11_accept_tap::live_accept_tap_failed_arm_leaves_no_state_behind`. A second
+  X client holds the bare Tab grab so `set_accept_action(Some(..))` fails
+  `BadAccess` → `UnsupportedField`. Two legs, both behavioral: (1) a failsafe
+  hide scheduled *before* the failed arm must not survive it — the test waits
+  past that deadline, re-arms with `set_accept_action` (deliberately not
+  `set_suggestion_visible`, which clears the deadline itself and would mask the
+  leak) and requires Tab to still accept; (2) the failed arm's action must not
+  survive either — a later `set_suggestion_visible(true)` must default to a full
+  accept as from cold, which Tab reports as `Accept(Word)`, rather than
+  inheriting the failed `Correction` (under which Tab passes through). The tap
+  is installed *before* the conflicting grab, because `with_accessibility`
+  trial-grabs the accept keys and would otherwise not install at all.
+- **Mutations (live, both bite):** dropping `clear_armed_state` from the
+  Grab-error arm fails leg 1 (`left: []`, `right: [Accept(Word)]`); clearing
+  everything *except* the armed action fails leg 2 (`left: [Accept(Word)]`,
+  `right: [Accept(Word), Accept(Word)]`).
+- **Count impact:** live count **35 → 36** (adapter tests 32 → 33). No macOS
+  impact (`atspi_live_tests` is `cfg(all(test, target_os = "linux"))`).
+
+### F8 (A22/A34 class) — the parallel-crate count is derived, not typed
+
+- **Changed:** `tools/release/check-model-gates.sh` — new
+  `check_workspace_parallel_crate_count`, called in normal mode and in the
+  self-test. It parses the root `Cargo.toml` `[workspace] members` list with
+  ruby, requires both serial-lane crates to be listed, and pins three prose
+  lines to `members − 2`: `ci.yml`'s "the other 24 crates" comment and
+  DEVELOPMENT's "parallel run over the 24 portable crates" and "while the other
+  24 crates no longer pay". Each `require_line` returns immediately on failure —
+  `set -e` is suspended while the function runs as an `if` condition, so a later
+  passing line would otherwise mask an earlier stale count (this bug was caught
+  by the self-test mutant, not by review).
+- **Self-test mutants (both bite):** decrementing the ci.yml comment's count,
+  and incrementing both DEVELOPMENT counts. `--self-test` rc=0 on the real tree.
+- **Not added:** the ARCHITECTURE "26 crates" lines, already pinned to
+  `workspace_members_count` in the live lane.
+
+### Count restamps in this round
+
+| anchor | from | to |
+|---|---|---|
+| `README.md:360` "roughly … tests." | 2,064 | **2,065** |
+| `docs/DEVELOPMENT.md:212`, `:293` "~… tests" | 2064 | **2065** |
+| `docs/ROADMAP.md:3` "≈… workspace tests" | 2064 | **2065** |
+| `docs/superpowers/specs/2026-07-01-grammar-fix-design.md:5` | 2064 | **2065** |
+| `docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md:4` | 2064 | **2065** |
+| `docs/ROADMAP.md:435` live total | 35 (32) | **36 (33)** |
+| `docs/ROADMAP.md:~1364` live lane result | 35/35 (32) | **36/36 (33)** |
+| `tools/release/check-model-gates.sh:265-266` comment | 35 (32) | **36 (33)** |
+
+The macOS delta is exactly +1: the `memory` schema test. The other six new
+tests live in `atspi_live`, `atspi_events` (both `#[cfg(target_os = "linux")]`
+modules) and `atspi_live_tests` (`cfg(all(test, target_os = "linux"))`), none of
+which compiles on the macOS lane. As before, the next macOS CI checker run is
+the authoritative arbiter of the 2,065 stamp. `2FIX.md`'s Appendix D carries a
+dated supersession note rather than an edit to its original evidence numbers.
+
+### Seams closed by this round
+
+A61's call site, A47's counter sharing (headless *and* at both real call sites),
+A44's bounded drop, A39's schema pin, and A58's failed-arm state are no longer
+code-pinned-only. Still open from that list, untouched here: the
+`MacosPlatformAdapter::Drop` → clipboard-coordinator and `insert_for_field` →
+snapshot-gate wirings (macOS, code-pinned only), AX-worker `Drop` joins at quit,
+and the absence of commit hashes in per-item sections.
+
+### Validation evidence (this host, staged rustc 1.97.0)
+
+`cargo fmt --all -- --check` rc=0 · `-p platform_linux` 112/0 + 36 ignored ·
+`-p memory --all-targets` 50/0 · portable workspace `--all-targets` all green
+rc=0 · `-p app --bins -- --test-threads=1` 558/0 + 2 ignored · workspace clippy
+`-D warnings` rc=0 · `platform_linux` clippy `--target aarch64-apple-darwin`
+rc=0 · `check-model-gates.sh --self-test` PASS · `check-linux-live-test-count.sh`
+PASS (36 = 33 + 1 each confirm/keyring/reveal) · `check-version-docs.sh` and
+`check-agent-briefs.sh` PASS. **Live lane: 36/36** in the nix-provisioned Xvfb
+harness (`--test-threads=1`, `COMPME_FONT` pointing at a real DejaVu file —
+an empty `COMPME_FONT` fails the four overlay tests and is an invocation
+error, not a regression). shellcheck was **not** run: it is not installed on
+this host. macOS execution evidence (serial lane, doc tests, the 22 live gates)
+and real-tag `post_verify` remain unchanged external obligations.

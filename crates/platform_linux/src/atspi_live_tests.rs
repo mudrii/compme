@@ -1016,9 +1016,21 @@ fn live_focus_events_deliver_a_readable_field_and_stop_when_dropped() {
     let cb: FocusCallback = Arc::new(move |field| {
         let _ = tx.send(field);
     });
+    // A47: the event path and the accept path share one process-wide id
+    // counter. Bracketing the real call proves *this* consumer draws from it —
+    // a second counter reintroduced in `atspi_events::into_subscription` would
+    // hand out an id outside this window.
+    let before_id = crate::next_subscription_id();
     let subscription = adapter
         .subscribe_focus(Arc::clone(&cb))
         .expect("subscribe_focus");
+    let after_id = crate::next_subscription_id();
+    assert!(
+        before_id < subscription.id() && subscription.id() < after_id,
+        "subscribe_focus must mint its id from the shared subscription counter: \
+         {before_id} < {} < {after_id}",
+        subscription.id()
+    );
 
     // Focus the text view, then the entry again: two real focus changes, ending on
     // the fixture's documented baseline so the rest of the suite is unaffected.
@@ -1416,9 +1428,20 @@ mod x11_accept_tap {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(control);
         });
+        // A47's other consumer, pinned at its real call site: the accept
+        // subscription's id must fall inside a window drawn from the same
+        // process-wide counter the event subscriptions use.
+        let before_id = crate::next_subscription_id();
         let subscription = adapter
             .subscribe_accept(callback)
             .expect("the harness's X session has the accept keys free, so the tap must install");
+        let after_id = crate::next_subscription_id();
+        assert!(
+            before_id < subscription.id() && subscription.id() < after_id,
+            "subscribe_accept must mint its id from the shared subscription counter: \
+             {before_id} < {} < {after_id}",
+            subscription.id()
+        );
         (adapter, subscription, recorded)
     }
 
@@ -1686,6 +1709,101 @@ mod x11_accept_tap {
 
         drop(subscription);
         crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
+        restore_entry_focus();
+    }
+
+    #[test]
+    #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+    fn live_accept_tap_failed_arm_leaves_no_state_behind() {
+        // A58: arm state (the armed action, the arm timestamp, the failsafe hide
+        // deadline) is written on the *success* arm. The failure arm must leave
+        // none of it, or a later successful arm inherits a deadline that already
+        // expired and the watchdog disarms it out from under the user. Asserted
+        // through behavior only: a keystroke either accepts or it does not.
+        crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
+        let (owner, root) = xtest();
+        // Installed BEFORE the conflicting grab: `with_accessibility` trial-grabs
+        // the accept keys to decide `accept_intercept`, so grabbing Tab first
+        // would fail the probe and there would be no tap to arm at all.
+        let (_adapter, subscription, recorded) = install_tap();
+        let tab = keycode(&owner, KEYSYM_TAB);
+        let grab_tab = |owner: &RustConnection| {
+            owner
+                .grab_key(
+                    false,
+                    root,
+                    x11rb::protocol::xproto::ModMask::from(0u16),
+                    tab,
+                    x11rb::protocol::xproto::GrabMode::ASYNC,
+                    x11rb::protocol::xproto::GrabMode::ASYNC,
+                )
+                .expect("bare Tab grab request")
+                .check()
+                .expect("the isolated Xvfb has bare Tab free");
+        };
+        let ungrab_tab = |owner: &RustConnection| {
+            owner
+                .ungrab_key(tab, root, x11rb::protocol::xproto::ModMask::from(0u16))
+                .expect("release owned Tab")
+                .check()
+                .expect("release owned Tab reply");
+        };
+
+        // Leg 1: a pending failsafe hide must not survive the failed arm.
+        subscription
+            .hide_suggestion_after(Duration::from_millis(150))
+            .expect("schedule a failsafe hide before the arm fails");
+        grab_tab(&owner);
+        assert!(
+            matches!(
+                subscription.set_accept_action(Some(AcceptAction::Correction)),
+                Err(PlatformError::UnsupportedField { .. })
+            ),
+            "another client's bare Tab grab must make the arm fail with BadAccess"
+        );
+        // Well past the scheduled hide: a deadline that survived has now fired.
+        std::thread::sleep(Duration::from_millis(400));
+        ungrab_tab(&owner);
+        // Deliberately NOT set_suggestion_visible, which clears the deadline on
+        // every visibility transition and would hide the leak this leg is for.
+        subscription
+            .set_accept_action(Some(AcceptAction::Word))
+            .expect("the accept keys are free again");
+        std::thread::sleep(Duration::from_millis(150)); // several watchdog ticks
+        tap_key(&owner, root, KEYSYM_TAB);
+        assert_eq!(
+            delivered(&recorded, 1),
+            vec![TapControl::Accept(AcceptAction::Word)],
+            "a hide deadline from before the failed arm must not disarm the later arm"
+        );
+
+        // Leg 2: the failed arm's action must not survive either — the next
+        // `set_suggestion_visible(true)` defaults to a full accept only if it
+        // finds no armed action, so a leaked Correction would silently replace
+        // the arm's meaning and stop Tab from accepting.
+        subscription.set_suggestion_visible(false).expect("disarm");
+        grab_tab(&owner);
+        assert!(
+            subscription
+                .set_accept_action(Some(AcceptAction::Correction))
+                .is_err(),
+            "the second arm must fail the same way"
+        );
+        ungrab_tab(&owner);
+        subscription
+            .set_suggestion_visible(true)
+            .expect("arm again, as from cold");
+        tap_key(&owner, root, KEYSYM_TAB);
+        assert_eq!(
+            delivered(&recorded, 2),
+            vec![
+                TapControl::Accept(AcceptAction::Word),
+                TapControl::Accept(AcceptAction::Word)
+            ],
+            "arming after a failed arm must behave as from cold, not inherit its action"
+        );
+
+        drop(subscription);
         restore_entry_focus();
     }
 

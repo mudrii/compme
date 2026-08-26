@@ -82,6 +82,42 @@ fn checked_rebuilt_len(
     Ok(rebuilt)
 }
 
+/// Every pre-write check a whole-field range replacement owes, followed by the
+/// value it would write. One function so the checks cannot drift apart from the
+/// write they guard: the caller cannot reach `SetTextContents` without the
+/// `updated` string this returns, so no check here can be dropped and still
+/// compile — which the checks-as-separate-statements shape did allow.
+///
+/// The inverted-range guard stays at the call site on purpose: it must run
+/// before the field is read over D-Bus, and this function takes the scalars that
+/// read produced.
+fn checked_replacement(
+    scalars: &[char],
+    expected_text: &str,
+    text: &str,
+    range: platform::CorrectionRange,
+) -> Result<String, PlatformError> {
+    if range.end > scalars.len() {
+        return Err(unsupported(format!(
+            "platform_linux: range {}..{} past the field length {}",
+            range.start,
+            range.end,
+            scalars.len()
+        )));
+    }
+    let current: String = scalars[range.start..range.end].iter().collect();
+    if current != expected_text {
+        return Err(unsupported(format!(
+            "platform_linux: field changed under the replacement (found {current:?})"
+        )));
+    }
+    checked_rebuilt_len(scalars.len(), range.end - range.start, text.chars().count())?;
+    let mut updated: String = scalars[..range.start].iter().collect();
+    updated.push_str(text);
+    updated.extend(scalars[range.end..].iter());
+    Ok(updated)
+}
+
 fn field_over_cap_error() -> PlatformError {
     unsupported(format!(
         "field exceeds {MAX_FIELD_SCALARS} scalars; refusing lossy read/replace"
@@ -454,24 +490,7 @@ impl AtspiSession {
         }
         let id = self.element(field)?;
         let scalars = self.field_scalars(&id)?;
-        if range.end > scalars.len() {
-            return Err(unsupported(format!(
-                "platform_linux: range {}..{} past the field length {}",
-                range.start,
-                range.end,
-                scalars.len()
-            )));
-        }
-        let current: String = scalars[range.start..range.end].iter().collect();
-        if current != expected_text {
-            return Err(unsupported(format!(
-                "platform_linux: field changed under the replacement (found {current:?})"
-            )));
-        }
-        checked_rebuilt_len(scalars.len(), range.end - range.start, text.chars().count())?;
-        let mut updated: String = scalars[..range.start].iter().collect();
-        updated.push_str(text);
-        updated.extend(scalars[range.end..].iter());
+        let updated = checked_replacement(&scalars, expected_text, text, range)?;
 
         let editable = self.editable_text(&id)?;
         if !editable
@@ -650,6 +669,71 @@ mod tests {
             Err(PlatformError::UnsupportedField { reason })
                 if reason == "field exceeds 200000 scalars; refusing lossy read/replace"
         ));
+    }
+
+    /// The same cap, asserted where `insert_replacing_range` actually applies it:
+    /// on the whole pre-write sequence, over a real at-cap field. Pinning only
+    /// [`checked_rebuilt_len`]'s verdict left the call site free — the check
+    /// could be deleted from the replacement path with every test still green.
+    #[test]
+    fn at_cap_field_refuses_a_growing_replacement_and_still_builds_a_same_size_one() {
+        let scalars: Vec<char> = std::iter::repeat_n('a', MAX_FIELD_SCALARS).collect();
+        let range = platform::CorrectionRange { start: 0, end: 1 };
+        let expected = "a";
+
+        // One scalar out, two in: the rebuilt value is one over the cap, so the
+        // replacement must be refused *before* anything is written.
+        assert!(matches!(
+            checked_replacement(&scalars, expected, "bc", range),
+            Err(PlatformError::UnsupportedField { reason })
+                if reason == "field exceeds 200000 scalars; refusing lossy read/replace"
+        ));
+
+        // Same size and shrinking stay allowed at the cap: the guard is about
+        // growth past the cap, not about touching a full field at all.
+        let same = checked_replacement(&scalars, expected, "b", range).expect("same-size swap");
+        assert_eq!(same.chars().count(), MAX_FIELD_SCALARS);
+        assert!(same.starts_with('b'));
+        let shrunk = checked_replacement(&scalars, expected, "", range).expect("shrinking swap");
+        assert_eq!(shrunk.chars().count(), MAX_FIELD_SCALARS - 1);
+    }
+
+    /// The other two pre-write guards, over the same sequence: a range past the
+    /// field and text that changed under the replacement must both refuse
+    /// without producing a value to write.
+    #[test]
+    fn replacement_refuses_a_range_past_the_field_and_text_that_changed_underneath() {
+        let scalars: Vec<char> = "hello".chars().collect();
+        assert!(matches!(
+            checked_replacement(
+                &scalars,
+                "hello",
+                "x",
+                platform::CorrectionRange { start: 0, end: 9 },
+            ),
+            Err(PlatformError::UnsupportedField { reason })
+                if reason == "platform_linux: range 0..9 past the field length 5"
+        ));
+        assert!(matches!(
+            checked_replacement(
+                &scalars,
+                "help",
+                "x",
+                platform::CorrectionRange { start: 0, end: 4 },
+            ),
+            Err(PlatformError::UnsupportedField { reason })
+                if reason == "platform_linux: field changed under the replacement (found \"hell\")"
+        ));
+        assert_eq!(
+            checked_replacement(
+                &scalars,
+                "ell",
+                "i",
+                platform::CorrectionRange { start: 1, end: 4 },
+            )
+            .expect("in-range swap"),
+            "hio"
+        );
     }
 
     /// `open()` must report a diagnosable error rather than panic when no

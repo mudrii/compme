@@ -142,6 +142,21 @@ fn next_subscription_id() -> u64 {
     NEXT_SUBSCRIPTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Mint the accept tap's subscription. Every subscription this adapter hands
+/// out — event and accept alike — is built by one of these two constructors, so
+/// "one counter for all of them" is a property of two functions rather than of
+/// each call site remembering to use the shared allocator.
+#[cfg(target_os = "linux")]
+fn new_subscription() -> Subscription {
+    Subscription::new(next_subscription_id())
+}
+
+/// Mint an event subscription, whose teardown is the cancel closure.
+#[cfg(target_os = "linux")]
+fn new_cancelling_subscription(cancel: impl FnOnce() + Send + 'static) -> Subscription {
+    Subscription::with_cancel(next_subscription_id(), cancel)
+}
+
 impl LinuxAdapter {
     /// An inert adapter: no accessibility bus, so every field operation still
     /// fails closed.
@@ -313,12 +328,11 @@ impl PlatformAdapter for LinuxAdapter {
         let for_hide = std::sync::Arc::clone(&tap);
         let for_action = std::sync::Arc::clone(&tap);
         let for_rearm = std::sync::Arc::clone(&tap);
-        let id = next_subscription_id();
         Ok(AcceptSubscription::new(
             // Teardown is the tap's `Drop`: it thaws the keyboard and releases
             // every grab before joining its threads. Dropping the returned
             // handle drops these closures, which hold the only references.
-            Subscription::new(id),
+            new_subscription(),
             move |visible| for_visible.set_suggestion_visible(visible),
             move |delay| for_hide.hide_suggestion_after(delay),
             move |action| for_action.set_accept_action(action),

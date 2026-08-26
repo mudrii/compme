@@ -262,7 +262,7 @@ abort("missing release gate: CI runs model quality after the model smoke gate") 
     portable_test && portable_test.fetch("run") == "cargo test --locked --workspace --exclude platform_macos --all-targets"
 end
 # The live Linux surfaces (AT-SPI read/insert/events, X11 accept tap, overlay,
-# session shell services) ship 35 live tests (32 AT-SPI/X11 adapter tests + 1
+# session shell services) ship 36 live tests (33 AT-SPI/X11 adapter tests + 1
 # each for confirm, keyring, and reveal) that only run inside the harness.
 # Nothing pinned the step that runs them, so deleting it left every gate green
 # while the entire live Linux surface went unexercised.
@@ -995,6 +995,35 @@ check_manual_a2_summary() {
   fi
 }
 
+# The parallel/serial test split is documented as a *count* — "the other 24
+# crates run in parallel" — and nothing recomputed it when a crate was added or
+# removed (the A22/A34 count-drift class). Derive it from the root manifest
+# instead: every workspace member except the two serial-lane crates, whose step
+# (`cargo test ... -p platform_macos -p app ... --test-threads=1`) is pinned
+# exactly in the CI and release workflow contracts above.
+check_workspace_parallel_crate_count() {
+  local manifest_file="$1"
+  local ci_file="$2"
+  local development_file="$3"
+  local parallel_count
+  parallel_count="$(ruby - "$manifest_file" <<'RUBY'
+manifest = File.read(ARGV.fetch(0))
+members = manifest[/^members = \[\n(.*?)^\]$/m, 1]
+abort("missing release gate: root manifest [workspace] members list") unless members
+listed = members.scan(/^\s*"([^"]+)",?\s*$/).flatten
+serial = %w[crates/platform_macos crates/app]
+abort("missing release gate: root manifest lists both serial-lane crates") unless (serial - listed).empty?
+puts listed.length - serial.length
+RUBY
+)"
+  # Each failure returns immediately: `set -e` is suspended while this runs as an
+  # `if` condition in the self-test, so a later passing check would otherwise
+  # mask an earlier stale count.
+  require_line "$ci_file" "the other ${parallel_count} crates\$" "CI parallel crate count comment" || return 1
+  require_line "$development_file" "parallel run over the ${parallel_count} portable crates" "DEVELOPMENT parallel crate count" || return 1
+  require_line "$development_file" "while the other ${parallel_count} crates no longer pay" "DEVELOPMENT serial-lane crate count" || return 1
+}
+
 check_manual_gate_id_sets() {
   local runner_file="$1"
   local acceptance_file="$2"
@@ -1250,6 +1279,29 @@ run_self_test() {
     "$acceptance_doc" \
     "$bad_manual_gate_validation" >/dev/null 2>&1; then
     echo "release gate self-test failed: incomplete manual-validation gate set was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  check_workspace_parallel_crate_count "$repo_root/Cargo.toml" "$ci_workflow" "$development_doc"
+
+  bad_parallel_ci="$tmp_dir/bad-parallel-count.yml"
+  cp "$ci_workflow" "$bad_parallel_ci"
+  ruby -0pi -e 'sub(/the other (\d+) crates/) { "the other #{$1.to_i - 1} crates" }' "$bad_parallel_ci"
+  if check_workspace_parallel_crate_count \
+    "$repo_root/Cargo.toml" "$bad_parallel_ci" "$development_doc" >/dev/null 2>&1; then
+    echo "release gate self-test failed: stale CI parallel crate count was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_parallel_development="$tmp_dir/bad-parallel-count.md"
+  cp "$development_doc" "$bad_parallel_development"
+  ruby -0pi -e 'gsub(/(parallel run over the |while the other )(\d+)( crates| portable crates)/) { "#{$1}#{$2.to_i + 1}#{$3}" }' \
+    "$bad_parallel_development"
+  if check_workspace_parallel_crate_count \
+    "$repo_root/Cargo.toml" "$ci_workflow" "$bad_parallel_development" >/dev/null 2>&1; then
+    echo "release gate self-test failed: stale DEVELOPMENT parallel crate count was accepted" >&2
     cleanup
     return 1
   fi
@@ -3554,6 +3606,7 @@ check_release_integrity_controls "$release_workflow"
 check_all_self_test_env_contracts
 check_manual_a2_summary "$readme_doc" "README"
 check_manual_a2_summary "$development_doc" "DEVELOPMENT"
+check_workspace_parallel_crate_count "$repo_root/Cargo.toml" "$ci_workflow" "$development_doc"
 check_manual_gate_id_sets \
   "$repo_root/tools/acceptance/run-a1b-live-gates.sh" \
   "$acceptance_doc" \

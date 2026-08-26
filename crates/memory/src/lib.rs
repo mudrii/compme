@@ -499,6 +499,70 @@ mod tests {
         std::env::temp_dir().join(format!("cm-memory-test-{hex}.db"))
     }
 
+    /// The 0.x schema policy in this module's docs, made executable.
+    ///
+    /// **If this test fails you are changing the 0.x schema.** The policy is not
+    /// "never change it", it is "changing it is a migration": add
+    /// `PRAGMA user_version` plus a transactional migration that upgrades an
+    /// existing encrypted store in place, then update the literal below. An
+    /// existing store must never be reopened as though it had been created under
+    /// the new schema — its rows would be unreadable or silently mislabelled.
+    ///
+    /// The DDL is compared as SQLite echoes it back (`sqlite_master.sql`), so a
+    /// changed column name, type, or constraint fails here, not in the field.
+    #[test]
+    fn the_0x_schema_is_exactly_this_ddl_until_a_migration_lands() {
+        let store = MemoryStore::open_in_memory(&key(72), StorageMode::AcceptedOnly).unwrap();
+        // AUTOINCREMENT makes SQLite create `sqlite_sequence` on the first
+        // insert, so write a row first: the snapshot must cover the schema an
+        // installed store actually has, not the one an untouched file has.
+        store.remember("com.apple.TextEdit", "hello").unwrap();
+
+        let mut statement = store
+            .conn
+            .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+            .unwrap();
+        let objects: Vec<(String, String, Option<String>)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+
+        assert_eq!(
+            objects,
+            vec![
+                (
+                    "table".to_string(),
+                    "memories".to_string(),
+                    Some(
+                        "CREATE TABLE memories (\n                 id   INTEGER PRIMARY KEY \
+                         AUTOINCREMENT,\n                 app  TEXT NOT NULL,\n                 \
+                         blob BLOB NOT NULL\n             )"
+                            .to_string()
+                    )
+                ),
+                (
+                    "table".to_string(),
+                    "sqlite_sequence".to_string(),
+                    Some("CREATE TABLE sqlite_sequence(name,seq)".to_string())
+                ),
+            ],
+            "read the doc comment above before restamping this literal"
+        );
+
+        // No migration machinery exists yet, so the version must still be the
+        // SQLite default. The first schema change flips this to 1 and adds the
+        // upgrade path.
+        let user_version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            user_version, 0,
+            "a non-zero user_version means a migration landed: update this test with it"
+        );
+    }
+
     #[test]
     fn off_mode_records_nothing() {
         let store = MemoryStore::open_in_memory(&key(1), StorageMode::Off).unwrap();

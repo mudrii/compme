@@ -220,24 +220,87 @@ struct EventWorkers {
 
 impl EventWorkers {
     fn stop(self) {
-        self.active.store(false, Ordering::Release);
-        let _ = self.connection.close();
-        if self.stopped.recv_timeout(STOP_TIMEOUT).is_err() {
-            // Detach rather than park the run loop on a bus that stopped answering.
-            // Nothing new can pass the gate above. A callback already past it may
-            // finish; returning here keeps subscription drop bounded even though
-            // that worker cannot be joined safely within the timeout.
-            return;
+        // `close` is the only part of this that needs a bus, so the sequence
+        // itself lives in [`stop_gated_workers`] where a test can drive it.
+        let EventWorkers {
+            active,
+            connection,
+            stopped,
+            threads,
+        } = self;
+        stop_gated_workers(
+            &active,
+            || {
+                let _ = connection.close();
+            },
+            &stopped,
+            threads,
+        );
+    }
+}
+
+/// Close the delivery gate, wake the workers, and wait a bounded time for their
+/// acknowledgement before detaching them.
+///
+/// Order is load-bearing: the gate closes *first*, so anything the `wake` step
+/// shakes loose is already refused delivery, and the wait can then time out
+/// without leaving a callback able to fire.
+fn stop_gated_workers(
+    active: &AtomicBool,
+    wake: impl FnOnce(),
+    stopped: &mpsc::Receiver<()>,
+    threads: Vec<JoinHandle<()>>,
+) {
+    active.store(false, Ordering::Release);
+    wake();
+    if stopped.recv_timeout(STOP_TIMEOUT).is_err() {
+        // Detach rather than park the run loop on a bus that stopped answering.
+        // Nothing new can pass the gate above. A callback already past it may
+        // finish; returning here keeps subscription drop bounded even though
+        // that worker cannot be joined safely within the timeout.
+        return;
+    }
+    for thread in threads {
+        let _ = thread.join();
+    }
+}
+
+/// The dispatcher thread's loop: take the next event, refuse it if the
+/// subscription has stopped, coalesce, and hand it to the subscriber.
+///
+/// The gate is re-read per event rather than once, because an event queued
+/// before `stop` is still waiting in the channel when `stop` runs — delivering
+/// it would be a callback after the subscription was cancelled.
+fn dispatch_gated_events<F>(
+    active: &AtomicBool,
+    events: &mpsc::Receiver<ElementId>,
+    coalesce: Option<Duration>,
+    mut deliver: F,
+) where
+    F: FnMut(ElementId),
+{
+    while let Ok(element) = events.recv() {
+        if !active.load(Ordering::Acquire) {
+            break;
         }
-        for thread in self.threads {
-            let _ = thread.join();
+        let element = match coalesce {
+            Some(_) => latest(element, events),
+            None => element,
+        };
+        // A panicking subscriber must not take the subscription with it: the
+        // contract lets callbacks run on an adapter-internal thread, and
+        // unwinding out of one would silently end delivery for every later event.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            deliver(element);
+        }));
+        if let Some(interval) = coalesce {
+            thread::sleep(interval);
         }
     }
 }
 
 fn into_subscription(workers: EventWorkers) -> Subscription {
-    let id = crate::next_subscription_id();
-    Subscription::with_cancel(id, move || workers.stop())
+    crate::new_cancelling_subscription(move || workers.stop())
 }
 
 /// Start the reader and dispatcher for one event kind.
@@ -275,24 +338,9 @@ where
     // never-started closure drops `event_tx`, and the dispatcher retires on its own.
     let active_for_dispatch = Arc::clone(&active);
     let dispatcher = spawn("compme-atspi-dispatch", move || {
-        while let Ok(element) = event_rx.recv() {
-            if !active_for_dispatch.load(Ordering::Acquire) {
-                break;
-            }
-            let element = match coalesce {
-                Some(_) => latest(element, &event_rx),
-                None => element,
-            };
-            // A panicking subscriber must not take the subscription with it: the
-            // contract lets callbacks run on an adapter-internal thread, and
-            // unwinding out of one would silently end delivery for every later event.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                deliver(&session, element);
-            }));
-            if let Some(interval) = coalesce {
-                thread::sleep(interval);
-            }
-        }
+        dispatch_gated_events(&active_for_dispatch, &event_rx, coalesce, |element| {
+            deliver(&session, element);
+        });
         let _ = stopped_tx.send(());
     })?;
 
@@ -411,6 +459,122 @@ mod tests {
         let first = crate::next_subscription_id();
         let second = crate::next_subscription_id();
         assert!(second > first);
+    }
+
+    /// Both kinds of subscription this adapter mints — the accept tap's
+    /// (`new_subscription`, used by `subscribe_accept`) and the event
+    /// subscriptions' (`new_cancelling_subscription`, used by
+    /// [`into_subscription`]) — must draw from ONE counter. Interleaving them
+    /// and demanding a strictly increasing sequence is what a second counter in
+    /// either constructor would fail: it would restart at 1 and hand the host
+    /// an id the other kind had already used.
+    #[test]
+    fn both_subscription_constructors_draw_from_the_same_counter() {
+        let accept = crate::new_subscription();
+        let event = crate::new_cancelling_subscription(|| {});
+        let accept_again = crate::new_subscription();
+        let event_again = crate::new_cancelling_subscription(|| {});
+
+        let ids = [accept.id(), event.id(), accept_again.id(), event_again.id()];
+        assert!(
+            ids.windows(2).all(|pair| pair[1] > pair[0]),
+            "subscription ids must come from one process-wide sequence: {ids:?}"
+        );
+    }
+
+    /// A44's drop contract, headless: a subscriber still running when the
+    /// subscription stops must not park the caller, and the event that was
+    /// already queued behind it must never reach the callback.
+    ///
+    /// Both halves are one test because they are one ordering rule — the gate
+    /// closes before the wait starts, so timing out is safe.
+    #[test]
+    fn stopping_is_bounded_when_a_subscriber_blocks_and_nothing_is_delivered_after_it() {
+        let active = Arc::new(AtomicBool::new(true));
+        let (event_tx, event_rx) = mpsc::channel();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        // Held by the "subscriber" until the test releases it, standing in for a
+        // callback that outlives the stop timeout without sleeping for one.
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+
+        let active_for_worker = Arc::clone(&active);
+        let sink = Arc::clone(&delivered);
+        let worker = thread::spawn(move || {
+            dispatch_gated_events(&active_for_worker, &event_rx, None, |element| {
+                sink.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(element);
+                entered_tx.send(()).expect("the test outlives the worker");
+                // Blocks past the stop below, exactly like a subscriber waiting
+                // on something slow.
+                let _ = release_rx.recv();
+            });
+            let _ = stopped_tx.send(());
+        });
+
+        let first = ElementId::new(BUS_NAME, PATH);
+        event_tx.send(first.clone()).expect("queue the first event");
+        entered_rx.recv().expect("the subscriber must be entered");
+        // Queued while the subscriber is blocked, so it is waiting in the channel
+        // when the stop below closes the gate.
+        event_tx
+            .send(ElementId::new(BUS_NAME, "/org/a11y/atspi/accessible/18"))
+            .expect("queue an event behind the blocked subscriber");
+
+        let started = std::time::Instant::now();
+        stop_gated_workers(&active, || drop(event_tx), &stopped_rx, vec![worker]);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "stop must be bounded by STOP_TIMEOUT, took {elapsed:?}"
+        );
+        assert!(
+            elapsed >= STOP_TIMEOUT,
+            "this case must be the timeout path, not a clean acknowledgement: {elapsed:?}"
+        );
+
+        release_tx.send(()).expect("release the blocked subscriber");
+        // The detached worker now drains: the queued event must hit the closed
+        // gate rather than the callback.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            *delivered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![first],
+            "no event may be delivered after the subscription stopped"
+        );
+    }
+
+    /// The other half of the same sequence: when the workers do acknowledge,
+    /// stop joins them instead of detaching, so the threads are gone by return.
+    #[test]
+    fn stopping_joins_workers_that_acknowledge_within_the_bound() {
+        let active = Arc::new(AtomicBool::new(true));
+        let (event_tx, event_rx) = mpsc::channel();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+
+        let active_for_worker = Arc::clone(&active);
+        let finished_for_worker = Arc::clone(&finished);
+        let worker = thread::spawn(move || {
+            dispatch_gated_events(&active_for_worker, &event_rx, None, |_| {});
+            finished_for_worker.store(true, Ordering::Release);
+            let _ = stopped_tx.send(());
+        });
+
+        let started = std::time::Instant::now();
+        stop_gated_workers(&active, || drop(event_tx), &stopped_rx, vec![worker]);
+        assert!(
+            started.elapsed() < STOP_TIMEOUT,
+            "an acknowledged stop must not wait out the timeout"
+        );
+        assert!(
+            finished.load(Ordering::Acquire),
+            "stop must join the worker it waited for"
+        );
     }
 
     #[test]
