@@ -1310,9 +1310,11 @@ Linux-only additions are deliberately excluded from that macOS count.
 (Superseded 2026-08-26 by the findings-fix round in `FIXED.md`: one portable
 `memory` schema-snapshot test takes the macOS restamp to **2,065**, and the
 Linux package lane to **112** tests with 36 ignored, **36/36** live.)
-The current Linux package lane passes **107** tests with 35 ignored. All
-**35/35** ignored live AT-SPI/X11/session-service cases pass in the provisioned
-Xvfb harness, including the A42 plan-construction failure regression. The app's
+At that round's HEAD the Linux package lane passed **107** tests with 35
+ignored, and all **35/35** ignored live AT-SPI/X11/session-service cases passed
+in the provisioned Xvfb harness, including the A42 plan-construction failure
+regression — historical snapshot; the superseding current figures are the
+112/36 and 36/36 above. The app's
 isolated `config_startup` executable test also passes from the required
 RPATH-linked target while preserving its intentional clean environment.
 
