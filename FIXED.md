@@ -1114,6 +1114,66 @@ model_fetch 51/0 · app 558/0 + 2 ignored · engine/engine_core untouched ·
 `fmt --all` clean · clippy `-D warnings` clean on the three touched crates
 **and** `platform_linux`/`platform_macos` for `aarch64-apple-darwin` ·
 `check-model-gates.sh --self-test` PASS (new mutation bites) ·
-`check-linux-live-test-count.sh` PASS (34) · actionlint clean. macOS
+`check-linux-live-test-count.sh` PASS (35) · actionlint clean. macOS
 execution evidence (serial lane, doc-test step, live gates) remains a
 real-Mac obligation, unchanged.
+
+## Independent re-verification — 2026-08-26, post-`a1cb743`
+
+Sequencing disclosure: commit `a1cb743` ("close final X11 audit gaps" — the
+`clear_armed_state` consolidation, the plan-build-failure live regression, and
+the 34→35 live-count restamps) landed **after** the round recorded above and
+was therefore unreviewed at commit time. This round reviewed it, alongside a
+fresh verification of all 69 items, at HEAD `a1cb743`.
+
+- **Scope:** four independent verification passes (Linux X11/AT-SPI cluster;
+  macOS/app/model_fetch cluster; CI/checker/doc pins and anchors; ledger
+  completeness and TDD/BDD quality), each reading code at HEAD against the
+  per-item claims here, plus a full gate reproduction on this host.
+- **`a1cb743` verdict: sound.** All four `clear_armed_state` call sites are
+  semantically equivalent-or-safer than the pre-refactor code (the Grab-error
+  arm's extra clears only discard event-thread-panic residue; `grab_plan` is
+  transactional so no partial grab can survive). The new live test's
+  arm-on-empty-plan assertion is behavioral, not tautological: the test still
+  owns the stale keycode when it arms, so a regressed stale plan would fail
+  the arm deterministically. Its 400 ms wait is load-bearing for the
+  hide-deadline claim, not a flake source; the one residual race
+  (map-restore `MappingNotify` vs the final tap) can only fail falsely, never
+  pass falsely.
+- **Live lane independently reproduced: 35/35.** The harness ran on this host
+  (`run-linux-atspi-session.sh --run-in-session cargo test --locked
+  -p platform_linux -- --ignored --test-threads=1`, nix-provisioned with a
+  DejaVu font via `COMPME_FONT`, `zenity`, and
+  `COMPME_KEYRING_EXPECT=absent`), including the new
+  `live_accept_tap_plan_build_failure_drops_the_stale_armed_plan`, all four
+  overlay tests, confirm, and keyring. This closes the one claim above that
+  previously rested on a single unwitnessed run. A parallel run without
+  `--test-threads=1` fails on shared-fixture interference — the serial flag
+  in the documented invocation is mandatory, not advisory.
+- **Gates reproduced at HEAD:** fmt · portable workspace `--all-targets` ·
+  app bins serial 558/0 + 2 ignored · workspace clippy `-D warnings` ·
+  `platform_linux` clippy and `platform_macos` check for
+  `aarch64-apple-darwin` · strict portable rustdoc · version-docs,
+  agent-briefs, model-gates `--self-test`, linux-live-test-count (35) ·
+  shellcheck. All green. Three regressions were additionally
+  mutation-verified to fail on revert (A50, A30 cleanup, A57 dismissal).
+- **Record corrections in this round:** the stale `PASS (34)` token in the
+  evidence block above (now 35), and this section itself (the prior round's
+  text had been edited in place by `a1cb743` without disclosing that its
+  changes postdate that round's validation — future rounds append, never
+  rewrite).
+- **Residual improvement seams (none blocking, none claimed fixed):**
+  A61's `checked_rebuilt_len` call site has no regression net (only the
+  helper's verdict is pinned — deleting the call keeps every test green);
+  A47's shared-counter property is asserted only on the shared fn, not
+  against reintroduction of a second counter; A44's 2 s bounded-drop wording
+  is testable headlessly but unpinned; A39's schema-immutability posture has
+  no `sqlite_master` DDL pin; the `MacosPlatformAdapter::Drop` →
+  clipboard-coordinator and `insert_for_field` → snapshot-gate wirings remain
+  code-pinned only (the latter already recorded above); AX-worker `Drop`
+  joins at quit are Stop-driven, not deadline-bounded (outside A32's declared
+  scope). Per-item sections cite files and tests but no commit hashes;
+  mapping items to commits requires git history.
+- **Unchanged external obligations:** macOS serial lane, the 2,064 anchor's
+  authoritative check on the next macOS CI run, real-tag `post_verify`/A53
+  evidence, the 22 live macOS gates, and the A72 cargo-deny owner decision.
