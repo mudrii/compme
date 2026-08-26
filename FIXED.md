@@ -91,7 +91,9 @@ Status meanings:
   `UnsupportedField`, timeout,
   secure-input, and other subscription failures remain fatal.
 - **Files:** `crates/platform/src/lib.rs`, `crates/platform_linux/src/lib.rs`,
-  `crates/app/src/run_loop.rs`, `crates/app/src/run_loop_tests.rs`.
+  `crates/app/src/run_loop.rs`, `crates/app/src/run_loop_tests.rs`,
+  `crates/app/src/status.rs` (`AccessibilitySubscriptions::Unavailable`,
+  `BlockReason::AccessibilityUnavailable`).
 - **Red evidence:** the new classifier regression initially failed to compile
   because neither `AccessibilityUnavailable` nor the `Unavailable` action
   existed (`E0599` for both variants).
@@ -186,8 +188,11 @@ Status meanings:
 ### A11 — pinned docs and privacy checks reach a CI lane
 
 - **Status:** Code complete; push/macOS checker evidence remains pending.
-- **Changed:** CI now ignores only `docs/superpowers/plans/**`, so pinned specs
-  trigger the full lane. The mirrored docs lane uses the same narrow path and
+- **Changed:** CI now ignores only unpinned prose — `docs/superpowers/plans/**`,
+  `docs/RELEASE-NOTES-*.md`, `docs/TROUBLESHOOTING.md`, `Qfd.md`, and `LICENSE`
+  (five entries; the earlier wording "only `docs/superpowers/plans/**`" was
+  loose shorthand) — so pinned specs trigger the full lane. The mirrored docs
+  lane uses the same narrow path list and
   runs `check-privacy-policy.sh`. The release checker pins both invariants and
   mutates widened paths and a removed privacy step in self-test fixtures.
 - **Files:** `.github/workflows/ci.yml`, `.github/workflows/docs.yml`,
@@ -390,7 +395,8 @@ Status meanings:
 - **Files:** root `Cargo.toml`/`Cargo.lock`, `vendor/llama-cpp-2`,
   `crates/model_client/src/lib.rs`, `crates/model_client/tests/latency.rs`,
   `crates/app/{Cargo.toml,src/inference.rs,src/run_loop.rs,src/run_loop_tests.rs}`,
-  model gate/checker, and coordinated docs.
+  model gate/checker (`tools/release/run-model-gates.sh`,
+  `tools/release/check-model-gates.sh`), and coordinated docs.
 - **Red evidence:** the first real CPU GGUF test timed out after 250 ms while a
   single prompt decode was still inside native code, proving token-boundary
   polling alone insufficient. Before the checker hardening, the model wrapper
@@ -728,6 +734,11 @@ Status meanings:
   harness, and its self-test plus the model-policy self-test passed. The next
   remote CI run is still required before calling the workflow execution
   verified.
+- **Superseded 2026-08-26 (append, not rewrite):** the figures above (35/32)
+  are this item's completion state. The final restamp is **36 (33)** — the
+  F7 round added one live failed-arm test — see "Count restamps in this
+  round" and the F7 section; `check-linux-live-test-count.sh` and all three
+  documented tokens (ROADMAP, checker comment) read 36 (33) today.
 
 ### A3 — accurate dependency pinning claim
 
@@ -1199,10 +1210,11 @@ changed. Every new test was mutation-verified — the mutant is named per item.
   so the call cannot be deleted and still compile — the exact failure mode the
   finding described (deleting the check kept every test green).
 - **Verbatim proof:** normalized token-sequence diff of the old statement block
-  against the new callee body: 157 tokens vs 157, identical, with the callee's
-  only addition being the trailing `Ok(updated)` and the call site's only
-  content being `let updated = checked_replacement(&scalars, expected_text,
-  text, range)?;`.
+  against the new callee body: the statement bodies are token-identical
+  (the only additions are the callee's trailing `Ok(updated)` and the call
+  site's single delegating line). The "157 vs 157" figure in an earlier draft
+  was tokenizer-dependent and is not pinned; the load-bearing claim is the
+  statement-body identity above.
 - **Tests:** `atspi_live::tests::at_cap_field_refuses_a_growing_replacement_and_still_builds_a_same_size_one`
   (200,000-scalar field: 1→2 refused, 1→1 and 1→0 allowed) and
   `atspi_live::tests::replacement_refuses_a_range_past_the_field_and_text_that_changed_underneath`.
@@ -1240,7 +1252,10 @@ changed. Every new test was mutation-verified — the mutant is named per item.
 - **Verbatim proof:** token diffs, both 1:1 — stop 45 vs 45 tokens (differences
   are only `self.field` → parameter and `connection.close()` → the injected
   `wake()`); dispatch loop 98 vs 98 tokens (differences are only the two
-  parameter renames and `&session` moving into the caller's closure).
+  parameter renames and `&session` moving into the caller's closure). The exact
+  counts are tokenizer-dependent (a naive tokenizer yields different whole-function
+  totals); the load-bearing claim — statement bodies token-identical 1:1 — is
+  verified by the `09c23f2^` → HEAD diff.
 - **Tests:** `atspi_events::tests::stopping_is_bounded_when_a_subscriber_blocks_and_nothing_is_delivered_after_it`
   — a subscriber blocked past stop; asserts stop returns in < 5 s (and that it
   really took the `STOP_TIMEOUT` path, not a clean acknowledgement) and that the
@@ -1348,3 +1363,32 @@ an empty `COMPME_FONT` fails the four overlay tests and is an invocation
 error, not a regression). shellcheck was **not** run: it is not installed on
 this host. macOS execution evidence (serial lane, doc tests, the 22 live gates)
 and real-tag `post_verify` remain unchanged external obligations.
+
+## Independent re-verification and repeatable probe — 2026-08-26 (post-5fbdfc5)
+
+- **Ledger precision (prose fixes, no behavior change):** A11's "ignores only
+  `docs/superpowers/plans/**`" now names the full five-entry unpinned set; A1's
+  section carries an explicit superseded note pointing at the 36 (33) restamp;
+  the F3/A44 "verbatim proof" paragraphs restate the load-bearing claim
+  (statement bodies token-identical 1:1, verified by diff) and mark the exact
+  token counts as tokenizer-dependent; A41/A32 `Files:` lists now name
+  `status.rs` and `run-model-gates.sh`.
+- **Diagnostic-gate test widened:** `debug_logging_is_opt_in_and_understands_explicit_off_values`
+  now pins the full `COMPME_DEBUG` decision table (explicit off values
+  case-insensitively, on values `1/true/on/yes`, empty, unset). Test-only;
+  name unchanged; Linux-cfg'd module — no count-pin impact.
+- **C.2 probe is now repeatable:** new `tools/acceptance/run-linux-c2-probe.sh`
+  plus `run-linux-atspi-session.sh --c2-probe` (requires xdotool before
+  session bring-up, exit 3 when absent; hermetic `--self-test` on both
+  scripts; documented in DEVELOPMENT.md). The probe drives the product binary
+  with `COMPME_STUB_COMPLETION` against real xdotool typing, re-focusing the
+  fixture entry after subscription (the adapter's focus registry mints from
+  focus events only), and asserts `shown>0`.
+- **Independent live evidence (this host):** `--c2-probe` PASS — usage line
+  `shown=1 accepted=0 dismissed=0 superseded=0` with `request gen=9` and the
+  stub completion (candidate_lengths=[6]) — the C.2 `shown=0` diagnostic is
+  closed on the current tree by an independent run, not only the recorded
+  probe. First probe attempt (no `COMPME_FONT`) failed exactly at the overlay
+  font scan, i.e. the pipeline (focus → per-key reads → request → completion)
+  was already working; the font env var is an invocation requirement, as in
+  the live lane.

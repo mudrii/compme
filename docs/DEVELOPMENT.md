@@ -538,6 +538,12 @@ Two other modes run inside the same session instead of the probe:
 # Phase 2.3 accept-key experiment (builds linux-keytap-spike.c; needs x11 + xtst)
 tools/acceptance/run-linux-atspi-session.sh --keytap-spike
 
+# C.2 (`shown=0`) closure probe: the product binary against real xdotool
+# typing with a deterministic stub completion, asserting the ghost is shown.
+# Needs xdotool, a prebuilt target/debug/compme, and COMPME_FONT (the overlay
+# font scan is env-bound):
+COMPME_FONT=/path/to/Font.ttf tools/acceptance/run-linux-atspi-session.sh --c2-probe
+
 # Anything else — this is how the Linux adapter's own tests run against a real
 # accessibility stack. DISPLAY, DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR,
 # COMPME_ATSPI_SESSION_DIR, and COMPME_ATSPI_FIXTURE_LOG are exported for it.

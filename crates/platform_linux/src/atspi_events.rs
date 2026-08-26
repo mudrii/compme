@@ -579,13 +579,20 @@ mod tests {
 
     #[test]
     fn debug_logging_is_opt_in_and_understands_explicit_off_values() {
-        for value in ["", "0", "false", "off", "no"] {
+        // Full decision table for the diagnostic gate: every explicit off
+        // value (case-insensitive), every on value, empty, and unset.
+        for value in ["", "0", "false", "off", "no", "FALSE", "OFF", "No"] {
             assert!(
                 !debug_flag_on(Some(std::ffi::OsStr::new(value))),
                 "{value:?} must keep diagnostics off"
             );
         }
-        assert!(debug_flag_on(Some(std::ffi::OsStr::new("1"))));
+        for value in ["1", "true", "on", "yes", "TRUE", "On", "YES"] {
+            assert!(
+                debug_flag_on(Some(std::ffi::OsStr::new(value))),
+                "{value:?} must enable diagnostics"
+            );
+        }
         assert!(!debug_flag_on(None));
     }
 }

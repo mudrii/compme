@@ -13,6 +13,11 @@
 # XDG_RUNTIME_DIR, COMPME_ATSPI_SESSION_DIR, and COMPME_ATSPI_FIXTURE_LOG
 # exported. That is how the accept-key spike and the adapter's own tests run
 # against a real accessibility stack without each re-implementing the bring-up.
+# `--keytap-spike` compiles and runs the Phase 2.3 accept-key experiment;
+# `--c2-probe` runs the repeatable C.2 (`shown=0`) closure probe — the product
+# binary with a deterministic stub completion against real xdotool typing,
+# asserting the ghost is shown (needs xdotool, a prebuilt `target/debug/compme`,
+# and `COMPME_FONT`).
 #
 # No desktop environment, display, or root is required, so it runs on a headless
 # Linux box or a CI runner. It is a *harness*, not product code: it proves the
@@ -264,6 +269,25 @@ run_self_test() {
     status=1
   fi
 
+  # 6b. --c2-probe must fail as unprovisioned (exit 3) when xdotool is not on
+  # PATH — before any session bring-up — and must never fall through to the
+  # plain probe. The crafted PATH hides xdotool regardless of the host.
+  tools_only="$(mktemp -d "$tmp_dir/tools-only.XXXXXX")"
+  for t in bash env dirname grep head tail cut sleep kill mktemp mkdir rm date; do
+    ln -s "$(command -v "$t")" "$tools_only/$t"
+  done
+  set +e
+  PATH="$tools_only" "$0" --c2-probe >"$tmp_dir/c2-no-xdotool.out" 2>&1
+  c2_rc=$?
+  set -e
+  if [ "$c2_rc" -eq 3 ] && grep -q 'missing tool: xdotool' "$tmp_dir/c2-no-xdotool.out"; then
+    echo "PASS self-test-atspi-session-c2-probe-requires-xdotool"
+  else
+    echo "FAIL self-test-atspi-session-c2-probe-requires-xdotool: rc=$c2_rc" >&2
+    cat "$tmp_dir/c2-no-xdotool.out" >&2
+    status=1
+  fi
+
   # 7. The fixture and probe sources must exist and agree with this script on the
   # accessible names — a rename on one side would otherwise fail only at runtime,
   # on a Linux host, long after the change.
@@ -300,9 +324,17 @@ case "${1:-}" in
     # is what makes the Phase 2.3 experiment reproducible.
     build_keytap_spike=1
     ;;
+  --c2-probe)
+    # Repeatable C.2 (`shown=0`) closure probe: real X typing into the fixture
+    # with a deterministic stub completion; asserts the product shows a ghost.
+    # Needs xdotool (checked before session bring-up -> exit 3 when absent)
+    # and a prebuilt app binary + COMPME_FONT (checked inside the probe).
+    require_tools xdotool
+    payload=("bash" "$ROOT_DIR/tools/acceptance/run-linux-c2-probe.sh")
+    ;;
   "") ;;
   *)
-    fail "unknown argument: $1 (use --self-test, --keytap-spike, --run-in-session CMD, or no arguments)"
+    fail "unknown argument: $1 (use --self-test, --keytap-spike, --c2-probe, --run-in-session CMD, or no arguments)"
     ;;
 esac
 
