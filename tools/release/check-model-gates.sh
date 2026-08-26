@@ -1017,7 +1017,11 @@ check_workspace_parallel_crate_count() {
   local ci_file="$2"
   local development_file="$3"
   local parallel_count
-  parallel_count="$(ruby - "$manifest_file" <<'RUBY'
+  # `ruby -e` with a single-quoted script, NOT a heredoc inside `$(...)`:
+  # macOS CI runs this file under /bin/bash 3.2, whose command-substitution
+  # parser rejects the heredoc form ("unexpected EOF while looking for
+  # matching `)'"). Bash 5 accepts it, so only the mac lane sees the break.
+  parallel_count="$(ruby -e '
 manifest = File.read(ARGV.fetch(0))
 members = manifest[/^members = \[\n(.*?)^\]$/m, 1]
 abort("missing release gate: root manifest [workspace] members list") unless members
@@ -1025,8 +1029,7 @@ listed = members.scan(/^\s*"([^"]+)",?\s*$/).flatten
 serial = %w[crates/platform_macos crates/app]
 abort("missing release gate: root manifest lists both serial-lane crates") unless (serial - listed).empty?
 puts listed.length - serial.length
-RUBY
-)"
+' "$manifest_file")"
   # Each failure returns immediately: `set -e` is suspended while this runs as an
   # `if` condition in the self-test, so a later passing check would otherwise
   # mask an earlier stale count.
