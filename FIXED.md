@@ -1475,3 +1475,14 @@ Mac-only remainder (brew install through the trusted tap, strict
 codesign/staple/Gatekeeper assessment of the installed app, bounded startup
 smoke) needs one manual pass on a real Mac and is recorded as pending until
 then.
+
+**Closure (2026-08-26, owner's Mac):** the pending Mac-only half of
+`post_verify` completed manually through the documented user path. Evidence:
+`brew trust mudrii/compme` ("Trusted tap"), `brew install --cask compme`
+upgraded 0.1.5 → 0.1.6 against the finalized cask checksum, and
+`spctl --assess --type execute` returned `accepted` with
+`source=Notarized Developer ID` (proving the notarization ticket on the
+installed app); `open -a Compme` launched without error. Combined with the
+out-of-band checksum/attestation/cask verification above, every check
+`post_verify` performs is now individually evidenced for v0.1.6; the job
+itself runs with the `brew trust` fix from the next tag onward.
