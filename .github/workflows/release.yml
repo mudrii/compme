@@ -833,6 +833,10 @@ jobs:
           set -euo pipefail
           brew update
           brew tap mudrii/compme https://github.com/mudrii/compme
+          # Homebrew gates third-party taps behind an explicit trust step;
+          # without it the install refuses the cask (first bit live at the
+          # v0.1.6 post_verify). Mirrors the documented user install path.
+          brew trust mudrii/compme
           brew install --cask compme
 
       - name: Assess installed app

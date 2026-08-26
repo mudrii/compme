@@ -1447,3 +1447,31 @@ now-unblocked macOS lane runs its checker; the anchor is unchanged this
 round. The stale-analysis P2 items from the external report (A7/A10, A8/A9,
 A18, A30) were re-confirmed as already implemented and verified at HEAD —
 no action.
+
+## v0.1.6 release execution record — 2026-08-26
+
+Tag `v0.1.6` (`6c0bea5`) ran the full pipeline: preflight, three-lane
+validation (including the live Linux suite and portable doc tests on a tag),
+secretless prebuild, approved signing/notarization/stapling, approved
+publication (checksum + provenance verified, update manifest written,
+undrafted), and approved cask finalization (main's cask now 0.1.6 with the
+published artifact's sha256). Three first-live-execution defects were found
+and fixed en route, each requiring its own green run: the macos-15 validate
+runner lacks shellcheck (exit 127 — install step added), and the first tag
+attempt burned on it before any artifact existed, so `v0.1.6` was retagged at
+the fixed HEAD under a temporary, immediately-restored ruleset-enforcement
+window (owner-approved; nothing had been published under the old tag).
+
+`post_verify` — its own first live run (A53/N3) — failed at
+"Install the published cask": Homebrew now gates third-party taps behind
+`brew trust`, which the job (and the documented user install path) predated.
+The workflow, README, and RELEASING now carry the trust step for the next
+tag; a rerun under the v0.1.6 tag snapshot would re-execute the old workflow,
+so for this release the job's checks were completed out-of-band instead:
+zip↔sha256 asset verified, provenance attestation verified against the
+release signer workflow (`gh attestation verify`, rc=0), and cask↔artifact
+sha256 equality confirmed on `main` — all from the development host. The
+Mac-only remainder (brew install through the trusted tap, strict
+codesign/staple/Gatekeeper assessment of the installed app, bounded startup
+smoke) needs one manual pass on a real Mac and is recorded as pending until
+then.

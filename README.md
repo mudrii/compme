@@ -57,6 +57,7 @@ Install with:
 
 ```sh
 brew tap mudrii/compme https://github.com/mudrii/compme
+brew trust mudrii/compme   # Homebrew requires explicit trust for third-party taps
 brew install --cask compme
 ```
 

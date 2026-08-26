@@ -1,8 +1,8 @@
 # Compme v0.1.6 — audit remediation and release hardening
 
-> Historical release record for protected tag `v0.1.6` (stamp the tag commit
-> here when it is pushed). It describes that published artifact, not current
-> `main` or a later stable release.
+> Historical release record for protected tag `v0.1.6` (`6c0bea5`, published
+> 2026-08-26). It describes that published artifact, not current `main` or a
+> later stable release.
 
 A correctness and hardening patch: a full three-pass audit (plan, code, CI/CD)
 produced 69 verified findings, and every one is closed, test-pinned, and
