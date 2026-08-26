@@ -83,6 +83,12 @@ jobs:
           # default paths.
           cache-directories: ~/.cargo/advisory-db
 
+      # ubuntu-latest ships shellcheck preinstalled; the macos-15 image does
+      # not, and this parity step first executed live at the v0.1.6 tag —
+      # where it failed with exit 127. Install explicitly.
+      - name: Install shellcheck
+        run: brew install shellcheck
+
       - name: Shellcheck (errors only)
         run: |
           find tools -type f -name '*.sh' -print0 \
