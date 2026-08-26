@@ -426,6 +426,9 @@ checker proves that comment is part of a pinned shape.
 - **Change:** 23 → 24 (26 − platform_macos − app). Comment-only, but it
   lives inside a pinned workflow: run `check-model-gates.sh --self-test`;
   if the line is inside a pinned step shape, land it with WP4.
+- **Later verification follow-up:** the separately commissioned 2026-08-26
+  findings-fix round added manifest-derived enforcement for this count; see
+  `FIXED.md` F8. That hardening extends this original comment-only repair.
 
 ### [x] A28 — Qfd §18 contradicts §13 on F7/F11/F13 (P5)
 
@@ -1187,6 +1190,10 @@ commit excluding A13; A13 is a later Linux-policy commit after C.2.
   ROADMAP: the SQLite schema is immutable for 0.x; any first schema change
   must land `PRAGMA user_version` + a migration helper **first**. No code
   now.
+- **Later verification follow-up:** the separately commissioned 2026-08-26
+  findings-fix round made the documented boundary executable with a schema
+  snapshot and `user_version` test; see `FIXED.md` F6. That test extends this
+  original documentation-only repair without adding migration machinery.
 
 ### [x] A13 — `compat` terminal policy keys on macOS bundle ids (P4, deferred)
 

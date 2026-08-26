@@ -1151,7 +1151,8 @@ fresh verification of all 69 items, at HEAD `a1cb743`.
   `--test-threads=1` fails on shared-fixture interference — the serial flag
   in the documented invocation is mandatory, not advisory.
 - **Gates reproduced at HEAD:** fmt · portable workspace `--all-targets` ·
-  app bins serial 558/0 + 2 ignored · workspace clippy `-D warnings` ·
+  app bins serial 558/0 + 2 ignored · portable workspace clippy
+  (`--exclude platform_macos --all-targets -- -D warnings`) ·
   `platform_linux` clippy and `platform_macos` check for
   `aarch64-apple-darwin` · strict portable rustdoc · version-docs,
   agent-briefs, model-gates `--self-test`, linux-live-test-count (35) ·
@@ -1335,9 +1336,11 @@ and the absence of commit hashes in per-item sections.
 
 `cargo fmt --all -- --check` rc=0 · `-p platform_linux` 112/0 + 36 ignored ·
 `-p memory --all-targets` 50/0 · portable workspace `--all-targets` all green
-rc=0 · `-p app --bins -- --test-threads=1` 558/0 + 2 ignored · workspace clippy
-`-D warnings` rc=0 · `platform_linux` clippy `--target aarch64-apple-darwin`
-rc=0 · `check-model-gates.sh --self-test` PASS · `check-linux-live-test-count.sh`
+rc=0 · `-p app --bins -- --test-threads=1` 558/0 + 2 ignored · portable
+workspace clippy (`--exclude platform_macos --all-targets -- -D warnings`) rc=0 ·
+Darwin cross-clippy (`-p platform_linux -p platform_macos --target
+aarch64-apple-darwin --all-targets -- -D warnings`) rc=0 ·
+`check-model-gates.sh --self-test` PASS · `check-linux-live-test-count.sh`
 PASS (36 = 33 + 1 each confirm/keyring/reveal) · `check-version-docs.sh` and
 `check-agent-briefs.sh` PASS. **Live lane: 36/36** in the nix-provisioned Xvfb
 harness (`--test-threads=1`, `COMPME_FONT` pointing at a real DejaVu file —

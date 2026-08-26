@@ -82,6 +82,7 @@ rule under `# Lessons` before continuing, so it cannot happen twice.
 
 # Lessons
 
+- Distinguish intentional explicit test duplication and separately commissioned verification hardening from actionable defects; confirm provenance before prescribing deduplication or labeling scope drift.
 - A release is not done until the workflow's final job (cask finalization) has run: after pushing a tag, follow the run through every environment approval and verify the published cask/checksum consistency end-to-end before reporting success.
 - Cutting a release includes reconciling every doc that names the published version (README status/boundary, SECURITY supported release, ROADMAP anchors, release-boundary notes) in the same flow as the version bump — not as a follow-up when someone notices.
 - Do not quote a metric that inline test code inflates: file line counts and per-file coverage here were 56-63% test code, so measure the production surface (or split the tests out) before calling a file large or well covered.
