@@ -472,7 +472,10 @@ chord collision errors without touching the live set) and
 (the run loop sets bindings before `subscribe_accept`; Settings on Linux is
 config-file-only, so there is no live-rebind path). A physically rebound
 chord has not yet been exercised in a live session — the Xvfb suite arms
-the defaults. `pump_events` stays a sleep until there is
+the defaults; `docs/MANUAL-VALIDATION-LINUX.md` is the human-at-the-keyboard
+checklist that closes this and the other Linux UX gates (its sandbox lane
+exists because the development desktop is Wayland/niri with XWayland
+forbidden by owner policy). `pump_events` stays a sleep until there is
 a native UI to service; with no toolkit in the process there is no main loop to
 pump. Deliberately fail-closed and staying that way until each can be *proven*:
 `open_permission_settings` (Linux has no TCC-style pane, and the switches that
