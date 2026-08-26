@@ -261,6 +261,12 @@ abort("missing release gate: CI runs model quality after the model smoke gate") 
   abort("missing release gate: CI #{job_name} tests every portable target") unless
     portable_test && portable_test.fetch("run") == "cargo test --locked --workspace --exclude platform_macos --all-targets"
 end
+# `--all-targets` above deliberately excludes doc tests, and the mac-only doc
+# step covers just two crates — this Linux step is the only executor of the
+# portable crates' doc examples.
+portable_doc_tests = jobs.fetch("linux").fetch("steps").find { |step| step["name"] == "Doc tests (portable workspace)" }
+abort("missing release gate: CI Linux runs portable doc tests") unless
+  portable_doc_tests && portable_doc_tests.fetch("run") == "cargo test --locked --doc --workspace --exclude platform_macos"
 # The live Linux surfaces (AT-SPI read/insert/events, X11 accept tap, overlay,
 # session shell services) ship 36 live tests (33 AT-SPI/X11 adapter tests + 1
 # each for confirm, keyring, and reveal) that only run inside the harness.
@@ -556,6 +562,11 @@ portable_steps = {
     abort("missing release gate: #{job_name} portable parity #{name}") unless matches.length == 1
   end
 end
+# Linux-only: the sole executor of the portable crates' doc examples
+# (`--all-targets` excludes doc tests; the mac-only doc step covers two crates).
+release_portable_doc_tests = jobs.fetch("linux").fetch("steps").find { |step| step["name"] == "Doc tests (portable workspace)" }
+abort("missing release gate: release Linux runs portable doc tests") unless
+  release_portable_doc_tests && release_portable_doc_tests.fetch("run") == "cargo test --locked --doc --workspace --exclude platform_macos"
 # The live Linux surfaces must be gated on a tag, not only on a push to main.
 # They were branch-CI-only until 2026-07-29, so a tag validated less of Linux
 # than an ordinary push did — and that matters now the adapter is wired into the
@@ -2520,7 +2531,7 @@ YAML
   check_ci_integrity_controls "$ci_workflow"
   ci_integrity_fixture="$tmp_dir/ci-integrity.yml"
 
-  for mutation in concurrency doc-tests quality-gate all-targets; do
+  for mutation in concurrency doc-tests portable-doc-tests quality-gate all-targets; do
     cp "$ci_workflow" "$ci_integrity_fixture"
     ruby -ryaml -e '
       path, mutation = ARGV
@@ -2531,6 +2542,8 @@ YAML
         workflow.fetch("concurrency")["cancel-in-progress"] = true
       when "doc-tests"
         jobs.fetch("check").fetch("steps").reject! { |step| step["name"] == "Doc tests (macOS crates)" }
+      when "portable-doc-tests"
+        jobs.fetch("linux").fetch("steps").reject! { |step| step["name"] == "Doc tests (portable workspace)" }
       when "quality-gate"
         jobs.fetch("check").fetch("steps").reject! { |step| step["name"] == "Model-quality gate" }
       when "all-targets"
@@ -2875,7 +2888,7 @@ YAML
 
   for mutation in \
     validate-shellcheck validate-rustdoc validate-doc-tests policy-self-test runner-self-test \
-    portable-all-targets credential-scrubs prebuild-fail-open \
+    portable-all-targets portable-doc-tests credential-scrubs prebuild-fail-open \
     publish-runner finalize-runner signer-workflow post-attestation \
     finalize-attestation-order post-attestation-order \
     draft-preparation finalizer-repository; do
@@ -2896,6 +2909,7 @@ YAML
       when "portable-all-targets"
         step = jobs.fetch("linux").fetch("steps").find { |candidate| candidate["name"] == "Test portable workspace" }
         step["run"] = step.fetch("run").sub(" --all-targets", "")
+      when "portable-doc-tests" then remove_step.call("linux", "Doc tests (portable workspace)")
       when "credential-scrubs"
         jobs.values.each do |job|
           Array(job["steps"]).each { |step| step["run"] = step["run"].to_s.gsub(/^.*scrub-git-credentials[.]sh.*$\n?/, "") if step.key?("run") }
@@ -3897,6 +3911,7 @@ ruby -ryaml -e '
   require_step!(jobs, "linux", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "platform_linux clippy job")
   require_step!(jobs, "linux", "Rustdoc portable workspace (deny warnings)", "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --workspace --exclude platform_macos", "platform_linux rustdoc job")
   require_step!(jobs, "linux", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos --all-targets", "platform_linux test job")
+  require_step!(jobs, "linux", "Doc tests (portable workspace)", "cargo test --locked --doc --workspace --exclude platform_macos", "platform_linux doc-test job")
   require_step!(jobs, "linux", "Build app binary", "cargo build --locked -p app", "platform_linux build job")
   require_step!(jobs, "linux", "Linux live-test count", "tools/release/check-linux-live-test-count.sh", "platform_linux live-test count job")
   shellcheck_step = linux.fetch("steps").find { |step| step["name"] == "Shellcheck (errors only)" }
@@ -3946,6 +3961,7 @@ ruby -ryaml -e '
   abort("missing release gate: release platform_linux runs on Linux") unless linux.fetch("runs-on") == "ubuntu-latest"
   require_step!(release_jobs, "linux", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "release platform_linux clippy job")
   require_step!(release_jobs, "linux", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos --all-targets", "release platform_linux test job")
+  require_step!(release_jobs, "linux", "Doc tests (portable workspace)", "cargo test --locked --doc --workspace --exclude platform_macos", "release platform_linux doc-test job")
   require_step!(release_jobs, "linux", "Build app binary", "cargo build --locked -p app", "release platform_linux build job")
   require_step!(release_jobs, "linux", "Linux live-test count", "tools/release/check-linux-live-test-count.sh", "release platform_linux live-test count job")
   prebuild = release_jobs.fetch("prebuild")

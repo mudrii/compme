@@ -70,9 +70,11 @@ Each of these has broken a real run here.
   `post_verify` job needs a real tag. Never mark one passed from a headless
   run — record real results in `docs/ACCEPTANCE.md`.
 - **ABI-pinned deps.** `llama-cpp-2` is exact-pinned twice in
-  `crates/model_client` (one entry per target) and again in `tools/spike`; the
-  root patch vendors the same release with the safe abort-lifetime extension.
-  Bump all three pins and rebase that patch together, then run
+  `crates/model_client` (one entry per target) and again in `tools/spike`;
+  both the root workspace **and** `tools/spike` carry a `[patch.crates-io]`
+  pointing at `vendor/llama-cpp-2` (the same release plus the safe
+  abort-lifetime extension). Bump all three version pins, rebase the vendored
+  copy, and regenerate both lockfiles together, then run
   `tools/release/run-model-gates.sh`. Dependabot excludes it for this reason.
 
 # Self-Learning
@@ -88,3 +90,5 @@ rule under `# Lessons` before continuing, so it cannot happen twice.
 - Do not quote a metric that inline test code inflates: file line counts and per-file coverage here were 56-63% test code, so measure the production surface (or split the tests out) before calling a file large or well covered.
 - Prove a "verbatim" refactor instead of asserting it: a normalized token-sequence diff of the old function against the new function plus its extracted callees catches a dropped branch that green tests and clippy will not.
 - `platform_linux`/`platform_windows` are compiled and tested on all three hosts, so their logic must not use `std` APIs whose semantics follow the *build* host: `Path::is_absolute("/home/u")` is false on the Windows lane. Encode POSIX rules on the string (`starts_with('/')`), and run a non-mac lane before claiming a platform-crate change is green.
+- Never trust a lane you can't run: a change that touches `#[cfg(target_os)]` code or its tests is not done until the pushed CI run is green on the lane that actually compiles and executes it — local "all gates green" on this Linux host says nothing about the macOS/Windows lanes' cfg branches (this let four red runs stack on main).
+- A `[patch.crates-io]` applies only to the workspace that declares it: workspace-excluded trees with their own `Cargo.lock` (`tools/spike`) resolve from crates.io unless they carry the same patch section.

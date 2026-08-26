@@ -1392,3 +1392,58 @@ and real-tag `post_verify` remain unchanged external obligations.
   font scan, i.e. the pipeline (focus → per-key reads → request → completion)
   was already working; the font env var is an invocation requirement, as in
   the live lane.
+
+## CI-red fix round — 2026-08-26, hosted lanes C1/C2 + regressions N1/N2
+
+Ground truth came from the hosted run history (runs #424–#427, all red) after
+gh authentication — the first time this repo's pushed CI results were read
+back during a validation round. Root causes, each reproduced from the actual
+run logs:
+
+- **C1 — macOS clippy exit 101 (all four runs).** The A26 allow-scoping pass
+  removed `#![allow(dead_code, unused_imports)]` from
+  `crates/app/src/shell/macos.rs` without the scoped replacement that
+  `mod.rs`/`stub.rs` received. The macOS lane (the only lane that compiles
+  that file) failed with `unused imports:` on the facade re-export block
+  (macos.rs:35, :39) and `ShellHost` (stub.rs:14, test build). Fixed with the
+  same scoped `#[allow(unused_imports)]` + rationale pattern the sibling
+  files use. The A26 record's "three scoped allowances" count grows by the
+  three added here.
+- **C2 — Windows Test exit 1 (runs #426–#427).** Four host-portable
+  `platform_linux` scaffold tests (`scaffold_reports_linux_and_fails_closed`,
+  `every_io_and_subscribe_method_fails_closed`,
+  `insert_fails_closed_for_every_strategy_variant`,
+  `unavailable_and_unsupported_reasons_name_the_failing_method`) pin the A41
+  `AccessibilityUnavailable` contract and run on every host — but A41 only
+  updated the Linux paths. The non-Linux stubs still returned
+  `UnsupportedField`, and `popup_anchor`/`insert_replacing_range` had no
+  stubs at all (falling to trait defaults `Ok(None)`/`UnsupportedField`).
+  Fixed by making `accessibility_unavailable` host-portable and mirroring the
+  Linux inert-session contract in every stub, including the Linux `insert`
+  branch order (non-atomic → unsupported, atomic → unavailable). Runtime
+  proof is necessarily the hosted lanes — this host cannot execute non-Linux
+  cfg branches; the darwin cross-clippy compiles them.
+- **N1 — spike validated unpatched llama.** `tools/spike` (own lockfile,
+  outside the workspace) resolved `llama-cpp-2 0.1.146` from crates.io while
+  the product ships `vendor/llama-cpp-2` with the abort-lifetime patch. The
+  spike now carries the same `[patch.crates-io]`; its lock resolves to the
+  vendored path. AGENTS.md's ABI-pin tripwire and the Dependabot comment now
+  name the vendor rebase + both lockfiles as part of a bump.
+- **N2 — portable doc tests ran nowhere.** A55's `--all-targets` removed the
+  implicit doc-test execution from the Win/Linux lanes, and A35's new step
+  covers only `platform_macos`/`app`. Exactly one executable portable doc
+  example exists today (`grammar`, verified 1/1 green locally) and no lane
+  ran it. Both ci.yml's and release.yml's Linux jobs gained
+  `Doc tests (portable workspace)`
+  (`cargo test --locked --doc --workspace --exclude platform_macos`),
+  checker-pinned with biting `portable-doc-tests` mutations in both
+  self-test loops.
+
+Process fix recorded as two AGENTS.md lessons: hosted lanes are the only
+validators for cfg branches this host cannot run (watch the pushed run, not
+the local gate), and a `[patch.crates-io]` never reaches a
+workspace-excluded tree's lockfile. C3 (the 2,065 anchor) resolves when the
+now-unblocked macOS lane runs its checker; the anchor is unchanged this
+round. The stale-analysis P2 items from the external report (A7/A10, A8/A9,
+A18, A30) were re-confirmed as already implemented and verified at HEAD —
+no action.

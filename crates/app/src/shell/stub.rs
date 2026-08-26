@@ -11,6 +11,9 @@
 
 use std::sync::{Arc, LazyLock, RwLock};
 
+// `ShellHost` is cfg-shaped: `make_shell` uses it on Windows/Linux, while the
+// macOS test build compiles this file without that consumer.
+#[allow(unused_imports)]
 use platform::shell::{ShellHost, TrayHandle};
 use platform::PlatformError;
 use shell_flags::TrayFlags;

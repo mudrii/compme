@@ -30,7 +30,11 @@ pub fn make_tray(flags: TrayFlags) -> Result<Box<dyn TrayHandle>, PlatformError>
     platform_macos::MacosTray::new(flags).map(|tray| Box::new(tray) as Box<dyn TrayHandle>)
 }
 
+// The facade surface is intentionally broader than each build's call set (the
+// bin and test builds each use different subsets), matching mod.rs/stub.rs.
+#[allow(unused_imports)]
 pub use platform_macos::install_url_event_handler;
+#[allow(unused_imports)]
 pub use platform_macos::{
     effective_accept_keys_with_mods_and_grammar, effective_shortcut_bindings, format_accept_key,
     keycode_label_with_mods, parse_accept_key, policy_restore_needed,

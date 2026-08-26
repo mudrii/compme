@@ -57,3 +57,11 @@ path = "src/bin/p7_smoke.rs"
 [[bin]]
 name = "p8_carbon_hotkey"
 path = "src/bin/p8_carbon_hotkey.rs"
+
+# Same vendored copy the product ships (root Cargo.toml [patch.crates-io]):
+# without this, the spike's Metal validation lane exercises the unpatched
+# crates.io release instead of the vendored abort-lifetime patch. A version
+# bump touches all four sites together — both model_client target entries,
+# this file, and a vendor/ rebase (see AGENTS.md "ABI-pinned deps").
+[patch.crates-io]
+llama-cpp-2 = { path = "../../vendor/llama-cpp-2" }

@@ -34,8 +34,10 @@ updates:
   # ("failed to select a version for llama-cpp-2") and, because the group
   # pattern is "*", it drags every unrelated bump down with it. ABI-sensitive
   # llama bumps are a manual, gated change anyway: edit both target entries in
-  # crates/model_client/Cargo.toml AND tools/spike/Cargo.toml together, then
-  # run tools/release/run-model-gates.sh before committing.
+  # crates/model_client/Cargo.toml AND tools/spike/Cargo.toml together, rebase
+  # vendor/llama-cpp-2 (both the root workspace and tools/spike patch to it)
+  # and regenerate both lockfiles, then run tools/release/run-model-gates.sh
+  # before committing.
   - package-ecosystem: cargo
     directory: "/"
     schedule:

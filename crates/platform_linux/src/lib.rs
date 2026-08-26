@@ -217,7 +217,11 @@ impl LinuxAdapter {
             .ok_or_else(|| Self::accessibility_unavailable(method))
     }
 
-    #[cfg(target_os = "linux")]
+    /// The error every session-backed method returns without a live AT-SPI
+    /// session. Host-portable on purpose: the non-Linux stubs return the same
+    /// variant and reason, so the fail-closed contract the scaffold tests pin
+    /// (`AccessibilityUnavailable`, crate + method + cause in the reason) holds
+    /// identically on the macOS and Windows lanes that also build this crate.
     fn accessibility_unavailable(method: &str) -> PlatformError {
         PlatformError::AccessibilityUnavailable {
             reason: format!(
@@ -291,7 +295,10 @@ impl PlatformAdapter for LinuxAdapter {
     /// Real impl: AT-SPI2 focus-changed event subscription (D-Bus).
     #[cfg(not(target_os = "linux"))]
     fn subscribe_focus(&self, _cb: FocusCallback) -> Result<Subscription, PlatformError> {
-        Err(Self::unsupported("subscribe_focus"))
+        // Mirror the Linux no-session path: same variant, same reason. The run
+        // loop degrades only on `AccessibilityUnavailable` (A41), so a stub
+        // returning `UnsupportedField` here would be treated as fatal.
+        Err(Self::accessibility_unavailable("subscribe_focus"))
     }
 
     /// AT-SPI2 `object:text-caret-moved` signals plus the `caret_rect` geometry
@@ -305,7 +312,7 @@ impl PlatformAdapter for LinuxAdapter {
     /// Real impl: AT-SPI2 text-caret-moved / bounds-changed events.
     #[cfg(not(target_os = "linux"))]
     fn subscribe_caret(&self, _cb: CaretCallback) -> Result<Subscription, PlatformError> {
-        Err(Self::unsupported("subscribe_caret"))
+        Err(Self::accessibility_unavailable("subscribe_caret"))
     }
 
     /// The X11 accept tap (Phase 2.3): a **passive** `XGrabKey` on the accept keys
@@ -378,7 +385,7 @@ impl PlatformAdapter for LinuxAdapter {
     /// Real impl: AT-SPI2 Text/EditableText interface probe + role/state checks.
     #[cfg(not(target_os = "linux"))]
     fn capabilities(&self, _field: &FieldHandle) -> Result<Capabilities, PlatformError> {
-        Err(Self::unsupported("capabilities"))
+        Err(Self::accessibility_unavailable("capabilities"))
     }
 
     /// AT-SPI2 `Text` around the caret, in Unicode scalars.
@@ -392,7 +399,7 @@ impl PlatformAdapter for LinuxAdapter {
     /// Real impl: AT-SPI2 Text interface range around the caret.
     #[cfg(not(target_os = "linux"))]
     fn read_context(&self, _field: &FieldHandle) -> Result<TextContext, PlatformError> {
-        Err(Self::unsupported("read_context"))
+        Err(Self::accessibility_unavailable("read_context"))
     }
 
     /// AT-SPI2 per-character screen extents at the caret.
@@ -421,7 +428,14 @@ impl PlatformAdapter for LinuxAdapter {
     /// Real impl: AT-SPI2 character-extents bounding rectangle of the caret.
     #[cfg(not(target_os = "linux"))]
     fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
-        Err(Self::unsupported("caret_rect"))
+        Err(Self::accessibility_unavailable("caret_rect"))
+    }
+
+    /// Real impl: AT-SPI Component screen bounds. Without this stub the trait
+    /// default answers `Ok(None)`, which would *pretend* geometry was probed.
+    #[cfg(not(target_os = "linux"))]
+    fn popup_anchor(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
+        Err(Self::accessibility_unavailable("popup_anchor"))
     }
 
     /// AT-SPI2 `EditableText.InsertText` at the caret. Only the atomic strategy is
@@ -448,9 +462,14 @@ impl PlatformAdapter for LinuxAdapter {
         &self,
         _field: &FieldHandle,
         _text: &str,
-        _strategy: InsertStrategy,
+        strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError> {
-        Err(Self::unsupported("insert"))
+        // Same branch order as the Linux impl: refuse non-atomic strategies as
+        // unsupported, and atomic ones as session-unavailable.
+        if !strategy.supports_atomic_range_replace() {
+            return Err(Self::unsupported("insert (non-atomic strategy)"));
+        }
+        Err(Self::accessibility_unavailable("insert"))
     }
 
     /// Left-of-caret replacement stays **fail-closed on Linux**, deliberately.
@@ -487,6 +506,21 @@ impl PlatformAdapter for LinuxAdapter {
         let session = self.session("insert_replacing_range")?;
         self.validate_field(field)?;
         session.insert_replacing_range(field, expected_text, text, range, strategy)
+    }
+
+    /// Real impl: the guarded AT-SPI whole-value swap above. Without this stub
+    /// the trait default answers `UnsupportedField`, breaking the scaffold's
+    /// session-unavailable contract on the macOS/Windows lanes.
+    #[cfg(not(target_os = "linux"))]
+    fn insert_replacing_range(
+        &self,
+        _field: &FieldHandle,
+        _expected_text: &str,
+        _text: &str,
+        _range: platform::CorrectionRange,
+        _strategy: InsertStrategy,
+    ) -> Result<Inserted, PlatformError> {
+        Err(Self::accessibility_unavailable("insert_replacing_range"))
     }
 }
 

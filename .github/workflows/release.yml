@@ -315,6 +315,11 @@ jobs:
       - name: Test portable workspace
         run: cargo test --locked --workspace --exclude platform_macos --all-targets
 
+      # `--all-targets` deliberately excludes doc tests; tag parity with the
+      # branch lane that executes the portable crates' doc examples.
+      - name: Doc tests (portable workspace)
+        run: cargo test --locked --doc --workspace --exclude platform_macos
+
       - name: Build app binary
         run: cargo build --locked -p app
 
