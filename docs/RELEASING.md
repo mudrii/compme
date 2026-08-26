@@ -52,6 +52,28 @@ platforms.
 - A separate Ubuntu job runs `actionlint` with shellcheck over inline `run:`
   blocks across every workflow.
 
+The policy lane's checker and self-test entry points, by exact command — the
+release policy checker pins each of these lines, so renaming a script means
+updating this list and the checker in the same commit:
+
+- `tools/bundle/check-bundle-metadata.sh --self-test` (metadata equality),
+  `tools/bundle/make-app.sh --self-test` (bundle assembly),
+  `tools/bundle/bundle-smoke.sh` and `tools/bundle/bundle-smoke.sh --self-test`
+- `tools/release/run-model-gates.sh --self-test`,
+  `tools/release/check-model-client-features.sh` and
+  `tools/release/check-model-client-features.sh --self-test`
+- `tools/release/update-cask.sh --self-test` and
+  `tools/release/finalize-cask.sh --self-test`,
+  `tools/release/notarize-app.sh --self-test`,
+  `tools/release/write-update-manifest.sh --self-test`
+- `tools/release/check-agent-briefs.sh` and
+  `tools/release/check-agent-briefs.sh --self-test`
+- `tools/acceptance/run-ui-assisted-session.sh --self-test`,
+  `tools/acceptance/missing-model-startup.sh --self-test`, and the
+  missing-model product smoke through `tools/acceptance/missing-model-startup.sh`
+- `cargo build --locked -p platform_macos --examples` (the macOS example
+  binaries stay buildable)
+
 CI (the Linux portability job) and tag validation install `cargo-audit` 0.22.2
 with `--locked` and run `cargo audit` under `contents: read`. The weekly
 dependency-audit workflow runs the same pinned command and additionally holds
