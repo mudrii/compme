@@ -2493,7 +2493,14 @@ mod tests {
             outcome.timed_out(),
             "blocked call must arm forced-exit policy"
         );
-        assert!(started.elapsed() < Duration::from_millis(100));
+        // Generous bound on purpose: the claim is "returned at the deadline
+        // instead of waiting out the blocked native call" (which never
+        // returns until released below), not a latency budget. 100 ms flaked
+        // on a loaded shared macOS runner while the logic was correct.
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "shutdown must return at its deadline, not block on the wedged call"
+        );
         release_tx.send(()).unwrap();
         outcome.join_after_release();
     }
