@@ -25,7 +25,7 @@ promoted into the workspace.
 
 | Platform | Product status | Current boundary |
 |---|---|---|
-| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.5` | Current `main` contains post-release build, release-tooling, cask, and documentation changes; its deterministic gates are green, while 22 runner-pinned manual/live acceptance gates still need formal closure on a granted desktop. |
+| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.6` | The v0.1.6 audit-remediation patch: 69 verified findings closed and test-pinned; 22 runner-pinned manual/live acceptance gates retain their recorded evidence in the acceptance ledger. |
 | Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | Adapter/overlay operations and most ShellHost services remain fail-closed; owner-only DACL hardening, console shutdown handling, and URL opening are real, but there is no usable Windows product or package yet. |
 | Linux | **Foundation + AT-SPI2 read/write/event seam + overlay** — native CI compiles and tests the portable workspace, and runs the live AT-SPI adapter tests against a GTK app under Xvfb | Reading real fields works (focused-field walk, text/caret in Unicode scalars, selection, capabilities, caret geometry), as does writing them (caret insert, and exact-range replace guarded by expected text and verified by readback) and *noticing* them (focus and caret subscriptions over AT-SPI signals; stop closes the active gate before bounded teardown). The ghost/correction overlay is real: a click-through override-redirect X11 window (ARGB visual where the server offers one, SHAPE-based transparency where it does not), verified live in the same Xvfb session. The session shell services are real too and each fails closed when its desktop service is absent: Secret Service memory key, `zenity` confirm, FileManager1 reveal. The accept tap is real too: a passive X11 `XGrabKey` that consumes the accept key only while a suggestion shows. Still fail-closed: the tray, Wayland overlay placement, and the accessibility-permission pane (Linux has no TCC equivalent to open). The desktop-free host probes are real (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, `xdg-open`). The binary is wired to this adapter; a 2026-08-25 private Xvfb/GTK session observed two end-to-end suggestions with deterministic completion, but Linux remains experimental and has no package. |
 
@@ -60,7 +60,7 @@ brew tap mudrii/compme https://github.com/mudrii/compme
 brew install --cask compme
 ```
 
-The current v0.1.5 release artifact is Developer-ID signed, notarized, and
+The current v0.1.6 release artifact is Developer-ID signed, notarized, and
 stapled (see [docs/RELEASING.md](docs/RELEASING.md)). Earlier release notes
 record their original signing status. Local source bundles remain ad-hoc signed
 by default.
@@ -454,8 +454,8 @@ model's license for acceptance.
 ## Status
 
 This repository develops on `main`; documented behavior describes the current
-workspace. Published releases, currently through v0.1.5, are listed on the
-[Releases page](https://github.com/mudrii/compme/releases). The latest v0.1.5
+workspace. Published releases, currently through v0.1.6, are listed on the
+[Releases page](https://github.com/mudrii/compme/releases). The latest v0.1.6
 artifact is signed, notarized, and stapled; the per-version release notes record
 the original status of earlier artifacts.
 

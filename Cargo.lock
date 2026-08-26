@@ -70,7 +70,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "app"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "autocorrect",
  "compat",
@@ -296,7 +296,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "autocorrect"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "textcase",
 ]
@@ -442,7 +442,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "compat"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "concurrent-queue"
@@ -461,7 +461,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "context"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "core-foundation"
@@ -649,7 +649,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "emoji"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "encoding_rs"
@@ -668,7 +668,7 @@ checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
 name = "engine"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "engine_core",
  "platform",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "engine_core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "context",
  "platform",
@@ -943,7 +943,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "grammar"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "textcase",
 ]
@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "localize"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "textcase",
 ]
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "memory"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aes-gcm",
  "getrandom 0.4.3",
@@ -1201,11 +1201,11 @@ dependencies = [
 
 [[package]]
 name = "model_catalog"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "model_client"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "encoding_rs",
  "grammar",
@@ -1214,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "model_fetch"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "libc",
  "sha2",
@@ -1450,7 +1450,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "personalization"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "webconfig",
 ]
@@ -1480,14 +1480,14 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "platform"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "shell_flags",
 ]
 
 [[package]]
 name = "platform_linux"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "atspi",
  "fontdue",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "platform_macos"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "accessibility-sys",
  "core-foundation",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "platform_windows"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "platform",
  "shell_flags",
@@ -1553,7 +1553,7 @@ dependencies = [
 
 [[package]]
 name = "prefs"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "webconfig",
 ]
@@ -1615,11 +1615,11 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "ranker"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "redaction"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "regex",
 ]
@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "shell_flags"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "shlex"
@@ -1921,7 +1921,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stats"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "subtle"
@@ -1966,11 +1966,11 @@ dependencies = [
 
 [[package]]
 name = "textcase"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "thesaurus"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "textcase",
 ]
@@ -2236,7 +2236,7 @@ dependencies = [
 
 [[package]]
 name = "webconfig"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ed25519-dalek",
 ]

@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-08-26 · **Branch:** `main` · v0.1.5 (`14ae81e`) remains the latest published artifact · **Tests:** ≈2065 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-08-26 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2065 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -123,12 +123,12 @@ tested**. Everything below is what the plan still calls for.
 
 ---
 
-## Next release — v0.1.6 audit remediation
+## Current release — v0.1.6 audit remediation
 
-The planned next patch release is **v0.1.6**, macOS-first. Its scope is the
-verified correctness fixes plus CI and documentation repairs accumulated after
-v0.1.5; Linux remains experimental and is not promoted to a supported product
-by this patch. Planning this milestone does not authorize a tag or publication.
+**v0.1.6** is the current patch release, macOS-first, cut 2026-08-26 on the
+owner's authorization. Its scope is the verified correctness fixes plus CI and
+documentation repairs accumulated after v0.1.5; Linux remains experimental and
+is not promoted to a supported product by this patch.
 
 Ready-to-tag requires recorded closure of all 22 runner-pinned macOS
 manual/live gates (Qfd F3), a green Full Local Gate, and the pre-tag steps in

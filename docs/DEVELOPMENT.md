@@ -27,10 +27,10 @@ The current checkout develops on `main`; the latest published release is the
 signed, notarized, and stapled v0.1.5. Earlier release notes preserve each
 artifact's original signing status. Workspace behavior may be newer than the
 latest tag, so use tag-specific release assets and notes when validating a
-published version. Specifically, `v0.1.5` points to `14ae81e`; current `main`
-contains post-release build, release-tooling, cask, and documentation changes.
-The post-v0.1.4 runtime/release hardening, local/manual-only A2 policy, and
-single model-location control shipped in v0.1.5.
+published version. Specifically, `v0.1.6` points to the `v0.1.6` tag commit.
+The audit-remediation correctness fixes and CI/release hardening accumulated
+after v0.1.5 shipped in v0.1.6; the local/manual-only A2 policy and single
+model-location control shipped in v0.1.5.
 
 The root `Cargo.toml` is a Rust workspace with 26 members
 ([verified 2026-08-25] — keep in sync with `Cargo.toml`):

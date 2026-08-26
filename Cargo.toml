@@ -31,7 +31,7 @@ members = [
 exclude = ["tools/spike", "vendor/llama-cpp-2"]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 rust-version = "1.97"
 license = "Apache-2.0"
 
