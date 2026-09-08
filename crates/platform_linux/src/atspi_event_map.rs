@@ -67,6 +67,11 @@ impl LinuxFieldRegistry {
             .cloned()
     }
 
+    /// The application owning the current focused field, if one is registered.
+    pub fn current_app(&self) -> Option<String> {
+        self.current.as_ref().map(|current| current.app.clone())
+    }
+
     /// Validate both native element identity and focus generation.
     pub fn validate(&self, field: &FieldHandle) -> Result<ElementId, PlatformError> {
         let current = self.current.as_ref().ok_or(PlatformError::StaleField)?;

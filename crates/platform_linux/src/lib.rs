@@ -375,6 +375,19 @@ impl PlatformAdapter for LinuxAdapter {
     /// which is also the honest answer when nothing is focused.
     #[cfg(target_os = "linux")]
     fn front_app(&self) -> Option<AppId> {
+        // The registry already knows the focused field's application from the
+        // last focus event, at no bus cost; the contract asks this not to
+        // block. Only before the first focus event (nothing registered yet)
+        // does it fall back to the depth-16 desktop walk, which is the one
+        // remaining blocking path here (G8).
+        let registered = self
+            .fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .current_app();
+        if registered.is_some() {
+            return registered;
+        }
         self.session.as_ref()?.focused_app_name()
     }
 
@@ -1141,6 +1154,26 @@ mod tests {
         let status = detected.expect("the second poll must observe the launcher failure");
         assert!(!status.success());
         assert_eq!(polls, 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn front_app_answers_from_the_registry_without_a_bus_walk() {
+        // No session at all, so any bus walk would return None: a registered
+        // focus must still name its application, proving the answer comes
+        // from the registry rather than the blocking desktop walk.
+        let adapter = LinuxAdapter::new();
+        assert_eq!(adapter.front_app(), None);
+        let id = atspi_ids::ElementId {
+            bus_name: ":1.42".to_string(),
+            path: "/org/a11y/atspi/accessible/7".to_string(),
+        };
+        adapter
+            .fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .focus(&id, || ("gedit".to_string(), Some(4242)));
+        assert_eq!(adapter.front_app().as_deref(), Some("gedit"));
     }
 
     #[test]

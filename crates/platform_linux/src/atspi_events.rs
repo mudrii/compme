@@ -88,10 +88,25 @@ pub fn subscribe_focus(
         // *duplicates* are dropped below, which is a different thing.
         None,
         move |session, element| {
-            let field = fields
+            // Reuse first, describe second, and never hold the registry lock
+            // across a bus call: `element_owner` is up to four blocking D-Bus
+            // round trips, and every run-loop AT-SPI method takes this same
+            // lock in `validate_field`, so describing under it stalled the run
+            // loop for as long as a hung application took to answer (G8).
+            let reused = fields
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .focus(&element, || session.element_owner(&element));
+                .current_for(&element);
+            let field = match reused {
+                Some(field) => field,
+                None => {
+                    let owner = session.element_owner(&element);
+                    fields
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .focus(&element, || owner)
+                }
+            };
             // GTK emits `state-changed:focused` **twice** for one focus move
             // (measured on GTK3/at-spi2 2.60 with the harness fixture), and each
             // focus event costs the host a capability probe plus a field read. So
