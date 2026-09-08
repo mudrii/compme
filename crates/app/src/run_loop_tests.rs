@@ -9505,6 +9505,62 @@ fn host_event_queue_never_orphans_caret_when_dropping_focus() {
 }
 
 #[test]
+fn host_event_queue_keeps_carets_that_follow_a_refocus_when_dropping_focus() {
+    // Dropping the oldest Focus(A) must prune only the carets that depended on
+    // it — those queued before A's next Focus. A later re-Focus(A) starts a new
+    // dependency chain, and its carets must survive intact; the old `retain`
+    // dropped every Caret(A) in the queue, orphaning the second chain's focus.
+    let mut queue = VecDeque::new();
+    assert!(enqueue_host_event(
+        &mut queue,
+        HostEvent::Focus(host_field("a"))
+    ));
+    assert!(enqueue_host_event(
+        &mut queue,
+        HostEvent::Caret(host_field("a"), rect(1.0))
+    ));
+    assert!(enqueue_host_event(
+        &mut queue,
+        HostEvent::Focus(host_field("b"))
+    ));
+    assert!(enqueue_host_event(
+        &mut queue,
+        HostEvent::Focus(host_field("a"))
+    ));
+    assert!(enqueue_host_event(
+        &mut queue,
+        HostEvent::Caret(host_field("a"), rect(2.0))
+    ));
+    for i in 5..MAX_HOST_EVENT_QUEUE {
+        assert!(enqueue_host_event(
+            &mut queue,
+            HostEvent::Caret(host_field(&format!("field-{i}")), rect(i as f64))
+        ));
+    }
+
+    assert!(enqueue_host_event(
+        &mut queue,
+        HostEvent::Accept(AcceptAction::Full)
+    ));
+
+    let a_events: Vec<&HostEvent> = queue
+        .iter()
+        .filter(|event| match event {
+            HostEvent::Focus(field) | HostEvent::Caret(field, _) => field.element_id == "a",
+            _ => false,
+        })
+        .collect();
+    // The first Focus(a) and its Caret(a) at rect 1.0 are gone; the re-focus
+    // and its Caret(a) at rect 2.0 remain, in order.
+    assert_eq!(a_events.len(), 2, "{a_events:?}");
+    assert!(matches!(a_events[0], HostEvent::Focus(_)));
+    assert!(matches!(a_events[1], HostEvent::Caret(_, r) if *r == rect(2.0)));
+    assert!(queue
+        .iter()
+        .any(|event| matches!(event, HostEvent::Focus(field) if field.element_id == "b")));
+}
+
+#[test]
 fn host_event_queue_refuses_when_only_control_events_remain() {
     let mut queue = VecDeque::new();
     for _ in 0..MAX_HOST_EVENT_QUEUE {

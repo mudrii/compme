@@ -66,8 +66,7 @@ pub fn tray_menu_action_specs() -> &'static [TrayMenuActionSpec] {
 pub fn apply_tray_action(flags: &TrayFlags, action: TrayAction) {
     match action {
         TrayAction::ToggleEnabled => {
-            let enabled = &flags.enabled;
-            enabled.store(!enabled.load(Ordering::Relaxed), Ordering::Relaxed);
+            flags.toggle_enabled();
         }
         TrayAction::OpenAccessibilitySettings => {
             flags.open_settings.store(true, Ordering::Relaxed);

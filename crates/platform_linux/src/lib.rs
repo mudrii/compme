@@ -51,7 +51,7 @@ pub mod atspi_ids;
 /// `atspi` dependency is target-gated, so the module cannot exist elsewhere.
 #[cfg(target_os = "linux")]
 pub mod atspi_live;
-/// `zenity`/`kdialog` modal confirmation: argv construction and exit-code
+/// `zenity` modal confirmation: argv construction and exit-code
 /// interpretation are pure, so they are tested on every host.
 pub mod confirm;
 /// Secret Service (`org.freedesktop.secrets`) key transport — the Linux
@@ -230,6 +230,22 @@ impl LinuxAdapter {
         }
     }
 
+    /// The error `subscribe_accept` returns without an installable X11 accept
+    /// tap: no `DISPLAY`, a Wayland session, or a window manager already
+    /// grabbing the accept keys. `AccessibilityUnavailable`, not
+    /// `UnsupportedField`, because the run loop degrades only on that variant
+    /// (A41): the AT-SPI read path stays live and the accept keys stay with
+    /// the application, instead of the whole startup failing with
+    /// "subscribe accept: UnsupportedField".
+    fn accept_tap_unavailable() -> PlatformError {
+        PlatformError::AccessibilityUnavailable {
+            reason: "platform_linux::subscribe_accept: no installable X11 accept tap (no DISPLAY, \
+                     Wayland session, or accept keys already grabbed); accept keys stay with the \
+                     application"
+                .to_string(),
+        }
+    }
+
     /// Validate a field against the adapter's current focus identity before an
     /// AT-SPI proxy is constructed or called.
     #[cfg(target_os = "linux")]
@@ -322,13 +338,15 @@ impl PlatformAdapter for LinuxAdapter {
     /// reports a visible suggestion through the returned handle, which is the
     /// contract's "swallow keys only while a suggestion is visible" rule.
     ///
-    /// Fail-closed without a probed tap (including every `new()` adapter): a
-    /// `GrabModeSync` grab freezes the keyboard system-wide until it is resolved,
-    /// so this is not a mechanism to install speculatively.
+    /// Without a probed tap (including every `new()` adapter) this degrades
+    /// rather than fails: a `GrabModeSync` grab freezes the keyboard
+    /// system-wide until it is resolved, so it is not a mechanism to install
+    /// speculatively, and the run loop treats the returned
+    /// `AccessibilityUnavailable` as "no accept tap this session".
     #[cfg(target_os = "linux")]
     fn subscribe_accept(&self, cb: AcceptCallback) -> Result<AcceptSubscription, PlatformError> {
         if !self.accept_tap_installable {
-            return Err(Self::unsupported("subscribe_accept"));
+            return Err(Self::accept_tap_unavailable());
         }
         let tap = x11_tap::X11AcceptTap::install(cb)?;
         let for_visible = std::sync::Arc::clone(&tap);
@@ -350,7 +368,7 @@ impl PlatformAdapter for LinuxAdapter {
     /// Real impl: the X11 `XGrabKey` tap above; a compositor/IME path on Wayland.
     #[cfg(not(target_os = "linux"))]
     fn subscribe_accept(&self, _cb: AcceptCallback) -> Result<AcceptSubscription, PlatformError> {
-        Err(Self::unsupported("subscribe_accept"))
+        Err(Self::accept_tap_unavailable())
     }
 
     /// The application owning the focused accessible. `None` without a session,
@@ -682,8 +700,9 @@ fn desktop_exec_value(exec: &Path) -> String {
 }
 
 /// The autostart desktop entry. `X-GNOME-Autostart-enabled` is the key the GNOME
-/// startup UIs toggle; other desktops ignore it. `NoDisplay=true` keeps compme
-/// out of application menus — the tray is its entry point.
+/// startup UIs toggle; other desktops ignore it. No `NoDisplay=true`: that key
+/// hides the entry from the desktop's startup-applications UI, and with no
+/// Linux tray yet that UI is the only place a user can see or disable it.
 fn autostart_desktop_entry(exec: &Path) -> String {
     format!(
         "[Desktop Entry]\n\
@@ -692,7 +711,6 @@ fn autostart_desktop_entry(exec: &Path) -> String {
          Comment=Inline text completion\n\
          Exec={}\n\
          Terminal=false\n\
-         NoDisplay=true\n\
          X-GNOME-Autostart-enabled=true\n",
         desktop_exec_value(exec)
     )
@@ -731,7 +749,7 @@ fn apply_autostart(dir: &Path, enabled: bool, exec: &Path) -> std::io::Result<()
 /// - `load_or_create_memory_key` — Secret Service over D-Bus
 ///   (`keyring`, contract in [`memory_key`]). No key store, or a locked
 ///   keyring, is an error; there is no plaintext fallback.
-/// - `confirm` — `zenity`, then `kdialog` ([`confirm`]). `Ok(true)` only on an
+/// - `confirm` — `zenity` only ([`confirm`]; `kdialog` was measured out). `Ok(true)` only on an
 ///   explicit confirm click; neither helper present is an error.
 /// - `reveal_file` — `org.freedesktop.FileManager1.ShowItems`, else `xdg-open` on
 ///   the containing directory ([`reveal`]).
@@ -908,7 +926,7 @@ impl platform::shell::ShellHost for LinuxShellHost {
         })
     }
 
-    /// Blocking modal confirm via `zenity`, then `kdialog`. `Ok(true)` only on an
+    /// Blocking modal confirm via `zenity` (`kdialog` cannot default to Cancel). `Ok(true)` only on an
     /// explicit confirm click; Return declines. See [`confirm`].
     #[cfg(target_os = "linux")]
     fn confirm(&self, prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
@@ -927,7 +945,7 @@ impl platform::shell::ShellHost for LinuxShellHost {
     #[cfg(not(target_os = "linux"))]
     fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
         Err(PlatformError::UnsupportedField {
-            reason: "platform_linux::confirm requires Linux (zenity/kdialog)".to_string(),
+            reason: "platform_linux::confirm requires Linux (zenity)".to_string(),
         })
     }
 
@@ -1126,6 +1144,30 @@ mod tests {
     }
 
     #[test]
+    fn subscribe_accept_without_a_tap_degrades_instead_of_failing_startup() {
+        // Every `new()` adapter, and every `with_accessibility()` adapter on a
+        // host without an installable X11 tap (no DISPLAY, Wayland, or a WM
+        // already grabbing the accept keys), must answer with the ONE variant
+        // the run loop degrades on. `UnsupportedField` here made the Linux
+        // product exit at startup ("subscribe accept: UnsupportedField") on
+        // exactly the Wayland desktop it is manually validated on.
+        let adapter = LinuxAdapter::new();
+        let Err(PlatformError::AccessibilityUnavailable { reason }) =
+            adapter.subscribe_accept(Arc::new(|_| {}))
+        else {
+            panic!("subscribe_accept without a tap must be AccessibilityUnavailable");
+        };
+        assert!(
+            reason.starts_with("platform_linux::subscribe_accept:"),
+            "reason names crate and method: {reason:?}"
+        );
+        assert!(
+            reason.contains("X11 accept tap"),
+            "reason explains the missing tap: {reason:?}"
+        );
+    }
+
+    #[test]
     fn scaffold_reports_linux_and_fails_closed() {
         let adapter = LinuxAdapter::new();
         // environment() is the one cheap, infallible method the scaffold answers.
@@ -1202,9 +1244,11 @@ mod tests {
             Err(PlatformError::AccessibilityUnavailable { .. })
         ));
         let accept_cb: AcceptCallback = Arc::new(|_tap| {});
+        // Still closed, but as the variant the run loop degrades on rather
+        // than the fatal one (see `subscribe_accept_without_a_tap_degrades…`).
         assert!(matches!(
             adapter.subscribe_accept(accept_cb),
-            Err(PlatformError::UnsupportedField { .. })
+            Err(PlatformError::AccessibilityUnavailable { .. })
         ));
         assert!(matches!(
             adapter.capabilities(&field),

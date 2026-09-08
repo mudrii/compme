@@ -288,9 +288,20 @@ fn enqueue_host_event(queue: &mut VecDeque<HostEvent>, event: HostEvent) -> bool
         };
         queue.remove(drop_index);
         if let Some(field) = dropped_focus {
-            queue.retain(
-                |event| !matches!(event, HostEvent::Caret(caret_field, _) if caret_field == &field),
-            );
+            // Carets that depended on the dropped focus are the ones queued
+            // between it and the field's next `Focus` (a re-focus starts a new
+            // dependency chain that must survive intact), so prune only that
+            // span rather than every same-field caret in the queue.
+            let mut index = drop_index;
+            while index < queue.len() {
+                match &queue[index] {
+                    HostEvent::Focus(next) if next == &field => break,
+                    HostEvent::Caret(caret_field, _) if caret_field == &field => {
+                        queue.remove(index);
+                    }
+                    _ => index += 1,
+                }
+            }
         }
     }
     queue.push_back(event);
@@ -5212,8 +5223,7 @@ pub fn run() -> Result<(), String> {
                             // Invert the runtime global-enabled flag, mirroring the
                             // SIGUSR1 / tray enable-disable below, including the
                             // monitored-state reset on the policy transition.
-                            let now = flags.enabled.load(Ordering::Relaxed);
-                            flags.enabled.store(!now, Ordering::Relaxed);
+                            let now = flags.toggle_enabled();
                             clear_monitored_state_for_policy_transition(
                                 &mut monitored.pending_monitored,
                                 &mut monitored.monitored_buffers,
@@ -5383,8 +5393,7 @@ pub fn run() -> Result<(), String> {
         }
         // SIGUSR1 toggles enable/disable (headless equivalent of the tray item).
         if TOGGLE.swap(false, Ordering::Relaxed) {
-            let now = flags.enabled.load(Ordering::Relaxed);
-            flags.enabled.store(!now, Ordering::Relaxed);
+            let now = flags.toggle_enabled();
             clear_monitored_state_for_policy_transition(
                 &mut monitored.pending_monitored,
                 &mut monitored.monitored_buffers,

@@ -10,9 +10,11 @@
 //! When in doubt it OVER-redacts (privacy over fidelity): a Luhn-valid 13–19
 //! digit run is scrubbed even if it is not actually a card, and a 32+ char
 //! mixed-entropy token is scrubbed even if benign. False positives lose a bit
-//! of stored context. The deliberate false-negative boundary is all-one-case
-//! all-letter prose: those runs survive unless a credential key/prefix or other
-//! entropy signal identifies them as secrets.
+//! of stored context: a URL or filesystem path whose 32+ char run carries a
+//! digit or mixed case (`/Users/Alice/…`, `…/v2/app.js`) is one such loss,
+//! pinned by test. The deliberate false-negative boundary is all-one-case
+//! all-letter prose and all-lowercase paths/URLs: those runs survive unless a
+//! credential key/prefix or other entropy signal identifies them as secrets.
 
 use std::sync::OnceLock;
 
@@ -47,14 +49,16 @@ fn secret_re() -> &'static Regex {
 }
 
 /// Whether a generic long token looks high-entropy enough to be a secret rather
-/// than a long word: it has a digit, mixed case, or base64 punctuation. (An
-/// all-one-case all-letter 32+ run is left alone unless another credential
-/// signal catches it.)
+/// than a long word or a path: it has a digit, mixed case, or base64 `+`/`=`.
+/// A `/` on its own is NOT a signal — it is the separator of every URL path and
+/// filesystem path, and a real base64 secret that is all one case with no digit
+/// and no `+`/`=` is vanishingly unlikely (`(26/64)^32`). An all-one-case
+/// all-letter 32+ run is left alone unless another credential signal catches it.
 fn looks_high_entropy(token: &str) -> bool {
     let has_digit = token.chars().any(|c| c.is_ascii_digit());
     let has_upper = token.chars().any(|c| c.is_ascii_uppercase());
     let has_lower = token.chars().any(|c| c.is_ascii_lowercase());
-    let has_b64_punct = token.contains(['+', '/', '=']);
+    let has_b64_punct = token.contains(['+', '=']);
     has_digit || (has_upper && has_lower) || has_b64_punct
 }
 
@@ -714,7 +718,7 @@ mod tests {
 
     #[test]
     fn redacts_all_lowercase_token_with_only_base64_punct() {
-        // looks_high_entropy's base64-punct arm (+,/,=) ALONE marks a long token
+        // looks_high_entropy's base64-punct arm (+,=) ALONE marks a long token
         // as a secret even with no digit and no uppercase — base64/base64url
         // payloads are often all-lowercase. A regression dropping has_b64_punct
         // would leak exactly this class while the digit/mixed-case arms still pass.
@@ -734,7 +738,7 @@ mod tests {
 
     #[test]
     fn redacts_base64_token_whose_only_punct_is_padding_equals() {
-        // looks_high_entropy's base64-punct arm lists ('+','/','='). A standard
+        // looks_high_entropy's base64-punct arm lists ('+','='). A standard
         // base64 token whose ONLY special char is '=' padding (no '+'/'/', no
         // digit, no uppercase) relies solely on '=' to be flagged. A regression
         // dropping '=' from the punct set would leak exactly this token while the
@@ -1064,6 +1068,43 @@ mod tests {
         assert_eq!(
             redact("authorization failed for request"),
             "authorization failed for request"
+        );
+    }
+
+    #[test]
+    fn lowercase_urls_and_paths_survive_the_generic_secret_branch() {
+        // A `/` is the separator of every URL and filesystem path, not an
+        // entropy signal on its own: before this pin, any 32+ char lowercase
+        // path run was scrubbed to `[redacted-secret]`, silently stripping most
+        // URLs from stored memory and diagnostics (2026-09-08 audit, G13).
+        let url = "see https://example.com/some/long/path/segment/that/keeps/going";
+        assert_eq!(redact(url), url);
+        let path = "open /home/alice/documents/projects/compme/crates/redaction/src/lib.rs";
+        assert_eq!(redact(path), path);
+        // A lowercase run with `+` or `=` is still base64-shaped and still trips.
+        let with_plus = "blob abcdefghij/klmnopqrstuvwxyz+abcdefghij end";
+        assert_eq!(redact(with_plus), "blob [redacted-secret] end");
+    }
+
+    #[test]
+    fn mixed_case_or_digit_paths_are_still_over_redacted_known_cost() {
+        // ACCEPTED COST of the entropy heuristic: a path run that carries a
+        // digit or mixed case is indistinguishable from a base64 token by
+        // shape, and privacy wins. Pinned so the boundary cannot move silently
+        // in either direction.
+        assert_eq!(
+            redact("open /Users/Alice/Documents/projects/compme/crates/redaction"),
+            "open [redacted-secret]"
+        );
+        assert_eq!(
+            redact("see https://cdn.example.com/assets/v2/application/bundle.js"),
+            "see https:[redacted-secret]"
+        );
+        // Keyed parameters inside a URL are caught by the credential pass
+        // regardless of the generic branch (unchanged behaviour).
+        assert_eq!(
+            redact("https://x.com/cb?code=abc123"),
+            "https://x.com/cb?code=[redacted-secret]"
         );
     }
 

@@ -8,7 +8,7 @@
 //! for `ShellHost::confirm`'s `ConfirmPrompt` without the dependency
 //! direction ever cycling back.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub type UrlCallback = dyn Fn(String) + Send + Sync + 'static;
@@ -86,6 +86,9 @@ pub fn format_key_with_mods(keycode: i64, mask: u32) -> String {
 pub enum KeymapError {
     Collision(i64),
     InvalidKeycode(i64),
+    /// The host has no accept-key rebinding mechanism; the persisted chords
+    /// are ignored and the defaults stay in force.
+    Unsupported,
 }
 
 impl std::fmt::Display for KeymapError {
@@ -99,6 +102,12 @@ impl std::fmt::Display for KeymapError {
             }
             KeymapError::InvalidKeycode(keycode) => {
                 write!(f, "invalid keycode: {keycode} (must be non-negative)")
+            }
+            KeymapError::Unsupported => {
+                write!(
+                    f,
+                    "accept-key rebinding is not implemented on this platform"
+                )
             }
         }
     }
@@ -252,6 +261,17 @@ pub struct TrayFlags {
     pub app_disable: Arc<Mutex<Option<DisableArm>>>,
 }
 
+impl TrayFlags {
+    /// Flip the user enable/disable toggle atomically and return the state it
+    /// had *before* the flip. Three threads toggle this flag (the tray menu,
+    /// the ToggleGlobal shortcut on the run loop, and the SIGUSR1 handler);
+    /// a load-then-store from two of them at once collapsed both toggles into
+    /// one, so the flip is a single `fetch_xor`.
+    pub fn toggle_enabled(&self) -> bool {
+        self.enabled.fetch_xor(true, Ordering::Relaxed)
+    }
+}
+
 /// Which "Disable Completions in Current App" arm the user picked
 /// (Cotypist-style tray submenu).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -267,6 +287,66 @@ pub enum DisableArm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tray_flags(enabled: bool) -> TrayFlags {
+        TrayFlags {
+            enabled: Arc::new(AtomicBool::new(enabled)),
+            quit: Arc::new(AtomicBool::new(false)),
+            open_settings: Arc::new(AtomicBool::new(false)),
+            snooze_requested: Arc::new(AtomicBool::new(false)),
+            global_disable: Arc::new(Mutex::new(None)),
+            open_settings_window: Arc::new(AtomicBool::new(false)),
+            check_updates: Arc::new(AtomicBool::new(false)),
+            visit_website: Arc::new(AtomicBool::new(false)),
+            contact_support: Arc::new(AtomicBool::new(false)),
+            collection_toggle: Arc::new(AtomicBool::new(false)),
+            app_disable: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    #[test]
+    fn toggle_enabled_flips_and_reports_the_previous_state() {
+        let flags = tray_flags(true);
+        assert!(flags.toggle_enabled(), "previous state was enabled");
+        assert!(!flags.enabled.load(Ordering::Relaxed));
+        assert!(!flags.toggle_enabled(), "previous state was disabled");
+        assert!(flags.enabled.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn concurrent_toggles_never_collapse() {
+        // Two toggles racing from two threads must both land: an even number
+        // of flips returns the flag to its start state. The old load-then-store
+        // let two near-simultaneous toggles read the same value and store the
+        // same result, losing one of them.
+        let flags = tray_flags(true);
+        let per_thread = 5_000;
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let flags = flags.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..per_thread {
+                        flags.toggle_enabled();
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(
+            flags.enabled.load(Ordering::Relaxed),
+            "4 × {per_thread} toggles is an even count and must restore the start state"
+        );
+    }
+
+    #[test]
+    fn keymap_error_unsupported_names_the_platform_boundary() {
+        assert_eq!(
+            KeymapError::Unsupported.to_string(),
+            "accept-key rebinding is not implemented on this platform"
+        );
+    }
 
     #[test]
     fn key_with_mods_parser_accepts_shared_shortcut_grammar() {

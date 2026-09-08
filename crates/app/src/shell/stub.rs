@@ -130,6 +130,10 @@ pub fn set_accept_keymap_from_config_with_mods(
     platform_linux::x11_keys::set_accept_chords_with_mods(word, full, grammar_accept)
 }
 
+/// No rebinding mechanism exists off Linux yet (Windows is a fail-closed
+/// scaffold), so the persisted chords are refused rather than silently
+/// accepted: the run loop then logs "using defaults" instead of "accept keys
+/// rebound" for a rebind that never happened.
 #[cfg(not(target_os = "linux"))]
 #[allow(dead_code)]
 pub fn set_accept_keymap_from_config_with_mods(
@@ -137,7 +141,7 @@ pub fn set_accept_keymap_from_config_with_mods(
     _full: Option<(i64, u32)>,
     _grammar_accept: Option<(i64, u32)>,
 ) -> Result<(), KeymapError> {
-    Ok(())
+    Err(KeymapError::Unsupported)
 }
 
 #[cfg(target_os = "linux")]
@@ -146,6 +150,8 @@ pub fn effective_accept_keys_with_mods_and_grammar() -> EffectiveAcceptKeys {
     platform_linux::x11_keys::effective_accept_chords_with_mods()
 }
 
+/// The defaults, because [`set_accept_keymap_from_config_with_mods`] refuses
+/// every rebind on these hosts: what is reported is exactly what is in force.
 #[cfg(not(target_os = "linux"))]
 #[allow(dead_code)]
 pub fn effective_accept_keys_with_mods_and_grammar() -> EffectiveAcceptKeys {
@@ -189,6 +195,11 @@ pub fn policy_restore_needed(was_visible: bool, visible_now: bool) -> bool {
     was_visible && !visible_now
 }
 
+/// No settings window exists off macOS: Windows is a fail-closed scaffold and
+/// Linux is config-file-only by decision (2026-07-29). `show` therefore
+/// reports that instead of pretending a window opened, so the run loop logs
+/// "settings window unavailable"; the refresh hooks stay no-ops because there
+/// is nothing to refresh, and `is_visible` is honestly `false`.
 #[allow(dead_code)]
 pub struct SettingsWindow;
 
@@ -199,7 +210,9 @@ impl SettingsWindow {
     }
 
     pub fn show(&mut self) -> Result<(), PlatformError> {
-        Ok(())
+        Err(PlatformError::UnsupportedField {
+            reason: "settings window not implemented on this platform (Windows scaffold; Linux is config-file-only)".into(),
+        })
     }
 
     pub fn flush_personalization_edits(&self) {}
@@ -218,5 +231,36 @@ impl SettingsWindow {
 
     pub fn restore_accessory_policy(&self) -> Result<(), PlatformError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_window_stub_reports_unavailable_instead_of_silent_success() {
+        let mut window = SettingsWindow;
+        let Err(PlatformError::UnsupportedField { reason }) = window.show() else {
+            panic!("the stub has no window to show; Ok would make the run loop log a success");
+        };
+        assert!(reason.contains("settings window"), "{reason}");
+        assert!(!window.is_visible());
+        // Nothing was shown, so there is no activation policy to restore.
+        assert!(window.restore_accessory_policy().is_ok());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn accept_keymap_rebind_is_refused_where_no_mechanism_exists() {
+        assert_eq!(
+            set_accept_keymap_from_config_with_mods(Some((48, 0)), None, None),
+            Err(KeymapError::Unsupported)
+        );
+        // The reported effective keys are the defaults the refusal leaves in force.
+        assert_eq!(
+            effective_accept_keys_with_mods_and_grammar(),
+            ((48, 0), (50, 0), None)
+        );
     }
 }

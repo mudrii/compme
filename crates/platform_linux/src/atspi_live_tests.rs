@@ -2048,11 +2048,12 @@ mod x11_accept_tap {
             .capabilities(&handle(&adapter, &id))
             .expect("capabilities");
         assert_eq!(caps.accept_intercept, platform::KeyInterceptMode::XGrabKey);
-        // An adapter that never probed must stay fail-closed on both counts.
+        // An adapter that never probed must stay closed on both counts, and its
+        // refusal must be the variant the run loop degrades on (not fatal).
         let inert = LinuxAdapter::new();
         assert!(matches!(
             inert.subscribe_accept(Arc::new(|_| {})),
-            Err(PlatformError::UnsupportedField { .. })
+            Err(PlatformError::AccessibilityUnavailable { .. })
         ));
     }
 }

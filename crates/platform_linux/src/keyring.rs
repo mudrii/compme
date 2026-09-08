@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use platform::PlatformError;
 use zbus::blocking::Connection;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zeroize::Zeroize;
 
 use crate::memory_key::{
     classify_lookup, KeyLookup, KEY_ATTRIBUTES, LOOKUP_ATTRIBUTES, MEMORY_KEY_ACCOUNT,
@@ -152,24 +153,22 @@ pub fn write_memory_key_on(connection: &Connection, key: &[u8]) -> Result<(), Pl
         "org.freedesktop.Secret.Item.Attributes",
         Value::from(attributes),
     );
-    let secret = (
-        session.clone(),
-        Vec::<u8>::new(),
-        key.to_vec(),
-        CONTENT_TYPE.to_string(),
-    );
+    // The key is copied for the wire encoding; wipe that copy as soon as the
+    // call returns (success or failure), mirroring the read path's zeroize.
+    let mut key_copy = key.to_vec();
+    let secret = (session.clone(), Vec::<u8>::new(), &key_copy, CONTENT_TYPE);
 
     // `replace = false`: this path runs only after a read reported no item, so
     // replacing could only ever destroy a key another process just created.
-    let reply = connection
-        .call_method(
-            Some(SECRETS_NAME),
-            DEFAULT_COLLECTION_PATH,
-            Some(COLLECTION_IFACE),
-            "CreateItem",
-            &(properties, secret, false),
-        )
-        .map_err(|err| failed("CreateItem", err))?;
+    let reply = connection.call_method(
+        Some(SECRETS_NAME),
+        DEFAULT_COLLECTION_PATH,
+        Some(COLLECTION_IFACE),
+        "CreateItem",
+        &(properties, secret, false),
+    );
+    key_copy.zeroize();
+    let reply = reply.map_err(|err| failed("CreateItem", err))?;
     let (item, prompt): (OwnedObjectPath, OwnedObjectPath) = reply
         .body()
         .deserialize()

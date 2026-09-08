@@ -792,14 +792,31 @@ fn run_ax_worker_loop<L, F>(
                 worker_loop.pump_run_loop();
             }
             Ok(Message::InstallResource { id, install, reply }) => {
-                let result = install().map(|resource| {
-                    resources.insert(id, resource);
-                });
+                // Same containment as `Run`: a panicking installer (or a
+                // panicking resource `Drop` below) must answer the caller with a
+                // typed error and leave the worker alive, not take every later
+                // adapter call down with "AX worker dropped job result".
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(install))
+                    .unwrap_or_else(|_| {
+                        crate::write_stderr(format_args!("compme: AX resource install panicked"));
+                        Err(PlatformError::CannotComplete {
+                            reason: "AX resource install panicked".into(),
+                        })
+                    })
+                    .map(|resource| {
+                        resources.insert(id, resource);
+                    });
                 let _ = reply.send(result);
                 worker_loop.pump_run_loop();
             }
             Ok(Message::RemoveResource { id, reply }) => {
-                let removed = resources.remove(&id).is_some();
+                let removed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    resources.remove(&id).is_some()
+                }))
+                .unwrap_or_else(|_| {
+                    crate::write_stderr(format_args!("compme: AX resource drop panicked"));
+                    false
+                });
                 if let Some(reply) = reply {
                     let _ = reply.send(removed);
                 }

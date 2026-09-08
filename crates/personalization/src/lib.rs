@@ -9,9 +9,10 @@
 
 use std::collections::HashMap;
 
-/// Delimiter fencing the free-text instruction block so user/domain text (which
-/// can arrive from web-driven `setOverride` deep links — design spec §13) cannot
-/// dissolve the surrounding directive frame.
+/// Delimiter fencing the free-text instruction block so user/domain text (edited
+/// in Settings today; design spec §13 also foresees web-driven `setOverride`
+/// deep links, which the URL scheme does not yet carry) cannot dissolve the
+/// surrounding directive frame.
 const INSTRUCTION_FENCE: &str = "\"\"\"";
 
 /// Upper bound on instruction characters folded into a single preamble. The
