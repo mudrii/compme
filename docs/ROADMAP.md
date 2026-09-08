@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-08-26 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2065 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-08 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2065 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.5: the five macOS
 > parity closures and their pinned live gates, three architecture follow-ups, a
@@ -55,6 +55,12 @@
 > deferred-risk history behind these batches.
 >
 > </details>
+>
+> **2026-09-08 full audit:** findings ledger in `Qfd.md` §20; the
+> proposed re-sequencing of the execution order below (three clusters ahead
+> of Windows Phase 1, and a smaller seam cut) is in
+> [`superpowers/plans/2026-09-08-full-audit-next-steps.md`](superpowers/plans/2026-09-08-full-audit-next-steps.md).
+> Nothing in that plan is started.
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and

@@ -813,3 +813,78 @@ The load-bearing migration decision is recorded at
 cap every multi-GB model download at 30 s). Both halves are pinned by stall
 tests, and the production agent's config shape — including the `None` knobs —
 is pinned by `production_agent_pins_the_load_bearing_timeout_shape`.
+
+## 20. 2026-09-08 full-codebase audit (post-v0.1.6, tree at `2d18c34`)
+
+Read-only audit of the whole workspace two weeks after the v0.1.6 tag. Five
+parallel finder passes (app + engine, Linux/Windows platform crates, macOS
+platform crate, model/memory/security crates, tools/CI/docs), each claim
+re-checked against the tree by the coordinating reviewer before entering this
+ledger. Severity is the reviewer's; **CONFIRMED** means the reviewer re-read the
+cited lines and reproduced the reasoning, **PLAUSIBLE** means the code path is
+as described but the user-visible impact needs live evidence on the target OS.
+Line numbers cite `2d18c34`; re-locate by symbol before editing. Remediation is
+sequenced in
+[`docs/superpowers/plans/2026-09-08-full-audit-next-steps.md`](docs/superpowers/plans/2026-09-08-full-audit-next-steps.md).
+
+Local gate evidence for this audit is recorded in §20.5.
+
+### 20.1 Findings ledger
+
+| ID | Sev | Area | Finding | Evidence | Status |
+|---|---|---|---|---|---|
+| G1 | High | platform_linux / app | Linux product **aborts at startup** when no X11 accept tap is installable (no `DISPLAY`, Wayland, or a WM already grabbing Tab): `subscribe_accept` returns `UnsupportedField`, the Linux `ShellHost` default reports `accessibility_trusted() == true`, so `subscription_error_action` maps it to `Fatal` and `run()` returns `Err`. The `ln1-clean-degradation-without-x` gate that would catch it is unchecked. Focus/caret already use `AccessibilityUnavailable` for the same condition. | `crates/platform_linux/src/lib.rs:330-332`, `crates/app/src/run_loop.rs:3437-3445,3505-3521`, `crates/platform/src/shell.rs:29-31`, `docs/MANUAL-VALIDATION-LINUX.md:88` | CONFIRMED, OPEN |
+| G2 | High | platform_macos | AxSet readback is taken immediately after the set; an app that applies `AXValue` writes asynchronously reads back the original, is classified `SilentlyIgnored`, and the adapter re-posts the same text as synthetic keys — a **double insert**. Only iTerm2 evidence backs the fallback today. | `crates/platform_macos/src/lib.rs:4459-4477,1360-1386` | PLAUSIBLE, OPEN |
+| G3 | High | platform_macos | `read_required_ax_string_attribute` converts through `CFString::to_string()`, which stops at the first unconvertible UTF-16 unit (lone surrogate, reachable from JS-backed fields). `insert_for_field` then rewrites the **whole value** from the truncated string; the pre-write snapshot check compares two identically truncated reads and cannot catch it. | `crates/platform_macos/src/lib.rs:4741-4744,4436-4457` | PLAUSIBLE, OPEN |
+| G4 | Med | platform_macos | `insert_range_for_field` reads once, converts, sets — it lacks the pre-write re-read that `insert_for_field` has, so a keystroke between read and set is clobbered by the full-value write. | `crates/platform_macos/src/lib.rs:4603-4624` vs `:4447-4454` | PLAUSIBLE, OPEN |
+| G5 | Med | platform_macos | `Message::InstallResource` and the `RemoveResource` drop on the AX worker are not `catch_unwind`-wrapped (only `Run` is); a panic there kills the worker and every later adapter call fails with "AX worker dropped job result" until relaunch. | `crates/platform_macos/src/ax_worker.rs:783-807` | CONFIRMED, OPEN |
+| G6 | Med | platform_macos | No worker-side coalescing of queued `ObserverEvent`s (each costs up to 7 AX round trips before the 25 ms callback-side coalescer runs), and the 4 Hz safety poll dispatches unchanged `(identity, rect)` pairs, so a slow AX server plus fast typing queues seconds of geometry work ahead of `insert`/`read_context`. This is the concrete cost of the accepted A66 posture. | `crates/platform_macos/src/ax_worker.rs:726-736,1229-1233`, `crates/platform_macos/src/lib.rs:5455-5459,5594-5613` | PLAUSIBLE, OPEN |
+| G7 | Med | platform_macos | Carbon `RegisterEventHotKey`/`InstallEventHandler` run on the AX worker thread; Apple documents Carbon Events as main-thread-only. Works in live gates, unsupported. | `crates/platform_macos/src/lib.rs:1446-1450,3215,3242,3430,3643` | CONFIRMED, OPEN |
+| G8 | Med | platform_linux | D-Bus round trips (`element_owner`, up to four calls) run **under the field-registry mutex** that every run-loop AT-SPI method also takes; `front_app` walks the desktop tree to depth 16 although the contract says "must not block"; no `platform_linux` call carries a per-call timeout (zbus default 25 s) and every X11 void request is `.check()`ed (about 8 round trips per `show_ghost`). | `crates/platform_linux/src/atspi_events.rs:91-94`, `src/lib.rs:236-241,359-361`, `src/atspi_live.rs:235-284,587-613`, `src/x11_overlay.rs:93-100,441-620`, `crates/platform/src/lib.rs:524` | CONFIRMED, OPEN |
+| G9 | Med | app (non-Linux stub) | The `cfg(not(target_os = "linux"))` shell stub returns `Ok(())` from `set_accept_keymap_from_config_with_mods`, hard-coded keys from `effective_accept_keys_with_mods_and_grammar`, and `Ok(())` from `SettingsWindow::show`, so the run loop logs "accept keys rebound" for a no-op. Contradicts the fail-closed Windows posture; `make_tray` in the same file already returns `Err(UnsupportedField)`. | `crates/app/src/shell/stub.rs:133-152,194-196`, `crates/app/src/run_loop.rs:3462-3475` | CONFIRMED, OPEN |
+| G10 | Med | app / platform_macos | `TrayFlags.enabled` is toggled by non-atomic load-then-store from three threads (tray menu, ToggleGlobal shortcut, SIGUSR1); two near-simultaneous toggles collapse into one. `fetch_xor(true)` at all three sites fixes it. | `crates/app/src/run_loop.rs:5215-5216,5386-5387`, `crates/platform_macos/src/tray.rs:70` | CONFIRMED, OPEN |
+| G11 | Med | docs / process | The 22 runner-pinned macOS gate IDs have **no per-ID result or date** anywhere in `docs/ACCEPTANCE.md` or `docs/MANUAL-VALIDATION.md` (19 never recorded; 3 partial). `docs/ROADMAP.md:133-134` says ready-to-tag requires recorded closure of all 22, yet v0.1.6 was tagged with none recorded: policy and practice disagree. | `docs/ACCEPTANCE.md:690-713`, `docs/MANUAL-VALIDATION.md:138-176`, `docs/ROADMAP.md:133-134` | CONFIRMED, OPEN (owner decision) |
+| G12 | Med | docs | Release-boundary anchors drifted a release behind and are not guarded: `README.md:35-39` and `docs/ROADMAP.md:5,93-109` still name `v0.1.5` / `14ae81e`; `check-version-docs.sh` only pins the "latest published artifact" phrases. Qfd §10/§13/§14/§19 `post_verify` "next tag will prove" items and `FIXED.md:33` (A53 "real-tag proof pending") are satisfied by `2d18c34` but unflipped. Qfd §14 (`:460,552`) still says no doctests exist although CI now runs them. | `README.md:35-39`, `docs/ROADMAP.md:5`, `tools/release/check-version-docs.sh:199-201`, `.github/workflows/ci.yml:111-112` | CONFIRMED, OPEN |
+| G13 | Med | redaction | The generic secret branch `[A-Za-z0-9+/=._-]{32,}` plus `looks_high_entropy` counting `/` as base64 punctuation redacts **every path or URL segment run of 32+ characters** (`https:[redacted-secret]`), silently stripping most URLs from memory and diagnostics. Deliberate over-redaction bias, but unpinned by any test. | `crates/redaction/src/lib.rs:44,55-61` | CONFIRMED (reproduced, §20.5), OPEN |
+| G14 | Low | webconfig | Signed `compme://` deep links carry no nonce or expiry, so a captured link verifies forever. Mitigated: only reversible enable/exclude commands exist and every link prompts. Add `&exp=` inside the signed prefix before any non-reversible command lands. | `crates/webconfig/src/lib.rs:250-267,279-292` | CONFIRMED, OPEN (pre-emptive) |
+| G15 | Low | app / model_client | The detached 250 ms hard-exit watchdog (A32) fires during a quit issued while the first decode is in flight (Metal shader compile is not abort-polled), pre-empting cipher/key zeroize; the memory store is autocommit + `journal_mode=DELETE` so no user data is lost. Either lengthen the deadline during warm-up or record exit code 70 as expected in ACCEPTANCE. | `crates/app/src/run_loop.rs:95-136`, `crates/app/src/inference.rs:660-686`, `vendor/llama-cpp-2/src/model.rs:866-877` | CONFIRMED, OPEN (decision) |
+| G16 | Low | platform_linux | Autostart entry writes `NoDisplay=true` because "the tray is its entry point" but Linux has no tray; keyring `CreateItem` key copy is not zeroized (read side is); `open_url` spawns an unjoined reaper thread per call; stale "zenity, then kdialog" comments (chain is zenity-only); `atspi_caps` always reports `OverrideRedirect` so a Wayland session resolves to `UxMode::Inline` and every `show_ghost` fails late. | `crates/platform_linux/src/lib.rs:54,684-701,734,764-772,911,930`, `src/keyring.rs:155-160`, `src/atspi_caps.rs` | CONFIRMED, OPEN |
+| G17 | Low | app | Backpressure eviction: when the oldest droppable event is `Focus(A)`, `retain` drops every `Caret(A)` in the queue, including carets after a later re-`Focus(A)`. Benign today (coalescing + safety poll) but the documented invariant is broken. | `crates/app/src/run_loop.rs:280-297` | CONFIRMED, OPEN |
+| G18 | Low | docs ↔ code | `docs/ARCHITECTURE.md:854-855` "self-generated synthetic events are tagged and ignored": the tag is written but `is_self_generated_event` is `allow(dead_code)` and the Carbon handler hard-codes `source_user_data: 0`. ARCHITECTURE `:682` / ROADMAP `:406` "one geometry round trip per 25 ms" describes duplicate suppression, not round-trip coalescing. ROADMAP `:995,1007` counts drifted (`run()` is 1,559 lines, `SettingsFlags` has 42 fields). `docs/RELEASE-NOTES-v0.1.6.md` contradicts `docs/RELEASING.md:349-354` ("no hand-written file" from v0.1.3 on). `personalization/src/lib.rs:13-15` claims deep links can set instruction text; webconfig only carries enable/exclude. | as cited | CONFIRMED, OPEN |
+| G19 | Low | CI | `release.yml` checkouts at `:25`, `:383`, `:635`, `:750` lack `persist-credentials: false` (the checker pins it only for `audit.yml`/`docs.yml`); the Windows lane runs neither doc tests nor `cargo audit`; `check-model-gates.sh`'s ~230 doc pins execute only on the macOS lanes. | `.github/workflows/release.yml`, `tools/release/check-model-gates.sh:320,337,381` | CONFIRMED, OPEN |
+| G20 | Info | platform_macos | 126 production `unsafe {}` blocks, 80 without a `SAFETY:` comment (`lib.rs` 54/64, `ax_worker.rs` 19/19, `shell_host.rs` 2/2); 34 `unsafe fn`, 3 with `# Safety`. No `unsafe impl Send/Sync`; CF retain/release balance, `catch_unwind` on both `extern "C"` callbacks, and single global AX messaging timeout all checked sound. | `crates/platform_macos/src/*.rs` | CONFIRMED, OPEN |
+
+### 20.2 Verified sound (no finding)
+
+- Vendored `llama-cpp-2` abort-callback extension: `Arc<AbortCallbackState>` is the last field of `LlamaContext`, so it outlives `llama_free`; callback body touches only atomics; the `Send/Sync` claims on `LlamaContextParams` still hold (`vendor/llama-cpp-2/src/context.rs:25-38,383-386`, `src/model.rs:858-900`). Both `[patch.crates-io]` sections and all three `=0.1.146` pins agree.
+- `model_fetch`: `https_only(true)` is enforced per redirect hop by ureq 3.4; 206 only trusted with matching `Content-Range`; declared and streamed size ceilings; SHA-256 verified through the same `O_NOFOLLOW` handle before rename; part file `0o600`.
+- `memory`: 12-byte `getrandom` nonces (fail-closed), AAD = app id, all SQL parameterized, `0o600|O_NOFOLLOW` create, sidecar symlink rejection, `SQLITE_OPEN_NOFOLLOW`, `secure_delete`, key copies zeroized.
+- `app`: every `.lock()` site is poison-tolerant and no guard is held across a second lock; `persist_setting` is loop-thread-only with `create_new`+`O_NOFOLLOW` temp and `rename`; inference shutdown bounded at 250 ms; no production `unwrap`/`expect` reachable from platform callbacks.
+- CI: every `uses:` is full-SHA pinned; no secrets in `if:`; no `pull_request_target`; every job has a timeout; the Windows lane builds the `app` binary; the Xvfb lane's pinned count (36) matches the tree.
+- Checker pins: all 230 grep-only `check-model-gates.sh` pins and all 27 `require_test_symbol` pins resolve against the tree (ruby-structured checks and the host-derived workspace count are mac-lane only and were not re-run here).
+
+### 20.3 Test-coverage gaps worth closing (production behaviour with no test)
+
+- The eight heartbeat phases lifted from `run()` (`model_download_phase` … `tray_app_disable_phase`, `crates/app/src/run_loop.rs:4056-4677`) have no driver; `startup()` has ten.
+- `feature_policy.rs` (245 LOC) has no test module; `engine`'s "capabilities unreadable on focus" degradation (`engine/src/lib.rs:242-251`) is untested.
+- `model_fetch` redirect policy: no loopback test drives an https→http downgrade, a same-host 302 preserving `Range`, or the redirect cap.
+- `platform_linux`: a `subscribe_accept` failure being non-fatal (G1); `keyring.rs` has zero unit tests; `grab_error` BadAccess mapping; `reveal` fallback to `xdg-open`.
+- `platform_macos`: `insert_for_field` has no injectable seam (unlike `insert_range_for_field`); observer send-failure release; `normalize_caret_rect` for iTerm2/Chromium prefixes; `rearm_consumer_tap` install failure.
+- `redaction`: URL/path over-redaction (G13) unpinned either way.
+
+### 20.4 Roadmap alignment
+
+- `docs/ROADMAP.md` names Windows UIA Phase 1 as the next adapter milestone. This audit puts three items ahead of it: G1 (Linux is fatal on the only desktop it has been validated on), the macOS insert-path cluster G2–G5 (the shipping platform's text-integrity surface), and the roadmap's own prerequisite that the `run()` seams land before a second native shell — which itself needs the eight phase tests first.
+- The roadmap's proposed snapshot-bus redesign (replacing `SettingsFlags`/`TrayFlags`) touches roughly 170 sites, 111 of them in mac-only code; a typed `SettingsCommand` drain/apply over the existing `settings_runtime` edge helpers delivers the same testability with zero `platform_macos` changes and is the recommended cut.
+
+### 20.5 Validation record
+
+Local portable gate on this Linux host (staged 1.97.0 toolchain): fmt, clippy
+`-D warnings` over all targets, workspace tests excluding `platform_macos`
+(1,741 listed, all pass; `app` serial 558 + 1), strict rustdoc, `app` build,
+shellcheck, and every script self-test pass. Not run: `cargo audit` (not
+installed here), `platform_macos` tests and live-mode doc pins (mac only),
+`tools/spike` (mac only). G13 reproduced with a throwaway test:
+`redact("see https://example.com/some/long/path/segment/that/keeps/going")`
+returns `"see https:[redacted-secret]"` and an absolute source path of 60+
+characters returns `"open [redacted-secret]"`. Full table in the plan file.

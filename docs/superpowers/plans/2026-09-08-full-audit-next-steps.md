@@ -1,0 +1,251 @@
+# Next development steps after the 2026-09-08 full audit
+
+**Date:** 2026-09-08 · **Status:** proposed, nothing below is started ·
+**Tree:** `2d18c34` (v0.1.6 + same-day post-release commits; no commits since 2026-08-26)
+**Evidence base:** `Qfd.md` §20 — five parallel finder passes, every ledger row
+re-read by the coordinating reviewer; local portable gate green (see Evidence).
+**Supersedes:** the ordering of items 7–12 in `docs/ROADMAP.md` "Current
+execution order". Items 3, 5, 8, 9, 10, 12 there are unchanged; this plan
+inserts three clusters ahead of Windows Phase 1 and replaces the seam-work
+design with a smaller cut.
+
+Anchors cite `2d18c34`; line numbers drift, re-locate by symbol. The
+cross-cutting rules of
+[`2026-07-18-quality-and-release-gates.md`](2026-07-18-quality-and-release-gates.md)
+apply (checker pins move with the doc, one work item per commit series, every
+gate green before commit, non-mac lanes prove nothing about `cfg(target_os)`
+branches).
+
+## Why this order
+
+1. **Text integrity on the shipping platform first.** G2/G3/G4 sit on the
+   macOS insert path. Every other item is recoverable; a double insert or a
+   truncated field rewrite is user-visible data damage.
+2. **Linux is fatal on the desktop it was validated on.** G1 means the product
+   exits on the owner's Wayland/niri host and on any X11 host whose window
+   manager already grabs Tab. It is a three-line fix with a unit test.
+3. **The roadmap's own prerequisite.** ROADMAP says the `run()` seams land
+   before a second native shell. They need a safety net that does not exist:
+   the eight heartbeat phases have zero tests.
+4. **Windows Phase 1 then starts from honest ground** (G9 fixed, phase tests
+   in place, seams typed) instead of mirroring a mac-shaped flag bus.
+
+## Scope
+
+| # | Work item | Findings | Lane that proves it | Est. |
+|---|-----------|----------|---------------------|------|
+| 0 | Doc and ledger restamp | G12, G18, G11 (record part) | Linux + mac doc pins | 2 h |
+| 1 | Off-mac correctness fixes | G1, G9, G10, G13, G17 | Linux/Windows CI | 3–4 h |
+| 2 | macOS insert-path hardening | G3, G4, G2, G5 | mac lane + gates | 1–2 d |
+| 3 | Heartbeat-phase tests | §20.3 | Linux | 1 d |
+| 4 | Settings-watcher and host-event seams | ROADMAP seam work | Linux (+ mac compile) | 2–3 d |
+| 5 | Linux blocking and lock hygiene | G8, G16 | Xvfb lane + `ln1` | 1 d |
+| 6 | AX worker throughput | G6, G7, G20 | mac lane + live | 2 d |
+| 7 | Windows Phase 1, slice 1.1 | ROADMAP 1.1 | `windows-latest` | 2 d |
+| 8 | Windows UIA read-only slice | ROADMAP 1.1 | `windows-latest` + notepad smoke | 3–5 d |
+| 9 | Pre-emptive hardening | G14, G15, G19, vendor drift | Linux | 1 d |
+| 10 | Owner decisions | G11 policy, governance, release notes | — | decision |
+
+## Item 0 — Doc and ledger restamp (S)
+
+- `README.md:35-39` and `docs/ROADMAP.md:5,93-109`: release boundary to
+  `v0.1.6` / `6c0bea5`. Add "Release boundary" anchors for both to
+  `tools/release/check-version-docs.sh` (same exact-phrase style as the
+  existing eight) so the next release cannot leave them behind.
+- Flip the satisfied rows: Qfd §10 item 7, §13 item 3, §14 item 6, §19
+  "first live proof is still the next tag"; `FIXED.md:33` A53. Correct Qfd
+  §14 `:460,552` (doctests now run in CI). Record `ce39c50`, `ec3247e`,
+  `fcbc8f6` in the ROADMAP delivery log.
+- ROADMAP counts: `run()` 1,559 lines, `SettingsFlags` 42 fields.
+- Release-notes policy: either delete `docs/RELEASE-NOTES-v0.1.6.md` or amend
+  `docs/RELEASING.md:349-354` and `README.md:183-185`. Recommended: amend the
+  policy to "hand-written notes optional for patch releases"; deleting evidence
+  is worse than a policy footnote.
+- Add a per-ID evidence table to `docs/ACCEPTANCE.md` under the 22-gate list
+  (columns: gate, last result, date, binary/commit, tester) modelled on
+  `docs/MANUAL-VALIDATION-LINUX.md:110-115`, initially populated with the three
+  partial rows and "never recorded" for the rest. This is the recording half
+  of G11; the policy half is item 10.
+- Verify every touched doc against the mac-only pins before pushing (harness
+  technique in the memory note `mac-live-mode-doc-pins`).
+
+## Item 1 — Off-mac correctness fixes (S), one commit each
+
+1. **G1** `crates/platform_linux/src/lib.rs:330-332`: return
+   `Self::accessibility_unavailable("subscribe_accept")` when
+   `accept_tap_installable` is false, matching focus/caret. Unit test:
+   `LinuxAdapter::new().subscribe_accept(..)` maps through
+   `subscription_error_action(true, ..)` to `Unavailable`, not `Fatal`. Then
+   run `ln1-clean-degradation-without-x` on the niri host and record it.
+2. **G9** `crates/app/src/shell/stub.rs:133-152,194-196`: the three
+   non-Linux stubs return `Err(KeymapError::..)` / `Err(UnsupportedField)` so
+   the loop takes its existing "using defaults" and "settings window
+   unavailable" branches (`run_loop.rs:3471-3473,5512-5514`). Pin with a
+   `cfg(not(target_os = "linux"))` test; the Windows CI lane compiles it.
+3. **G10** `fetch_xor(true, Ordering::Relaxed)` at `run_loop.rs:5216,5387`
+   and `platform_macos/src/tray.rs:70`. Test: two toggles from two threads
+   leave the flag unchanged.
+4. **G13** decide and pin. Recommended: in `looks_high_entropy`, treat `/`
+   as a base64 signal only when the token also has a digit or mixed case, so
+   `https://example.com/some/long/path` survives while `AbC1/…` still trips.
+   Add the three probe strings from Qfd §20.5 as tests whichever way the
+   decision goes. Note the memory store and diagnostics both flow through
+   this function, so the change is user-visible in stored context.
+5. **G17** `run_loop.rs:280-297`: prune carets only between `drop_index` and
+   the next `Focus` for the same identity; extend the existing backpressure
+   tests with a Focus/Caret/Focus/Caret sequence.
+
+## Item 2 — macOS insert-path hardening (S each, mac lane only)
+
+Order matters: the seam (2b) makes 2c and 2d testable.
+
+- **2a G3** `read_required_ax_string_attribute` (`lib.rs:4741-4744`):
+  compare `CFString::char_len()` with `converted.encode_utf16().count()`;
+  on mismatch return `UnsupportedField { reason: "AX value not
+  round-trippable" }`. Unit-test the predicate on a lone-surrogate
+  `CFString`.
+- **2b** Give `insert_for_field` the same injectable target seam that
+  `insert_range_for_field` already has (`AxRangeTarget`), so the
+  recheck→set→caret→readback order is pinned with a fake.
+- **2c G4** Call `ensure_ax_insert_snapshot_unchanged` in
+  `insert_range_for_field` (`lib.rs:4603-4624`) before the set.
+- **2d G2** Bounded readback re-poll (three reads, 20 ms apart) before
+  classifying `SilentlyIgnored`, and gate the synthetic-key fallback on a
+  bundle allowlist seeded with iTerm2 (the only live evidence). Record the
+  Chromium-family behaviour in `docs/ACCEPTANCE.md` when the caret-marker
+  gates run.
+- **2e G5** `catch_unwind` around `InstallResource` and the `RemoveResource`
+  drop in `ax_worker.rs:794-807`, mapped to `CannotComplete`.
+- Ship behind a green mac CI lane; local Linux gates prove nothing here.
+
+## Item 3 — Heartbeat-phase tests (M)
+
+Drivers for the eight `_phase` functions at `run_loop.rs:4056-4677` using the
+recording fakes already in `run_loop_tests.rs` (the `startup()` tests at
+`:8845-8911` are the template). Add a test module for `feature_policy.rs`
+and pin `engine`'s unreadable-capabilities degradation
+(`engine/src/lib.rs:242-251`). This is the safety net item 4 needs; do not
+reorder them.
+
+## Item 4 — Seams, the smaller cut (M)
+
+Replaces the ROADMAP "typed commands + immutable snapshots" design for now.
+
+- **4a** `drain_settings_edges(&SettingsFlags, &mut Config, &mut
+  SettingsState) -> Vec<SettingsCommand>` (pure edge detection over the
+  existing `settings_runtime::apply_*_settings_edge` helpers) plus
+  `apply_settings_commands(..)` carrying the engine/shell effects. Lifts
+  `run_loop.rs:5674-5860` out of `run()` with zero changes to the 89
+  `SettingsFlags` references in `platform_macos`.
+- **4b** `HostEventCtx<'a>` borrowing the existing `loop_state.rs` structs;
+  split the `Shortcut` arm (`run_loop.rs:5090-5291`) from `Focus`/`Caret`.
+  Test Focus→Caret→Shortcut routing with the item-3 fakes.
+- Defer the snapshot bus until a non-mac shell actually produces flags (today
+  `stub::make_tray` is `Err`, so there is no second producer).
+- Re-stamp ROADMAP `:995-1015` and the `run()` line count in the same commit.
+
+## Item 5 — Linux blocking and lock hygiene (M)
+
+- G8: compute `(app, pid)` before taking the registry lock in
+  `atspi_events.rs:91-94`; answer `front_app` from
+  `LinuxFieldRegistry::current.app`; bound D-Bus calls with zbus's per-call
+  timeout so the adapter returns `PlatformError::Timeout` as the contract
+  asks; collapse the overlay's per-request `.check()`s to one sync per
+  `present()`.
+- G16: drop `NoDisplay=true` from the autostart entry until a tray exists;
+  `Zeroizing<Vec<u8>>` for the keyring write copy; fix the kdialog comments;
+  make `atspi_caps` report `Popup`/unsupported overlay when
+  `WAYLAND_DISPLAY` is set and `DISPLAY` is not.
+- Prove with the 36-test Xvfb lane (`--test-threads=1`) and `ln1`.
+
+## Item 6 — AX worker throughput (M, mac lane)
+
+- G6: `try_recv`-drain queued `ObserverEvent`s per `(pid, notification)` in
+  `run_ax_worker_loop`, resolve the newest, release the rest; remember the
+  last dispatched `(identity, rect)` in `dispatch_focused_element_poll` and
+  skip unchanged polls. This removes most of A66's cost without changing the
+  accepted 250 ms posture.
+- G7: marshal Carbon register/unregister to the main thread via
+  `DispatchQueue::main().exec_sync`, resource ownership stays on the worker.
+- G20: annotate the 80 bare `unsafe` blocks in the same pass (mechanical;
+  do it while the code is open).
+- Live evidence: `always-on-hotkeys-physical-look` and the caret-marker
+  gates, recorded in the item-0 evidence table.
+
+## Item 7 — Windows Phase 1, slice 1.1 (M, hosted runner only)
+
+Smallest slice unit-testable on `windows-latest` without a desktop:
+`RtlGetVersion` for `environment()` (drops `version: "unknown"`),
+`GlobalMemoryStatusEx` for `physical_memory_bytes` (fixes the hard-coded 0 at
+`platform_windows/src/lib.rs:142-144`, the same "every model rated Exceeds"
+defect Linux already fixed), `PeekMessage` pump. Enable the needed
+`windows` features in `platform_windows/Cargo.toml`. Carry the memory crate's
+Unix-only hardening (`memory/src/lib.rs:142-214`, tests `:1313-1590`) to
+DACL equivalents via the existing `win_host::harden_owner_only` in the same
+series.
+
+## Item 8 — Windows UIA read-only slice (L)
+
+`IUIAutomation` on an STA thread: `GetFocusedElement` + `TextPattern` feeding
+`capabilities`/`read_context`; best-effort notepad smoke per the
+cross-platform plan §1.7. Insertion, the keyboard hook, and the layered
+overlay follow only after this reads real fields.
+
+## Item 9 — Pre-emptive hardening (S/M)
+
+- G14: `&exp=<unix>` inside the signed deep-link prefix, rejected past
+  expiry, with a test; do it while every command is still reversible.
+- G15: decide between a longer forced-exit deadline while the first decode
+  is in flight and documenting exit code 70 during warm-up as expected in
+  `docs/ACCEPTANCE.md`.
+- G19: `persist-credentials: false` on `release.yml:25,383,635` (`:750`
+  needs push); extend the checker allowlist form to `release.yml`; add doc
+  tests and `cargo audit` to the Windows lane.
+- Vendor drift checker in `tools/release/` (`diff -r` against the registry
+  tarball, allowlisting the three patched files); open the upstream
+  `llama-cpp-2` PR so `[patch.crates-io]` can be retired; loopback redirect
+  tests in `model_fetch`; `PRAGMA user_version` in `memory` before its first
+  schema change.
+
+## Item 10 — Owner decisions (record either way)
+
+- **G11 policy**: either "patch releases may ship with the 22 gates open"
+  written into `docs/ROADMAP.md:133-134` and `docs/RELEASING.md`, or the
+  gates become a real pre-tag ledger. Today the doc says one thing and
+  v0.1.6 did the other.
+- **Governance** (ROADMAP item 10): unchanged; the read-only checker's three
+  pending mismatches are the inventory.
+- **Release-notes policy** (item 0).
+
+## Deliberately not in this plan
+
+- Full `SettingsFlags`/`TrayFlags` snapshot redesign (deferred, see item 4).
+- Linux StatusNotifierItem tray, always-on shortcut registration, XTEST
+  fallback, `text_range_rect`, Wayland placement: unchanged Phase 2/3
+  residuals in ROADMAP 1.1, sequenced after Windows slice 1.1 because Linux
+  remains experimental by decision.
+- Sparkle/appcast updater (ROADMAP 1.2, optional).
+- Any change to the accepted A66 latency posture beyond removing its
+  duplicate-event cost (item 6).
+
+## Evidence (2026-09-08, this Linux host, staged toolchain 1.97.0)
+
+Run through `nix-shell -p gcc pkg-config gtk3 at-spi2-core glib dbus cmake
+ninja clang ruby shellcheck go` with the staged `target/revalidate/env.sh`
+(its libclang/cmake store paths had been garbage-collected and were repaired
+first):
+
+| Step | Result |
+|---|---|
+| `cargo fmt --all -- --check` | pass |
+| `cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings` | pass |
+| `cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets` | all pass (36 Linux live tests ignored as designed) |
+| `cargo test --locked -p app --all-targets -- --test-threads=1` | 558 + 1 pass, 2 ignored |
+| `cargo test --workspace --exclude platform_macos -- --list` | 1,741 tests |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --exclude platform_macos` | pass |
+| `cargo build --locked -p app` | pass |
+| `shellcheck --severity=error` over `tools/**/*.sh`; `bash -n` | pass |
+| `validate-version.sh`, `check-version-docs.sh` (live + self-test), `check-bundle-metadata.sh`, `check-agent-briefs.sh`, `check-linux-live-test-count.sh` (36), `check-model-gates.sh --self-test`, `check-github-governance.sh --self-test`, `check.sh --self-test` | pass |
+| `cargo audit` | **not run** (cargo-audit not installed on this host) |
+| `platform_macos` tests, `check-model-gates.sh` live mode, `tools/spike` | **not run** (mac-only; spike's `objc2` refuses to build on Linux) |
+| G13 reproduction | `redact("see https://example.com/some/long/path/segment/that/keeps/going")` → `"see https:[redacted-secret]"`; `redact("open /Users/alice/Documents/projects/compme/crates/redaction/src/lib.rs")` → `"open [redacted-secret]"` |
