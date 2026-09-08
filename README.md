@@ -32,11 +32,14 @@ promoted into the workspace.
 The detailed Windows, Linux/X11, Wayland, GPU, packaging, and per-OS acceptance
 sequence is tracked in [the cross-platform implementation plan](docs/superpowers/specs/2026-07-08-cross-platform-implementation-plan.md).
 
-**Release boundary:** `v0.1.5` points to `14ae81e`. The feature and architecture
+**Release boundary:** `v0.1.6` points to `6c0bea5`. The feature and architecture
 descriptions below document current `main`; use the tag and its release assets
-when validating the published artifact. The runtime/release hardening, the
-local/manual-only A2 pipeline policy, and the single **Show Models Folder**
-control shipped in `v0.1.5`.
+when validating the published artifact. The v0.1.6 patch shipped the
+audit-remediation correctness fixes (field-race-safe AxSet writes, contained
+worker panics, bounded shutdown, single-origin self-cleaning model downloads)
+and the CI/release repairs recorded in
+[`docs/RELEASE-NOTES-v0.1.6.md`](docs/RELEASE-NOTES-v0.1.6.md); the previous
+`v0.1.5` artifact points to `14ae81e`.
 
 The macOS run loop is functional: it reads caret/text context through
 Accessibility, generates short local completions, classifies field UX (inline /
@@ -183,6 +186,7 @@ unbundled `cargo run -p app` is still fine.
     ├── RELEASE-NOTES-v0.1.0.md
     ├── RELEASE-NOTES-v0.1.1.md
     ├── RELEASE-NOTES-v0.1.2.md
+    ├── RELEASE-NOTES-v0.1.6.md
     ├── RELEASING.md
     ├── ROADMAP.md
     ├── TROUBLESHOOTING.md

@@ -88,7 +88,9 @@ become fix loops; do not mark a gate from a headless run.
 - [ ] `ln1-clean-degradation-without-x` — On the real niri session (no
       `DISPLAY`), compme starts, reports tray/deep-link scaffolds and the
       unavailable tap/overlay as non-fatal, keeps the AT-SPI focus/caret/read
-      path live, and does not crash, busy-loop, or spam the log.
+      path live, and does not crash, busy-loop, or spam the log. _Code
+      prerequisite closed 2026-09-08 (`b8d3626`): before it, the missing tap was
+      reported as `UnsupportedField` and the run loop exited at startup._
 - [ ] `ln2-zenity-confirm` — A destructive action prompts through zenity
       (native Wayland GTK): the confirming button is not the default, cancel
       and timeout both decline, and a missing display would have been

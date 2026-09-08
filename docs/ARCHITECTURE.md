@@ -679,9 +679,11 @@ reason: a slow or panicking subscriber must not stall or kill the bus reader.
 Cancellation closes the subscription's own connection, which is what wakes a reader
 parked in a receive the blocking zbus API gives no way to interrupt — hence one
 connection per subscription rather than sharing the read path's. Caret events are
-throttled to one geometry round trip per 25ms (matching the macOS coalescer) while
-always delivering the newest queued event, so a burst loses intermediate positions
-but never the caret's resting place. Consecutive duplicate focus events are
+resolved to geometry on the dispatcher as they arrive, and consecutive deliveries
+of an identical `(field, rect)` within 25ms are suppressed (the macOS coalescer's
+window) while the newest queued event is always delivered, so a burst loses
+intermediate positions but never the caret's resting place. Consecutive duplicate
+focus events are
 suppressed, because GTK emits `state-changed:focused` twice per focus move and each
 one would otherwise cost the host a capability probe plus a field read.
 
@@ -851,8 +853,10 @@ live keystroke, maps the NSEvent flags onto the same Carbon mask bits, and
 a PINNED order — set keymap first, re-arm the registered hotkeys second, and
 persist only after the re-arm succeeds, reverting on failure. The Shortcuts
 settings pane renders the current binding with ⌃⌥⇧⌘ glyph labels. Self-
-generated synthetic insertion events are tagged and ignored so the app never
-swallows its own inserts.
+generated synthetic insertion events carry a source user-data tag; the Carbon
+hotkey path does not consult it today (the accept keys are armed only while a
+suggestion is visible, which is what keeps the app from swallowing its own
+inserts), so the tag is a reserved marker rather than a live filter.
 
 ### Overlay Presenter
 

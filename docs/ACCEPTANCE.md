@@ -712,6 +712,41 @@ Exact runner-emitted manual gate IDs:
 - `multi-candidate-cycle-physical-look`
 - `input-monitoring-revoked-carbon-accept`
 
+Per-gate evidence ledger. One row per gate, updated in place whenever a gate is
+executed; "never recorded" means no execution on any binary has been written
+down, and the release policy in [`ROADMAP.md`](ROADMAP.md) ("Current release")
+reads this table, not the prose below, to decide whether the 22 gates are
+closed for a tag.
+
+| Gate | Last result | Date | Binary / commit | Evidence |
+|---|---|---|---|---|
+| `apps-policy-toggle-look` | never recorded | — | — | — |
+| `personalization-pane-look` | never recorded | — | — | — |
+| `menu-bar-icon-look` | never recorded | — | — | — |
+| `shortcuts-recorder-look` | never recorded | — | — | — |
+| `always-on-hotkeys-physical-look` | never recorded | — | — | — |
+| `setup-model-picker-look` | never recorded | — | — | — |
+| `nine-tab-settings-walkthrough` | never recorded | — | — | — |
+| `full-autocorrect-prose-code-look` | never recorded | — | — | — |
+| `cross-app-previous-inputs-look` | never recorded | — | — | — |
+| `selection-thesaurus-look` | never recorded | — | — | — |
+| `tray-external-links-look` | never recorded | — | — | — |
+| `caret-marker-chromium-forks-calibration` | never recorded | — | — | — |
+| `caret-marker-chrome-marker` | never recorded | — | — | — |
+| `caret-marker-chromium-marker` | never recorded | — | — | — |
+| `caret-marker-electron-marker` | never recorded | — | — | — |
+| `sidebar-only-editor-assistant-look` | never recorded | — | — | — |
+| `encrypted-memory-all-monitored-live` | partial (live) | 2026-06-17 | dev build | TextEdit product-loop privacy, runtime-disable, and Chrome domain-exclude proven; secure input, snoozed transition, and volatile `pid:N` still pending — see "Encrypted memory AllMonitored live gate" below |
+| `grammar-fix-textedit-look` | scripted pass; physical residual | 2026-07-07 | dev build after `4c2f8d3` | assisted-session pass with a real model (underline, banner, in-place accept, staleness refusal); the human/physical pass remains — see the grammar entry above |
+| `mirror-window-firefox-zen-look` | never recorded | — | — | — |
+| `setup-needed-docs-arc-onboarding` | never recorded | — | — | — |
+| `multi-candidate-cycle-physical-look` | never recorded | — | — | — |
+| `input-monitoring-revoked-carbon-accept` | pending / conditional | — | — | see "Input Monitoring revoked spot-check" below |
+
+As of 2026-09-08, v0.1.6 was tagged with none of the 22 rows closed; whether
+patch releases may ship that way is an open owner decision recorded in
+`Qfd.md` §20 (G11).
+
 The five parity-closure gates added 2026-07-17 require this evidence:
 
 - **SidebarOnly editor/assistant:** with `COMPME_DEBUG=1`, focus the main editor

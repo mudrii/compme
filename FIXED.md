@@ -30,7 +30,7 @@ Status meanings:
 | WP9 | A18, A31, A62 **Code complete** |
 | WP10 | A2, A4, A5, A20, A21, A29 **Code complete** |
 | WP11 | A15, A73, A74 **Code complete** |
-| WP12 | A14, A23, A24, A35, A36, A37, A49, A54, A55, A56 **Code complete**; A53 **CI shape complete, real-tag proof pending** |
+| WP12 | A14, A23, A24, A35, A36, A37, A49, A54, A55, A56 **Code complete**; A53 **Verified** (v0.1.6 release run, 2026-08-26) |
 | WP13 | A32, A38, A48 **Code complete**; A44 **Posture recorded** |
 | WP14 | A19, A26, A52, A57, A64, A65, A67, A71 **Code complete**; A66 **Posture recorded** |
 | WP15 | A13, A39, A59, A69, A70 **Code complete** |

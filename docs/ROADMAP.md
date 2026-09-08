@@ -2,14 +2,17 @@
 
 > **Last updated:** 2026-09-08 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2074 workspace tests listed on the current tree (44 spike tests separate)
 >
-> Current `main` carries post-release work that is not in v0.1.5: the five macOS
-> parity closures and their pinned live gates, three architecture follow-ups, a
-> pinned Rust baseline, the read-only GitHub-governance checker, cross-platform
-> Phase 0, and the workspace version single-sourced in the root manifest
-> (`1a12b50`). See the delivery log below for the commit-by-commit history.
+> Current `main` carries post-release work that is not in v0.1.6: the
+> 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commit, the
+> off-mac correctness cluster (`b8d3626`: Linux no longer exits at startup
+> without an X11 accept tap, honest non-Linux shell stubs, atomic enable
+> toggle, path-safe redaction, scoped backpressure pruning, contained AX
+> resource panics). Everything earlier — the macOS parity closures, the Linux
+> adapter, the 2026-08 audit remediation, the dependency majors, and the CI
+> repairs — shipped in v0.1.6 (`6c0bea5`). See the delivery log below.
 >
 > <details>
-> <summary>Post-v0.1.5 delivery log (2026-07-21 → 2026-08-18)</summary>
+> <summary>Post-v0.1.5 delivery log (2026-07-21 → 2026-08-26, shipped in v0.1.6)</summary>
 >
 > Committed 2026-07-21: Batch 1+2 CI/docs/cask-window/dependabot/pre-push
 > hardening; the active `protect-main` ruleset plus the governance checker's
@@ -54,6 +57,15 @@
 > accept-key rebind wiring. See `Qfd.md` §§15–19 for the audit evidence and
 > deferred-risk history behind these batches.
 >
+> Committed 2026-08-25/26: the three-pass audit remediation (`52b509b` through
+> `09c23f2`, dual-model verified; `2FIX.md`/`FIXED.md`), the Linux audit
+> correctness cluster and the manual-validation rig (`082e7b9`, `17752d4`,
+> lx1–lx4 green), the CI lane repairs (`ec3247e`, `fcbc8f6`, `ce39c50`), the
+> v0.1.6 release (`9047861`, cask `77b96f5`), and its post-release fixes:
+> shellcheck on the validate runner (`6c0bea5`, the tag commit), brew trust for
+> the third-party tap (`434e9d1`), and the manual `post_verify` closure
+> (`2d18c34`).
+>
 > </details>
 >
 > **2026-09-08 full audit:** findings ledger in `Qfd.md` §20; the
@@ -96,9 +108,12 @@
 
 </details>
 
-> **Release boundary:** the published v0.1.5 artifact is tag `v0.1.5` (commit
-> `14ae81e`); the previous v0.1.4 artifact is tag `v0.1.4` (commit `18b8dc0`).
-> Everything between those tags shipped in v0.1.5:
+> **Release boundary:** the published `v0.1.6` artifact is tag `v0.1.6` (commit
+> `6c0bea5`); the previous `v0.1.5` artifact is tag `v0.1.5` (commit `14ae81e`).
+> Everything between those tags shipped in v0.1.6: the post-v0.1.5 delivery log
+> above, from the five macOS parity closures through the 2026-08-25/26 audit
+> remediation and release repairs. The earlier v0.1.4 → v0.1.5 boundary
+> (`18b8dc0` → `14ae81e`) is kept below for the record:
 > `1f4c041` (cask finalization), `216fa0a` (runtime/release hardening),
 > `618013d` (seam hardening and A2 local/manual-only automation policy),
 > `a5781fc` (single model-location control), `18fbc4f` (catalog metadata fix),
@@ -409,7 +424,7 @@ and caret changes instead of only answering questions about a field it is handed
   own connection instead of sharing the read path's. Drop waits up to 2 seconds,
   then returns without joining if a worker has not acknowledged stop, because
   unsubscribing runs on the engine's run loop.
-- **Caret events are coalesced** to one geometry round trip per 25ms (the macOS
+- **Caret events are coalesced**: identical deliveries within 25ms are suppressed (the macOS
   `CARET_COALESCE_INTERVAL_MS`), always delivering the *newest* queued event: a
   burst loses intermediate positions but never the caret's resting place, which is
   the property a naive throttle gets wrong and which the live test pins.
@@ -998,7 +1013,7 @@ not new product scope:
    groups), `loop_state.rs` (eight heartbeat state structs, teardown order
    preserved), `ax_worker.rs` in `platform_macos`, the inline test modules
    split into `run_loop_tests.rs`/`lib_tests.rs`, and eight heartbeat phases
-   lifted out of `run()` (2,039 → 1,546 lines).
+   lifted out of `run()` (2,039 → 1,546 lines; 1,559 at `b8d3626`).
 
 ### ☐ Remaining architecture seam work (design task, not debt)
 
@@ -1010,7 +1025,7 @@ hide state — the same "relocated state, not a deeper interface" trap the
 27-field startup result showed. Closing them properly means a real seam:
 
 - typed settings/tray **commands** and immutable **snapshots** replacing the
-  39-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses (the
+  42-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses (the
   `shell_flags` crate split moved this vocabulary out of the portable contract
   crate; the redesign itself is still open);
 - a host-event context type so the caret/focus arm can be tested without the

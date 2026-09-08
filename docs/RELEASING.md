@@ -347,11 +347,14 @@ in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    because create-only publication refuses the existing release for the tag.
 
    The release body is auto-generated from commits (`--generate-notes`), and
-   those GitHub-generated notes are the policy going forward — v0.1.3 and later
-   shipped on them alone, with no hand-written file. The curated
+   those GitHub-generated notes are the baseline policy — v0.1.3 through v0.1.5
+   shipped on them alone. A hand-written `docs/RELEASE-NOTES-vX.Y.Z.md` is
+   optional and supplements the generated body when a release warrants a
+   curated record (v0.1.6 has one); when present, add it to the README's
+   `docs/` tree listing. The curated
    [`docs/RELEASE-NOTES-v0.1.0.md`](RELEASE-NOTES-v0.1.0.md),
-   `RELEASE-NOTES-v0.1.1.md`, and `RELEASE-NOTES-v0.1.2.md` files are historical
-   pre-0.1.3 artifacts, kept for the record and no longer produced. Also refresh
+   `RELEASE-NOTES-v0.1.1.md`, and `RELEASE-NOTES-v0.1.2.md` files are the
+   historical pre-0.1.3 records. Also refresh
    the README **Status** section if this is the first release.
 5. After publication, the separate **Finalize Homebrew cask** job downloads the
    artifact again and commits the cask version and sha256 back to the default

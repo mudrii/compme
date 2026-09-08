@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Fail when a documented version surface lags the workspace version (AGENTS.md
 # lesson #2). The version is single-sourced in the root Cargo.toml
-# [workspace.package] table; the README status line, the SECURITY supported
-# release, the ROADMAP header, and the release-boundary notes in RELEASING,
+# [workspace.package] table; the README status line and release boundary, the
+# SECURITY supported release, the ROADMAP header and release boundary, and the
+# release-boundary notes in RELEASING,
 # DEVELOPMENT, ACCEPTANCE, ARCHITECTURE, and MANUAL-VALIDATION must each name
 # it. Casks/compme.rb and tools/bundle/Info.plist are covered by
 # tools/bundle/check-bundle-metadata.sh and are deliberately not checked here.
@@ -65,6 +66,8 @@ TOML
 | Platform | Product status |
 |---|---|
 | macOS | **Latest published artifact:** signed, notarized, and stapled `v1.2.3` |
+
+**Release boundary:** `v1.2.3` points to `deadbeef`.
 MD
     cat >"$root/SECURITY.md" <<'MD'
 ## Supported versions
@@ -75,6 +78,8 @@ MD
 # compme — Roadmap & Pending Work
 
 > **Last updated:** 2026-01-01 (v1.2.3 (`deadbeef`) remains the latest published artifact)
+
+> **Release boundary:** the published `v1.2.3` artifact is tag `v1.2.3` (commit `deadbeef`).
 MD
     cat >"$root/docs/RELEASING.md" <<'MD'
 > **Release boundary (2026-01-01):** The latest published artifact is `v1.2.3` at `deadbeef`.
@@ -135,10 +140,29 @@ MD
   # The ROADMAP needle is the bare version: a header without the parenthesized
   # commit still passes because the anchor already pins the context.
   write_fixtures "$root"
+  # A release-boundary note lagging behind a current status line must fail on
+  # its own: the boundary anchors exist precisely because v0.1.6 left them
+  # naming v0.1.5 while every status line was current.
+  for boundary_file in README.md docs/ROADMAP.md; do
+    write_fixtures "$root"
+    sed '/Release boundary/s/1\.2\.3/9.9.9/g' "$root/$boundary_file" >"$tmp/stale.md"
+    mv "$tmp/stale.md" "$root/$boundary_file"
+    if out="$(COMPME_VERSION_DOCS_ROOT="$root" "$0" 2>&1)"; then
+      echo "version-docs self-test failed: stale release boundary in $boundary_file passed" >&2
+      return 1
+    fi
+    case "$out" in
+      *"$boundary_file: release-boundary note"*) ;;
+      *) echo "version-docs self-test failed: stale boundary did not name $boundary_file's note, got: $out" >&2; return 1 ;;
+    esac
+  done
+  write_fixtures "$root"
   cat >"$root/docs/ROADMAP.md" <<'MD'
 # compme — Roadmap & Pending Work
 
 > **Last updated:** 2026-01-01 (v1.2.3 remains the latest published artifact)
+
+> **Release boundary:** the published `v1.2.3` artifact is tag `v1.2.3` (commit `deadbeef`).
 MD
   if ! out="$(COMPME_VERSION_DOCS_ROOT="$root" "$0" 2>&1)"; then
     echo "version-docs self-test failed: ROADMAP header without commit parens should pass, got: $out" >&2
@@ -197,8 +221,10 @@ fi
 backticked='`v'"$version"'`'
 stale=0
 require_doc_version "status line" "README.md" "Latest published artifact" "$backticked" || stale=1
+require_doc_version "release-boundary note" "README.md" "**Release boundary:**" "$backticked" || stale=1
 require_doc_version "supported-release table" "SECURITY.md" "supported release is" "$backticked" || stale=1
 require_doc_version "header" "docs/ROADMAP.md" "remains the latest published artifact" "v$version" || stale=1
+require_doc_version "release-boundary note" "docs/ROADMAP.md" "**Release boundary:** the published" "$backticked" || stale=1
 require_doc_version "release-boundary note" "docs/RELEASING.md" "latest published artifact is" "$backticked" || stale=1
 require_doc_version "repository-state note" "docs/DEVELOPMENT.md" "points to" "$backticked" || stale=1
 require_doc_version "release-boundary header" "docs/ACCEPTANCE.md" "latest published artifact" "$backticked" || stale=1
