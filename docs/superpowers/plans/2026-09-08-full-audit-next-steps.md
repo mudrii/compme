@@ -1,6 +1,9 @@
 # Next development steps after the 2026-09-08 full audit
 
-**Date:** 2026-09-08 · **Status:** proposed, nothing below is started ·
+**Date:** 2026-09-08 · **Status:** items 0, 1, 3, and the lock/`front_app` half
+of 5 delivered the same day (`f0bec03`, `b8d3626`, `5bf36fc`, `df34a62`);
+items 2, 4, 6–10 and the rest of 5 (D-Bus timeouts, overlay check collapse)
+remain open ·
 **Tree:** `2d18c34` (v0.1.6 + same-day post-release commits; no commits since 2026-08-26)
 **Evidence base:** `Qfd.md` §20 — five parallel finder passes, every ledger row
 re-read by the coordinating reviewer; local portable gate green (see Evidence).

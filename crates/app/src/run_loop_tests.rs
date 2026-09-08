@@ -10320,19 +10320,34 @@ fn startup_overlay_failure_stops_before_engine() {
 /// drop (unwind included) so no later test — and never the developer's real
 /// `config.env` — sees a phase's persist. Process-env mutation is safe here
 /// only because the `app` lane is pinned to `--test-threads=1`.
+/// Serialises every test that owns a `PhaseConfigHome`: the phases read
+/// `COMPME_CONFIG` from the process environment, and the Windows/Linux CI lanes
+/// run this crate's tests in parallel (only the macOS lane passes
+/// `--test-threads=1`), so two phase tests racing on `set_var` would persist
+/// into each other's temp home. The guard is held for the test's lifetime.
+static PHASE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 struct PhaseConfigHome {
     dir: PathBuf,
     previous: Option<std::ffi::OsString>,
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 impl PhaseConfigHome {
     fn new(tag: &str) -> Self {
+        let serial = PHASE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!("compme-phase-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let previous = std::env::var_os("COMPME_CONFIG");
         std::env::set_var("COMPME_CONFIG", dir.join("config.env"));
-        Self { dir, previous }
+        Self {
+            dir,
+            previous,
+            _serial: serial,
+        }
     }
 
     fn config_path(&self) -> PathBuf {

@@ -1,15 +1,19 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-08 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2116 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-08 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2115 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
-> 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commit, the
-> off-mac correctness cluster (`b8d3626`: Linux no longer exits at startup
+> 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
+> the off-mac correctness cluster (`b8d3626`: Linux no longer exits at startup
 > without an X11 accept tap, honest non-Linux shell stubs, atomic enable
 > toggle, path-safe redaction, scoped backpressure pruning, contained AX
-> resource panics). Everything earlier — the macOS parity closures, the Linux
-> adapter, the 2026-08 audit remediation, the dependency majors, and the CI
-> repairs — shipped in v0.1.6 (`6c0bea5`). See the delivery log below.
+> resource panics), the doc/ledger restamp with the 22-gate evidence table
+> (`f0bec03`), 41 tests over the heartbeat phases, feature policy, engine
+> degradation, and download redirects (`5bf36fc`), and the Linux registry-lock
+> and `front_app` hygiene (`df34a62`). Everything earlier — the macOS parity
+> closures, the Linux adapter, the 2026-08 audit remediation, the dependency
+> majors, and the CI repairs — shipped in v0.1.6 (`6c0bea5`). See the delivery
+> log below.
 >
 > <details>
 > <summary>Post-v0.1.5 delivery log (2026-07-21 → 2026-08-26, shipped in v0.1.6)</summary>
@@ -72,7 +76,9 @@
 > proposed re-sequencing of the execution order below (three clusters ahead
 > of Windows Phase 1, and a smaller seam cut) is in
 > [`superpowers/plans/2026-09-08-full-audit-next-steps.md`](superpowers/plans/2026-09-08-full-audit-next-steps.md).
-> Nothing in that plan is started.
+> Items 0, 1, 3, and half of 5 landed the same day; the next step is item 2
+> (macOS insert-path hardening, mac lane) and then item 4 (the `run()` seams,
+> now that the heartbeat phases have a test driver).
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
