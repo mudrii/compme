@@ -10311,3 +10311,1051 @@ fn startup_overlay_failure_stops_before_engine() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// — heartbeat phases: each `*_phase` fn's consume-edge / mutate / persist
+//   contract, driven through the same fakes as the startup seam. —
+
+/// Point `config::config_file_path()` (and therefore the app-support models
+/// dir) at a hermetic temp dir for one test. `COMPME_CONFIG` is restored on
+/// drop (unwind included) so no later test — and never the developer's real
+/// `config.env` — sees a phase's persist. Process-env mutation is safe here
+/// only because the `app` lane is pinned to `--test-threads=1`.
+struct PhaseConfigHome {
+    dir: PathBuf,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl PhaseConfigHome {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("compme-phase-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous = std::env::var_os("COMPME_CONFIG");
+        std::env::set_var("COMPME_CONFIG", dir.join("config.env"));
+        Self { dir, previous }
+    }
+
+    fn config_path(&self) -> PathBuf {
+        self.dir.join("config.env")
+    }
+
+    fn models_dir(&self) -> PathBuf {
+        self.dir.join("models")
+    }
+
+    /// The persisted key/value map; an absent file reads as empty.
+    fn persisted(&self) -> HashMap<String, String> {
+        config::load_file_map(&self.config_path()).expect("config.env readable")
+    }
+}
+
+impl Drop for PhaseConfigHome {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var("COMPME_CONFIG", value),
+            None => std::env::remove_var("COMPME_CONFIG"),
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Shell double for the phases: a programmable confirm answer, a pid → bundle
+/// id map (the frontmost-app resolver), a screen-grant state, and a call log
+/// so "which privileged call ran" is observable.
+struct PhaseShell {
+    confirm_answer: bool,
+    screen_granted: bool,
+    bundle_ids: HashMap<i32, String>,
+    calls: Mutex<Vec<String>>,
+}
+
+impl PhaseShell {
+    fn new() -> Self {
+        Self {
+            confirm_answer: false,
+            screen_granted: false,
+            bundle_ids: HashMap::new(),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn confirming(mut self, answer: bool) -> Self {
+        self.confirm_answer = answer;
+        self
+    }
+
+    fn with_app(mut self, pid: i32, app: &str) -> Self {
+        self.bundle_ids.insert(pid, app.to_string());
+        self
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn record(&self, call: String) {
+        self.calls.lock().unwrap().push(call);
+    }
+}
+
+impl ShellHost for PhaseShell {
+    fn pump_events(&self, _heartbeat: Duration) {}
+    fn prompt_accessibility_trust(&self) -> bool {
+        self.record("prompt-ax".into());
+        true
+    }
+    fn screen_capture_permission(&self) -> bool {
+        self.screen_granted
+    }
+    fn request_screen_capture_permission(&self) -> bool {
+        self.record("request-screen".into());
+        true
+    }
+    fn physical_memory_bytes(&self) -> u64 {
+        0
+    }
+    fn bundle_id_for_pid(&self, pid: i32) -> Option<String> {
+        self.bundle_ids.get(&pid).cloned()
+    }
+    fn open_url(&self, _url: &str) -> Result<(), PlatformError> {
+        Ok(())
+    }
+    fn open_permission_settings(&self) -> Result<(), PlatformError> {
+        Ok(())
+    }
+    fn reveal_file(&self, path: &Path) -> Result<(), PlatformError> {
+        self.record(format!("reveal:{}", path.display()));
+        Ok(())
+    }
+    fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
+        Ok(())
+    }
+    fn confirm(&self, prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
+        self.record(format!("confirm:{}", prompt.title));
+        Ok(self.confirm_answer)
+    }
+    fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
+        Ok([0; 32])
+    }
+}
+
+fn phase_shell(shell: PhaseShell) -> (Arc<PhaseShell>, Arc<dyn ShellHost>) {
+    let shell = Arc::new(shell);
+    let host: Arc<dyn ShellHost> = Arc::clone(&shell) as Arc<dyn ShellHost>;
+    (shell, host)
+}
+
+fn phase_settings_flags(config: &Config) -> crate::shell::SettingsFlags {
+    build_settings_flags(config, Arc::new(AtomicBool::new(true)), false, 8)
+}
+
+fn phase_tray_flags() -> TrayFlags {
+    TrayFlags {
+        enabled: Arc::new(AtomicBool::new(true)),
+        quit: Arc::new(AtomicBool::new(false)),
+        open_settings: Arc::new(AtomicBool::new(false)),
+        snooze_requested: Arc::new(AtomicBool::new(false)),
+        global_disable: Arc::new(Mutex::new(None)),
+        open_settings_window: Arc::new(AtomicBool::new(false)),
+        check_updates: Arc::new(AtomicBool::new(false)),
+        visit_website: Arc::new(AtomicBool::new(false)),
+        contact_support: Arc::new(AtomicBool::new(false)),
+        collection_toggle: Arc::new(AtomicBool::new(false)),
+        app_disable: Arc::new(Mutex::new(None)),
+    }
+}
+
+/// An engine over the inert fakes: the dismiss edge is observed through the
+/// `suggestion.latest` slot the phases clear alongside it.
+fn phase_engine() -> Engine<SharedAdapter<FakeAdapter>, FakeOverlay> {
+    Engine::new(
+        SharedAdapter::new(Arc::new(FakeAdapter::allow_all(startup_log()))),
+        FakeOverlay,
+        0,
+        8,
+        32,
+    )
+}
+
+fn phase_settings_state(apps_ids: Vec<String>) -> SettingsState {
+    let mut settings = SettingsState::new(false, false, EmojiPrefs::default(), 0, 0, false);
+    settings.apps_ids = apps_ids;
+    settings
+}
+
+/// A `FocusContext` on `field`, plus the resolver map entry for its pid.
+fn phase_focus(field: &FieldHandle) -> FocusContext {
+    let mut focus = FocusContext::new();
+    focus.current_field = Some(field.clone());
+    focus
+}
+
+fn phase_pending_suggestion() -> SuggestionState {
+    let mut suggestion = SuggestionState::new();
+    suggestion.latest.offer(request_for_submit_tracking(1));
+    suggestion
+}
+
+fn phase_monitored_with_buffer(field: &FieldHandle) -> MonitoredInput {
+    let mut monitored = MonitoredInput::default();
+    monitored
+        .monitored_buffers
+        .insert(field.clone(), MonitoredBuffer::Collecting("partial".into()));
+    monitored
+}
+
+// model_download_phase
+
+#[test]
+fn model_download_phase_without_click_or_status_is_a_no_op() {
+    let home = PhaseConfigHome::new("dl-noop");
+    let mut config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new());
+    let mut downloader = None;
+    let mut download = DownloadState::default();
+
+    model_download_phase(
+        &flags,
+        &host,
+        &mut config,
+        64,
+        &mut downloader,
+        &mut download,
+    );
+
+    assert!(downloader.is_none(), "no click → no downloader spawned");
+    assert!(download.model_download_status.is_none());
+    assert_eq!(download.model_download_logged, 0);
+    assert!(!home.config_path().exists(), "nothing persisted");
+}
+
+#[test]
+fn model_download_phase_ram_block_consumes_the_click_without_starting() {
+    // The recommended entry needs ≥ 2 GiB; 0 GiB available takes the
+    // BlockedByRam arm: the click edge is consumed, no downloader is
+    // spawned, no status is armed, and nothing (license or path) persists.
+    let home = PhaseConfigHome::new("dl-ram");
+    let mut config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    flags.setup_download_model.store(true, Ordering::Relaxed);
+    let mut downloader = None;
+    let mut download = DownloadState::default();
+
+    model_download_phase(
+        &flags,
+        &host,
+        &mut config,
+        0,
+        &mut downloader,
+        &mut download,
+    );
+
+    assert!(
+        !flags.setup_download_model.load(Ordering::Relaxed),
+        "click edge consumed"
+    );
+    assert!(
+        downloader.is_none(),
+        "blocked click must not spawn a downloader"
+    );
+    assert!(download.model_download_status.is_none());
+    assert!(config.license_accepted.is_empty());
+    assert!(
+        shell.calls().is_empty(),
+        "no license prompt before the RAM gate"
+    );
+    assert!(!home.config_path().exists());
+}
+
+#[test]
+fn model_download_phase_click_while_running_is_consumed_and_only_logs_progress() {
+    // A second click during an in-flight download is swallowed by the
+    // download_idle gate (edge consumed, nothing restarted); the progress
+    // cursor still advances 0 → 1 on the Running transition.
+    let home = PhaseConfigHome::new("dl-running");
+    let mut config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new());
+    flags.setup_download_model.store(true, Ordering::Relaxed);
+    let status = Arc::new(model_fetch::DownloadStatus::default());
+    *status.state.lock().unwrap() = model_fetch::DownloadState::Running;
+    let mut downloader = None;
+    let mut download = DownloadState {
+        model_download_status: Some(Arc::clone(&status)),
+        model_download_logged: 0,
+    };
+
+    model_download_phase(
+        &flags,
+        &host,
+        &mut config,
+        64,
+        &mut downloader,
+        &mut download,
+    );
+
+    assert!(!flags.setup_download_model.load(Ordering::Relaxed));
+    assert!(downloader.is_none(), "busy download must not spawn another");
+    assert!(
+        download
+            .model_download_status
+            .as_ref()
+            .is_some_and(|s| Arc::ptr_eq(s, &status)),
+        "the in-flight status is kept"
+    );
+    assert_eq!(download.model_download_logged, 1, "Running logged once");
+    assert!(!home.config_path().exists());
+}
+
+#[test]
+fn model_download_phase_done_edge_persists_model_path_exactly_once() {
+    // The Done transition auto-wires COMPME_MODEL_PATH to the downloaded
+    // file; a later heartbeat on the same Done state must not re-persist.
+    let home = PhaseConfigHome::new("dl-done");
+    let mut config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new());
+    let done_path = home.models_dir().join("m.gguf");
+    let status = Arc::new(model_fetch::DownloadStatus::default());
+    *status.state.lock().unwrap() = model_fetch::DownloadState::Done(done_path.clone());
+    let mut downloader = None;
+    let mut download = DownloadState {
+        model_download_status: Some(status),
+        model_download_logged: 0,
+    };
+
+    model_download_phase(
+        &flags,
+        &host,
+        &mut config,
+        64,
+        &mut downloader,
+        &mut download,
+    );
+
+    assert_eq!(download.model_download_logged, 2, "terminal state logged");
+    assert_eq!(
+        home.persisted().get("COMPME_MODEL_PATH"),
+        Some(&done_path.to_string_lossy().to_string())
+    );
+
+    // Same Done state, second heartbeat: cursor stays at 2 and the key is
+    // not rewritten (remove it and check it stays gone).
+    config::remove_setting(&home.config_path(), "COMPME_MODEL_PATH").unwrap();
+    model_download_phase(
+        &flags,
+        &host,
+        &mut config,
+        64,
+        &mut downloader,
+        &mut download,
+    );
+    assert_eq!(download.model_download_logged, 2);
+    assert!(
+        !home.persisted().contains_key("COMPME_MODEL_PATH"),
+        "Done edge fires once per download"
+    );
+}
+
+// drain_deep_links_phase
+
+#[test]
+fn drain_deep_links_phase_applies_a_confirmed_link_and_persists_overrides() {
+    let home = PhaseConfigHome::new("dl-link-ok");
+    let config = startup_test_config();
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let deep_links = Mutex::new(vec![
+        "compme://setOverride?app=com.apple.TextEdit&excluded=true".to_string(),
+    ]);
+    let mut prefs = Prefs::default();
+    let field = field_with_app("com.apple.TextEdit");
+    let mut monitored = phase_monitored_with_buffer(&field);
+    let mut suggestion = phase_pending_suggestion();
+    let mut engine = phase_engine();
+
+    drain_deep_links_phase(
+        &deep_links,
+        &host,
+        &config,
+        &mut prefs,
+        &mut monitored,
+        &mut suggestion,
+        &mut engine,
+    );
+
+    assert!(deep_links.lock().unwrap().is_empty(), "queue drained");
+    assert_eq!(
+        shell.calls(),
+        vec!["confirm:Allow configuration change?"],
+        "the §16 confirmation ran once"
+    );
+    assert!(prefs.excluded_apps.contains("com.apple.TextEdit"));
+    assert_eq!(
+        home.persisted()
+            .get("COMPME_EXCLUDED_APPS")
+            .map(String::as_str),
+        Some("com.apple.TextEdit"),
+        "applied override persisted"
+    );
+    assert!(
+        monitored.monitored_buffers.is_empty(),
+        "policy transition clears monitored capture"
+    );
+    assert!(
+        suggestion.latest.take().is_none(),
+        "dismiss edge clears the pending suggestion"
+    );
+}
+
+#[test]
+fn drain_deep_links_phase_declined_or_malformed_links_change_nothing() {
+    // Declined: the prompt ran, prefs/config/suggestion untouched. Malformed:
+    // rejected by the parser BEFORE any prompt. Both drain the queue.
+    let home = PhaseConfigHome::new("dl-link-declined");
+    let config = startup_test_config();
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(false));
+    let deep_links = Mutex::new(vec![
+        "compme://setOverride?app=com.apple.TextEdit&excluded=true".to_string(),
+        "compme://setEverything?x=1".to_string(),
+    ]);
+    let mut prefs = Prefs::default();
+    let mut monitored = MonitoredInput::default();
+    let mut suggestion = phase_pending_suggestion();
+    let mut engine = phase_engine();
+
+    drain_deep_links_phase(
+        &deep_links,
+        &host,
+        &config,
+        &mut prefs,
+        &mut monitored,
+        &mut suggestion,
+        &mut engine,
+    );
+
+    assert!(deep_links.lock().unwrap().is_empty(), "queue drained");
+    assert_eq!(
+        shell.calls(),
+        vec!["confirm:Allow configuration change?"],
+        "only the well-formed link reaches the prompt"
+    );
+    assert_eq!(prefs, Prefs::default(), "declined link leaves prefs alone");
+    assert!(!home.config_path().exists(), "nothing persisted");
+    assert!(
+        suggestion.latest.take().is_some(),
+        "no override applied → no dismiss edge"
+    );
+}
+
+// setup_pane_actions_phase
+
+#[test]
+fn setup_pane_actions_phase_consumes_grant_ax_and_screen_edges() {
+    let _home = PhaseConfigHome::new("setup-edges");
+    let mut config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+
+    // Screen context OFF: the request edge is consumed but no OS call runs.
+    let (shell, host) = phase_shell(PhaseShell::new());
+    flags.setup_grant_ax.store(true, Ordering::Relaxed);
+    flags.setup_request_screen.store(true, Ordering::Relaxed);
+    setup_pane_actions_phase(&flags, &host, &config);
+    assert!(!flags.setup_grant_ax.load(Ordering::Relaxed));
+    assert!(!flags.setup_request_screen.load(Ordering::Relaxed));
+    assert_eq!(shell.calls(), vec!["prompt-ax"]);
+
+    // Screen context ON and not yet granted: the request runs.
+    config.screen_context = true;
+    let (shell, host) = phase_shell(PhaseShell::new());
+    flags.setup_request_screen.store(true, Ordering::Relaxed);
+    setup_pane_actions_phase(&flags, &host, &config);
+    assert_eq!(shell.calls(), vec!["request-screen"]);
+
+    // Already granted: nothing to request.
+    let (shell, host) = phase_shell(PhaseShell {
+        screen_granted: true,
+        ..PhaseShell::new()
+    });
+    flags.setup_request_screen.store(true, Ordering::Relaxed);
+    setup_pane_actions_phase(&flags, &host, &config);
+    assert!(shell.calls().is_empty());
+    assert!(!flags.setup_request_screen.load(Ordering::Relaxed));
+}
+
+#[test]
+fn setup_pane_actions_phase_reveals_the_models_dir_after_creating_it() {
+    let home = PhaseConfigHome::new("setup-reveal");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (shell, host) = phase_shell(PhaseShell::new());
+    flags.setup_reveal_models_dir.store(true, Ordering::Relaxed);
+    assert!(!home.models_dir().exists());
+
+    setup_pane_actions_phase(&flags, &host, &config);
+
+    assert!(!flags.setup_reveal_models_dir.load(Ordering::Relaxed));
+    assert!(home.models_dir().is_dir(), "created before reveal");
+    assert_eq!(
+        shell.calls(),
+        vec![format!("reveal:{}", home.models_dir().display())]
+    );
+}
+
+#[test]
+fn setup_pane_actions_phase_chosen_model_is_validated_before_persist() {
+    let home = PhaseConfigHome::new("setup-byom");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new());
+
+    // A non-GGUF pick is rejected: slot consumed, nothing persisted.
+    let bad = home.dir.join("bad.gguf");
+    std::fs::write(&bad, b"NOPE1234").unwrap();
+    *flags.setup_choose_model.lock().unwrap() = Some(bad);
+    setup_pane_actions_phase(&flags, &host, &config);
+    assert!(flags.setup_choose_model.lock().unwrap().is_none());
+    assert!(
+        !home.config_path().exists(),
+        "rejected model never persists"
+    );
+
+    // A GGUF-magic pick points COMPME_MODEL_PATH at it in place.
+    let good = home.dir.join("good.gguf");
+    std::fs::write(&good, b"GGUF\x03\x00\x00\x00rest").unwrap();
+    *flags.setup_choose_model.lock().unwrap() = Some(good.clone());
+    setup_pane_actions_phase(&flags, &host, &config);
+    assert!(flags.setup_choose_model.lock().unwrap().is_none());
+    assert_eq!(
+        home.persisted().get("COMPME_MODEL_PATH"),
+        Some(&good.to_string_lossy().to_string())
+    );
+}
+
+// apps_row_delete_phase
+
+fn phase_memory_with_two_apps() -> (memory::MemoryStore, Vec<String>) {
+    let store = memory::MemoryStore::open_in_memory(
+        &memory::StaticKey([5u8; 32]),
+        memory::StorageMode::AcceptedOnly,
+    )
+    .expect("store");
+    store.remember("com.a", "alpha").unwrap();
+    store.remember("com.b", "beta").unwrap();
+    let (_, ids) = compose_apps_rows(Some(&store));
+    assert_eq!(ids.len(), 2);
+    (store, ids)
+}
+
+#[test]
+fn apps_row_delete_phase_confirmed_deletes_the_row_and_recomposes() {
+    let _home = PhaseConfigHome::new("apps-delete-ok");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let (store, ids) = phase_memory_with_two_apps();
+    let row = ids.iter().position(|a| a == "com.a").unwrap();
+    let survivor = ids[1 - row].clone();
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids);
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    *flags.apps_delete_row.lock().unwrap() = Some(row);
+
+    apps_row_delete_phase(
+        &flags,
+        &host,
+        &memory,
+        &mut settings,
+        &prefs,
+        &config,
+        &window,
+    );
+
+    assert!(
+        flags.apps_delete_row.lock().unwrap().is_none(),
+        "edge consumed"
+    );
+    assert_eq!(shell.calls(), vec!["confirm:Delete recorded inputs?"]);
+    let counts = memory.as_ref().unwrap().count_by_app().unwrap();
+    assert_eq!(counts, vec![(survivor.clone(), 1)], "only com.a erased");
+    assert_eq!(settings.apps_ids, vec![survivor.clone()], "rows recomposed");
+    assert!(
+        flags
+            .apps_lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains(&survivor)),
+        "apps_lines republished"
+    );
+    assert_eq!(
+        flags.apps_policy_bits.lock().unwrap().len(),
+        1,
+        "policy bits re-seeded in the new row order"
+    );
+}
+
+#[test]
+fn apps_row_delete_phase_cancel_keeps_every_row() {
+    let _home = PhaseConfigHome::new("apps-delete-cancel");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(false));
+    let (store, ids) = phase_memory_with_two_apps();
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids.clone());
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    *flags.apps_delete_row.lock().unwrap() = Some(0);
+
+    apps_row_delete_phase(
+        &flags,
+        &host,
+        &memory,
+        &mut settings,
+        &prefs,
+        &config,
+        &window,
+    );
+
+    assert!(flags.apps_delete_row.lock().unwrap().is_none());
+    assert_eq!(shell.calls(), vec!["confirm:Delete recorded inputs?"]);
+    assert_eq!(
+        memory.as_ref().unwrap().count().unwrap(),
+        2,
+        "nothing erased"
+    );
+    assert_eq!(settings.apps_ids, ids, "rows unchanged");
+    assert!(flags.apps_lines.lock().unwrap().is_empty(), "no re-render");
+}
+
+#[test]
+fn apps_row_delete_phase_stale_row_or_missing_store_never_prompts() {
+    let _home = PhaseConfigHome::new("apps-delete-stale");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+
+    // Out-of-range row against a live store.
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let (store, ids) = phase_memory_with_two_apps();
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids.clone());
+    *flags.apps_delete_row.lock().unwrap() = Some(99);
+    apps_row_delete_phase(
+        &flags,
+        &host,
+        &memory,
+        &mut settings,
+        &prefs,
+        &config,
+        &window,
+    );
+    assert!(
+        flags.apps_delete_row.lock().unwrap().is_none(),
+        "edge consumed"
+    );
+    assert!(shell.calls().is_empty(), "stale click never prompts");
+    assert_eq!(memory.as_ref().unwrap().count().unwrap(), 2);
+
+    // Valid row but memory is off.
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let no_memory: Option<memory::MemoryStore> = None;
+    *flags.apps_delete_row.lock().unwrap() = Some(0);
+    apps_row_delete_phase(
+        &flags,
+        &host,
+        &no_memory,
+        &mut settings,
+        &prefs,
+        &config,
+        &window,
+    );
+    assert!(flags.apps_delete_row.lock().unwrap().is_none());
+    assert!(shell.calls().is_empty());
+    assert_eq!(settings.apps_ids, ids);
+}
+
+// apps_row_policy_edit_phase
+
+#[test]
+fn apps_row_policy_edit_phase_writes_the_override_and_persists() {
+    // Editing an UNFOCUSED app's row: the per-app override lands in prefs
+    // and the web-override file, but the focused field's suggestion stays.
+    let home = PhaseConfigHome::new("apps-edit-persist");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new().with_app(7, "com.focused"));
+    let settings = phase_settings_state(vec!["com.a".into()]);
+    let mut prefs = Prefs::default();
+    let focus = phase_focus(&field_with_app("com.focused"));
+    let mut suggestion = phase_pending_suggestion();
+    let mut engine = phase_engine();
+    *flags.apps_edit.lock().unwrap() = Some((0, 0, false));
+
+    apps_row_policy_edit_phase(
+        &flags,
+        &settings,
+        &mut prefs,
+        &focus,
+        &host,
+        &mut suggestion,
+        &mut engine,
+    );
+
+    assert!(flags.apps_edit.lock().unwrap().is_none(), "edge consumed");
+    assert_eq!(
+        prefs.per_app.get("com.a").and_then(|p| p.enabled),
+        Some(false),
+        "Enabled=false written as a per-app override"
+    );
+    assert_eq!(
+        home.persisted()
+            .get("COMPME_DISABLED_APPS")
+            .map(String::as_str),
+        Some("com.a")
+    );
+    assert!(
+        suggestion.latest.take().is_some(),
+        "another app's row never dismisses the focused ghost"
+    );
+}
+
+#[test]
+fn apps_row_policy_edit_phase_disabling_the_focused_app_dismisses() {
+    let _home = PhaseConfigHome::new("apps-edit-dismiss");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new().with_app(7, "com.a"));
+    let settings = phase_settings_state(vec!["com.a".into()]);
+    let mut prefs = Prefs::default();
+    let focus = phase_focus(&field_with_app("com.a"));
+    let mut engine = phase_engine();
+
+    // Disable (Enabled → false) on the focused app: dismiss fires.
+    let mut suggestion = phase_pending_suggestion();
+    *flags.apps_edit.lock().unwrap() = Some((0, 0, false));
+    apps_row_policy_edit_phase(
+        &flags,
+        &settings,
+        &mut prefs,
+        &focus,
+        &host,
+        &mut suggestion,
+        &mut engine,
+    );
+    assert!(suggestion.latest.take().is_none(), "dismiss edge fired");
+
+    // Re-enable on the focused app: no dismiss.
+    let mut suggestion = phase_pending_suggestion();
+    *flags.apps_edit.lock().unwrap() = Some((0, 0, true));
+    apps_row_policy_edit_phase(
+        &flags,
+        &settings,
+        &mut prefs,
+        &focus,
+        &host,
+        &mut suggestion,
+        &mut engine,
+    );
+    assert!(
+        suggestion.latest.take().is_some(),
+        "enabling never dismisses"
+    );
+    assert_ne!(
+        prefs.per_app.get("com.a").and_then(|p| p.enabled),
+        Some(false)
+    );
+}
+
+#[test]
+fn apps_row_policy_edit_phase_ignores_stale_row_or_field() {
+    let home = PhaseConfigHome::new("apps-edit-stale");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new());
+    let settings = phase_settings_state(vec!["com.a".into()]);
+    let mut prefs = Prefs::default();
+    let focus = FocusContext::new();
+    let mut suggestion = SuggestionState::new();
+    let mut engine = phase_engine();
+
+    for stale in [(5, 0, false), (0, 9, false)] {
+        *flags.apps_edit.lock().unwrap() = Some(stale);
+        apps_row_policy_edit_phase(
+            &flags,
+            &settings,
+            &mut prefs,
+            &focus,
+            &host,
+            &mut suggestion,
+            &mut engine,
+        );
+        assert!(flags.apps_edit.lock().unwrap().is_none(), "edge consumed");
+    }
+    assert_eq!(prefs, Prefs::default(), "stale edits never touch prefs");
+    assert!(!home.config_path().exists(), "nothing persisted");
+}
+
+// personalization_edits_phase
+
+#[test]
+fn personalization_edits_phase_applies_persists_and_mirrors_every_knob() {
+    let home = PhaseConfigHome::new("pers-edit");
+    let mut config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let inference = InferenceHandle::unavailable();
+    use crate::shell::PersonalizationEdit as E;
+    *flags.personalization_edit.lock().unwrap() = vec![
+        E::GlobalInstructions("be brief".into()),
+        E::SenderName("Ann".into()),
+        E::SenderEmail("ann@example.com".into()),
+        E::StrengthStop(personalization_strength_index(Strength::Max)),
+    ];
+
+    personalization_edits_phase(&window, &flags, &mut config, &inference);
+
+    assert!(
+        flags.personalization_edit.lock().unwrap().is_empty(),
+        "edit queue drained"
+    );
+    // Source profile updated (survives restart via persist).
+    assert_eq!(config.personalization.global_instructions, "be brief");
+    assert_eq!(config.personalization.sender.name, "Ann");
+    assert_eq!(config.personalization.sender.email, "ann@example.com");
+    assert_eq!(config.personalization.strength, Strength::Max);
+    // Persisted under the launch-parser keys.
+    let persisted = home.persisted();
+    assert_eq!(
+        persisted.get("COMPME_INSTRUCTIONS").map(String::as_str),
+        Some("be brief")
+    );
+    assert_eq!(
+        persisted.get("COMPME_SENDER_NAME").map(String::as_str),
+        Some("Ann")
+    );
+    assert_eq!(
+        persisted.get("COMPME_SENDER_EMAIL").map(String::as_str),
+        Some("ann@example.com")
+    );
+    assert_eq!(
+        persisted.get("COMPME_STRENGTH").map(String::as_str),
+        Some(
+            personalization_strength_index(Strength::Max)
+                .to_string()
+                .as_str()
+        )
+    );
+    // Flag mirrors re-seeded from the applied profile.
+    assert_eq!(
+        *flags.personalization_instructions.lock().unwrap(),
+        "be brief"
+    );
+    assert_eq!(*flags.personalization_sender_name.lock().unwrap(), "Ann");
+    assert_eq!(
+        *flags.personalization_sender_email.lock().unwrap(),
+        "ann@example.com"
+    );
+    assert_eq!(
+        flags.personalization_strength_index.load(Ordering::Relaxed),
+        personalization_strength_index(Strength::Max)
+    );
+}
+
+#[test]
+fn personalization_edits_phase_without_edits_changes_nothing() {
+    let home = PhaseConfigHome::new("pers-noop");
+    let mut config = startup_test_config();
+    let before = config.personalization.clone();
+    let flags = phase_settings_flags(&config);
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let inference = InferenceHandle::unavailable();
+
+    personalization_edits_phase(&window, &flags, &mut config, &inference);
+
+    assert_eq!(config.personalization, before);
+    assert!(!home.config_path().exists(), "nothing persisted");
+}
+
+// tray_collection_toggle_phase
+
+#[test]
+fn tray_collection_toggle_phase_flips_collection_and_round_trips_the_no_collect_key() {
+    let home = PhaseConfigHome::new("tray-collect");
+    let flags = phase_tray_flags();
+    let (_shell, host) = phase_shell(PhaseShell::new().with_app(7, "com.a"));
+    let field = field_with_app("com.a");
+    let focus = phase_focus(&field);
+    let mut prefs = Prefs::default();
+
+    // First toggle: collection OFF, key written, capture buffers cleared.
+    let mut monitored = phase_monitored_with_buffer(&field);
+    flags.collection_toggle.store(true, Ordering::Relaxed);
+    tray_collection_toggle_phase(&flags, &host, &focus, &mut prefs, &mut monitored);
+    assert!(
+        !flags.collection_toggle.load(Ordering::Relaxed),
+        "edge consumed"
+    );
+    assert_eq!(
+        prefs.per_app.get("com.a").and_then(|p| p.collect_inputs),
+        Some(false)
+    );
+    assert_eq!(
+        home.persisted()
+            .get("COMPME_NO_COLLECT_APPS")
+            .map(String::as_str),
+        Some("com.a")
+    );
+    assert!(monitored.monitored_buffers.is_empty());
+
+    // Second toggle: back to inherit, and the emptied key is REMOVED (not
+    // written blank, which would shadow the env layer).
+    flags.collection_toggle.store(true, Ordering::Relaxed);
+    tray_collection_toggle_phase(&flags, &host, &focus, &mut prefs, &mut monitored);
+    assert_eq!(
+        prefs.per_app.get("com.a").and_then(|p| p.collect_inputs),
+        None
+    );
+    assert!(
+        !home.persisted().contains_key("COMPME_NO_COLLECT_APPS"),
+        "re-enabling the last app clears the key"
+    );
+}
+
+#[test]
+fn tray_collection_toggle_phase_without_a_focused_app_only_consumes_the_edge() {
+    let home = PhaseConfigHome::new("tray-collect-nofocus");
+    let flags = phase_tray_flags();
+    let (_shell, host) = phase_shell(PhaseShell::new());
+    let focus = FocusContext::new();
+    let mut prefs = Prefs::default();
+    let mut monitored = phase_monitored_with_buffer(&field_with_app("com.a"));
+    flags.collection_toggle.store(true, Ordering::Relaxed);
+
+    tray_collection_toggle_phase(&flags, &host, &focus, &mut prefs, &mut monitored);
+
+    assert!(!flags.collection_toggle.load(Ordering::Relaxed));
+    assert_eq!(prefs, Prefs::default());
+    assert!(!home.config_path().exists());
+    assert!(
+        monitored.monitored_buffers.is_empty(),
+        "capture is cleared before app resolution"
+    );
+}
+
+// tray_app_disable_phase
+
+#[test]
+fn tray_app_disable_phase_always_excludes_persists_and_dismisses() {
+    let home = PhaseConfigHome::new("tray-disable-always");
+    let flags = phase_tray_flags();
+    let (_shell, host) = phase_shell(PhaseShell::new().with_app(7, "com.a"));
+    let field = field_with_app("com.a");
+    let focus = phase_focus(&field);
+    let mut prefs = Prefs::default();
+    let mut monitored = phase_monitored_with_buffer(&field);
+    let mut suggestion = phase_pending_suggestion();
+    let mut engine = phase_engine();
+    *flags.app_disable.lock().unwrap() = Some(DisableArm::Always);
+
+    tray_app_disable_phase(
+        &flags,
+        &host,
+        &focus,
+        &mut prefs,
+        &mut monitored,
+        &mut suggestion,
+        &mut engine,
+        1_000,
+    );
+
+    assert!(flags.app_disable.lock().unwrap().is_none(), "arm consumed");
+    assert!(prefs.excluded_apps.contains("com.a"));
+    assert!(
+        prefs.app_snooze_until_ms.is_empty(),
+        "Always is not a snooze"
+    );
+    assert_eq!(
+        home.persisted()
+            .get("COMPME_EXCLUDED_APPS")
+            .map(String::as_str),
+        Some("com.a")
+    );
+    assert!(monitored.monitored_buffers.is_empty());
+    assert!(suggestion.latest.take().is_none(), "dismiss edge fired");
+}
+
+#[test]
+fn tray_app_disable_phase_hour_snoozes_the_app_without_persisting() {
+    let home = PhaseConfigHome::new("tray-disable-hour");
+    let flags = phase_tray_flags();
+    let (_shell, host) = phase_shell(PhaseShell::new().with_app(7, "com.a"));
+    let field = field_with_app("com.a");
+    let focus = phase_focus(&field);
+    let mut prefs = Prefs::default();
+    let mut monitored = MonitoredInput::default();
+    let mut suggestion = phase_pending_suggestion();
+    let mut engine = phase_engine();
+    let now_ms = 5_000;
+    *flags.app_disable.lock().unwrap() = Some(DisableArm::Hour);
+
+    tray_app_disable_phase(
+        &flags,
+        &host,
+        &focus,
+        &mut prefs,
+        &mut monitored,
+        &mut suggestion,
+        &mut engine,
+        now_ms,
+    );
+
+    assert!(flags.app_disable.lock().unwrap().is_none());
+    assert_eq!(
+        prefs.app_snooze_until_ms.get("com.a").copied(),
+        Some(now_ms + SNOOZE_MINUTES * 60 * 1000)
+    );
+    assert!(prefs.excluded_apps.is_empty(), "Hour never excludes");
+    assert!(!home.config_path().exists(), "timed arms are session-only");
+    assert!(
+        !prefs.should_suggest(Some("com.a"), None, now_ms),
+        "suggestions paused in the app"
+    );
+    assert!(suggestion.latest.take().is_none(), "dismiss edge fired");
+}
+
+#[test]
+fn tray_app_disable_phase_without_a_focused_app_only_consumes_the_arm() {
+    let home = PhaseConfigHome::new("tray-disable-nofocus");
+    let flags = phase_tray_flags();
+    let (_shell, host) = phase_shell(PhaseShell::new());
+    let focus = FocusContext::new();
+    let mut prefs = Prefs::default();
+    let mut monitored = MonitoredInput::default();
+    let mut suggestion = phase_pending_suggestion();
+    let mut engine = phase_engine();
+    *flags.app_disable.lock().unwrap() = Some(DisableArm::Always);
+
+    tray_app_disable_phase(
+        &flags,
+        &host,
+        &focus,
+        &mut prefs,
+        &mut monitored,
+        &mut suggestion,
+        &mut engine,
+        1_000,
+    );
+
+    assert!(flags.app_disable.lock().unwrap().is_none(), "arm consumed");
+    assert_eq!(prefs, Prefs::default());
+    assert!(!home.config_path().exists());
+    assert!(
+        suggestion.latest.take().is_some(),
+        "no app resolved → no policy change → no dismiss"
+    );
+}

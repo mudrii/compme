@@ -2462,4 +2462,182 @@ mod tests {
             "sha256 mismatch: expected abc, got def"
         );
     }
+    use std::sync::{Arc, Mutex};
+
+    /// Redirecting loopback server. Every request head is recorded. Requests
+    /// for `/model.bin` get `redirect_status` + `Location: <location>`;
+    /// `/real.bin` is served from `body` honoring a `Range: bytes=N-` header
+    /// with a validated 206. `location` may point back at `/model.bin` to
+    /// build a redirect loop.
+    fn serve_redirect(
+        body: &'static [u8],
+        redirect_status: &'static str,
+        location: impl Fn(&std::net::SocketAddr) -> String,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let location = location(&addr);
+        let heads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&heads);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let ranged = head.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("range")
+                        .then(|| {
+                            value
+                                .trim()
+                                .strip_prefix("bytes=")?
+                                .strip_suffix('-')?
+                                .parse::<usize>()
+                                .ok()
+                        })
+                        .flatten()
+                });
+                let real = head.starts_with("GET /real.bin ");
+                recorded.lock().unwrap().push(head);
+                if !real {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {redirect_status}\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    continue;
+                }
+                let (status, slice, content_range) = match ranged {
+                    Some(start) => (
+                        "206 Partial Content",
+                        &body[start..],
+                        Some(format!("bytes {start}-{}/{}", body.len() - 1, body.len())),
+                    ),
+                    None => ("200 OK", body, None),
+                };
+                let _ = write!(stream, "HTTP/1.1 {status}\r\n");
+                if let Some(cr) = content_range {
+                    let _ = write!(stream, "Content-Range: {cr}\r\n");
+                }
+                let _ = write!(
+                    stream,
+                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    slice.len()
+                );
+                let _ = stream.write_all(slice);
+            }
+        });
+        (format!("http://{addr}/model.bin"), heads)
+    }
+
+    #[test]
+    fn same_host_redirect_keeps_the_range_header_and_resumes() {
+        // HF resolve URLs 302 to a CDN; the doc contract in `download_url`
+        // says the Range header rides along with the redirect. Pin it on a
+        // same-host hop: the follow-up request carries `Range: bytes=N-`,
+        // the validated 206 appends from N, and the part is completed.
+        let body: &'static [u8] = b"0123456789abcdef";
+        let (url, heads) = serve_redirect(body, "302 Found", |_| "/real.bin".to_string());
+        let dest = temp_dest("redirect-resume");
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(dest.with_extension("part"), &body[..6]).unwrap();
+
+        let seen = Mutex::new(Vec::new());
+        let path = download_url(&url, &dest, None, |so_far, total| {
+            seen.lock().unwrap().push((so_far, total));
+        })
+        .expect("redirected resume completes");
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+
+        let heads = heads.lock().unwrap();
+        assert_eq!(heads.len(), 2, "one redirect hop: {heads:?}");
+        assert!(heads[0].starts_with("GET /model.bin "), "{}", heads[0]);
+        assert!(heads[1].starts_with("GET /real.bin "), "{}", heads[1]);
+        for head in heads.iter() {
+            assert!(
+                head.lines()
+                    .any(|line| line.eq_ignore_ascii_case("range: bytes=6-")),
+                "Range must survive the redirect hop: {head:?}"
+            );
+        }
+        assert_eq!(
+            seen.lock().unwrap().last().copied(),
+            Some((body.len() as u64, Some(body.len() as u64))),
+            "progress resumes from the part and reaches the full total"
+        );
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn https_only_agent_refuses_a_plaintext_target_as_a_network_error() {
+        // The production agent is https-only, and ureq applies that check per
+        // hop inside its redirect loop (`call_run`), so a plaintext redirect
+        // target is refused with the same `RequireHttpsOnly` error as a
+        // plaintext initial URL. Loopback has no TLS, so this test can only
+        // reach that check on the initial hop; it pins the error mapping the
+        // redirect hop shares — a typed `Network` carrying ureq's message —
+        // and proves the server was never contacted.
+        let (url, heads) = serve_redirect(b"never served", "302 Found", |_| "/real.bin".into());
+        let dest = temp_dest("https-only");
+        let err = download_with_agent(
+            &test_agent(ureq::Agent::config_builder().https_only(true)),
+            &url,
+            &dest,
+            None,
+            None,
+            |_, _| {},
+        )
+        .unwrap_err();
+        let FetchError::Network(msg) = &err else {
+            panic!("expected Network, got: {err}");
+        };
+        assert!(
+            msg.contains("configured for https only"),
+            "expected ureq's RequireHttpsOnly message, got: {msg}"
+        );
+        assert!(msg.contains(&url), "the refused URL is named: {msg}");
+        assert!(
+            heads.lock().unwrap().is_empty(),
+            "no plaintext request may leave the process"
+        );
+        assert!(!dest.with_extension("part").exists());
+    }
+
+    #[test]
+    fn redirect_loop_stops_at_the_cap_with_a_typed_error() {
+        // A server that redirects to itself forever must fail with ureq's
+        // TooManyRedirects mapped to `Network`, after exactly cap + 1
+        // requests — not hang or recurse.
+        let (url, heads) = serve_redirect(b"unreachable", "302 Found", |addr| {
+            format!("http://{addr}/model.bin")
+        });
+        let dest = temp_dest("redirect-loop");
+        let err = download_with_agent(
+            &test_agent(ureq::Agent::config_builder().max_redirects(3)),
+            &url,
+            &dest,
+            None,
+            None,
+            |_, _| {},
+        )
+        .unwrap_err();
+        let FetchError::Network(msg) = &err else {
+            panic!("expected Network, got: {err}");
+        };
+        assert!(msg.contains("too many redirects"), "got: {msg}");
+        assert_eq!(
+            heads.lock().unwrap().len(),
+            4,
+            "initial request plus exactly three followed redirects"
+        );
+        assert!(!dest.with_extension("part").exists());
+
+        // The production agent keeps ureq's cap AND errors at it rather than
+        // handing a 3xx response to the body reader.
+        let agent = production_agent();
+        let config = agent.config();
+        assert_eq!(config.max_redirects(), 10);
+        assert!(config.max_redirects_will_error());
+    }
 }

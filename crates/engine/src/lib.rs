@@ -4086,4 +4086,190 @@ mod tests {
         let (cold_engine, _a, _o) = engine();
         assert_eq!(cold_engine.preview_accept_correction(), None);
     }
+
+    #[test]
+    fn focus_capability_error_fails_closed_until_a_readable_focus() {
+        // On a focus whose capabilities cannot be read the engine must NOT
+        // keep the previous field's caps: it adopts fail-closed
+        // `unsupported_caps()`, surfaces the adapter error, and yields no
+        // completion request for anything typed until a later focus reads
+        // capabilities successfully.
+        let (mut engine, adapter, overlay) = engine();
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let in_flight = engine.on_tick(500).unwrap();
+        assert_eq!(in_flight.len(), 1, "readable focus arms a request");
+
+        adapter.fail_capabilities.store(true, Ordering::Relaxed);
+        assert_eq!(engine.on_focus(other_field()), Err(PlatformError::Timeout));
+        assert_eq!(engine.current_capabilities(), unsupported_caps());
+        assert!(!engine.assistant_field());
+
+        // The in-flight result for the old field is stale: no ghost, nothing
+        // visible, and no Shown stat.
+        engine
+            .on_completion(&in_flight[0], "late ghost".into())
+            .unwrap();
+        assert!(
+            !overlay
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| matches!(call, OverlayCall::Show(_, _))),
+            "a completion for the pre-failure field must not paint"
+        );
+        assert!(!engine.has_visible_suggestion());
+        assert_eq!(engine.take_stat_events(), vec![]);
+
+        // Typing into the unreadable field never produces a request.
+        let mut change = typed("y", 1, 1000);
+        change.field = other_field();
+        engine.on_text_changed(change).unwrap();
+        assert!(engine.on_tick(9_999).unwrap().is_empty());
+
+        // Recovery: a focus that reads capabilities re-opens suggestions.
+        adapter.fail_capabilities.store(false, Ordering::Relaxed);
+        engine.on_focus(field()).unwrap();
+        assert_eq!(engine.current_capabilities(), inline_caps());
+        engine.on_text_changed(typed("x", 1, 20_000)).unwrap();
+        assert_eq!(engine.on_tick(20_500).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failed_ghost_paint_disarms_the_tap_instead_of_leaving_it_armed() {
+        // show_ghost fails AFTER the machine transitioned to showing but
+        // BEFORE the accept tap is armed. reconcile_failed_show must run the
+        // hide sequence (visible=false, action=None) so the platform tap is
+        // never left in an armed or half-armed state, and the machine must
+        // not own a visible suggestion afterwards.
+        struct FailingShow(FakeOverlay);
+        impl OverlayPresenter for FailingShow {
+            fn show_ghost(&mut self, _rect: ScreenRect, _text: &str) -> Result<(), PlatformError> {
+                Err(PlatformError::Timeout)
+            }
+            fn show_correction(
+                &mut self,
+                rect: ScreenRect,
+                suggestion: &str,
+            ) -> Result<(), PlatformError> {
+                self.0.show_correction(rect, suggestion)
+            }
+            fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError> {
+                self.0.update_ghost(text)
+            }
+            fn hide(&mut self) -> Result<(), PlatformError> {
+                self.0.hide()
+            }
+        }
+
+        let adapter = FakeAdapter::new();
+        let inserts = Arc::clone(&adapter.inserts);
+        let overlay = FakeOverlay::default();
+        let calls = Arc::clone(&overlay.calls);
+        let mut engine = Engine::new(adapter, FailingShow(overlay), 200, 4, 32);
+        let tap: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let tap_visible = Arc::clone(&tap);
+        let tap_action = Arc::clone(&tap);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |visible| {
+                tap_visible.lock().unwrap().push(if visible {
+                    "visible:true"
+                } else {
+                    "visible:false"
+                });
+                Ok(())
+            },
+            |_delay| Ok(()),
+            move |action| {
+                tap_action.lock().unwrap().push(if action.is_some() {
+                    "action:set"
+                } else {
+                    "action:none"
+                });
+                Ok(())
+            },
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        assert_eq!(
+            engine.on_completion(&requests[0], "hello world".into()),
+            Err(PlatformError::Timeout),
+            "the paint failure surfaces"
+        );
+
+        assert_eq!(
+            *tap.lock().unwrap(),
+            vec!["visible:false", "action:none"],
+            "the tap is hidden in hide order and was never armed"
+        );
+        assert_eq!(*calls.lock().unwrap(), vec![OverlayCall::Hide]);
+        assert!(!engine.has_visible_suggestion());
+        assert_eq!(engine.take_stat_events(), vec![]);
+
+        engine.on_accept(AcceptAction::Full).unwrap();
+        assert!(inserts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_tap_arm_is_reconciled_by_an_explicit_disarm() {
+        // The arm itself fails (visible=true errors): the ghost is painted and
+        // the accept action is already installed, so reconciliation must
+        // clear visibility AND the action override rather than stop at the
+        // error — otherwise the platform tap keeps an action for a ghost the
+        // engine no longer owns.
+        let (mut engine, _adapter, overlay) = engine();
+        let tap: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let tap_visible = Arc::clone(&tap);
+        let tap_action = Arc::clone(&tap);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |visible| {
+                if visible {
+                    tap_visible.lock().unwrap().push("visible:true(failed)");
+                    Err(PlatformError::Timeout)
+                } else {
+                    tap_visible.lock().unwrap().push("visible:false");
+                    Ok(())
+                }
+            },
+            |_delay| Ok(()),
+            move |action| {
+                tap_action.lock().unwrap().push(if action.is_some() {
+                    "action:set"
+                } else {
+                    "action:none"
+                });
+                Ok(())
+            },
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        assert_eq!(
+            engine.on_completion(&requests[0], "hello world".into()),
+            Err(PlatformError::Timeout)
+        );
+        assert_eq!(
+            *tap.lock().unwrap(),
+            vec![
+                "action:set",
+                "visible:true(failed)",
+                "visible:false",
+                "action:none"
+            ]
+        );
+        assert!(overlay
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| matches!(call, OverlayCall::Hide)));
+        assert!(!engine.has_visible_suggestion());
+        assert_eq!(engine.take_stat_events(), vec![]);
+    }
 }
