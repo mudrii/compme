@@ -252,3 +252,12 @@ first):
 | `cargo audit` | **not run** (cargo-audit not installed on this host) |
 | `platform_macos` tests, `check-model-gates.sh` live mode, `tools/spike` | **not run** (mac-only; spike's `objc2` refuses to build on Linux) |
 | G13 reproduction | `redact("see https://example.com/some/long/path/segment/that/keeps/going")` → `"see https:[redacted-secret]"`; `redact("open /Users/alice/Documents/projects/compme/crates/redaction/src/lib.rs")` → `"open [redacted-secret]"` |
+
+**CI evidence (2026-09-08):** pushed `main` at `857f1a4` (items 0, 1, 3, half of
+5, and the phase-test serialization) is green on every lane — macOS
+(`check-model-gates.sh` live mode at the 2115 count), Windows (portable
+workspace + app binary), Linux (portable workspace + the 36-test Xvfb lane),
+and Docs. The intermediate run at `df34a62` failed twice and both causes are
+closed in `857f1a4`: the mac count pin was one too high (the new `front_app`
+test is Linux-only), and the Windows lane runs `app` tests in parallel, which
+the process-env-scoped phase tests now serialize behind a mutex.
