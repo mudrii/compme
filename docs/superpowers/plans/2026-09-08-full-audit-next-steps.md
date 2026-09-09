@@ -275,3 +275,100 @@ and Docs. The intermediate run at `df34a62` failed twice and both causes are
 closed in `857f1a4`: the mac count pin was one too high (the new `front_app`
 test is Linux-only), and the Windows lane runs `app` tests in parallel, which
 the process-env-scoped phase tests now serialize behind a mutex.
+
+## Spec analysis of the open items (2026-09-09, tree `ccf90a2`)
+
+Each open item was read against the governing spec, the adapter contract, and
+the code. Corrections the items above must carry; nothing here reorders them.
+
+- **Item 2d (G2) conflicts with MVP spec §15 F2** (`2026-06-03-engine-macos-mvp-design.md:433`:
+  keep the fixed `AxSet → SyntheticKeys → Clipboard → None` order, revisit only
+  on live proof an app needs a *different* strategy). A bundle allowlist
+  narrows that order to iTerm2 on absence of proof. Ship it only with F2
+  amended in the same commit, and update the integration spec `:13-14,110-112`
+  and ARCHITECTURE `:825-826` that describe the unqualified fallback. The
+  readback re-poll itself fills a gap no spec fixes.
+- **Item 2a also fixes the range path**: `AxRangeTarget::read_value` forwards
+  to `read_required_ax_string_attribute`. **2b** must keep `extend_range_left`
+  (integration spec `:96-99`) and the two pinned `lib_tests.rs` symbols
+  (`check-model-gates.sh:4534-4535`) unchanged. **2c** needs the fake to
+  return the second value/selected-range read.
+- **Item 6 (G7) vs MVP §2 `:75`** ("AX worker run loop owns … transient Carbon
+  accept-hotkey resources"): ownership stays, so add "registered on the main
+  thread" to that line. `exec_sync` from the worker deadlocks if main is
+  waiting on the worker (`install_resource` is synchronous): use a bounded
+  wait or an async post, and re-record `always-on-hotkeys-physical-look`.
+  G6 is consistent; no spec mentions the 4 Hz safety poll (gap, record it).
+- **Item 4 is spec-consistent.** No spec makes the snapshot bus a
+  prerequisite; the Windows spec `:199` plans to map `TrayFlags`/`SettingsFlags`
+  directly. Two settings edges are *not* pure: launch-at-login
+  (`settings_runtime.rs:135-152` calls the shell inside detection and reverts
+  the atomic) and screen context (`context_policy.rs:58-96` probes permission,
+  spawns OCR, reverts the flag). Both need `SettingsCommand` variants with a
+  revert path. Host-event arms are `Focus` 4807, `Caret` 4880, `Accept` 5101,
+  `Shortcut` 5167 (not 5090-5291); `HostEventCtx` must cover
+  `Accept`/`Dismiss`/`Cycle` or say why not. The "89 references" figure is 82
+  (8 type + 74 field). Re-stamp ROADMAP `:49,1022,1026-1055`, ARCHITECTURE
+  `:527-532`, Qfd `:21,214,371,587` when it ships; none are checker-pinned.
+- **Item 5 timeouts:** zbus 5.19.0 has only connection-level
+  `Builder::method_timeout`, applied inside `Connection::call_method` and
+  *not* on generated `*ProxyBlocking` calls — so it bounds the 10 raw sites
+  (keyring, reveal, `GetAddress`) but none of the 14 AT-SPI proxy sites on
+  the hot path. Set it anyway, and wrap AT-SPI (and x11rb, which has no
+  request timeout) calls in the helper-thread + `recv_timeout` pattern
+  `x11_tap.rs:718,912` already uses, mapped to `PlatformError::Timeout`
+  (today zero production sites emit it). Qfd's "zbus default 25 s" is
+  libdbus's figure; zbus defaults to unbounded.
+- **Item 5 overlay:** the collapse has not started; the one `.check()` token
+  is inside `checked()`, called at 15 sites (10–12 round trips on first show,
+  8–10 steady). X errors are per-request, so one trailing check does not
+  preserve the fail-closed guarantee at `x11_overlay.rs:85-92`: send
+  unchecked, then sync and drain `poll_for_event` for `Error` before `Ok`,
+  with a live test that injects a bad request.
+- **Item 5 Wayland:** consistent with the review spec `:124` and the contract
+  `platform/src/lib.rs:252-254`; patch `overlay_at_caret` to `None` in
+  `LinuxAdapter::capabilities` (`lib.rs:404-413`, where `accept_intercept` is
+  already patched) — the symbols are `atspi_caps::capabilities_from` and
+  `LinuxAdapter::capabilities`, not `capabilities_for_field`. Stale after:
+  ROADMAP `:525-526`, ARCHITECTURE `:715`, MANUAL-VALIDATION-LINUX `:120`.
+- **Item 7 mis-phases the DACL work.** Memory hardening on Windows is spec
+  Phase 0.2 (`2026-07-08-cross-platform-implementation-plan.md:87-103`,
+  shipped): `run_loop.rs:1318-1330` already hardens the db and sidecars via
+  `win_host::harden_owner_only`. Of the five `cfg(unix)` sites only the ACL
+  half has a Windows analogue; symlink/reparse rejection is not ACL work.
+  Drop that bullet; fix the stale `memory/src/lib.rs:22-24` comment and
+  ROADMAP `:1400-1401` instead. Spec 1.1 also requires the
+  `MsgWaitForMultipleObjectsEx` heartbeat wait, not a bare `PeekMessage`
+  loop, and its acceptance (boot/idle/quit) is desktop-manual. Enable the
+  `windows =0.62.2` features for `RtlGetVersion` and
+  `GlobalMemoryStatusEx` (verify names). Pins: windows job step shapes
+  `check-model-gates.sh:3907-3910,3959-3962`, test-count pins, the
+  `version == "unknown"` test and the "Tier 1.1 scaffold" reason string.
+- **Item 8:** §1.7 reference is correct. Spec 1.2 also wants
+  `AddFocusChangedEventHandler`, `caret_rect`, `subscribe_caret`. The specs
+  disagree on threading: the implementation plan `:140` says STA, the
+  cross-platform review `:58,126,219` says MTA on a window-less thread —
+  decide and record before coding.
+- **Prerequisites the plan sequences only implicitly:** the ROADMAP-stated
+  logging seam A31 (`ROADMAP.md:1043-1045`, "before Windows/Linux UI adapter
+  work C.5") is absent from this plan. Add it to item 4 or record the
+  deferral.
+- **Item 9 G14:** `parse_deep_link` rejects unknown params
+  (`webconfig/src/lib.rs:189`), so `exp` joins the allow-list, is rejected on
+  unsigned links, and the test needs an injectable clock. **G15:** "exit code
+  70" is documented only in `RELEASE-NOTES-v0.1.6.md:32`; `shutdown_with_timeout`
+  already takes a `Duration`, so the warm-up deadline option is cheap.
+  **G19:** `:750` needs push (`finalize-cask.sh:227`); the other three already
+  scrub credentials after their last fetch. Adding the flag needs the
+  approved-input sets at `check-model-gates.sh:3754` and the topology at
+  `:479,483,486` updated in the same commit; the Windows doc-test/audit step
+  is a second topology edit (`:481`). **Vendor drift:** allowlist the
+  vendored `Cargo.lock` too; the checker must be `--self-test`-able and join
+  the pinned DEVELOPMENT gate list. **`user_version`:** the DDL pin
+  `the_0x_schema_is_exactly_this_ddl_until_a_migration_lands` asserts
+  `user_version == 0`; defer until a schema change is actually scheduled.
+- **Item 10 G11:** the sentence is `ROADMAP.md:160-163` (not `:133-134`);
+  RELEASING `:157-161` and the runbook have no 22-gate step. Neither option
+  is checker-pinned. **Governance:** the checker emits six pending decisions
+  (self-approval, admin bypass, deployment branches, actions allowlist,
+  SHA-pin requirement, tag creation), not three.
