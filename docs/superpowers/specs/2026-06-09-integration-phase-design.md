@@ -15,6 +15,15 @@ in iTerm2. Non-AxSet replacements remain fail-closed residual work because the
 global input channels cannot atomically delete `replace_left` and insert the
 replacement.
 
+*(status 2026-09-09: the iTerm2 evidence stands, but the plain-insert fallback
+in `finish_axset_insert` is still **unconditional for every app** — any
+`SilentlyIgnored` readback on `replace_left == 0` re-posts the text as
+synthetic keys with no bundle check. `Qfd.md` §20 G2 (double insert when an app
+applies `AXValue` asynchronously) is OPEN; plan
+`2026-09-08-full-audit-next-steps.md` item 2d proposes a bounded readback
+re-poll plus a bundle allowlist seeded with iTerm2, to ship together with an
+amendment to MVP spec §15 F2.)*
+
 ## Why this exists
 
 Pure §16 parity features were exhausted as pure crates in cycles 11–18:
@@ -101,6 +110,16 @@ to record `replace_left` for the wiring test.
   unchanged; the exact count is historical). **Live AX
   deletion CONFIRMED (step 6, 2026-06-10):** the typed token is physically deleted
   and replaced in TextEdit.
+  *(status 2026-09-09: verified against HEAD — `insert_replacing` →
+  `insert_impl(replace_left)` → `insert_for_field` → `extend_range_left` →
+  `splice_text_at_utf16_range`, in that order; `extend_range_left` keeps its
+  five unit tests in `lib_tests.rs`. Since then `insert_for_field` also
+  re-reads value+range and refuses via `ensure_ax_insert_snapshot_unchanged`
+  before the set, and classifies the readback as `AxSetApply::Applied` /
+  `SilentlyIgnored`; `finish_axset_insert` turns `SilentlyIgnored` with
+  `replace_left > 0` into `CannotComplete` rather than falling back. The
+  separate exact-range path `insert_replacing_range` → `insert_range_for_field`
+  is seamed behind `AxRangeTarget`; plan item 2b proposes the same seam here.)*
 - **`platform_macos` honoring — SyntheticKeys / Clipboard (superseded prototype):**
   the first implementation synthesized N backspaces before posting replacement
   text. That is not atomic, so the committed adapter now refuses every non-zero
@@ -110,6 +129,11 @@ to record `replace_left` for the wiring test.
   `NativeRangeSet`). The 2026-06-10 iTerm2 run validated only the
   silently-ignored-`AxSet` fallback for a **plain append** (`replace_left == 0`);
   silently ignored AxSet replacements fail closed rather than falling back.
+  *(status 2026-09-09: still accurate. `refuse_non_atomic_replacement` guards
+  the SyntheticKeys/Clipboard arms and `finish_axset_insert` guards the
+  post-readback arm. The plain-append fallback itself remains unconditional —
+  no per-app gate exists — so the single iTerm2 run is the only live evidence
+  behind it in every app; see Qfd G2 / plan item 2d in the status note above.)*
 
 ### 5. Flags / config (default off; host-read)
 `COMPME_EMOJI` (+ `_SKIN_TONE`, `_GENDER`), `COMPME_AUTOCORRECT`,
@@ -128,7 +152,8 @@ the corresponding crate in the `TextChanged` replacement-detection step.
 3. **engine + platform:** required `insert_replacing`; dispatch threads
    `replace_left`; `FakeAdapter` wiring test. *(pure)*
 4. **platform_macos:** `replacement_range` pure helper + test; AxSet honoring wired.
-   *(pure helper + FFI call)*
+   *(pure helper + FFI call)* *(status 2026-09-09: shipped under the name
+   `extend_range_left`; no `replacement_range` symbol exists.)*
 5. **[DONE, cycle 26] app/run_loop:** the observe `Observation::Typed` branch now,
    after `on_text_changed`, calls `emoji_offer(&ctx.left, &config.emoji)`; on a hit
    it `latest.clear()`s (preempts the just-queued model request — Cotypist behavior)
@@ -138,6 +163,15 @@ the corresponding crate in the `TextChanged` replacement-detection step.
    helpers are unit-tested. Preempt is safe: `on_text_changed` advances the snapshot
    (stale prior requests discarded) and the current model request is cleared, so no
    completion can supersede the emoji ghost.
+   *(status 2026-09-09: the helpers moved — `emoji_offer` lives in
+   `crates/app/src/feature_policy.rs` (thin `run_loop.rs` wrapper),
+   `build_emoji_config`/`parse_skin_tone`/`parse_gender` in
+   `crates/app/src/builders.rs`. The single-consumer call is now the chain
+   `feature_policy::replacement_offer` (priority emoji → typo → pronoun →
+   British → thesaurus, pinned by
+   `replacement_offer_priority_is_emoji_typo_pronoun_british_thesaurus`)
+   feeding `Engine::offer_replacement_multi`; `offer_replacement` remains the
+   single-candidate entry point in `engine_core`.)*
 6. **[DONE, 2026-06-10] Live validation (manual, §16):** physical-key accept of an
    emoji/typo replacement in TextEdit (AxSet) deletes the typed token and inserts
    the replacement — PASSED (`:smile`→😄, `teh`→`the`; `colour` offered + placed;
@@ -149,6 +183,11 @@ Steps 1–6 are done; step 6 passed live (mirrors the existing Carbon-accept man
 gates). Emoji was the first consumer wired; autocorrect/localize reuse the same
 path, and thesaurus now uses that path behind `COMPME_THESAURUS`. Remaining
 thesaurus work is live LOOK/UX validation and any future selection-trigger design.
+*(status 2026-09-09: the selection trigger has since shipped —
+`COMPME_THESAURUS_SELECTION` accepts through the exact-range
+`insert_replacing_range` path (ROADMAP "Current execution order" item 1, ✅
+2026-07-16); its physical LOOK gate `selection-thesaurus-look` is still
+pending in ROADMAP/ACCEPTANCE.)*
 
 ## Pre-wiring checklist (from the step 1–3 code review)
 
@@ -182,4 +221,6 @@ replacement preempts the model request for that turn. Emoji, autocorrect,
 British-English normalization, and the current thesaurus host path are
 type-triggered trailing-token offers. Selection-triggered thesaurus UX remains
 future parity work and should reuse the same lookup once a selection surface
-exists.
+exists. *(status 2026-09-09: implemented — see the note under "Build order";
+it reuses the thesaurus lookup and replaces via an exact `CorrectionRange`
+rather than `replace_left`.)*

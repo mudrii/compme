@@ -9,6 +9,8 @@
 > is not a current support or pending-work statement. Production accept uses
 > transient Carbon hotkeys, macOS has shipped through v0.1.4, and the remaining
 > work is tracked only in `docs/ROADMAP.md` and `docs/ACCEPTANCE.md`.
+> (status 2026-09-09: latest published artifact is v0.1.6; root `Cargo.toml`
+> version `0.1.6`.)
 
 **Current-design correction (2026-07-05):** CGEventTap/Input Monitoring notes
 below are historical A0/prior-art evidence, not the current Compme accept-key
@@ -88,7 +90,9 @@ Plus: **Retina pixel-vs-point is a second independent bug** — AX text rects so
   with hardened runtime and no entitlements file. Its cross-app Accessibility
   design still does not fit a conventional Mac App Store sandbox. The current
   release publishes the `.app` zip/manifest, undrafts it, then finalizes the
-  Homebrew cask.
+  Homebrew cask. (status 2026-09-09: still true through v0.1.6 — no entitlements
+  file; `docs/RELEASING.md` keeps `COMPME_CODESIGN_ENTITLEMENTS` for a future
+  release that needs one.)
 - **TCC keys on cert+bundle-id** — a new signing cert under the same bundle id causes an **infinite "grant Accessibility" loop**. Need a **stable signing identity** + a `tccutil reset` recovery path + re-grant detection after OS updates.
 - Historical CGEventTap probes needed **both** Accessibility + Input Monitoring.
   Current production accept does not require Input Monitoring; **Secure Input**
@@ -112,6 +116,18 @@ Plus: **Retina pixel-vs-point is a second independent bug** — AX text rects so
 | `rdevin` | 0.1.0 | rdev fork | **Avoid** — v0.1, grab disabled on Linux. |
 | `global-hotkey` (tauri) | 0.8.0 | registered hotkeys | Hotkeys only; **X11-only on Linux**, Wayland unmerged. |
 
+**(status 2026-09-09, per `Cargo.lock` and crate manifests):** `llama-cpp-2` is
+exact-pinned `=0.1.146` in `crates/model_client` with a vendored
+`[patch.crates-io]` copy carrying the abort-callback extension; backend features
+are `metal` on macOS only — off-mac builds are CPU-only (no `vulkan`).
+`platform_macos` uses `objc2` 0.6.4 / `objc2-app-kit` 0.3.2 / `objc2-foundation`
+0.3.2 (not `objc2-application-services`), `accessibility-sys` =0.2.0 (the safe
+`accessibility` wrapper and `axuielement` were not adopted), and `core-graphics`
+=0.25.0; production accept uses Carbon `RegisterEventHotKey`, not a CGEventTap.
+`platform_linux` uses `atspi` 0.30.0 / `zbus` 5.19.0 / `x11rb` 0.14.0 (passive
+`XGrabKey` accept tap, override-redirect overlay). `enigo`, `rdev`, `rdevin`, and
+`global-hotkey` are not dependencies.
+
 **Signal:** Espanso, KeyType, Cotabby all **wrote their own native capture/inject layer** rather than depend on rdev. Do the same via `objc2`/`core-graphics`/`windows`/native FFI. Use `enigo` only as an inject shortcut on the easy platforms.
 
 ---
@@ -121,7 +137,7 @@ Plus: **Retina pixel-vs-point is a second independent bug** — AX text rects so
 | # | Assumption | Verdict |
 |---|---|---|
 | 1 | Caret via `kAXBoundsForRange` + collapsed-range workaround | **CONFIRMS + major nuance** — 5-tier ladder; collapsed *works* in native; web needs AXTextMarker; Retina scaling; reject container rects |
-| 2 | Focus/text via AXObserver | **CONFIRMS** — + 2 Hz safety poll for under-reporting apps; ~20 ms debounce |
+| 2 | Focus/text via AXObserver | **CONFIRMS** — + 2 Hz safety poll for under-reporting apps; ~20 ms debounce (status 2026-09-09: `platform_macos/src/ax_worker.rs` runs the focused-element safety poll at `CARET_SAFETY_POLL_INTERVAL` = 250 ms, i.e. 4 Hz) |
 | 3 | Historical Tab accept via CGEventTap + Input Monitoring | **CONFIRMS + critical nuance for the A0 probe** — must be two-tap (listen-only + on-demand consuming); current production accept moved to transient Carbon hotkeys |
 | 4 | Non-activating NSPanel overlay | **CONFIRMS exactly** — + need capsule-below-caret mode for mid-line; caret-height font; defensive color |
 | 5 | AX-set / CGEvent / clipboard insertion | **CONFIRMS all three** — per-app planner; tag synthetic events; Unicode codepoint inject |

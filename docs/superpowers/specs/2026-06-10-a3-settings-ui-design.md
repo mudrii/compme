@@ -10,10 +10,45 @@
 > LOOK gate was completed 2026-06-17. A metric-picker redesign was closed by
 > design in the Roadmap.
 >
-> **Current-main release boundary:** the latest published artifact is v0.1.5
-> (`14ae81e`) and includes the single model-location-control cleanup (one
-> **Show Models Folder**, no **Reveal Model in Finder**). Current `main` also
-> contains the tray website/support actions described below.
+> **Current-main release boundary (restamped 2026-09-09):** the latest
+> published artifact is v0.1.6 (tag `v0.1.6` → `6c0bea5`; root `Cargo.toml`
+> `version = "0.1.6"`) and includes the single model-location-control cleanup
+> (one **Show Models Folder**, no **Reveal Model in Finder** —
+> `MODEL_MANAGEMENT_BUTTON_TITLES` in `settings_window.rs`). Current `main`
+> also contains the tray website/support actions described below.
+>
+> **Status 2026-09-09 (reconciled against HEAD `1da83f5`):**
+> - Tab order is pinned by `pane_titles()` (`PANE_COUNT` = 9) in
+>   `crates/platform_macos/src/settings_window.rs` (Setup, General,
+>   Personalization, Apps, Context, Emoji, Shortcuts, Statistics, About) and
+>   its unit test; the gate ID is `nine-tab-settings-walkthrough`.
+> - Beyond the panes listed above, General now carries seven switches
+>   (`general_enabled`, `general_launch_at_login`, `labs_midline`,
+>   `general_autocorrect`, `general_full_autocorrect`,
+>   `general_thesaurus_selection`, `general_trailing_space`) and Context adds
+>   `context_cross_app_previous_inputs` (`COMPME_CROSS_APP_PREVIOUS_INPUTS`).
+> - Window ↔ run loop transport is still the atomic/`Mutex` slot bus:
+>   `SettingsFlags` (39 fields) and `TrayFlags` (11 fields) moved to the
+>   `shell_flags` crate in `9fcc177`; the run loop polls edges each tick via
+>   `settings_runtime::apply_*_settings_edge` and the inline settings-watcher
+>   block in `run_loop.rs`. The typed-command/snapshot redesign is **open**
+>   (`docs/superpowers/plans/2026-09-08-full-audit-next-steps.md` item 4).
+> - Persistence: every control routes through `config::persist_setting` on
+>   the loop thread — read-modify-write of `config.env`, temp file opened
+>   with `create_new` + `O_NOFOLLOW` + mode `0600`, then `fs::rename` over
+>   the target (`crates/app/src/config.rs`). Env still wins at launch;
+>   `settings_runtime::SWITCH_KEYS` (36 keys) drives the env-shadow warning.
+> - Launch at Login: `toggleLaunchAtLogin:` → `general_launch_at_login` →
+>   `apply_launch_at_login_settings_edge`; the `SMAppService` change commits
+>   before `COMPME_LAUNCH_AT_LOGIN` persists, and an OS failure reverts the
+>   switch without persisting (ROADMAP Tier 3).
+> - Deep links (not a settings-window surface, but the other config writer):
+>   `webconfig::parse_deep_link_with_trust` verifies a trailing `&sig=` Ed25519
+>   signature over the URL bytes; links carry **no nonce/expiry** (Qfd G14,
+>   CONFIRMED OPEN — no `exp=` handling exists yet).
+> - Evidence: all eleven Settings/tray LOOK gate rows in `docs/ACCEPTANCE.md`
+>   still read "never recorded"; none of the DONE marks below is live
+>   evidence.
 >
 > **Live pending status (re-verified 2026-07-17): see [`docs/ROADMAP.md`](../../ROADMAP.md)**
 > and [`docs/ACCEPTANCE.md`](../../ACCEPTANCE.md) — the remaining Tier 3 work is
@@ -29,7 +64,7 @@ every settings pane). This maps each surface to compme's existing backing and
 sequences the build. Native AppKit, no web view (engine-macos §9 A3 "no
 Tauri"). Most logic already exists as crates + `COMPME_*` env config; the UI
 is a front-end over `config.env` via `config::persist_setting` (c50) plus the
-live tray flags.
+live tray flags (`shell_flags::TrayFlags` since `9fcc177`).
 
 ## Deliberate divergences (Project Scope)
 
@@ -65,7 +100,7 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
 |---|---|---|---|
 | Setup | permission states (AX, Screen Recording), model downloaded, macOS text-suggestions off, clipboard context | `accessibility_trusted`, `screen_recording_permission`, model_select, compat | pane only; "disable macOS suggestions" helper is new — **[2026-06-10] DONE** (checklist + Grant/Request/Reveal buttons + 480ms visible-only poll) |
 | General | launch-at-login; menu-bar icon toggle; accessory button; model picker + folder reveal; enable-by-default; max length (S/M/L); autocorrect toggles | SMAppService (bundle exists, c80); tray exists; model_select + `COMPME_MODEL_PATH`; `COMPME_ENABLED`; `COMPME_MAX_WORDS`; `COMPME_AUTOCORRECT` | accessory floating button = new feature (defer) — **[2026-06-10] DONE** for 3 live switches (mid-line/autocorrect/trailing-space); launch-at-login wiring done via SMAppService; **[2026-06-17] model catalog/download shipped in Setup** with picker, RAM labels/gate, license gate, SHA verify, and dest-exists guard; **[2026-07-10, current main]** Setup has exactly one model-location action, **Show Models Folder**, and no **Reveal Model in Finder**; residual model work is recovery/visual LOOK validation |
-| Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT` | dedicated Context tab with clipboard + screen-OCR switches shipped; screen enable starts OCR live when Screen Recording is granted, while denial reverts the switch, and screen disable immediately drops the worker, clears cached OCR, and gates new submissions; appearance sub-toggle has no equivalent (defer) |
+| Context | screenshots-for-context (+appearance sub-toggle); clipboard | `COMPME_SCREEN_CONTEXT`, `COMPME_CLIPBOARD_CONTEXT`, `COMPME_CROSS_APP_PREVIOUS_INPUTS` (status 2026-09-09: third switch, `context_cross_app_previous_inputs`) | dedicated Context tab with clipboard + screen-OCR switches shipped; screen enable starts OCR live when Screen Recording is granted, while denial reverts the switch, and screen disable immediately drops the worker, clears cached OCR, and gates new submissions; appearance sub-toggle has no equivalent (defer) |
 | Personalization | collect typing history; store-without-accepts; word-choice strength slider; existing-data count + Delete All; custom AI instructions editor | `memory` modes (AcceptedOnly/AllMonitored!), `count`/`delete_all`; personalization 6-stop strength; `COMPME_INSTRUCTIONS`, `COMPME_INSTRUCTIONS_APPS` / `_APP_*`, `COMPME_INSTRUCTIONS_DOMAINS` / `_DOMAIN_*` | global instructions, sender identity, and 6-stop strength controls shipped in the dedicated Personalization tab; layout/edit persistence is live-validated, and the remaining LOOK is a visible steering effect. Memory mode/global delete controls are tracked separately from the profile editor |
 | Emoji | enable; skin tone; **include neutral variant**; gender | `COMPME_EMOJI`, `_SKIN_TONE`, `_GENDER` | enable switch plus skin-tone and gender popups shipped in a dedicated Emoji tab; `includeVanillaVariants` is unmodeled and deferred until multi-candidate replacement display exists |
 | Shortcuts | word key (+trailing-space toggle); full key; force-activate; per-app temp toggle shortcut; global toggle shortcut | `AcceptKeymap` (c13) + `COMPME_TRAILING_SPACE`; `KeyRecorderField` rows persist live rebinds through `COMPME_ACCEPT_*` config; always-on force/toggle/grammar-check hotkeys are config-backed at startup | recorder UI and live rebind are implemented for Word, Full, and Grammar accept; modifier persistence is synthetic-validated. Force-activate, per-app toggle, global toggle, and grammar-check remain config-only startup bindings whose physical dispatch needs LOOK validation |
@@ -99,6 +134,9 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
    as a General-tab switch; Context DONE for clipboard + screen-OCR switches;
    Emoji DONE for the enable switch, skin-tone popup, and gender popup;
    Personalization controls and the Context appearance sub-toggle deferred.
+   (status 2026-09-09: superseded — the window is 9 tabs and the
+   Personalization pane shipped, see the S2 table; only the Context
+   appearance sub-toggle remains deferred.)
 5. **Shortcuts pane** + keymap threading (closes the c13 residual) —
    **[2026-06-15] DONE for recorder UI/live rebind** via `KeyRecorderField`
    rows and run-loop persistence for Word, Full, and Grammar accept. Force-
@@ -106,8 +144,14 @@ AppKit). Pane order mirrors Cotypist. Every toggle persists through
    implemented as config-only startup bindings; adding recorder rows for those
    always-on shortcuts is a future UI enhancement, not part of the shipped pane.
 6. **App Settings pane** (largest; needs the new per-app prefs fields).
+   (status 2026-09-09: shipped as the Apps tab — `APP_POLICY_COLUMN_HEADERS`
+   On/Tab/Mid/AC/GF grid, `apps_edit`/`apps_delete_row` slots; LOOK gate
+   `apps-policy-toggle-look` never recorded.)
 7. Statistics charts; Setup/onboarding pane; About. **[2026-06-10] DONE**
    (Statistics DONE-MVP as sparklines; Setup and About panes shipped).
+   (status 2026-09-09: Statistics has since gained the range/grouping popups
+   — `stat_range_index`/`stat_group_index` — and the About/telemetry text is
+   the static `about_text` string.)
 8. Out of scope here: model catalog/download manager (§15 D14; since shipped
    into the Setup tab — download button c122, sha verify c126, license gate
    c127 **[2026-06-12]**), accessory

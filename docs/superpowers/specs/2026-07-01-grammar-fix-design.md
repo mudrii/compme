@@ -1,11 +1,13 @@
 # Standalone grammar/spell-fix mode — implementation spec
 
-**Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · pending live LOOK validation
+**Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · scripted assisted-session LOOK pass 2026-07-07 · physical `grammar-fix-textedit-look` pass still open (status 2026-09-09: unchanged, see `docs/ACCEPTANCE.md` evidence table)
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
 **Prereqs:** clean `main` (builds, clippy clean, ≈2115 tests green).
-**Release boundary:** this status describes current `main`. The published
-v0.1.4 tag predates the post-release runtime/grammar hardening in `216fa0a` and
-the A2 automation-policy change in `618013d`; those changes require a later tag.
+**Release boundary:** this status describes current `main`. (status 2026-09-09:
+the published v0.1.6 tag includes the runtime/grammar hardening in `216fa0a` and
+the A2 automation-policy change in `618013d` that v0.1.4 predated; the grammar
+code path on `main` is therefore shipped, with the physical LOOK gate and the
+Qfd §20 G4 pre-write re-read still open.)
 
 This spec turns the roadmap Tier 5 bullet into an executable, phase-by-phase plan.
 Every phase is sized to land independently, pure/testable layers first, novel FFI
@@ -26,6 +28,12 @@ before editing (they drift).
   `text_range_rect` still inherits the fail-closed trait default. The Windows
   scaffold still inherits both defaults. Live LOOK validation remains pending
   because it requires granted Accessibility permissions and an interactive macOS app.
+  (status 2026-09-09: a scripted assisted-session pass with a real model was
+  recorded 2026-07-07 after `4c2f8d3`; the human/physical keypress pass is the
+  residual. `insert_range_for_field` checks the expected text against its single
+  pre-splice read but does not re-read before `set_value` the way
+  `insert_for_field` does via `ensure_ax_insert_snapshot_unchanged` — Qfd §20 G4,
+  open, plan item 2c.)
 - G5 settings surface is implemented: the Shortcuts pane has a grammar-accept
   recorder row, live rebind persists `COMPME_GRAMMAR_ACCEPT_KEY`, the Apps pane
   includes the `GrammarFix` policy column, and config/env shadow tests cover the
@@ -182,13 +190,21 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   and emits `Command::ShowCorrection { field, correction_range, suggestion }`
   instead of `ShowGhost`. Add an explicit `Event::AcceptCorrection` arm that only
   commits a `Showing { presentation: Correction, .. }` and emits
-  `Command::ReplaceRange { field, text, correction_range }`. Do not reuse
+  `Command::ReplaceRange { field, text, correction_range }`. **As built:** there
+  is no `offer_correction`; the engine feeds `Event::CorrectionReady` (handled by
+  `on_correction_ready`, which also carries the original word as
+  `correction_original`), and `ReplaceRange` additionally carries `expected_text`
+  for the platform-side stale guard. `Presentation` gained a third
+  `SelectionReplacement` variant for the thesaurus feature. Do not reuse
   `AcceptFull`/`AcceptWord`: those commit the existing `replace_left` model and
   can only delete characters immediately left of the caret. Same
   `InsertStrategy::supports_atomic_range_replace()` capability gate (`AxSet`
   and `NativeRangeSet` are the currently atomic strategies).
 - `crates/engine/src/lib.rs`: add `pub fn on_correction(...)` wrapping
-  `offer_correction` (mirror `on_replacement`). Extend dispatch for
+  the correction event (mirror `on_replacement`). **As built:**
+  `Engine::on_correction(&request, suggestion, correction_range)` plus
+  `on_correction_absent(&request)`, which consumes the request stamp on a
+  rejected output so late duplicates go stale. Extend dispatch for
   `ShowCorrection`: resolve `adapter.text_range_rect(field, correction_range)`,
   fall back to `caret_rect`/`popup_anchor` only when range bounds return `Ok(None)`,
   then call `overlay.show_correction`. Extend `FakeAdapter`/`FakeOverlay`
@@ -207,6 +223,11 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   `pub fn word_at_caret(value, caret) -> Option<(&str, CorrectionRange)>` — the
   word the caret is in/just after (combine trailing word of `left_context` with
   any leading fragment of `right_context`). Returns the word text + scalar range.
+  **As built:** the production entry point is
+  `context::word_at_split_caret(left, right, left_scalar_count, max_word_chars)`
+  returning `OwnedWordAtCaret` with a `context::WordRange`; `word_at_caret` is
+  the `#[cfg(test)]` single-string form the RED-first tests drive. The run loop
+  caps the word at `GRAMMAR_WORD_MAX_CHARS` = 128.
   The range, not a `replace_left` count, is authoritative for both underline
   geometry and acceptance so mid-word corrections replace the whole word rather
   than only the left fragment.
@@ -221,7 +242,9 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   Result<Option<ScreenRect>, PlatformError>` and
   `fn insert_replacing_range(&self, field: &FieldHandle, text: &str,
   range: CorrectionRange, strategy: InsertStrategy) -> Result<Inserted,
-  PlatformError>`. `insert_replacing` remains the left-of-caret replacement path
+  PlatformError>` (as built the signature also takes `expected_text: &str`
+  before `text`, the original word the live field must still contain).
+  `insert_replacing` remains the left-of-caret replacement path
   for emoji/autocorrect; grammar uses range replacement. Add compile-safe,
   fail-closed impls in `platform_macos`, `platform_linux`, `platform_windows`, and
   every fake adapter in the same phase that extends the trait.
@@ -265,7 +288,10 @@ Any TextChanged/CaretMoved before accept → advance_snapshot() invalidates it.
   `text_range_rect` converts scalar ranges to platform-native range units,
   geometry failures do not fall back to a caret correction, and accept-time range
   replacement refuses to write if the live field text no longer matches the
-  original typo.
+  original typo. (The geometry fail-closed test lives in `crates/engine`, not the
+  platform crate; the other three are in `platform_macos`. status 2026-09-09: the
+  expected-text guard compares against the same read that is spliced — the
+  read→set window itself is Qfd §20 G4, open.)
 - Prefs RED-first tests:
   `grammar_fix_enabled_inherits_global_default_without_app`,
   `grammar_fix_enabled_respects_per_app_override`, and
@@ -320,7 +346,9 @@ release-readiness uses the locked workspace gates from `docs/ACCEPTANCE.md` and
   and `grammar_accept_key: Option<(i64,u32)>`, parsed in `from_lookup`
   as `COMPME_GRAMMAR_CHECK_KEY` / `COMPME_GRAMMAR_ACCEPT_KEY`. Add the
   `HostEvent::Shortcut(GrammarCheck)` arm to run G2 detection. Route
-  `HostEvent::Accept(AcceptAction::Correction)` to `engine.on_accept_correction`;
+  `HostEvent::Accept(AcceptAction::Correction)` to the engine's correction accept
+  (as built: `engine.on_accept(AcceptAction::Correction)` →
+  `Event::AcceptCorrection`; there is no separate `on_accept_correction`);
   do not fold it through `Full`.
 
 **Tests:** RED-first tests include
@@ -448,7 +476,11 @@ range bounds and range replacement, not just the existing left-of-caret
 - **R5 (high):** range drift between detection, underline, and accept could replace
   the wrong text. Mitigation: store one `CorrectionRange` on the request/outcome/
   showing state, invalidate it on every `TextChanged`/`CaretMoved`, and use that
-  same range for both `text_range_rect` and `ReplaceRange`.
+  same range for both `text_range_rect` and `ReplaceRange`. (status 2026-09-09:
+  engine-side invalidation and the `expected_text` guard are in place; the
+  residual is the macOS read→`set_value` window in `insert_range_for_field`,
+  which lacks the pre-write re-read `insert_for_field` performs — Qfd §20 G4,
+  open, plan item 2c.)
 
 ## Validation commands
 - `cargo fmt --all -- --check`
@@ -498,5 +530,6 @@ green, the grammar LOOK gate is listed in `docs/ACCEPTANCE.md` /
 `tools/acceptance/run-a1b-live-gates.sh --self-test`, and ROADMAP Tier 5 is now
 marked 🟢 with verified anchors. The remaining grammar-mode macOS LOOK item is
 on-device validation of the TextEdit underline/banner and grammar-accept
-replacement flow in a granted GUI session; broader release readiness still
-depends on the release checklist in `docs/ROADMAP.md`.
+replacement flow in a granted GUI session (status 2026-09-09: scripted pass
+2026-07-07, physical pass never recorded — `docs/ACCEPTANCE.md` table); broader
+release readiness still depends on the release checklist in `docs/ROADMAP.md`.

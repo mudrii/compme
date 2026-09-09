@@ -283,8 +283,10 @@ the code. Corrections the items above must carry; nothing here reorders them.
 
 - **Item 2d (G2) conflicts with MVP spec §15 F2** (`2026-06-03-engine-macos-mvp-design.md:433`:
   keep the fixed `AxSet → SyntheticKeys → Clipboard → None` order, revisit only
-  on live proof an app needs a *different* strategy). A bundle allowlist
-  narrows that order to iTerm2 on absence of proof. Ship it only with F2
+  on live proof an app needs a *different* strategy). That order is a
+  capability-probe preference; the only runtime fallback is the single
+  `SilentlyIgnored` → `SyntheticKeys` retry in `finish_axset_insert`, and a
+  bundle allowlist narrows that retry to iTerm2 on absence of proof. Ship it only with F2
   amended in the same commit, and update the integration spec `:13-14,110-112`
   and ARCHITECTURE `:825-826` that describe the unqualified fallback. The
   readback re-poll itself fills a gap no spec fixes.

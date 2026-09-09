@@ -1,6 +1,6 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
-**Date:** 2026-07-08 · **Status:** Phase 0 and Linux Phase 2.1–2.7 core shipped; Windows Phase 1 and Phases 3–6 remain pending (native/live acceptance target-system-gated)
+**Date:** 2026-07-08 · **Status (2026-09-09, HEAD `1da83f5`):** Phase 0 shipped; Linux Phase 2 core shipped and live-gated (2.1–2.5, 2.7, and the desktop-free half of 2.6 — residuals: XTEST fallback, `text_range_rect`, StatusNotifierItem tray, always-on shortcuts); Windows Phase 1 has nothing beyond the fail-closed scaffold; Phases 3–6 not started (native/live acceptance target-system-gated)
 **Prereqs:** clean `main` (builds, clippy clean, ≈2065 tests green, re-verified 2026-08-26).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
 status ledger; this doc is the execution guide.
@@ -68,6 +68,14 @@ The inventory counts below are frozen at `b367f0f`; re-verified 2026-07-21, `Pla
 Small, independently shippable, all gate-green on macOS. Do these before any
 adapter work so the contract is final when real impls land.
 
+(status 2026-09-09: Phase 0 is done, but ROADMAP "Remaining architecture seam
+work" still names two prerequisites before the first real Windows/Linux UI
+adapter that are **open**: the `run()` seams — settings-watcher run and
+host-event arm still inline; the smaller `drain_settings_edges`/`HostEventCtx`
+cut is audit-plan item 4, not started — and the operational logging seam A31
+(no decision recorded). The Linux C.2 wired-ghost trigger that gated Windows
+Phase 1 closed 2026-08-25.)
+
 0.1 **`InsertStrategy::NativeRangeSet`** (fixes G1)
    - Add variant to `platform::InsertStrategy`; opt into
      `supports_atomic_range_replace()` (one site, post-d4c978f).
@@ -101,6 +109,16 @@ adapter work so the contract is final when real impls land.
      test in platform_windows asserting DACL owner-only (runs in CI windows
      job).
    - Effort: M (1-2 days incl. CI verification).
+   - (status 2026-09-09: shipped as `platform_windows::win_host::harden_owner_only`
+     (`SetNamedSecurityInfoW`); `crates/app/src/run_loop.rs` ~1318–1330 applies
+     it fail-closed to the memory db and every sidecar
+     (`retain_memory_store_if_hardened`), and `crates/app/src/config.rs`
+     hardens the config dir and atomic-write temp files. **Not covered:** the
+     memory crate's `symlink_metadata`-based symlink/sidecar-swap rejection
+     (`crates/memory/src/lib.rs` `#[cfg(unix)]` sites ~142–218) has no Windows
+     reparse-point analogue; on Windows the DACL is applied but a symlinked
+     sidecar is not rejected. The `memory/src/lib.rs:22-24` module comment
+     overstates the gap ("no Windows ACL analogue") — the ACL half exists.)
 
 0.3 **Windows console-control handler** (fixes G3)
    - `SetConsoleCtrlHandler` in platform_windows behind the shell; wire
@@ -109,6 +127,9 @@ adapter work so the contract is final when real impls land.
      event `Global\compme-toggle` waited on a thread — defer to Phase 2 if not
      trivial.
    - Effort: S-M (1 day).
+   - (status 2026-09-09: `install_console_ctrl_handler` shipped and wired at
+     `run_loop.rs:199`; the named-event headless toggle is deferred to the real
+     adapter, see 1.6.)
 
 0.4 **Cosmetics** (fixes G4, doc drift)
    - About credits: cfg-gate the Apple-crate ACK entries.
@@ -120,6 +141,15 @@ Phase 0 exit: contract frozen for adapter work; ROADMAP 1.1 updated; all
 gates green on 3-OS CI.
 
 ## Phase 1 — Windows adapter (implementation actionable; live acceptance needs a Windows desktop)
+
+(status 2026-09-09: **nothing in 1.1–1.7 is implemented.** `platform_windows`
+is still the fail-closed scaffold: `environment()` reports
+`version: "unknown"` (pinned by test), `physical_memory_bytes()` returns 0,
+`pump_events` is a `thread::sleep`, every subscribe/IO method returns
+`UnsupportedField`. The only real Win32 code is Phase 0's `win_host`
+(`ShellExecuteW` open_url, `harden_owner_only`,
+`install_console_ctrl_handler`). Audit plan items 7 (slice 1.1) and 8 (UIA
+read-only slice) are the next cuts.)
 
 Order chosen so each step yields a testable increment. The `windows` dep is
 already active and pinned (`=0.62.2`, Phase 0.2/0.3, carrying
@@ -140,6 +170,9 @@ target-gated.
    - `IUIAutomation` singleton on a dedicated STA thread (UIA callbacks have
      apartment requirements — mirror platform_macos's worker-thread pattern:
      one owner thread, mpsc request/reply, generation-stamped FieldHandles).
+     (status 2026-09-09: the specs disagree — `2026-06-03-cross-platform-review.md`
+     `:58,126,219` says a dedicated **MTA** thread that owns no windows. Not
+     resolved here; decide and record before coding, audit plan item 8.)
    - `AddFocusChangedEventHandler` → `subscribe_focus`; element runtime-id +
      pid → `FieldHandle{app, pid, element_id, generation}`.
    - `capabilities()`: TextPattern/ValuePattern presence → readable/writable;
@@ -198,12 +231,18 @@ target-gated.
      equivalent; UIA needs no consent for non-elevated).
    - Tray: Shell_NotifyIcon + popup menu mapping TrayFlags/SettingsFlags;
      settings window can stay webconfig-driven (browser open) initially.
+     (status 2026-09-09: still the plan of record — the typed-command /
+     snapshot-bus replacement for `TrayFlags`/`SettingsFlags` is deferred
+     until a non-mac shell produces flags (audit plan item 4); today
+     `app::shell::stub::make_tray` is `Err`.)
    - Clipboard read (`read_clipboard_text`): `GetClipboardData(CF_UNICODETEXT)`.
    - Deep links: `compme://` via HKCU URL protocol registration; single
      instance already portable.
    - G3 toggle: named-event listener thread.
 
-1.7 **Windows CI upgrades**
+1.7 **Windows CI upgrades** (status 2026-09-09: not implemented — no workflow
+    step spawns notepad or runs a UIA smoke; the Windows job runs the
+    scaffold's unit tests only.)
    - Extend windows job: run platform_windows unit tests (now real), plus a
      headless UIA smoke against a spawned notepad (best-effort; skip on
      runner-image variance, keep as scheduled job if flaky).
@@ -219,18 +258,31 @@ Windows flips ✅; acceptance matrix doc extended with Windows column.
 Activate `atspi` (D-Bus) + `x11rb` deps. Wayland is Phase 3 — do not block
 X11 on it.
 
-2.1 **AT-SPI2 read path**: `atspi` crate over session bus; requires
+(status 2026-09-09: per-item marks below. The ignored live lane is **36
+tests** (33 AT-SPI/X11 + confirm, keyring, reveal), run with
+`--test-threads=1` under the Xvfb harness and in the Ubuntu CI job. Not
+built: StatusNotifierItem tray, always-on shortcut registration, XTEST
+synthetic-key fallback, `text_range_rect`; `pump_events` stays a sleep.
+Real-desktop calibration (GNOME-Xorg, KDE-Xorg, XFCE) is still open —
+`docs/MANUAL-VALIDATION-LINUX.md`.)
+
+2.1 **AT-SPI2 read path** — ✅ DONE 2026-07-27/28 (`atspi_live`, `atspi_events`,
+    pure `atspi_caps`/`atspi_ids`/`atspi_event_map`): `atspi` crate over session bus; requires
     `org.a11y.Status.IsEnabled` (prompt user if off — the Linux analog of
     TCC). Focus events via `object:state-changed:focused` /
     `window:activate`; `Text`/`EditableText` interfaces for read/insert;
     offsets are characters → report `UnicodeScalars` (exercises non-UTF-16
     conversion paths for the first time — expect engine-side latent bug
     flush; the context-crate contract already wants scalars).
-2.2 **Caret geometry**: `Text.GetCharacterExtents` at caret offset,
+2.2 **Caret geometry** — ✅ `caret_rect` DONE 2026-07-27; `text_range_rect` NOT
+    implemented (trait default `Ok(None)`, pinned at `platform_linux/src/lib.rs:1236`):
+    `Text.GetCharacterExtents` at caret offset,
     `coords_global_screen=true` (CoordType::Screen).
 2.3 **Accept tap (X11)** — ✅ **IMPLEMENTED 2026-07-28** (`platform_linux::x11_keys`
     pure + `x11_tap` live; 17 unit tests on every host, 6 live tests in the
-    harness). See ROADMAP §1.1 "Phase 2.3 accept tap" for what shipped, including
+    harness; since 2026-08 one transactional exact-modifier `GrabPlan` owns
+    initial grab, keymap refresh, and live rearm, and persisted chord rebinds
+    feed it). See ROADMAP §1.1 "Phase 2.3 accept tap" for what shipped, including
     the two places this plan turned out to be wrong: `BadAccess` degrades to
     `KeyInterceptMode::None` rather than `HotkeyOnly` (that variant promises an
     always-on hotkey this adapter does not register yet), and the capability is
@@ -279,17 +331,27 @@ X11 on it.
       the same spike on GNOME-Xorg, KDE-Xorg, and XFCE before declaring 2.3
       done on real desktops: a WM there may already hold Tab.
     - Wayland is unaffected — no global grabs exist there; that remains Phase 3.
-2.4 **Insert**: `EditableText.InsertText/DeleteText` (report
+2.4 **Insert** — ◑ `EditableText` path ✅ DONE 2026-07-27 (`insert`,
+    `insert_replacing_range` as `NativeRangeSet`); XTEST fallback NOT built
+    (non-atomic strategies fail closed with `unsupported`), and
+    `insert_replacing`'s left-of-caret form is deliberately fail-closed:
+    `EditableText.InsertText/DeleteText` (report
     `NativeRangeSet`); XTEST synthetic fallback where EditableText absent.
-2.5 **Overlay**: override-redirect X11 window (x11rb), ARGB visual for
+2.5 **Overlay** — ✅ DONE 2026-07-28 (`x11_overlay` + pure `overlay_geometry`,
+    `overlay_font`): override-redirect X11 window (x11rb), ARGB visual for
     alpha; font rendering via existing text stack choice (pango or
     tiny-skia+fontdue — pick in spike; smallest dep wins).
-2.6 **ShellHost**: libsecret (Secret Service D-Bus) key store — fail-closed
+2.6 **ShellHost** — ◑ shipped 2026-07-27/28: Secret Service keyring
+    (`keyring.rs`, zbus, no libsecret link), `/proc/meminfo`, zenity confirm
+    (zenity-only — no kdialog leg), XDG autostart entry, `xdg-open` reveal;
+    NOT built: StatusNotifierItem tray (`stub::make_tray` is `Err`);
+    `open_permission_settings` fail-closed by decision: libsecret (Secret Service D-Bus) key store — fail-closed
     when absent (headless servers); `/proc/meminfo`; zenity/kdialog confirm
     fallback chain with `eprintln` last resort; XDG autostart .desktop;
     tray via StatusNotifierItem D-Bus (ksni crate or hand-rolled) —
     degrade to none when no SNI host.
-2.7 **CI**: ubuntu job gains `dbus` + `at-spi2-core` + Xvfb service; run
+2.7 **CI** — ✅ DONE 2026-07-27/28 (`tools/acceptance/run-linux-atspi-session.sh`,
+    GTK fixture, ignored lane in the Ubuntu job): ubuntu job gains `dbus` + `at-spi2-core` + Xvfb service; run
     platform_linux tests under `xvfb-run` with a11y bus launched; keep
     deterministic (no real desktop apps — test against a GTK fixture app
     spawned in Xvfb, gtk3 example checked into tools/acceptance).
@@ -298,6 +360,13 @@ Effort: 4-8 weeks after the 2.3 spike resolves. Exit: X11 desktops
 (GNOME-Xorg, KDE-Xorg, XFCE) functional.
 
 ## Phase 3 — Wayland strategy
+
+(status 2026-09-09: not started; the decision spike has not run. Known
+defect: `atspi_caps::capabilities_for_field` hard-codes
+`OverlayPlacement::OverrideRedirect`, so a Wayland session (`WAYLAND_DISPLAY`
+set, no `DISPLAY`) is misreported as X11-capable and resolves to
+`UxMode::Inline` with late `show_ghost` failures — Qfd §20 G16 residual,
+audit plan item 5, open.)
 
 No global key grab, restricted synthetic input. Options, in preference
 order (contract variants already exist):

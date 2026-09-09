@@ -12,6 +12,20 @@
 > CUDA, real adapters, Wayland, packaging, and acceptance remain planned. The
 > current execution source is the 2026-07-08 cross-platform implementation plan;
 > the current status ledger is `docs/ROADMAP.md`.
+>
+> **(status 2026-09-09:** the "both scaffolds" sentence above is stale for Linux.
+> `crates/platform_linux` is a real X11-session adapter — AT-SPI2 read/insert/
+> focus/caret (`atspi_live`, `atspi_events`), a passive `XGrabKey` accept tap
+> (`x11_tap`), an override-redirect ghost/correction overlay (`x11_overlay`),
+> keyring/confirm/reveal/autostart — proven by a 36-test live lane
+> (`--test-threads=1`, ROADMAP Phase 2). Still not built on Linux: the tray,
+> always-on shortcut registration, XTEST/`wtype` synthetic insert, and any
+> Wayland surface. `crates/platform_windows` remains the fail-closed scaffold
+> (`WindowsAdapter::unsupported` → `UnsupportedField`, `environment().version ==
+> "unknown"`, `physical_memory_bytes() == 0`). Inference off-mac is still
+> CPU-only: `crates/model_client/Cargo.toml` enables `metal` for macOS only and
+> no `vulkan`/`cuda`/`dynamic-backends` feature. Execution now follows
+> `docs/superpowers/plans/2026-09-08-full-audit-next-steps.md`.**)
 
 **Current-design correction (2026-07-05):** The macOS accept path now uses the
 `CarbonHotkey` capability (`RegisterEventHotKey`) for transient accept
@@ -51,11 +65,39 @@ Three load-bearing conclusions:
 
 **The killer cell:** GNOME/Wayland is ✗ on overlay **and** key-interception **and** front-app — three pillars of the macOS interaction model gone at once.
 
+**(status 2026-09-09 — table cells vs. `capabilities()` as shipped:**
+- *macOS* column: implemented as written. `platform_macos` reports
+  `accept_intercept: CarbonHotkey`, `overlay_at_caret: NativePanel` (only when
+  the selected range is settable and a caret rect exists, else `None`),
+  `coords_global_screen: true`.
+- *Windows* column: entirely planned. `WindowsAdapter::capabilities` returns
+  `UnsupportedField`; no cell is implemented.
+- *Linux X11* column: implemented except as noted. Read/caret → AT-SPI `Text`
+  (`atspi_caps::capabilities_from`, `coords_global_screen: true`). Overlay →
+  `OverrideRedirect` (real, `x11_overlay`). Intercept → `XGrabKey`, reported by
+  `LinuxAdapter::capabilities` only after `x11_tap::probe_accept_intercept`
+  succeeds; otherwise `KeyInterceptMode::None`, deliberately *not* `HotkeyOnly`
+  (no always-on shortcuts exist to fall back to). Note the shipped design differs
+  from the ‡ footnote: the tap grabs the configured accept chord (default Tab)
+  **passively, only while a suggestion is armed**, rather than a permanent
+  dedicated hotkey. Insert → `NativeRangeSet` via EditableText
+  `SetTextContents` guarded by an expected-text snapshot; XTEST is not built, so
+  a field without EditableText reports `InsertStrategy::None`. Front app → the
+  AT-SPI focus registry (`LinuxFieldRegistry::current_app`), not
+  `_NET_ACTIVE_WINDOW`; that also works under Wayland.
+- *Linux Wayland* columns (KDE/wlroots and GNOME): nothing implemented — no
+  layer-shell, no IME, no portal path (ROADMAP Phase 3; the decision spike is
+  ROADMAP execution-order item 8). Worse, the pure mapping hard-codes
+  `overlay_at_caret: OverrideRedirect` regardless of session, so a Wayland
+  session is currently *misreported* as inline-capable and only fails at
+  `show_ghost`; correcting this in `LinuxAdapter::capabilities` is open plan
+  item 5 (G16) of the 2026-09-08 plan.**)
+
 ---
 
 ## 2. Windows adapter — findings (UIA + Win32)
 
-- **UIA via `windows` crate (~0.62)**, COM. **Must run all UIA calls on a dedicated MTA thread that owns no windows** — calling on the UI thread can deadlock. Adapter owns a UIA worker thread; trait methods do a channel round-trip (tens of ms, cross-process COM). Consider the `uiautomation` ergonomic wrapper crate over hand-rolled vtables.
+- **UIA via `windows` crate (~0.62)**, COM. **Must run all UIA calls on a dedicated MTA thread that owns no windows** — calling on the UI thread can deadlock. Adapter owns a UIA worker thread; trait methods do a channel round-trip (tens of ms, cross-process COM). Consider the `uiautomation` ergonomic wrapper crate over hand-rolled vtables. **(status 2026-09-09: the two specs disagree on the apartment — this review says MTA on a window-less thread; `2026-07-08-cross-platform-implementation-plan.md` Phase 1.2 says a dedicated STA thread. Nothing is implemented yet (`platform_windows` is the scaffold; `windows` is pinned `=0.62.2`), so neither is validated. The decision is pending and must be recorded before coding plan item 8 of the 2026-09-08 plan; this note does not resolve it.)**
 - **Caret:** `TextPattern2.GetCaretRange` (check `isActive` BOOL!) → `GetBoundingRectangles`; degenerate selection range returns empty array → `ExpandToEnclosingUnit(Character)`; legacy `GetCaretPos` needs `AttachThreadInput`. **Electron/Chromium + Windows Terminal/console expose no usable caret.**
 - **Focus/caret events** (`AddFocusChangedEventHandler`, `Text_TextSelectionChanged`) fire cross-process but are **slow and can freeze the whole desktop** with broad `TreeScope` (documented NVDA/PowerToys multi-second hangs). Narrow scope to focused element; subscribe caret separately from focus.
 - **Secure field:** `UIA_IsPasswordPropertyId`. Also UAC **secure desktop** + **elevated windows** invisible to a normal-integrity client (UIPI) → ship `uiAccess="true"` (signed, Program Files) or mark elevated unsupported.
@@ -81,6 +123,8 @@ Sources: learn.microsoft.com UIA threading, GetCaretRange, ValuePattern, LowLeve
 - **Engine OS-agnostic confirmed:** identical ggml/llama API across backends; one `LlamaModel`+context behind a mutex/actor, predict on a bg thread — same pattern on all 3 OSes. **Only the cargo feature + shipped runtime differ.**
 
 **Ship rule:** macOS→Metal · Windows+Linux default→Vulkan+CPU fallback (build with `dynamic-backends`) · NVIDIA→optional CUDA download.
+
+**(status 2026-09-09:** the ship rule is still the plan, not the build. `crates/model_client/Cargo.toml` pins `llama-cpp-2 =0.1.146` twice — `features = ["metal"]` on macOS, no backend feature elsewhere — so non-mac builds are CPU-only; `vulkan` needs the Vulkan SDK the CI runners lack and `dynamic-backends` is deferred with it (ROADMAP Phase 4; ROADMAP execution-order item 9).**)
 
 Sources: ggml-org/llama.cpp build.md + releases; docs.rs llama-cpp-2 / llama-cpp-sys-2 build.rs; knightli.com benchmarks.
 
@@ -116,14 +160,16 @@ struct Capabilities {
 }
 ```
 
+**(status 2026-09-09 — the sketch above vs. `crates/platform/src/lib.rs` as shipped:** the shape was adopted, with these differences. `subscribe_accept(cb) -> Result<AcceptSubscription>` was added (the tap swallows keys only while `set_suggestion_visible(true)`); `subscribe_*`, `capabilities`, and `caret_rect` all return `Result<_, PlatformError>` (`caret_rect` → `Result<Option<ScreenRect>>`); `insert_replacing` is required (no default), and `insert_replacing_range`, `text_range_rect`, `popup_anchor`, `focused_page_url` have fail-closed/`None` defaults. `Capabilities` gained `assistant_field` and `security_state: SecurityState`. `InsertStrategy` is `AxSet | NativeRangeSet | SyntheticKeys | Clipboard | ImeCommit | None` (not `EditableTextApi`/`ValueSet`; only the first two `supports_atomic_range_replace`). `Toolkit` is `AppKit | UIKit | Chromium | WebKit | Electron | Terminal | Unknown(String)` — no Win32/WPF/Qt/Gtk/Java/Vte variants. `KeyInterceptMode` and `OverlayPlacement` match the sketch exactly. `Environment` is only `{ os: OperatingSystem, version: String }` — **no `display_server`/`compositor` field exists**; see the `environment()` bullet below. Methods are synchronous and must return `PlatformError::Timeout` rather than block; `front_app` "must not block". `ux_mode()` derives `Blocked | Unsupported | Hotkey | Inline | Popup` from these fields.**)
+
 **Why each change (evidence):**
 
 - **`subscribe_caret` split from `subscribe_focus`** — Windows `Text_TextSelectionChanged` is the desktop-freezing one; must be scoped/throttled independently. Linux caret events are D-Bus round-trips needing coalescing.
 - **`insert_strategy` enum** — there is no uniform insert primitive. Windows: SendInput vs clipboard vs Value. Linux: EditableText (often absent) vs XTEST (X11 only) vs wtype/ydotool. Caller must know if insert is lossless or best-effort, and key-up of the accept key must be coordinated with SendInput (so key-interception is **not** cleanly separable from insert).
 - **`accept_intercept` mode** — "press Tab to accept" is **not portable**. Possible: macOS/Windows/X11(dedicated hotkey). Impossible for a normal client: **Wayland**. Where impossible → `HotkeyOnly` or `ImeOwnsKey`.
-- **`overlay_at_caret` ≠ `readable_caret`** — GNOME/Wayland can give the caret rect via AT-SPI but **cannot place a window there** (no layer-shell). Overlay placement is a separate capability.
-- **`environment()` with display_server + compositor** — there is no single `LinuxAdapter`; it must detect `XDG_SESSION_TYPE` and the Wayland compositor (Mutter/KWin/wlroots/COSMIC) and advertise very different capabilities.
-- **Threading is implicit but real** — Windows mandates a UIA MTA worker thread; Linux AT-SPI is async D-Bus (zbus/tokio); macOS AX off-main. Each adapter owns its own runtime; trait methods may block (document it) or become `async`.
+- **`overlay_at_caret` ≠ `readable_caret`** — GNOME/Wayland can give the caret rect via AT-SPI but **cannot place a window there** (no layer-shell). Overlay placement is a separate capability. **(status 2026-09-09: the contract honors this — `ux_mode` needs both `readable_caret` and `overlay_at_caret != None` for `Inline`. The Linux adapter does not yet: `atspi_caps::capabilities_from` hard-codes `OverlayPlacement::OverrideRedirect` for every field, so under Wayland `readable_caret` is true *and* `overlay_at_caret` claims placement, and the session is misreported as inline until `show_ghost` fails closed. Open plan item 5 (G16) of the 2026-09-08 plan is to report `None` from `LinuxAdapter::capabilities` when `WAYLAND_DISPLAY` is set and `DISPLAY` is not.)**
+- **`environment()` with display_server + compositor** — there is no single `LinuxAdapter`; it must detect `XDG_SESSION_TYPE` and the Wayland compositor (Mutter/KWin/wlroots/COSMIC) and advertise very different capabilities. **(status 2026-09-09: not adopted. `Environment` carries only `os` + `version` (Linux: distro + kernel from `/etc/os-release` and `/proc/sys/kernel/osrelease`); the one `LinuxAdapter` is X11-only and detects the session indirectly — the accept-tap probe and `show_ghost` fail closed without `DISPLAY`. Whether Wayland becomes a field on `Environment` or a second adapter family is part of the Phase 3 decision spike.)**
+- **Threading is implicit but real** — Windows mandates a UIA MTA worker thread; Linux AT-SPI is async D-Bus (zbus/tokio); macOS AX off-main. Each adapter owns its own runtime; trait methods may block (document it) or become `async`. **(status 2026-09-09: resolved as *synchronous with a bounded wait* — the trait doc says methods "must not block unboundedly — return `PlatformError::Timeout`". macOS: one dedicated AX worker thread (`platform_macos::ax_worker`, mpsc request/reply, run loop pumped between jobs) plus a separate callback-dispatcher thread. Linux: AT-SPI over D-Bus in `atspi_live`/`atspi_events`, and `x11_tap` runs three threads (X events, callback dispatch, watchdog); per-call D-Bus timeouts are still open under plan item 5 (G8). Windows: unbuilt, and the MTA-vs-STA apartment choice is an unresolved disagreement with the 2026-07-08 plan — see §2.)**
 
 This expanded trait should be adopted in the **macOS spec now** (macOS implements
 the rich enum values: `CarbonHotkey`, `NativePanel`,
@@ -183,6 +229,8 @@ Tier = best achievable interaction. "Accept" = how the user commits a suggestion
 
 Per-platform inference (orthogonal, all tiers): macOS Metal; Windows/Linux Vulkan+CPU; CUDA optional.
 
+**(status 2026-09-09:** rows achieved so far — macOS **Full inline** (released); Linux X11 **Full inline** for AT-SPI fields with EditableText (live-verified on the Xvfb lane; GNOME-Xorg/KDE-Xorg/XFCE calibration and a contending window manager are still live residuals per ROADMAP), with the accept mechanism being a passive, armed-only grab of the configured chord rather than a permanent dedicated hotkey. All Windows rows and both Wayland rows are unimplemented; the password/secure row is enforced on macOS and Linux (`ux_mode` → `Blocked`). Inference off-mac is CPU-only today (§3 note).**)
+
 ---
 
 ## 7b. Cotypist feature × platform parity matrix **[added 2026-06-09 — D16]**
@@ -216,8 +264,8 @@ Every cloned Cotypist feature (rows) against each target platform (cols). Legend
 ## 8. Recommendations & sub-project shape
 
 - **Adopt the expanded trait now** (§4) in the macOS spec — macOS fills the rich enums; B/C don't reshape the contract.
-- **Sub-project B (Windows):** UIA MTA-worker adapter + WH_KEYBOARD_LL + layered overlay (PMv2). Default Vulkan+CPU build, optional CUDA. Strong tier = native toolkits; accept Electron-as-popup/hotkey.
-- **Sub-project C1 (Linux/X11 + KDE/wlroots Wayland):** `atspi` adapter + XTEST/wtype + override-redirect/layer-shell overlay + dedicated-hotkey accept. AppImage distribution.
+- **Sub-project B (Windows):** UIA MTA-worker adapter + WH_KEYBOARD_LL + layered overlay (PMv2). Default Vulkan+CPU build, optional CUDA. Strong tier = native toolkits; accept Electron-as-popup/hotkey. **(status 2026-09-09: not started beyond the fail-closed scaffold; "MTA-worker" here conflicts with the STA thread in the 2026-07-08 plan Phase 1.2 — decision pending, see §2.)**
+- **Sub-project C1 (Linux/X11 + KDE/wlroots Wayland):** `atspi` adapter + XTEST/wtype + override-redirect/layer-shell overlay + dedicated-hotkey accept. AppImage distribution. **(status 2026-09-09: the X11 half shipped as ROADMAP Phase 2 — `atspi` read/insert, override-redirect overlay, passive `XGrabKey` accept. Not shipped: XTEST/wtype, layer-shell, tray, always-on shortcuts, packaging.)**
 - **Sub-project C2 (Linux/GNOME-Wayland, and cross-platform IME path):** **IBus input-method engine backend** with IME-native suggestion UI. Distinct architecture; biggest single piece of Linux work.
 - **Shell:** macOS Sub-project A uses the native AppKit shell. For future Windows/Linux, Tauri remains only a candidate for tray/settings UI; **native overlays** stay mandatory everywhere. Document GNOME tray extension + XWayland fallback if Tauri is reintroduced.
 - **Engine/inference:** no change — OS-agnostic crate, per-OS build feature, `dynamic-backends` for one-binary GPU/CPU adaptation.
