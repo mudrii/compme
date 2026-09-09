@@ -1019,7 +1019,7 @@ not new product scope:
    groups), `loop_state.rs` (eight heartbeat state structs, teardown order
    preserved), `ax_worker.rs` in `platform_macos`, the inline test modules
    split into `run_loop_tests.rs`/`lib_tests.rs`, and eight heartbeat phases
-   lifted out of `run()` (2,039 → 1,546 lines; 1,559 at `b8d3626`).
+   lifted out of `run()` (2,039 → 1,546 lines; 1,557 at `b8d3626` and `ecf5f7c`).
 
 ### ☐ Remaining architecture seam work (design task, not debt)
 
@@ -1031,7 +1031,7 @@ hide state — the same "relocated state, not a deeper interface" trap the
 27-field startup result showed. Closing them properly means a real seam:
 
 - typed settings/tray **commands** and immutable **snapshots** replacing the
-  42-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses (the
+  39-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses (the
   `shell_flags` crate split moved this vocabulary out of the portable contract
   crate; the redesign itself is still open);
 - a host-event context type so the caret/focus arm can be tested without the

@@ -1,10 +1,14 @@
 # Next development steps after the 2026-09-08 full audit
 
-**Date:** 2026-09-08 · **Status:** items 0, 1, 3, and the lock/`front_app` half
-of 5 delivered the same day (`f0bec03`, `b8d3626`, `5bf36fc`, `df34a62`);
-items 2, 4, 6–10 and the rest of 5 (D-Bus timeouts, overlay check collapse)
-remain open ·
-**Tree:** `2d18c34` (v0.1.6 + same-day post-release commits; no commits since 2026-08-26)
+**Date:** 2026-09-08 · **Reviewed:** 2026-09-09 against `ecf5f7c` ·
+**Status:** items 0, 1 (code half), 3, item 2e (G5), the lock/`front_app`
+half of 5, and item 9's `model_fetch` redirect tests delivered 2026-09-08
+(`f0bec03`, `b8d3626`, `5bf36fc`, `df34a62`; CI green at `857f1a4`).
+Still open: item 1's live `ln1` record (owner's niri host), items 2a–2d, 4,
+6, 7, 8, the rest of 5 (D-Bus timeouts, overlay `.check()` collapse, Wayland
+overlay capability report), the rest of 9, and 10 ·
+**Tree audited:** `2d18c34` (v0.1.6 + same-day post-release commits); seven
+commits since, all from this plan (`b865790`…`ecf5f7c`)
 **Evidence base:** `Qfd.md` §20 — five parallel finder passes, every ledger row
 re-read by the coordinating reviewer; local portable gate green (see Evidence).
 **Supersedes:** the ordering of items 7–12 in `docs/ROADMAP.md` "Current
@@ -59,7 +63,10 @@ branches).
   "first live proof is still the next tag"; `FIXED.md:33` A53. Correct Qfd
   §14 `:460,552` (doctests now run in CI). Record `ce39c50`, `ec3247e`,
   `fcbc8f6` in the ROADMAP delivery log.
-- ROADMAP counts: `run()` 1,559 lines, `SettingsFlags` 42 fields.
+- ROADMAP counts: `run()` 1,557 lines (measured `pub fn run` to its closing
+  brace, unchanged since `b8d3626`), `SettingsFlags` 39 fields, `TrayFlags`
+  11. The original "1,559 / 42" figures were off; corrected 2026-09-09 in
+  `docs/ROADMAP.md` and here.
 - Release-notes policy: either delete `docs/RELEASE-NOTES-v0.1.6.md` or amend
   `docs/RELEASING.md:349-354` and `README.md:183-185`. Recommended: amend the
   policy to "hand-written notes optional for patch releases"; deleting evidence
@@ -80,6 +87,9 @@ branches).
    `LinuxAdapter::new().subscribe_accept(..)` maps through
    `subscription_error_action(true, ..)` to `Unavailable`, not `Fatal`. Then
    run `ln1-clean-degradation-without-x` on the niri host and record it.
+   *Status 2026-09-09:* code and unit test shipped in `b8d3626`; the `ln1`
+   row in `docs/MANUAL-VALIDATION-LINUX.md` is still unchecked — it needs
+   the owner's Wayland session and stays open under this item.
 2. **G9** `crates/app/src/shell/stub.rs:133-152,194-196`: the three
    non-Linux stubs return `Err(KeymapError::..)` / `Err(UnsupportedField)` so
    the loop takes its existing "using defaults" and "settings window
@@ -117,8 +127,9 @@ Order matters: the seam (2b) makes 2c and 2d testable.
   bundle allowlist seeded with iTerm2 (the only live evidence). Record the
   Chromium-family behaviour in `docs/ACCEPTANCE.md` when the caret-marker
   gates run.
-- **2e G5** `catch_unwind` around `InstallResource` and the `RemoveResource`
-  drop in `ax_worker.rs:794-807`, mapped to `CannotComplete`.
+- **2e G5** ✅ delivered early in `b8d3626`: `catch_unwind` around
+  `InstallResource` and the `RemoveResource` drop in `ax_worker.rs`
+  (`run_ax_worker_loop`), so 2a–2d are what remain here.
 - Ship behind a green mac CI lane; local Linux gates prove nothing here.
 
 ## Item 3 — Heartbeat-phase tests (M)
@@ -145,7 +156,8 @@ Replaces the ROADMAP "typed commands + immutable snapshots" design for now.
   Test Focus→Caret→Shortcut routing with the item-3 fakes.
 - Defer the snapshot bus until a non-mac shell actually produces flags (today
   `stub::make_tray` is `Err`, so there is no second producer).
-- Re-stamp ROADMAP `:995-1015` and the `run()` line count in the same commit.
+- Re-stamp the ROADMAP "Remaining architecture seam work" section and the
+  `run()` line count in the same commit.
 
 ## Item 5 — Linux blocking and lock hygiene (M)
 
@@ -155,10 +167,11 @@ Replaces the ROADMAP "typed commands + immutable snapshots" design for now.
   timeout so the adapter returns `PlatformError::Timeout` as the contract
   asks; collapse the overlay's per-request `.check()`s to one sync per
   `present()`.
-- G16: drop `NoDisplay=true` from the autostart entry until a tray exists;
-  `Zeroizing<Vec<u8>>` for the keyring write copy; fix the kdialog comments;
-  make `atspi_caps` report `Popup`/unsupported overlay when
-  `WAYLAND_DISPLAY` is set and `DISPLAY` is not.
+- G16: ✅ `b8d3626` dropped `NoDisplay=true` from the autostart entry,
+  zeroized the keyring write copy, and fixed the kdialog comments. Still
+  open: make `atspi_caps` report `Popup`/unsupported overlay when
+  `WAYLAND_DISPLAY` is set and `DISPLAY` is not (today
+  `capabilities_for_field` always reports `OverrideRedirect`).
 - Prove with the 36-test Xvfb lane (`--test-threads=1`) and `ln1`.
 
 ## Item 6 — AX worker throughput (M, mac lane)
@@ -206,9 +219,10 @@ overlay follow only after this reads real fields.
   tests and `cargo audit` to the Windows lane.
 - Vendor drift checker in `tools/release/` (`diff -r` against the registry
   tarball, allowlisting the three patched files); open the upstream
-  `llama-cpp-2` PR so `[patch.crates-io]` can be retired; loopback redirect
-  tests in `model_fetch`; `PRAGMA user_version` in `memory` before its first
-  schema change.
+  `llama-cpp-2` PR so `[patch.crates-io]` can be retired; `PRAGMA
+  user_version` in `memory` before its first schema change. ✅ The loopback
+  redirect tests in `model_fetch` (https→http refusal, same-host 302 keeping
+  `Range`, redirect cap) landed with item 3 in `5bf36fc`.
 
 ## Item 10 — Owner decisions (record either way)
 
