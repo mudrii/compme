@@ -2402,7 +2402,7 @@ impl FakeAxRangeTarget {
     }
 
     /// Script the sequence of `read_value` results, front-first.
-    fn with_value_reads(mut self, reads: Vec<String>) -> Self {
+    fn with_value_reads(self, reads: Vec<String>) -> Self {
         *self.value_reads.lock().unwrap() = reads.into();
         self
     }
