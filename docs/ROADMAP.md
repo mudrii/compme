@@ -85,8 +85,9 @@
 > §15 F2 / integration-spec / ARCHITECTURE amendments in the same commit;
 > CI green on every lane, macOS included — item 2 is closed except for the
 > Chromium-family live recording attached to the caret-marker gates). The
-> next actionable step is item 4 (the `run()` seams,
-> now that the heartbeat phases have a test driver).
+> next actionable step is item 4b — the host-event context seam — now that
+> 4a (the settings-command seam, `bbf3724`) and the heartbeat-phase test
+> driver are in place.
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and

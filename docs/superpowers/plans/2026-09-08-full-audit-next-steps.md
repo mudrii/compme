@@ -6,13 +6,14 @@ half of 5, and item 9's `model_fetch` redirect tests delivered 2026-09-08
 (`f0bec03`, `b8d3626`, `5bf36fc`, `df34a62`; CI green at `857f1a4`);
 items 2a–2c delivered 2026-09-10 (`e3c8d37`, `74e428e`, `b4ae361`, plus
 `7462f33` fixing a mac-lane clippy `unused_mut` in the new fake builder),
-and item 2d (G2) the same day (`b26caca` + `c93b508`); CI green on every
-lane (runs 34432782232 and 34439157981, macOS included, platform_macos
-357 tests) — item 2 is closed except for the Chromium-family live
-recording attached to the caret-marker gates.
-Still open: item 1's live `ln1` record (owner's niri host), 4,
-6, 7, 8, the rest of 5 (D-Bus timeouts, overlay `.check()` collapse, Wayland
-overlay capability report), the rest of 9, and 10 ·
+and item 2d (G2) the same day (`b26caca` + `c93b508`); item 4a
+(settings-command seam) delivered 2026-09-10 (`bbf3724`). CI green on every
+lane (runs 34432782232, 34439157981, and 34455569795, macOS included;
+platform_macos 357 tests, app 603) — item 2 is closed except for the
+Chromium-family live recording attached to the caret-marker gates.
+Still open: item 1's live `ln1` record (owner's niri host), 4b (the
+host-event half), 6, 7, 8, the rest of 5 (D-Bus timeouts, overlay `.check()`
+collapse, Wayland overlay capability report), the rest of 9, and 10 ·
 **Tree audited:** `2d18c34` (v0.1.6 + same-day post-release commits); seven
 commits since, all from this plan (`b865790`…`ecf5f7c`)
 **Evidence base:** `Qfd.md` §20 — five parallel finder passes, every ledger row
@@ -166,12 +167,17 @@ reorder them.
 
 Replaces the ROADMAP "typed commands + immutable snapshots" design for now.
 
-- **4a** `drain_settings_edges(&SettingsFlags, &mut Config, &mut
-  SettingsState) -> Vec<SettingsCommand>` (pure edge detection over the
-  existing `settings_runtime::apply_*_settings_edge` helpers) plus
-  `apply_settings_commands(..)` carrying the engine/shell effects. Lifts
-  `run_loop.rs:5674-5860` out of `run()` with zero changes to the 89
-  `SettingsFlags` references in `platform_macos`.
+- **4a** ✅ delivered `bbf3724` (2026-09-10):
+  `drain_settings_edges(&SettingsFlags, &mut Config, &mut SettingsState,
+  &Prefs, focused_app) -> Vec<SettingsCommand>` (pure edge detection) plus
+  `apply_settings_commands(commands, SettingsApplyCtx)` carrying the
+  engine/shell/persist effects, including the two OS-backed edges
+  (launch-at-login, screen context) with their revert paths — the drain
+  emits them without consuming, apply resolves them in the same heartbeat.
+  run() 1,557 → 1,432 lines. Eight tests (drain strict red→green on Linux,
+  apply test-after); the pre-4a watcher helpers stay as `#[cfg(test)]`
+  fixtures. The "89 SettingsFlags references" figure was 82 per the spec
+  analysis; the macOS-side flag references are untouched.
 - **4b** `HostEventCtx<'a>` borrowing the existing `loop_state.rs` structs;
   split the `Shortcut` arm (`run_loop.rs:5090-5291`) from `Focus`/`Caret`.
   Test Focus→Caret→Shortcut routing with the item-3 fakes.
