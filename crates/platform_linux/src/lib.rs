@@ -1110,6 +1110,7 @@ impl platform::OverlayPresenter for LinuxOverlayPresenter {
 /// 3), so its capability must report `None` rather than arm a placement the
 /// first show would fail on. XWayland (`DISPLAY` also set) still maps the
 /// window, and a headless host is not Wayland.
+#[cfg(target_os = "linux")]
 fn wayland_only_session(
     wayland: Option<&std::ffi::OsStr>,
     display: Option<&std::ffi::OsStr>,
@@ -1121,6 +1122,7 @@ fn wayland_only_session(
 /// on a Wayland-only session the caret overlay is unplaceable and reports
 /// `None` so the engine degrades to no inline ghost instead of a failed
 /// show; every other session keeps the pure mapping's `OverrideRedirect`.
+#[cfg(target_os = "linux")]
 fn apply_overlay_reality(capabilities: &mut Capabilities, wayland_only: bool) {
     if wayland_only {
         capabilities.overlay_at_caret = platform::OverlayPlacement::None;
@@ -1863,6 +1865,7 @@ mod tests {
         o.hide().expect("hide after a failed show is still Ok");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn wayland_only_session_detection_needs_both_env_facts() {
         // G16: the overlay is an override-redirect X11 window; only a
@@ -1890,6 +1893,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn overlay_reality_patch_downgrades_placement_only_on_wayland_only() {
         // The pure AT-SPI mapping reports OverrideRedirect unconditionally
