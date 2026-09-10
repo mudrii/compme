@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-10 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2134 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-10 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2136 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -528,7 +528,9 @@ design decision avoided (a C library in the link line makes the binary refuse to
 Live-session residuals no headless run can close: caret/ghost placement
 calibration on GNOME-Xorg, KDE-Xorg, and XFCE; `BadAccess` degradation against a
 window manager that already holds the accept key (Xvfb has none to contend with);
-and any Wayland session.
+and any Wayland session (whose capabilities honestly report no caret overlay
+since the G16 fix: `WAYLAND_DISPLAY` set with `DISPLAY` unset downgrades
+`overlay_at_caret` to `None`).
 
 **Phase 2.5 overlay ✅ DONE (2026-07-28) — live-verified:**
 The ghost and correction overlay is a real **override-redirect X11 window**, so

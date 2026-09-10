@@ -52,7 +52,10 @@ const ROLE_PASSWORD: &str = "password text";
 ///   under Wayland this adapter's screen geometry is wrong anyway, and the overlay
 ///   there is `LayerShell` in Phase 3. A session with no X server is not silently
 ///   mis-served: `show_ghost` fails closed with the `DISPLAY` it tried, and the
-///   contract requires the host to reconcile a failed show.
+///   contract requires the host to reconcile a failed show. (Since the G16
+///   fix, `LinuxAdapter::capabilities` goes one step further on a
+///   Wayland-only session — `WAYLAND_DISPLAY` set, `DISPLAY` unset — and
+///   patches this to `None` before the host ever arms the placement.)
 /// - `accept_intercept` stays `None` **here** even though the X11 tap (Phase 2.3)
 ///   exists, because whether it is installable is a *session* fact — is there an X
 ///   server, and is the accept key free of other clients' grabs? — that these

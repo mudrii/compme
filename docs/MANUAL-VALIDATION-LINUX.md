@@ -118,4 +118,8 @@ become fix loops; do not mark a gate from a headless run.
 | _(fill per run)_ | | | |
 
 Wayland-native overlay/accept remain **Phase 3 by design** — nothing in this
-checklist claims them. When that phase lands, this document grows a Lane W.
+checklist claims them. Since the G16 fix, a Wayland-only session
+(`WAYLAND_DISPLAY` set, `DISPLAY` unset) reports `overlay_at_caret: None` in
+`capabilities`, so the engine runs with no inline ghost instead of arming an
+X11 placement that cannot map. When Phase 3 lands, this document grows a
+Lane W.

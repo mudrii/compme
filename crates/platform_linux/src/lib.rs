@@ -410,6 +410,16 @@ impl PlatformAdapter for LinuxAdapter {
         // cannot know it and reports the fail-closed `None`. It is filled in here,
         // where the probe result lives.
         capabilities.accept_intercept = self.accept_intercept();
+        // G16: so is overlay placeability — the pure mapping's
+        // `OverrideRedirect` is an X11 statement, and a Wayland-only session
+        // cannot map the window at all.
+        apply_overlay_reality(
+            &mut capabilities,
+            wayland_only_session(
+                std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+                std::env::var_os("DISPLAY").as_deref(),
+            ),
+        );
         Ok(capabilities)
     }
 
@@ -1092,6 +1102,28 @@ impl platform::OverlayPresenter for LinuxOverlayPresenter {
             return overlay.hide();
         }
         Ok(())
+    }
+}
+
+/// Whether this is a Wayland session with no X server (G16): the
+/// override-redirect overlay has no Wayland placement (LayerShell is Phase
+/// 3), so its capability must report `None` rather than arm a placement the
+/// first show would fail on. XWayland (`DISPLAY` also set) still maps the
+/// window, and a headless host is not Wayland.
+fn wayland_only_session(
+    wayland: Option<&std::ffi::OsStr>,
+    display: Option<&std::ffi::OsStr>,
+) -> bool {
+    wayland.is_some() && display.is_none()
+}
+
+/// Patch session-derived capabilities with the adapter's overlay reality:
+/// on a Wayland-only session the caret overlay is unplaceable and reports
+/// `None` so the engine degrades to no inline ghost instead of a failed
+/// show; every other session keeps the pure mapping's `OverrideRedirect`.
+fn apply_overlay_reality(capabilities: &mut Capabilities, wayland_only: bool) {
+    if wayland_only {
+        capabilities.overlay_at_caret = platform::OverlayPlacement::None;
     }
 }
 
@@ -1829,6 +1861,55 @@ mod tests {
             );
         }
         o.hide().expect("hide after a failed show is still Ok");
+    }
+
+    #[test]
+    fn wayland_only_session_detection_needs_both_env_facts() {
+        // G16: the overlay is an override-redirect X11 window; only a
+        // Wayland session WITHOUT XWayland (WAYLAND_DISPLAY set, DISPLAY
+        // unset) makes it unplaceable. Either X fact present means the
+        // overlay can still map.
+        assert!(
+            wayland_only_session(Some(std::ffi::OsStr::new("wayland-0")), None),
+            "Wayland without X is the one unplaceable session"
+        );
+        assert!(
+            !wayland_only_session(
+                Some(std::ffi::OsStr::new("wayland-0")),
+                Some(std::ffi::OsStr::new(":0")),
+            ),
+            "XWayland present: the overlay maps through it"
+        );
+        assert!(
+            !wayland_only_session(None, None),
+            "headless is not Wayland; the overlay fails closed on show, not here"
+        );
+        assert!(
+            !wayland_only_session(None, Some(std::ffi::OsStr::new(":0"))),
+            "plain X11 session"
+        );
+    }
+
+    #[test]
+    fn overlay_reality_patch_downgrades_placement_only_on_wayland_only() {
+        // The pure AT-SPI mapping reports OverrideRedirect unconditionally
+        // (it is an X11 statement). The adapter patches it to None exactly
+        // on a Wayland-only session so the engine degrades to no inline
+        // ghost instead of arming a placement the first show would fail on.
+        let facts = crate::atspi_caps::FieldFacts::default();
+        let mut caps = crate::atspi_caps::capabilities_from(&facts);
+        assert_eq!(
+            caps.overlay_at_caret,
+            platform::OverlayPlacement::OverrideRedirect,
+            "the pure mapping is an X11 statement, pre-patch"
+        );
+        apply_overlay_reality(&mut caps, false);
+        assert_eq!(
+            caps.overlay_at_caret,
+            platform::OverlayPlacement::OverrideRedirect
+        );
+        apply_overlay_reality(&mut caps, true);
+        assert_eq!(caps.overlay_at_caret, platform::OverlayPlacement::None);
     }
 
     #[test]

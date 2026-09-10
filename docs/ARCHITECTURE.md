@@ -718,7 +718,10 @@ per-desktop with no portable URL.
 The Linux **ghost/correction overlay** is implemented (ROADMAP Phase 2.5) as an
 override-redirect X11 window, so `atspi_caps` reports
 `OverlayPlacement::OverrideRedirect` and Linux editable fields resolve to
-`UxMode::Inline`. Three modules, split so the interesting decisions are testable
+`UxMode::Inline` — except on a Wayland-only session (`WAYLAND_DISPLAY` set,
+`DISPLAY` unset), where `LinuxAdapter::capabilities` patches the placement to
+`None` (G16): the window cannot map there, and the engine degrades to no
+inline ghost instead of arming a placement the first show would fail on. Three modules, split so the interesting decisions are testable
 off Linux: `overlay_geometry` is pure placement (ghost box at the caret,
 correction underline and banner around a word rect, on-screen clamp, and the
 pixel-coverage runs that shape the window), `overlay_font` is pure font discovery
