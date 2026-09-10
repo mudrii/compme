@@ -3446,6 +3446,214 @@ where
     }
 }
 
+/// The host events routed through [`HostEventCtx`] (plan item 4b): the
+/// tray/hotkey control trio plus the global shortcuts. `Focus`/`Caret` and
+/// `Accept` stay inline in `run()` — see [`HostEventCtx`] for why.
+#[derive(Debug, PartialEq, Eq)]
+enum HostControlEvent {
+    Dismiss,
+    Cycle,
+    Shortcut(ShortcutAction),
+}
+
+/// Borrowed context for the routed host-event handlers (plan item 4b): the
+/// `loop_state` structs and shared services the Dismiss/Cycle/Shortcut arms
+/// use, nothing more. `Focus`/`Caret` stay inline: they interleave
+/// subscription state, monitored reads, and session-UI diagnostics against
+/// loop-owned locals (field canonicalization, the domain cache, onboarding
+/// hints), so a context extraction would be a wide-struct move, not a seam.
+/// `Accept` stays inline for the same reason: the arm is already a thin
+/// composition over the extracted `preview_accept_*` +
+/// `apply_accept_side_effects` helpers, and moving it would add
+/// `previous_inputs`/`memory`/`context_bound` fields used by exactly one
+/// arm.
+struct HostEventCtx<'a, A, O>
+where
+    A: PlatformAdapter,
+    O: OverlayPresenter,
+{
+    engine: &'a mut Engine<SharedAdapter<A>, O>,
+    suggestion: &'a mut SuggestionState,
+    focus: &'a mut FocusContext,
+    prefs: &'a mut Prefs,
+    config: &'a Config,
+    flags: &'a TrayFlags,
+    monitored: &'a mut MonitoredInput,
+    usage: &'a mut UsageStats,
+    shell: &'a Arc<dyn ShellHost>,
+    adapter: &'a Arc<A>,
+    now_ms: u64,
+    wall_ms: u64,
+    manual_grammar_request: &'a mut Option<CompletionRequest>,
+}
+
+/// Route one [`HostControlEvent`] through the shared context. Behavior is
+/// the pre-4b arm body, verbatim; only the loop-local `continue` in the
+/// grammar-check guard became a `return`.
+fn handle_control_event<A, O>(ctx: &mut HostEventCtx<'_, A, O>, event: HostControlEvent)
+where
+    A: PlatformAdapter,
+    O: OverlayPresenter,
+{
+    match event {
+        HostControlEvent::Dismiss => {
+            eprintln!("compme: dismiss (Esc)");
+            record_dismissal(
+                &mut ctx.usage.usage,
+                ctx.wall_ms,
+                ctx.engine.has_visible_suggestion(),
+            );
+            offer_all(
+                &mut ctx.suggestion.latest,
+                log_err("on_dismiss_suppress", ctx.engine.on_dismiss_suppress()),
+            );
+        }
+        HostControlEvent::Cycle => {
+            eprintln!("compme: cycle candidate");
+            offer_all(
+                &mut ctx.suggestion.latest,
+                log_err("on_cycle", ctx.engine.on_cycle()),
+            );
+        }
+        HostControlEvent::Shortcut(action) => handle_shortcut_action(ctx, action),
+    }
+}
+
+/// One `ShortcutAction` (plan item 4b): verbatim the pre-4b `run()` arm
+/// body, with the loop-local `continue` in the grammar-check guard turned
+/// into a `return` (the loop stays behind the seam).
+fn handle_shortcut_action<A, O>(ctx: &mut HostEventCtx<'_, A, O>, action: ShortcutAction)
+where
+    A: PlatformAdapter,
+    O: OverlayPresenter,
+{
+    match action {
+        ShortcutAction::ForceActivate => {
+            // Settled semantics: re-show the CURRENT pending suggestion
+            // without kicking a fresh inference. `on_force_show`
+            // re-emits the held candidate verbatim (no rotation, no
+            // RequestCompletion); a no-op when nothing is held.
+            eprintln!("compme: shortcut force-activate (re-show pending)");
+            offer_all(
+                &mut ctx.suggestion.latest,
+                log_err("on_force_show", ctx.engine.on_force_show()),
+            );
+        }
+        ShortcutAction::ToggleApp => {
+            // Flip per-app Enabled for the focused app, mirroring the
+            // tray/settings per-app toggle. The focused app key comes
+            // from the same resolver the app-disable path uses.
+            match ctx
+                .focus
+                .current_field
+                .as_ref()
+                .and_then(|f| effective_app_key(f, |pid| ctx.shell.bundle_id_for_pid(pid)))
+            {
+                Some(app) => {
+                    // Invert the per-app `enabled` baseline (override if
+                    // present, else `default_enabled`) — NOT
+                    // `should_suggest`, which folds in snooze / app-snooze
+                    // / `excluded_apps` that outrank `enabled`. See
+                    // `app_enabled_baseline` for why inverting the gated
+                    // value would never converge.
+                    let current = app_enabled_baseline(ctx.prefs, &app);
+                    ctx.prefs
+                        .set_app_policy_field(&app, prefs::AppPolicyField::Enabled, !current);
+                    eprintln!(
+                        "compme: shortcut toggle-app {app} enabled {current} -> {}",
+                        !current
+                    );
+                    if let Some(path) = config::config_file_path() {
+                        persist_web_override_prefs(&path, ctx.prefs);
+                    }
+                    // Disabling must retract any suggestion already on
+                    // screen (and disarm its accept key); the gate is only
+                    // re-checked at submission, so a visible ghost would
+                    // otherwise still insert. Mirrors the snooze /
+                    // tray-disable paths below.
+                    if toggle_app_dismisses(current) {
+                        ctx.suggestion.latest.clear();
+                        let _ = log_err("on_dismiss", ctx.engine.on_dismiss());
+                    }
+                }
+                // No resolvable focused app (no field / unknown bundle):
+                // nothing to toggle.
+                None => eprintln!("compme: shortcut toggle-app: no focused app"),
+            }
+        }
+        ShortcutAction::ToggleGlobal => {
+            // Invert the runtime global-enabled flag, mirroring the
+            // SIGUSR1 / tray enable-disable below, including the
+            // monitored-state reset on the policy transition.
+            let now = ctx.flags.toggle_enabled();
+            clear_monitored_state_for_policy_transition(
+                &mut ctx.monitored.pending_monitored,
+                &mut ctx.monitored.monitored_buffers,
+            );
+            // Disabling must retract any visible suggestion (and disarm
+            // its accept key); the enabled gate is only re-checked at
+            // submission. Mirrors the snooze / tray global-disable paths.
+            if now {
+                ctx.suggestion.latest.clear();
+                let _ = log_err("on_dismiss", ctx.engine.on_dismiss());
+            }
+            eprintln!("compme: shortcut toggle-global enabled {now} -> {}", !now);
+        }
+        ShortcutAction::GrammarCheck => {
+            let Some(field) = ctx.focus.current_field.clone() else {
+                eprintln!("compme: shortcut grammar-check: no focused field");
+                return;
+            };
+            let outcome = handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
+                current_field: Some(field),
+                config: ctx.config,
+                prefs: &*ctx.prefs,
+                enabled: ctx.flags.enabled.load(Ordering::Relaxed),
+                now_ms: ctx.now_ms,
+                last_domain: &mut ctx.focus.last_domain,
+                resolve_app_key: |field| {
+                    effective_app_key(&field, |pid| ctx.shell.bundle_id_for_pid(pid))
+                },
+                focused_page_url: |field| ctx.adapter.focused_page_url(&field).ok().flatten(),
+                read_context: |field| ctx.adapter.read_context(&field),
+                capabilities: |field| ctx.adapter.capabilities(&field),
+                arm_manual_grammar_request: |field| ctx.engine.arm_manual_grammar_request(&field),
+            });
+            apply_grammar_shortcut_pending_effect(
+                &mut ctx.suggestion.latest,
+                ctx.manual_grammar_request,
+                &outcome,
+            );
+            match outcome {
+                GrammarCheckShortcutOutcome::NoField => {
+                    eprintln!("compme: shortcut grammar-check: no focused field");
+                }
+                GrammarCheckShortcutOutcome::BlockedBeforeRead => {
+                    eprintln!("compme: shortcut grammar-check blocked before text read");
+                }
+                GrammarCheckShortcutOutcome::ReadContextError(err) => {
+                    eprintln!("compme: grammar-check read_context error: {err:?}");
+                }
+                GrammarCheckShortcutOutcome::CapabilitiesError(err) => {
+                    eprintln!("compme: grammar-check capabilities error: {err:?}");
+                }
+                GrammarCheckShortcutOutcome::BlockedAfterRead => {
+                    eprintln!("compme: shortcut grammar-check blocked");
+                }
+                GrammarCheckShortcutOutcome::NotArmed => {
+                    eprintln!("compme: shortcut grammar-check not armed");
+                }
+                GrammarCheckShortcutOutcome::Armed(request) => {
+                    debug_assert!(matches!(
+                        ctx.manual_grammar_request.as_ref(),
+                        Some(armed) if armed.generation == request.generation
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Persist one switch edge and log it. A persist failure is logged, not
 /// retried — the runtime value wins until relaunch (deliberate graceful
 /// degradation: an IO hiccup must not stall the app, at the cost of
@@ -5362,157 +5570,35 @@ pub fn run() -> Result<(), String> {
                         }
                     }
                 }
-                HostEvent::Dismiss => {
-                    eprintln!("compme: dismiss (Esc)");
-                    record_dismissal(
-                        &mut usage_stats.usage,
-                        wall_ms,
-                        engine.has_visible_suggestion(),
+                HostEvent::Dismiss | HostEvent::Cycle | HostEvent::Shortcut(_) => {
+                    // Plan item 4b: the control events route through the
+                    // borrowed HostEventCtx (built per arm-hit — Focus/Caret
+                    // and Accept still use the loop locals directly, so the
+                    // ctx cannot outlive one arm).
+                    let event = match event {
+                        HostEvent::Dismiss => HostControlEvent::Dismiss,
+                        HostEvent::Cycle => HostControlEvent::Cycle,
+                        HostEvent::Shortcut(action) => HostControlEvent::Shortcut(action),
+                        _ => unreachable!("the arm pattern already excluded the rest"),
+                    };
+                    handle_control_event(
+                        &mut HostEventCtx {
+                            engine: &mut engine,
+                            suggestion: &mut suggestion,
+                            focus: &mut focus,
+                            prefs: &mut prefs,
+                            config: &config,
+                            flags: &flags,
+                            monitored: &mut monitored,
+                            usage: &mut usage_stats,
+                            shell: &shell,
+                            adapter: &adapter,
+                            now_ms,
+                            wall_ms,
+                            manual_grammar_request: &mut manual_grammar_request,
+                        },
+                        event,
                     );
-                    offer_all(
-                        &mut suggestion.latest,
-                        log_err("on_dismiss_suppress", engine.on_dismiss_suppress()),
-                    );
-                }
-                HostEvent::Cycle => {
-                    eprintln!("compme: cycle candidate");
-                    offer_all(
-                        &mut suggestion.latest,
-                        log_err("on_cycle", engine.on_cycle()),
-                    );
-                }
-                HostEvent::Shortcut(action) => {
-                    match action {
-                        ShortcutAction::ForceActivate => {
-                            // Settled semantics: re-show the CURRENT pending suggestion
-                            // without kicking a fresh inference. `on_force_show`
-                            // re-emits the held candidate verbatim (no rotation, no
-                            // RequestCompletion); a no-op when nothing is held.
-                            eprintln!("compme: shortcut force-activate (re-show pending)");
-                            offer_all(
-                                &mut suggestion.latest,
-                                log_err("on_force_show", engine.on_force_show()),
-                            );
-                        }
-                        ShortcutAction::ToggleApp => {
-                            // Flip per-app Enabled for the focused app, mirroring the
-                            // tray/settings per-app toggle. The focused app key comes
-                            // from the same resolver the app-disable path uses.
-                            match focus.current_field.as_ref().and_then(|f| {
-                                effective_app_key(f, |pid| shell.bundle_id_for_pid(pid))
-                            }) {
-                                Some(app) => {
-                                    // Invert the per-app `enabled` baseline (override if
-                                    // present, else `default_enabled`) — NOT
-                                    // `should_suggest`, which folds in snooze / app-snooze
-                                    // / `excluded_apps` that outrank `enabled`. See
-                                    // `app_enabled_baseline` for why inverting the gated
-                                    // value would never converge.
-                                    let current = app_enabled_baseline(&prefs, &app);
-                                    prefs.set_app_policy_field(
-                                        &app,
-                                        prefs::AppPolicyField::Enabled,
-                                        !current,
-                                    );
-                                    eprintln!(
-                                        "compme: shortcut toggle-app {app} enabled {current} -> {}",
-                                        !current
-                                    );
-                                    if let Some(path) = config::config_file_path() {
-                                        persist_web_override_prefs(&path, &prefs);
-                                    }
-                                    // Disabling must retract any suggestion already on
-                                    // screen (and disarm its accept key); the gate is only
-                                    // re-checked at submission, so a visible ghost would
-                                    // otherwise still insert. Mirrors the snooze /
-                                    // tray-disable paths below.
-                                    if toggle_app_dismisses(current) {
-                                        suggestion.latest.clear();
-                                        let _ = log_err("on_dismiss", engine.on_dismiss());
-                                    }
-                                }
-                                // No resolvable focused app (no field / unknown bundle):
-                                // nothing to toggle.
-                                None => eprintln!("compme: shortcut toggle-app: no focused app"),
-                            }
-                        }
-                        ShortcutAction::ToggleGlobal => {
-                            // Invert the runtime global-enabled flag, mirroring the
-                            // SIGUSR1 / tray enable-disable below, including the
-                            // monitored-state reset on the policy transition.
-                            let now = flags.toggle_enabled();
-                            clear_monitored_state_for_policy_transition(
-                                &mut monitored.pending_monitored,
-                                &mut monitored.monitored_buffers,
-                            );
-                            // Disabling must retract any visible suggestion (and disarm
-                            // its accept key); the enabled gate is only re-checked at
-                            // submission. Mirrors the snooze / tray global-disable paths.
-                            if now {
-                                suggestion.latest.clear();
-                                let _ = log_err("on_dismiss", engine.on_dismiss());
-                            }
-                            eprintln!("compme: shortcut toggle-global enabled {now} -> {}", !now);
-                        }
-                        ShortcutAction::GrammarCheck => {
-                            let Some(field) = focus.current_field.clone() else {
-                                eprintln!("compme: shortcut grammar-check: no focused field");
-                                continue;
-                            };
-                            let outcome = handle_grammar_check_shortcut(GrammarCheckShortcutArgs {
-                                current_field: Some(field),
-                                config: &config,
-                                prefs: &prefs,
-                                enabled: flags.enabled.load(Ordering::Relaxed),
-                                now_ms,
-                                last_domain: &mut focus.last_domain,
-                                resolve_app_key: |field| {
-                                    effective_app_key(&field, |pid| shell.bundle_id_for_pid(pid))
-                                },
-                                focused_page_url: |field| {
-                                    adapter.focused_page_url(&field).ok().flatten()
-                                },
-                                read_context: |field| adapter.read_context(&field),
-                                capabilities: |field| adapter.capabilities(&field),
-                                arm_manual_grammar_request: |field| {
-                                    engine.arm_manual_grammar_request(&field)
-                                },
-                            });
-                            apply_grammar_shortcut_pending_effect(
-                                &mut suggestion.latest,
-                                &mut manual_grammar_request,
-                                &outcome,
-                            );
-                            match outcome {
-                                GrammarCheckShortcutOutcome::NoField => {
-                                    eprintln!("compme: shortcut grammar-check: no focused field");
-                                }
-                                GrammarCheckShortcutOutcome::BlockedBeforeRead => {
-                                    eprintln!(
-                                        "compme: shortcut grammar-check blocked before text read"
-                                    );
-                                }
-                                GrammarCheckShortcutOutcome::ReadContextError(err) => {
-                                    eprintln!("compme: grammar-check read_context error: {err:?}");
-                                }
-                                GrammarCheckShortcutOutcome::CapabilitiesError(err) => {
-                                    eprintln!("compme: grammar-check capabilities error: {err:?}");
-                                }
-                                GrammarCheckShortcutOutcome::BlockedAfterRead => {
-                                    eprintln!("compme: shortcut grammar-check blocked");
-                                }
-                                GrammarCheckShortcutOutcome::NotArmed => {
-                                    eprintln!("compme: shortcut grammar-check not armed");
-                                }
-                                GrammarCheckShortcutOutcome::Armed(request) => {
-                                    debug_assert!(matches!(
-                                        manual_grammar_request.as_ref(),
-                                        Some(armed) if armed.generation == request.generation
-                                    ));
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }

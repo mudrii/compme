@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-10 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2131 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-10 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2134 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -1029,7 +1029,8 @@ not new product scope:
    preserved), `ax_worker.rs` in `platform_macos`, the inline test modules
    split into `run_loop_tests.rs`/`lib_tests.rs`, and eight heartbeat phases
    lifted out of `run()` (2,039 → 1,546 lines; 1,557 at `b8d3626` and
-   `ecf5f7c`; 1,432 after the plan-item-4a settings-command seam, 2026-09-10).
+   `ecf5f7c`; 1,432 after the plan-item-4a settings-command seam; 1,310 after
+   the plan-item-4b host-event context seam, 2026-09-10).
 
 ### ☐ Remaining architecture seam work (design task, not debt)
 
@@ -1038,14 +1039,18 @@ cut: `drain_settings_edges` (pure edge detection over the shared flags,
 emitting typed `SettingsCommand`s) + `apply_settings_commands` (the
 engine/shell/persist effects, including the OS-backed launch-at-login and
 screen-context edges with their revert paths) — no wide context struct, no
-snapshot bus. The host-event arm is the one block still inline in `run()`,
-because it touches 15–20 bindings: a plain extraction would hand a wide
-context struct to a function rather than hide state — the same "relocated
-state, not a deeper interface" trap the 27-field startup result showed.
-Closing it properly means a real seam:
+snapshot bus. The host-event control trio (Dismiss/Cycle/Shortcut) followed
+the same day as plan item 4b: `HostEventCtx` borrows the `loop_state`
+structs and `handle_control_event` routes them, the Shortcut arm verbatim.
+`Focus`/`Caret`/`Accept` stay inline deliberately: they interleave
+subscription state, monitored reads, and session-UI diagnostics against
+loop-owned locals (or, for Accept, are already a thin composition over the
+extracted accept-side-effect helpers) — moving them would be a wide-struct
+relocation, not a seam (the reasons are recorded on `HostEventCtx`). What
+remains of the seam work:
 
-- a host-event context type so the caret/focus/shortcut arm can be tested
-  without the whole loop;
+- a focus/caret context type, only if a future change actually needs to
+  test those arms outside the loop — today nothing does;
 - the immutable-snapshot half of the settings/tray redesign stays deferred:
   the 39-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses
   remain (the `shell_flags` crate split moved this vocabulary out of the

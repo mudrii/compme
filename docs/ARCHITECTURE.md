@@ -530,9 +530,11 @@ settings-watcher run is a two-phase seam: `drain_settings_edges` performs
 pure edge detection over the shared flag bus into typed `SettingsCommand`s,
 and `apply_settings_commands` carries the persists, engine setters, and the
 OS-backed launch-at-login / screen-context edges with their revert paths.
-The host-event arm deliberately stays inline: it touches 15–20 bindings, so
-a function would take a wide context struct instead of hiding state.
-Deepening it needs a host-event context type — a design change, not a move.
+The host-event control trio (Dismiss/Cycle/Shortcut) routes through
+`HostEventCtx` + `handle_control_event`, which borrows the same loop-state
+structs; `Focus`/`Caret`/`Accept` stay inline by design (their arms
+interleave loop-owned diagnostics, or already compose extracted helpers —
+the reasons are recorded on `HostEventCtx`).
 
 Major responsibilities:
 

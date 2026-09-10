@@ -1700,6 +1700,176 @@ fn apply_settings_commands_screen_context_denial_reverts_flag_and_mirror() {
 }
 
 #[test]
+fn handle_control_event_toggle_global_flips_flag_clears_monitored_and_retracts() {
+    // 4b routing pin: the Shortcut arm through HostEventCtx. Disabling via
+    // the global shortcut flips TrayFlags.enabled atomically, clears the
+    // monitored state for the policy transition, and retracts the visible
+    // suggestion; re-enabling flips back without touching the rest.
+    let mut engine = phase_engine();
+    let mut suggestion = phase_pending_suggestion();
+    let mut focus = FocusContext::new();
+    let mut prefs = Prefs::default();
+    let config = Config::from_lookup(lookup(&[]));
+    let flags = phase_tray_flags();
+    let field = FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: "ax:0x123".into(),
+        generation: 1,
+    };
+    let mut monitored = phase_monitored_with_buffer(&field);
+    let mut usage = UsageStats::default();
+    let shell: Arc<dyn ShellHost> = Arc::new(RecordingShell {
+        trusted: true,
+        log: startup_log(),
+    });
+    let adapter = Arc::new(FakeAdapter::allow_all(startup_log()));
+    let mut manual_grammar_request = None;
+    let now_ms = 1_000u64;
+    let wall_ms = 1_000u64;
+    let mut ctx = HostEventCtx {
+        engine: &mut engine,
+        suggestion: &mut suggestion,
+        focus: &mut focus,
+        prefs: &mut prefs,
+        config: &config,
+        flags: &flags,
+        monitored: &mut monitored,
+        usage: &mut usage,
+        shell: &shell,
+        adapter: &adapter,
+        now_ms,
+        wall_ms,
+        manual_grammar_request: &mut manual_grammar_request,
+    };
+
+    handle_control_event(
+        &mut ctx,
+        HostControlEvent::Shortcut(ShortcutAction::ToggleGlobal),
+    );
+
+    assert!(
+        !ctx.flags.enabled.load(Ordering::Relaxed),
+        "the shortcut flips the shared enable atomic"
+    );
+    assert!(
+        ctx.monitored.monitored_buffers.is_empty(),
+        "the policy transition clears monitored state"
+    );
+    assert!(
+        ctx.suggestion.latest.take().is_none(),
+        "disabling retracts the visible suggestion"
+    );
+
+    handle_control_event(
+        &mut ctx,
+        HostControlEvent::Shortcut(ShortcutAction::ToggleGlobal),
+    );
+    assert!(
+        ctx.flags.enabled.load(Ordering::Relaxed),
+        "re-enabling flips back"
+    );
+}
+
+#[test]
+fn handle_control_event_grammar_check_without_field_stays_disarmed() {
+    // 4b routing pin: GrammarCheck with no focused field routes to the
+    // NoField outcome — nothing armed, nothing retracted.
+    let mut engine = phase_engine();
+    let mut suggestion = phase_pending_suggestion();
+    let mut focus = FocusContext::new();
+    let mut prefs = Prefs::default();
+    let config = Config::from_lookup(lookup(&[]));
+    let flags = phase_tray_flags();
+    let mut monitored = MonitoredInput::default();
+    let mut usage = UsageStats::default();
+    let shell: Arc<dyn ShellHost> = Arc::new(RecordingShell {
+        trusted: true,
+        log: startup_log(),
+    });
+    let adapter = Arc::new(FakeAdapter::allow_all(startup_log()));
+    let mut manual_grammar_request = None;
+    let mut ctx = HostEventCtx {
+        engine: &mut engine,
+        suggestion: &mut suggestion,
+        focus: &mut focus,
+        prefs: &mut prefs,
+        config: &config,
+        flags: &flags,
+        monitored: &mut monitored,
+        usage: &mut usage,
+        shell: &shell,
+        adapter: &adapter,
+        now_ms: 1_000,
+        wall_ms: 1_000,
+        manual_grammar_request: &mut manual_grammar_request,
+    };
+
+    handle_control_event(
+        &mut ctx,
+        HostControlEvent::Shortcut(ShortcutAction::GrammarCheck),
+    );
+
+    assert!(
+        ctx.manual_grammar_request.is_none(),
+        "no field → no armed grammar request"
+    );
+    assert!(
+        ctx.suggestion.latest.take().is_some(),
+        "the pending suggestion is untouched"
+    );
+}
+
+#[test]
+fn handle_control_event_routes_dismiss_cycle_and_force_activate() {
+    // 4b routing pin: the light arms route through the same ctx — over an
+    // engine with nothing held, all three complete and leave the pending
+    // request slot untouched (ForceActivate re-shows nothing, Dismiss
+    // suppresses nothing, Cycle rotates nothing).
+    let mut engine = phase_engine();
+    let mut suggestion = phase_pending_suggestion();
+    let mut focus = FocusContext::new();
+    let mut prefs = Prefs::default();
+    let config = Config::from_lookup(lookup(&[]));
+    let flags = phase_tray_flags();
+    let mut monitored = MonitoredInput::default();
+    let mut usage = UsageStats::default();
+    let shell: Arc<dyn ShellHost> = Arc::new(RecordingShell {
+        trusted: true,
+        log: startup_log(),
+    });
+    let adapter = Arc::new(FakeAdapter::allow_all(startup_log()));
+    let mut manual_grammar_request = None;
+    let mut ctx = HostEventCtx {
+        engine: &mut engine,
+        suggestion: &mut suggestion,
+        focus: &mut focus,
+        prefs: &mut prefs,
+        config: &config,
+        flags: &flags,
+        monitored: &mut monitored,
+        usage: &mut usage,
+        shell: &shell,
+        adapter: &adapter,
+        now_ms: 1_000,
+        wall_ms: 1_000,
+        manual_grammar_request: &mut manual_grammar_request,
+    };
+
+    handle_control_event(
+        &mut ctx,
+        HostControlEvent::Shortcut(ShortcutAction::ForceActivate),
+    );
+    handle_control_event(&mut ctx, HostControlEvent::Dismiss);
+    handle_control_event(&mut ctx, HostControlEvent::Cycle);
+
+    assert!(
+        ctx.suggestion.latest.take().is_some(),
+        "nothing held → none of the three routes replaces the pending request"
+    );
+}
+
+#[test]
 fn delete_app_row_resolves_against_ids_and_recomposes_together() {
     // The irreversible path (audit c121, top missing test): row index →
     // app id resolution uses the SAME cap/order as the rendered lines,
