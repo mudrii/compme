@@ -1150,8 +1150,16 @@ impl MacosPlatformAdapter {
         match strategy {
             InsertStrategy::AxSet => {
                 let text_for_worker = text.clone();
+                let ax_range_target = Arc::clone(&self.ax_range_target);
                 let apply = self.worker.run(move || {
-                    insert_for_field(pid, field, text_for_worker, replace_left, strategy)
+                    insert_for_field(
+                        pid,
+                        field,
+                        text_for_worker,
+                        replace_left,
+                        strategy,
+                        ax_range_target.as_ref(),
+                    )
                 })?;
                 let result = apply
                     .and_then(|apply| self.finish_axset_insert(pid, apply, &text, replace_left));
@@ -4412,9 +4420,10 @@ fn insert_for_field(
     text: String,
     replace_left: usize,
     strategy: InsertStrategy,
+    target: &dyn AxRangeTarget,
 ) -> Result<AxSetApply, PlatformError> {
-    let (element, _owners) = copy_focused_or_app_element(pid)?;
-    let identity = unsafe { resolve_ax_element_identity(element) }?;
+    let (element, _owners) = target.copy_focused_or_app_element(pid)?;
+    let identity = unsafe { target.resolve_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
     }
@@ -4432,8 +4441,8 @@ fn insert_for_field(
         });
     }
 
-    let value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
-    let selected_range_snapshot = unsafe { read_required_ax_range_attribute(element) }?;
+    let value = unsafe { target.read_value(element) }?;
+    let selected_range_snapshot = unsafe { target.read_selected_range(element) }?;
     // For a replacement, extend the splice range left to cover the typed token
     // (`replace_left` characters) so it is deleted before the new text is inserted.
     let selected_range = extend_range_left(&value, selected_range_snapshot, replace_left);
@@ -4444,8 +4453,8 @@ fn insert_for_field(
     // moved. This converts the common clobber window into a clean retry; an app
     // can still change the field after this check and before the set, so the
     // readback classifier below narrows but cannot close the final race.
-    let current_value = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }?;
-    let current_range = unsafe { read_required_ax_range_attribute(element) }?;
+    let current_value = unsafe { target.read_value(element) }?;
+    let current_range = unsafe { target.read_selected_range(element) }?;
     ensure_ax_insert_snapshot_unchanged(
         &value,
         selected_range_snapshot,
@@ -4454,8 +4463,8 @@ fn insert_for_field(
     )?;
 
     unsafe {
-        set_required_ax_string_attribute(element, kAXValueAttribute, &new_value)?;
-        set_caret_after_value_write(element, new_caret);
+        target.set_value(element, &new_value)?;
+        target.set_caret_after_value_write(element, new_caret);
     }
 
     // Read the value back: some apps (live: iTerm2) report a settable
@@ -4463,8 +4472,7 @@ fn insert_for_field(
     // still equal to the original is that silent no-op; the adapter then
     // falls back to synthetic input. Readback failure is treated as Applied
     // (fail open — the set reported success and we cannot prove otherwise).
-    let readback = unsafe { read_required_ax_string_attribute(element, kAXValueAttribute) }
-        .unwrap_or_else(|_| new_value.clone());
+    let readback = unsafe { target.read_value(element) }.unwrap_or_else(|_| new_value.clone());
     Ok(axset_readback_outcome(
         &value,
         &readback,
@@ -4510,11 +4518,12 @@ fn text_range_rect_for_field(
     unsafe { read_ax_bounds_for_range(element, range.location, range.length) }
 }
 
-/// Element-level AX access for the range-replacement write path, abstracted so
-/// tests can drive `insert_replacing_range` without a live AX element — the
-/// same role `ObserverBackend` plays for the observer path. Production uses
-/// [`RawAxRangeTarget`]'s forwarders to the raw FFI helpers; tests inject a
-/// recording fake and assert the exact attribute-set sequence.
+/// Element-level AX access for the AX insert write paths (append/replace and
+/// exact-range replacement), abstracted so tests can drive `insert` /
+/// `insert_replacing` / `insert_replacing_range` without a live AX element —
+/// the same role `ObserverBackend` plays for the observer path. Production
+/// uses [`RawAxRangeTarget`]'s forwarders to the raw FFI helpers; tests
+/// inject a recording fake and assert the exact attribute-set sequence.
 trait AxRangeTarget {
     fn copy_focused_or_app_element(
         &self,

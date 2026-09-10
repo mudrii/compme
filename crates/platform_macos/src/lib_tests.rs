@@ -2357,20 +2357,22 @@ fn insert_replacing_range_secure_input_wins_even_for_non_axset_strategy() {
     );
 }
 
-/// Recording fake for the AX range-replacement target seam: models one
-/// focused text element (value + selected range + resolved identity) and
-/// logs every attribute SET in order as "attribute=payload" strings — the
+/// Recording fake for the AX insert-path target seam: models one focused
+/// text element (value + selected range + resolved identity) and logs every
+/// attribute SET in order as "attribute=payload" strings — the
 /// `FakeObserverBackend` log style — so a test asserts the exact
 /// `AXUIElementSetAttributeValue` sequence byte-for-byte, Unicode payload
-/// included. Reads are not logged (the mutation sequence is the contract
-/// under test); `focused_element_copies` counts how often a dispatch
-/// actually reached for an AX element, so reject-before-any-AX-call cases
-/// can assert zero AX traffic.
+/// included. Every attribute READ is logged to `read_log` the same way, so
+/// the read → pre-write recheck → set → caret → readback order of both
+/// insert paths is pinnable too. `focused_element_copies` counts how often
+/// a dispatch actually reached for an AX element, so
+/// reject-before-any-AX-call cases can assert zero AX traffic.
 struct FakeAxRangeTarget {
     identity: AxElementIdentity,
     value: Arc<Mutex<String>>,
     selected_range: CFRange,
     set_log: Arc<Mutex<Vec<String>>>,
+    read_log: Arc<Mutex<Vec<String>>>,
     focused_element_copies: Arc<AtomicUsize>,
 }
 
@@ -2380,6 +2382,7 @@ impl FakeAxRangeTarget {
         value: &str,
         selected_range: CFRange,
         set_log: Arc<Mutex<Vec<String>>>,
+        read_log: Arc<Mutex<Vec<String>>>,
         focused_element_copies: Arc<AtomicUsize>,
     ) -> Self {
         Self {
@@ -2387,6 +2390,7 @@ impl FakeAxRangeTarget {
             value: Arc::new(Mutex::new(value.to_string())),
             selected_range,
             set_log,
+            read_log,
             focused_element_copies,
         }
     }
@@ -2415,13 +2419,22 @@ impl AxRangeTarget for FakeAxRangeTarget {
     }
 
     unsafe fn read_value(&self, _element: AXUIElementRef) -> Result<String, PlatformError> {
-        Ok(self.value.lock().unwrap().clone())
+        let value = self.value.lock().unwrap().clone();
+        self.read_log
+            .lock()
+            .unwrap()
+            .push(format!("read:AXValue={value}"));
+        Ok(value)
     }
 
     unsafe fn read_selected_range(
         &self,
         _element: AXUIElementRef,
     ) -> Result<CFRange, PlatformError> {
+        self.read_log.lock().unwrap().push(format!(
+            "read:AXSelectedTextRange={},{}",
+            self.selected_range.location, self.selected_range.length
+        ));
         Ok(self.selected_range)
     }
 
@@ -2500,6 +2513,7 @@ fn insert_replacing_range_applies_value_then_caret_in_order() {
 
     for case in cases {
         let set_log = Arc::new(Mutex::new(Vec::new()));
+        let read_log = Arc::new(Mutex::new(Vec::new()));
         let copies = Arc::new(AtomicUsize::new(0));
         let identity = resolved_identity("ax:0x123", 42, Some("note"));
         let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
@@ -2511,6 +2525,7 @@ fn insert_replacing_range_applies_value_then_caret_in_order() {
                 length: 0,
             },
             Arc::clone(&set_log),
+            Arc::clone(&read_log),
             copies,
         ));
         let adapter = test_adapter_with_hooks(config);
@@ -2563,8 +2578,76 @@ fn insert_replacing_range_applies_value_then_caret_in_order() {
 }
 
 #[test]
+fn insert_axset_rechecks_snapshot_then_sets_value_caret_then_reads_back() {
+    let set_log = Arc::new(Mutex::new(Vec::new()));
+    let read_log = Arc::new(Mutex::new(Vec::new()));
+    let copies = Arc::new(AtomicUsize::new(0));
+    let identity = resolved_identity("ax:0x123", 42, Some("note"));
+    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = Arc::new(FakeAxRangeTarget::new(
+        identity.clone(),
+        "teh",
+        CFRange {
+            location: 3,
+            length: 0,
+        },
+        Arc::clone(&set_log),
+        Arc::clone(&read_log),
+        copies,
+    ));
+    let adapter = test_adapter_with_hooks(config);
+    let field = FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: identity.field_element_id(),
+        generation: 1,
+    };
+
+    // A typo replacement through the plain insert path: "teh" with the
+    // caret at the end (UTF-16 3), replace_left 3 deletes the whole token
+    // before "the" lands — the same shape the range path pins.
+    assert_eq!(
+        adapter.insert_replacing(&field, "the", 3, InsertStrategy::AxSet),
+        Ok(Inserted {
+            bytes: 3,
+            chars: 3,
+            strategy: InsertStrategy::AxSet,
+        })
+    );
+
+    // Invariant (plan item 2b): the AxSet append/replace path performs
+    // read → snapshot recheck → AXValue set → caret set → readback, in that
+    // order, through the same element-target seam the exact-range path
+    // uses. A set landing before the recheck would clobber an edit that
+    // raced the read; a readback before the set would classify the field's
+    // pre-write text as a silent no-op.
+    assert_eq!(
+        read_log.lock().unwrap().as_slice(),
+        [
+            "read:AXValue=teh".to_string(),             // initial value read
+            "read:AXSelectedTextRange=3,0".to_string(), // selection snapshot
+            "read:AXValue=teh".to_string(),             // pre-write recheck (A64)
+            "read:AXSelectedTextRange=3,0".to_string(), // recheck selection
+            "read:AXValue=the".to_string(),             // readback after the set
+        ]
+        .as_slice(),
+        "read, recheck, then read back — in that order"
+    );
+    assert_eq!(
+        set_log.lock().unwrap().as_slice(),
+        [
+            "set:AXValue=the".to_string(),
+            "set:AXSelectedTextRange=3,0".to_string(),
+        ]
+        .as_slice(),
+        "one value write, then the caret write, after the recheck"
+    );
+}
+
+#[test]
 fn insert_replacing_range_refuses_stale_field_without_any_ax_write() {
     let set_log = Arc::new(Mutex::new(Vec::new()));
+    let read_log = Arc::new(Mutex::new(Vec::new()));
     let copies = Arc::new(AtomicUsize::new(0));
     let mut config = TestAdapterConfig::new(Some(99), Arc::new(Mutex::new(Vec::new())), None);
     config.ax_range_target = Arc::new(FakeAxRangeTarget::new(
@@ -2580,6 +2663,7 @@ fn insert_replacing_range_refuses_stale_field_without_any_ax_write() {
             length: 0,
         },
         Arc::clone(&set_log),
+        Arc::clone(&read_log),
         copies,
     ));
     let adapter = test_adapter_with_hooks(config);
@@ -2614,6 +2698,7 @@ fn insert_replacing_range_refuses_stale_field_without_any_ax_write() {
 #[test]
 fn insert_replacing_range_rejects_non_atomic_strategy_before_any_ax_call() {
     let set_log = Arc::new(Mutex::new(Vec::new()));
+    let read_log = Arc::new(Mutex::new(Vec::new()));
     let copies = Arc::new(AtomicUsize::new(0));
     let identity = resolved_identity("ax:0x123", 42, Some("note"));
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
@@ -2625,6 +2710,7 @@ fn insert_replacing_range_rejects_non_atomic_strategy_before_any_ax_call() {
             length: 0,
         },
         Arc::clone(&set_log),
+        Arc::clone(&read_log),
         Arc::clone(&copies),
     ));
     let adapter = test_adapter_with_hooks(config);
