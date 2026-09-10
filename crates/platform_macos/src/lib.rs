@@ -4627,6 +4627,15 @@ fn insert_range_for_field(
         return Err(PlatformError::StaleField);
     }
     let (new_value, new_caret) = splice_text_at_utf16_range(&value, range, &text);
+
+    // G4: the same pre-write recheck `insert_for_field` performs. This path
+    // used to read once and set, so a keystroke landing between the read and
+    // the set was clobbered by the full-value write. Re-read both snapshots
+    // and refuse if either moved; the caller retries on the fresh state.
+    let current_value = unsafe { target.read_value(element) }?;
+    let current_range = unsafe { target.read_selected_range(element) }?;
+    ensure_ax_insert_snapshot_unchanged(&value, selected_range, &current_value, current_range)?;
+
     unsafe {
         target.set_value(element, &new_value)?;
         target.set_caret_after_value_write(element, new_caret);

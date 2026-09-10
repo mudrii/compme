@@ -2370,6 +2370,11 @@ fn insert_replacing_range_secure_input_wins_even_for_non_axset_strategy() {
 struct FakeAxRangeTarget {
     identity: AxElementIdentity,
     value: Arc<Mutex<String>>,
+    /// Scripted `read_value` results, consumed front-first; reads past the
+    /// script fall back to `value`. Lets a test change the field BETWEEN the
+    /// initial read and the pre-write recheck (G4) without racing the
+    /// worker thread the insert runs on.
+    value_reads: Arc<Mutex<VecDeque<String>>>,
     selected_range: CFRange,
     set_log: Arc<Mutex<Vec<String>>>,
     read_log: Arc<Mutex<Vec<String>>>,
@@ -2388,11 +2393,18 @@ impl FakeAxRangeTarget {
         Self {
             identity,
             value: Arc::new(Mutex::new(value.to_string())),
+            value_reads: Arc::new(Mutex::new(VecDeque::new())),
             selected_range,
             set_log,
             read_log,
             focused_element_copies,
         }
+    }
+
+    /// Script the sequence of `read_value` results, front-first.
+    fn with_value_reads(mut self, reads: Vec<String>) -> Self {
+        *self.value_reads.lock().unwrap() = reads.into();
+        self
     }
 }
 
@@ -2419,7 +2431,12 @@ impl AxRangeTarget for FakeAxRangeTarget {
     }
 
     unsafe fn read_value(&self, _element: AXUIElementRef) -> Result<String, PlatformError> {
-        let value = self.value.lock().unwrap().clone();
+        let value = self
+            .value_reads
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| self.value.lock().unwrap().clone());
         self.read_log
             .lock()
             .unwrap()
@@ -2574,7 +2591,91 @@ fn insert_replacing_range_applies_value_then_caret_in_order() {
             "{}: value write then caret write, exact payloads in order",
             case.name,
         );
+        // Invariant (G4): both attribute reads happen AGAIN between the
+        // initial read pair and the set — the pre-write snapshot recheck —
+        // and only then does the mutation run, followed by the readback
+        // read of the landed value.
+        assert_eq!(
+            read_log.lock().unwrap().as_slice(),
+            [
+                format!("read:AXValue={}", case.field_value),
+                format!("read:AXSelectedTextRange={},0", case.caret_utf16),
+                format!("read:AXValue={}", case.field_value),
+                format!("read:AXSelectedTextRange={},0", case.caret_utf16),
+                format!("read:AXValue={}", case.want_value),
+            ]
+            .as_slice(),
+            "{}: read, recheck, set, then read back — in that order",
+            case.name,
+        );
     }
+}
+
+#[test]
+fn insert_replacing_range_recheck_refuses_field_edited_before_the_set() {
+    let set_log = Arc::new(Mutex::new(Vec::new()));
+    let read_log = Arc::new(Mutex::new(Vec::new()));
+    let copies = Arc::new(AtomicUsize::new(0));
+    let identity = resolved_identity("ax:0x123", 42, Some("note"));
+    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = Arc::new(
+        FakeAxRangeTarget::new(
+            identity.clone(),
+            "teh later",
+            CFRange {
+                location: 3,
+                length: 0,
+            },
+            Arc::clone(&set_log),
+            Arc::clone(&read_log),
+            copies,
+        )
+        // The initial read (the splice source) sees the original text; the
+        // pre-write recheck sees a keystroke that landed in between — the
+        // exact G4 window between read and set.
+        .with_value_reads(vec!["teh later".to_string(), "tehx later".to_string()]),
+    );
+    let adapter = test_adapter_with_hooks(config);
+    let field = FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: identity.field_element_id(),
+        generation: 1,
+    };
+
+    // Invariant: a field that changed between the read and the set fails
+    // closed with the same CannotComplete the plain insert path surfaces,
+    // so the caller retries on the fresh text instead of the full-value
+    // write clobbering the keystroke.
+    assert_eq!(
+        adapter.insert_replacing_range(
+            &field,
+            "teh",
+            "the",
+            CorrectionRange { start: 0, end: 3 },
+            InsertStrategy::AxSet,
+        ),
+        Err(PlatformError::CannotComplete {
+            reason: "field value or selection changed before AX write".into(),
+        })
+    );
+    // No attribute SET may land on a moved snapshot, and the recheck must
+    // be the LAST read before the (refused) write would have gone out.
+    assert!(
+        set_log.lock().unwrap().is_empty(),
+        "no AXValue write may land after the snapshot moved"
+    );
+    assert_eq!(
+        read_log.lock().unwrap().as_slice(),
+        [
+            "read:AXValue=teh later".to_string(),
+            "read:AXSelectedTextRange=3,0".to_string(),
+            "read:AXValue=tehx later".to_string(),
+            "read:AXSelectedTextRange=3,0".to_string(),
+        ]
+        .as_slice(),
+        "initial read pair, then the recheck pair, then refuse"
+    );
 }
 
 #[test]
