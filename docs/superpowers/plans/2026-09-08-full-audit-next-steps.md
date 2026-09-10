@@ -5,10 +5,12 @@
 half of 5, and item 9's `model_fetch` redirect tests delivered 2026-09-08
 (`f0bec03`, `b8d3626`, `5bf36fc`, `df34a62`; CI green at `857f1a4`);
 items 2a–2c delivered 2026-09-10 (`e3c8d37`, `74e428e`, `b4ae361`, plus
-`7462f33` fixing a mac-lane clippy `unused_mut` in the new fake builder);
-CI green on every lane at `7462f33` (run 34432782232, macOS included,
-platform_macos 352 tests).
-Still open: item 1's live `ln1` record (owner's niri host), item 2d, 4,
+`7462f33` fixing a mac-lane clippy `unused_mut` in the new fake builder),
+and item 2d (G2) the same day (`b26caca` + `c93b508`); CI green on every
+lane (runs 34432782232 and 34439157981, macOS included, platform_macos
+357 tests) — item 2 is closed except for the Chromium-family live
+recording attached to the caret-marker gates.
+Still open: item 1's live `ln1` record (owner's niri host), 4,
 6, 7, 8, the rest of 5 (D-Bus timeouts, overlay `.check()` collapse, Wayland
 overlay capability report), the rest of 9, and 10 ·
 **Tree audited:** `2d18c34` (v0.1.6 + same-day post-release commits); seven
@@ -138,11 +140,14 @@ Order matters: the seam (2b) makes 2c and 2d testable.
   `ensure_ax_insert_snapshot_unchanged` runs in `insert_range_for_field`
   before the set; the fake serves scripted second value/selected-range
   reads, and both the refusal and the applied read order are pinned.
-- **2d G2** Bounded readback re-poll (three reads, 20 ms apart) before
-  classifying `SilentlyIgnored`, and gate the synthetic-key fallback on a
-  bundle allowlist seeded with iTerm2 (the only live evidence). Record the
-  Chromium-family behaviour in `docs/ACCEPTANCE.md` when the caret-marker
-  gates run.
+- **2d G2** ✅ delivered `b26caca` + `c93b508` (2026-09-10): bounded
+  readback re-poll (three reads, 20 ms apart) before classifying
+  `SilentlyIgnored` in both insert paths, and the synthetic-key fallback
+  gated on a bundle allowlist seeded with iTerm2 (the only live evidence)
+  with staleness/secure-input checks still first. MVP §15 F2, the
+  integration spec, and ARCHITECTURE amended in the same commit. Remaining:
+  record the Chromium-family behaviour in `docs/ACCEPTANCE.md` when the
+  caret-marker gates run (GUI-bound).
 - **2e G5** ✅ delivered early in `b8d3626`: `catch_unwind` around
   `InstallResource` and the `RemoveResource` drop in `ax_worker.rs`
   (`run_ax_worker_loop`), so 2a–2d are what remain here.
