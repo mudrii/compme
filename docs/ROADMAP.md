@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-08 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2118 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-10 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2118 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -76,8 +76,13 @@
 > proposed re-sequencing of the execution order below (three clusters ahead
 > of Windows Phase 1, and a smaller seam cut) is in
 > [`superpowers/plans/2026-09-08-full-audit-next-steps.md`](superpowers/plans/2026-09-08-full-audit-next-steps.md).
-> Items 0, 1, 3, and half of 5 landed the same day; the next step is item 2
-> (macOS insert-path hardening, mac lane) and then item 4 (the `run()` seams,
+> Items 0, 1, 3, and half of 5 landed the same day; item 2's code half
+> (2a–2c: G3 round-trip refusal, the `AxRangeTarget` seam for
+> `insert_for_field`, G4 pre-write recheck on the range path) landed
+> 2026-09-10 (`e3c8d37`, `74e428e`, `b4ae361`; mac-lane verification of
+> that series still pending). What remains of item 2 is 2d (G2 readback
+> re-poll + fallback gating), which is blocked on amending MVP §15 F2 in
+> the same commit; the next actionable step is item 4 (the `run()` seams,
 > now that the heartbeat phases have a test driver).
 >
 > This document cross-references the plan specs in

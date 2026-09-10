@@ -3,8 +3,10 @@
 **Date:** 2026-09-08 · **Reviewed:** 2026-09-09 against `ecf5f7c` ·
 **Status:** items 0, 1 (code half), 3, item 2e (G5), the lock/`front_app`
 half of 5, and item 9's `model_fetch` redirect tests delivered 2026-09-08
-(`f0bec03`, `b8d3626`, `5bf36fc`, `df34a62`; CI green at `857f1a4`).
-Still open: item 1's live `ln1` record (owner's niri host), items 2a–2d, 4,
+(`f0bec03`, `b8d3626`, `5bf36fc`, `df34a62`; CI green at `857f1a4`);
+items 2a–2c delivered 2026-09-10 (`e3c8d37`, `74e428e`, `b4ae361`;
+mac-lane verification of that series still pending).
+Still open: item 1's live `ln1` record (owner's niri host), item 2d, 4,
 6, 7, 8, the rest of 5 (D-Bus timeouts, overlay `.check()` collapse, Wayland
 overlay capability report), the rest of 9, and 10 ·
 **Tree audited:** `2d18c34` (v0.1.6 + same-day post-release commits); seven
@@ -112,16 +114,28 @@ branches).
 
 Order matters: the seam (2b) makes 2c and 2d testable.
 
-- **2a G3** `read_required_ax_string_attribute` (`lib.rs:4741-4744`):
-  compare `CFString::char_len()` with `converted.encode_utf16().count()`;
-  on mismatch return `UnsupportedField { reason: "AX value not
-  round-trippable" }`. Unit-test the predicate on a lone-surrogate
-  `CFString`.
-- **2b** Give `insert_for_field` the same injectable target seam that
-  `insert_range_for_field` already has (`AxRangeTarget`), so the
-  recheck→set→caret→readback order is pinned with a fake.
-- **2c G4** Call `ensure_ax_insert_snapshot_unchanged` in
-  `insert_range_for_field` (`lib.rs:4603-4624`) before the set.
+- **2a G3** ✅ delivered `e3c8d37` (2026-09-10):
+  `read_required_ax_string_attribute` refuses any CFString whose content
+  cannot round-trip to a Rust string — the plan's `char_len()` vs
+  `encode_utf16().count()` predicate gates a conversion built from the
+  exact UTF-16 units (`CFStringGetCharacters` + strict `String::from_utf16`),
+  returning `UnsupportedField { reason: "AX value not round-trippable" }`.
+  Deviation from the letter of the plan: `converted` cannot come from
+  `CFString::to_string()` — the pinned core-foundation 0.10.1 `Display`
+  path asserts full UTF-8 convertibility and panics on the lone-surrogate
+  input this guard exists for, so the exact-copy conversion is used
+  instead. `AxRangeTarget::read_value` forwards here (range path covered).
+  Unit-tested on a lone-surrogate CFString.
+- **2b** ✅ delivered `74e428e` (2026-09-10): `insert_for_field` takes the
+  same `&dyn AxRangeTarget` seam (injected through the adapter's
+  `ax_range_target`), every FFI call a verbatim forward; the
+  recheck→set→caret→readback order is pinned with the recording fake
+  (`FakeAxRangeTarget` now logs reads as well as sets). `extend_range_left`
+  and its five tests unchanged.
+- **2c G4** ✅ delivered `b4ae361` (2026-09-10):
+  `ensure_ax_insert_snapshot_unchanged` runs in `insert_range_for_field`
+  before the set; the fake serves scripted second value/selected-range
+  reads, and both the refusal and the applied read order are pinned.
 - **2d G2** Bounded readback re-poll (three reads, 20 ms apart) before
   classifying `SilentlyIgnored`, and gate the synthetic-key fallback on a
   bundle allowlist seeded with iTerm2 (the only live evidence). Record the
