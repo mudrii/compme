@@ -161,6 +161,10 @@ type SecureInputProvider = dyn Fn() -> bool + Send + Sync + 'static;
 type ProcessExistsProvider = dyn Fn(i32) -> bool + Send + Sync + 'static;
 type SyntheticKeyPoster = dyn Fn(i32, &str) -> Result<(), PlatformError> + Send + Sync + 'static;
 type PasteboardPoster = dyn Fn(i32, &str) -> Result<(), PlatformError> + Send + Sync + 'static;
+/// Bundle-id lookup for a pid (production: `bundle_id_for_pid` via
+/// `NSRunningApplication`), injectable so tests can drive the 2d AxSet
+/// fallback allowlist without a live app.
+type BundleIdForPidProvider = dyn Fn(i32) -> Option<String> + Send + Sync + 'static;
 type AcceptTapHandler = dyn Fn(AcceptTapEvent) -> AcceptTapDecision + Send + Sync + 'static;
 type AcceptTapInstallerFn = dyn Fn(AcceptTapKind, Arc<AcceptTapHandler>) -> Result<AcceptTapResource, PlatformError>
     + Send
@@ -247,6 +251,7 @@ pub struct MacosPlatformAdapter {
     observer_installer: AdapterObserverInstaller,
     accept_tap_installer: AdapterAcceptTapInstaller,
     ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
+    bundle_id_for_pid: Arc<BundleIdForPidProvider>,
 }
 
 impl Drop for MacosPlatformAdapter {
@@ -368,6 +373,7 @@ struct AdapterTestHooks {
     observer_installer: Arc<AdapterObserverInstallerFn>,
     accept_tap_installer: Arc<AcceptTapInstallerFn>,
     ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
+    bundle_id_for_pid: Arc<BundleIdForPidProvider>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1218,6 +1224,7 @@ impl MacosPlatformAdapter {
             observer_installer: AdapterObserverInstaller::Worker,
             accept_tap_installer: AdapterAcceptTapInstaller::Worker,
             ax_range_target: Arc::new(RawAxRangeTarget),
+            bundle_id_for_pid: Arc::new(bundle_id_for_pid),
         })
     }
 
@@ -1284,6 +1291,7 @@ impl MacosPlatformAdapter {
             observer_installer,
             accept_tap_installer,
             ax_range_target,
+            bundle_id_for_pid,
         } = hooks;
 
         Self {
@@ -1302,6 +1310,7 @@ impl MacosPlatformAdapter {
             observer_installer: AdapterObserverInstaller::Custom(observer_installer),
             accept_tap_installer: AdapterAcceptTapInstaller::Custom(accept_tap_installer),
             ax_range_target,
+            bundle_id_for_pid,
         }
     }
 
@@ -1376,12 +1385,24 @@ impl MacosPlatformAdapter {
                         reason: "AxSet replacement was ignored; non-atomic fallback refused".into(),
                     });
                 }
+                self.recheck_secure_input()?;
+                // G2 (plan item 2d): even after the bounded readback re-poll
+                // the classifier cannot distinguish a true no-op from an
+                // asynchronously applied write it failed to observe, so the
+                // synthetic retry is restricted to bundles with live
+                // evidence and fails closed everywhere else.
+                if !self.axset_silent_fallback_allowed(pid) {
+                    return Err(PlatformError::CannotComplete {
+                        reason:
+                            "AxSet write silently ignored; synthetic fallback requires a validated bundle"
+                                .into(),
+                    });
+                }
                 if debug_enabled() {
                     eprintln!(
                         "compme: AxSet write silently ignored — falling back to synthetic input"
                     );
                 }
-                self.recheck_secure_input()?;
                 self.ensure_global_insert_target(pid)?;
                 (self.synthetic_key_poster)(pid, text).map(|()| Inserted {
                     bytes: text.len(),
@@ -1390,6 +1411,19 @@ impl MacosPlatformAdapter {
                 })
             }
         }
+    }
+
+    /// Bundles with live evidence that a silently ignored AxSet write needs
+    /// the synthetic-key retry: iTerm2 (validated 2026-06-10) is the only
+    /// one. Every other app fails closed — re-posting text into an app that
+    /// merely applied its write asynchronously is a double insert (Qfd G2,
+    /// plan item 2d).
+    fn axset_fallback_bundle_allowed(bundle_id: Option<&str>) -> bool {
+        matches!(bundle_id, Some("com.googlecode.iterm2"))
+    }
+
+    fn axset_silent_fallback_allowed(&self, pid: i32) -> bool {
+        Self::axset_fallback_bundle_allowed((self.bundle_id_for_pid)(pid).as_deref())
     }
 
     fn refuse_non_atomic_replacement(
@@ -4357,6 +4391,38 @@ fn axset_readback_outcome(original: &str, readback: &str, inserted: Inserted) ->
     }
 }
 
+/// Readback polls allowed before an AxSet write may be classified
+/// [`AxSetApply::SilentlyIgnored`] (Qfd G2, plan item 2d): an app that
+/// applies its `AXValue` write asynchronously still reads back the ORIGINAL
+/// on an immediate poll, and re-posting the text there double-inserts.
+const AXSET_READBACK_RE_POLLS: usize = 3;
+/// Spacing between those readback polls.
+const AXSET_READBACK_RE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Read the post-write value, re-polling while it still equals the original:
+/// at most [`AXSET_READBACK_RE_POLLS`] reads spaced
+/// [`AXSET_READBACK_RE_POLL_INTERVAL`] apart (worst case ~40 ms of added
+/// latency on the AX worker, only on the silent-ignored path). A read that
+/// errors fails OPEN exactly like the single-read classifier it replaces —
+/// the set reported success and we cannot prove otherwise.
+fn axset_readback_with_re_poll(
+    target: &dyn AxRangeTarget,
+    element: AXUIElementRef,
+    original_value: &str,
+    landed_value: &str,
+) -> String {
+    let mut readback =
+        unsafe { target.read_value(element) }.unwrap_or_else(|_| landed_value.to_string());
+    let mut polls = 1;
+    while polls < AXSET_READBACK_RE_POLLS && readback == original_value {
+        thread::sleep(AXSET_READBACK_RE_POLL_INTERVAL);
+        readback =
+            unsafe { target.read_value(element) }.unwrap_or_else(|_| landed_value.to_string());
+        polls += 1;
+    }
+    readback
+}
+
 /// Whether a post-write readback is worth logging as a divergence. A readback
 /// equal to `new_value` is a clean apply, and one equal to `original` is the
 /// silent-no-op quirk already classified by [`axset_readback_outcome`]; both
@@ -4469,10 +4535,11 @@ fn insert_for_field(
 
     // Read the value back: some apps (live: iTerm2) report a settable
     // AXValue, return success from the set, and change NOTHING. A readback
-    // still equal to the original is that silent no-op; the adapter then
-    // falls back to synthetic input. Readback failure is treated as Applied
-    // (fail open — the set reported success and we cannot prove otherwise).
-    let readback = unsafe { target.read_value(element) }.unwrap_or_else(|_| new_value.clone());
+    // still equal to the original after the bounded re-poll below is that
+    // silent no-op; the adapter then applies the (allowlist-gated) synthetic
+    // fallback. Readback failure is treated as Applied (fail open — the set
+    // reported success and we cannot prove otherwise).
+    let readback = axset_readback_with_re_poll(target, element, &value, &new_value);
     Ok(axset_readback_outcome(
         &value,
         &readback,
@@ -4641,16 +4708,17 @@ fn insert_range_for_field(
         target.set_caret_after_value_write(element, new_caret);
     }
 
-    // Classify by readback exactly like `insert_for_field`: fail OPEN on a
-    // readback read error (the set reported success and we cannot prove
-    // otherwise), and treat any value that differs from the ORIGINAL as
-    // Applied. A readback that differs from both original and `new_value` (e.g.
-    // app-side normalization of smart quotes / trailing whitespace) is a
-    // COMPLETED replacement, not a silent no-op; classifying it `SilentlyIgnored`
-    // would claim nothing happened after the field was already mutated (see the
-    // `AxSetApply` doc). Only a readback byte-identical to the original is the
+    // Classify by readback exactly like `insert_for_field` (including its
+    // bounded re-poll): fail OPEN on a readback read error (the set reported
+    // success and we cannot prove otherwise), and treat any value that
+    // differs from the ORIGINAL as Applied. A readback that differs from
+    // both original and `new_value` (e.g. app-side normalization of smart
+    // quotes / trailing whitespace) is a COMPLETED replacement, not a silent
+    // no-op; classifying it `SilentlyIgnored` would claim nothing happened
+    // after the field was already mutated (see the `AxSetApply` doc). Only a
+    // readback byte-identical to the original after the re-poll is the
     // silent-write quirk.
-    let readback = unsafe { target.read_value(element) }.unwrap_or_else(|_| new_value.clone());
+    let readback = axset_readback_with_re_poll(target, element, &value, &new_value);
     // Log a divergent readback so a wrong-range/partial-splice failure stays
     // diagnosable while still reporting Applied. Lengths only: the field text
     // may be sensitive.

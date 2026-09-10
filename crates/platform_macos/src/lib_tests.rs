@@ -288,6 +288,10 @@ struct TestAdapterConfig {
     /// "drop" per fake tap-resource drop.
     accept_tap_events: Arc<Mutex<Vec<String>>>,
     ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
+    /// Bundle-id lookup for the 2d AxSet-fallback allowlist. Defaults to
+    /// `None` (no bundle) so tests see the fail-closed posture unless they
+    /// explicitly allowlist an app.
+    bundle_id_for_pid: Arc<BundleIdForPidProvider>,
 }
 
 impl TestAdapterConfig {
@@ -308,6 +312,7 @@ impl TestAdapterConfig {
             accept_tap_installs: Arc::new(Mutex::new(Vec::new())),
             accept_tap_events: Arc::new(Mutex::new(Vec::new())),
             ax_range_target: Arc::new(RawAxRangeTarget),
+            bundle_id_for_pid: Arc::new(|_| None),
         }
     }
 }
@@ -386,6 +391,7 @@ fn test_adapter_with_hooks(config: TestAdapterConfig) -> MacosPlatformAdapter {
         accept_tap_installs,
         accept_tap_events,
         ax_range_target,
+        bundle_id_for_pid,
     } = config;
     let worker = AxWorker::start_with_setup(|_| Ok(())).expect("worker");
     let frontmost_pid = Arc::new(move || frontmost_pid);
@@ -439,6 +445,7 @@ fn test_adapter_with_hooks(config: TestAdapterConfig) -> MacosPlatformAdapter {
             observer_installer,
             accept_tap_installer,
             ax_range_target,
+            bundle_id_for_pid,
         },
     )
 }
@@ -495,6 +502,7 @@ fn test_adapter_with_dynamic_frontmost_and_install_hook(
             observer_installer,
             accept_tap_installer,
             ax_range_target: Arc::new(RawAxRangeTarget),
+            bundle_id_for_pid: Arc::new(|_| None),
         },
     )
 }
@@ -2967,6 +2975,317 @@ fn axset_prewrite_snapshot_treats_selection_length_movement_as_a_change() {
     assert_eq!(
         ensure_ax_insert_snapshot_unchanged("abc def", widened, "abc def", widened),
         Ok(())
+    );
+}
+
+#[test]
+fn axset_fallback_bundle_allowlist_is_iterm2_only() {
+    // 2d: the synthetic-key retry after a silently ignored AxSet write is
+    // restricted to bundles with LIVE evidence. iTerm2 is the only one
+    // (2026-06-10); every other app — including look-alikes and a missing
+    // bundle id — fails closed instead of risking a double insert (G2).
+    assert!(MacosPlatformAdapter::axset_fallback_bundle_allowed(Some(
+        "com.googlecode.iterm2"
+    )));
+    assert!(!MacosPlatformAdapter::axset_fallback_bundle_allowed(Some(
+        "com.apple.Terminal"
+    )));
+    assert!(!MacosPlatformAdapter::axset_fallback_bundle_allowed(Some(
+        "com.googlecode.iterm2.beta"
+    )));
+    assert!(!MacosPlatformAdapter::axset_fallback_bundle_allowed(None));
+}
+
+#[test]
+fn finish_axset_silent_fallback_posts_only_for_allowlisted_bundle() {
+    struct Case {
+        name: &'static str,
+        bundle: Option<&'static str>,
+        want_post: bool,
+    }
+    let cases = [
+        Case {
+            name: "iTerm2 (live-validated 2026-06-10)",
+            bundle: Some("com.googlecode.iterm2"),
+            want_post: true,
+        },
+        Case {
+            name: "any other bundle",
+            bundle: Some("com.apple.Terminal"),
+            want_post: false,
+        },
+        Case {
+            name: "no bundle id resolvable",
+            bundle: None,
+            want_post: false,
+        },
+    ];
+
+    for case in cases {
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let posted_in_hook = Arc::clone(&posted);
+        let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        let bundle = case.bundle;
+        config.bundle_id_for_pid = Arc::new(move |_| bundle.map(str::to_string));
+        let p = Arc::clone(&posted_in_hook);
+        config.synthetic_key_poster = Arc::new(move |_, text| {
+            p.lock().unwrap().push(text.to_string());
+            Ok(())
+        });
+        let adapter = test_adapter_with_hooks(config);
+
+        let result = adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "x", 0);
+        if case.want_post {
+            // Invariant: the allowlisted app keeps the live-validated
+            // behavior — the retry posts exactly once and reports the
+            // SyntheticKeys strategy that actually inserted the text.
+            assert_eq!(
+                result,
+                Ok(Inserted {
+                    bytes: 1,
+                    chars: 1,
+                    strategy: InsertStrategy::SyntheticKeys,
+                }),
+                "{}",
+                case.name,
+            );
+            assert_eq!(
+                *posted.lock().unwrap(),
+                vec!["x".to_string()],
+                "{}",
+                case.name
+            );
+        } else {
+            // Invariant: every unlisted app fails closed BEFORE any text is
+            // re-posted — the readback classifier cannot distinguish an
+            // asynchronously applied write from a true no-op, so re-posting
+            // would double-insert (G2).
+            assert_eq!(
+                result,
+                Err(PlatformError::CannotComplete {
+                    reason: "AxSet write silently ignored; synthetic fallback requires a validated bundle"
+                        .into(),
+                }),
+                "{}",
+                case.name,
+            );
+            assert!(posted.lock().unwrap().is_empty(), "{}", case.name);
+        }
+    }
+}
+
+#[test]
+fn insert_axset_readback_re_poll_reclassifies_late_applying_write() {
+    let set_log = Arc::new(Mutex::new(Vec::new()));
+    let read_log = Arc::new(Mutex::new(Vec::new()));
+    let posted = Arc::new(Mutex::new(Vec::new()));
+    let copies = Arc::new(AtomicUsize::new(0));
+    let identity = resolved_identity("ax:0x123", 42, Some("note"));
+    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    let p = Arc::clone(&posted);
+    config.synthetic_key_poster = Arc::new(move |_, text| {
+        p.lock().unwrap().push(text.to_string());
+        Ok(())
+    });
+    config.ax_range_target = Arc::new(
+        FakeAxRangeTarget::new(
+            identity.clone(),
+            "teh",
+            CFRange {
+                location: 3,
+                length: 0,
+            },
+            Arc::clone(&set_log),
+            Arc::clone(&read_log),
+            copies,
+        )
+        // An app that applies the AXValue write asynchronously: the first
+        // two readback polls still observe the ORIGINAL text, the third
+        // sees the landed write — the G2 window a single immediate read
+        // misclassifies as a silent no-op.
+        .with_value_reads(vec![
+            "teh".to_string(), // initial value read
+            "teh".to_string(), // pre-write recheck read
+            "teh".to_string(), // readback poll 1
+            "teh".to_string(), // readback poll 2
+            "the".to_string(), // readback poll 3 — the write landed
+        ]),
+    );
+    let adapter = test_adapter_with_hooks(config);
+    let field = FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: identity.field_element_id(),
+        generation: 1,
+    };
+
+    // Invariant: the bounded re-poll reclassifies the write as Applied, so
+    // the adapter reports the AxSet insert AND never re-posts the text as
+    // synthetic keys (that retry would double-insert).
+    assert_eq!(
+        adapter.insert(&field, "the", InsertStrategy::AxSet),
+        Ok(Inserted {
+            bytes: 3,
+            chars: 3,
+            strategy: InsertStrategy::AxSet,
+        })
+    );
+    assert!(
+        posted.lock().unwrap().is_empty(),
+        "a late-applying write must not trigger the synthetic fallback"
+    );
+    // Bounded: exactly three readback polls — initial read, recheck, then
+    // polls 1-3; no further reads after the classification flips.
+    assert_eq!(
+        read_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.starts_with("read:AXValue="))
+            .count(),
+        5,
+        "two pre-write reads + three readback polls, no more"
+    );
+}
+
+#[test]
+fn insert_axset_still_ignored_after_bounded_re_poll_fails_closed_off_allowlist() {
+    let set_log = Arc::new(Mutex::new(Vec::new()));
+    let read_log = Arc::new(Mutex::new(Vec::new()));
+    let posted = Arc::new(Mutex::new(Vec::new()));
+    let copies = Arc::new(AtomicUsize::new(0));
+    let identity = resolved_identity("ax:0x123", 42, Some("note"));
+    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    let p = Arc::clone(&posted);
+    config.synthetic_key_poster = Arc::new(move |_, text| {
+        p.lock().unwrap().push(text.to_string());
+        Ok(())
+    });
+    config.ax_range_target = Arc::new(
+        FakeAxRangeTarget::new(
+            identity.clone(),
+            "teh",
+            CFRange {
+                location: 3,
+                length: 0,
+            },
+            Arc::clone(&set_log),
+            Arc::clone(&read_log),
+            copies,
+        )
+        // A true no-op write (the iTerm2 quirk shape): every readback poll
+        // observes the original text forever.
+        .with_value_reads(vec![
+            "teh".to_string(),
+            "teh".to_string(),
+            "teh".to_string(),
+            "teh".to_string(),
+            "teh".to_string(),
+        ]),
+    );
+    let adapter = test_adapter_with_hooks(config);
+    let field = FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: identity.field_element_id(),
+        generation: 1,
+    };
+
+    // Invariant: after the bounded re-poll the classification stands
+    // (SilentlyIgnored) AND the synthetic retry stays closed for a bundle
+    // that is not on the allowlist (the default test provider returns no
+    // bundle id) — the caller gets a clean CannotComplete, not a re-post.
+    assert_eq!(
+        adapter.insert(&field, "the", InsertStrategy::AxSet),
+        Err(PlatformError::CannotComplete {
+            reason: "AxSet write silently ignored; synthetic fallback requires a validated bundle"
+                .into(),
+        })
+    );
+    assert!(posted.lock().unwrap().is_empty());
+    assert_eq!(
+        read_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.starts_with("read:AXValue="))
+            .count(),
+        5,
+        "the re-poll is bounded: three readback polls, then classification"
+    );
+    assert_eq!(
+        set_log.lock().unwrap().as_slice(),
+        [
+            "set:AXValue=the".to_string(),
+            "set:AXSelectedTextRange=3,0".to_string()
+        ]
+        .as_slice(),
+    );
+}
+
+#[test]
+fn insert_replacing_range_readback_re_poll_reclassifies_late_applying_write() {
+    let set_log = Arc::new(Mutex::new(Vec::new()));
+    let read_log = Arc::new(Mutex::new(Vec::new()));
+    let copies = Arc::new(AtomicUsize::new(0));
+    let identity = resolved_identity("ax:0x123", 42, Some("note"));
+    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = Arc::new(
+        FakeAxRangeTarget::new(
+            identity.clone(),
+            "teh later",
+            CFRange {
+                location: 3,
+                length: 0,
+            },
+            Arc::clone(&set_log),
+            Arc::clone(&read_log),
+            copies,
+        )
+        // Same G2 window on the exact-range path: the write applies
+        // asynchronously and only the third readback observes it.
+        .with_value_reads(vec![
+            "teh later".to_string(),
+            "teh later".to_string(),
+            "teh later".to_string(),
+            "teh later".to_string(),
+            "the later".to_string(),
+        ]),
+    );
+    let adapter = test_adapter_with_hooks(config);
+    let field = FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: identity.field_element_id(),
+        generation: 1,
+    };
+
+    // Invariant: the shared readback re-poll also covers the range path —
+    // a late-applying replacement reports Applied instead of the
+    // "AX range replacement was ignored" refusal.
+    assert_eq!(
+        adapter.insert_replacing_range(
+            &field,
+            "teh",
+            "the",
+            CorrectionRange { start: 0, end: 3 },
+            InsertStrategy::AxSet,
+        ),
+        Ok(Inserted {
+            bytes: 3,
+            chars: 3,
+            strategy: InsertStrategy::AxSet,
+        })
+    );
+    assert_eq!(
+        read_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.starts_with("read:AXValue="))
+            .count(),
+        5,
+        "two pre-write reads + three readback polls, no more"
     );
 }
 

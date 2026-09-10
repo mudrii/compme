@@ -828,7 +828,11 @@ The macOS adapter supports:
   restore only if the pasteboard change count is still safe.
 
 Global strategies are rejected if the frontmost PID has moved away from the
-field's PID before insertion.
+field's PID before insertion. An AxSet write whose readback still equals the
+original after a bounded re-poll (three reads, 20 ms apart — apps can apply
+`AXValue` asynchronously) is classified silently-ignored; the synthetic-key
+retry for such plain inserts is restricted to live-validated bundles (iTerm2)
+and fails closed with `CannotComplete` elsewhere.
 
 ### Accept Interception
 

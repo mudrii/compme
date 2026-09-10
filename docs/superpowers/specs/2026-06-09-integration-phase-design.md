@@ -15,14 +15,14 @@ in iTerm2. Non-AxSet replacements remain fail-closed residual work because the
 global input channels cannot atomically delete `replace_left` and insert the
 replacement.
 
-*(status 2026-09-09: the iTerm2 evidence stands, but the plain-insert fallback
-in `finish_axset_insert` is still **unconditional for every app** — any
-`SilentlyIgnored` readback on `replace_left == 0` re-posts the text as
-synthetic keys with no bundle check. `Qfd.md` §20 G2 (double insert when an app
-applies `AXValue` asynchronously) is OPEN; plan
-`2026-09-08-full-audit-next-steps.md` item 2d proposes a bounded readback
-re-poll plus a bundle allowlist seeded with iTerm2, to ship together with an
-amendment to MVP spec §15 F2.)*
+*(status 2026-09-10: the iTerm2 evidence stands, and plan item 2d shipped the
+proposed hardening — the `SilentlyIgnored` classification is now preceded by a
+bounded readback re-poll (three reads, 20 ms apart) in both insert paths, and
+the `SyntheticKeys` retry in `finish_axset_insert` is gated on a bundle
+allowlist seeded with iTerm2 only; unlisted apps fail closed with
+`CannotComplete`. `Qfd.md` §20 G2 is closed against that tree; the MVP spec
+§15 F2 amendment landed in the same commit. Chromium-family behaviour is to
+be recorded from the caret-marker live gates when they next run.)*
 
 ## Why this exists
 
@@ -129,11 +129,13 @@ to record `replace_left` for the wiring test.
   `NativeRangeSet`). The 2026-06-10 iTerm2 run validated only the
   silently-ignored-`AxSet` fallback for a **plain append** (`replace_left == 0`);
   silently ignored AxSet replacements fail closed rather than falling back.
-  *(status 2026-09-09: still accurate. `refuse_non_atomic_replacement` guards
-  the SyntheticKeys/Clipboard arms and `finish_axset_insert` guards the
-  post-readback arm. The plain-append fallback itself remains unconditional —
-  no per-app gate exists — so the single iTerm2 run is the only live evidence
-  behind it in every app; see Qfd G2 / plan item 2d in the status note above.)*
+  *(status 2026-09-10: `refuse_non_atomic_replacement` guards the
+  SyntheticKeys/Clipboard arms and `finish_axset_insert` guards the
+  post-readback arm. The plain-append fallback is no longer unconditional:
+  a bounded readback re-poll (three reads, 20 ms apart) precedes the
+  `SilentlyIgnored` classification, and the retry fires only for the
+  iTerm2-seeded bundle allowlist — every other app fails closed. Chromium-
+  family behaviour pending the caret-marker live gates.)*
 
 ### 5. Flags / config (default off; host-read)
 `COMPME_EMOJI` (+ `_SKIN_TONE`, `_GENDER`), `COMPME_AUTOCORRECT`,
