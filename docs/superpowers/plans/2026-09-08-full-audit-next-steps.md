@@ -6,14 +6,15 @@ half of 5, and item 9's `model_fetch` redirect tests delivered 2026-09-08
 (`f0bec03`, `b8d3626`, `5bf36fc`, `df34a62`; CI green at `857f1a4`);
 items 2a–2c delivered 2026-09-10 (`e3c8d37`, `74e428e`, `b4ae361`, plus
 `7462f33` fixing a mac-lane clippy `unused_mut` in the new fake builder),
-and item 2d (G2) the same day (`b26caca` + `c93b508`); item 4a
-(settings-command seam) delivered 2026-09-10 (`bbf3724`). CI green on every
-lane (runs 34432782232, 34439157981, and 34455569795, macOS included;
-platform_macos 357 tests, app 603) — item 2 is closed except for the
-Chromium-family live recording attached to the caret-marker gates.
-Still open: item 1's live `ln1` record (owner's niri host), 4b (the
-host-event half), 6, 7, 8, the rest of 5 (D-Bus timeouts, overlay `.check()`
-collapse, Wayland overlay capability report), the rest of 9, and 10 ·
+and item 2d (G2) the same day (`b26caca` + `c93b508`); items 4a
+(settings-command seam) and 4b (host-event context seam) delivered
+2026-09-10 (`bbf3724`, `4584b35`) — item 4 is closed. CI green on every
+lane (runs 34432782232, 34439157981, 34455569795, and 34488750297, macOS
+included; platform_macos 357 tests, app 606) — item 2 is closed except for
+the Chromium-family live recording attached to the caret-marker gates.
+Still open: item 1's live `ln1` record (owner's niri host), 6, 7, 8,
+the rest of 5 (D-Bus timeouts, overlay `.check()` collapse, Wayland
+overlay capability report), the rest of 9, and 10 ·
 **Tree audited:** `2d18c34` (v0.1.6 + same-day post-release commits); seven
 commits since, all from this plan (`b865790`…`ecf5f7c`)
 **Evidence base:** `Qfd.md` §20 — five parallel finder passes, every ledger row
@@ -178,9 +179,16 @@ Replaces the ROADMAP "typed commands + immutable snapshots" design for now.
   apply test-after); the pre-4a watcher helpers stay as `#[cfg(test)]`
   fixtures. The "89 SettingsFlags references" figure was 82 per the spec
   analysis; the macOS-side flag references are untouched.
-- **4b** `HostEventCtx<'a>` borrowing the existing `loop_state.rs` structs;
-  split the `Shortcut` arm (`run_loop.rs:5090-5291`) from `Focus`/`Caret`.
-  Test Focus→Caret→Shortcut routing with the item-3 fakes.
+- **4b** ✅ delivered `4584b35` (2026-09-10): `HostEventCtx<'a, A, O>`
+  borrows the `loop_state` structs + shared services, and
+  `handle_control_event` routes Dismiss/Cycle/Shortcut (the arm map had
+  drifted: Focus 5024 / Caret 5097 / Accept 5318 / Shortcut 5384 on the
+  pre-4a tree, not 5090-5291). The Shortcut arm moved verbatim (normalized
+  token diff; the loop-local `continue` became `return`). Focus/Caret/Accept
+  stay inline with the reasons recorded on the ctx — the spec-analysis
+  requirement to "cover Accept/Dismiss/Cycle or say why not" is satisfied
+  by routing Dismiss/Cycle and documenting Accept's why-not. Routing pinned
+  with the item-3 fakes. run() 1,432 → 1,310 lines.
 - Defer the snapshot bus until a non-mac shell actually produces flags (today
   `stub::make_tray` is `Err`, so there is no second producer).
 - Re-stamp the ROADMAP "Remaining architecture seam work" section and the
