@@ -25,7 +25,7 @@ use core_foundation::array::CFArray;
 use core_foundation::base::{CFRange, CFRelease, CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
-use core_foundation::string::CFString;
+use core_foundation::string::{CFString, CFStringGetCharacters};
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField, KeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -4717,6 +4717,57 @@ fn split_identity_segments(value: &str) -> Vec<&str> {
     segments
 }
 
+/// The G3 refusal for an AX value no Rust `String` can represent exactly.
+fn ax_value_not_round_trippable() -> PlatformError {
+    PlatformError::UnsupportedField {
+        reason: "AX value not round-trippable".into(),
+    }
+}
+
+/// Whether `cf_string` converts to `converted` without losing or adding
+/// content: [`CFString::char_len`] counts UTF-16 code units, exactly what
+/// [`str::encode_utf16().count()`] counts, so equal lengths mean the
+/// conversion round-trips the whole string (G3).
+fn cf_string_round_trips(cf_string: &CFString, converted: &str) -> bool {
+    cf_string.char_len().max(0) as usize == converted.encode_utf16().count()
+}
+
+/// Convert a `CFString` to a Rust `String`, refusing content a Rust string
+/// cannot represent.
+///
+/// A `CFString` stores UTF-16 code units and can carry unpaired surrogates
+/// (JS-backed fields hand AX exactly that). The former `to_string()` path
+/// converts through `CFStringGetBytes(UTF-8)`, which stops at the first
+/// unconvertible unit — so the caller spliced and rewrote the WHOLE AX value
+/// from a truncated snapshot (Qfd G3), and the pinned core-foundation
+/// `Display` path even asserts full convertibility and panics there. Instead
+/// the exact UTF-16 units are copied out with `CFStringGetCharacters` (never
+/// lossy), strict [`String::from_utf16`] rejects unpaired surrogates, and
+/// [`cf_string_round_trips`] pins the exact round-trip the callers depend on.
+fn cf_string_to_exact_string(cf_string: &CFString) -> Result<String, PlatformError> {
+    let mut units = vec![0u16; cf_string.char_len().max(0) as usize];
+    if !units.is_empty() {
+        // SAFETY: `CFStringGetCharacters` writes exactly `length` UTF-16
+        // units into `units`, which is sized from `char_len` to hold them;
+        // the range covers the whole string.
+        unsafe {
+            CFStringGetCharacters(
+                cf_string.as_concrete_TypeRef(),
+                CFRange {
+                    location: 0,
+                    length: units.len() as isize,
+                },
+                units.as_mut_ptr(),
+            );
+        }
+    }
+    let converted = String::from_utf16(&units).map_err(|_| ax_value_not_round_trippable())?;
+    if !cf_string_round_trips(cf_string, &converted) {
+        return Err(ax_value_not_round_trippable());
+    }
+    Ok(converted)
+}
+
 unsafe fn read_required_ax_string_attribute(
     element: AXUIElementRef,
     attribute: &str,
@@ -4741,10 +4792,10 @@ unsafe fn read_required_ax_string_attribute(
     let value = CFType::wrap_under_create_rule(value);
     value
         .downcast::<CFString>()
-        .map(|value| value.to_string())
         .ok_or_else(|| PlatformError::UnsupportedField {
             reason: "AX text value was not a string".into(),
         })
+        .and_then(|value| cf_string_to_exact_string(&value))
 }
 
 unsafe fn read_required_ax_range_attribute(

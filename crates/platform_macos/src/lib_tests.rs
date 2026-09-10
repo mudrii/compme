@@ -632,6 +632,50 @@ fn map_ax_error_covers_illegal_argument_failure_and_unknown() {
 }
 
 #[test]
+fn cf_string_conversion_refuses_lone_surrogate_ax_values() {
+    use core_foundation::base::kCFAllocatorDefault;
+    use core_foundation::string::CFStringCreateWithCharacters;
+
+    // A CFString carrying an unpaired high surrogate between two BMP
+    // characters — the shape a JS-backed field can hand AX (Qfd G3). Built
+    // through the raw creator because `CFString::new` takes UTF-8, which
+    // cannot carry a lone surrogate.
+    let units: [u16; 3] = [0x61, 0xD800, 0x62];
+    let lone_surrogate = unsafe {
+        CFString::wrap_under_create_rule(CFStringCreateWithCharacters(
+            kCFAllocatorDefault,
+            units.as_ptr(),
+            units.len() as isize,
+        ))
+    };
+    assert_eq!(
+        lone_surrogate.char_len(),
+        3,
+        "the unpaired surrogate counts as one UTF-16 unit"
+    );
+
+    // The length predicate the read path refuses on: a conversion that
+    // dropped the surrogate (char_len 3) reports a shorter UTF-16 length,
+    // so it cannot round-trip. `read_required_ax_string_attribute` — and
+    // with it `AxRangeTarget::read_value`, so both insert paths — rewrites
+    // the whole AX value from this read, so a lossy conversion here is
+    // field-corrupting data damage.
+    assert!(!cf_string_round_trips(&lone_surrogate, "ab"));
+    assert_eq!(
+        cf_string_to_exact_string(&lone_surrogate),
+        Err(PlatformError::UnsupportedField {
+            reason: "AX value not round-trippable".into(),
+        })
+    );
+
+    // Exact conversions still pass: a BMP + astral payload round-trips with
+    // char_len counting UTF-16 units (the emoji is two).
+    let exact = CFString::new("aé😺b");
+    assert_eq!(cf_string_to_exact_string(&exact).as_deref(), Ok("aé😺b"));
+    assert!(cf_string_round_trips(&exact, "aé😺b"));
+}
+
+#[test]
 fn focus_token_factory_assigns_new_generation_for_each_focus_event() {
     let mut factory = FocusTokenFactory::new();
 
