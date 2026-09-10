@@ -3213,11 +3213,13 @@ fn insert_axset_still_ignored_after_bounded_re_poll_fails_closed_off_allowlist()
         5,
         "the re-poll is bounded: three readback polls, then classification"
     );
+    // The write itself DID go out (a plain insert appends at the caret);
+    // only the synthetic retry is refused.
     assert_eq!(
         set_log.lock().unwrap().as_slice(),
         [
-            "set:AXValue=the".to_string(),
-            "set:AXSelectedTextRange=3,0".to_string()
+            "set:AXValue=tehthe".to_string(),
+            "set:AXSelectedTextRange=6,0".to_string()
         ]
         .as_slice(),
     );

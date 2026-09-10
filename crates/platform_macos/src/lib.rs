@@ -1386,11 +1386,14 @@ impl MacosPlatformAdapter {
                     });
                 }
                 self.recheck_secure_input()?;
+                self.ensure_global_insert_target(pid)?;
                 // G2 (plan item 2d): even after the bounded readback re-poll
                 // the classifier cannot distinguish a true no-op from an
                 // asynchronously applied write it failed to observe, so the
                 // synthetic retry is restricted to bundles with live
-                // evidence and fails closed everywhere else.
+                // evidence and fails closed everywhere else. Staleness and
+                // secure input still refuse first: this gate only decides
+                // whether the retry may run at all.
                 if !self.axset_silent_fallback_allowed(pid) {
                     return Err(PlatformError::CannotComplete {
                         reason:
@@ -1403,7 +1406,6 @@ impl MacosPlatformAdapter {
                         "compme: AxSet write silently ignored — falling back to synthetic input"
                     );
                 }
-                self.ensure_global_insert_target(pid)?;
                 (self.synthetic_key_poster)(pid, text).map(|()| Inserted {
                     bytes: text.len(),
                     chars: text.chars().count(),
