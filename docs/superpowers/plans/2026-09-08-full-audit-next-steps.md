@@ -4,8 +4,10 @@
 **Status:** items 0, 1 (code half), 3, item 2e (G5), the lock/`front_app`
 half of 5, and item 9's `model_fetch` redirect tests delivered 2026-09-08
 (`f0bec03`, `b8d3626`, `5bf36fc`, `df34a62`; CI green at `857f1a4`);
-items 2a–2c delivered 2026-09-10 (`e3c8d37`, `74e428e`, `b4ae361`;
-mac-lane verification of that series still pending).
+items 2a–2c delivered 2026-09-10 (`e3c8d37`, `74e428e`, `b4ae361`, plus
+`7462f33` fixing a mac-lane clippy `unused_mut` in the new fake builder);
+CI green on every lane at `7462f33` (run 34432782232, macOS included,
+platform_macos 352 tests).
 Still open: item 1's live `ln1` record (owner's niri host), item 2d, 4,
 6, 7, 8, the rest of 5 (D-Bus timeouts, overlay `.check()` collapse, Wayland
 overlay capability report), the rest of 9, and 10 ·

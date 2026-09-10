@@ -79,8 +79,9 @@
 > Items 0, 1, 3, and half of 5 landed the same day; item 2's code half
 > (2a–2c: G3 round-trip refusal, the `AxRangeTarget` seam for
 > `insert_for_field`, G4 pre-write recheck on the range path) landed
-> 2026-09-10 (`e3c8d37`, `74e428e`, `b4ae361`; mac-lane verification of
-> that series still pending). What remains of item 2 is 2d (G2 readback
+> 2026-09-10 (`e3c8d37`, `74e428e`, `b4ae361`, plus `7462f33` fixing a
+> mac-lane clippy `unused_mut` in the new fake builder; CI green on every
+> lane at `7462f33`, macOS included). What remains of item 2 is 2d (G2 readback
 > re-poll + fallback gating), which is blocked on amending MVP §15 F2 in
 > the same commit; the next actionable step is item 4 (the `run()` seams,
 > now that the heartbeat phases have a test driver).
